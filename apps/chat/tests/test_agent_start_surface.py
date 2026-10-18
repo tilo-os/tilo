@@ -41,10 +41,28 @@ class ExplicitAgentStart(unittest.TestCase):
     def test_semantic_effect_is_explicit_not_a_chat_record_mutation(self):
         effects = source("effects.rs")
         self.assertRegex(effects, r"#\[effect\(device_only\)\]\s+StartAgentTask,")
-        self.assertRegex(effects, r"ChatEffect::StartAgentTask => \{\s+if !self.start_agent_task\(\)")
+        dispatch = function(effects, "answer_effect")
+        self.assertIn(
+            "ChatEffect::StartAgentTask => self.answer_task_effect(TaskEffect::StartAgentTask)",
+            dispatch,
+        )
+        task_dispatch = function(effects, "answer_task_effect")
+        self.assertRegex(task_dispatch, r"TaskEffect::StartAgentTask => \{\s+if !self.start_agent_task\(\)")
         self.assertIn("ChatEffect::START_AGENT_TASK", function(effects, "effect_statuses"))
         # surface.toml describes kept record verbs, not device effects.
         self.assertNotIn('id = "start-agent-task"', (ROOT / "surface.toml").read_text())
+
+    def test_task_controls_are_registered_on_the_live_resource_tree(self):
+        effects = source("effects.rs")
+        row = function(effects, "task_list_row")
+        for control in ("NewTask", "SaveTaskGoal", "StartAgentTask", "StopAgentTask", "SetupTaskModels"):
+            self.assertIn(f".effect(&ChatEffect::{control})", row)
+        for control in ("SetTaskGoal", "QueryTasks", "FilterTasks"):
+            self.assertIn(f"ChatEffect::{control}", row)
+        published = function(effects, "published_rows")
+        self.assertIn("let task_list = Self::task_list_row();", published)
+        self.assertIn(".chain(std::iter::once(task_list))", published)
+        self.assertIn("self.published_rows()", function(effects, "published_row"))
 
     def test_pointer_accessibility_and_semantic_target_agree(self):
         app = source("app.rs")

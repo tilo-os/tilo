@@ -14,6 +14,7 @@
 
 pub(crate) mod diagnostics;
 pub(crate) mod launch_history;
+mod managed_agent;
 #[cfg(target_os = "linux")]
 pub(crate) mod retained_home;
 
@@ -160,6 +161,8 @@ pub struct ServiceLaunchIdentity {
 
 #[derive(Clone, Debug)]
 struct TrustedServiceLaunch {
+    managed_actor: Option<String>,
+    managed_identity: Option<std::sync::Arc<managed_agent::ManagedLaunch>>,
     start_time: u64,
     identity: ServiceLaunchIdentity,
     registered_at: Instant,
@@ -269,7 +272,7 @@ pub(crate) fn verified_running_packages() -> Vec<String> {
 #[cfg(any(test, target_os = "linux"))]
 #[cfg(test)]
 fn register_trusted_service_launch(pid: u32, identity: ServiceLaunchIdentity) {
-    register_trusted_window_launch(pid, identity, None, None);
+    register_trusted_window_launch(pid, identity, None, None, None);
 }
 
 fn register_trusted_window_launch(
@@ -277,15 +280,23 @@ fn register_trusted_window_launch(
     identity: ServiceLaunchIdentity,
     continuation_instance: Option<u64>,
     launch_ticket: Option<u64>,
+    managed_actor: Option<String>,
 ) {
     let Some((_, start_time)) = proc_stat(pid) else {
         return;
     };
+    let managed_identity = managed_actor.as_deref().and_then(|agent| {
+        (identity.app_id == WORKSPACE_AGENT_PACKAGE_ID)
+            .then(|| managed_agent::retained(&identity.workspace_id, agent))
+            .flatten()
+    });
     let mut launches = lock(&TRUSTED_SERVICE_LAUNCHES);
     launches.retain(|_, launch| launch.registered_at.elapsed() <= SERVICE_LAUNCH_TTL);
     launches.insert(
         pid,
         TrustedServiceLaunch {
+            managed_identity,
+            managed_actor,
             start_time,
             identity,
             registered_at: Instant::now(),
@@ -293,6 +304,27 @@ fn register_trusted_window_launch(
             launch_ticket,
         },
     );
+}
+
+/// Resolve protected model attribution from the registered process, not the
+/// service switch, package id, or metadata supplied by an application.
+pub(super) fn registered_protected_model_launch(
+    pid: u32,
+) -> Option<launcher::registration_gate::ProtectedModelLaunch> {
+    let launch = lock(&TRUSTED_SERVICE_LAUNCHES).get(&pid)?.clone();
+    let (_, start) = proc_stat(pid)?;
+    if start != launch.start_time || launch.registered_at.elapsed() > SERVICE_LAUNCH_TTL {
+        return None;
+    }
+    // Provisioning augments the existing protected MODEL source; it never
+    // replaces the kernel-pinned original launch identity with caller data.
+    launch.managed_identity.as_ref()?.identity().ok()?;
+    Some(launcher::registration_gate::ProtectedModelLaunch {
+        app: launch.identity.app_id.clone(),
+        room: launch.identity.workspace_id.clone(),
+        agent: launch.managed_actor.clone()?,
+        launch: format!("{pid}-{start}"),
+    })
 }
 
 /// Launch records of the apps the session shows inside its own process: the
@@ -346,13 +378,27 @@ pub(crate) fn authenticated_window_launch(
     {
         let mut launches = lock(&TRUSTED_SERVICE_LAUNCHES);
         launches.retain(|_, launch| launch.registered_at.elapsed() <= SERVICE_LAUNCH_TTL);
-        if let Some(launch) = launches.get(&pid)
+        if let Some(launch) = launches.get(&pid).cloned()
             && launch.start_time == start_time
             && launch.identity.app_id == app
             && launch.identity.workspace_id == room
         {
+            drop(launches);
+            if launch.managed_actor.is_some() && launch.managed_identity.is_none() {
+                return None;
+            }
+            if let Some(identity) = &launch.managed_identity {
+                identity.identity().ok()?;
+            }
             return Some(
                 tilo_action_broker::services::AuthenticatedApplicationLaunch {
+                    managed_task_agent: launch.managed_actor.clone(),
+                    managed_identity: launch.managed_identity.clone().map(|identity| {
+                        identity
+                            as std::sync::Arc<
+                                dyn tilo_action_broker::services::ManagedApplicationIdentity,
+                            >
+                    }),
                     creation: launch.identity.application_creation.clone(),
                     continuation_instance: launch.continuation_instance,
                     launch_ticket: launch.launch_ticket,
@@ -380,6 +426,8 @@ fn take_in_process_window_launch(
     drop(launches);
     Some(
         tilo_action_broker::services::AuthenticatedApplicationLaunch {
+            managed_task_agent: None,
+            managed_identity: None,
             creation: launch.identity.application_creation,
             continuation_instance: launch.continuation_instance,
             launch_ticket: None,
@@ -2525,7 +2573,7 @@ pub fn build_workspace_agent_command(
     app: &InstalledApp,
     launcher_bin: &Path,
     room: RoomId,
-    identity_path: Option<&Path>,
+    _identity_path: Option<&Path>,
     agent_id: &str,
 ) -> LaunchCommand {
     let mut command = build_launch_command_for(
@@ -2535,7 +2583,7 @@ pub fn build_workspace_agent_command(
         room,
         &LaunchExtras {
             capabilities_file: None,
-            identity_path,
+            identity_path: None,
             render_node: None,
             document: None,
             uri: None,
@@ -2935,6 +2983,37 @@ pub fn launch_workspace_agent(
     execute_workspace_agent(app, agent_id, workspace)
 }
 
+/// Install native owner custody from the authenticated session, never an app.
+pub(crate) fn install_managed_agent_owner(
+    owner: &crate::shell::native_workspace_owner::NativeWorkspaceOwner,
+) {
+    managed_agent::install_owner(owner);
+}
+
+/// Start through the same fixed-package path with the actual governing owner.
+pub(crate) fn launch_workspace_agent_with_owner(
+    agent: &str,
+    workspace: &Workspace,
+    owner: &crate::shell::native_workspace_owner::NativeWorkspaceOwner,
+) -> Result<InstalledApp, LaunchError> {
+    install_managed_agent_owner(owner);
+    // First use has no roster entry yet. The protected execution path verifies
+    // the fixed installed package, then enrolls through the actual governor
+    // before spawning; the presentation-only roster cannot be its prerequisite.
+    let app = installed_apps()?
+        .into_iter()
+        .find(|app| app.package_id == WORKSPACE_AGENT_PACKAGE_ID)
+        .ok_or_else(|| LaunchError::NotInstalled {
+            package_id: WORKSPACE_AGENT_PACKAGE_ID.into(),
+        })?;
+    if !is_headless_collab_service(&app)? {
+        return Err(LaunchError::NotAManagedService {
+            package_id: app.package_id,
+        });
+    }
+    execute_workspace_agent(app, agent, workspace)
+}
+
 /// Whether `app`'s signed manifest describes a headless service that needs
 /// the collaboration broker: `kind = "service"`, a `cli` entrypoint and a
 /// required `collab` service — the only shape started without a window.
@@ -2971,6 +3050,11 @@ fn execute_workspace_agent(
     agent_id: &str,
     workspace: &Workspace,
 ) -> Result<InstalledApp, LaunchError> {
+    let refused = |detail| LaunchError::IdentityUnavailable { detail };
+    let package_hash = managed_agent::verify_installed_package(&app).map_err(refused)?;
+    let owner = managed_agent::owner(workspace.room).map_err(refused)?;
+    let identity = managed_agent::prepare(&owner, workspace, agent_id).map_err(refused)?;
+    identity.identity().map_err(refused)?;
     let launcher_bin = selected_execution_program()?;
     let identity_path = crate::identity_registry::selected_identity_path(
         &workspace.room.to_string(),
@@ -2982,13 +3066,21 @@ fn execute_workspace_agent(
     // only once their actions are published instead of without them.
     let companions =
         start_agent_companions(&launcher_bin, workspace.room, identity_path.as_deref());
-    let mut command = build_workspace_agent_command(
-        &app,
-        &launcher_bin,
-        workspace.room,
-        identity_path.as_deref(),
-        agent_id,
-    );
+    let mut command =
+        build_workspace_agent_command(&app, &launcher_bin, workspace.room, None, agent_id);
+    // The expected hash comes from independently installed host trust, not
+    // application metadata or the publisher embedded in its signed root.
+    if let Some(index) = command
+        .args
+        .iter()
+        .position(|arg| arg == "--expected-package-hash")
+    {
+        command.args[index + 1] = package_hash;
+    } else {
+        command
+            .args
+            .splice(1..1, ["--expected-package-hash".into(), package_hash]);
+    }
     for companion in companions {
         command
             .args
@@ -4700,7 +4792,9 @@ fn start_launch(
                 .iter()
                 .find(|(key, _)| key == "TILO_CONTINUITY_INSTANCE")
                 .and_then(|(_, value)| value.parse::<u64>().ok());
-            register_trusted_window_launch(child.id(), identity, instance, startup_token);
+            register_trusted_window_launch(
+                child.id(), identity, instance, startup_token, command.managed_agent_id.clone(),
+            );
         }
         let workspace_id = command
             .service_identity
@@ -4759,7 +4853,15 @@ fn start_launch(
         // The child cannot exec the launcher (and therefore cannot reach the
         // public Wayland socket) until both registries above are complete.
         let release = match launch_gate {
-            SupervisedLaunchGate::Local(gate) => gate.release(),
+            SupervisedLaunchGate::Local(gate) => {
+                if command.managed_agent_id.is_some() {
+                    registered_protected_model_launch(child.id())
+                        .ok_or_else(|| io::Error::other("managed actor launch record unavailable"))
+                        .and_then(|context| gate.release_protected(&context))
+                } else {
+                    gate.release()
+                }
+            },
             #[cfg(target_os = "linux")]
             SupervisedLaunchGate::Retained(gate) => match retained {
                 Some(registration) => child.retained().and_then(|owned| {
@@ -7411,6 +7513,8 @@ mod tests {
             assert!(!command.args.iter().any(|arg| arg == "--wayland-socket"));
             assert!(!command.args.iter().any(|arg| arg == "--capabilities"));
             assert_eq!(command.managed_agent_id.as_deref(), Some("studio-agent"));
+            assert!(!command.args.iter().any(|arg| arg == "--identity"));
+            assert!(!command.args.iter().any(|arg| arg.contains("identity.json")));
             let separator = command
                 .args
                 .iter()
@@ -8202,7 +8306,7 @@ mod tests {
             compat_entry_generation: 0,
             application_creation: None,
         };
-        register_trusted_window_launch(pid, identity, Some(42), Some(9));
+        register_trusted_window_launch(pid, identity, Some(42), Some(9), None);
         assert!(authenticated_window_launch(pid, "so.tilo.notes", "private-window-room").is_none());
         assert!(authenticated_window_launch(pid, "so.tilo.code", "other-room").is_none());
         assert!(

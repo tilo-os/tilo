@@ -12,6 +12,8 @@ test-support = ["dep:iroh-base"]
 
 [dependencies]
 tilo-action-policy = { path = "../action-policy" }
+# Opaque successful HTTP evidence; no provider server is enabled here.
+tilo-model-gateway = { path = "../../agent/model-gateway" }
 # Writes the file-backed store: owner-only, crash-safe replacement.
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-content = { path = "../../system/content" }

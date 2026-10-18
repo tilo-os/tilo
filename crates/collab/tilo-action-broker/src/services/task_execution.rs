@@ -3,34 +3,29 @@
 use crate::collab_broker_capnp::InvocationJob;
 use tilo_peer_state::workspace_task::{WorkspaceTaskCommand, WorkspaceTaskSnapshot};
 
+#[path = "task_admission_transfer.rs"]
+mod admission_transfer;
+pub use admission_transfer::{
+    NativeTaskAdmissionCaller, NativeTaskAdmissionFuture, NativeTaskAdmissionReady,
+    NativeTaskAdmissionTransfer,
+};
+
 #[cfg(test)]
 #[path = "task_execution_tests.rs"]
 mod tests;
 
-#[derive(Clone, Debug)]
-pub struct NativeTaskBinding {
-    pub task_id: String,
-    pub agent_id: String,
-    pub epoch: u64,
-    pub revision: u64,
-    /// The person whose approval started the run, as the owner recorded it
-    /// from their device's certificate: the run's actions are admitted as
-    /// the agent acting for them. `None` where only a record of an earlier
-    /// admission is at hand; the owner's check reads the live approval.
-    pub starter: Option<String>,
+pub use tilo_joined_room::task_policy::{
+    NativeTaskActionRequirement, NativeTaskBinding, NativeTaskInvocation,
+};
+
+/// Broker actor adaptation stays here: canonical policy must not depend on
+/// the broker's transport types.
+pub(crate) trait NativeTaskBindingActor {
+    fn actor(&self) -> Result<crate::collab_broker_capnp::BrokerActor, String>;
 }
 
-impl NativeTaskBinding {
-    /// Who the run's actions are admitted as in the broker: the agent acting
-    /// for its starter, carrying the delegation a person's device gives its
-    /// agents. It may do what the starter may, held to the answers the room
-    /// keeps for the agent, never to the preset it was admitted with, which
-    /// bounds only what it does on its own. Effects stay attributed to the
-    /// agent.
-    ///
-    /// # Errors
-    /// The binding does not name its starter.
-    pub fn actor(&self) -> Result<crate::collab_broker_capnp::BrokerActor, String> {
+impl NativeTaskBindingActor for NativeTaskBinding {
+    fn actor(&self) -> Result<crate::collab_broker_capnp::BrokerActor, String> {
         let starter = self.starter.clone().ok_or("native task starter absent")?;
         Ok(
             crate::collab_broker_capnp::BrokerActor::agent(format!("agent:{}", self.agent_id))
@@ -40,173 +35,30 @@ impl NativeTaskBinding {
     }
 }
 
-/// A current published contract requirement, never a grant from task arguments.
-#[derive(Clone, Debug)]
-pub struct NativeTaskActionRequirement {
-    /// Supplied by the broker's authenticated run channel, never action arguments.
-    pub binding: Option<NativeTaskBinding>,
-    pub app: String,
-    pub resource_kind: String,
-    pub resource: String,
-    pub action: String,
-    pub need: tilo_actions::ActionNeed,
-    /// The action's contract asks for confirmation with these arguments
-    /// (it sends, publishes or deletes for good): the agent's person is
-    /// asked first unless they allowed this very action.
-    pub consequential: bool,
-    /// The person the run acts for confirmed this invocation, or it was
-    /// admitted on their confirmation: an answer that asks first is
-    /// answered.
-    pub confirmed: bool,
+/// Owner-private text for exactly one authenticated task/run read. Never merge
+/// this into a public workspace snapshot.
+#[derive(Clone, Default)]
+pub struct NativeTaskPrivateInstructions {
+    pub instruction: Option<String>,
+    pub agent_request: Option<tilo_desktop_model::WorkspaceAgentRequest>,
+    pub directions: std::collections::BTreeMap<u64, String>,
 }
 
-impl NativeTaskActionRequirement {
-    /// Apply the room's grants for the agent to this action, on the live
-    /// admitted document, held to the exact task/run's frozen authority.
-    /// Where any of them asks first, the run pauses for its person: unless
-    /// the invocation is [`Self::confirmed`], the answer is an error starting
-    /// with [`tilo_actions::draft::AWAITING_CONFIRMATION`].
-    ///
-    /// # Errors
-    /// The room is unavailable, the current agent is not allowed this
-    /// action, or it waits for its person's confirmation.
-    pub fn check(
-        &self,
-        peer: &tilo_peer_state::StatePeer,
-        room: &str,
-        agent: &str,
-        now: std::time::SystemTime,
-    ) -> Result<(), String> {
-        use tilo_action_policy::{Answer, Authority, Context, agent_answers, roles};
-        let doc = peer
-            .admitted_room()
-            .ok_or("native action policy unavailable")?;
-        let policy = tilo_desktop_model::projection::room_policy_of(doc, room);
-        let node = tilo_actions::action_node(
-            &policy.node(),
-            &self.app,
-            &self.resource_kind,
-            &self.resource,
-            self.need.field.as_deref(),
-            &self.action,
-        );
-        let cx = Context::at_time(now);
-        let binding = self
-            .binding
-            .as_ref()
-            .ok_or("native task action binding absent")?;
-        if binding.agent_id != agent || self.need.privileged {
-            return Err("native task action binding invalid or action privileged".into());
-        }
-        let state = tilo_peer_state::workspace_task::snapshot(doc)?;
-        let task = state
-            .tasks
-            .iter()
-            .find(|task| task.id == binding.task_id)
-            .ok_or("native task absent")?;
-        let control = state
-            .controls
-            .get(&binding.task_id)
-            .ok_or("native task control absent")?;
-        let run = control.active_run.as_ref().ok_or("native task run ended")?;
-        if run.epoch != binding.epoch
-            || run.agent_id != agent
-            || task.status != tilo_desktop_model::WorkspaceTaskStatus::InProgress
-            || task.assigned_agent.as_deref() != Some(agent)
-        {
-            return Err("native task run replaced or stopped".into());
-        }
-        let approval = run.approval.as_ref().ok_or("native task starter absent")?;
-        // The run acts for its starter, so the agent is bounded as the
-        // starter's delegate, as every member admits its writes: the agent
-        // delegation and the answers the room holds for the agent. The
-        // preset it was admitted with bounds what it does on its own, not
-        // what a person asked of it.
-        let delegation = roles::agent_delegation(room, agent, &approval.person);
-        let verdict =
-            Authority::person(delegation.party(&policy.grants)).decide(&node, self.need.kind, &cx);
-        let agent_answer = verdict.parts.first().map_or(Answer::Deny, |decision| {
-            agent_answers::held_to_contract(decision, self.consequential)
-        });
-        let member = peer.permissions(approval.device, now)?;
-        let foreign = tilo_action_policy::roles::foreign_device_bound();
-        let starter = member
-            .authority(&foreign)
-            .decide(&node, self.need.kind, &cx)
-            .answer;
-        if member.person != approval.person || starter == Answer::Deny {
-            return Err("native task action is no longer authorized by its starter".into());
-        }
-        let bound = control
-            .execution_authority
-            .as_ref()
-            .ok_or("native task authority absent")?;
-        let frozen = if bound.scope.covers(&node) {
-            bound.starter.answer(&node, self.need.kind, &cx)
-        } else {
-            Answer::Deny
-        };
-        if bound.epoch != binding.epoch || frozen == Answer::Deny {
-            return Err("native task action exceeds its frozen execution authority".into());
-        }
-        let task = policy
-            .task_answer(&binding.task_id, &node, self.need.kind, &cx)
-            .unwrap_or(Answer::Allow);
-        if agent_answer == Answer::Deny {
-            return Err(not_allowed(self.need.kind, &agent_basis(&verdict)));
-        }
-        if task == Answer::Deny {
-            return Err(not_allowed(self.need.kind, "this task's own grants"));
-        }
-        let answer = [agent_answer, starter, frozen, task]
-            .into_iter()
-            .fold(Answer::Allow, Answer::min);
-        if answer == Answer::Ask && !self.confirmed {
-            let whose = if agent_answer == Answer::Ask {
-                agent_basis(&verdict)
-            } else {
-                "the person's own grants".to_owned()
-            };
-            return Err(format!(
-                "{}: {} asks a person first: {whose} answer \"ask\" for {}",
-                tilo_actions::draft::AWAITING_CONFIRMATION,
-                self.action,
-                self.need.kind.phrase()
-            ));
-        }
-        Ok(())
-    }
-
-    /// Whether `error`, from [`Self::check`], says the action waits for the
-    /// person's confirmation rather than being refused.
-    #[must_use]
-    pub fn awaits_confirmation(error: &str) -> bool {
-        error.contains(tilo_actions::draft::AWAITING_CONFIRMATION)
+impl std::fmt::Debug for NativeTaskPrivateInstructions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("NativeTaskPrivateInstructions { private: redacted }")
     }
 }
 
-/// The agent's grants that decided `verdict`, by the grant, so the agent (and
-/// whoever reads its report) learns why rather than retrying.
-fn agent_basis(verdict: &tilo_action_policy::Verdict<'_>) -> String {
-    match verdict.parts.first().map(|part| part.basis) {
-        Some(tilo_action_policy::Basis::Grant(grant)) => format!(
-            "the agent's grants in this workspace (grant {} on {})",
-            grant.id, grant.node
-        ),
-        _ => format!(
-            "the agent's grants in this workspace (no grant covers {})",
-            verdict.node
-        ),
-    }
-}
-
-/// Why a task run may not take an action `whose` grants deny.
-fn not_allowed(kind: tilo_action_policy::ActionKind, whose: &str) -> String {
-    format!(
-        "native task action is not allowed: {whose} do not allow {}",
-        kind.phrase()
-    )
-}
+/// Private owner inbox read. Dropping it ends observation, never delivery.
+pub type NativeTaskInboxFuture<'a> = std::pin::Pin<
+    Box<
+        dyn std::future::Future<
+                Output = Result<Vec<tilo_actions::task_messaging::TaskMessage>, String>,
+            > + Send
+            + 'a,
+    >,
+>;
 
 pub trait WorkspaceTaskExecution: Send + Sync {
     fn requires_room(&self, room: &str) -> bool;
@@ -215,11 +67,169 @@ pub trait WorkspaceTaskExecution: Send + Sync {
     /// # Errors
     /// The owner is unavailable or this service does not govern the room.
     fn snapshot(&self, room: &str) -> Result<WorkspaceTaskSnapshot, String>;
+    /// Recheck the owner's admission barrier, not a runner or projection flag.
+    /// Historical delivery remains valid after this gate closes; ACK authority does not.
+    fn ensure_model_run_open(
+        &self,
+        _room: &str,
+        _binding: &NativeTaskBinding,
+    ) -> Result<(), String> {
+        Err("native MODEL admission barrier unavailable".into())
+    }
     /// Read instructions only while the assigned agent remains a current member.
     ///
     /// # Errors
     /// The owner is unavailable or current agent admission ended.
     fn agent_snapshot(&self, room: &str, agent: &str) -> Result<WorkspaceTaskSnapshot, String>;
+    /// Read the exact owner-private draft and answer for an authenticated run.
+    /// # Errors
+    /// Refuses stale authority or unavailable private custody.
+    fn private_confirmation(
+        &self,
+        _room: &str,
+        _binding: &NativeTaskBinding,
+    ) -> Result<Option<tilo_desktop_model::WorkspaceTaskConfirmation>, String> {
+        Err("native task private confirmation owner unavailable".into())
+    }
+    /// Freeze the exact child ceiling before publishing its request for approval.
+    /// # Errors
+    /// Refuses unavailable custody, stale authority, or a changed request.
+    fn freeze_confirmation(
+        &self,
+        _room: &str,
+        _binding: &NativeTaskBinding,
+        _asking: uuid::Uuid,
+        _requirement: &NativeTaskActionRequirement,
+    ) -> Result<(), String> {
+        Err("native task confirmation freeze owner unavailable".into())
+    }
+    /// Read only the exact active run's private text. The broker supplies its
+    /// authenticated run binding; the owner rechecks the current host and actor.
+    ///
+    /// # Errors
+    /// The owner is unavailable, the run changed, or current admission ended.
+    fn private_instructions(
+        &self,
+        _room: &str,
+        _binding: &NativeTaskBinding,
+    ) -> Result<Option<NativeTaskPrivateInstructions>, String> {
+        Err("native task private instruction owner unavailable".into())
+    }
+    /// Digest the exact authenticated owner-private run envelope, not its lease.
+    ///
+    /// # Errors
+    /// Refuses unavailable private custody or a stale run/frontier.
+    /// Recover the original child identity only while this exact review is held.
+    /// # Errors
+    /// Review, run or request-time owner custody changed.
+    fn confirmation_invocation(
+        &self,
+        _room: &str,
+        _binding: &NativeTaskBinding,
+        _asking: uuid::Uuid,
+    ) -> Result<uuid::Uuid, String> {
+        Err("native confirmation invocation custody unavailable".into())
+    }
+
+    fn private_run_digest(
+        &self,
+        _room: &str,
+        _binding: &NativeTaskBinding,
+    ) -> Result<[u8; 32], String> {
+        Err("native task private run digest owner unavailable".into())
+    }
+    /// Read untrusted mail only for this authenticated native run.
+    ///
+    /// # Errors
+    /// Returns an error if the owner is unavailable or current run authorization fails.
+    fn messages(
+        &self,
+        _room: &str,
+        _binding: &NativeTaskBinding,
+    ) -> Result<Vec<tilo_actions::task_messaging::TaskMessage>, String> {
+        Ok(Vec::new())
+    }
+    /// Subscribe before the first inbox read to avoid losing a committed send.
+    /// Wake hints never carry private data or confer read authority.
+    fn message_changes(
+        &self,
+        _room: &str,
+    ) -> Result<Option<tokio::sync::watch::Receiver<()>>, String> {
+        Ok(None)
+    }
+
+    /// Subscribe to private mailbox changes scoped to the actual native run.
+    /// Remote governors must authenticate physical host and run custody.
+    fn message_changes_for_run(
+        &self,
+        room: &str,
+        _binding: &NativeTaskBinding,
+    ) -> Result<Option<tokio::sync::watch::Receiver<()>>, String> {
+        self.message_changes(room)
+    }
+
+    /// One asynchronous, currently authorized owner-private inbox observation.
+    /// Wait actions must not treat the legacy empty inbox default as evidence.
+    /// Implementations must keep network/blocking work off the broker task.
+    fn poll_messages(
+        &self,
+        _room: &str,
+        _binding: &NativeTaskBinding,
+        _requirement: &NativeTaskActionRequirement,
+    ) -> NativeTaskInboxFuture<'_> {
+        Box::pin(async { Err("native task private inbox observation unavailable".into()) })
+    }
+    /// Read exact original reports only for this authenticated native run.
+    ///
+    /// # Errors
+    /// Refuses unavailable custody or stale run authority.
+    fn report_transcript(
+        &self,
+        _room: &str,
+        _binding: &NativeTaskBinding,
+    ) -> Result<Vec<tilo_actions::task_messaging::TaskReport>, String> {
+        Err("private task transcript owner unavailable".into())
+    }
+    /// Links from the broker's actual durable native invocation result.
+    ///
+    /// # Errors
+    /// Returns an error if output recording is unavailable or current run/action checks fail.
+    fn record_outputs(
+        &self,
+        _room: &str,
+        _binding: &NativeTaskBinding,
+        _outputs: Vec<tilo_actions::task_messaging::TaskOutputRef>,
+        _requirement: &NativeTaskActionRequirement,
+    ) -> Result<(), String> {
+        Err("native task output owner unavailable".into())
+    }
+    /// Internal native prompt boundary, not a public messaging action.
+    ///
+    /// # Errors
+    /// Returns an error if acknowledgement is unavailable or current run authorization fails.
+    fn acknowledge_messages(
+        &self,
+        _room: &str,
+        _binding: &NativeTaskBinding,
+        _ids: &[String],
+    ) -> Result<(), String> {
+        Err("native inbox acknowledgement unavailable".into())
+    }
+    /// Called only by the registered inbox action's native invocation handler.
+    ///
+    /// # Errors
+    /// Returns an error if messaging is unavailable or message admission or delivery fails.
+    fn send_message(
+        &self,
+        _room: &str,
+        _binding: &NativeTaskBinding,
+        _recipient: &str,
+        _invocation: uuid::Uuid,
+        _send: tilo_actions::task_messaging::TaskMessageSend,
+        _requirement: &NativeTaskActionRequirement,
+    ) -> Result<tilo_actions::task_messaging::TaskMessage, String> {
+        Err("private task messaging unavailable".into())
+    }
     /// The broker supplies a binding derived from its authenticated channel.
     /// Authority uses the host's existing enrolled attestation, never a wire grant.
     fn report(
@@ -238,6 +248,21 @@ pub trait WorkspaceTaskExecution: Send + Sync {
         agent: &str,
         requirement: &NativeTaskActionRequirement,
     ) -> Result<(), String>;
+    /// Observe a child whose exact invocation has already crossed durable host
+    /// admission. This read-only door may retain Ask-compatible observation; it
+    /// must never reserve, consume approval or return new dispatch authority.
+    ///
+    /// # Errors
+    /// No durable dispatch custody exists, or current authority denies the action.
+    fn authorize_retained_action(
+        &self,
+        room: &str,
+        agent: &str,
+        requirement: &NativeTaskActionRequirement,
+        _invocation: uuid::Uuid,
+    ) -> Result<(), String> {
+        self.authorize_action(room, agent, requirement)
+    }
     /// Admit a host activation in the same serialized task turn as an action.
     /// The callback must retain custody before invoking the ordinary launcher.
     ///
@@ -250,6 +275,23 @@ pub trait WorkspaceTaskExecution: Send + Sync {
         requirement: &NativeTaskActionRequirement,
         launch: &mut dyn FnMut() -> Result<(), String>,
     ) -> Result<(), String>;
+
+    /// Prepare one asynchronous transfer of the owner's guarded enqueue turn.
+    /// Only owned metadata crosses to the worker; the original non-Send enqueue
+    /// closure stays on the broker LocalSet. The worker must recheck the original
+    /// caller and task policy on the exact guarded owner view, including live
+    /// expiry immediately before Ready, and hold its guard until completion or drop.
+    /// Implementations must not re-enter the owner mutex from that callback.
+    /// The default fails closed rather than invoking synchronous admission.
+    fn prepare_admission(
+        &self,
+        _room: String,
+        _binding: NativeTaskBinding,
+        _requirement: NativeTaskActionRequirement,
+        _caller: NativeTaskAdmissionCaller,
+    ) -> NativeTaskAdmissionFuture {
+        Box::pin(async { Err("native task asynchronous admission owner unavailable".into()) })
+    }
 
     /// Runs ordinary action admission inside the existing serialized task turn.
     ///

@@ -844,6 +844,10 @@ mod tests {
             Answer::Deny,
         );
         workspace.tasks.push(tilo_desktop_model::WorkspaceTask {
+            parent_task_id: None,
+            child_order: None,
+            labels: Vec::new(),
+            responsible_assignees: Vec::new(),
             id: "task:tidy".into(),
             title: "Tidy up".into(),
             created_by: "owner".into(),
@@ -883,6 +887,10 @@ mod tests {
             Answer::Deny,
         );
         workspace.tasks.push(tilo_desktop_model::WorkspaceTask {
+            parent_task_id: None,
+            child_order: None,
+            labels: Vec::new(),
+            responsible_assignees: Vec::new(),
             id: "task:waiting".into(),
             title: "Waiting for input".into(),
             created_by: "owner".into(),

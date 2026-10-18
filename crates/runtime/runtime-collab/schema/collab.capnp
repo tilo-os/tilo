@@ -468,6 +468,13 @@ interface ChannelHandle {
   # Native Chat's original person actor only; reauthorized on every next.
   subscribePersonChat @65 (publicKey :Text, onBehalfOf :Data) -> (stream :PersonChatStream);
 
+  # Original owner-private reports for the authenticated agent's exact leased run.
+  # Persons read the same reports through the existing read-conversation action.
+  taskReportTranscript @66 (runId :UInt64, lease :Text) -> (reportsJson :Text);
+  # Private typed MODEL custody on the certified Agent connection. No host
+  # backend key or endpoint capability is returned to the application.
+  nativeModel @67 (command :Data) -> (reply :Data);
+
 }
 
 # Optional result on @35, minted from the same captured directory and worker.
@@ -704,6 +711,9 @@ interface InvocationStream {
 # Agent-only task work sent by the broker after live-session admission.
 interface TaskRunStream {
   read @0 () -> (taskJson :Text);
+  # Private, level-triggered control for this subscription's accepted runs.
+  # Observation is not incorporation and never acknowledges inbox messages.
+  readControl @1 () -> (controlJson :Text);
 }
 
 interface ActionStream {

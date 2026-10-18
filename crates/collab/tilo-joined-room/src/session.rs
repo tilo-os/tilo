@@ -3,6 +3,9 @@
 //! sending what the owner holds in outgoing custody. The host drives these
 //! from its own event loop.
 mod cursor;
+#[cfg(test)]
+#[path = "privacy_publication_tests.rs"]
+mod privacy_publication_tests;
 
 use crate::{NativeWorkspaceOwner, RoomId};
 use ed25519_dalek::SigningKey;
@@ -227,15 +230,12 @@ impl Scope {
         if !self.pinned_to(&hint, &device, continuity) {
             return Err("native publication session changed".into());
         }
-        // Reconciliation may persist a genuine authorized successor. Its
-        // failure must not erase or prevent other fresh retained frames.
-        if let Err(error) = self.connect.owner.reconcile_outgoing(
+        // Privacy migration must succeed before any retained bytes leave custody.
+        self.connect.owner.reconcile_outgoing(
             self.connect.room,
             &identity.device_signing_key,
             std::time::SystemTime::now(),
-        ) {
-            tracing::debug!(%error,"native publication reconciliation blocked");
-        }
+        )?;
         if let Some(reseal) = reseal
             && let Err(error) = self.connect.owner.renew_outgoing(
                 self.connect.room,
@@ -281,12 +281,11 @@ impl Scope {
                             neighbour_wire::Retention::Delta => {
                                 session.publish_retained_delta(channel, bytes.to_vec())
                             }
-                            // Members never republish a governor checkpoint with
-                            // their own relay author, even if a producer errs. A
-                            // sealed checkpoint already arrives here as a delta
-                            // (`publication::member_publishes_as_delta`).
                             neighbour_wire::Retention::Checkpoint => {
-                                return Err("native member checkpoint publication refused".into());
+                                crate::publication::authorize_baseline_checkpoint(
+                                    view, bytes, channel,
+                                )?;
+                                session.publish_checkpoint(channel, bytes.to_vec())
                             }
                         }
                         .map_err(|e| e.to_string())

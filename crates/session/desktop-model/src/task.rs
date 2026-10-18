@@ -1,5 +1,8 @@
 //! Room-owned tasks and effect receipts.
 
+#[cfg(test)]
+mod private_instruction_tests;
+
 use serde::{Deserialize, Serialize};
 
 /// Largest full instruction retained for one queued agent task.
@@ -163,6 +166,8 @@ pub struct WorkspaceTaskAuditEvent {
 
 /// The resource kind task audit verbs are published on.
 pub const TASK_KIND: &str = "workspace-task";
+/// Existing broker-owned desktop task resource provider, not a root-task app.
+pub const TASK_PROVIDER: &str = "so.tilo.desktop";
 
 impl WorkspaceTaskAuditEvent {
     /// `actor` did `action` (a task verb such as `create-task`) with the
@@ -374,6 +379,10 @@ pub enum WorkspaceTaskMutationResult {
     ConfirmationRecorded {
         task_id: String,
     },
+    /// Coordination only; appended to retain shipped result indices.
+    MetadataUpdated {
+        task_id: String,
+    },
 }
 
 /// Exact replay record for one owner-admitted task mutation.
@@ -386,6 +395,20 @@ pub struct WorkspaceTaskMutationReceipt {
     pub result: WorkspaceTaskMutationResult,
 }
 
+/// Model-use ceiling frozen only at an explicitly approved person start.
+/// Kept separate from the resource data scope: permission to reason about an
+/// attached file does not grant access to the rest of the workspace.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceTaskModelAuthority {
+    pub epoch: u64,
+    pub request_model: tilo_action_policy::TreePath,
+    pub kind: tilo_action_policy::ActionKind,
+    /// Complete nonsecret host selection contract, not just a profile id.
+    pub contract: serde_json::Value,
+    pub starter: tilo_action_policy::Standing,
+}
+
 /// Owner-only task execution state, stored beside `tasks_v1` under the task id.
 /// Keeping it as a sidecar leaves the long-lived public [`WorkspaceTask`] shape
 /// backward compatible while preserving restart fences and exact replay.
@@ -396,10 +419,16 @@ pub struct WorkspaceTaskControl {
     /// Owner-minted ceiling for this run; never accepted from task arguments.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_authority: Option<WorkspaceTaskExecutionAuthority>,
+    /// Absent for legacy/host starts and non-model planning. Not a data grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_authority: Option<WorkspaceTaskModelAuthority>,
     /// Private instruction retained by the task owner. Public task projections
     /// expose the bounded title, never this text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instruction: Option<String>,
+    /// Digest-bound owner-private custody; never a public instruction fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_instruction_ref: Option<String>,
     /// Owner-configured policy, frozen into a broker-minted run at dispatch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_budget: Option<collab_types::task_budget::TaskExecutionBudget>,
@@ -662,9 +691,98 @@ pub struct WorkspaceTask {
     pub updated_at: i64,
     #[serde(default, skip_serializing_if = "crate::history::omitted")]
     pub audit: Vec<WorkspaceTaskAuditEvent>,
+    /// Structural metadata never delegates execution or resource authority.
+    #[serde(default)]
+    pub parent_task_id: Option<String>,
+    #[serde(default)]
+    pub child_order: Option<i64>,
+    #[serde(default)]
+    pub labels: Vec<String>,
+    #[serde(default)]
+    pub responsible_assignees: Vec<String>,
+}
+
+/// Public coordination fields. There is deliberately no private goal or instruction.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceTaskMetadata {
+    #[serde(default)]
+    pub parent_task_id: Option<String>,
+    #[serde(default)]
+    pub child_order: Option<i64>,
+    #[serde(default)]
+    pub labels: Vec<String>,
+    #[serde(default)]
+    pub responsible_assignees: Vec<String>,
+}
+
+/// Conjunctive filters for the public task list. Empty lists match all values.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceTaskFilter {
+    #[serde(default)]
+    pub labels: Vec<String>,
+    #[serde(default)]
+    pub responsible_assignees: Vec<String>,
+    #[serde(default)]
+    pub statuses: Vec<WorkspaceTaskStatus>,
+    /// When present, list direct children of this task.
+    #[serde(default)]
+    pub parent_task_id: Option<String>,
+    #[serde(default)]
+    pub roots_only: bool,
+}
+
+impl WorkspaceTaskFilter {
+    pub fn matches(&self, task: &WorkspaceTask) -> bool {
+        self.labels.iter().all(|label| task.labels.contains(label))
+            && self
+                .responsible_assignees
+                .iter()
+                .all(|person| task.responsible_assignees.contains(person))
+            && (self.statuses.is_empty() || self.statuses.contains(&task.status))
+            && self
+                .parent_task_id
+                .as_ref()
+                .is_none_or(|parent| task.parent_task_id.as_ref() == Some(parent))
+            && (!self.roots_only || task.parent_task_id.is_none())
+    }
+}
+
+/// Counts of real direct-child states, independent of the parent's own run.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkspaceTaskProgress {
+    pub queued: usize,
+    pub in_progress: usize,
+    pub waiting: usize,
+    pub done: usize,
+    pub cancelled: usize,
 }
 
 impl WorkspaceTask {
+    pub fn child_progress(&self, tasks: &[Self]) -> WorkspaceTaskProgress {
+        let mut progress = WorkspaceTaskProgress::default();
+        for child in tasks
+            .iter()
+            .filter(|task| task.parent_task_id.as_deref() == Some(&self.id))
+        {
+            match child.status {
+                WorkspaceTaskStatus::Queued => progress.queued = progress.queued.saturating_add(1),
+                WorkspaceTaskStatus::InProgress => {
+                    progress.in_progress = progress.in_progress.saturating_add(1);
+                }
+                WorkspaceTaskStatus::Waiting => {
+                    progress.waiting = progress.waiting.saturating_add(1);
+                }
+                WorkspaceTaskStatus::Done => progress.done = progress.done.saturating_add(1),
+                WorkspaceTaskStatus::Cancelled => {
+                    progress.cancelled = progress.cancelled.saturating_add(1);
+                }
+            }
+        }
+        progress
+    }
+
     pub fn action_context(&self) -> tilo_actions::ActionContext {
         let mut context = tilo_actions::ActionContext::default()
             .with_purpose(self.title.clone())
@@ -680,6 +798,87 @@ impl WorkspaceTask {
             }
         }
         context
+    }
+}
+
+#[cfg(test)]
+mod hierarchy_tests {
+    use super::*;
+
+    fn task(id: &str, parent: Option<&str>, status: WorkspaceTaskStatus) -> WorkspaceTask {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "title": "Task", "created_by": "ada",
+            "assigned_agent": null, "route": "manual", "status": status,
+            "resource": null, "created_at": 1, "updated_at": 1,
+            "parent_task_id": parent,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn progress_counts_real_direct_child_states_not_parent_or_descendant_status() {
+        let parent = task("parent", None, WorkspaceTaskStatus::Done);
+        let mut children = vec![
+            task("queued", Some("parent"), WorkspaceTaskStatus::Queued),
+            task("running", Some("parent"), WorkspaceTaskStatus::InProgress),
+            task("waiting", Some("parent"), WorkspaceTaskStatus::Waiting),
+            task("done", Some("parent"), WorkspaceTaskStatus::Done),
+            task("cancelled", Some("parent"), WorkspaceTaskStatus::Cancelled),
+            task("grandchild", Some("running"), WorkspaceTaskStatus::Done),
+            task("other", None, WorkspaceTaskStatus::Done),
+        ];
+        assert_eq!(
+            parent.child_progress(&children),
+            WorkspaceTaskProgress {
+                queued: 1,
+                in_progress: 1,
+                waiting: 1,
+                done: 1,
+                cancelled: 1,
+            }
+        );
+        children[0].status = WorkspaceTaskStatus::Done;
+        assert_eq!(
+            parent.child_progress(&children),
+            WorkspaceTaskProgress {
+                queued: 0,
+                in_progress: 1,
+                waiting: 1,
+                done: 2,
+                cancelled: 1,
+            }
+        );
+        assert_eq!(parent.status, WorkspaceTaskStatus::Done);
+    }
+
+    #[test]
+    fn metadata_filters_combine_labels_assignees_status_and_hierarchy() {
+        let mut child = task("child", Some("parent"), WorkspaceTaskStatus::Waiting);
+        child.labels = vec!["review".into(), "draft".into()];
+        child.responsible_assignees = vec!["ada".into()];
+        let mut filter = WorkspaceTaskFilter {
+            labels: vec!["review".into()],
+            responsible_assignees: vec!["ada".into()],
+            statuses: vec![WorkspaceTaskStatus::Waiting],
+            parent_task_id: Some("parent".into()),
+            roots_only: false,
+        };
+        assert!(filter.matches(&child));
+        filter.labels.push("absent".into());
+        assert!(!filter.matches(&child));
+        filter.labels.pop();
+        filter.responsible_assignees.push("other".into());
+        assert!(!filter.matches(&child));
+        filter.responsible_assignees.pop();
+        filter.statuses = vec![WorkspaceTaskStatus::Done];
+        assert!(!filter.matches(&child));
+        filter.statuses.clear();
+        filter.parent_task_id = Some("foreign".into());
+        assert!(!filter.matches(&child));
+        filter.parent_task_id = None;
+        filter.roots_only = true;
+        assert!(!filter.matches(&child));
+        assert!(WorkspaceTaskFilter::default().matches(&child));
     }
 }
 

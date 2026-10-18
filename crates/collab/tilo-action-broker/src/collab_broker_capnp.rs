@@ -20,6 +20,7 @@ mod execution_activity;
 mod execution_activity_tests;
 mod observed_launch;
 mod offload_door;
+mod painted_task_origin;
 use execution_activity::{ActivityBus, ActivityTarget, ExecutionScope};
 pub use execution_activity::{ExecutionActivity, ExecutionStatus};
 #[cfg(test)]
@@ -43,9 +44,14 @@ mod native_checkout;
 #[path = "collab_broker_capnp/native_effect_recovery_tests.rs"]
 mod native_effect_recovery_tests;
 mod native_media;
+mod native_model;
+mod native_task_compute_registration;
 mod native_task_confirmation;
+mod native_task_control;
 mod native_task_execution;
 mod native_task_launch;
+mod native_task_mailbox;
+mod native_task_outputs;
 mod person_chat;
 #[cfg(test)]
 mod policy_turn_tests;
@@ -59,7 +65,7 @@ mod workspace_checkpoints;
 #[path = "workspace_memberships.rs"]
 mod workspace_memberships;
 #[path = "workspace_tasks.rs"]
-mod workspace_tasks;
+pub mod workspace_tasks;
 pub use crate::services::LaunchScope;
 pub use committed_document::{
     DocumentBytes, HeldRevision, NativeDocumentRead, NativeDocumentReadContext,
@@ -694,6 +700,7 @@ struct AdmittedJoinIdentity {
     /// Only an actual broker-allocated private descriptor can carry this scope.
     host_scope: Option<LocalHostWorkerScope>,
     worker_registration: Option<PrivateWorkerRegistration>,
+    managed_actor: Option<native_task_compute_registration::ManagedActorBinding>,
     certificate: Option<tilo_user_identity::DeviceCert>,
     verified: VerifiedJoinIdentity,
     principal_id: String,
@@ -1302,6 +1309,7 @@ fn admit_verified_join_at(
         return Ok(AdmittedJoinIdentity {
             host_scope: None,
             worker_registration: None,
+            managed_actor: None,
             certificate: None,
             verified,
             principal_id,
@@ -1322,6 +1330,7 @@ fn admit_verified_join_at(
     Ok(AdmittedJoinIdentity {
         host_scope: None,
         worker_registration: None,
+        managed_actor: None,
         certificate: None,
         verified,
         principal_id,
@@ -1858,6 +1867,9 @@ struct TaskSubscription {
     agent_id: String,
     cluster_id: String,
     tx: mpsc::UnboundedSender<TaskRunEnvelope>,
+    control_refresh: watch::Sender<()>,
+    route: CrdtRoute,
+    identity: AdmittedJoinIdentity,
 }
 
 #[derive(Clone, Debug)]
@@ -2551,6 +2563,7 @@ impl CapnpBrokerState {
                 .cancel(key)?;
         }
         pending.cancellation_fence.store(true, Ordering::Release);
+        self.refresh_task_control();
         Ok(())
     }
 
@@ -3405,6 +3418,70 @@ struct AdmissionProvenance<'a> {
     origin: Option<InvocationCaller>,
     retained_time: Option<&'a crate::peer_actions::PolicyTime>,
 }
+type InvocationCheck<'a> = dyn Fn(uuid::Uuid) -> Result<(), String> + 'a;
+type TaskInvocationCheck<'a> = dyn Fn(uuid::Uuid) -> Result<(), String> + Send + 'a;
+type InvocationEnqueue<'a> =
+    dyn FnOnce(Option<InvocationKey>) -> Result<InvocationJob, String> + Send + 'a;
+
+/// Frozen dispatch metadata. Only the journal write moves to a blocking worker;
+/// the one-use enqueue closure stays on its original executor.
+struct PreparedInvocation<'a> {
+    journal_admission: PreparedJournalAdmission,
+    check: PreparedInvocationCheck<'a>,
+    enqueue: Box<InvocationEnqueue<'a>>,
+}
+
+/// Local directory custody is not Send; native task custody is independent of it.
+enum PreparedInvocationCheck<'a> {
+    Local(Box<InvocationCheck<'a>>),
+    Task(Box<TaskInvocationCheck<'a>>),
+}
+
+impl PreparedInvocationCheck<'_> {
+    fn check(&self, host: uuid::Uuid) -> Result<(), String> {
+        match self {
+            Self::Local(check) => check(host),
+            Self::Task(check) => check(host),
+        }
+    }
+}
+
+impl<'a> PreparedInvocationCheck<'a> {
+    fn into_task(self) -> Result<Box<TaskInvocationCheck<'a>>, String> {
+        match self {
+            Self::Task(check) => Ok(check),
+            Self::Local(_) => Err("native task invocation requires task custody".into()),
+        }
+    }
+}
+
+struct PreparedJournalAdmission {
+    key: InvocationKey,
+    intent: Result<serde_json::Value, String>,
+    id: u64,
+    required: bool,
+}
+
+impl PreparedJournalAdmission {
+    fn admit(
+        mut self,
+        journal: Option<&mut InvocationJournal>,
+    ) -> Result<Option<InvocationKey>, String> {
+        let Some(journal) = journal else {
+            return if self.required {
+                Err("durable admission unavailable".into())
+            } else {
+                Ok(None)
+            };
+        };
+        self.key.host = journal.host();
+        if !journal.admit(self.key.clone(), self.intent?, self.id)? {
+            return Err("invocation already admitted".into());
+        }
+        Ok(Some(self.key))
+    }
+}
+
 /// Shared typed broker state, attached to the transport-neutral fanout core.
 pub struct CapnpBrokerState {
     /// Serializes the cloneable shell facade against final shutdown. Broker
@@ -3467,6 +3544,7 @@ pub struct CapnpBrokerState {
     action_catalogue_subscribers: Mutex<HashMap<u64, ActionCatalogueSubscriber>>,
     pending_invocations: Mutex<HashMap<u64, PendingInvocation>>,
     private_drafts: Mutex<private_draft::Drafts>,
+    painted_task_origins: Mutex<painted_task_origin::PaintOrigins>,
     approved_check_jobs: Mutex<approved_checks::Registry>,
     /// Remote-action invocations admitted through the action host, keyed by
     /// caller and invocation id so a retried id is idempotent.
@@ -3494,7 +3572,7 @@ pub struct CapnpBrokerState {
     /// Admission serialization covers policy, one-use confirmation, the durable
     /// barrier and the single application delivery. Never held across awaits.
     admission_lock: Mutex<()>,
-    journal: Mutex<Result<Option<InvocationJournal>, String>>,
+    journal: Arc<Mutex<Result<Option<InvocationJournal>, String>>>,
     stable_invocation_subscribers: Mutex<std::collections::HashSet<u64>>,
     /// Broker-owned governed membership surface per native room.
     workspace_membership_peers: Mutex<HashMap<String, u64>>,
@@ -3512,7 +3590,11 @@ pub struct CapnpBrokerState {
     witnessed_confirmations: Mutex<HashMap<String, Witness>>,
     cancellation_requests: Mutex<std::collections::HashSet<u64>>,
     task_subscribers: Mutex<HashMap<u64, TaskSubscription>>,
+    task_delivery_refresh: AtomicBool,
+    task_mailbox_refresh: watch::Sender<()>,
     pending_task_runs: Mutex<HashMap<u64, PendingTaskRun>>,
+    native_model_claims: Mutex<HashMap<uuid::Uuid, native_model::Claim>>,
+    native_model_leases: Mutex<native_model::Leases>,
     task_run_id: AtomicU64,
     invocation_id: AtomicU64,
     services: HostServices,
@@ -3643,6 +3725,8 @@ impl CapnpBrokerState {
 
     pub(crate) fn request_stop(&self) {
         self.accepting.store(false, Ordering::Release);
+        self.refresh_task_control();
+        self.close_native_models();
         self.local_turn.notify_one();
         // Held committed-read waits re-check custody, which now refuses.
         tilo_identity_host::policy_change::announce();
@@ -3712,12 +3796,14 @@ impl CapnpBrokerState {
         clear!(self.action_catalogue_subscribers);
         clear!(self.pending_invocations);
         clear!(self.private_drafts);
+        clear!(self.painted_task_origins);
         clear!(self.stable_invocation_subscribers);
         clear!(self.workspace_membership_peers);
         clear!(self.confirmation_grants);
         clear!(self.cancellation_requests);
         clear!(self.task_subscribers);
         clear!(self.pending_task_runs);
+        clear!(self.native_model_claims);
         clear!(self.workers);
         // A launch waiting for an app to publish learns the broker stopped.
         self.invocation_streams_changed();
@@ -3934,6 +4020,7 @@ impl CapnpBrokerState {
         };
         for (id, cancellation_expired, pending) in expired {
             pending.cancellation_fence.store(true, Ordering::Release);
+            self.refresh_task_control();
             let (code, message) = if cancellation_expired {
                 (
                     "action_cancellation_timeout",
@@ -4304,6 +4391,7 @@ impl CapnpBrokerState {
                 action_catalogue_subscribers: Mutex::new(HashMap::new()),
                 pending_invocations: Mutex::new(HashMap::new()),
                 private_drafts: Mutex::new(HashMap::default()),
+                painted_task_origins: Mutex::default(),
                 approved_check_jobs: Mutex::default(),
                 remote_invocations: Mutex::new(tilo_actions::remote::InvocationLedger::default()),
                 ended_runs: crate::task_runs::EndedRuns::default(),
@@ -4319,7 +4407,7 @@ impl CapnpBrokerState {
                 invocation_generation: tokio::sync::watch::Sender::new(0),
                 execution_activity: ActivityBus::default(),
                 admission_lock: Mutex::new(()),
-                journal: Mutex::new(journal),
+                journal: Arc::new(Mutex::new(journal)),
                 stable_invocation_subscribers: Mutex::new(std::collections::HashSet::new()),
                 workspace_membership_peers: Mutex::new(HashMap::new()),
                 completed_invocations: Mutex::new(HashMap::new()),
@@ -4329,7 +4417,11 @@ impl CapnpBrokerState {
                 witnessed_confirmations: Mutex::new(HashMap::new()),
                 cancellation_requests: Mutex::new(std::collections::HashSet::new()),
                 task_subscribers: Mutex::new(HashMap::new()),
+                task_delivery_refresh: AtomicBool::new(false),
+                task_mailbox_refresh: watch::channel(()).0,
                 pending_task_runs: Mutex::new(HashMap::new()),
+                native_model_claims: Mutex::default(),
+                native_model_leases: Mutex::default(),
                 task_run_id: AtomicU64::new(1),
                 invocation_id: AtomicU64::new(next_invocation),
                 services,
@@ -5614,10 +5706,6 @@ impl CapnpBrokerState {
         )
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "a freshly offered live action and its durable identity are consumed into one invocation job while all checks remain atomic"
-    )]
     fn dispatch_invocation_from_offered_owned(
         &self,
         peer_id: u64,
@@ -5625,6 +5713,32 @@ impl CapnpBrokerState {
         inputs: InvocationInputs<'_>,
         provenance: AdmissionProvenance<'_>,
     ) -> Result<InvocationJob, String> {
+        let prepared =
+            self.prepare_invocation_from_offered_owned(peer_id, offered, inputs, provenance)?;
+        let mut guard = self
+            .journal
+            .lock()
+            .map_err(|_| "invocation journal unavailable")?;
+        let journal = guard.as_mut().map_err(|error| error.clone())?;
+        if let Some(journal) = journal.as_ref() {
+            prepared.check.check(journal.host())?;
+        }
+        let key = prepared.journal_admission.admit(journal.as_mut())?;
+        drop(guard);
+        (prepared.enqueue)(key)
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a freshly offered live action and its durable identity are consumed into one invocation job while all checks remain atomic"
+    )]
+    fn prepare_invocation_from_offered_owned<'a>(
+        &'a self,
+        peer_id: u64,
+        offered: (PublishedSurface, PublishedAction),
+        inputs: InvocationInputs<'a>,
+        provenance: AdmissionProvenance<'a>,
+    ) -> Result<PreparedInvocation<'a>, String> {
         let InvocationInputs {
             original_request,
             requested,
@@ -5652,16 +5766,15 @@ impl CapnpBrokerState {
         // In native rooms an agent's action authority comes only from the
         // authenticated task admission callback, never from ambient context
         // or a room grant alone (including after its run has stopped).
-        if actor.is_agent && self.native_tasks(&offered.0.route.cluster_id).is_some() {
-            match durable {
-                Some(DurableContext::Task { binding, .. })
-                    if actor.id.strip_prefix("agent:").unwrap_or(&actor.id) == binding.agent_id => {
+        if actor.is_agent {
+            if let Some(DurableContext::Task { binding, .. }) = durable {
+                if actor.id.strip_prefix("agent:").unwrap_or(&actor.id) != binding.agent_id {
+                    return Err("native task actor does not match its admission".into());
                 }
-                _ => {
-                    return Err(
-                        "native task agent requires authenticated task action admission".into(),
-                    );
-                }
+            } else if self.native_tasks(&offered.0.route.cluster_id).is_some() {
+                return Err(
+                    "native task agent requires authenticated task action admission".into(),
+                );
             }
         }
         // Never trust an envelope's invoker: the host sets it.
@@ -5785,23 +5898,19 @@ impl CapnpBrokerState {
             .and_then(|context| context.group.as_ref())
             .filter(|group| group.kind == "task")
             .map(|group| group.id.as_str());
-        let (asks, spent) = self
-            .membership
-            .as_ref()
-            .ok_or("workspace authority unavailable")?
-            .decide_in_room(&offered.0.route.cluster_id, |workspace| {
-                let workspace = workspace.ok_or("workspace no longer hosted")?;
-                match durable {
-                    Some(DurableContext::Task { binding, .. }) => actor
-                        .admit_published_with_task_in(
-                            workspace,
-                            now,
-                            workspace_tasks::TaskAdmission::Native(binding),
-                            (&offered.0, &offered.1),
-                        ),
-                    _ => actor.admit_published_in(workspace, now, task, (&offered.0, &offered.1)),
-                }
-            })??;
+        let (asks, spent) = if matches!(durable, Some(DurableContext::Task { .. })) {
+            // Native task admission owns the live policy sample and its exact
+            // guard on a worker. Reopening the owner snapshot here deadlocks.
+            (false, Vec::new())
+        } else {
+            self.membership
+                .as_ref()
+                .ok_or("workspace authority unavailable")?
+                .decide_in_room(&offered.0.route.cluster_id, |workspace| {
+                    let workspace = workspace.ok_or("workspace no longer hosted")?;
+                    actor.admit_published_in(workspace, now, task, (&offered.0, &offered.1))
+                })??
+        };
 
         if (durable.is_some() || execution.is_some())
             && !self
@@ -5811,15 +5920,6 @@ impl CapnpBrokerState {
                 .contains(&peer_id)
         {
             return Err("application_stable_identity_unavailable".into());
-        }
-        // A configured but unreadable/corrupt journal disables every new admission.
-        let mut journal_guard = self
-            .journal
-            .lock()
-            .map_err(|_| "invocation journal unavailable")?;
-        let journal = journal_guard.as_mut().map_err(|error| error.clone())?;
-        if durable.is_some() && journal.is_none() {
-            return Err("durable admission unavailable".into());
         }
         // Where the room's grants ask first, the person's confirmation in
         // the host is the answer: the invocation needs a confirmation token
@@ -5892,216 +5992,267 @@ impl CapnpBrokerState {
         if let Some(ambient) = &context {
             receipt_context = receipt_context.enriched_by(ambient);
         }
-        let journal_key = if let Some(journal) = journal.as_mut() {
+        let journal_admission = {
             let key = InvocationKey {
                 room: offered.0.route.cluster_id.clone(),
-                host: journal.host(),
+                // Filled only by the journal that durably admits this request.
+                host: uuid::Uuid::nil(),
                 invocation,
                 owner: owner.clone(),
             };
-            let request = if offered.0.app_id == "so.tilo.desktop"
-                && offered.1.resource == workspace_checkpoints::RESOURCE
-            {
-                let certificate = match origin.as_ref() {
-                    Some(InvocationCaller::Certified { caller, .. }) => self
-                        .current_action_caller(caller)?
-                        .certificate
-                        .ok_or("checkpoint caller certificate absent")?,
-                    Some(InvocationCaller::NativePerson { certificate, .. }) => certificate.clone(),
-                    _ => return Err("checkpoint requires original certified caller custody".into()),
-                };
-                let mut intent = workspace_checkpoints::intent(
-                    &offered.0.route.cluster_id,
-                    &certificate,
-                    &InvocationEnvelope {
-                        id,
-                        invocation,
-                        resource: offered.1.resource.clone(),
-                        action: offered.1.action.clone(),
-                        argument: argument.map(str::to_owned),
-                        actor: actor.id.clone(),
-                        context: None,
-                    },
-                )?;
-                if let Some(request) = original_request {
+            let intent = (|| {
+                let request = if offered.0.app_id == "so.tilo.desktop"
+                    && offered.1.resource == workspace_checkpoints::RESOURCE
+                {
+                    let certificate = match origin.as_ref() {
+                        Some(InvocationCaller::Certified { caller, .. }) => self
+                            .current_action_caller(caller)?
+                            .certificate
+                            .ok_or("checkpoint caller certificate absent")?,
+                        Some(InvocationCaller::NativePerson { certificate, .. }) => {
+                            certificate.clone()
+                        }
+                        _ => {
+                            return Err(
+                                "checkpoint requires original certified caller custody".into()
+                            );
+                        }
+                    };
+                    let mut intent = workspace_checkpoints::intent(
+                        &offered.0.route.cluster_id,
+                        &certificate,
+                        &InvocationEnvelope {
+                            id,
+                            invocation,
+                            resource: offered.1.resource.clone(),
+                            action: offered.1.action.clone(),
+                            argument: argument.map(str::to_owned),
+                            actor: actor.id.clone(),
+                            context: None,
+                        },
+                    )?;
+                    if let Some(request) = original_request {
+                        intent
+                            .as_object_mut()
+                            .ok_or("checkpoint intent invalid")?
+                            .insert(
+                                "remote_request".into(),
+                                workspace_checkpoints::remote_request(request)?,
+                            );
+                    }
                     intent
-                        .as_object_mut()
-                        .ok_or("checkpoint intent invalid")?
-                        .insert(
-                            "remote_request".into(),
-                            workspace_checkpoints::remote_request(request)?,
-                        );
-                }
-                intent
-            } else {
-                match durable {
-                    Some(context) => context.intent(),
-                    None => serde_json::json!({
-                        "peer_id": peer_id, "app_id": offered.0.app_id, "record_id": offered.0.route.record_id,
-                        "resource": offered.1.resource, "action": offered.1.action, "argument": argument,
-                    }),
-                }
-            };
-            let intent = serde_json::json!({ "request": request,
+                } else {
+                    match durable {
+                        Some(context) => context.intent(),
+                        None => serde_json::json!({
+                            "peer_id": peer_id, "app_id": offered.0.app_id, "record_id": offered.0.route.record_id,
+                            "resource": offered.1.resource, "action": offered.1.action, "argument": argument,
+                        }),
+                    }
+                };
+                let intent = serde_json::json!({ "request": request,
                 "contract": offered.1.contract, "operation_kind": offered.1.operation_kind,
                 "context": receipt_context, "actor": actor.id, "app_id": offered.0.app_id,
                 "record_id": offered.0.route.record_id,
                 "resource": offered.1.resource, "resource_kind": offered.1.resource_kind,
-                "action": offered.1.action, "revision": revision });
-            if let Some(context) = durable {
-                context.before_admission(self, journal.host(), peer_id, &offered, &sender)?;
+                "action": offered.1.action, "revision": revision,
+                "native_requirement": durable.and_then(DurableContext::native_requirement) });
+                Ok(intent)
+            })();
+            PreparedJournalAdmission {
+                key,
+                intent,
+                id,
+                required: durable.is_some(),
             }
-            if !journal.admit(key.clone(), intent, id)? {
-                return Err("invocation already admitted".into());
-            }
-            Some(key)
-        } else {
-            None
         };
-        drop(journal_guard);
-        if offered.0.app_id == "so.tilo.desktop"
-            && offered.1.resource == workspace_checkpoints::RESOURCE
-        {
-            self.checkpoint_jobs
-                .lock()
-                .map_err(|_| "checkpoint registry unavailable")?
-                .insert(
-                    id,
-                    (
-                        offered.0.route.cluster_id.clone(),
-                        offered.1.action.clone(),
-                        offered.1.contract.clone(),
-                    ),
-                );
-        }
-        if offered.1.contract.carries_untrusted_content() {
-            self.untrusted_jobs
-                .lock()
-                .map_err(|_| "untrusted job registry unavailable")?
-                .insert(id);
-        }
-        self.spend_once_grants(&offered.0.route.cluster_id, &spent);
-        // Admitted: an offloadable action may now run on a better-placed
-        // device, which the turn asks the route about.
+        let checked_offer = offered.clone();
+        let checked_sender = sender.clone();
+        let check = match durable {
+            Some(DurableContext::Task {
+                caller,
+                binding,
+                requirement,
+                invocation,
+                intent,
+            }) => PreparedInvocationCheck::Task(Box::new(move |host| {
+                DurableContext::Task {
+                    caller,
+                    binding,
+                    requirement,
+                    invocation,
+                    intent,
+                }
+                .before_admission(
+                    self,
+                    host,
+                    peer_id,
+                    &checked_offer,
+                    &checked_sender,
+                )
+            })),
+            context => PreparedInvocationCheck::Local(Box::new(move |host| {
+                if let Some(context) = context {
+                    context.before_admission(
+                        self,
+                        host,
+                        peer_id,
+                        &checked_offer,
+                        &checked_sender,
+                    )?;
+                }
+                Ok(())
+            })),
+        };
+        // Freeze both delivery and retained provenance before the durable
+        // barrier. The continuation never rebuilds arguments or selects a target.
         let offload = self.offload_request(
             (&offered.0.route.cluster_id, &offered.0.app_id),
             &offered.1,
             argument,
         );
-        // Keep acceptance before an immediately completing application's first
-        // update. Sending to the unbounded app queue and bounded observation
-        // bus never waits or calls back into the broker.
-        let mut registry = self
-            .pending_invocations
-            .lock()
-            .map_err(|_| "the invocation registry is unavailable".to_string())?;
-        registry.insert(
-            id,
-            PendingInvocation {
-                caller: continuing,
-                activity: ActivityTarget::new(
-                    execution.clone(),
-                    (actor, caller, context.as_ref()),
-                    &offered.0,
-                    &offered.1,
-                ),
-                owner,
-                network_evidence: durable.and_then(DurableContext::network),
-                original: OriginalInvocationData::capture(
-                    ui::invocation_scope::PublishedInvocationRequest {
-                        wire_id: id,
-                        invocation,
-                        address: tilo_actions::ActionAddress {
-                            resource: offered.1.resource.clone(),
-                            action: offered.1.action.clone(),
-                        },
-                        argument: argument.map(str::to_string),
-                        actor: actor.id.clone(),
-                        participant: invoker::invoker_participant(context.as_ref()),
+        let mut pending = PendingInvocation {
+            caller: continuing,
+            activity: ActivityTarget::new(
+                execution.clone(),
+                (actor, caller, context.as_ref()),
+                &offered.0,
+                &offered.1,
+            ),
+            owner,
+            network_evidence: durable.and_then(DurableContext::network),
+            original: OriginalInvocationData::capture(
+                ui::invocation_scope::PublishedInvocationRequest {
+                    wire_id: id,
+                    invocation,
+                    address: tilo_actions::ActionAddress {
+                        resource: offered.1.resource.clone(),
+                        action: offered.1.action.clone(),
                     },
-                    offered.0.route.clone(),
-                    &offered.1,
-                    revision,
-                    durable.map(DurableContext::origin).or(origin),
-                    policy_time.clone(),
-                    execution.as_ref().map(ExecutionScope::lease),
-                ),
-                policy_time,
-                journal_key,
-                peer_id,
-                tx,
-                update: tilo_actions::InvocationUpdate::Accepted { invocation },
-                prepared_effect: Arc::default(),
-                last_sequence: 0,
-                actor: actor.id.clone(),
-                cancellable: matches!(
-                    offered.1.contract.execution,
-                    tilo_actions::ExecutionMode::Background { cancellable: true }
-                        | tilo_actions::ExecutionMode::Streaming {
-                            cancellable: true,
-                            ..
-                        }
-                ),
-                retryable_on_disconnect: matches!(
-                    offered.1.contract.retry,
-                    tilo_actions::RetryPolicy::Idempotent
-                        | tilo_actions::RetryPolicy::RetryWithInvocationId
-                ),
-                execution: offered.1.contract.execution.clone(),
-                result: offered.1.contract.result.clone(),
-                operation_kind: offered.1.operation_kind,
-                cluster_id: offered.0.route.cluster_id.clone(),
-                context: receipt_context,
-                last_activity: std::time::Instant::now(),
-                cancellation_requested_at: None,
-                cancellation_fence: Arc::new(AtomicBool::new(false)),
-            },
-        );
-        self.invocation_changed();
+                    argument: argument.map(str::to_string),
+                    actor: actor.id.clone(),
+                    participant: invoker::invoker_participant(context.as_ref()),
+                },
+                offered.0.route.clone(),
+                &offered.1,
+                revision,
+                durable.map(DurableContext::origin).or(origin),
+                policy_time.clone(),
+                execution.as_ref().map(ExecutionScope::lease),
+            ),
+            policy_time,
+            journal_key: None,
+            peer_id,
+            tx,
+            update: tilo_actions::InvocationUpdate::Accepted { invocation },
+            prepared_effect: Arc::default(),
+            last_sequence: 0,
+            actor: actor.id.clone(),
+            cancellable: matches!(
+                offered.1.contract.execution,
+                tilo_actions::ExecutionMode::Background { cancellable: true }
+                    | tilo_actions::ExecutionMode::Streaming {
+                        cancellable: true,
+                        ..
+                    }
+            ),
+            retryable_on_disconnect: matches!(
+                offered.1.contract.retry,
+                tilo_actions::RetryPolicy::Idempotent
+                    | tilo_actions::RetryPolicy::RetryWithInvocationId
+            ),
+            execution: offered.1.contract.execution.clone(),
+            result: offered.1.contract.result.clone(),
+            operation_kind: offered.1.operation_kind,
+            cluster_id: offered.0.route.cluster_id.clone(),
+            context: receipt_context,
+            last_activity: std::time::Instant::now(),
+            cancellation_requested_at: None,
+            cancellation_fence: Arc::new(AtomicBool::new(false)),
+        };
         let envelope = InvocationEnvelope {
             id,
             invocation,
-            resource: offered.1.resource,
-            action: offered.1.action,
+            resource: offered.1.resource.clone(),
+            action: offered.1.action.clone(),
             argument: argument.map(str::to_string),
             actor: actor.id.clone(),
             context,
         };
-        let envelope = match (offload, self.offloads.lock()) {
-            (Some((route, request)), Ok(mut queued)) => {
-                queued.push(offload_door::QueuedOffload {
-                    id,
-                    peer_id,
-                    request,
-                    route,
-                    envelope,
-                    app: sender.clone(),
-                });
-                None
+        let enqueue = Box::new(move |journal_key| {
+            if offered.0.app_id == "so.tilo.desktop"
+                && offered.1.resource == workspace_checkpoints::RESOURCE
+            {
+                self.checkpoint_jobs
+                    .lock()
+                    .map_err(|_| "checkpoint registry unavailable")?
+                    .insert(
+                        id,
+                        (
+                            offered.0.route.cluster_id.clone(),
+                            offered.1.action.clone(),
+                            offered.1.contract.clone(),
+                        ),
+                    );
             }
-            _ => Some(envelope),
-        };
-        if let Some(envelope) = envelope
-            && sender.send(envelope).is_err()
-        {
-            let removed = registry.remove(&id);
-            drop(registry);
+            if offered.1.contract.carries_untrusted_content() {
+                self.untrusted_jobs
+                    .lock()
+                    .map_err(|_| "untrusted job registry unavailable")?
+                    .insert(id);
+            }
+            self.spend_once_grants(&offered.0.route.cluster_id, &spent);
+            // Keep acceptance before an immediately completing application's update.
+            let mut registry = self
+                .pending_invocations
+                .lock()
+                .map_err(|_| "the invocation registry is unavailable".to_string())?;
+            pending.journal_key = journal_key;
+            registry.insert(id, pending);
             self.invocation_changed();
-            if let Some(pending) = removed {
-                let _ = self.persist_invocation(
-                    &pending,
-                    invocation_journal::unknown(invocation),
-                    true,
-                );
+            let envelope = match (offload, self.offloads.lock()) {
+                (Some((route, request)), Ok(mut queued)) => {
+                    queued.push(offload_door::QueuedOffload {
+                        id,
+                        peer_id,
+                        request,
+                        route,
+                        envelope,
+                        app: sender.clone(),
+                    });
+                    None
+                }
+                _ => Some(envelope),
+            };
+            if let Some(envelope) = envelope
+                && sender.send(envelope).is_err()
+            {
+                let removed = registry.remove(&id);
+                drop(registry);
+                self.invocation_changed();
+                if let Some(pending) = removed {
+                    let _ = self.persist_invocation(
+                        &pending,
+                        invocation_journal::unknown(invocation),
+                        true,
+                    );
+                }
+                return Err("the application invocation stream closed; outcome unknown".into());
             }
-            return Err("the application invocation stream closed; outcome unknown".into());
-        }
-        if let Some(pending) = registry.get(&id) {
-            self.publish_activity(pending.activity.as_ref(), &pending.update);
-        }
-        drop(registry);
-        self.local_turn.notify_one();
-        Ok(InvocationJob { id, completion: rx })
+            if let Some(pending) = registry.get(&id) {
+                // Freeze the original admitted run before its first published paint.
+                self.retain_painted_task_origin(pending);
+                self.publish_activity(pending.activity.as_ref(), &pending.update);
+            }
+            drop(registry);
+            self.local_turn.notify_one();
+            Ok(InvocationJob { id, completion: rx })
+        });
+        Ok(PreparedInvocation {
+            journal_admission,
+            check,
+            enqueue,
+        })
     }
 
     /// Retire only this run's transient presence, preserving its pending jobs.
@@ -6179,6 +6330,7 @@ impl CapnpBrokerState {
         let interaction = tilo_actions::SemanticInteraction {
             version: tilo_actions::INTERACTION_VERSION,
             invocation,
+            paint_origin: Some(shown.paint_origin),
             sequence,
             actor: shown.actor.clone(),
             phase,
@@ -6722,11 +6874,21 @@ impl CapnpBrokerState {
         lease: &str,
         update: runtime_collab::TaskRunUpdate,
     ) -> Result<(), String> {
-        let run = self.task_run_for(peer_id, agent_id, run_id, lease)?;
-        if run.native.is_some() {
-            return self.report_native_task(run, update).await;
+        let mut run = self.task_run_for(peer_id, agent_id, run_id, lease)?;
+        if let Some(binding) = run.native.as_mut() {
+            let (_, revision) =
+                runtime_collab::native_task_revision(lease).ok_or("invalid native report lease")?;
+            // Preserve this report's frozen frontier, not mutable latest state.
+            binding.revision = revision;
+            run.lease = lease.to_owned();
+            let result = self.report_native_task(run, update).await;
+            self.refresh_task_control();
+            return result;
         }
         let (summary, status, terminal) = match update {
+            runtime_collab::TaskRunUpdate::InboxIncorporated { .. } => {
+                return Err("private inbox is unavailable on a legacy task".into());
+            }
             runtime_collab::TaskRunUpdate::DirectionsApplied { .. } => {
                 return Err("native directions are unavailable on a legacy task".into());
             }
@@ -6781,6 +6943,9 @@ impl CapnpBrokerState {
             // The terminal marker is durable in the run registry before the
             // workspace projection is updated below.
             drop(runs);
+            if let Some(binding) = &run.native {
+                self.revoke_native_model_run(&run.cluster_id, &binding.task_id, binding.epoch);
+            }
         }
         let actor = format!("agent:{}", run.agent_id);
         self.services
@@ -6791,19 +6956,20 @@ impl CapnpBrokerState {
         Ok(())
     }
 
-    fn start_task_action(
+    async fn start_task_action(
         &self,
         peer_id: u64,
         agent_id: &str,
         run_id: u64,
         lease: &str,
         target: runtime_collab::TaskAction<'_>,
-        (provenance, confirmed): (
+        (provenance, confirmation): (
             Option<&(
                 durable_local_invocation::LocalCaller,
                 tilo_actions::InvocationId,
+                Option<&str>,
             )>,
-            bool,
+            Option<&str>,
         ),
     ) -> Result<InvocationJob, String> {
         let runtime_collab::TaskAction {
@@ -6814,7 +6980,9 @@ impl CapnpBrokerState {
             argument: _,
         } = target;
         let run = self.task_run_for(peer_id, agent_id, run_id, lease)?;
-        if self.task_run_cancelled(peer_id, agent_id, run_id, lease)? {
+        // Native cancellation is checked by the worker's guarded admission;
+        // reading its owner synchronously here can block the broker LocalSet.
+        if run.native.is_none() && self.task_run_cancelled(peer_id, agent_id, run_id, lease)? {
             return Err("the task was cancelled; no further action may start".into());
         }
         let (surface, descriptor) = self
@@ -6829,22 +6997,24 @@ impl CapnpBrokerState {
             run,
             lease,
             target,
-            (provenance, confirmed),
+            (provenance, confirmation),
             (surface, descriptor),
         )
+        .await
     }
 
-    fn admit_task_action(
+    async fn admit_task_action(
         &self,
         run: PendingTaskRun,
         lease: &str,
         target: runtime_collab::TaskAction<'_>,
-        (provenance, confirmed): (
+        (provenance, confirmation): (
             Option<&(
                 durable_local_invocation::LocalCaller,
                 tilo_actions::InvocationId,
+                Option<&str>,
             )>,
-            bool,
+            Option<&str>,
         ),
         offered: (PublishedSurface, PublishedAction),
     ) -> Result<InvocationJob, String> {
@@ -6882,35 +7052,104 @@ impl CapnpBrokerState {
                 "task action requires an interactive confirmation and cannot run unattended".into(),
             );
         }
-        let requirement = crate::services::NativeTaskActionRequirement {
+        let provider = if target.provider.is_empty() {
+            launchable::launchable_provider(&surface)
+        } else {
+            target.provider.to_owned()
+        };
+        let mut requirement = crate::services::NativeTaskActionRequirement {
             binding: run.native.clone(),
             app: surface.app_id.clone(),
             resource_kind: descriptor.resource_kind.clone(),
-            resource: resource.into(),
+            resource: tilo_actions::selection::logical_resource_id(resource).into_owned(),
             action: descriptor.action.clone(),
             need: descriptor.contract.need(),
             consequential,
-            confirmed,
+            confirmation: confirmation.map(str::to_owned),
+            invocation: provenance
+                .map(|(_, id, _)| {
+                    crate::services::NativeTaskInvocation::new(
+                        id.0,
+                        &provider,
+                        argument,
+                        &descriptor.contract,
+                        lease,
+                    )
+                })
+                .transpose()?,
         };
         if let Some(binding) = &run.native {
-            let (caller, invocation) =
+            let (caller, invocation, original_argument) =
                 provenance.ok_or("native task action requires authenticated original caller")?;
             let mut current = binding.clone();
             current.revision = runtime_collab::native_task_revision(lease)
                 .ok_or("invalid native lease")?
                 .1;
-            self.native_tasks(&run.cluster_id)
-                .ok_or("native task owner unavailable")?
-                .admit(&run.cluster_id, &current, &requirement, &mut || {
-                    self.start_native_task_invocation(
-                        &run,
-                        target,
-                        caller,
-                        *invocation,
-                        (surface.clone(), descriptor.clone()),
-                        confirmed || consequential,
-                    )
-                })
+            let service = self
+                .native_tasks(&run.cluster_id)
+                .cloned()
+                .ok_or("native task owner unavailable")?;
+            let digest_service = service.clone();
+            let digest_room = run.cluster_id.clone();
+            let digest_binding = current.clone();
+            let digest = tokio::task::spawn_blocking(move || {
+                let digest = digest_service.private_run_digest(&digest_room, &digest_binding)?;
+                if digest == [0; 32] {
+                    return Err("native task private run digest absent".to_owned());
+                }
+                Ok(digest)
+            })
+            .await
+            .map_err(|_| "native task private run read interrupted")??;
+            requirement
+                .invocation
+                .as_mut()
+                .ok_or("native task invocation metadata absent")?
+                .private_run_digest = digest;
+            requirement.binding = Some(current.clone());
+            let ready = service
+                .prepare_admission(
+                    run.cluster_id.clone(),
+                    current,
+                    requirement.clone(),
+                    caller.admission_caller()?,
+                )
+                .await?;
+            // The worker retains the exact owner guard. Only broker memory may
+            // be sampled here: owner authorization is already frozen in Ready.
+            let result = async {
+                caller.current_task_connection(self)?;
+                let fresh = self
+                    .surfaces
+                    .lock()
+                    .map_err(|_| "task action surface unavailable")?
+                    .get(&target_peer)
+                    .and_then(|surface| surface.action_projection(resource, action))
+                    .ok_or("task action publisher retired during admission")?;
+                if fresh != (surface.clone(), descriptor.clone()) {
+                    return Err("task action publisher or contract changed during admission".into());
+                }
+                self.start_native_task_invocation(
+                    &run,
+                    target,
+                    caller,
+                    *invocation,
+                    (surface.clone(), descriptor.clone()),
+                    (
+                        confirmation.is_some() || consequential,
+                        *original_argument,
+                        &requirement,
+                    ),
+                )
+                .await
+            }
+            .await;
+            // Do not await a response or refresh owner-backed projections until
+            // the worker has released its guarded admission turn.
+            ready
+                .complete(result.as_ref().map(|_| ()).map_err(Clone::clone))
+                .await?;
+            result
         } else {
             self.start_invocation_confirmed_for(
                 target_peer,
@@ -7002,6 +7241,7 @@ impl CapnpBrokerState {
             for id in ids {
                 if let Some(invocation) = pending.remove(&id) {
                     invocation.cancellation_fence.store(true, Ordering::Release);
+                    self.refresh_task_control();
                     let completion = InvocationCompletion {
                         code: "action_failed".into(),
                         message: "application disconnected before completing the action".into(),
@@ -7065,6 +7305,13 @@ impl CapnpBrokerState {
     }
 
     fn disconnect_native_task_stream(&self, peer_id: u64) {
+        if let Some(registry) = &self.services.native_task_executors {
+            registry.disconnect(peer_id);
+        }
+        self.close_native_model_peer(peer_id);
+        if let Ok(mut claims) = self.native_model_claims.lock() {
+            claims.retain(|_, claim| claim.peer != peer_id);
+        }
         if let Ok(mut subscribers) = self.task_subscribers.lock() {
             subscribers.remove(&peer_id);
         }
@@ -7082,12 +7329,51 @@ impl CapnpBrokerState {
         )
     }
 
+    fn revalidate_managed_actor(
+        route: &CrdtRoute,
+        admitted: &AdmittedJoinIdentity,
+        now: u64,
+    ) -> Result<(), capnp::Error> {
+        if let Some(binding) = &admitted.managed_actor {
+            let (certificate, delegation, proof) =
+                binding.custody.identity().map_err(capnp::Error::failed)?;
+            if admitted.certificate.as_ref() != Some(&certificate)
+                || binding.delegation != delegation
+                || delegation.delegate.agent_id() != admitted.agent_id.as_deref()
+                || !delegation.permits_room(&route.cluster_id)
+                || !delegation.permits_app(&route.app_id)
+            {
+                return Err(capnp::Error::failed("managed actor custody changed".into()));
+            }
+            delegation
+                .verify(&certificate.user_public_key, now)
+                .map_err(|error| capnp::Error::failed(error.to_string()))?;
+            let presentation = runtime_collab::CertifiedJoinIdentity {
+                workspace_id: route.cluster_id.clone(),
+                device_certificate: serde_json::to_vec(&certificate)
+                    .map_err(|error| capnp::Error::failed(error.to_string()))?,
+                proof: proof.to_vec(),
+            };
+            verify_join_presentation(
+                route,
+                &presentation,
+                &certificate.user_public_key,
+                now,
+                false,
+                true,
+            )
+            .map_err(capnp::Error::failed)?;
+        }
+        Ok(())
+    }
+
     fn revalidate_admission(
         &self,
         route: &CrdtRoute,
         admitted: &AdmittedJoinIdentity,
     ) -> Result<AdmittedJoinIdentity, capnp::Error> {
         let now = self.policy_now_ns().map_err(capnp::Error::failed)?;
+        Self::revalidate_managed_actor(route, admitted, now)?;
         if let Some(cert) = &admitted.certificate {
             tilo_user_identity::verify_device_cert_at(cert, now)
                 .map_err(|_| capnp::Error::failed("certificate no longer valid".into()))?;
@@ -7147,6 +7433,7 @@ impl CapnpBrokerState {
                                 "certified collaboration session is no longer admitted: {error}"
                             )
                         })?;
+                current.managed_actor.clone_from(&admitted.managed_actor);
                 current.certificate.clone_from(&admitted.certificate);
                 current.host_scope.clone_from(&admitted.host_scope);
                 current
@@ -7369,6 +7656,7 @@ impl CapnpBrokerState {
             | CollabEvent::TaskRunCancellation { .. }
             | CollabEvent::TaskRunControl { .. }
             | CollabEvent::TaskRunReportResult { .. }
+            | CollabEvent::NativeModelResult { .. }
             | CollabEvent::NativeMediaCommandResult { .. }
             | CollabEvent::RealtimeCommandResult { .. }
             | CollabEvent::NearbyTransferCommandResult { .. }
@@ -8317,69 +8605,91 @@ impl collab_service::Server for CapnpCollabService {
                 capnp::Error::failed(format!("participant kind not utf8: {error}"))
             })?;
             let record_kind = joined_record_kind(reader.get_record_kind()?)?;
-            if (verified_identity.host_scope.is_some()
-                || verified_identity.worker_registration.is_some())
+            let managed_agent = self
+                .lease
+                .local_media
+                .as_ref()
+                .and_then(|app| app.managed_task_agent.as_deref());
+            if managed_agent.is_none()
+                && (verified_identity.host_scope.is_some()
+                    || verified_identity.worker_registration.is_some())
                 && !matches!(participant_kind, "" | "person")
             {
                 return Err(capnp::Error::failed(
                     "host worker cannot delegate an agent identity".into(),
                 ));
             }
-            match participant_kind {
-                "" | "person" => {
-                    // A Person handle is presentation, not its certified identity.
-                    let participant_handle = participant_handle
-                        .trim()
-                        .chars()
-                        .take(64)
-                        .collect::<String>();
-                    if !participant_handle.is_empty() {
-                        verified_identity.display_handle = Some(participant_handle);
-                    }
+            if let Some(agent) = managed_agent {
+                let app =
+                    self.lease.local_media.as_ref().ok_or_else(|| {
+                        capnp::Error::failed("managed launch custody absent".into())
+                    })?;
+                state
+                    .admit_managed_task_identity(app, &route, &mut verified_identity)
+                    .map_err(capnp::Error::failed)?;
+                if !matches!(participant_kind, "" | "person" | "agent")
+                    || (participant_kind == "agent" && participant_handle != agent)
+                {
+                    return Err(capnp::Error::failed("managed launch actor mismatch".into()));
                 }
-                "agent" => {
-                    // Unlike a display handle, this names the exact workspace
-                    // principal. Normalize as enrollment does, then validate
-                    // its byte bound; truncation can silently select another
-                    // admitted Agent that shares the same display prefix.
-                    let participant_handle = participant_handle.trim();
-                    // Bound allocation before Unicode case normalization;
-                    // every normalized character consumes at least one byte.
-                    if participant_handle.chars().take(129).count() > 128 {
-                        return Err(capnp::Error::failed(
-                            "invalid canonical workspace agent identifier".into(),
-                        ));
+            } else {
+                match participant_kind {
+                    "" | "person" => {
+                        // A Person handle is presentation, not its certified identity.
+                        let participant_handle = participant_handle
+                            .trim()
+                            .chars()
+                            .take(64)
+                            .collect::<String>();
+                        if !participant_handle.is_empty() {
+                            verified_identity.display_handle = Some(participant_handle);
+                        }
                     }
-                    let participant_handle = participant_handle.to_lowercase();
-                    tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::RemoveAgent {
+                    "agent" => {
+                        // Unlike a display handle, this names the exact workspace
+                        // principal. Normalize as enrollment does, then validate
+                        // its byte bound; truncation can silently select another
+                        // admitted Agent that shares the same display prefix.
+                        let participant_handle = participant_handle.trim();
+                        // Bound allocation before Unicode case normalization;
+                        // every normalized character consumes at least one byte.
+                        if participant_handle.chars().take(129).count() > 128 {
+                            return Err(capnp::Error::failed(
+                                "invalid canonical workspace agent identifier".into(),
+                            ));
+                        }
+                        let participant_handle = participant_handle.to_lowercase();
+                        tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::RemoveAgent {
                         agent: participant_handle.clone(),
                     }
                     .validate()
                     .map_err(capnp::Error::failed)?;
-                    let membership = state.membership.as_ref().ok_or_else(|| {
-                        capnp::Error::failed("agent session has no workspace authority".into())
-                    })?;
-                    let now = state.policy_now_ns().map_err(capnp::Error::failed)? / 1_000_000_000;
-                    membership
-                        .decide_in_room(&route.cluster_id, |workspace| {
-                            admit_agent_delegation_at(
-                                workspace,
-                                &mut verified_identity,
-                                &participant_handle,
-                                now,
-                            )
-                        })
-                        .and_then(std::convert::identity)
-                        .map_err(|error| {
-                            capnp::Error::failed(format!(
-                                "agent collaboration join rejected: {error}"
-                            ))
+                        let membership = state.membership.as_ref().ok_or_else(|| {
+                            capnp::Error::failed("agent session has no workspace authority".into())
                         })?;
-                }
-                other => {
-                    return Err(capnp::Error::failed(format!(
-                        "unknown collaboration participant kind `{other}`"
-                    )));
+                        let now =
+                            state.policy_now_ns().map_err(capnp::Error::failed)? / 1_000_000_000;
+                        membership
+                            .decide_in_room(&route.cluster_id, |workspace| {
+                                admit_agent_delegation_at(
+                                    workspace,
+                                    &mut verified_identity,
+                                    &participant_handle,
+                                    now,
+                                )
+                            })
+                            .and_then(std::convert::identity)
+                            .map_err(|error| {
+                                capnp::Error::failed(format!(
+                                    "agent collaboration join rejected: {error}"
+                                ))
+                            })?;
+                    }
+                    other => {
+                        return Err(capnp::Error::failed(format!(
+                            "unknown collaboration participant kind `{other}`"
+                        )));
+                    }
                 }
             }
             tracing::info!(
@@ -10669,25 +10979,35 @@ impl channel_handle::Server for CapnpChannelHandle {
             Ok(current) => current,
             Err(error) => return Promise::err(error),
         };
-        let Some(agent_id) = current.agent_id else {
+        let Some(agent_id) = current.agent_id.clone() else {
             return Promise::err(capnp::Error::failed(
                 "only an admitted delegated agent may subscribe to task runs".into(),
             ));
         };
         let (tx, rx) = mpsc::unbounded_channel();
+        let (control_refresh, control_rx) = watch::channel(());
         if let Ok(mut subscribers) = self.state.task_subscribers.lock() {
             subscribers.insert(
                 self.peer_id,
                 TaskSubscription {
-                    agent_id,
+                    agent_id: agent_id.clone(),
                     cluster_id: self.route().cluster_id,
                     tx,
+                    control_refresh,
+                    route: self.route(),
+                    identity: self.verified_identity.clone(),
                 },
             );
         } else {
             return Promise::err(capnp::Error::failed(
                 "task subscription registry unavailable".into(),
             ));
+        }
+        if let Err(error) = self.register_native_task_executor(&current, &agent_id) {
+            if let Ok(mut subscribers) = self.state.task_subscribers.lock() {
+                subscribers.remove(&self.peer_id);
+            }
+            return Promise::err(capnp::Error::failed(error));
         }
         // A replacement stream needs the canonical approved run again, even
         // when the authenticated connection itself did not change.
@@ -10696,6 +11016,13 @@ impl channel_handle::Server for CapnpChannelHandle {
         }
         self.state.local_turn.notify_one();
         let client: task_run_stream::Client = capnp_rpc::new_client(TaskRunStreamServer {
+            control: AsyncMutex::new(native_task_control::TaskControlReader::new(
+                self.state.clone(),
+                self.peer_id,
+                self.route(),
+                self.verified_identity.clone(),
+                control_rx,
+            )),
             host_guard: HostWorkerReadGuard::for_channel(
                 &self.state,
                 self.peer_id,
@@ -10825,8 +11152,9 @@ impl channel_handle::Server for CapnpChannelHandle {
                         request.get_run_id(),
                         &lease,
                         target,
-                        (None, false),
+                        (None, None),
                     )
+                    .await
                     .map_err(capnp::Error::failed)?;
                 let update = state.invocation_status(job.id).ok_or_else(|| {
                     capnp::Error::failed("accepted task action has no broker state".into())
@@ -10842,10 +11170,61 @@ impl channel_handle::Server for CapnpChannelHandle {
         })
     }
 
-    fn task_run_cancelled(
+    fn native_model(
         self: Rc<Self>,
-        params: channel_handle::TaskRunCancelledParams,
-        mut results: channel_handle::TaskRunCancelledResults,
+        params: channel_handle::NativeModelParams,
+        mut results: channel_handle::NativeModelResults,
+    ) -> Promise<(), capnp::Error> {
+        let prepared = (|| {
+            let current = self
+                .state
+                .revalidate_admission(&self.route(), &self.verified_identity)?;
+            let agent = current.agent_id.clone().ok_or_else(|| {
+                capnp::Error::failed("native MODEL requires a certified agent connection".into())
+            })?;
+            if current.managed_actor.is_none() {
+                return Err(capnp::Error::failed(
+                    "native MODEL requires protected actor certificate custody".into(),
+                ));
+            }
+            let local = self
+                .lease
+                .as_ref()
+                .and_then(|lease| lease.local_media.clone())
+                .filter(|local| local.current() && local.protected_model.is_some())
+                .ok_or_else(|| {
+                    capnp::Error::failed("native MODEL requires a protected managed process".into())
+                })?;
+            let request = params.get()?;
+            let bytes = request.get_command()?;
+            if bytes.len() > 8 * 1024 * 1024 {
+                return Err(capnp::Error::failed(
+                    "native MODEL request too large".into(),
+                ));
+            }
+            let command = serde_json::from_slice(bytes)
+                .map_err(|error| capnp::Error::failed(error.to_string()))?;
+            Ok((agent, current, local, command))
+        })();
+        let (agent, identity, local, command) = match prepared {
+            Ok(value) => value,
+            Err(error) => return Promise::err(error),
+        };
+        let state = self.state.clone();
+        let peer = self.peer_id;
+        Promise::from_future(async move {
+            let reply = native_model::command(state, peer, agent, identity, local, command)
+                .await
+                .map_err(capnp::Error::failed)?;
+            results.get().set_reply(&reply);
+            Ok(())
+        })
+    }
+
+    fn task_report_transcript(
+        self: Rc<Self>,
+        params: channel_handle::TaskReportTranscriptParams,
+        mut results: channel_handle::TaskReportTranscriptResults,
     ) -> Promise<(), capnp::Error> {
         let current = match self
             .state
@@ -10856,31 +11235,95 @@ impl channel_handle::Server for CapnpChannelHandle {
         };
         let Some(agent_id) = current.agent_id else {
             return Promise::err(capnp::Error::failed(
-                "only an agent may observe task cancellation".into(),
+                "task transcript requires an agent lease".into(),
             ));
         };
         let state = self.state.clone();
         let peer_id = self.peer_id;
         Promise::from_future(async move {
             let request = params.get()?;
-            let lease = request.get_lease()?.to_str()?.to_owned();
-            let cancelled = state
-                .task_run_cancelled(peer_id, &agent_id, request.get_run_id(), &lease)
-                .map_err(capnp::Error::failed)?;
-            results.get().set_cancelled(cancelled);
+            let lease = request.get_lease()?.to_str()?;
             let run = state
-                .task_run_for(peer_id, &agent_id, request.get_run_id(), &lease)
+                .task_run_for(peer_id, &agent_id, request.get_run_id(), lease)
                 .map_err(capnp::Error::failed)?;
-            if run.native.is_some() {
-                let status = state
-                    .native_task_status(&run, &lease)
+            let binding = run
+                .native
+                .as_ref()
+                .ok_or_else(|| capnp::Error::failed("native task binding absent".into()))?;
+            let reports = state
+                .native_tasks(&run.cluster_id)
+                .ok_or_else(|| capnp::Error::failed("native task owner unavailable".into()))?
+                .report_transcript(&run.cluster_id, binding)
+                .map_err(capnp::Error::failed)?;
+            let json = serde_json::to_string(&reports)
+                .map_err(|error| capnp::Error::failed(error.to_string()))?;
+            if json.len() > 40 * 1024 * 1024 {
+                return Err(capnp::Error::failed(
+                    "task transcript exceeds transport bound".into(),
+                ));
+            }
+            results.get().set_reports_json(&json);
+            Ok(())
+        })
+    }
+
+    fn task_run_cancelled(
+        self: Rc<Self>,
+        params: channel_handle::TaskRunCancelledParams,
+        mut results: channel_handle::TaskRunCancelledResults,
+    ) -> Promise<(), capnp::Error> {
+        let state = self.state.clone();
+        let peer_id = self.peer_id;
+        let route = self.route();
+        let identity = self.verified_identity.clone();
+        Promise::from_future(async move {
+            let request = params.get()?;
+            let lease = request.get_lease()?.to_str()?.to_owned();
+            let run_id = request.get_run_id();
+            let worker = state.clone();
+            // Even certificate/current-source revalidation may call an owner
+            // service. No synchronous control RPC belongs on the LocalSet.
+            let (run, status) = native_task_control::blocking(move || {
+                let current = worker.revalidate_admission(&route, &identity)?;
+                let agent = current.agent_id.ok_or_else(|| {
+                    capnp::Error::failed("only an agent may observe task cancellation".into())
+                })?;
+                let run = worker
+                    .task_run_for(peer_id, &agent, run_id, &lease)
                     .map_err(capnp::Error::failed)?;
-                if let Some(control) = status.control {
-                    results.get().set_control_json(
-                        &serde_json::to_string(&control)
-                            .map_err(|error| capnp::Error::failed(error.to_string()))?,
-                    );
-                }
+                let status = if run.native.is_some() {
+                    worker
+                        .read_native_task_status(&run, &lease)
+                        .map_err(capnp::Error::failed)?
+                } else {
+                    runtime_collab::TaskRunStatus {
+                        cancelled: worker
+                            .task_run_cancelled(peer_id, &agent, run_id, &lease)
+                            .map_err(capnp::Error::failed)?,
+                        control: None,
+                    }
+                };
+                worker.revalidate_admission(&route, &identity)?;
+                worker
+                    .task_run_for(peer_id, &agent, run_id, &lease)
+                    .map_err(capnp::Error::failed)?;
+                Ok((run, status))
+            })
+            .await?;
+            state
+                .task_run_for(peer_id, &run.agent_id, run_id, &run.lease)
+                .map_err(capnp::Error::failed)?;
+            if status.cancelled && run.native.is_some() {
+                state
+                    .cancel_native_children(&run)
+                    .map_err(capnp::Error::failed)?;
+            }
+            results.get().set_cancelled(status.cancelled);
+            if let Some(control) = status.control {
+                results.get().set_control_json(
+                    &serde_json::to_string(&control)
+                        .map_err(|error| capnp::Error::failed(error.to_string()))?,
+                );
             }
             Ok(())
         })
@@ -12687,6 +13130,7 @@ struct InvocationStreamServer {
 }
 
 struct TaskRunStreamServer {
+    control: AsyncMutex<native_task_control::TaskControlReader>,
     host_guard: Option<HostWorkerReadGuard>,
     rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<TaskRunEnvelope>>>,
 }
@@ -12772,6 +13216,27 @@ impl invocation_stream::Server for InvocationStreamServer {
 }
 
 impl task_run_stream::Server for TaskRunStreamServer {
+    fn read_control(
+        self: Rc<Self>,
+        _params: task_run_stream::ReadControlParams,
+        mut results: task_run_stream::ReadControlResults,
+    ) -> Promise<(), capnp::Error> {
+        Promise::from_future(async move {
+            HostWorkerReadGuard::check(self.host_guard.as_ref())?;
+            let mut reader = self.control.try_lock().map_err(|_| {
+                capnp::Error::overloaded("one task control read may be pending per stream".into())
+            })?;
+            let control = reader.next().await?;
+            drop(reader);
+            HostWorkerReadGuard::check(self.host_guard.as_ref())?;
+            results.get().set_control_json(
+                serde_json::to_string(&control)
+                    .map_err(|error| capnp::Error::failed(error.to_string()))?,
+            );
+            Ok(())
+        })
+    }
+
     fn read(
         self: Rc<Self>,
         _params: task_run_stream::ReadParams,
@@ -13676,6 +14141,7 @@ async fn serve_broker_thread(
         }
         if state.has_native_task_subscribers() && now >= next_native_task_refresh {
             state.refresh_native_task_delivery();
+            state.refresh_task_control_subscribers();
             next_native_task_refresh = now.checked_add(Duration::from_secs(1)).unwrap_or(now);
         }
         #[cfg(test)]
@@ -14024,6 +14490,19 @@ async fn authenticate_launcher_handoff(
         })?
         .flatten();
     if let Some(launch) = launch {
+        let protected_model = services
+            .launcher
+            .as_ref()
+            .map(|service| {
+                service.protected_model_launch(pid, &handoff.app_id, &handoff.workspace_id)
+            })
+            .transpose()
+            .map_err(|error| LaunchRefusal {
+                error: capnp::Error::failed(error),
+                peer: peer.clone(),
+                answerable: !handoff.executing_peer,
+            })?
+            .flatten();
         #[cfg(target_os = "linux")]
         let media_process = if handoff.executing_peer {
             Some(
@@ -14058,6 +14537,7 @@ async fn authenticate_launcher_handoff(
                 handoff,
                 media_process,
                 launch,
+                protected_model,
             ),
             launch: opened,
         });
@@ -14724,6 +15204,8 @@ pub mod tests {
         ) -> Result<Option<crate::services::AuthenticatedApplicationLaunch>, String> {
             Ok(self.attest_process(pid, app, room).then_some(
                 crate::services::AuthenticatedApplicationLaunch {
+                    managed_task_agent: None,
+                    managed_identity: None,
                     creation: None,
                     continuation_instance: None,
                     launch_ticket: Some(31),
@@ -15620,6 +16102,7 @@ pub mod tests {
                     AdmittedJoinIdentity {
                         host_scope: None,
                         worker_registration: None,
+                        managed_actor: None,
                         certificate: None,
                         verified: VerifiedJoinIdentity {
                             user_public_key: [0; 32],
@@ -20478,6 +20961,7 @@ mod host_worker_capacity_tests {
                 certificate: certificate.clone(),
             }),
             worker_registration: None,
+            managed_actor: None,
             certificate: Some(certificate),
             verified: VerifiedJoinIdentity {
                 user_public_key: root.verifying_key().to_bytes(),

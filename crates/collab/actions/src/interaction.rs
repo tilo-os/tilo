@@ -204,6 +204,11 @@ pub struct InteractionAction {
 pub struct SemanticInteraction {
     pub version: u16,
     pub invocation: InvocationId,
+    /// Opaque host-minted correlation to this exact original admission.
+    /// It grants no authority; hosts resolve it against retained custody,
+    /// never against the actor's current task or an application claim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paint_origin: Option<uuid::Uuid>,
     pub sequence: u64,
     pub actor: InteractionActor,
     pub phase: InteractionPhase,
@@ -230,6 +235,8 @@ impl SemanticInteraction {
     #[must_use]
     pub fn normalized_by_broker(mut self, actor: InteractionActor, sequence: u64) -> Self {
         self.actor = actor;
+        // Application-authored presence cannot mint admission provenance.
+        self.paint_origin = None;
         self.sequence = sequence;
         self
     }
@@ -452,6 +459,7 @@ mod tests {
 
     fn example(anchor: InteractionAnchor) -> SemanticInteraction {
         SemanticInteraction {
+            paint_origin: None,
             version: INTERACTION_VERSION,
             invocation: InvocationId::new(),
             sequence: 2,
@@ -527,7 +535,8 @@ mod tests {
     }
 
     fn broker_normalization_replaces_claimed_attribution_and_sequence() {
-        let claimed = example(InteractionAnchor::Resource);
+        let mut claimed = example(InteractionAnchor::Resource);
+        claimed.paint_origin = Some(uuid::Uuid::new_v4());
         let normalized = claimed.normalized_by_broker(
             InteractionActor {
                 id: "agent:reviewer".into(),
@@ -538,6 +547,10 @@ mod tests {
         );
         assert_eq!(normalized.actor.id, "agent:reviewer");
         assert_eq!(normalized.sequence, 17);
+        assert_eq!(
+            normalized.paint_origin, None,
+            "presence claims cannot mint original run custody"
+        );
     }
 
     /// Anchors are non-empty, ordered and bounded; labels and terminal details are bounded; terminal

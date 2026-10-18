@@ -185,7 +185,7 @@ impl TaskReviewProvider {
                     .iter()
                     .find(|task| task.id == task_id)
                     .ok_or_else(|| ActionError::Refused("task no longer exists".into()))?;
-                let evidence = serde_json::json!({"room":room,"generation":snapshot.generation,"sampled_at":snapshot.sampled_at_secs,"task":task,"control":snapshot.controls.get(&task_id)});
+                let evidence = serde_json::json!({"room":room,"generation":snapshot.generation,"sampled_at":snapshot.sampled_at_secs,"task":task,"control":snapshot.controls.get(&task_id),"admission":snapshot.admissions.get(&task_id)});
                 chrome.borrow_mut().open_room_activity(Some(
                     crate::shell::chrome_state::ActivityFocus {
                         task_id: Some(task_id.clone()),

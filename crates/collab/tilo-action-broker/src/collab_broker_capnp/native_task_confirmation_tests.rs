@@ -107,13 +107,7 @@ async fn append_as(
 }
 
 fn held(f: &Fixture) -> Option<tilo_desktop_model::WorkspaceTaskConfirmation> {
-    f.native
-        .owner
-        .workspace_task_snapshot(room())
-        .unwrap()
-        .controls
-        .get(&f.task)
-        .and_then(|control| control.confirmation.clone())
+    f.private_confirmation()
 }
 
 fn answer(f: &Fixture, id: &str, answer: WorkspaceTaskConfirmationAnswer) {
@@ -222,6 +216,17 @@ async fn an_asking_action_pauses_the_run_and_runs_exactly_what_the_person_confir
                 serde_json::from_str(wire.get_argument().unwrap().to_str().unwrap()).unwrap();
             assert_eq!(argument["text"], "Reviewed line", "the person's edit ran");
             assert!(held(&f).is_none(), "the answer reached the run");
+            let replay = append(&agent, &run, 9102, "Draft line").await.unwrap_err();
+            assert!(
+                replay
+                    .to_string()
+                    .contains(tilo_actions::draft::AWAITING_CONFIRMATION),
+                "a second UUID borrowed the consumed person answer: {replay}"
+            );
+            assert!(
+                nothing_delivered(&stream).await,
+                "the confirmation ran twice"
+            );
             drop(f);
         })
         .await;

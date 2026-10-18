@@ -27,6 +27,8 @@ async fn checkout_channel(
             room.route.cluster_id.clone(),
             native_media::PeerProcess::from_socket(&socket).unwrap(),
             crate::services::AuthenticatedApplicationLaunch {
+                managed_task_agent: None,
+                managed_identity: None,
                 creation: None,
                 continuation_instance: Some(73),
                 launch_ticket: None,

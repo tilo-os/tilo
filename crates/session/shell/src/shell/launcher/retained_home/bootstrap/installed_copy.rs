@@ -110,7 +110,7 @@ impl AdmittedRootHelper {
         drop(child_root);
         let result = (|| {
             alive(&mut child, &self.cancel, deadline)?;
-            let peer = self.release(&shell_gate, child.id())?;
+            let peer = self.release(&shell_gate, child.id(), None)?;
             let expected = self.helper.file.metadata()?;
             let actual = std::fs::metadata(format!("/proc/{}/exe", peer.pid()))?;
             if (expected.dev(), expected.ino()) != (actual.dev(), actual.ino()) || !peer.current() {

@@ -46,11 +46,18 @@ pub use delegates::{GovernedAgent, GovernedDelegateRow};
 mod local_admission;
 mod local_outbox;
 mod owner_membership;
+pub(crate) mod sanitized_baseline;
+mod task_sanitization;
+pub use sanitized_baseline::{
+    SanitizedRoomBaseline, SanitizedRoomBaselineAnchor,
+    validate_sync as validate_sanitized_room_sync,
+};
 mod topology_namespace;
 mod workspace_effects;
 mod workspace_membership;
 mod workspace_tasks;
 pub use local_outbox::{LocalRecoveryReservation, Reseal};
+pub use workspace_tasks::PreparedTaskStart;
 mod media_governance;
 mod native_publication;
 mod room_name;
@@ -1451,6 +1458,25 @@ impl StatePeer {
         match message {
             NeighbourMsg::IdentityHello { cert, revocations } => {
                 self.receive_identity_hello(source, &cert, revocations, now)
+            }
+            NeighbourMsg::SanitizedRoomBaseline { room, baseline } => {
+                if room != self.core.room {
+                    return Err("baseline room topic mismatch".into());
+                }
+                let (baseline, tail) = postcard::take_from_bytes::<
+                    sanitized_baseline::SanitizedRoomBaseline,
+                >(&baseline)
+                .map_err(err)?;
+                if !tail.is_empty() || baseline.room != room || baseline.governor != source {
+                    return Err("baseline transport author or framing mismatch".into());
+                }
+                // A transport message cannot supply its own trusted bootstrap anchor.
+                self.admit_sanitized_room_baseline(&baseline, now)
+                    .map_err(err)?;
+                Ok(AdmissionReport::metadata(ReceiveOutcome {
+                    changed: true,
+                    ..Default::default()
+                }))
             }
             NeighbourMsg::SyncResp {
                 changes,

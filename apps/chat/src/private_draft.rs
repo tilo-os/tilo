@@ -13,9 +13,26 @@ impl ChatApp {
         if draft.workspace != self.active_ws || self.rect.area() <= 0.0 {
             return Err("private draft workspace or Chat view unavailable".into());
         }
-        let ui::private_draft::Target::Person { public_key } = &draft.target;
-        self.open_person_conversation(public_key)?;
-        let conversation = self.person_conversation_key(public_key);
+        let conversation = match &draft.target {
+            ui::private_draft::Target::Person { public_key } => {
+                self.open_person_conversation(public_key)?;
+                self.person_conversation_key(public_key)
+            }
+            ui::private_draft::Target::Task {
+                agent,
+                task,
+                run_epoch,
+            } => {
+                self.open_task_conversation_effect(&draft.workspace, agent, task, *run_epoch)?;
+                let route = self
+                    .agent_draft_route()
+                    .ok_or("exact task editor route unavailable")?;
+                crate::composer::ConversationKey::Agent {
+                    workspace: draft.workspace.clone(),
+                    route,
+                }
+            }
+        };
         // A desktop-hosted conversation already owns its retained editor.
         // Adopt there, not into a hidden second parent editor sharing its store.
         if let Some(surface) = self.agent_surfaces.get_mut(&self.active_channel)

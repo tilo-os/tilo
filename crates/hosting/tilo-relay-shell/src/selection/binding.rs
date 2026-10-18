@@ -50,6 +50,34 @@ impl ShellBinding for DesktopBinding {
     fn governor(&self) -> &tilo_user_identity::DeviceCert {
         self.authority.governor()
     }
+    fn verify_room_retirement(
+        &self,
+        store: &dyn ShellStore,
+        publisher: [u8; 32],
+        body: &[u8],
+    ) -> Result<(), StoreError> {
+        if publisher != self.authority.governor().device_public_key {
+            return Err(super::invalid(
+                "retirement publisher is not the pinned governor",
+            ));
+        }
+        let mut selected = SelectedRead::new(store)?
+            .ok_or_else(|| super::invalid("room retirement requires selected predecessor"))?;
+        while selected.step()? == Step::More {}
+        let prior = selected
+            .basis
+            .room
+            .as_ref()
+            .ok_or_else(|| super::invalid("room retirement requires selected predecessor"))?;
+        crate::retained_proof::verify_room_replacement(
+            prior,
+            publisher,
+            *blake3::hash(b"shell-tree").as_bytes(),
+            body,
+        )
+        .map_err(|_| super::invalid("room retirement predecessor mismatch"))?;
+        Ok(())
+    }
     fn selection(
         &self,
         store: &dyn ShellStore,

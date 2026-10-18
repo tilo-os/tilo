@@ -151,6 +151,23 @@ pub trait ShellStore: Send + Sync {
 pub trait ShellBinding: Any + Send + Sync {
     /// The device certificate of the room governor the authority names.
     fn governor(&self) -> &tilo_user_identity::DeviceCert;
+    /// Authenticate a destructive room replacement against the committed selected
+    /// predecessor, never against a pin supplied by the replacement itself.
+    ///
+    /// # Errors
+    /// Rejects replacements without an exact independently verified predecessor.
+    fn verify_room_retirement(
+        &self,
+        _store: &dyn ShellStore,
+        _publisher: [u8; 32],
+        _body: &[u8],
+    ) -> Result<(), StoreError> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "shell adapter cannot authenticate room retirement",
+        )
+        .into())
+    }
     /// A selection of `store`'s retained history, staged under `scratch`,
     /// classifying `incoming` (the input just written) if any.
     ///

@@ -5,7 +5,9 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use ui::widget::{Button, Decorator, Widget};
+use ui::widget::{Button, ButtonRole, Decorator, Widget};
+
+use crate::shell::agent_quick_composer::ComposerTask;
 use ui::{LocalState, PresenceCtx, Theme};
 use vello::kurbo::{Affine, Point, Rect};
 
@@ -19,6 +21,7 @@ pub(crate) struct AccessibleAgentMarker {
     pub app_id: String,
     pub room: String,
     pub agent: String,
+    pub task: ComposerTask,
     pub interaction: tilo_actions::SemanticInteraction,
     pub marker: Rect,
     pub locus: Rect,
@@ -47,6 +50,7 @@ impl AccessibleAgentMarker {
             && self.app_id == other.app_id
             && self.room == other.room
             && self.agent == other.agent
+            && self.task == other.task
             && self.interaction == other.interaction
             && self.marker == other.marker
             && self.locus == other.locus
@@ -57,6 +61,17 @@ impl AccessibleAgentMarker {
         !self.room.is_empty()
             && !self.app_id.is_empty()
             && !self.agent.is_empty()
+            && !self.task.task_id.is_empty()
+            && self.task.run_epoch > 0
+            && self
+                .interaction
+                .paint_origin
+                .is_some_and(|origin| !origin.is_nil())
+            && self
+                .interaction
+                .group
+                .as_ref()
+                .is_some_and(|group| group.kind == "task" && group.id == self.task.task_id)
             && self.interaction.validate().is_ok()
             && self.interaction.actor.kind == tilo_actions::ActorKind::Agent
             && [self.marker, self.locus, self.protected]
@@ -66,13 +81,14 @@ impl AccessibleAgentMarker {
 }
 
 /// Button supplies ordinary focus, keyboard, accessibility and hit routing.
-/// Its pixels are the source's real marker, already painted in that frame;
-/// this decorator does not paint a second cursor or invented activity.
+/// The real marker is already painted. Reveal only a shared message control
+/// on hover/focus, without an idle animation or a second activity cursor.
 struct MarkerControl {
     source: AccessibleAgentMarker,
     activation_source: LocalState<AccessibleAgentMarker>,
     button: Button,
     origin: Point,
+    hovered: bool,
 }
 
 impl Decorator for MarkerControl {
@@ -88,18 +104,42 @@ impl Decorator for MarkerControl {
     }
     fn draw(
         &mut self,
-        _: &mut vello::Scene,
-        _: Affine,
-        _: &mut ui::text_render::TextRenderer,
-        _: &Theme,
-        _: &PresenceCtx,
+        scene: &mut vello::Scene,
+        transform: Affine,
+        text: &mut ui::text_render::TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
     ) {
+        if self.button.is_enabled() && (self.hovered || self.button.is_focused()) {
+            self.button.draw(scene, transform, text, theme, presence);
+        } else {
+            let mut hidden = vello::Scene::new();
+            self.button
+                .draw(&mut hidden, transform, text, theme, presence);
+        }
+    }
+    fn handle_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) {
+        match event {
+            winit::event::WindowEvent::CursorMoved { position, .. } => {
+                self.hovered = self.button.cursor_shape(ctx.logical(position)).is_some();
+            }
+            winit::event::WindowEvent::CursorLeft { .. } => self.hovered = false,
+            _ => {}
+        }
+        self.button.handle_event(event, ctx);
     }
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         self.button.accessibility().map(|node| {
-            node.with_name(self.source.label.clone())
-                .with_description(self.source.description.clone())
-                .with_action_target(self.source.action_target())
+            node.with_name(super::super::i18n::t_args(
+                "agent-marker-message",
+                &[("task", self.source.task.label.clone().into())],
+            ))
+            .with_description(self.source.description.clone())
+            .with_action_target(self.source.action_target())
         })
     }
     fn build_layout(
@@ -130,19 +170,28 @@ impl Decorator for MarkerControl {
 }
 
 pub(crate) struct AgentMarkers {
-    controls: Vec<MarkerControl>,
+    #[expect(clippy::vec_box, reason = "node maps retain raw widget addresses")]
+    controls: Vec<Box<MarkerControl>>,
+    #[expect(
+        clippy::vec_box,
+        reason = "retired registrations must keep their addresses"
+    )]
+    retired: Vec<Box<MarkerControl>>,
     nodes: Vec<taffy::NodeId>,
     activation: LocalState<Option<AccessibleAgentMarker>>,
     dirty: bool,
+    review: Option<crate::shell::task_review::NativeTaskReview>,
 }
 
 impl Default for AgentMarkers {
     fn default() -> Self {
         Self {
             controls: Vec::new(),
+            retired: Vec::new(),
             nodes: Vec::new(),
             activation: LocalState::new(None),
             dirty: false,
+            review: None,
         }
     }
 }
@@ -175,6 +224,9 @@ impl AgentMarkers {
                     && control.source.app_id == source.app_id
                     && control.source.room == source.room
                     && control.source.agent == source.agent
+                    && control.source.task.task_id == source.task.task_id
+                    && control.source.task.run_epoch == source.task.run_epoch
+                    && control.source.interaction.paint_origin == source.interaction.paint_origin
             }) {
                 // Preserve the shared Button's held gesture while the painted
                 // marker animates. Its callback reads the latest publication.
@@ -186,18 +238,28 @@ impl AgentMarkers {
                 let activation = self.activation.clone();
                 let activation_source = LocalState::new(source.clone());
                 let selected = activation_source.clone();
-                let mut button = Button::new(&source.action_target(), &source.label)
-                    .with_accessible_name(&source.description)
-                    .on_click(move || activation.set(Some(selected.get())));
+                let mut button = Button::icon_only(
+                    &source.action_target(),
+                    ui::icons::Icon::MessageSquare,
+                    &super::super::i18n::t("agent-quick-message"),
+                )
+                .role(ButtonRole::Plain)
+                .with_accessible_name(&source.description)
+                .on_click(move || activation.set(Some(selected.get())));
                 button.set_enabled(false);
-                self.controls.push(MarkerControl {
+                self.controls.push(Box::new(MarkerControl {
                     source,
                     activation_source,
                     button,
                     origin: Point::ZERO,
-                });
+                    hovered: false,
+                }));
             }
         }
+        for control in &mut previous {
+            control.button.set_enabled(false);
+        }
+        self.retired.extend(previous);
         if let Some(pending) = pending
             && self
                 .controls
@@ -211,7 +273,16 @@ impl AgentMarkers {
 
     pub(crate) fn retain(&mut self, mut keep: impl FnMut(&AccessibleAgentMarker) -> bool) -> bool {
         let before = self.controls.len();
-        self.controls.retain(|control| keep(&control.source));
+        let mut live = Vec::new();
+        for mut control in std::mem::take(&mut self.controls) {
+            if keep(&control.source) {
+                live.push(control);
+            } else {
+                control.button.set_enabled(false);
+                self.retired.push(control);
+            }
+        }
+        self.controls = live;
         let changed = before != self.controls.len();
         self.dirty |= changed;
         if let Some(pending) = self.activation.get()
@@ -239,9 +310,12 @@ impl AgentMarkers {
 
     pub(crate) fn pointer_at(&self, point: (f64, f64)) -> bool {
         self.controls.iter().any(|control| {
-            control.source.marker.contains(Point::new(point.0, point.1))
+            control
+                .button
+                .cursor_shape(Point::new(point.0, point.1))
+                .is_some()
                 && control.source.is_fresh(Instant::now())
-                && Widget::is_enabled(control)
+                && Widget::is_enabled(control.as_ref())
         })
     }
 
@@ -251,7 +325,7 @@ impl AgentMarkers {
         activation.filter(|source| {
             source.is_fresh(Instant::now())
                 && self.controls.iter().any(|control| {
-                    control.source.same_publication(source) && Widget::is_enabled(control)
+                    control.source.same_publication(source) && Widget::is_enabled(control.as_ref())
                 })
         })
     }
@@ -263,12 +337,13 @@ impl AgentMarkers {
         nodes: &mut HashMap<taffy::NodeId, *mut dyn Widget>,
         origin: Point,
     ) -> Vec<taffy::NodeId> {
+        self.retired.clear();
         self.nodes = self
             .controls
             .iter_mut()
             .map(|control| {
                 control.origin = origin;
-                Widget::build_layout(control, tree, theme, nodes)
+                Widget::build_layout(control.as_mut(), tree, theme, nodes)
             })
             .collect();
         self.nodes.clone()
@@ -278,7 +353,7 @@ impl AgentMarkers {
         self.controls.iter().any(|control| {
             control.source.action_target() == target
                 && control.source.is_fresh(Instant::now())
-                && Widget::is_enabled(control)
+                && Widget::is_enabled(control.as_ref())
         })
     }
 
@@ -297,25 +372,40 @@ impl AgentMarkers {
             .iter_mut()
             .find(|control| control.source.action_target() == target)
         {
-            Widget::perform_action(control, action, &[], edits, path);
+            Widget::perform_action(control.as_mut(), action, &[], edits, path);
         }
         true
     }
 
     pub(crate) fn apply(&mut self, tree: &taffy::TaffyTree<()>, origin: Point) {
         for (control, node) in self.controls.iter_mut().zip(&self.nodes) {
-            Widget::apply_layout(control, tree, *node, origin);
+            Widget::apply_layout(control.as_mut(), tree, *node, origin);
+        }
+    }
+
+    pub(crate) fn draw(
+        &mut self,
+        scene: &mut vello::Scene,
+        transform: Affine,
+        text: &mut ui::text_render::TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        for control in &mut self.controls {
+            Widget::draw(control.as_mut(), scene, transform, text, theme, presence);
         }
     }
 
     pub(crate) fn children(&self) -> impl Iterator<Item = &dyn Widget> {
-        self.controls.iter().map(|control| control as &dyn Widget)
+        self.controls
+            .iter()
+            .map(|control| control.as_ref() as &dyn Widget)
     }
 
     pub(crate) fn children_mut(&mut self) -> impl Iterator<Item = &mut dyn Widget> {
         self.controls
             .iter_mut()
-            .map(|control| control as &mut dyn Widget)
+            .map(|control| control.as_mut() as &mut dyn Widget)
     }
 
     pub(crate) fn take_structure_dirty(&mut self) -> bool {
@@ -338,7 +428,7 @@ impl AgentMarkers {
             if !control.source.is_fresh(Instant::now()) {
                 continue;
             }
-            Widget::handle_event(control, event, &mut ctx.reborrow(ctx.path, *node));
+            Widget::handle_event(control.as_mut(), event, &mut ctx.reborrow(ctx.path, *node));
             if *ctx.handled {
                 return;
             }
@@ -346,7 +436,163 @@ impl AgentMarkers {
     }
 }
 
+/// Resolve only the marker's explicit task group in an authorized owner view.
+/// Neither a display label nor the agent's other work can supply a target.
+fn task_from_view(
+    view: &tilo_desktop::activity::TaskReviewSnapshot,
+    room: &str,
+    person: &str,
+    agent: &str,
+    task_id: &str,
+    original_epoch: Option<u64>,
+    now: i64,
+) -> Option<ComposerTask> {
+    if view.room != room
+        || view.actor != person
+        || !(0..=2).contains(&now.checked_sub(view.sampled_at_secs)?)
+    {
+        return None;
+    }
+    let mut matches = view.tasks.iter().filter(|task| task.id == task_id);
+    let task = matches.next()?;
+    if matches.next().is_some() || task.route != tilo_desktop_model::WorkspaceTaskRoute::Model {
+        return None;
+    }
+    let control = view.controls.get(&task.id)?;
+    // Only a retained broker admission supplies this epoch. The current
+    // assignment/status cannot erase old pixels' conversation custody, and
+    // cannot supply a replacement run when the original has ended.
+    if let Some(epoch) = original_epoch {
+        if epoch == 0 || epoch > control.run_epoch {
+            return None;
+        }
+        return Some(ComposerTask {
+            task_id: task.id.clone(),
+            run_epoch: epoch,
+            revision: control
+                .directions
+                .last()
+                .map_or(0, |direction| direction.revision),
+            label: task.title.clone(),
+        });
+    }
+    if task.assigned_agent.as_deref() != Some(agent)
+        || task.status != tilo_desktop_model::WorkspaceTaskStatus::InProgress
+    {
+        return None;
+    }
+    let active = control.active_run.as_ref()?;
+    if active.agent_id != agent
+        || active.epoch == 0
+        || active.epoch != control.run_epoch
+        || original_epoch.is_some_and(|epoch| epoch != active.epoch)
+    {
+        return None;
+    }
+    Some(ComposerTask {
+        task_id: task.id.clone(),
+        run_epoch: active.epoch,
+        revision: control
+            .directions
+            .last()
+            .map_or(0, |direction| direction.revision),
+        label: task.title.clone(),
+    })
+}
+
 impl super::ShellOverlayHost {
+    pub(crate) fn attach_agent_marker_task_review(
+        &mut self,
+        review: crate::shell::task_review::NativeTaskReview,
+    ) {
+        self.agent_markers.review = Some(review);
+    }
+
+    pub(crate) fn certified_marker_task(
+        &self,
+        room: &str,
+        app: &str,
+        agent: &str,
+        interaction: &tilo_actions::SemanticInteraction,
+    ) -> Option<ComposerTask> {
+        let (task, epoch) = self.shortcut_triggers.broker()?.certified_painted_task(
+            room,
+            app,
+            agent,
+            interaction,
+        )?;
+        // The owner view may validate the original run, never select a new
+        // epoch for old pixels, even on their first appearance after reconnect.
+        self.marker_task_at_epoch(room, agent, &task, Some(epoch))
+    }
+
+    fn marker_task_at_epoch(
+        &self,
+        room: &str,
+        agent: &str,
+        task_id: &str,
+        original_epoch: Option<u64>,
+    ) -> Option<ComposerTask> {
+        let view = self.agent_markers.review.as_ref()?.snapshot(room)?.ok()?;
+        let person = self.chrome.as_ref()?.borrow().active_local_user();
+        let now = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()?
+                .as_secs(),
+        )
+        .ok()?;
+        task_from_view(&view, room, &person, agent, task_id, original_epoch, now)
+    }
+
+    pub(crate) fn validate_painted_composer(&mut self) {
+        if self.agent_quick_composer.about_selection() {
+            return;
+        }
+        let Some(owner) = self.agent_quick_composer.owner().cloned() else {
+            return;
+        };
+        let Some((app, interaction)) = self.agent_quick_composer.marker_origin().cloned() else {
+            return;
+        };
+        let valid = self
+            .certified_marker_task(&owner.room, &app, &owner.agent, &interaction)
+            .is_some_and(|task| {
+                self.agent_quick_composer
+                    .marker_task()
+                    .is_some_and(|bound| {
+                        task.task_id == bound.task_id && task.run_epoch == bound.run_epoch
+                    })
+            });
+        if !valid {
+            // Keep the retained local editor, but never replace its source or authority.
+            self.agent_quick_composer.marker.revoke_conversation();
+        }
+    }
+
+    pub(crate) fn retain_current_agent_marker_tasks(&mut self) -> bool {
+        let current: Vec<_> = self
+            .agent_markers
+            .controls
+            .iter()
+            .filter(|control| {
+                self.certified_marker_task(
+                    &control.source.room,
+                    &control.source.app_id,
+                    &control.source.agent,
+                    &control.source.interaction,
+                )
+                .is_some_and(|task| {
+                    task.task_id == control.source.task.task_id
+                        && task.run_epoch == control.source.task.run_epoch
+                })
+            })
+            .map(|control| control.source.action_target())
+            .collect();
+        self.agent_markers
+            .retain(|marker| current.contains(&marker.action_target()))
+    }
+
     pub(crate) fn certified_marker_agent(
         &self,
         room: &str,
@@ -371,7 +617,52 @@ impl super::ShellOverlayHost {
         markers: Vec<AccessibleAgentMarker>,
     ) {
         self.agent_markers.publish(connection, markers);
+        self.follow_agent_composer_anchor();
     }
+    fn follow_agent_composer_anchor(&mut self) {
+        if !self.agent_quick_composer.is_open() {
+            return;
+        }
+        let Some(owner) = self.agent_quick_composer.owner() else {
+            return;
+        };
+        let Some(task) = self.agent_quick_composer.marker_task() else {
+            return;
+        };
+        if self
+            .chrome
+            .as_ref()
+            .is_none_or(|chrome| chrome.borrow().active_local_user() != owner.person)
+            || self
+                .marker_action_session_source()
+                .and_then(|source| source.identity_revision(&owner.room))
+                != Some(owner.identity_revision)
+        {
+            return;
+        }
+        let now = Instant::now();
+        let marker = self.agent_markers.controls.iter().find(|control| {
+            let source = &control.source;
+            source.room == owner.room
+                && source.agent == owner.agent
+                && &source.task == task
+                && source.is_fresh(now)
+                && self
+                    .certified_marker_task(
+                        &source.room,
+                        &source.app_id,
+                        &source.agent,
+                        &source.interaction,
+                    )
+                    .as_ref()
+                    == Some(task)
+        });
+        if let Some(control) = marker {
+            self.agent_quick_composer
+                .follow_anchor(control.source.marker, control.source.protected);
+        }
+    }
+
     pub(crate) fn retire_accessible_agent_markers(&mut self, connection: u64) {
         self.agent_markers
             .retain(|source| source.connection != connection);
@@ -491,6 +782,78 @@ impl super::ShellOverlayHost {
         Ok(())
     }
 
+    /// Mount the production task cursor widget; fixtures are never native admission proof.
+    #[cfg(debug_assertions)]
+    pub fn seed_task_cursor_for_shots(&mut self, phase: &str) -> Result<(), &'static str> {
+        use crate::shell::agent_quick_composer::{
+            AgentQuickComposerOrigin, ComposerOwner, ComposerTask,
+        };
+        use crate::shell::i18n::t;
+        if std::env::var_os("TILO_UI_DEBUG").is_none() {
+            return Err("task cursor fixtures require the debug gate");
+        }
+        if !matches!(
+            phase,
+            "task-cursor-ready" | "task-cursor-ended" | "task-cursor-edge"
+        ) {
+            return Err("unknown task cursor fixture");
+        }
+        let viewport = self.overlay_area();
+        let size = f64::from(ui::tokens::Metrics::BASE.icon_md);
+        let marker = if phase == "task-cursor-edge" {
+            Rect::new(
+                viewport.x1 - size,
+                viewport.y1 - size,
+                viewport.x1,
+                viewport.y1,
+            )
+        } else {
+            Rect::new(
+                viewport.x0 + viewport.width() * 0.25,
+                viewport.y0 + viewport.height() * 0.45,
+                viewport.x0 + viewport.width() * 0.25 + size,
+                viewport.y0 + viewport.height() * 0.45 + size,
+            )
+        };
+        let owner = ComposerOwner {
+            room: "shots-room".into(),
+            agent: "shots-worker".into(),
+            person: "shots-person".into(),
+            identity_revision: 0,
+        };
+        let task = ComposerTask {
+            task_id: "task:shots".into(),
+            run_epoch: 1,
+            revision: 0,
+            label: t("agent-quick-shots-task"),
+        };
+        self.agent_quick_composer.open(
+            owner.clone(),
+            &task.label,
+            AgentQuickComposerOrigin {
+                marker,
+                protected: marker,
+                context: String::new(),
+            },
+            viewport,
+        );
+        self.agent_quick_composer.bind_marker_task(task.clone());
+        let live = phase != "task-cursor-ended";
+        self.agent_quick_composer.project(
+            &owner,
+            [live, false, live],
+            if live { vec![task] } else { Vec::new() },
+            live,
+        );
+        self.agent_quick_composer
+            .marker
+            .stage_for_shots(&t("agent-quick-shots-steer"));
+        if !live {
+            self.agent_quick_composer.marker.observe_ended();
+        }
+        Ok(())
+    }
+
     pub(crate) fn agent_quick_composer_open(&self) -> bool {
         self.agent_quick_composer.is_open()
     }
@@ -512,7 +875,14 @@ mod tests {
             app_id: "so.tilo.chat".into(),
             room: "room".into(),
             agent: "tide".into(),
+            task: ComposerTask {
+                task_id: "task:exact".into(),
+                run_epoch: 1,
+                revision: 0,
+                label: "Exact task".into(),
+            },
             interaction: tilo_actions::SemanticInteraction {
+                paint_origin: Some(uuid::Uuid::from_u128(42)),
                 version: tilo_actions::INTERACTION_VERSION,
                 invocation: tilo_actions::InvocationId::new(),
                 sequence: 1,
@@ -532,7 +902,11 @@ mod tests {
                     label: "Category".into(),
                 },
                 anchor: tilo_actions::InteractionAnchor::Resource,
-                group: None,
+                group: Some(tilo_actions::ActionGroup {
+                    id: "task:exact".into(),
+                    label: "Untrusted label".into(),
+                    kind: "task".into(),
+                }),
             },
             marker: Rect::new(100.0, 100.0, 132.0, 132.0),
             locus: Rect::new(90.0, 90.0, 210.0, 150.0),
@@ -541,6 +915,133 @@ mod tests {
             description: "Renaming Category".into(),
             published_at: Instant::now(),
         }
+    }
+
+    #[test]
+    fn marker_binding_requires_exact_authorized_task_and_active_run() {
+        use tilo_desktop_model::{WorkspaceTaskActiveRun, WorkspaceTaskControl};
+        let task = serde_json::from_value(serde_json::json!({
+            "id":"task:exact", "title":"Authorized title", "created_by":"person",
+            "assigned_agent":"tide", "route":"model", "status":"in_progress",
+            "created_at":0, "updated_at":0
+        }))
+        .expect("public task fixture");
+        let control = WorkspaceTaskControl {
+            run_epoch: 7,
+            active_run: Some(WorkspaceTaskActiveRun {
+                epoch: 7,
+                agent_id: "tide".into(),
+                started_at: 1,
+                applied_direction_revision: 0,
+                approval: None,
+            }),
+            ..WorkspaceTaskControl::default()
+        };
+        let mut view = tilo_desktop::activity::TaskReviewSnapshot {
+            admissions: Default::default(),
+            room: "room".into(),
+            actor: "person".into(),
+            generation: 1,
+            sampled_at_secs: 100,
+            writable: true,
+            tasks: vec![task],
+            controls: std::collections::BTreeMap::from([("task:exact".into(), control)]),
+        };
+        let resolve =
+            |view: &tilo_desktop::activity::TaskReviewSnapshot, room, person, agent, id, now| {
+                task_from_view(view, room, person, agent, id, None, now)
+            };
+        let exact = resolve(&view, "room", "person", "tide", "task:exact", 101).unwrap();
+        assert_eq!(exact.run_epoch, 7);
+        assert_eq!(exact.label, "Authorized title");
+        for (room, person, agent, id, now) in [
+            ("other", "person", "tide", "task:exact", 101),
+            ("room", "other", "tide", "task:exact", 101),
+            ("room", "person", "other", "task:exact", 101),
+            ("room", "person", "tide", "task:missing", 101),
+            ("room", "person", "tide", "task:exact", 103),
+            ("room", "person", "tide", "task:exact", 99),
+        ] {
+            assert!(resolve(&view, room, person, agent, id, now).is_none());
+        }
+        view.controls.get_mut("task:exact").unwrap().run_epoch = 8;
+        assert!(resolve(&view, "room", "person", "tide", "task:exact", 101).is_none());
+        view.controls
+            .get_mut("task:exact")
+            .unwrap()
+            .active_run
+            .as_mut()
+            .unwrap()
+            .epoch = 8;
+        assert_eq!(
+            task_from_view(&view, "room", "person", "tide", "task:exact", Some(7), 101)
+                .unwrap()
+                .run_epoch,
+            7,
+            "old pixels open their historical conversation, never the replacement"
+        );
+        assert_eq!(
+            task_from_view(&view, "room", "person", "tide", "task:exact", Some(8), 101)
+                .unwrap()
+                .run_epoch,
+            8
+        );
+        view.controls.get_mut("task:exact").unwrap().active_run = None;
+        view.tasks[0].assigned_agent = Some("replacement-agent".into());
+        view.tasks[0].status = tilo_desktop_model::WorkspaceTaskStatus::Done;
+        assert!(resolve(&view, "room", "person", "tide", "task:exact", 101).is_none());
+        assert_eq!(
+            task_from_view(&view, "room", "person", "tide", "task:exact", Some(7), 101)
+                .unwrap()
+                .run_epoch,
+            7,
+            "historical custody does not depend on the current agent assignment"
+        );
+        assert!(
+            task_from_view(&view, "room", "person", "tide", "task:exact", Some(9), 101).is_none()
+        );
+    }
+
+    #[test]
+    fn task_or_run_replacement_retires_a_pending_marker_activation() {
+        let source = marker();
+        let mut markers = AgentMarkers::default();
+        let mut presence = PresenceCtx::default();
+        presence.set_participant_kind(
+            ui::permissions::UserId(source.interaction.actor.id.clone()),
+            ui::presence::ParticipantKind::Agent,
+        );
+        markers.publish(source.connection, vec![source.clone()]);
+        markers.refresh(&presence, false);
+        let mut doc = automerge::AutoCommit::new();
+        markers.semantic_action(
+            &source.action_target(),
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        );
+        assert!(markers.activation.get().is_some());
+        let mut replacement = source.clone();
+        replacement.task.run_epoch += 1;
+        replacement.interaction.paint_origin = Some(uuid::Uuid::from_u128(43));
+        markers.publish(source.connection, vec![replacement]);
+        assert_eq!(
+            markers.retired.len(),
+            1,
+            "a replacement admission must retire the held Button, not update its click source"
+        );
+        assert_eq!(markers.retired[0].source.task.run_epoch, 1);
+        assert_eq!(markers.retired[0].activation_source.get().task.run_epoch, 1);
+        markers.refresh(&presence, false);
+        assert!(markers.take_activation().is_none());
+        let mut mismatched = source.clone();
+        mismatched.task.task_id = "task:another".into();
+        markers.publish(source.connection, vec![mismatched]);
+        assert_eq!(markers.children().count(), 0);
+        let mut unbound = source.clone();
+        unbound.interaction.group = None;
+        markers.publish(source.connection, vec![unbound]);
+        assert_eq!(markers.children().count(), 0);
     }
 
     #[test]

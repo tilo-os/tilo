@@ -87,6 +87,10 @@ pub fn standalone(msg: &NeighbourMsg) -> bool {
 /// incremental tail.
 pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32], Retention)> {
     let (route, kind) = match msg {
+        // Routing is not retirement authority: admission verifies the signed predecessor.
+        NeighbourMsg::SanitizedRoomBaseline { .. } => {
+            (b"shell-tree".as_slice(), Retention::Checkpoint)
+        }
         NeighbourMsg::SyncResp { .. } => (
             b"shell-tree".as_slice(),
             if shell_checkpoint {

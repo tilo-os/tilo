@@ -163,7 +163,7 @@ impl Worker {
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_err(|error| error.to_string())?
             .as_secs();
-        self.owner.with_current(id, |view| {
+        let mut snapshot = self.owner.with_current(id, |view| {
             if view.device().device_public_key != certificate.device_public_key {
                 return Err("selected identity differs from this enrolled workspace device".into());
             }
@@ -187,8 +187,31 @@ impl Worker {
                 actor: member.person,
                 tasks: snapshot.tasks,
                 controls: snapshot.controls,
+                admissions: Default::default(),
             }))
-        })
+        })?;
+        // Read outside with_current: asking the governor takes its own owner lock.
+        // A remote or unavailable governor remains unknown, never optimistically stopped.
+        let runs: Vec<_> = snapshot
+            .controls
+            .iter()
+            .filter(|(_, control)| control.run_epoch > 0)
+            .map(|(task, control)| (task.clone(), control.run_epoch))
+            .collect();
+        for (task, run_epoch) in runs {
+            use tilo_desktop::activity::{TaskAdmissionState, TaskAdmissionView};
+            use tilo_joined_room::task_admission::NativeTaskAdmissionState;
+            let state = match self.owner.native_task_admission_state(id, &task, run_epoch) {
+                Ok(NativeTaskAdmissionState::Open) => TaskAdmissionState::Open,
+                Ok(NativeTaskAdmissionState::Stopping) => TaskAdmissionState::Stopping,
+                Ok(NativeTaskAdmissionState::Stopped) => TaskAdmissionState::Stopped,
+                Err(_) => TaskAdmissionState::Unknown,
+            };
+            Arc::make_mut(&mut snapshot)
+                .admissions
+                .insert(task, TaskAdmissionView { run_epoch, state });
+        }
+        Ok(snapshot)
     }
 
     fn execute(

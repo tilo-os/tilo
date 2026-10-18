@@ -1187,6 +1187,12 @@ fn catalogue_poll_cannot_deliver_queued_media_after_its_owner_closes() {
         ui::portable_storage::PortableStorage::new("catalogue-media-retirement", "device").unwrap();
     let (mut frame, _, _) =
         component_mount_in_room(&cache, "author", 1, "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71");
+    let mut lane = MediaLane::default();
+    let startup = lane.take_catalogue_requests(&mut frame);
+    assert_eq!(startup.len(), 2);
+    assert!(startup.iter().all(|request| matches!(request,
+        tilo_actions::remote::RemoteActionMessage::CatalogueRequest { query, .. }
+        if query.needle == "list-tasks")));
     frame
         .invoke_bound_action(
             &BoundActionAddress {
@@ -1199,7 +1205,6 @@ fn catalogue_poll_cannot_deliver_queued_media_after_its_owner_closes() {
             &serde_json::Map::new(),
         )
         .unwrap();
-    let mut lane = MediaLane::default();
     assert!(lane.take_catalogue_requests(&mut frame).is_empty());
     frame.close_components();
     let media = lane.take(&mut frame);

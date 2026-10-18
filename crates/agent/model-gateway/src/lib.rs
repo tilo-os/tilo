@@ -29,12 +29,17 @@ mod error_tests;
 pub mod caller;
 #[cfg(all(unix, feature = "server"))]
 pub mod http_service;
+pub mod native_delivery;
 pub mod openai;
 #[cfg(all(unix, feature = "server"))]
 pub mod service;
 /// Direct provider access for trusted host CLIs only, never sandbox RPC callers.
 #[cfg(all(unix, feature = "host-backend"))]
 pub use service::host_backend;
+#[cfg(all(unix, feature = "server"))]
+pub use service::native::{
+    FrozenNativeAttempt, GatewaySource, NativeGatewaySource, NativeModelDispatch,
+};
 #[cfg(feature = "runtime-client")]
 pub mod runtime_client;
 #[cfg(all(unix, feature = "server"))]
@@ -160,6 +165,40 @@ pub enum Request {
         timeout_ms: u64,
         #[serde(default)]
         stream: bool,
+    },
+    /// Native host-custodied completion. Invocation metadata is not authority.
+    NativeComplete {
+        invocation: serde_json::Value,
+        profile_id: String,
+        model_id: String,
+        request: agent_provider_config::protocol::ModelRequest,
+        timeout_ms: u64,
+        #[serde(default)]
+        stream: bool,
+    },
+    /// Native host-custodied planning, never an alias for ordinary Plan.
+    NativePlan {
+        invocation: serde_json::Value,
+        profile_id: String,
+        model_id: String,
+        body: serde_json::Value,
+        timeout_ms: u64,
+        #[serde(default)]
+        stream: bool,
+        #[serde(default)]
+        deltas: bool,
+        #[serde(default)]
+        trace: Option<PlanTrace>,
+    },
+    /// Native host-custodied bounded transformation.
+    NativeTransform {
+        invocation: serde_json::Value,
+        profile_id: String,
+        model_id: String,
+        instructions: String,
+        input: String,
+        max_output_tokens: u32,
+        timeout_ms: u64,
     },
     /// Resolve the deliberate enabled default once, when this inference starts.
     CompleteDefault {

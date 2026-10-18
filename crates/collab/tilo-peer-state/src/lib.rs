@@ -19,6 +19,7 @@ mod shared;
 mod state;
 pub use installation::{AppearancePolicy, ArmedRecord, DirectoryRef, Installation, InstallationId};
 mod verified_certificate;
+pub use state::PreparedTaskStart;
 pub use state::{
     BoundedPeerError, BoundedPeerInvalid, BoundedStatePeer, DocumentRow, GovernedAccess,
     GovernedAgent, GovernedDelegateRow, GovernedMember, InstalledBot, LocalRecoveryReservation,
@@ -27,9 +28,9 @@ pub use state::{
     PeerGovernanceMut, PeerLimits, PeerMediaCall, PeerMediaGovernance, PeerMediaGovernanceMut,
     PeerMember, PeerOutbox, PeerOutboxMut, PeerPolicyBasis, PeerRead, PeerRevocations,
     PeerRoomAccess, PeerWorkspace, PeerWorkspaceMut, PlaintextChanges, ReceiveOutcome,
-    RecordReaders, Reseal, SealCheckpoint, SealDelta, SeedDocument, SeedState, StatePeer,
-    TransportOrigin, committed_document_revision, decide_with_surfaces, default_surfaces,
-    peer_handle, seed_room,
+    RecordReaders, Reseal, SanitizedRoomBaseline, SanitizedRoomBaselineAnchor, SealCheckpoint,
+    SealDelta, SeedDocument, SeedState, StatePeer, TransportOrigin, committed_document_revision,
+    decide_with_surfaces, default_surfaces, peer_handle, seed_room, validate_sanitized_room_sync,
 };
 pub mod coverage;
 mod governed_routes;

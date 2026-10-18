@@ -1559,6 +1559,7 @@ impl WorkspaceStore {
         fresh: FreshCheckpoint,
         bytes: Vec<u8>,
     ) -> Result<Result<RetainBuild, (FreshCheckpoint, Vec<u8>)>, StoreError> {
+        self.fence_room_input(&bytes)?;
         let (author, actual_channel, checkpoint) = identity(&bytes, self.workspace_id)
             .ok_or_else(|| invalid("invalid retained envelope"))?;
         let lineage = self.root.join(RETAINED_DIR).join("v2").join(format!(
@@ -1650,6 +1651,7 @@ impl WorkspaceStore {
         bytes: Vec<u8>,
         scratch: Option<PathBuf>,
     ) -> Result<RetainBuild, StoreError> {
+        self.fence_room_input(&bytes)?;
         let (author, actual_channel, checkpoint) = identity(&bytes, self.workspace_id)
             .ok_or_else(|| invalid("invalid retained envelope"))?;
         if actual_channel != *channel || checkpoint != seq.is_none() {
@@ -1872,6 +1874,11 @@ impl WorkspaceStore {
     ///
     /// Returns an error when a retained file cannot be read.
     pub fn load_shared(&self) -> Result<Vec<Vec<u8>>, StoreError> {
+        self.room_retirement_ready()?;
+        self.load_shared_for_retirement()
+    }
+
+    pub(super) fn load_shared_for_retirement(&self) -> Result<Vec<Vec<u8>>, StoreError> {
         let mut out = Vec::new();
         // Compatibility/admin reads do not grant proof or GC authority, but
         // must retain visibility of a previously committed local selection.

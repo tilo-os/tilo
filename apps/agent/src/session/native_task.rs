@@ -27,6 +27,12 @@ pub(super) struct NativeTaskState {
     pub children: std::collections::HashMap<[u8; 32], u32>,
     pub epoch: Option<u64>,
     pub pending: Option<runtime_collab::TaskRunControl>,
+    /// Directions placed in context, not yet proven to have reached the model.
+    pub directions_incorporating: Option<runtime_collab::TaskRunControl>,
+    pub mail_pending: Vec<runtime_collab::TaskMessage>,
+    pub mail_incorporating: Vec<String>,
+    pub mail_seen: std::collections::BTreeSet<String>,
+    pub mail_known: std::collections::BTreeMap<String, runtime_collab::TaskMessage>,
 }
 
 /// How a native task's child is observed: by re-asking for it with its
@@ -234,12 +240,66 @@ impl Session {
         if control.from_revision != state.revision {
             anyhow::bail!("native task control belongs to another instruction frontier");
         }
+        if control
+            .messages
+            .iter()
+            .any(|message| message.recipient.agent_id != self.cfg.agent_id)
+        {
+            anyhow::bail!("native task inbox belongs to another executor");
+        }
+        if control
+            .messages
+            .windows(2)
+            .any(|pair| pair[0].sequence >= pair[1].sequence)
+        {
+            anyhow::bail!("native task inbox is not in owner sequence order");
+        }
+        // Validate the whole observation before mutating the retained inbox.
+        for message in &control.messages {
+            if let Some(known) = state.mail_known.get(&message.message_id) {
+                let mut observed = message.clone();
+                observed.status = known.status;
+                if &observed != known {
+                    anyhow::bail!("native task message identity changed");
+                }
+            } else if state
+                .mail_known
+                .values()
+                .any(|known| known.sequence == message.sequence)
+            {
+                anyhow::bail!("native task message sequence reused");
+            }
+        }
         state.epoch = Some(control.run_epoch);
         if control.has_more {
             anyhow::bail!(
                 "More than one page of task directions needs person review; none were acknowledged"
             );
         }
+        for message in &control.messages {
+            state
+                .mail_known
+                .entry(message.message_id.clone())
+                .or_insert_with(|| message.clone());
+            if message.status == runtime_collab::TaskMessageStatus::DeliveredToModel {
+                // A committed private-history frame is already recorded by the
+                // owner for this run; reopening must not mint another receipt.
+                state.mail_seen.insert(message.message_id.clone());
+            }
+            if !state.mail_seen.contains(&message.message_id)
+                && !state.mail_incorporating.contains(&message.message_id)
+                && !state
+                    .mail_pending
+                    .iter()
+                    .any(|pending| pending.message_id == message.message_id)
+            {
+                state.mail_pending.push(message.clone());
+            }
+        }
+        state
+            .mail_pending
+            .retain(|message| !state.mail_seen.contains(&message.message_id));
+        state.mail_pending.sort_by_key(|message| message.sequence);
         if !control.directions.is_empty() {
             state.pending = Some(control);
         }
@@ -258,24 +318,21 @@ impl Session {
         else {
             return Ok(());
         };
-        // The attributed, exact source is now in the next model request. A
-        // concurrent newer direction still fences every child at the owner.
+        // Context preparation is not delivery. Retain the exact directions
+        // until the corresponding complete response validates.
         let text = serde_json::to_string(&control.directions)?;
         conversation.push_user(&format!(
             "Authenticated workspace task directions (apply before further operations):\n{text}"
         ));
-        self.report_task(
-            run,
-            runtime_collab::TaskRunUpdate::DirectionsApplied {
-                revision: control.latest_revision,
-            },
-        )?;
         if let Some(state) = self.native_task.as_mut() {
             state.revision = control.latest_revision;
+            state.directions_incorporating = Some(control);
+        }
+        if let Some(scope) = &self.native_model {
+            scope.set_lease(self.task_lease(run));
         }
         self.step_settled();
-        // This round trip observes durable acknowledgement; logging a failed
-        // report in the SDK cannot silently mint a usable revised lease.
+        // Refresh the owner frontier without manufacturing an Applied receipt.
         if self.task_cancelled(run)? {
             anyhow::bail!("task cancelled while incorporating directions");
         }

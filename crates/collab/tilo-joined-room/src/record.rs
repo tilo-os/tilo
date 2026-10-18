@@ -52,6 +52,18 @@ pub(crate) struct StoredRoom {
     /// `StatePeer::durable()`: the largest field by far.
     #[serde(with = "base64_bytes")]
     pub peer: Vec<u8>,
+    /// Exact signed replacement checkpoint; never regenerated from later history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sanitized_baseline: Option<tilo_peer_state::SanitizedRoomBaseline>,
+    /// Owner-local instructions; never part of a room CRDT or relay payload.
+    #[serde(default)]
+    pub private_task_text: crate::private_task_text::PrivateTaskTextStore,
+    /// Owner-local addressed mail, never part of room publication history.
+    #[serde(default)]
+    pub private_task_mailboxes: crate::PrivateTaskMailboxStore,
+    /// Exact single-use task dispatch custody, never replicated room authority.
+    #[serde(default)]
+    pub task_admission: crate::task_admission::TaskAdmissionLedger,
     /// Two-person private text; never included in public room or task state.
     #[serde(default, rename = "privateDirectConversations")]
     pub private_direct_conversations: crate::PrivateDirectConversationStore,

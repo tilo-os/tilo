@@ -1,6 +1,8 @@
 //! Real native clock, certified local action, and durable terminal owner barrier.
 #[path = "native_checkpoint_tests.rs"]
 mod checkpoints;
+#[path = "model_start_tests.rs"]
+mod model_start;
 use crate::shell::{
     broker_services::NativeCertificates, certified_action_session::ActionSessionSource,
     collab_broker, native_workspace_owner, state::WorkspaceTree,

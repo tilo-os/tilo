@@ -132,6 +132,16 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "agent-failed",
     "agent-reasoning",
     "agent-long-thread",
+    "TaskGoalBeforeSetup",
+    "TaskGoalCompact",
+    "TaskTreeCompact",
+    "TaskGoalFloating",
+    "QueuedTask",
+    "Subtask",
+    "RunningSteering",
+    "TaskConversationFloating",
+    "TaskAnswer",
+    "TaskAnswerFloating",
     "agent-work",
     "bridged",
     "agent-task",
@@ -251,7 +261,12 @@ impl ResourceApp for ChatShell {
 
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
         match scenario {
-            Some("agent-task-compact" | "agent-task-queued-compact") => (420, 680),
+            Some(
+                "agent-task-compact"
+                | "agent-task-queued-compact"
+                | "TaskGoalCompact"
+                | "TaskTreeCompact",
+            ) => (420, 680),
             _ => (1280, 800),
         }
     }

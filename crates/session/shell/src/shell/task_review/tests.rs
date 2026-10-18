@@ -197,6 +197,13 @@ fn native_review_preserves_authorship_and_refuses_stale_or_foreign_commands() {
     );
     service.submit(request.clone()).unwrap();
     wait(&service, request.invocation).unwrap();
+    let review_snapshot = service.snapshot(&room.to_string()).unwrap().unwrap();
+    let admission = &review_snapshot.admissions[&task_id];
+    assert_eq!(admission.run_epoch, 1);
+    assert_eq!(
+        admission.state,
+        tilo_desktop::activity::TaskAdmissionState::Open
+    );
     let snapshot = owner.workspace_task_snapshot(room).unwrap();
     assert_eq!(snapshot.controls[&task_id].directions.len(), 1);
     assert_eq!(

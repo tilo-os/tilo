@@ -1,9 +1,24 @@
 //! Explicit host services. These are process-owned capabilities, never wire flags.
+mod native_task_compute;
 mod own_device;
+pub use native_task_compute::{
+    NativeTaskExecutor, NativeTaskExecutorRegistry, PendingNativeTaskStart,
+};
 pub mod person_chat;
 mod task_execution;
 pub use own_device::{OwnDeviceActions, OwnDeviceOutcome};
-pub use task_execution::{NativeTaskActionRequirement, NativeTaskBinding, WorkspaceTaskExecution};
+pub(crate) use task_execution::NativeTaskBindingActor;
+pub use task_execution::{
+    NativeTaskActionRequirement, NativeTaskAdmissionCaller, NativeTaskAdmissionFuture,
+    NativeTaskAdmissionReady, NativeTaskAdmissionTransfer, NativeTaskBinding,
+    NativeTaskInboxFuture, NativeTaskInvocation, NativeTaskPrivateInstructions,
+    WorkspaceTaskExecution,
+};
+pub use tilo_joined_room::{
+    FrozenNativeModelSelection, HostDispatchModel, NativeModelAuthority, NativeModelContext,
+    NativeModelContract, NativeModelGovernorCustody, NativeModelHttpAttempt, NativeModelPlanning,
+    NativeModelSource, NativeModelStartAuthority, TypedNativeModelRequirement,
+};
 
 use std::sync::Arc;
 use tilo_desktop_model::{DesktopTree, RoomId, Workspace, WorkspaceTaskStatus};
@@ -212,7 +227,63 @@ pub type WorkspaceAuthorityHandle = Arc<dyn WorkspaceAuthority>;
 
 /// Native room membership owner. Public callers choose only a closed typed
 /// command; this host service supplies the private governor signing custody.
+/// A host-owned current executor/configuration sample. Never accepted as action input.
+#[derive(Clone, Debug)]
+pub struct NativeTaskComputeRegistration {
+    pub agent_id: String,
+    pub workspace: String,
+    pub profile: String,
+    pub current_certified_executor: bool,
+    pub model_ready: bool,
+    pub permitted: bool,
+}
+
 pub trait WorkspaceMemberships: Send + Sync {
+    /// Retain a conscious Start privately before any executor is registered.
+    /// Freeze the original person's permission ceiling and task frontier here;
+    /// do not bind or approve until the protected subscription is authenticated.
+    /// The returned capability must atomically revalidate Stop, revocation,
+    /// model configuration and the frozen frontier when approving.
+    ///
+    /// # Errors
+    /// Refuses unavailable owner custody or an unauthorized/stale Start.
+    fn prepare_task_start(
+        &self,
+        _request: tilo_owner_commit::OwnerCommitRequest,
+    ) -> Result<Box<dyn PendingNativeTaskStart>, String> {
+        Err("private native task Start custody unavailable".into())
+    }
+
+    /// Trusted executor configuration lookup, not presence or caller-supplied metadata.
+    /// Implementations must sample current native executor certificates, usable model
+    /// configuration and permission for this authenticated person. No grants are made.
+    /// `None` means readiness/registration metadata is unavailable; discovery returns
+    /// an empty setup-required result rather than guessing from room membership.
+    ///
+    /// # Errors
+    /// Returns an error if current caller authorization or trusted metadata lookup fails.
+    fn task_compute(
+        &self,
+        _room: &str,
+        _caller: &tilo_user_identity::DeviceCert,
+    ) -> Result<Option<Vec<NativeTaskComputeRegistration>>, String> {
+        Ok(None)
+    }
+
+    /// Current configured model label from the same trusted metadata source.
+    /// This distinguishes missing executor consent from missing model setup.
+    /// It is read-only and may disclose no credentials or authority.
+    ///
+    /// # Errors
+    /// Returns an error if current caller authorization or model configuration lookup fails.
+    fn task_compute_configuration(
+        &self,
+        _room: &str,
+        _caller: &tilo_user_identity::DeviceCert,
+    ) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+
     /// Recheck custody, retained integrity and all current source rights before
     /// disclosing a completed checkpoint invocation, including journal retries.
     /// # Errors
@@ -260,6 +331,73 @@ pub trait WorkspaceMemberships: Send + Sync {
         &self,
         room: &str,
     ) -> Result<tilo_peer_state::workspace_task::WorkspaceTaskSnapshot, String>;
+
+    /// Read the approved full MODEL contract for the actual physical host and exact run.
+    ///
+    /// # Errors
+    /// Refuses stale runs, changed host custody or unavailable private governor state.
+    fn task_model_contract(
+        &self,
+        _room: &str,
+        _binding: &NativeTaskBinding,
+    ) -> Result<NativeModelContract, String> {
+        Err("private MODEL contract unavailable".into())
+    }
+
+    /// Read one task/run for the transport-authenticated person.
+    ///
+    /// # Errors
+    /// Refuses missing private custody, unrelated people or unavailable runs.
+    fn task_private_instructions(
+        &self,
+        _room: &str,
+        _task_id: &str,
+        _run_epoch: u64,
+        _caller: &tilo_user_identity::DeviceCert,
+    ) -> Result<Option<NativeTaskPrivateInstructions>, String> {
+        Err("private task owner unavailable".into())
+    }
+
+    /// Exact original automatic reports under current person-private custody.
+    ///
+    /// # Errors
+    /// Refuses unavailable custody, unrelated people, or an unauthorized run.
+    fn task_report_transcript(
+        &self,
+        _room: &str,
+        _task_id: &str,
+        _run_epoch: u64,
+        _caller: &tilo_user_identity::DeviceCert,
+    ) -> Result<Vec<tilo_actions::task_messaging::TaskReport>, String> {
+        Err("private task transcript owner unavailable".into())
+    }
+
+    /// Exact-run output metadata from actual native invocation receipts.
+    ///
+    /// # Errors
+    /// Returns an error if the owner is unavailable or current reader/run checks fail.
+    fn task_outputs(
+        &self,
+        _room: &str,
+        _task_id: &str,
+        _run_epoch: u64,
+        _caller: &tilo_user_identity::DeviceCert,
+    ) -> Result<Vec<tilo_actions::task_messaging::TaskOutputRef>, String> {
+        Err("private task output owner unavailable".into())
+    }
+    /// Read addressed mail under the same person-private conversation boundary.
+    ///
+    /// # Errors
+    /// Returns an error if the owner is unavailable or current reader/run checks fail.
+    fn task_messages(
+        &self,
+        _room: &str,
+        _task_id: &str,
+        _run_epoch: u64,
+        _caller: &tilo_user_identity::DeviceCert,
+    ) -> Result<Vec<tilo_actions::task_messaging::TaskMessage>, String> {
+        Err("private task inbox owner unavailable".into())
+    }
 
     fn execute(
         &self,
@@ -468,9 +606,28 @@ impl ObservedApplicationLaunch {
     }
 }
 
+/// Protected host custody of an enrolled managed application actor.
+pub trait ManagedApplicationIdentity: Send + Sync + std::fmt::Debug {
+    /// Revalidate custody and return the actor's exact room-scoped presentation.
+    /// # Errors
+    /// Refuses changed identity, delegation, membership or key custody.
+    fn identity(
+        &self,
+    ) -> Result<
+        (
+            tilo_user_identity::DeviceCert,
+            tilo_workspace_join::delegation::Delegation,
+            [u8; 64],
+        ),
+        String,
+    >;
+}
+
 /// Original host-retained facts for one authenticated live launch.
 #[derive(Clone, Debug)]
 pub struct AuthenticatedApplicationLaunch {
+    pub managed_task_agent: Option<String>,
+    pub managed_identity: Option<Arc<dyn ManagedApplicationIdentity>>,
     pub creation: Option<ApplicationCreationEvidence>,
     pub continuation_instance: Option<u64>,
     /// The ticket [`LauncherServices::launch_content`] answered for the
@@ -589,7 +746,27 @@ pub trait LauncherServices: Send + Sync {
             Err("opening launch content is unsupported on this host".into())
         }
     }
+    /// Provision or relaunch a native executor through the protected managed
+    /// lifecycle after conscious Start. This grants no task execution rights;
+    /// the owner binds/approves only after authenticated subscription.
+    /// # Errors
+    /// The managed lifecycle is unavailable or current launch policy refuses it.
+    fn launch_task_executor(&self, _agent: &str, _workspace: &Workspace) -> Result<(), String> {
+        Err("native task executor launch unavailable".into())
+    }
     fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool;
+    /// Protected managed actor recorded before releasing the private launcher
+    /// registration gate. Ordinary app launches and wire flags grant nothing.
+    /// Called only for the kernel-authenticated launcher socket.
+    fn protected_model_launch(
+        &self,
+        pid: u32,
+        app: &str,
+        room: &str,
+    ) -> Result<Option<launcher::registration_gate::ProtectedModelLaunch>, String> {
+        let _ = (pid, app, room);
+        Ok(None)
+    }
     /// Snapshot the original launch facts while admitting this connection.
     /// Unsupported launchers retain no private window-instance authority.
     ///
@@ -605,6 +782,8 @@ pub trait LauncherServices: Send + Sync {
             return Ok(None);
         }
         Ok(Some(AuthenticatedApplicationLaunch {
+            managed_task_agent: None,
+            managed_identity: None,
             creation: self.application_creation_evidence(pid, app, room)?,
             continuation_instance: None,
             launch_ticket: None,
@@ -1445,6 +1624,9 @@ pub trait DisplayControlServices: Send + Sync {
 
 #[derive(Clone, Default)]
 pub struct HostServices {
+    pub native_task_executors: Option<Arc<NativeTaskExecutorRegistry>>,
+    /// Typed MODEL custody; no credentials or endpoint capability crosses RPC.
+    pub native_model: Option<Arc<dyn crate::native_model::NativeModelHost>>,
     /// Fixed project-host registrations, unavailable unless actual enforcement is configured.
     pub approved_checks: Option<Arc<dyn crate::collab_broker_capnp::ApprovedCheckServices>>,
     /// Read-only existing-resource discovery, absent unless the native host

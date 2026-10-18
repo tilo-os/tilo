@@ -297,6 +297,10 @@ pub enum ConversationKey {
         workspace: String,
         public_key: String,
     },
+    TaskDraft {
+        workspace: String,
+        parent: Option<String>,
+    },
 }
 
 impl ConversationKey {
@@ -307,6 +311,11 @@ impl ConversationKey {
                 workspace,
                 public_key,
             } => ("person", workspace, public_key.clone()),
+            Self::TaskDraft { workspace, parent } => (
+                "task-draft",
+                workspace,
+                serde_json::to_string(parent).unwrap_or_default(),
+            ),
         };
         format!(
             "{kind}:{}:{workspace}:{}:{target}",

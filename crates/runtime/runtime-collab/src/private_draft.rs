@@ -3,7 +3,14 @@
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum Target {
-    Person { public_key: String },
+    Person {
+        public_key: String,
+    },
+    Task {
+        agent: String,
+        task: String,
+        run_epoch: u64,
+    },
 }
 
 /// UTF-8 byte endpoints, in anchor/caret order. Preedit remains display-only.

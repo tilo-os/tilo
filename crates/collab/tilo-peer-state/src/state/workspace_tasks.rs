@@ -5,6 +5,10 @@ use crate::workspace_task::{
 };
 use tilo_action_policy::{ActionKind, TreePath};
 
+mod hierarchy;
+mod prepared_start;
+pub use prepared_start::PreparedTaskStart;
+
 impl StatePeer {
     fn mint_task_authority(
         &self,
@@ -13,6 +17,8 @@ impl StatePeer {
         task_id: &str,
         epoch: u64,
         now: SystemTime,
+        model_start: Option<&crate::workspace_task::WorkspaceTaskModelStart>,
+        ceiling: Option<&tilo_desktop_model::WorkspaceTaskExecutionAuthority>,
     ) -> Result<(), String> {
         let task = tilo_desktop_model::projection::workspace_tasks_of(doc)
             .into_iter()
@@ -42,6 +48,13 @@ impl StatePeer {
                 .ok_or("attached task scope has no app identity")?;
             scope = scope.app(app).kind(&resource.kind).resource(&resource.id);
         }
+        if let Some(bound) = ceiling
+            && (bound.epoch != epoch || bound.scope != scope)
+        {
+            return Err("prepared Start ceiling changed".into());
+        }
+        let starter =
+            ceiling.map_or_else(|| member.clone().standing(), |bound| bound.starter.clone());
         let control = controls
             .get_mut(task_id)
             .ok_or("task control disappeared")?;
@@ -55,10 +68,41 @@ impl StatePeer {
                 instruction_revision: control.directions.last().map_or(0, |value| value.revision),
             });
         }
+        if let Some(model) = model_start {
+            let AdmittedTaskActor::Person { id, .. } = actor else {
+                return Err("only a conscious person start may freeze model use".into());
+            };
+            if task.route != tilo_desktop_model::WorkspaceTaskRoute::Model
+                || run
+                    .approval
+                    .as_ref()
+                    .is_none_or(|approval| approval.person != *id)
+                || model.request_model.room_id() != Some(self.core.room.as_str())
+                || model.request_model.is_root()
+                || model
+                    .request_model
+                    .segments()
+                    .iter()
+                    .any(|segment| segment.id().is_none())
+                || !model.contract.is_object()
+                || !member.allows(&model.request_model, model.kind, now)
+            {
+                return Err("approved model source or starter permission invalid".into());
+            }
+            control.model_authority = Some(tilo_desktop_model::task::WorkspaceTaskModelAuthority {
+                epoch,
+                request_model: model.request_model.clone(),
+                kind: model.kind,
+                // Only a content binding enters shared history; the complete
+                // profile/account snapshot stays in the owner's private store.
+                contract: crate::workspace_task::private_model_contract_reference(&model.contract)?,
+                starter: starter.clone(),
+            });
+        }
         control.execution_authority = Some(tilo_desktop_model::WorkspaceTaskExecutionAuthority {
             epoch,
             scope,
-            starter: member.standing(),
+            starter,
         });
         crate::workspace_task::project_controls(doc, &controls)?;
         doc.commit();
@@ -104,6 +148,19 @@ impl StatePeer {
             return Err("task execution scope is not concrete in this room".into());
         }
         let caller = member.standing();
+        if let Some(model) = control.model_authority.as_ref() {
+            let cx = tilo_action_policy::Context::at_time(now);
+            if model.epoch != run.epoch
+                || (model.starter.answer(&model.request_model, model.kind, &cx)
+                    == tilo_action_policy::Answer::Allow
+                    && caller.answer(&model.request_model, model.kind, &cx)
+                        != tilo_action_policy::Answer::Allow)
+            {
+                return Err(
+                    "task steering requires its separately approved model permission".into(),
+                );
+            }
+        }
         // An unbounded current owner structurally allows the entire room.
         if caller.policy.owner.as_ref() == Some(&caller.person) && caller.bounds.is_empty() {
             return Ok(());
@@ -199,6 +256,29 @@ impl PeerWorkspace<'_> {
     }
 }
 impl PeerWorkspaceMut<'_> {
+    /// Bind owner-private custody to the exact accepted queue result. Call on the
+    /// owner's unpublished candidate, before persisting/publishing that candidate.
+    /// No private instruction is ever inserted into the room document.
+    ///
+    /// # Errors
+    /// The reference is not canonical, the result was not retained, or an
+    /// existing instruction/binding would be replaced.
+    pub fn bind_workspace_task_private_instruction(
+        self,
+        result: &tilo_desktop_model::WorkspaceTaskMutationResult,
+        reference: &str,
+    ) -> Result<(), String> {
+        let room = self
+            .peer
+            .core
+            .room_doc
+            .as_deref()
+            .ok_or("workspace task room document is absent")?;
+        let candidate = crate::workspace_task::bind_private_instruction(room, result, reference)?;
+        self.peer.core.room_doc = Some(candidate.into());
+        Ok(())
+    }
+
     /// Apply one typed task command against the current admitted room document.
     /// The caller or host certificate is rechecked here, in the same serialized
     /// owner turn as the mutation; strings in the command confer no authority.
@@ -214,6 +294,54 @@ impl PeerWorkspaceMut<'_> {
         command: &WorkspaceTaskCommand,
         now: SystemTime,
     ) -> Result<(bool, tilo_desktop_model::WorkspaceTaskMutationResult), String> {
+        self.apply_workspace_task_command_with_model_start(
+            invocation,
+            request_digest,
+            authority,
+            command,
+            now,
+            None,
+        )
+    }
+
+    /// Trusted owner entrypoint. `model_start` is a shell snapshot, never a
+    /// serialized task-command field. Legacy callers cannot mint MODEL use.
+    pub fn apply_workspace_task_command_with_model_start(
+        self,
+        invocation: uuid::Uuid,
+        request_digest: [u8; 32],
+        authority: &WorkspaceTaskAuthority,
+        command: &WorkspaceTaskCommand,
+        now: SystemTime,
+        model_start: Option<&crate::workspace_task::WorkspaceTaskModelStart>,
+    ) -> Result<(bool, tilo_desktop_model::WorkspaceTaskMutationResult), String> {
+        self.apply_workspace_task_command_with_prepared(
+            invocation,
+            request_digest,
+            authority,
+            command,
+            now,
+            model_start,
+            None,
+        )
+    }
+
+    fn apply_workspace_task_command_with_prepared(
+        self,
+        invocation: uuid::Uuid,
+        request_digest: [u8; 32],
+        authority: &WorkspaceTaskAuthority,
+        command: &WorkspaceTaskCommand,
+        now: SystemTime,
+        model_start: Option<&crate::workspace_task::WorkspaceTaskModelStart>,
+        ceiling: Option<&tilo_desktop_model::WorkspaceTaskExecutionAuthority>,
+    ) -> Result<(bool, tilo_desktop_model::WorkspaceTaskMutationResult), String> {
+        if model_start.is_some()
+            && (!matches!(authority, WorkspaceTaskAuthority::Person { .. })
+                || !matches!(command, WorkspaceTaskCommand::ApproveRun { .. }))
+        {
+            return Err("model ceiling requires an explicit person approval".into());
+        }
         let certificate = authority.certificate();
         if self
             .peer
@@ -285,6 +413,8 @@ impl PeerWorkspaceMut<'_> {
                 }
             }
         };
+        self.peer
+            .check_task_metadata_authority(command, &actor, room, now)?;
         require_budget_owner(command, &actor, owner.as_ref())?;
         self.peer
             .check_agent_task_approval(&actor, command, room, now)?;
@@ -302,8 +432,15 @@ impl PeerWorkspaceMut<'_> {
             if let tilo_desktop_model::WorkspaceTaskMutationResult::RunStarted { task_id, epoch } =
                 &result
             {
-                self.peer
-                    .mint_task_authority(&mut candidate, &actor, task_id, *epoch, now)?;
+                self.peer.mint_task_authority(
+                    &mut candidate,
+                    &actor,
+                    task_id,
+                    *epoch,
+                    now,
+                    model_start,
+                    ceiling,
+                )?;
             }
             self.peer.core.room_doc = Some(candidate.into());
         }
@@ -449,6 +586,8 @@ fn direction_agent(
 
 #[cfg(test)]
 mod tests {
+    mod hierarchy_tests;
+    mod model_start_tests;
     use super::*;
     use crate::{SeedState, seed_room};
     use ed25519_dalek::SigningKey;
@@ -505,6 +644,52 @@ mod tests {
             .put_governed_grants(&[agent_grant("agent-scribe", ROOM)], &governor_key, now)
             .unwrap();
         (peer, governor, other, now)
+    }
+
+    #[test]
+    fn private_instruction_binding_uses_the_accepted_owner_candidate_atomically() {
+        let (mut peer, governor, _, now) = peer();
+        let (_, result) = peer
+            .workspace_mut()
+            .apply_workspace_task_command(
+                uuid::Uuid::from_u128(77),
+                [77; 32],
+                &WorkspaceTaskAuthority::Person { caller: governor },
+                &WorkspaceTaskCommand::Queue {
+                    title: "Public task".into(),
+                    assigned_agent: "scribe".into(),
+                    route: WorkspaceTaskRoute::Model,
+                    resource: None,
+                },
+                now,
+            )
+            .unwrap();
+        let reference = crate::workspace_task::private_instruction_reference("owner-private body");
+        peer.workspace_mut()
+            .bind_workspace_task_private_instruction(&result, &reference)
+            .unwrap();
+        let accepted = crate::workspace_task::snapshot(peer.admitted_room().unwrap()).unwrap();
+        assert!(accepted.controls.values().all(|c| c.instruction.is_none()
+            && c.private_instruction_ref.as_deref() == Some(reference.as_str())));
+        assert!(
+            peer.workspace_mut()
+                .bind_workspace_task_private_instruction(
+                    &result,
+                    &crate::workspace_task::private_instruction_reference("substituted body"),
+                )
+                .is_err()
+        );
+        assert_eq!(
+            crate::workspace_task::snapshot(peer.admitted_room().unwrap()).unwrap(),
+            accepted
+        );
+        peer.workspace_mut()
+            .bind_workspace_task_private_instruction(&result, &reference)
+            .unwrap();
+        assert_eq!(
+            crate::workspace_task::snapshot(peer.admitted_room().unwrap()).unwrap(),
+            accepted
+        );
     }
 
     fn agent_grant(id: &str, room: &str) -> Grant {

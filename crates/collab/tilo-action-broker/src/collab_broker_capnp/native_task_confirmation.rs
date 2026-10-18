@@ -17,9 +17,7 @@
 //! against what its person answered.
 
 use tilo_actions::Draft;
-use tilo_desktop_model::{
-    WorkspaceTaskConfirmation, WorkspaceTaskConfirmationState, WorkspaceTaskControl,
-};
+use tilo_desktop_model::{WorkspaceTaskConfirmation, WorkspaceTaskConfirmationState};
 use tilo_peer_state::workspace_task::WorkspaceTaskCommand;
 
 use super::native_task_execution::ChildReask;
@@ -32,12 +30,38 @@ pub(super) enum NativeGate {
     /// The person confirmed it: with these arguments, as they changed them,
     /// admitted as confirmed. The confirmation is settled once it starts.
     Confirmed {
+        invocation: uuid::Uuid,
         argument: String,
+        /// Unique answer custody; the stable draft id below is only for cleanup.
+        reference: String,
         confirmation: String,
     },
 }
 
+/// Exact transport identity shared with the final child admission.
+pub(super) struct ConfirmationContext<'a> {
+    pub lease: &'a str,
+    pub invocation: uuid::Uuid,
+    pub provider: &'a str,
+}
+
 impl CapnpBrokerState {
+    /// Resolve private execution content through the authenticated owner service.
+    pub(super) fn native_private_run_digest(
+        &self,
+        run: &PendingTaskRun,
+        binding: &crate::services::NativeTaskBinding,
+    ) -> Result<[u8; 32], String> {
+        let digest = self
+            .native_tasks(&run.cluster_id)
+            .ok_or("native task owner unavailable")?
+            .private_run_digest(&run.cluster_id, binding)?;
+        if digest == [0; 32] {
+            return Err("native task private run digest absent".into());
+        }
+        Ok(digest)
+    }
+
     /// Decide how `reask`'s child may start, recording the draft for the
     /// person when it asks first.
     ///
@@ -61,9 +85,18 @@ impl CapnpBrokerState {
             .filter(|surface| surface.route.cluster_id == run.cluster_id)
             .and_then(|surface| surface.action_projection(target.resource, target.action))
             .ok_or("the task action is no longer published in this workspace")?;
+        let provider = if target.provider.is_empty() {
+            super::launchable::launchable_provider(&surface)
+        } else {
+            target.provider.to_owned()
+        };
         self.native_confirmation_for(
             &run,
-            reask.lease,
+            ConfirmationContext {
+                lease: reask.lease,
+                invocation: reask.invocation.0,
+                provider: &provider,
+            },
             (&surface.app_id, &offered),
             (target.resource, target.action),
             target.argument,
@@ -81,14 +114,17 @@ impl CapnpBrokerState {
     pub(super) async fn native_confirmation_for(
         &self,
         run: &PendingTaskRun,
-        lease: &str,
+        context: ConfirmationContext<'_>,
         (app, offered): (&str, &PublishedAction),
         (resource, action): (&str, &str),
         argument: Option<&str>,
     ) -> Result<NativeGate, String> {
-        let Some(binding) = run.native.clone() else {
+        let Some(mut binding) = run.native.clone() else {
             return Ok(NativeGate::Proceed);
         };
+        binding.revision = runtime_collab::native_task_revision(context.lease)
+            .ok_or("invalid native lease")?
+            .1;
         // An agent sends its arguments in the wire form every caller uses,
         // JSON behind `ARGUMENTS_JSON_PREFIX`; a bare object is read the same.
         let prefixed =
@@ -112,15 +148,17 @@ impl CapnpBrokerState {
         let service = self
             .native_tasks(&run.cluster_id)
             .ok_or("native task owner unavailable")?;
-        let snapshot = service.snapshot(&run.cluster_id)?;
-        let held = snapshot
-            .controls
-            .get(&run.task_id)
-            .and_then(|control: &WorkspaceTaskControl| control.confirmation.clone())
+        let held = service
+            .private_confirmation(&run.cluster_id, &binding)?
             .filter(|held| held.id == id && held.run_epoch == binding.epoch);
         if let Some(held) = held {
             return self
-                .held_answer(run, held, &arguments, prefixed.is_some())
+                .held_answer(
+                    run,
+                    held,
+                    &arguments,
+                    (prefixed.is_some(), binding.revision),
+                )
                 .await;
         }
         let contract_argument =
@@ -132,18 +170,27 @@ impl CapnpBrokerState {
             tilo_actions::ConfirmationPolicy::None
         );
         let mut current = binding.clone();
-        current.revision = runtime_collab::native_task_revision(lease)
+        current.revision = runtime_collab::native_task_revision(context.lease)
             .ok_or("invalid native lease")?
             .1;
+        let mut invocation = crate::services::NativeTaskInvocation::new(
+            context.invocation,
+            context.provider,
+            argument,
+            &descriptor.contract,
+            context.lease,
+        )?;
+        invocation.private_run_digest = self.native_private_run_digest(run, &current)?;
         let requirement = crate::services::NativeTaskActionRequirement {
             binding: Some(current),
             app: app.to_owned(),
             resource_kind: descriptor.resource_kind.clone(),
-            resource: resource.into(),
+            resource: tilo_actions::selection::logical_resource_id(resource).into_owned(),
             action: descriptor.address.action.clone(),
             need: descriptor.contract.need(),
             consequential,
-            confirmed: false,
+            confirmation: None,
+            invocation: Some(invocation),
         };
         match service.authorize_action(&run.cluster_id, &run.agent_id, &requirement) {
             Ok(()) => Ok(NativeGate::Proceed),
@@ -157,7 +204,7 @@ impl CapnpBrokerState {
                     agent_id: run.agent_id.clone(),
                     app: app.to_owned(),
                     resource_kind: descriptor.resource_kind.clone(),
-                    resource: resource.into(),
+                    resource: tilo_actions::selection::logical_resource_id(resource).into_owned(),
                     action: descriptor.address.action.clone(),
                     kind: descriptor.contract.kind,
                     risk: descriptor.contract.risk,
@@ -166,6 +213,15 @@ impl CapnpBrokerState {
                     requested_at: unix_seconds(),
                     state: WorkspaceTaskConfirmationState::Waiting,
                 };
+                service.freeze_confirmation(
+                    &run.cluster_id,
+                    requirement
+                        .binding
+                        .as_ref()
+                        .ok_or("native task binding absent")?,
+                    confirmation.asking,
+                    &requirement,
+                )?;
                 Err(self.ask_native_confirmation(run, confirmation).await)
             }
             Err(error) => Err(error),
@@ -180,19 +236,27 @@ impl CapnpBrokerState {
         run: &PendingTaskRun,
         held: WorkspaceTaskConfirmation,
         arguments: &serde_json::Map<String, serde_json::Value>,
-        prefixed: bool,
+        (prefixed, revision): (bool, u64),
     ) -> Result<NativeGate, String> {
         match &held.state {
             WorkspaceTaskConfirmationState::Waiting => Err(awaiting(&held.draft)),
             WorkspaceTaskConfirmationState::Confirmed { edits, .. } => {
                 let edited = held.draft.apply_edits(arguments, edits)?;
                 let edited = serde_json::Value::Object(edited).to_string();
+                let mut binding = run.native.clone().ok_or("native task binding absent")?;
+                binding.revision = revision;
+                let invocation = self
+                    .native_tasks(&run.cluster_id)
+                    .ok_or("native task owner unavailable")?
+                    .confirmation_invocation(&run.cluster_id, &binding, held.asking)?;
                 Ok(NativeGate::Confirmed {
+                    invocation,
                     argument: if prefixed {
                         format!("{}{edited}", tilo_actions::ARGUMENTS_JSON_PREFIX)
                     } else {
                         edited
                     },
+                    reference: held.asking.to_string(),
                     confirmation: held.id,
                 })
             }

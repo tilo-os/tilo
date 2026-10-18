@@ -147,6 +147,7 @@ pub mod resource;
 pub mod schema;
 pub mod selection;
 pub mod surface;
+pub mod task_messaging;
 pub mod task_step;
 
 pub use action::{

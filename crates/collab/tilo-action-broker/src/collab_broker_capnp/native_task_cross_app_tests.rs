@@ -1,4 +1,4 @@
-//! One deterministic semantic acceptance journey, not a model or screenshot test.
+//! One deterministic semantic acceptance journey with a protected HTTP context turn.
 //! Uses the enrolled native owner, delegated Capnp task executor and real Writer
 //! and Settings resource vocabularies/action door. The small worker adapter below
 //! replaces window/process mounting, not the broker, policy or action executor.
@@ -213,7 +213,10 @@ async fn plan_step<R: Resource>(
 async fn native_cross_app_approval_steering_stop_and_grants() {
     tokio::task::LocalSet::new()
         .run_until(Box::pin(async {
-            let f = Fixture::new();
+            let f = Fixture::with_model_launcher(None, None, true);
+            let listener = Arc::new(tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap());
+            let _env =
+                model_owner::configure(&f, format!("http://{}/v1", listener.local_addr().unwrap()));
             let mut writer =
                 Worker::<Document>::mount(&f, 210, "so.tilo.word-processor", "append-paragraph")
                     .await;
@@ -224,10 +227,11 @@ async fn native_cross_app_approval_steering_stop_and_grants() {
                 tilo_resource::FIELD_EDIT,
             )
             .await;
-            let agent = f.channel(100, true);
+            let (_connection, agent) = model_owner::legacy::channel(&f, 100).await;
             let mut run = approve_journey(&f, &agent, &writer, &settings).await;
             // Deterministic planner: one Writer operation, a person direction, then
-            // a Settings edit on the revised lease. No model credentials or server.
+            // a Settings edit on the revised lease. Steering uses the protected
+            // MODEL path and a successful local HTTP response, not a runner receipt.
             let first_args = serde_json::json!({
                 "text": "Release checklist: preserve compatibility examples."
             })
@@ -247,7 +251,15 @@ async fn native_cross_app_approval_steering_stop_and_grants() {
                 &edit.arguments,
             )
             .await;
-            steering_journey(&f, &agent, &mut run, &mut settings, &edit.arguments).await;
+            steering_journey(
+                &f,
+                &agent,
+                &mut run,
+                &mut settings,
+                &edit.arguments,
+                listener,
+            )
+            .await;
             assert_reopened_resources(&writer, &settings);
             stop_journey(
                 &f,
@@ -340,6 +352,7 @@ async fn steering_journey(
     run: &mut runtime_collab::TaskRunEnvelope,
     settings: &mut Worker<DesktopControls>,
     settings_args: &serde_json::Map<String, serde_json::Value>,
+    listener: Arc<tokio::net::TcpListener>,
 ) {
     let direction = "Keep the compatibility checklist; enable Vim desktop controls for review.";
     f.person_command(WorkspaceTaskCommand::DirectionForRun {
@@ -350,7 +363,22 @@ async fn steering_journey(
     })
     .unwrap();
     let saved = f.native.owner.workspace_task_snapshot(room()).unwrap();
-    assert_eq!(saved.controls[&f.task].directions[0].text, direction);
+    assert!(saved.controls[&f.task].directions[0].text.is_empty());
+    let private = f
+        .native
+        .owner
+        .workspace_task_private_instructions(
+            room(),
+            &f.task,
+            1,
+            &WorkspaceTaskAuthority::Person {
+                caller: f.native.certificate.clone(),
+            },
+            std::time::SystemTime::now(),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(private.directions[&1], direction);
     assert!(
         saved.controls[&f.task].directions[0].applied.is_none(),
         "Saved must not mean Applied"
@@ -367,6 +395,18 @@ async fn steering_journey(
         "saved direction fences the old plan"
     );
     settings.assert_no_delivery().await;
+    let (base, _) = runtime_collab::native_task_revision(&run.lease).unwrap();
+    run.lease = format!("{base}:1");
+    assert!(
+        report(
+            agent,
+            run,
+            runtime_collab::TaskRunUpdate::DirectionsApplied { revision: 1 }
+        )
+        .await
+        .is_err()
+    );
+    model_owner::legacy::successful_context(agent, run, listener).await;
     report(
         agent,
         run,
@@ -390,7 +430,6 @@ async fn steering_journey(
         1
     );
     let original_id = run.run_id;
-    run.lease = format!("{}:1", run.lease.rsplit_once(':').unwrap().0);
     let accepted = plan_step(agent, run, settings, second, settings_args)
         .await
         .unwrap();

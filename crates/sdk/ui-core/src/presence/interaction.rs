@@ -138,6 +138,7 @@ impl PresenceCtx {
         interaction.validate()?;
         if let Some(current) = self.interactions.get(&interaction.invocation) {
             let same_identity = current.interaction.actor == interaction.actor
+                && current.interaction.paint_origin == interaction.paint_origin
                 && current.interaction.action == interaction.action
                 && current.interaction.resource == interaction.resource
                 && current.interaction.group == interaction.group;
@@ -983,6 +984,7 @@ mod tests {
         phase: InteractionPhase,
     ) -> SemanticInteraction {
         SemanticInteraction {
+            paint_origin: None,
             version: INTERACTION_VERSION,
             invocation: InvocationId(Uuid::from_u128(invocation)),
             sequence,

@@ -1041,6 +1041,7 @@ impl ShellDriver {
             },
             ui::collaboration::PresencePayload::Interaction(Box::new(
                 tilo_actions::SemanticInteraction {
+                    paint_origin: None,
                     version: tilo_actions::INTERACTION_VERSION,
                     invocation: tilo_actions::InvocationId::new(),
                     sequence: 1,
@@ -1338,6 +1339,7 @@ impl ShellDriver {
                 },
                 ui::collaboration::PresencePayload::Interaction(Box::new(
                     tilo_actions::SemanticInteraction {
+                        paint_origin: None,
                         version: tilo_actions::INTERACTION_VERSION,
                         invocation: tilo_actions::InvocationId::new(),
                         sequence: 1,
@@ -1377,6 +1379,7 @@ impl ShellDriver {
             },
             ui::collaboration::PresencePayload::Interaction(Box::new(
                 tilo_actions::SemanticInteraction {
+                    paint_origin: None,
                     version: tilo_actions::INTERACTION_VERSION,
                     invocation: tilo_actions::InvocationId::new(),
                     sequence: 1,
@@ -1621,6 +1624,14 @@ impl ShellDriver {
                     .map_err(str::to_owned)?;
                 #[cfg(not(debug_assertions))]
                 return Err("agent composer shots require a debug build".into());
+            }
+            "task-cursor-ready" | "task-cursor-ended" | "task-cursor-edge" => {
+                #[cfg(debug_assertions)]
+                self.host_mut()
+                    .seed_task_cursor_for_shots(name)
+                    .map_err(str::to_owned)?;
+                #[cfg(not(debug_assertions))]
+                return Err("task cursor shots require a debug build".into());
             }
             "room-activity" => self.scene_room_activity(),
             "room-activity-named" => self.scene_room_activity_named(),
@@ -2925,6 +2936,9 @@ impl ShellDriver {
         "agent-composer-typed",
         "agent-composer-answer",
         "agent-composer-working",
+        "task-cursor-ready",
+        "task-cursor-ended",
+        "task-cursor-edge",
         "notifications",
         "notifications-one",
         "notifications-dnd",

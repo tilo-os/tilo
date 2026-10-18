@@ -26,6 +26,8 @@ tilo-relay-client = { path = "../tilo-relay-client" }
 # Delivery v2/v3, private actions and the workspace join contract.
 tilo-delivery-protocol = { path = "../tilo-delivery-protocol" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+# Shared typed private task mailbox and report payloads.
+tilo-actions = { path = "../../collab/actions" }
 # The join contract and governed member rows the room and join clients carry.
 tilo-workspace-join = { path = "../../collab/workspace-join" }
 # Co-edit bodies are neighbour messages; presence slots classify them.

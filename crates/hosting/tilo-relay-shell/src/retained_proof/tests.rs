@@ -112,6 +112,89 @@ fn signed(
 }
 
 #[test]
+fn signed_replacement_requires_exact_predecessor_or_independent_current_pin() {
+    let (key, authority, mut peer, now) = fixture();
+    let bootstrap = peer.durable_bootstrap_messages(&key, now, 1).unwrap();
+    let prior = room_proof(&authority, &bootstrap[0], RoomInput::Checkpoint, None);
+    let (_, baseline) = peer
+        .extract_native_task_private_baseline(&key, now, &Default::default())
+        .unwrap();
+    let frame = NeighbourMsg::SanitizedRoomBaseline {
+        room: ROOM.into(),
+        baseline: postcard::to_allocvec(&baseline).unwrap(),
+    };
+    let (channel, body) = encoded(&frame);
+    let source = key.verifying_key().to_bytes();
+    assert!(matches!(
+        verify_room(
+            &authority,
+            source,
+            channel,
+            &body,
+            RoomInput::Checkpoint,
+            None
+        ),
+        Err(ProofError::Unknown)
+    ));
+    let replacement = verify_room_replacement(&prior, source, channel, &body).unwrap();
+    assert!(
+        verify_room_replacement(&replacement, source, channel, &body).is_err(),
+        "a signed generation must not replay over itself"
+    );
+    let anchor = baseline.anchor();
+    assert!(verify_anchored_room_baseline(&authority, source, channel, &body, &anchor).is_ok());
+    let mut stale = anchor.clone();
+    stale.generation += 1;
+    assert!(verify_anchored_room_baseline(&authority, source, channel, &body, &stale).is_err());
+    assert!(verify_anchored_room_baseline(&authority, [9; 32], channel, &body, &anchor).is_err());
+    let mut trailing = body.clone();
+    trailing.push(0);
+    assert!(
+        verify_anchored_room_baseline(&authority, source, channel, &trailing, &anchor).is_err()
+    );
+
+    // An ordinary unanchored checkpoint cannot introduce replacement metadata.
+    let current = peer.durable_bootstrap_messages(&key, now, 2).unwrap();
+    let (channel, body) = encoded(&current[0]);
+    assert!(
+        verify_room(
+            &authority,
+            source,
+            channel,
+            &body,
+            RoomInput::Checkpoint,
+            None
+        )
+        .is_err()
+    );
+    assert!(
+        verify_room(
+            &authority,
+            source,
+            channel,
+            &body,
+            RoomInput::Checkpoint,
+            Some(&replacement),
+        )
+        .is_ok(),
+        "an independently verified baseline permits its anchored sync checkpoint"
+    );
+    let (channel, body) = encoded(&bootstrap[0]);
+    assert!(
+        verify_room(
+            &authority,
+            source,
+            channel,
+            &body,
+            RoomInput::Delta,
+            Some(&replacement),
+        )
+        .is_err(),
+        "ordinary sync must not resurrect a retired room root"
+    );
+}
+
+#[test]
 fn same_heads_new_receipt_is_exact_pair_and_old_signature_is_unpaired() {
     let (key, authority, mut peer, now) = fixture();
     let first = peer.durable_bootstrap_messages(&key, now, 1).unwrap();

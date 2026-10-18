@@ -4,6 +4,9 @@
 
 use super::*;
 
+mod frontier;
+mod inbox;
+
 /// A native workspace task's run (`native:` lease, a control frontier the
 /// cancellation poll answers with): its steps are native children, each
 /// re-asked by its stable id to be observed.
@@ -17,6 +20,7 @@ fn native_run_fixture(title: &str, world: World, turns: Vec<Vec<TurnEvent>>) -> 
         latest_revision: 0,
         directions: Vec::new(),
         has_more: false,
+        messages: Vec::new(),
     };
     let mut f = fixture(
         title,

@@ -5,7 +5,7 @@
 //! is no build step and no runtime file I/O — a `--shots` render and a unit test
 //! resolve the same strings a live session does.
 
-ui::embedded_catalog!(pub fn, ["en-US"]);
+ui::embedded_catalog!(pub fn, ["en-US", "de-DE"]);
 
 /// Load the catalogue on this thread if it is not loaded yet.
 pub fn ensure() {
@@ -23,6 +23,25 @@ mod tests {
     use super::*;
 
     const APP_KEYS: &[&str] = &[
+        "chat-task-worker-setup",
+        "chat-task-worker-needed",
+        "chat-task-checking-setup",
+        "chat-agent-stop-unavailable",
+        "chat-task-kind",
+        "chat-task-no-compute",
+        "chat-task-save-goal",
+        "chat-task-saving-goal",
+        "chat-task-save-refused",
+        "chat-task-compute-profile",
+        "chat-task-message-context",
+        "chat-task-message-accepted",
+        "chat-task-message-delivered",
+        "chat-task-output-created",
+        "chat-task-output-updated",
+        "chat-task-output-viewed",
+        "chat-task-output-returned",
+        "chat-task-output-count",
+        "chat-task-output-unavailable",
         "chat-voice-unavailable",
         "chat-attachment-import-unavailable",
         "chat-mention-agent-tag",

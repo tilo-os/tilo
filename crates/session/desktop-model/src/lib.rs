@@ -53,8 +53,9 @@ pub use task::{
     WorkspaceTaskConfirmation, WorkspaceTaskConfirmationAnswer, WorkspaceTaskConfirmationState,
     WorkspaceTaskControl, WorkspaceTaskDirection, WorkspaceTaskDirectionApplied,
     WorkspaceTaskExecution, WorkspaceTaskExecutionAuthority, WorkspaceTaskExecutionPhase,
-    WorkspaceTaskMutationReceipt, WorkspaceTaskMutationResult, WorkspaceTaskResource,
-    WorkspaceTaskRoute, WorkspaceTaskStatus,
+    WorkspaceTaskFilter, WorkspaceTaskMetadata, WorkspaceTaskMutationReceipt,
+    WorkspaceTaskMutationResult, WorkspaceTaskProgress, WorkspaceTaskResource, WorkspaceTaskRoute,
+    WorkspaceTaskStatus,
 };
 pub use topology::{DropTarget, GroupShape, RemovedTab, TabMove};
 pub use tree::{DesktopTree, STATE_SCHEMA_VERSION};

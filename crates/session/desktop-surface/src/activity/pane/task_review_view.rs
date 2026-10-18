@@ -491,6 +491,7 @@ impl RoomActivityPane {
     fn review_evidence(
         &self,
         snapshot: &TaskReviewSnapshot,
+        task_id: &str,
         control: &tilo_desktop_model::WorkspaceTaskControl,
     ) -> Vec<String> {
         let now = self.now();
@@ -498,6 +499,9 @@ impl RoomActivityPane {
         let mut lines = task_run_evidence(control, now, |id| {
             (id != local).then(|| self.person_label(id))
         });
+        if control.run_epoch > 0 {
+            lines.insert(0, admission_label(snapshot, task_id, control.run_epoch));
+        }
         if let Some(direction) = control.directions.last() {
             lines.push(t_args(
                 "activity-task-review-direction",
@@ -669,7 +673,7 @@ impl RoomActivityPane {
         if confirmation.is_none()
             && let Some(control) = snapshot.controls.get(&task.id)
         {
-            for line in self.review_evidence(snapshot, control) {
+            for line in self.review_evidence(snapshot, &task.id, control) {
                 draw_review_line(paint, (&line, dim), &caption, width, x, &mut y);
             }
         }
@@ -757,6 +761,21 @@ fn draw_review_line(
         style,
     );
     *y += f64::from(height) + f64::from(paint.theme.tokens.spacing.s2);
+}
+
+fn admission_label(snapshot: &TaskReviewSnapshot, task: &str, epoch: u64) -> String {
+    use crate::activity::TaskAdmissionState;
+    let state = snapshot
+        .admissions
+        .get(task)
+        .filter(|view| view.run_epoch == epoch)
+        .map_or(TaskAdmissionState::Unknown, |view| view.state);
+    t(match state {
+        TaskAdmissionState::Open => "activity-task-admission-open",
+        TaskAdmissionState::Stopping => "activity-task-admission-stopping",
+        TaskAdmissionState::Stopped => "activity-task-admission-stopped",
+        TaskAdmissionState::Unknown => "activity-task-admission-unknown",
+    })
 }
 
 /// Who is doing the task and where it stands, as one sentence.

@@ -203,6 +203,8 @@ pub enum Action {
         surface_id: u64,
     },
     SeedInferredStatus(&'static str),
+    /// Production task cursor widget with explicitly synthetic owner projection.
+    SeedTaskCursor(&'static str),
     /// Fill the active room with enough live participants to exercise the
     /// production People pager without weakening each row's action/intent UI.
     SeedCrowdedWorkspace,
@@ -751,6 +753,15 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
             driver.focus_first_room_activity_work_session_for_shots(),
             "scenario: the settled recap must render a focusable work session"
         ),
+        Action::SeedTaskCursor(phase) => {
+            #[cfg(debug_assertions)]
+            driver
+                .host_mut()
+                .seed_task_cursor_for_shots(phase)
+                .expect("task cursor fixture must mount its production widget");
+            #[cfg(not(debug_assertions))]
+            panic!("task cursor fixtures require a debug build: {phase}");
+        }
         Action::SeedAutomaticWorkSessions => driver.seed_automatic_work_sessions_for_shots(),
         Action::ExpandAutomaticWorkSession => assert!(
             driver.expand_automatic_work_session_for_shots(),
@@ -1926,6 +1937,33 @@ fn desk_widgets_scenario() -> Scenario {
 fn build_scenarios() -> Vec<Scenario> {
     vec![
         desk_widgets_scenario(),
+        Scenario {
+            name: "task_cursor_ready",
+            description: "Production task cursor controls with a synthetic live-run projection; not a delivery proof.",
+            actions: vec![
+                Action::SeedTaskCursor("task-cursor-ready"),
+                Action::Relayout,
+                Action::Snapshot("task-cursor-ready"),
+            ],
+        },
+        Scenario {
+            name: "task_cursor_ended",
+            description: "Historical task conversation with steering disabled and the private draft retained.",
+            actions: vec![
+                Action::SeedTaskCursor("task-cursor-ended"),
+                Action::Relayout,
+                Action::Snapshot("task-cursor-ended"),
+            ],
+        },
+        Scenario {
+            name: "task_cursor_edge",
+            description: "Production single-line task cursor bar confined to a viewport edge.",
+            actions: vec![
+                Action::SeedTaskCursor("task-cursor-edge"),
+                Action::Relayout,
+                Action::Snapshot("task-cursor-edge"),
+            ],
+        },
         Scenario {
             name: "personal_workspace_on_laptop",
             description: "The person's Research workspace as the laptop that made it shows it, before and after splitting off the outline.",

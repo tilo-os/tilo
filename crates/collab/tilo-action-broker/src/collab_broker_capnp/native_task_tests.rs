@@ -19,10 +19,22 @@ use tilo_peer_state::workspace_task::{
 
 #[path = "native_task_launch_tests.rs"]
 mod closed_app;
+#[path = "native_task_compute_tests.rs"]
+mod compute;
 #[path = "native_task_confirmation_tests.rs"]
 mod confirmation;
 #[path = "native_task_cross_app_tests.rs"]
 mod cross_app;
+#[path = "native_task_durability_tests.rs"]
+mod durability;
+#[path = "native_task_mailbox_tests.rs"]
+mod mailbox;
+#[path = "native_model_owner_tests.rs"]
+mod model_owner;
+#[path = "native_task_paint_tests.rs"]
+mod paint_origin;
+#[path = "native_task_control_tests.rs"]
+mod task_control;
 
 struct Native {
     owner: tilo_joined_room::NativeWorkspaceOwner,
@@ -31,7 +43,100 @@ struct Native {
     origin: PolicyOrigin,
     cached_projection: Mutex<Option<tilo_desktop_model::DesktopTree>>,
     capped_connection: std::sync::atomic::AtomicBool,
+    inbox_observed: tokio::sync::Notify,
     spent_grants: Mutex<Vec<tilo_action_policy::GrantId>>,
+    start_models: Mutex<Option<Weak<model_owner::Models>>>,
+}
+impl Native {
+    fn private_authority(
+        &self,
+        requested: &str,
+        binding: &NativeTaskBinding,
+    ) -> Result<WorkspaceTaskAuthority, String> {
+        if !OwnerCommitService::requires_room(self, requested) {
+            return Err("foreign task room".into());
+        }
+        self.owner.with_current(room(), |view| {
+            if view.device() != &self.certificate
+                || view.host().unwrap_or_else(|| view.governor()) != &self.certificate
+            {
+                return Err("private task reader lacks local execution host custody".into());
+            }
+            let snapshot = tilo_peer_state::workspace_task::snapshot(
+                view.peer()
+                    .admitted_room()
+                    .ok_or("native task document unavailable")?,
+            )?;
+            let run = snapshot
+                .controls
+                .get(&binding.task_id)
+                .and_then(|control| control.active_run.as_ref())
+                .ok_or("private task run ended")?;
+            let approval = run
+                .approval
+                .as_ref()
+                .ok_or("private task run approval absent")?;
+            if run.epoch != binding.epoch
+                || run.agent_id != binding.agent_id
+                || binding.starter.as_deref() != Some(approval.person.as_str())
+            {
+                return Err("private task run binding changed".into());
+            }
+            view.peer().workspace().check_task_execution_actor(
+                &binding.agent_id,
+                Some(approval),
+                std::time::SystemTime::now(),
+            )?;
+            Ok(WorkspaceTaskAuthority::Agent {
+                attestor: self.certificate.clone(),
+                agent_id: binding.agent_id.clone(),
+            })
+        })
+    }
+
+    fn admit_custodied<T>(
+        &self,
+        requested: &str,
+        binding: &NativeTaskBinding,
+        requirement: &NativeTaskActionRequirement,
+        dispatch: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        use tilo_joined_room::task_admission::NativeInvocationBinding;
+        if !OwnerCommitService::requires_room(self, requested) {
+            return Err("foreign task room".into());
+        }
+        let exact = requirement
+            .invocation
+            .as_ref()
+            .ok_or("native exact invocation absent")?;
+        let invocation = NativeInvocationBinding {
+            room: room(),
+            task: binding.task_id.clone(),
+            agent: binding.agent_id.clone(),
+            epoch: binding.epoch,
+            revision: binding.revision,
+            invocation: exact.id,
+            request: exact.request,
+            host: self.certificate.device_public_key,
+            app: requirement.app.clone(),
+            provider: exact.provider.clone(),
+            resource: requirement.resource.clone(),
+            action: requirement.action.clone(),
+            arguments_digest: exact.arguments_digest,
+            contract_digest: exact.contract_digest,
+            ceiling_digest: requirement.ceiling_digest()?,
+            private_run_digest: exact.private_run_digest,
+        };
+        self.owner
+            .admit_local_native_invocation(
+                invocation,
+                &self.certificate,
+                &self.key,
+                |view, exact, now| view.check_native_task_action(requirement, exact, now),
+                dispatch,
+            )
+            .map(|(result, _)| result)
+    }
 }
 fn room() -> tilo_desktop_model::RoomId {
     tilo_desktop_model::RoomId::parse(tilo_joined_room::testing::ROOM).unwrap()
@@ -122,19 +227,29 @@ impl OwnerCommitService for Native {
         let key = self.key.clone();
         let cert = self.certificate.clone();
         Box::pin(async move {
-            // A real owner commits asynchronously: let other requests run
-            // first, as they do while a commit is on its way.
-            tokio::task::yield_now().await;
-            let receipt = match request.operation {
-                CommitOperation::WorkspaceTaskCommand { .. } => owner
-                    .commit_workspace_task_command(request.clone(), std::time::SystemTime::now()),
-                CommitOperation::EffectReceipt { .. } => {
-                    owner.commit_effect_receipt(&request, &cert, &key, std::time::SystemTime::now())
-                }
-                _ => Err("unsupported fixture owner operation".into()),
-            }?;
-            receipt.validate_for(&request)?;
-            Ok(receipt)
+            // Owner writes may wait behind another transaction; keep the
+            // broker's LocalSet available while the durable writer is held.
+            tokio::task::spawn_blocking(move || {
+                let receipt = match request.operation {
+                    CommitOperation::WorkspaceTaskCommand { .. } => owner
+                        .commit_workspace_task_command_with_key(
+                            request.clone(),
+                            &key,
+                            std::time::SystemTime::now(),
+                        ),
+                    CommitOperation::EffectReceipt { .. } => owner.commit_effect_receipt(
+                        &request,
+                        &cert,
+                        &key,
+                        std::time::SystemTime::now(),
+                    ),
+                    _ => Err("unsupported fixture owner operation".into()),
+                }?;
+                receipt.validate_for(&request)?;
+                Ok(receipt)
+            })
+            .await
+            .map_err(|_| "fixture native owner commit interrupted".to_owned())?
         })
     }
 }
@@ -162,6 +277,129 @@ impl crate::services::AppActionGrants for Native {
 }
 
 impl WorkspaceMemberships for Native {
+    fn task_private_instructions(
+        &self,
+        requested: &str,
+        task: &str,
+        epoch: u64,
+        caller: &tilo_user_identity::DeviceCert,
+    ) -> Result<Option<crate::services::NativeTaskPrivateInstructions>, String> {
+        if !OwnerCommitService::requires_room(self, requested) {
+            return Err("foreign task room".into());
+        }
+        self.owner
+            .workspace_task_private_instructions(
+                room(),
+                task,
+                epoch,
+                &WorkspaceTaskAuthority::Person {
+                    caller: caller.clone(),
+                },
+                std::time::SystemTime::now(),
+            )
+            .map(|text| {
+                text.map(|text| crate::services::NativeTaskPrivateInstructions {
+                    instruction: text.instruction,
+                    agent_request: text.agent_request,
+                    directions: text.directions,
+                })
+            })
+    }
+
+    fn task_messages(
+        &self,
+        requested: &str,
+        task: &str,
+        epoch: u64,
+        caller: &tilo_user_identity::DeviceCert,
+    ) -> Result<Vec<tilo_actions::task_messaging::TaskMessage>, String> {
+        if !OwnerCommitService::requires_room(self, requested) {
+            return Err("foreign task room".into());
+        }
+        self.owner.task_messages(
+            room(),
+            task,
+            epoch,
+            &WorkspaceTaskAuthority::Person {
+                caller: caller.clone(),
+            },
+            false,
+        )
+    }
+
+    fn task_outputs(
+        &self,
+        requested: &str,
+        task: &str,
+        epoch: u64,
+        caller: &tilo_user_identity::DeviceCert,
+    ) -> Result<Vec<tilo_actions::task_messaging::TaskOutputRef>, String> {
+        if !OwnerCommitService::requires_room(self, requested) {
+            return Err("foreign task room".into());
+        }
+        self.owner.task_outputs(
+            room(),
+            task,
+            epoch,
+            &WorkspaceTaskAuthority::Person {
+                caller: caller.clone(),
+            },
+        )
+    }
+
+    fn task_report_transcript(
+        &self,
+        requested: &str,
+        task: &str,
+        epoch: u64,
+        caller: &tilo_user_identity::DeviceCert,
+    ) -> Result<Vec<tilo_actions::task_messaging::TaskReport>, String> {
+        use tilo_actions::task_messaging::{TaskReport, TaskReportKind as K, TaskReportRole};
+        use tilo_joined_room::{NativePrivateTaskReportKind as N, NativePrivateTaskReportRole};
+        if !OwnerCommitService::requires_room(self, requested) {
+            return Err("foreign task room".into());
+        }
+        self.owner
+            .task_report_transcript(
+                room(),
+                task,
+                epoch,
+                &WorkspaceTaskAuthority::Person {
+                    caller: caller.clone(),
+                },
+            )?
+            .into_iter()
+            .map(|report| {
+                let report = TaskReport {
+                    invocation: report.invocation,
+                    source_device: report.source_device,
+                    role: match report.role {
+                        NativePrivateTaskReportRole::Assistant => TaskReportRole::Assistant,
+                    },
+                    accepted_at_unix_ns: report.accepted_at_unix_ns,
+                    sequence: report.sequence,
+                    task_run: report.task_run,
+                    actor: report.actor,
+                    kind: match report.kind {
+                        N::Presentation => K::Presentation,
+                        N::Progress => K::Progress,
+                        N::Finish => K::Finish,
+                        N::Failure => K::Failure,
+                    },
+                    body: report.body,
+                    presentation: report.presentation,
+                };
+                report.validate()?;
+                Ok(report)
+            })
+            .collect()
+    }
+    fn prepare_task_start(
+        &self,
+        request: OwnerCommitRequest,
+    ) -> Result<Box<dyn crate::services::PendingNativeTaskStart>, String> {
+        compute::prepare_start(self, request)
+    }
     fn requires_room(&self, requested: &str) -> bool {
         OwnerCommitService::requires_room(self, requested)
     }
@@ -179,6 +417,23 @@ impl WorkspaceMemberships for Native {
     }
 }
 impl WorkspaceTaskExecution for Native {
+    fn ensure_model_run_open(
+        &self,
+        requested: &str,
+        binding: &NativeTaskBinding,
+    ) -> Result<(), String> {
+        if requested != room().to_string() {
+            return Err("foreign MODEL room".into());
+        }
+        if self
+            .owner
+            .native_task_admission_state(room(), &binding.task_id, binding.epoch)?
+            != tilo_joined_room::task_admission::NativeTaskAdmissionState::Open
+        {
+            return Err("native MODEL admission is stopped".into());
+        }
+        Ok(())
+    }
     fn requires_room(&self, requested: &str) -> bool {
         OwnerCommitService::requires_room(self, requested)
     }
@@ -206,6 +461,200 @@ impl WorkspaceTaskExecution for Native {
             )
         })
     }
+    fn private_instructions(
+        &self,
+        requested: &str,
+        binding: &NativeTaskBinding,
+    ) -> Result<Option<crate::services::NativeTaskPrivateInstructions>, String> {
+        let authority = self.private_authority(requested, binding)?;
+        self.owner
+            .workspace_task_private_instructions(
+                room(),
+                &binding.task_id,
+                binding.epoch,
+                &authority,
+                std::time::SystemTime::now(),
+            )
+            .map(|text| {
+                text.map(|text| crate::services::NativeTaskPrivateInstructions {
+                    instruction: text.instruction,
+                    agent_request: text.agent_request,
+                    directions: text.directions,
+                })
+            })
+    }
+
+    fn messages(
+        &self,
+        requested: &str,
+        binding: &NativeTaskBinding,
+    ) -> Result<Vec<tilo_actions::task_messaging::TaskMessage>, String> {
+        let authority = self.private_authority(requested, binding)?;
+        self.owner
+            .task_messages(room(), &binding.task_id, binding.epoch, &authority, true)
+    }
+
+    fn message_changes(
+        &self,
+        requested: &str,
+    ) -> Result<Option<tokio::sync::watch::Receiver<()>>, String> {
+        if !OwnerCommitService::requires_room(self, requested) {
+            return Err("foreign task room".into());
+        }
+        Ok(Some(self.owner.workspace_task_changes()))
+    }
+
+    fn poll_messages(
+        &self,
+        requested: &str,
+        binding: &NativeTaskBinding,
+        requirement: &NativeTaskActionRequirement,
+    ) -> crate::services::NativeTaskInboxFuture<'_> {
+        let result = (|| {
+            self.authorize_action(requested, &binding.agent_id, requirement)?;
+            let authority = self.private_authority(requested, binding)?;
+            self.owner
+                .task_messages(room(), &binding.task_id, binding.epoch, &authority, true)
+        })();
+        self.inbox_observed.notify_one();
+        Box::pin(async move { result })
+    }
+
+    fn acknowledge_messages(
+        &self,
+        requested: &str,
+        binding: &NativeTaskBinding,
+        ids: &[String],
+    ) -> Result<(), String> {
+        let authority = self.private_authority(requested, binding)?;
+        self.owner.acknowledge_task_messages(
+            room(),
+            &binding.task_id,
+            binding.epoch,
+            &authority,
+            ids,
+        )
+    }
+
+    fn send_message(
+        &self,
+        requested: &str,
+        binding: &NativeTaskBinding,
+        recipient: &str,
+        invocation: uuid::Uuid,
+        send: tilo_actions::task_messaging::TaskMessageSend,
+        requirement: &NativeTaskActionRequirement,
+    ) -> Result<tilo_actions::task_messaging::TaskMessage, String> {
+        self.private_authority(requested, binding)?;
+        requirement.check_task_message_payload(recipient, invocation, &send)?;
+        if requirement.binding.as_ref().is_none_or(|bound| {
+            bound.task_id != binding.task_id
+                || bound.agent_id != binding.agent_id
+                || bound.epoch != binding.epoch
+                || bound.revision != binding.revision
+                || bound.starter != binding.starter
+        }) {
+            return Err("task mailbox capability binding mismatch".into());
+        }
+        self.owner.send_task_message(
+            room(),
+            tilo_actions::task_messaging::TaskRunAddress {
+                task_id: binding.task_id.clone(),
+                run_epoch: binding.epoch,
+                agent_id: binding.agent_id.clone(),
+            },
+            recipient,
+            invocation,
+            send,
+            |view| {
+                let exact = view.retained_native_invocation(invocation)?;
+                view.check_retained_native_task_action(
+                    requirement,
+                    exact,
+                    std::time::SystemTime::now(),
+                )
+            },
+        )
+    }
+
+    fn confirmation_invocation(
+        &self,
+        requested: &str,
+        binding: &NativeTaskBinding,
+        asking: uuid::Uuid,
+    ) -> Result<uuid::Uuid, String> {
+        if !OwnerCommitService::requires_room(self, requested) {
+            return Err("foreign task room".into());
+        }
+        let authority = WorkspaceTaskAuthority::Agent {
+            attestor: self.certificate.clone(),
+            agent_id: binding.agent_id.clone(),
+        };
+        self.owner.workspace_task_confirmation_invocation(
+            room(),
+            binding,
+            asking,
+            &authority,
+            std::time::SystemTime::now(),
+        )
+    }
+
+    fn private_run_digest(
+        &self,
+        requested: &str,
+        binding: &NativeTaskBinding,
+    ) -> Result<[u8; 32], String> {
+        let authority = self.private_authority(requested, binding)?;
+        self.owner.workspace_task_private_run_digest(
+            room(),
+            binding,
+            &authority,
+            std::time::SystemTime::now(),
+        )
+    }
+
+    fn private_confirmation(
+        &self,
+        requested: &str,
+        binding: &NativeTaskBinding,
+    ) -> Result<Option<tilo_desktop_model::WorkspaceTaskConfirmation>, String> {
+        let authority = self.private_authority(requested, binding)?;
+        self.owner.workspace_task_private_confirmation(
+            room(),
+            &binding.task_id,
+            binding.epoch,
+            &authority,
+            std::time::SystemTime::now(),
+        )
+    }
+
+    fn freeze_confirmation(
+        &self,
+        requested: &str,
+        binding: &NativeTaskBinding,
+        asking: uuid::Uuid,
+        requirement: &NativeTaskActionRequirement,
+    ) -> Result<(), String> {
+        self.private_authority(requested, binding)?;
+        if requirement.binding.as_ref().is_none_or(|current| {
+            current.task_id != binding.task_id
+                || current.agent_id != binding.agent_id
+                || current.epoch != binding.epoch
+                || current.revision != binding.revision
+                || current.starter != binding.starter
+        }) {
+            return Err("native confirmation run binding differs".into());
+        }
+        self.owner.freeze_native_confirmation(
+            room(),
+            asking,
+            requirement,
+            &self.certificate,
+            &self.key,
+            std::time::SystemTime::now(),
+        )
+    }
+
     fn report(
         &self,
         requested: &str,
@@ -247,8 +696,73 @@ impl WorkspaceTaskExecution for Native {
             view.peer()
                 .workspace()
                 .check_task_execution_actor(agent, None, now)?;
-            requirement.check(view.peer(), requested, agent, now)
+            view.check_native_task_preflight(requirement, agent, now)
         })
+    }
+
+    fn record_outputs(
+        &self,
+        requested: &str,
+        binding: &NativeTaskBinding,
+        outputs: Vec<tilo_actions::task_messaging::TaskOutputRef>,
+        requirement: &NativeTaskActionRequirement,
+    ) -> Result<(), String> {
+        self.private_authority(requested, binding)?;
+        if requirement.binding.as_ref().is_none_or(|bound| {
+            bound.task_id != binding.task_id
+                || bound.agent_id != binding.agent_id
+                || bound.epoch != binding.epoch
+                || bound.revision != binding.revision
+                || bound.starter != binding.starter
+        }) {
+            return Err("task output source capability binding mismatch".into());
+        }
+        let invocation = requirement
+            .invocation
+            .as_ref()
+            .ok_or("task output invocation absent")?
+            .id;
+        let address = tilo_actions::task_messaging::TaskRunAddress {
+            task_id: binding.task_id.clone(),
+            run_epoch: binding.epoch,
+            agent_id: binding.agent_id.clone(),
+        };
+        for output in &outputs {
+            output.validate()?;
+            if output.task_run != address
+                || uuid::Uuid::parse_str(&output.invocation).ok() != Some(invocation)
+            {
+                return Err("task output lacks original source custody".into());
+            }
+        }
+        self.owner
+            .record_task_outputs(room(), &address, outputs, |view| {
+                let exact = view.retained_native_invocation(invocation)?;
+                view.check_retained_native_task_action(
+                    requirement,
+                    exact,
+                    std::time::SystemTime::now(),
+                )
+            })
+    }
+
+    fn authorize_retained_action(
+        &self,
+        requested: &str,
+        agent: &str,
+        requirement: &NativeTaskActionRequirement,
+        invocation: uuid::Uuid,
+    ) -> Result<(), String> {
+        if !OwnerCommitService::requires_room(self, requested) {
+            return Err("foreign task room".into());
+        }
+        self.owner
+            .authorize_retained_native_invocation(room(), invocation, |view, exact, now| {
+                view.peer()
+                    .workspace()
+                    .check_task_execution_actor(agent, None, now)?;
+                view.check_retained_native_task_action(requirement, exact, now)
+            })
     }
 
     fn admit_host_launch(
@@ -261,17 +775,76 @@ impl WorkspaceTaskExecution for Native {
         if !OwnerCommitService::requires_room(self, requested) {
             return Err("foreign task room".into());
         }
-        self.owner.with_task_action_admission(
-            room(),
-            &binding.task_id,
-            &binding.agent_id,
-            binding.epoch,
-            binding.revision,
-            || {
-                self.authorize_action(requested, &binding.agent_id, requirement)?;
-                launch()
-            },
-        )
+        self.admit_custodied(requested, binding, requirement, launch)
+    }
+
+    fn prepare_admission(
+        &self,
+        requested: String,
+        binding: NativeTaskBinding,
+        requirement: NativeTaskActionRequirement,
+        caller: crate::services::NativeTaskAdmissionCaller,
+    ) -> crate::services::NativeTaskAdmissionFuture {
+        let owner = self.owner.clone();
+        let certificate = self.certificate.clone();
+        let key = self.key.clone();
+        let (mut transfer, ready) = crate::services::NativeTaskAdmissionTransfer::channel();
+        tokio::task::spawn_blocking(move || {
+            let result = (|| {
+                use tilo_joined_room::task_admission::NativeInvocationBinding;
+                if requested != room().to_string() {
+                    return Err("foreign task room".into());
+                }
+                let exact = requirement
+                    .invocation
+                    .as_ref()
+                    .ok_or("native exact invocation absent")?;
+                let invocation = NativeInvocationBinding {
+                    room: room(),
+                    task: binding.task_id.clone(),
+                    agent: binding.agent_id.clone(),
+                    epoch: binding.epoch,
+                    revision: binding.revision,
+                    invocation: exact.id,
+                    request: exact.request,
+                    host: certificate.device_public_key,
+                    app: requirement.app.clone(),
+                    provider: exact.provider.clone(),
+                    resource: requirement.resource.clone(),
+                    action: requirement.action.clone(),
+                    arguments_digest: exact.arguments_digest,
+                    contract_digest: exact.contract_digest,
+                    ceiling_digest: requirement.ceiling_digest()?,
+                    private_run_digest: exact.private_run_digest,
+                };
+                let checked = std::cell::RefCell::new(None);
+                owner
+                    .admit_local_native_invocation(
+                        invocation,
+                        &certificate,
+                        &key,
+                        |view, exact, now| {
+                            caller.check(view, &requirement, now)?;
+                            view.check_native_task_action(&requirement, exact, now)?;
+                            *checked.borrow_mut() = Some((view.clone(), exact.clone()));
+                            Ok(())
+                        },
+                        || {
+                            let (view, exact) = checked
+                                .borrow_mut()
+                                .take()
+                                .ok_or("fixture guarded policy absent")?;
+                            let now = std::time::SystemTime::now();
+                            caller.check(&view, &requirement, now)?;
+                            view.check_native_task_action(&requirement, &exact, now)?;
+                            transfer.ready_and_wait()
+                        },
+                    )
+                    .map(|((), _)| ())
+            })();
+            transfer.finish(result);
+        });
+        ready
     }
 
     fn admit(
@@ -284,25 +857,17 @@ impl WorkspaceTaskExecution for Native {
         if !OwnerCommitService::requires_room(self, requested) {
             return Err("foreign task room".into());
         }
-        self.owner.with_task_action_admission(
-            room(),
-            &binding.task_id,
-            &binding.agent_id,
-            binding.epoch,
-            binding.revision,
-            || {
-                self.authorize_action(requested, &binding.agent_id, requirement)?;
-                action()
-            },
-        )
+        self.admit_custodied(requested, binding, requirement, action)
     }
 }
 struct Fixture {
     directory: tempfile::TempDir,
+    writer: Arc<durability::TestOwnerWriter>,
     _fanout: Arc<FanoutState>,
     native: Arc<Native>,
     state: Arc<CapnpBrokerState>,
     directories: Rc<LocalActionDirectoryRegistry>,
+    models: Arc<model_owner::Models>,
     task: String,
 }
 impl Fixture {
@@ -310,8 +875,38 @@ impl Fixture {
         Self::with_launcher(None)
     }
     fn with_launcher(launcher: Option<Arc<dyn crate::services::LauncherServices>>) -> Self {
+        Self::with_executor_registry(launcher, None)
+    }
+    fn with_executor_registry(
+        launcher: Option<Arc<dyn crate::services::LauncherServices>>,
+        registry: Option<Arc<crate::services::NativeTaskExecutorRegistry>>,
+    ) -> Self {
+        Self::with_model_launcher(launcher, registry, false)
+    }
+    fn with_model_launcher(
+        launcher: Option<Arc<dyn crate::services::LauncherServices>>,
+        registry: Option<Arc<crate::services::NativeTaskExecutorRegistry>>,
+        protected_model: bool,
+    ) -> Self {
+        Self::with_task_execution(launcher, registry, protected_model, |native| native)
+    }
+    fn with_task_execution(
+        launcher: Option<Arc<dyn crate::services::LauncherServices>>,
+        registry: Option<Arc<crate::services::NativeTaskExecutorRegistry>>,
+        protected_model: bool,
+        execution: impl FnOnce(Arc<Native>) -> Arc<dyn WorkspaceTaskExecution>,
+    ) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let owner = tilo_joined_room::open_file(&directory.path().join("native.json")).unwrap();
+        let writer = Arc::new(durability::TestOwnerWriter::new(
+            tilo_joined_room::testing::store(&owner),
+        ));
+        let owner = tilo_joined_room::NativeWorkspaceOwner::restore(
+            writer.clone(),
+            tilo_joined_room::NativeAuthorityStorage::default(),
+            std::time::SystemTime::now(),
+        )
+        .unwrap();
         let key = SigningKey::from_bytes(&[92; 32]);
         let mut certificate = tilo_joined_room::testing::certificate(
             &SigningKey::from_bytes(&[91; 32]),
@@ -331,7 +926,9 @@ impl Fixture {
             origin: OwnerPolicyClock::new().unwrap().new_origin(),
             cached_projection: Mutex::new(None),
             capped_connection: std::sync::atomic::AtomicBool::new(false),
+            inbox_observed: tokio::sync::Notify::new(),
             spent_grants: Mutex::new(Vec::new()),
+            start_models: Mutex::new(None),
         });
         let membership = OwnerCommitRequest {
             room: room().to_string(),
@@ -358,7 +955,7 @@ impl Fixture {
         let queue = uuid::Uuid::new_v4();
         native
             .owner
-            .commit_workspace_task_command(
+            .commit_workspace_task_command_with_key(
                 OwnerCommitRequest {
                     room: room().to_string(),
                     operation: CommitOperation::WorkspaceTaskCommand {
@@ -374,6 +971,7 @@ impl Fixture {
                         },
                     },
                 },
+                &native.key,
                 std::time::SystemTime::now(),
             )
             .unwrap();
@@ -385,6 +983,17 @@ impl Fixture {
             journal_root: directory.path().join("journal"),
             certificate_authority: native.clone(),
         };
+        let models = Arc::new(model_owner::Models::new(native.clone()));
+        *native.start_models.lock().unwrap() = Some(Arc::downgrade(&models));
+        let launcher = if protected_model {
+            Some(model_owner::recorded_launch(&native))
+        } else {
+            launcher
+        };
+        let registry = registry.or_else(|| {
+            protected_model
+                .then(|| Arc::new(crate::services::NativeTaskExecutorRegistry::default()))
+        });
         let (state, rx) = CapnpBrokerState::new_configured(
             &fanout,
             Arc::new(Mutex::new(BrokerChannels::default())),
@@ -394,18 +1003,22 @@ impl Fixture {
             Some(&config),
             HostServices {
                 launcher,
+                native_task_executors: registry,
+                native_model: Some(models.clone()),
                 app_action_grants: Some(native.clone()),
-                task_execution: Some(native.clone()),
+                task_execution: Some(execution(native.clone())),
                 workspace_memberships: Some(native.clone()),
                 ..Default::default()
             },
         );
         Self {
             directory,
+            writer,
             _fanout: fanout,
             native,
             state,
             directories: Rc::new(LocalActionDirectoryRegistry::new(rx)),
+            models,
             task,
         }
     }
@@ -426,10 +1039,45 @@ impl Fixture {
                 .governs(uuid::Uuid::parse_str(&room().to_string()).unwrap(), None)
         );
     }
+    fn private_confirmation(&self) -> Option<tilo_desktop_model::WorkspaceTaskConfirmation> {
+        let snapshot = self.native.owner.workspace_task_snapshot(room()).unwrap();
+        let control = &snapshot.controls[&self.task];
+        self.native
+            .owner
+            .workspace_task_private_confirmation(
+                room(),
+                &self.task,
+                control.run_epoch,
+                &WorkspaceTaskAuthority::Person {
+                    caller: self.native.certificate.clone(),
+                },
+                std::time::SystemTime::now(),
+            )
+            .unwrap()
+    }
+
+    fn private_presentations(&self) -> Vec<tilo_actions::task_messaging::TaskReportPresentation> {
+        let snapshot = self.native.owner.workspace_task_snapshot(room()).unwrap();
+        self.native
+            .owner
+            .task_report_transcript(
+                room(),
+                &self.task,
+                snapshot.controls[&self.task].run_epoch,
+                &WorkspaceTaskAuthority::Person {
+                    caller: self.native.certificate.clone(),
+                },
+            )
+            .unwrap()
+            .into_iter()
+            .filter_map(|report| report.presentation)
+            .collect()
+    }
+
     fn person_command(&self, command: WorkspaceTaskCommand) -> Result<(), String> {
         self.native
             .owner
-            .commit_workspace_task_command(
+            .commit_workspace_task_command_with_key(
                 OwnerCommitRequest {
                     room: room().to_string(),
                     operation: CommitOperation::WorkspaceTaskCommand {
@@ -440,6 +1088,7 @@ impl Fixture {
                         command,
                     },
                 },
+                &self.native.key,
                 std::time::SystemTime::now(),
             )
             .map(|_| ())
@@ -1050,10 +1699,27 @@ async fn native_failure_preserves_pending_decisions_on_restart_and_old_run_canno
             let control = observed_control(&agent, &restarted).await;
             assert_eq!(control.run_epoch, 2);
             assert_eq!(control.applied_revision, 0);
+            assert_eq!(control.latest_revision, 1);
             assert_eq!(
                 control.directions[0].text,
                 "Ask me before changing the public API"
             );
+            // A freshly approved prepared lease can observe its desired
+            // frontier before reporting DirectionsApplied.
+            let mut prepared = restarted.clone();
+            let (base, _) = runtime_collab::native_task_revision(&restarted.lease).unwrap();
+            prepared.lease = format!("{base}:1");
+            let control = observed_control(&agent, &prepared).await;
+            assert_eq!(control.from_revision, 1);
+            assert_eq!(control.applied_revision, 0);
+            assert_eq!(control.latest_revision, 1);
+            assert!(control.directions.is_empty());
+            let mut unknown = prepared;
+            unknown.lease = format!("{base}:2");
+            let mut status = agent.task_run_cancelled_request();
+            status.get().set_run_id(unknown.run_id);
+            status.get().set_lease(&unknown.lease);
+            assert!(status.send().promise.await.is_err());
             drop(f);
         })
         .await;
@@ -1397,15 +2063,14 @@ async fn assert_authenticated_presentations_coalesce(
         Some(-100),
         "sender cannot mint the host's receipt time"
     );
-    assert_eq!(
+    assert!(
         snapshot.controls[&f.task]
             .presentations
             .values()
-            .next()
-            .unwrap()
-            .text,
-        "Reply 139"
+            .all(|value| value.text.is_empty())
     );
+    let private = f.private_presentations();
+    assert_eq!(private.last().unwrap().text, "Reply 139");
 }
 
 fn task_presentation(
@@ -1466,16 +2131,25 @@ async fn authenticated_presentations_coalesce_without_audit_or_receipt_exhaustio
             second.run = format!("{}:1", run.run_id);
             second.text = "é".repeat(runtime_collab::TaskPresentation::MAX_TEXT_BYTES);
             let second_id = second.run.clone();
+            assert!(report(&agent, &run, update(second.clone())).await.is_err());
+            second.text = "é".repeat(runtime_collab::TaskPresentation::MAX_TEXT_BYTES / 2);
+            second.detail = "Exact private detail".into();
+            let exact = second.clone();
             report(&agent, &run, update(second)).await.unwrap();
             let snapshot =
                 WorkspaceTaskExecution::snapshot(f.native.as_ref(), &room().to_string()).unwrap();
             let retained = &snapshot.controls[&f.task].presentations[&second_id];
-            assert_eq!(
-                retained.finish,
-                Some(runtime_collab::TaskPresentationFinish::Truncated)
-            );
-            assert!(retained.text.len() <= runtime_collab::TaskPresentation::MAX_TEXT_BYTES);
-            assert!(!retained.detail.is_empty());
+            assert_eq!(retained.finish, None);
+            assert!(retained.text.is_empty());
+            assert!(retained.detail.is_empty());
+            let private = f.private_presentations();
+            let retained = private
+                .iter()
+                .rev()
+                .find(|value| value.run == second_id)
+                .unwrap();
+            assert_eq!(retained.text, exact.text);
+            assert_eq!(retained.detail, exact.detail);
             for turn in 2..collab_types::task_presentation::MAX_TASK_PRESENTATIONS {
                 let mut next = presentation(0);
                 next.run = format!("{}:{turn}", run.run_id);
@@ -1526,7 +2200,10 @@ async fn authenticated_presentations_coalesce_without_audit_or_receipt_exhaustio
 async fn native_approved_run_reconnects_and_steering_stays_pending_until_applied() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let f = Fixture::new();
+            let f = Fixture::with_model_launcher(None, None, true);
+            let listener = Arc::new(tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap());
+            let _env =
+                model_owner::configure(&f, format!("http://{}/v1", listener.local_addr().unwrap()));
             assert!(
                 f.state
                     .dispatch_workspace_task(&room().to_string(), &f.task)
@@ -1543,7 +2220,7 @@ async fn native_approved_run_reconnects_and_steering_stays_pending_until_applied
                     .is_err()
             );
             f.approve();
-            let agent = f.channel(100, true);
+            let (connection, agent) = model_owner::legacy::channel(&f, 100).await;
             let run = delivered(&agent).await;
             assert_eq!(run.task_id, f.task);
             assert_eq!(run.execution_budget, None);
@@ -1576,21 +2253,48 @@ async fn native_approved_run_reconnects_and_steering_stays_pending_until_applied
                     )
                     .is_err()
             );
+            let mut prepared = run.clone();
+            let (base, _) = runtime_collab::native_task_revision(&run.lease).unwrap();
+            prepared.lease = format!("{base}:1");
+            assert!(
+                report(
+                    &agent,
+                    &prepared,
+                    runtime_collab::TaskRunUpdate::DirectionsApplied { revision: 1 }
+                )
+                .await
+                .is_err()
+            );
+            model_owner::legacy::successful_context(&agent, &prepared, listener.clone()).await;
             report(
                 &agent,
-                &run,
+                &prepared,
                 runtime_collab::TaskRunUpdate::DirectionsApplied { revision: 1 },
             )
             .await
             .unwrap();
+            drop(agent);
+            drop(connection);
             f.state.remove_connection(100);
-            let reconnect = f.channel(101, true);
+            let (_reconnection, reconnect) = model_owner::legacy::channel(&f, 101).await;
             let resumed = delivered(&reconnect).await;
             assert_eq!(resumed.run_id, run.run_id);
             assert_eq!(resumed.lease, run.lease);
+            let mut resumed_prepared = resumed.clone();
+            resumed_prepared.lease = prepared.lease.clone();
+            assert!(
+                report(
+                    &reconnect,
+                    &resumed_prepared,
+                    runtime_collab::TaskRunUpdate::DirectionsApplied { revision: 1 }
+                )
+                .await
+                .is_err()
+            );
+            model_owner::legacy::successful_context(&reconnect, &resumed_prepared, listener).await;
             report(
                 &reconnect,
-                &resumed,
+                &resumed_prepared,
                 runtime_collab::TaskRunUpdate::DirectionsApplied { revision: 1 },
             )
             .await

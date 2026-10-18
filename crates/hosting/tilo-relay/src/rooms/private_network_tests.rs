@@ -8,6 +8,7 @@ use tilo_relay_session::rooms::private::{
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 mod foreign_devices;
+mod model;
 
 const BODY: &str = "private-network-body-must-never-enter-the-public-room";
 

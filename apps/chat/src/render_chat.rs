@@ -15,7 +15,6 @@ use vello::peniko::Color;
 
 use ui::TextKind;
 use ui::Widget;
-use ui::agent_identity::{AgentIdentityStyle, draw_agent_identity_mark};
 use ui::author::Author;
 use ui::chrome::{
     self, NavCount, NavRowFace, NavSectionFace, SelectionState, nav_item_height,
@@ -105,9 +104,22 @@ pub(crate) fn agent_task_status_lines(view: &AgentTaskView) -> AgentTaskStatusLi
                 "queued" => crate::i18n::t("chat-agent-task-queued"),
                 "done" => crate::i18n::t("chat-agent-task-complete"),
                 "cancelled" => crate::i18n::t("chat-agent-task-cancelled"),
+                "ended" => crate::i18n::t("chat-agent-task-ended"),
                 _ => crate::i18n::t("chat-agent-task-phase-unknown"),
             },
         };
+        if task.run_epoch.is_none_or(|epoch| epoch == 0) {
+            return AgentTaskStatusLines {
+                primary: state,
+                receipt: view.start_error.clone().or_else(|| match view.receipt {
+                    AgentTaskReceipt::Queued => Some(crate::i18n::t("chat-agent-task-saved")),
+                    AgentTaskReceipt::Refused => {
+                        Some(crate::i18n::t("chat-agent-direction-refused"))
+                    }
+                    _ => None,
+                }),
+            };
+        }
         crate::i18n::t_args(
             "chat-agent-task-status",
             &[
@@ -141,7 +153,7 @@ pub(crate) fn agent_task_status_lines(view: &AgentTaskView) -> AgentTaskStatusLi
             )],
         )
     };
-    let receipt = match &view.receipt {
+    let receipt = view.start_error.clone().or_else(|| match &view.receipt {
         AgentTaskReceipt::None => None,
         AgentTaskReceipt::Saving => Some(crate::i18n::t("chat-agent-direction-saving")),
         AgentTaskReceipt::Saved { .. } => Some(crate::i18n::t("chat-agent-direction-saved")),
@@ -150,7 +162,7 @@ pub(crate) fn agent_task_status_lines(view: &AgentTaskView) -> AgentTaskStatusLi
         AgentTaskReceipt::StopRequested => Some(crate::i18n::t("chat-agent-task-stopped")),
         AgentTaskReceipt::Queued => Some(crate::i18n::t("chat-agent-task-saved")),
         AgentTaskReceipt::Refused => Some(crate::i18n::t("chat-agent-direction-refused")),
-    };
+    });
     AgentTaskStatusLines { primary, receipt }
 }
 
@@ -203,12 +215,18 @@ impl ChatApp {
         presence: &PresenceCtx,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        if let Some(tasks) = self.direct_agent_tasks() {
+        if self.task_goal.is_some() {
+            self.messages.clear();
+        } else if let Some(tasks) = self.direct_agent_tasks() {
             self.messages = tasks.conversation_messages(&self.active_channel, &self.me.id);
         }
         self.draw_header(scene, tf, tr, theme, hits);
         let field_w = self.center_right() - self.center_left() - 2.0 * self.chrome.gutter;
-        let width = composer_editor_width(field_w, theme, self.direct_person.is_none());
+        let width = composer_editor_width(
+            field_w,
+            theme,
+            self.direct_agent.is_none() && self.direct_person.is_none() && self.task_goal.is_none(),
+        );
         self.composer_main.measure(width, f32::INFINITY, theme, tr);
         let area = self.messages_rect(tr, theme);
         if area.width() > 0.0 && area.height() >= self.chrome.body_line {
@@ -467,7 +485,25 @@ impl ChatApp {
                 for_person: Some(initiator),
                 color,
             }
-        } else if self.agent_authors.contains_key(&m.author) {
+        } else if m
+            .author
+            .strip_prefix("task-report:")
+            .is_some_and(|task_id| {
+                // Only the private, typed Assistant transcript projection creates
+                // these authors. Public task summaries are never assistant turns.
+                self.direct_agent_tasks()
+                    .and_then(AgentTaskView::current)
+                    .is_some_and(|task| task.task_id == task_id)
+            })
+            || self.agent_authors.contains_key(&m.author)
+            || m.author.strip_prefix("agent:").is_some_and(|agent| {
+                self.direct_agent_tasks()
+                    .and_then(AgentTaskView::current)
+                    .is_some_and(|task| {
+                        task.assigned_agent == agent || task.active_agent.as_deref() == Some(agent)
+                    })
+            })
+        {
             Author::Agent {
                 name,
                 for_person: None,
@@ -491,7 +527,7 @@ impl ChatApp {
     }
 
     /// Whether the pointer is over `rect`.
-    fn hovered(&self, rect: Rect) -> bool {
+    pub(crate) fn hovered(&self, rect: Rect) -> bool {
         rect.contains(self.last_mouse)
     }
 
@@ -556,7 +592,8 @@ impl ChatApp {
             toggle.x1 + f64::from(sp.s2)
         };
         let mut right = band.x1 - f64::from(sp.s3);
-        if !self.inbox_open && self.can_participate() {
+        let task_mode = self.direct_agent.is_some() || self.task_goal.is_some();
+        if !self.inbox_open && !task_mode && self.can_participate() {
             let add = Rect::new(
                 right - target,
                 band.center().y - target / 2.0,
@@ -575,7 +612,9 @@ impl ChatApp {
             right = add.x0 - f64::from(sp.s1);
         }
 
-        let title = if self.inbox_open {
+        let title = if task_mode {
+            crate::i18n::t("chat-agents-section")
+        } else if self.inbox_open {
             "Inbox".to_owned()
         } else {
             self.workspaces
@@ -640,13 +679,32 @@ impl ChatApp {
                 .rail()
                 .icon(Icon::Hash)
                 .state(SelectionState::new(
-                    !self.inbox_open,
+                    !self.inbox_open && self.direct_agent.is_none() && self.task_goal.is_none(),
                     self.hovered(row),
                     false,
                 ));
             chrome::paint_nav_row(scene, tf, tr, theme, &face);
             ChatApp::push_hit(hits, row, Hit::CurrentContext);
+            y += row_h;
         }
+        let label = crate::i18n::t("chat-agents-section");
+        let height = nav_rail_item_height(theme, tr, &label, rail.width());
+        let row = Rect::new(rail.x0, y, rail.x1, y + height);
+        chrome::paint_nav_row(
+            scene,
+            tf,
+            tr,
+            theme,
+            &NavRowFace::new(row, &label)
+                .rail()
+                .icon(Icon::Plus)
+                .state(SelectionState::new(
+                    self.task_goal.is_some() || self.direct_agent.is_some(),
+                    self.hovered(row),
+                    false,
+                )),
+        );
+        ChatApp::push_hit(hits, row, Hit::Tasks);
     }
 
     // ------------------------------------------------------------- sidebar
@@ -663,6 +721,11 @@ impl ChatApp {
         if side.width() <= 0.5 {
             return;
         }
+        if self.task_goal.is_some() || self.direct_agent.is_some() {
+            self.draw_task_sidebar(&mut PaintCtx::new(scene, tf, tr, theme), side, hits);
+            return;
+        }
+        self.task_search.apply_layout_external(Rect::ZERO);
         if self.inbox_open {
             self.draw_inbox_sidebar(scene, tf, tr, theme, side, hits);
             return;
@@ -679,6 +742,60 @@ impl ChatApp {
             Rect::new(side.x0, side.y0, side.x1, bottom),
             hits,
         );
+    }
+
+    /// Channels remain available in the rail while the task tree owns the
+    /// bounded navigation viewport, independent of its content height.
+    fn draw_task_sidebar(
+        &mut self,
+        paint: &mut PaintCtx<'_>,
+        side: Rect,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        let rows_top = self
+            .draw_agent_navigation(
+                PaintCtx::new(paint.scene, paint.transform, paint.text, paint.theme),
+                side,
+                side.y0,
+                true,
+                hits,
+            )
+            .min(side.y1);
+        let height = self.task_navigation_height(paint.theme);
+        let mut scroll = std::mem::replace(
+            &mut self.task_navigation,
+            ui::widget::ScrollRegion::vertical().with_edge_fade(),
+        );
+        self.task_navigation_theme.clone_from(paint.theme);
+        scroll.set_viewport(Rect::new(side.x0, rows_top, side.x1, side.y1), paint.theme);
+        scroll.set_content_size(side.width(), height);
+        let viewport = scroll.content_rect();
+        let top = viewport.y0 - scroll.offset().y;
+        let content = Rect::new(viewport.x0, top, viewport.x1, top + height);
+        let mut rows = Vec::new();
+        scroll.paint(paint.scene, paint.transform, paint.theme, |scene, _| {
+            self.draw_task_navigation_rows(
+                &mut PaintCtx::new(scene, paint.transform, paint.text, paint.theme),
+                content,
+                top,
+                &mut rows,
+            );
+        });
+        hits.extend(rows.into_iter().filter_map(|(rect, hit)| {
+            let visible = rect.intersect(viewport);
+            (visible.area() > 0.0).then_some((visible, hit))
+        }));
+        self.task_navigation = scroll;
+    }
+
+    fn task_navigation_height(&self, theme: &Theme) -> f64 {
+        let tasks = self.agent_tasks.all_tasks();
+        let visible = tasks
+            .iter()
+            .zip(self.task_search_ranks(&tasks))
+            .filter(|(task, rank)| rank.is_some() && self.task_row_depth(task, &tasks).is_some())
+            .count();
+        nav_item_height(theme, true, false) * visible as f64
     }
 
     /// Cross-workspace conversations: one section per workspace, its text
@@ -835,7 +952,6 @@ impl ChatApp {
                 );
             }
         }
-        self.draw_agent_navigation(PaintCtx::new(scene, tf, tr, theme), side, y, first, hits);
     }
 
     /// Keep private history reachable in both the global Inbox and workspace tree,
@@ -886,71 +1002,306 @@ impl ChatApp {
         y
     }
 
-    /// Broker-authenticated Agents are entry points into their task conversations.
-    /// Membership does not imply liveness, so these rows identify their kind
-    /// without inventing an online or ready state.
+    /// Tasks are the primary navigation; compute membership remains on the
+    /// published workspace-management resources.
     fn draw_agent_navigation(
-        &self,
-        paint: PaintCtx<'_>,
+        &mut self,
+        mut paint: PaintCtx<'_>,
         side: Rect,
         mut y: f64,
         first: bool,
         hits: &mut Vec<(Rect, Hit)>,
-    ) {
-        if self.room_agents.is_empty() || y > side.y1 {
-            return;
+    ) -> f64 {
+        if y > side.y1 {
+            return side.y1;
         }
-        let PaintCtx {
-            scene,
-            transform: tf,
-            text: tr,
-            theme,
-        } = paint;
-        let section_h = nav_section_height(theme, first);
-        let header = Rect::new(side.x0, y, side.x1, y + section_h);
+        let section_h = nav_section_height(paint.theme, first);
         chrome::paint_nav_section(
-            scene,
-            tf,
-            tr,
-            theme,
-            &NavSectionFace::new(header, &crate::i18n::t("chat-agents-section")),
+            paint.scene,
+            paint.transform,
+            paint.text,
+            paint.theme,
+            &NavSectionFace::new(
+                Rect::new(side.x0, y, side.x1, y + section_h),
+                &crate::i18n::t("chat-agents-section"),
+            ),
         );
         y += section_h;
-        let row_h = nav_item_height(theme, true, false);
-        let kind = crate::i18n::t("chat-agent-kind");
-        for agent in &self.room_agents {
-            if y + row_h > side.y1 {
+        let row_h = nav_item_height(paint.theme, true, false);
+        let row = Rect::new(side.x0, y, side.x1, y + row_h);
+        let (label, detail, hit) = (
+            "chat-agent-mode-queue",
+            "chat-task-private-goal",
+            Hit::NewTask,
+        );
+        chrome::paint_nav_row(
+            paint.scene,
+            paint.transform,
+            paint.text,
+            paint.theme,
+            &NavRowFace::new(row, &crate::i18n::t(label)).secondary(&crate::i18n::t(detail)),
+        );
+        ChatApp::push_hit(hits, row, hit);
+        self.draw_task_filters(&mut paint, side, y + row_h, hits)
+    }
+
+    fn draw_task_filters(
+        &mut self,
+        paint: &mut PaintCtx<'_>,
+        side: Rect,
+        mut y: f64,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) -> f64 {
+        let search_h = ControlSize::Regular.height(paint.theme);
+        self.task_search
+            .apply_layout_external(Rect::new(side.x0, y, side.x1, y + search_h));
+        self.task_search.draw(
+            paint.scene,
+            paint.transform,
+            paint.text,
+            paint.theme,
+            &PresenceCtx::empty(),
+        );
+        y += search_h;
+        let height = SegmentedFace::height(ControlSize::Small, paint.theme);
+        let filters = ["all", "active", "completed", "mine"];
+        let width = side.width() / filters.len() as f64;
+        for (index, filter) in filters.iter().enumerate() {
+            let row = Rect::new(
+                side.x0 + index as f64 * width,
+                y,
+                side.x0 + (index + 1) as f64 * width,
+                y + height,
+            );
+            Button::paint(
+                paint.scene,
+                paint.transform,
+                paint.text,
+                paint.theme,
+                &ButtonFace::new(row, &crate::i18n::t(&format!("chat-tasks-filter-{filter}")))
+                    .control_size(ControlSize::Small)
+                    .toggled(self.task_filter == *filter)
+                    .hovered(self.hovered(row)),
+            );
+            ChatApp::push_hit(hits, row, Hit::TaskFilter((*filter).into()));
+        }
+        y += height;
+        let labels = self
+            .agent_tasks
+            .all_tasks()
+            .iter()
+            .flat_map(|task| task.labels.iter().cloned())
+            .collect::<std::collections::BTreeSet<_>>();
+        if !labels.is_empty() {
+            let labels = std::iter::once(String::new())
+                .chain(labels)
+                .collect::<Vec<_>>();
+            let width = side.width() / labels.len() as f64;
+            for (index, label) in labels.iter().enumerate() {
+                let row = Rect::new(
+                    side.x0 + index as f64 * width,
+                    y,
+                    side.x0 + (index + 1) as f64 * width,
+                    y + height,
+                );
+                let text = if label.is_empty() {
+                    crate::i18n::t("chat-task-all-labels")
+                } else {
+                    label.clone()
+                };
+                Button::paint(
+                    paint.scene,
+                    paint.transform,
+                    paint.text,
+                    paint.theme,
+                    &ButtonFace::new(row, &text)
+                        .control_size(ControlSize::Small)
+                        .toggled(self.task_label == *label)
+                        .hovered(self.hovered(row)),
+                );
+                ChatApp::push_hit(hits, row, Hit::TaskLabel(label.clone()));
+            }
+            y += height;
+        }
+        y
+    }
+
+    fn draw_task_navigation_rows(
+        &self,
+        paint: &mut PaintCtx<'_>,
+        side: Rect,
+        mut y: f64,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        let tasks = self.agent_tasks.all_tasks();
+        let ranks = self.task_search_ranks(&tasks);
+        let height = nav_item_height(paint.theme, true, false);
+        for (task, rank) in tasks.iter().zip(ranks) {
+            if rank.is_none() {
+                continue;
+            }
+            let Some(depth) = self.task_row_depth(task, &tasks) else {
+                continue;
+            };
+            if y + height > side.y1 {
                 break;
             }
-            let name = self.agent_display_name(agent);
-            let row = Rect::new(side.x0, y, side.x1, y + row_h);
-            let face = NavRowFace::new(row, &name)
-                .secondary(&kind)
-                .swatch(Color::TRANSPARENT)
-                .state(SelectionState::new(
-                    self.direct_agent.as_deref() == Some(agent.as_str()),
-                    self.hovered(row),
-                    false,
-                ));
-            let layout = nav_row_layout(theme, tr, &face);
-            chrome::paint_nav_row(scene, tf, tr, theme, &face);
-            if let Some(mark) = layout.icon {
-                let canonical = format!("agent:{agent}");
-                draw_agent_identity_mark(
-                    scene,
-                    tf,
-                    mark,
-                    theme
-                        .tokens
-                        .colors
-                        .presence
-                        .of_rgb(self.participant_color(&canonical)),
-                    theme,
-                    AgentIdentityStyle::Solid,
-                );
+            let row = Rect::new(
+                side.x0
+                    + (depth as f64 * f64::from(paint.theme.tokens.spacing.s3))
+                        .min(side.width() / 3.0),
+                y,
+                side.x1,
+                y + height,
+            );
+            self.draw_task_navigation_row(paint, row, task, &tasks, hits);
+            y += height;
+        }
+    }
+
+    fn task_search_ranks(
+        &self,
+        tasks: &[&crate::agent_tasks::AgentTaskFrontier],
+    ) -> Vec<Option<i32>> {
+        ui::search::ListIndex::default().ranks(
+            self.task_search.value(),
+            tasks.iter().map(|task| {
+                std::iter::once((task.title.as_str(), ui::search::FieldWeight::TITLE)).chain(
+                    task.labels
+                        .iter()
+                        .map(|label| (label.as_str(), ui::search::FieldWeight::KEYWORD)),
+                )
+            }),
+        )
+    }
+
+    fn task_row_depth(
+        &self,
+        task: &crate::agent_tasks::AgentTaskFrontier,
+        tasks: &[&crate::agent_tasks::AgentTaskFrontier],
+    ) -> Option<usize> {
+        let completed = matches!(task.status.as_str(), "done" | "cancelled");
+        if (!self.task_label.is_empty() && !task.labels.contains(&self.task_label))
+            || (self.task_filter == "active" && completed)
+            || (self.task_filter == "completed" && !completed)
+            || (self.task_filter == "mine"
+                && !task
+                    .responsible_assignees
+                    .iter()
+                    .any(|person| self.is_me(person)))
+        {
+            return None;
+        }
+        let mut depth = 0_usize;
+        let mut parent = task.parent_task_id.as_deref();
+        while let Some(id) = parent {
+            if depth >= tasks.len() || !self.expanded_tasks.contains(id) {
+                return None;
             }
-            ChatApp::push_hit(hits, row, Hit::Agent(agent.clone()));
-            y += row_h;
+            depth += 1;
+            parent = tasks
+                .iter()
+                .find(|candidate| candidate.task_id == id)
+                .and_then(|candidate| candidate.parent_task_id.as_deref());
+        }
+        Some(depth)
+    }
+
+    fn task_row_detail(
+        &self,
+        task: &crate::agent_tasks::AgentTaskFrontier,
+        tasks: &[&crate::agent_tasks::AgentTaskFrontier],
+    ) -> String {
+        let children = tasks
+            .iter()
+            .filter(|child| child.parent_task_id.as_deref() == Some(task.task_id.as_str()))
+            .collect::<Vec<_>>();
+        let mut detail = crate::i18n::t(match task.status.as_str() {
+            "queued" => "chat-agent-task-queued",
+            "done" => "chat-agent-task-complete",
+            "cancelled" => "chat-agent-task-cancelled",
+            "in_progress" => "chat-agent-task-executing",
+            _ => "chat-agent-task-phase-unknown",
+        });
+        if !children.is_empty() {
+            let done = children
+                .iter()
+                .filter(|child| child.status == "done")
+                .count();
+            detail.push_str(&crate::i18n::t_args(
+                "chat-task-child-progress",
+                &[
+                    ("done", done.to_string().into()),
+                    ("total", children.len().to_string().into()),
+                ],
+            ));
+        }
+        if !task.labels.is_empty() {
+            detail.push_str(" — ");
+            detail.push_str(&task.labels.join(", "));
+        }
+        if !task.responsible_assignees.is_empty() {
+            detail.push_str(" — ");
+            detail.push_str(
+                &task
+                    .responsible_assignees
+                    .iter()
+                    .map(|person| self.user_name(person))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+        }
+        detail
+    }
+
+    fn draw_task_navigation_row(
+        &self,
+        paint: &mut PaintCtx<'_>,
+        row: Rect,
+        task: &crate::agent_tasks::AgentTaskFrontier,
+        tasks: &[&crate::agent_tasks::AgentTaskFrontier],
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        let has_children = tasks
+            .iter()
+            .any(|child| child.parent_task_id.as_deref() == Some(task.task_id.as_str()));
+        let selected = self
+            .direct_agent_tasks()
+            .and_then(AgentTaskView::selected_identity)
+            == task.run_epoch.map(|epoch| (task.task_id.as_str(), epoch));
+        let toggle_width = SegmentedFace::height(ControlSize::Small, paint.theme);
+        let label_right = if has_children {
+            row.x1 - toggle_width
+        } else {
+            row.x1
+        };
+        chrome::paint_nav_row(
+            paint.scene,
+            paint.transform,
+            paint.text,
+            paint.theme,
+            &NavRowFace::new(Rect::new(row.x0, row.y0, label_right, row.y1), &task.title)
+                .secondary(&self.task_row_detail(task, tasks))
+                .state(SelectionState::new(selected, self.hovered(row), false)),
+        );
+        ChatApp::push_hit(hits, row, Hit::AgentTask(Box::new(task.clone())));
+        if has_children {
+            let toggle = Rect::new(label_right, row.y0, row.x1, row.y1);
+            let label = crate::i18n::t(if self.expanded_tasks.contains(&task.task_id) {
+                "chat-task-collapse"
+            } else {
+                "chat-task-expand"
+            });
+            Button::paint(
+                paint.scene,
+                paint.transform,
+                paint.text,
+                paint.theme,
+                &ButtonFace::new(toggle, &label)
+                    .control_size(ControlSize::Small)
+                    .hovered(self.hovered(toggle)),
+            );
+            ChatApp::push_hit(hits, toggle, Hit::TaskExpand(task.task_id.clone()));
         }
     }
 
@@ -1174,6 +1525,13 @@ impl ChatApp {
         } else {
             String::new()
         };
+        if self.task_goal.is_some() {
+            return HeaderIdentityText {
+                name: crate::i18n::t("chat-agent-mode-queue"),
+                kind: Some(crate::i18n::t("chat-task-private-conversation")),
+                context: String::new(),
+            };
+        }
         if let Some(peer) = &self.direct_person {
             return HeaderIdentityText {
                 name: self.person_display_name(peer),
@@ -1181,14 +1539,17 @@ impl ChatApp {
                 context: String::new(),
             };
         }
-        if let Some(agent) = &self.direct_agent {
+        if self.direct_agent.is_some() {
             return HeaderIdentityText {
                 name: self
                     .direct_agent_tasks()
                     .and_then(AgentTaskView::current)
-                    .map_or_else(|| self.agent_display_name(agent), |task| task.title.clone()),
-                kind: Some(self.agent_display_name(agent)),
-                context,
+                    .map_or_else(
+                        || crate::i18n::t("chat-agent-mode-queue"),
+                        |task| task.title.clone(),
+                    ),
+                kind: Some(crate::i18n::t("chat-task-private-conversation")),
+                context: String::new(),
             };
         }
 
@@ -1243,7 +1604,10 @@ impl ChatApp {
         } else {
             h.x0 + self.chrome.gutter
         };
-        let controls = if self.direct_person.is_some() {
+        let controls = if self.task_goal.is_some()
+            || self.direct_agent.is_some()
+            || self.direct_person.is_some()
+        {
             h
         } else {
             self.draw_context_stop(PaintCtx::new(scene, tf, tr, theme), h, hits)
@@ -1253,7 +1617,11 @@ impl ChatApp {
         for command in self
             .model_controls(&self.active_channel)
             .into_iter()
-            .filter(|_| self.direct_person.is_none())
+            .filter(|_| {
+                self.direct_person.is_none()
+                    && self.direct_agent.is_none()
+                    && self.task_goal.is_none()
+            })
         {
             let caption = crate::i18n::t(&format!("chat-model-{command}"));
             let height = ButtonFace::height(ControlSize::Small, theme);
@@ -1445,84 +1813,35 @@ impl ChatApp {
         h: Rect,
         hits: &mut Vec<(Rect, Hit)>,
     ) -> f64 {
-        if self.direct_person.is_some() {
+        if self.direct_person.is_some() || self.direct_agent.is_some() || self.task_goal.is_some() {
             return self.draw_private_header_buttons(
                 &mut PaintCtx::new(scene, tf, tr, theme),
                 h,
                 hits,
             );
         }
-        let sp = &theme.tokens.spacing;
         let control = ButtonFace::height(ControlSize::Regular, theme);
-        let cy = h.center().y;
-        let agent_header = self.direct_agent.is_some();
-        let show_search = self.header_has_search(tr, theme, h, control, agent_header);
-        let mut cluster_left = h.x1 - self.chrome.gutter;
-        if show_search {
-            let search = square(Point::new(cluster_left - control / 2.0, cy), control);
-            Button::paint(
-                scene,
-                tf,
-                tr,
-                theme,
-                &ButtonFace::icon_only(search, Icon::Search, "Search")
-                    .hovered(self.hovered(search)),
-            );
-            ChatApp::push_hit(hits, search, Hit::Search);
-            cluster_left = search.x0;
-        }
-        if self.direct_agent.is_some() {
-            let right = cluster_left - f64::from(sp.s2);
-            let window = square(Point::new(right - control / 2.0, cy), control);
-            let label = if self.conversation_surface {
-                crate::i18n::t("chat-agent-return")
-            } else {
-                crate::i18n::t("chat-agent-float")
-            };
-            Button::paint(
-                scene,
-                tf,
-                tr,
-                theme,
-                &ButtonFace::icon_only(window, Icon::ExternalLink, &label)
-                    .hovered(self.hovered(window)),
-            );
-            ChatApp::push_hit(hits, window, Hit::AgentWindow);
-            cluster_left = window.x0;
-            if self.conversation_surface {
-                return cluster_left;
-            }
-            let drag_right = cluster_left - f64::from(sp.s2);
-            let drag = square(Point::new(drag_right - control / 2.0, cy), control);
-            ui::surface::floating_drag_grip(scene, tf, drag, theme.text_dim);
-            ChatApp::push_hit(hits, drag, Hit::AgentDragHandle);
-            cluster_left = drag.x0;
-        }
-        // Calls and the people roster matter once a workspace is shared. In
-        // a private workspace the unadorned conversation header is the
-        // resting state; inviting belongs to the workspace surface.
+        let right = h.x1 - self.chrome.gutter;
+        let search = square(Point::new(right - control / 2.0, h.center().y), control);
+        Button::paint(
+            scene,
+            tf,
+            tr,
+            theme,
+            &ButtonFace::icon_only(search, Icon::Search, &crate::i18n::t("chat-header-search"))
+                .hovered(self.hovered(search)),
+        );
+        ChatApp::push_hit(hits, search, Hit::Search);
         if !self.has_other_collaborator() {
-            return cluster_left;
-        }
-        let right = cluster_left - f64::from(sp.s2);
-        if self.direct_agent.is_some() {
-            let people = square(Point::new(right - control / 2.0, cy), control);
-            let open = self.right_flap_open() && self.thread_open.is_none();
-            Button::paint(
-                scene,
-                tf,
-                tr,
-                theme,
-                &ButtonFace::icon_only(people, Icon::Users, self.roster_label())
-                    .hovered(self.hovered(people))
-                    .pressed(open),
-            );
-            ChatApp::push_hit(hits, people, Hit::ToggleRightFlap);
-            return people.x0;
+            return search.x0;
         }
         self.draw_human_header_buttons(
             PaintCtx::new(scene, tf, tr, theme),
-            (right, cy, control),
+            (
+                search.x0 - f64::from(theme.tokens.spacing.s2),
+                h.center().y,
+                control,
+            ),
             hits,
         )
     }
@@ -1813,7 +2132,13 @@ impl ChatApp {
                 }
             },
         );
-        let title = if let Some(title) = direct_title.as_deref() {
+        let goal_title = self
+            .task_goal
+            .as_ref()
+            .map(|_| crate::i18n::t("chat-task-private-goal"));
+        let title = if let Some(title) = goal_title.as_deref() {
+            title
+        } else if let Some(title) = direct_title.as_deref() {
             title
         } else if self.can_participate() {
             "No messages yet"
@@ -2827,12 +3152,17 @@ impl ChatApp {
         // no composer to type into.
         if self.direct_agent.is_none()
             && self.direct_person.is_none()
+            && self.task_goal.is_none()
             && self.channel(&self.active_channel).is_none()
         {
             self.composer_main.set_focus(false);
             return;
         }
-        if !self.can_participate() && self.direct_agent.is_none() && self.direct_person.is_none() {
+        if !self.can_participate()
+            && self.direct_agent.is_none()
+            && self.direct_person.is_none()
+            && self.task_goal.is_none()
+        {
             self.composer_main.set_focus(false);
             Self::draw_read_only_composer(scene, tf, tr, theme, rect);
             return;
@@ -2846,7 +3176,19 @@ impl ChatApp {
             && matches!(self.focus, crate::app::Focus::Main)
             && self.editing.is_none();
         let draft = self.composer_main.value();
-        let input = if self.direct_agent.is_some() {
+        let input = if self.task_goal.is_some() {
+            let height = (self.composer_main.measured_height() + self.chrome.composer_min_h
+                - self.chrome.body_line)
+                .clamp(self.chrome.composer_min_h, self.chrome.composer_max_h)
+                .min(rect.height());
+            let input = Rect::new(rect.x0, rect.y1 - height, rect.x1, rect.y1);
+            self.draw_task_goal_controls(
+                PaintCtx::new(scene, tf, tr, theme),
+                Rect::new(rect.x0, rect.y0, rect.x1, input.y0),
+                hits,
+            );
+            input
+        } else if self.direct_agent.is_some() {
             let pad = self.chrome.composer_min_h - self.chrome.body_line;
             let input_h = (self.composer_main.measured_height() + pad)
                 .clamp(self.chrome.composer_min_h, self.chrome.composer_max_h)
@@ -2880,7 +3222,9 @@ impl ChatApp {
             (
                 send_enabled,
                 focused,
-                self.direct_agent.is_none() && self.direct_person.is_none(),
+                self.direct_agent.is_none()
+                    && self.direct_person.is_none()
+                    && self.task_goal.is_none(),
                 interactive,
             ),
             Hit::FocusMain,
@@ -2894,7 +3238,10 @@ impl ChatApp {
         let key = ChatApp::draft_presence_key(&self.active_channel);
         if let Some(reason) = &self.not_sent {
             Self::draw_not_sent(PaintCtx::new(scene, tf, tr, theme), rect, reason, hits);
-        } else if self.direct_person.is_none() {
+        } else if self.direct_person.is_none()
+            && self.direct_agent.is_none()
+            && self.task_goal.is_none()
+        {
             Self::draw_draft_presence(&self.composer_main, &key, scene, tf, tr, theme, presence);
         }
     }
@@ -3058,9 +3405,44 @@ impl ChatApp {
         let gap = f64::from(paint.theme.tokens.spacing.s2);
         let row_h = SegmentedFace::height(ControlSize::Small, paint.theme);
         let mut y = rect.y0;
-        if tasks.tasks.len() > 1 {
-            let selected = tasks.current().map(|task| task.task_id.as_str());
+        if tasks.can_start() && self.agent_tasks.needs_compute_controls() && y + row_h <= rect.y1 {
+            let row = Rect::new(rect.x0, y, rect.x1, y + row_h);
+            Button::paint(
+                paint.scene,
+                paint.transform,
+                paint.text,
+                paint.theme,
+                &ButtonFace::new(row, &self.agent_tasks.setup_label())
+                    .control_size(ControlSize::Small)
+                    .hovered(self.hovered(row)),
+            );
+            ChatApp::push_hit(hits, row, Hit::AgentSetup);
+            y = row.y1 + gap;
+        }
+        if tasks.current().is_some() && y + row_h <= rect.y1 {
+            let row = Rect::new(rect.x0, y, rect.x1, y + row_h);
+            Button::paint(
+                paint.scene,
+                paint.transform,
+                paint.text,
+                paint.theme,
+                &ButtonFace::new(row, &crate::i18n::t("chat-task-add-subtask"))
+                    .control_size(ControlSize::Small)
+                    .hovered(self.hovered(row)),
+            );
+            ChatApp::push_hit(hits, row, Hit::AgentSubtask);
+            y = row.y1 + gap;
+        }
+        y = self.draw_task_output_controls(paint, rect, tasks, y, hits);
+        // Keep exact-run switching reachable when the sidebar is collapsed.
+        if tasks.tasks.len() > 1 && self.task_filter == "all" {
             for task in tasks.visible_tasks() {
+                if tasks
+                    .selected_identity()
+                    .is_some_and(|(id, epoch)| task.task_id == id && task.run_epoch == Some(epoch))
+                {
+                    continue;
+                }
                 if y + row_h > rect.y1 {
                     break;
                 }
@@ -3072,7 +3454,6 @@ impl ChatApp {
                     paint.theme,
                     &ButtonFace::new(row, &task.title)
                         .control_size(ControlSize::Small)
-                        .toggled(selected == Some(task.task_id.as_str()))
                         .hovered(self.hovered(row)),
                 );
                 ChatApp::push_hit(hits, row, Hit::AgentTask(Box::new(task.clone())));
@@ -3080,27 +3461,73 @@ impl ChatApp {
             }
             if y + row_h <= rect.y1 {
                 let remaining = tasks.remaining_after_page();
-                let row = Rect::new(rect.x0, y, rect.x1, y + row_h);
-                let more = if remaining == 0 {
+                let label = if remaining == 0 {
                     crate::i18n::t("chat-agent-task-first")
                 } else {
                     crate::i18n::t_args(
                         "chat-agent-task-more",
-                        &[("count", i64::try_from(remaining).unwrap_or(i64::MAX).into())],
+                        &[("count", remaining.to_string().into())],
                     )
                 };
+                let row = Rect::new(rect.x0, y, rect.x1, y + row_h);
                 Button::paint(
                     paint.scene,
                     paint.transform,
                     paint.text,
                     paint.theme,
-                    &ButtonFace::new(row, &more)
+                    &ButtonFace::new(row, &label)
                         .control_size(ControlSize::Small)
                         .hovered(self.hovered(row)),
                 );
                 ChatApp::push_hit(hits, row, Hit::AgentTaskMore);
                 y = row.y1 + gap;
             }
+        }
+        y
+    }
+
+    fn draw_task_output_controls(
+        &self,
+        paint: &mut PaintCtx<'_>,
+        rect: Rect,
+        tasks: &AgentTaskView,
+        mut y: f64,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) -> f64 {
+        let row_h = SegmentedFace::height(ControlSize::Small, paint.theme);
+        let gap = f64::from(paint.theme.tokens.spacing.s2);
+        if !tasks.outputs.is_empty() && y + row_h <= rect.y1 {
+            let label = crate::i18n::t_args(
+                "chat-task-output-count",
+                &[("count", tasks.outputs.len().to_string().into())],
+            );
+            paint.text.draw_style(
+                paint.scene,
+                &label,
+                paint.theme.text_dim,
+                paint.transform * Affine::translate((rect.x0, y)),
+                Some(rect.width().max(1.0) as f32),
+                &paint.theme.text(TextRole::Caption),
+            );
+            y += row_h + gap;
+        }
+        for output in &tasks.outputs {
+            if y + row_h > rect.y1 {
+                break;
+            }
+            let row = Rect::new(rect.x0, y, rect.x1, y + row_h);
+            let label = crate::agent_tasks::output_label(output);
+            Button::paint(
+                paint.scene,
+                paint.transform,
+                paint.text,
+                paint.theme,
+                &ButtonFace::new(row, &label)
+                    .control_size(ControlSize::Small)
+                    .hovered(self.hovered(row)),
+            );
+            ChatApp::push_hit(hits, row, Hit::TaskOutput(Box::new(output.clone())));
+            y = row.y1 + gap;
         }
         y
     }
@@ -3169,7 +3596,15 @@ impl ChatApp {
         let Some(tasks) = self.direct_agent_tasks() else {
             return 0.0;
         };
-        let chooser_rows = if tasks.tasks.len() > 1 { 2 } else { 0 };
+        let chooser_rows = tasks.outputs.len()
+            + usize::from(tasks.can_start() && self.agent_tasks.needs_compute_controls())
+            + usize::from(!tasks.outputs.is_empty())
+            + usize::from(tasks.current().is_some())
+            + if tasks.tasks.len() > 1 && self.task_filter == "all" {
+                2
+            } else {
+                0
+            };
         let receipt_rows = usize::from(agent_task_status_lines(tasks).receipt.is_some());
         let rows = chooser_rows + self.agent_intent_picker_rows(tr, theme, width);
         let row_h = SegmentedFace::height(ControlSize::Small, theme);
@@ -3358,7 +3793,9 @@ impl ChatApp {
             return tilo_rich_text::ComposerFrame::layout(rect, theme, &[], &[]).editor;
         }
 
-        let send_label = if self.direct_agent.is_none() {
+        let send_label = if self.task_goal.is_some() {
+            crate::i18n::t("chat-task-save-goal")
+        } else if self.direct_agent.is_none() {
             crate::i18n::t("chat-agent-send-steer")
         } else {
             match self.direct_agent_intent() {
@@ -4565,6 +5002,31 @@ mod tests {
     };
     use ui::theme::Theme;
     use ui::widget::{MediaArt, MediaSize};
+
+    #[test]
+    fn saved_goal_footer_does_not_invent_a_zero_run_or_model_readiness() {
+        let mut app = crate::app::ChatApp::new_ephemeral();
+        app.agent_tasks.stage_queued_capture("workspace", "scribe");
+        let view = app.agent_tasks.view("scribe").unwrap();
+        let status = super::agent_task_status_lines(view);
+        assert_eq!(status.primary, crate::i18n::t("chat-agent-task-queued"));
+        assert!(!status.primary.contains('0'));
+        assert!(!status.primary.contains("Ready"));
+        assert!(view.can_start());
+        assert!(!view.can_stop());
+    }
+
+    #[test]
+    fn task_footer_reports_the_actual_run_without_repeating_its_header_title() {
+        let mut app = crate::app::ChatApp::new_ephemeral();
+        let view = app.agent_tasks.stage_capture("workspace", "scribe");
+        let task = view.current().unwrap();
+        let status = super::agent_task_status_lines(view);
+        assert!(status.primary.contains("Working"));
+        assert!(status.primary.contains("Run 7"));
+        assert!(!status.primary.contains(&task.title));
+        assert!(status.receipt.unwrap().contains("waiting for the agent"));
+    }
 
     #[test]
     fn explicit_start_receipt_reports_approval_not_execution() {

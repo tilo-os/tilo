@@ -166,6 +166,92 @@ impl RoomRecords {
         }
     }
 
+    /// Retire predecessor room history before publishing a sanitized baseline.
+    ///
+    /// This is not checkpoint compaction: a successful replacement must also
+    /// retire every predecessor copy in pending queues, selected proof state,
+    /// replay pins and resume history, without retiring resource channels.
+    /// This startup transaction requires an inactive workspace. A live owner
+    /// or subscriber must never race scrub, captured replay pins or fan-out.
+    /// Callers must propagate refusal; there is no ordinary-checkpoint fallback.
+    ///
+    /// `predecessor` is the admitted replica before the change, or the durable
+    /// local governor record already containing this exact signed genesis.
+    /// The latter is recovery authority only for this host's own rooms; a
+    /// native publisher cannot manufacture recovery authority from its input.
+    ///
+    /// # Errors
+    ///
+    /// Rejects mismatched workspace/host identity and unauthorized or stale
+    /// replacements, or a workspace that already has live persistence/delivery.
+    pub(crate) async fn retire_room_channel(
+        &self,
+        workspace_id: u64,
+        predecessor: &tilo_peer_state::StatePeer,
+        baseline: &tilo_peer_state::SanitizedRoomBaseline,
+    ) -> Result<(), String> {
+        if crate::room_workspace_id(&baseline.room).map_err(|error| error.to_string())?
+            != workspace_id
+        {
+            return Err("sanitized room baseline belongs to a different workspace".into());
+        }
+        if baseline.governor != self.device {
+            return Err("sanitized room baseline is not authored by this host".into());
+        }
+        if predecessor.room() != baseline.room {
+            return Err("retirement predecessor belongs to a different room".into());
+        }
+        if predecessor.authority().device_public_key != self.device {
+            return Err("retirement predecessor is not governed by this host".into());
+        }
+        if predecessor.sanitized_room_generation()? == baseline.generation {
+            let mut genesis = baseline.verify_anchored_document(
+                &baseline.room,
+                self.device,
+                &baseline.anchor(),
+            )?;
+            let mut current = predecessor
+                .admitted_room()
+                .ok_or("governor record has no room")?
+                .clone();
+            if genesis
+                .get_changes(&[])
+                .iter()
+                .any(|change| current.get_change_by_hash(&change.hash()).is_none())
+            {
+                return Err("replacement is not the committed governor genesis".into());
+            }
+        } else {
+            let mut candidate = predecessor.clone();
+            candidate.admit_sanitized_room_baseline(baseline, std::time::SystemTime::now())?;
+        }
+        self.inflight.settle(workspace_id).await;
+        let ws = self
+            .workspaces
+            .lock()
+            .await
+            .get(&workspace_id)
+            .cloned()
+            .ok_or("retirement workspace is not initialized")?;
+        let mut runtime = ws.lock().await;
+        if runtime.persistence.is_some()
+            || !runtime.subscribers.is_empty()
+            || !runtime.state_sessions.is_empty()
+            || !runtime.outbound_federation.is_empty()
+        {
+            return Err("room history retirement requires an inactive workspace".into());
+        }
+        runtime
+            .store
+            .retire_room_history(baseline)
+            .map_err(|e| e.to_string())?;
+        runtime.doc =
+            Some(tilo_automerge_isolate::load(&baseline.document).map_err(|e| e.to_string())?);
+        drop(runtime);
+        drop(ws);
+        Ok(())
+    }
+
     /// This host's device key: the author of what [`Self::commit`] admits.
     #[must_use]
     pub const fn device(&self) -> [u8; 32] {

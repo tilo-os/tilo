@@ -86,6 +86,7 @@ mod tests {
             },
             PresencePayload::Following { target: None },
             PresencePayload::Interaction(Box::new(tilo_actions::SemanticInteraction {
+                paint_origin: None,
                 version: tilo_actions::INTERACTION_VERSION,
                 invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(7)),
                 sequence: 2,

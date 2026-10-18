@@ -7239,6 +7239,7 @@ fn semantic_text_caret_is_painted_without_a_selection_or_input() {
     let mut presence = PresenceCtx::empty();
     presence
         .apply_interaction(tilo_actions::SemanticInteraction {
+            paint_origin: None,
             version: tilo_actions::INTERACTION_VERSION,
             invocation: tilo_actions::InvocationId::new(),
             sequence: 1,

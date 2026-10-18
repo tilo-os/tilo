@@ -26,6 +26,30 @@ impl CapnpBrokerState {
         presentation: &[u8],
         draft: runtime_collab::private_draft::Draft,
     ) -> Result<uuid::Uuid, String> {
+        self.stage_private_draft_bound(caller, presentation, draft, None)
+    }
+
+    /// Task editor transfers must retain the actual published paint admission.
+    /// # Errors
+    /// Refuses absent, forged, mismatched or revoked original paint provenance.
+    pub fn stage_private_painted_draft(
+        self: &Arc<Self>,
+        caller: &Caller,
+        presentation: &[u8],
+        draft: runtime_collab::private_draft::Draft,
+        app: String,
+        interaction: tilo_actions::SemanticInteraction,
+    ) -> Result<uuid::Uuid, String> {
+        self.stage_private_draft_bound(caller, presentation, draft, Some((app, interaction)))
+    }
+
+    fn stage_private_draft_bound(
+        self: &Arc<Self>,
+        caller: &Caller,
+        presentation: &[u8],
+        draft: runtime_collab::private_draft::Draft,
+        source: Option<(String, tilo_actions::SemanticInteraction)>,
+    ) -> Result<uuid::Uuid, String> {
         let checked = self.checked_local_host(caller, presentation)?;
         let admitted = checked.check(caller).map_err(|error| error.to_string())?;
         let certificate = admitted
@@ -40,6 +64,32 @@ impl CapnpBrokerState {
         {
             return Err("private drafts require the original certified person".into());
         }
+        let bound_task = match (&draft.target, source) {
+            (runtime_collab::private_draft::Target::Person { .. }, None) => None,
+            (
+                runtime_collab::private_draft::Target::Task {
+                    agent,
+                    task,
+                    run_epoch,
+                },
+                Some((app, interaction)),
+            ) => {
+                if self.certified_painted_task(&draft.workspace, &app, agent, &interaction)
+                    != Some((task.clone(), *run_epoch))
+                {
+                    return Err("private task draft requires its original painted admission".into());
+                }
+                Some((
+                    draft.workspace.clone(),
+                    app,
+                    agent.clone(),
+                    task.clone(),
+                    *run_epoch,
+                    interaction,
+                ))
+            }
+            _ => return Err("private draft source does not match its target".into()),
+        };
         // Weak state avoids a broker -> draft -> checked host -> broker cycle.
         let state = Arc::downgrade(self);
         let caller = checked.caller.clone();
@@ -51,6 +101,13 @@ impl CapnpBrokerState {
                 return Err("private draft original person session ended".into());
             }
             let admitted = state.current_action_caller(&admission)?;
+            if let Some((room, app, agent, task, epoch, interaction)) = &bound_task {
+                if state.certified_painted_task(room, app, agent, interaction)
+                    != Some((task.clone(), *epoch))
+                {
+                    return Err("private task draft source was revoked".into());
+                }
+            }
             drop(state);
             if admitted.agent_id.is_some()
                 || admitted.verified.capped

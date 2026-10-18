@@ -382,13 +382,15 @@ pub(super) async fn enqueue_state_inner(
     // What only a channel's steward reads goes to the room's governor alone
     // when this relay governs the room (`steward_audience`).
     let steward_only = steward_only_delta(&*payloads, delta);
+    let (retirement_publisher, retirement) =
+        room_retirement_admission(&store, source.as_ref(), author, delta)?;
     let owner = crate::persistence::handle(workspace).await;
     let continuity_evidence = source.as_ref().and_then(|source| {
         crate::store::continuity::Evidence::authenticated(&*payloads, &envelope, &source.peer)
     });
     // A checkpoint that may start its lineage is staged before its turn;
     // the turn commits the stage, or retains it as usual if it cannot.
-    let fresh = if sync || continuity_evidence.is_some() {
+    let fresh = if sync || continuity_evidence.is_some() || retirement {
         UntakenStage(None)
     } else {
         stage_fresh_checkpoint(&store, &envelope).await
@@ -410,6 +412,7 @@ pub(super) async fn enqueue_state_inner(
         envelope: Some(envelope),
         sync,
         fresh,
+        retirement_publisher,
         continuity_evidence,
         durable_sequence: durable.clone(),
         trace: admission_trace.clone(),
@@ -468,6 +471,30 @@ pub(super) async fn enqueue_state_inner(
         completion,
         sequence: durable,
     })
+}
+
+/// Check baseline intake and identify an authenticated retirement before staging.
+fn room_retirement_admission(
+    store: &crate::store::WorkspaceStore,
+    source: Option<&StateSource>,
+    author: [u8; 32],
+    delta: &[u8],
+) -> Result<(Option<[u8; 32]>, bool), StoreError> {
+    let publisher = source
+        .filter(|source| {
+            source.peer.role == crate::auth::PeerRole::Device
+                && source.peer.device_public_key == author
+        })
+        .map(|source| source.peer.device_public_key);
+    let retirement = if let Some(publisher) = publisher {
+        store
+            .authenticated_room_retirement(publisher, author, delta)?
+            .is_some()
+    } else {
+        store.check_room_baseline_intake(author, delta)?;
+        false
+    };
+    Ok((publisher, retirement))
 }
 
 /// The author of the delta `envelope` carries, and the delta.
@@ -642,6 +669,7 @@ struct StateTurn {
     envelope: Option<Envelope>,
     sync: bool,
     fresh: UntakenStage,
+    retirement_publisher: Option<[u8; 32]>,
     continuity_evidence: Option<crate::store::continuity::Evidence>,
     durable_sequence: Arc<std::sync::atomic::AtomicU64>,
     trace: Option<StateAdmissionTrace>,
@@ -691,8 +719,10 @@ impl StateTurn {
         state: &mut crate::persistence::State,
         prepared: &mut Option<AdmissionRecipients>,
     ) -> Result<Step<StateCommit>, crate::store::StoreError> {
-        // This job changes retained history only through retention.
-        state.retaining_only();
+        // A retirement replaces the room baseline outside ordinary retention.
+        if self.retirement_publisher.is_none() {
+            state.retaining_only();
+        }
         if let Some(begun) = crate::timing::start() {
             let _ = self.persist_begun.set(begun);
         }
@@ -704,9 +734,27 @@ impl StateTurn {
             prepared: captured,
         } = prepared.take().invariant("ordered recipients")?;
         let envelope = self.envelope.take().invariant("admitted envelope")?;
-        let Envelope::Delta { delta, .. } = &envelope else {
+        let Envelope::Delta {
+            delta,
+            author_device_public_key: author,
+            ..
+        } = &envelope
+        else {
             return Err(crate::persistence::error("expected admitted delta"));
         };
+        // Recheck the exact predecessor after earlier queued publications.
+        if let Some(publisher) = self.retirement_publisher
+            && let Some(baseline) = state
+                .store
+                .authenticated_room_retirement(publisher, *author, delta)?
+        {
+            state.store.retire_room_history(&baseline)?;
+            state.doc = Some(
+                tilo_automerge_isolate::load(&baseline.document)
+                    .map_err(|e| crate::persistence::error(e.to_string()))?,
+            );
+        }
+        state.store.check_room_baseline_intake(*author, delta)?;
         let publish = !self.sync || state.would_materialize(delta);
         if !publish {
             return Ok(Step::Done(admitted_commit(

@@ -7,9 +7,11 @@
 //! `tilo_relay_store::shell` seam: [`binding::NeighbourReplay`] binds a
 //! [`RetentionAuthority`] to a store, and the store steps the [`Selection`],
 //! [`SelectedRead`] and [`tail_cache::FastTail`] that binding hands out.
+#[cfg(test)]
+use crate::retained_proof::verify_room;
 use crate::retained_proof::{
     CoverageDecision, FloorSafety, OrderedTailReadiness, ProofError, RetentionAuthority, RoomInput,
-    VerifiedRoom, VerifiedSnapshot, verify_room, verify_snapshot,
+    VerifiedRoom, VerifiedSnapshot, verify_room_anchored, verify_snapshot,
 };
 use neighbour_wire::NeighbourMsg;
 use std::{
@@ -103,6 +105,28 @@ pub fn selection_constructions(root: &Path) -> usize {
 }
 
 /// The retention authority bound to `store` by this crate's adapter, if any.
+fn room_anchor(
+    store: &dyn ShellStore,
+) -> Result<Option<tilo_peer_state::SanitizedRoomBaselineAnchor>, StoreError> {
+    if store
+        .root()
+        .join("room-retirement-pending-v1.json")
+        .exists()
+    {
+        return Err(invalid("room retirement is unfinished"));
+    }
+    let path = store.root().join("room-baseline-v1.json");
+    match fs::read(path) {
+        Ok(bytes) => {
+            let baseline: tilo_peer_state::SanitizedRoomBaseline =
+                serde_json::from_slice(&bytes).map_err(|e| StoreError::Json(e.to_string()))?;
+            Ok(Some(baseline.anchor()))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
 pub(crate) fn authority(store: &dyn ShellStore) -> Option<&RetentionAuthority> {
     binding::bound_authority(store.shell_binding()?)
 }
@@ -248,6 +272,7 @@ pub struct Selection {
     store: Arc<dyn ShellStore>,
     scratch: PathBuf,
     authority: RetentionAuthority,
+    anchor: Option<tilo_peer_state::SanitizedRoomBaselineAnchor>,
     old_read: SelectedRead,
     old: Basis,
     basis: Basis,
@@ -390,6 +415,7 @@ impl Selection {
         durable::create_dir(&staged)?;
         Ok(Self {
             store: store.handle(),
+            anchor: room_anchor(store)?,
             authority: authority(store)
                 .invariant("shell authority missing")?
                 .clone(),
@@ -899,13 +925,14 @@ impl Selection {
                         }) {
                             return Ok(Step::More);
                         }
-                        if let Ok(room) = verify_room(
+                        if let Ok(room) = verify_room_anchored(
                             &self.authority,
                             value.source,
                             value.channel,
                             &value.body,
                             value.kind,
                             self.basis.room.as_ref(),
+                            self.anchor.as_ref(),
                         ) {
                             if value.kind == RoomInput::Checkpoint {
                                 self.room_list.set_len(0)?;
@@ -1036,13 +1063,14 @@ impl Selection {
                             == CoverageDecision::Covered
                     }) {
                         self.covered(&meta, &value)?;
-                    } else if verify_room(
+                    } else if verify_room_anchored(
                         &self.authority,
                         value.source,
                         value.channel,
                         &value.body,
                         value.kind,
                         self.basis.room.as_ref(),
+                        self.anchor.as_ref(),
                     )
                     .is_ok()
                     {
@@ -1165,13 +1193,14 @@ impl Selection {
                         } else {
                             prior.as_ref()
                         };
-                        if let Ok(room) = verify_room(
+                        if let Ok(room) = verify_room_anchored(
                             &self.authority,
                             value.source,
                             value.channel,
                             &value.body,
                             value.kind,
                             previous,
+                            self.anchor.as_ref(),
                         ) {
                             if let Ok(old) =
                                 verify_snapshot(&room, target.source, target.channel, &target.body)

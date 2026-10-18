@@ -65,6 +65,10 @@ pub trait NativeMediaServices: Send + Sync {
 
 /// Exact connected peer, retained independently from the launch ticket's TTL.
 pub(super) struct LocalAppConnection {
+    pub(super) managed_task_agent: Option<String>,
+    pub(super) managed_identity: Option<Arc<dyn crate::services::ManagedApplicationIdentity>>,
+    pub(super) model_connection: uuid::Uuid,
+    pub(super) protected_model: Option<launcher::registration_gate::ProtectedModelLaunch>,
     pub(super) app_id: String,
     pub(super) workspace_id: String,
     pub(super) creation: Option<crate::services::ApplicationCreationEvidence>,
@@ -216,6 +220,8 @@ impl LocalAppConnection {
     ) -> Option<Arc<Self>> {
         process.alive().then(|| {
             Arc::new(Self {
+                model_connection: uuid::Uuid::new_v4(),
+                protected_model: None,
                 descriptors: (app_id == FILES).then(|| {
                     runtime_portal::descriptor_lane::ReceivedDescriptors::new(
                         MAX_HANDED_DESCRIPTORS,
@@ -223,6 +229,8 @@ impl LocalAppConnection {
                 }),
                 app_id,
                 workspace_id,
+                managed_task_agent: launch.managed_task_agent,
+                managed_identity: launch.managed_identity,
                 creation: launch.creation,
                 continuation_instance: launch.continuation_instance,
                 process,
@@ -234,9 +242,12 @@ impl LocalAppConnection {
         handoff: super::CollabLaunchHandoff,
         process: Option<PeerProcess>,
         launch: crate::services::AuthenticatedApplicationLaunch,
+        protected_model: Option<launcher::registration_gate::ProtectedModelLaunch>,
     ) -> Option<Arc<Self>> {
         process.and_then(|process| {
-            Self::attested(handoff.app_id, handoff.workspace_id, process, launch)
+            let mut local = Self::attested(handoff.app_id, handoff.workspace_id, process, launch)?;
+            Arc::get_mut(&mut local)?.protected_model = protected_model;
+            Some(local)
         })
     }
     pub(super) fn current(&self) -> bool {
@@ -301,6 +312,7 @@ impl ProcessMonitor {
                 // it now rather than on a clock.
                 tilo_identity_host::policy_change::announce();
                 if let Some(state) = state.upgrade() {
+                    state.close_native_model_peer(peer);
                     if let Some(service) = state.services.native_media.as_ref() {
                         service.disconnect(peer);
                     }

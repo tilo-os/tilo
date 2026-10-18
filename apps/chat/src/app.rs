@@ -299,13 +299,20 @@ pub(crate) enum Hit {
     /// Return from Inbox to channels belonging to the active Tilo workspace.
     CurrentContext,
     Channel(Id),
-    Agent(Id),
     DirectPerson(String),
     AgentWindow,
     AgentDragHandle,
     AgentIntent(AgentComposerIntent),
     AgentTask(Box<crate::agent_tasks::AgentTaskFrontier>),
     AgentTaskMore,
+    TaskOutput(Box<tilo_actions::task_messaging::TaskOutputRef>),
+    TaskFilter(String),
+    TaskLabel(String),
+    TaskExpand(Id),
+    AgentSubtask,
+    AgentSetup,
+    NewTask,
+    Tasks,
     AgentStart,
     AgentStop,
     /// A voice-channel member chip in the sidebar — clicking joins the call.
@@ -391,7 +398,6 @@ impl Hit {
             Self::CurrentContext => "chat.current-context".into(),
             Self::Channel(id) => format!("chat.channel:{id}"),
             Self::DirectPerson(key) => format!("chat.person:{key}"),
-            Self::Agent(id) => format!("chat.agent:{id}"),
             Self::AgentWindow => "chat.agent-window".into(),
             Self::AgentDragHandle => "chat.agent-drag".into(),
             Self::AgentIntent(intent) => format!("chat.agent-intent:{intent:?}"),
@@ -402,6 +408,17 @@ impl Hit {
                 task.after_revision.unwrap_or_default()
             ),
             Self::AgentTaskMore => "chat.agent-task-more".into(),
+            Self::TaskOutput(output) => format!(
+                "chat.task-output:{}:{}:{}",
+                output.task_run.task_id, output.task_run.run_epoch, output.invocation
+            ),
+            Self::TaskFilter(filter) => format!("chat.tasks-filter:{filter}"),
+            Self::TaskLabel(label) => format!("chat.tasks-label:{label}"),
+            Self::TaskExpand(task) => format!("chat.task-expand:{task}"),
+            Self::AgentSubtask => "chat.task-create-subtask".into(),
+            Self::AgentSetup => "chat.task-setup".into(),
+            Self::NewTask => "chat.new-task".into(),
+            Self::Tasks => "chat.tasks-open".into(),
             Self::AgentStart => "chat.agent-start".into(),
             Self::AgentStop => "chat.agent-stop".into(),
             Self::VoiceChannel(id) => format!("chat.voice-channel:{id}"),
@@ -637,6 +654,8 @@ pub struct ChatApp {
     pub(crate) timeline_total_height: f64,
     pub(crate) scroll_content: f64,
     pub(crate) scroll_viewport: f64,
+    pub(crate) task_navigation: ui::widget::ScrollRegion,
+    pub(crate) task_navigation_theme: Theme,
     pub(crate) thread_open: Option<Id>,
     pub(crate) revealed_message: Option<Id>,
     pub(crate) revealed_range: Option<(Id, String, usize, usize)>,
@@ -744,6 +763,7 @@ pub struct ChatApp {
     capture_agent_presence: Option<PresenceCtx>,
     /// Agent navigation entry; the task client pins the conversation's exact run.
     pub(crate) direct_agent: Option<Id>,
+    pub(crate) task_goal: Option<crate::task_onboarding::TaskGoalDraft>,
     pub(crate) direct_person: Option<String>,
     pub(crate) person_subscription: Option<uuid::Uuid>,
     pub(crate) person_workspace: Option<String>,
@@ -753,6 +773,11 @@ pub struct ChatApp {
     pub(crate) person_body_views: HashMap<String, (String, crate::composer::MessageEditor)>,
     pub(crate) agent_intents: ui::LocalState<HashMap<(Id, Id), AgentComposerIntent>>,
     pub(crate) agent_tasks: AgentTaskClient,
+    pub(crate) task_filter: String,
+    pub(crate) task_search: ui::widget::SearchField,
+    pub(crate) task_search_focused: bool,
+    pub(crate) task_label: String,
+    pub(crate) expanded_tasks: std::collections::BTreeSet<String>,
     /// Retained direct-Agent conversations currently owned by the shared
     /// floating-surface host, keyed by their deterministic conversation id.
     /// The person's reduced-motion setting, applied to every floating
@@ -1018,6 +1043,8 @@ impl ChatApp {
             timeline_total_height: 0.0,
             scroll_content: 0.0,
             scroll_viewport: 0.0,
+            task_navigation: ui::widget::ScrollRegion::vertical().with_edge_fade(),
+            task_navigation_theme: Theme::default(),
             thread_open: Some("m_concept".into()),
             revealed_message: None,
             revealed_range: None,
@@ -1074,6 +1101,7 @@ impl ChatApp {
             room_agents: Vec::new(),
             capture_agent_presence: None,
             direct_agent: None,
+            task_goal: None,
             direct_person: None,
             person_subscription: None,
             person_workspace: None,
@@ -1084,6 +1112,13 @@ impl ChatApp {
             agent_intents: ui::LocalState::new(HashMap::new()),
             agent_tasks: AgentTaskClient::new(),
             motion_reduced: false,
+            task_filter: "all".into(),
+            task_search: ui::widget::SearchField::filter()
+                .with_id("chat.tasks.public-filter.local")
+                .with_placeholder(&crate::i18n::t("chat-task-filter-placeholder")),
+            task_search_focused: false,
+            task_label: String::new(),
+            expanded_tasks: std::collections::BTreeSet::new(),
             agent_surfaces: HashMap::new(),
             agent_surface_requests: VecDeque::new(),
             focused_agent_surface: None,
@@ -1410,6 +1445,7 @@ impl ChatApp {
         preferences: ui::framework::Setting<crate::preferences::ChatPreferences>,
     ) {
         self.collapsed = preferences.get().collapsed_categories;
+        self.expanded_tasks = preferences.get().expanded_tasks;
         self.preferences = Some(preferences);
         self.reselect();
     }
@@ -1479,6 +1515,12 @@ impl ChatApp {
         self.reselect();
         self.request_relayout();
         self.stage_floating_call(scenario);
+        if matches!(
+            scenario,
+            "TaskConversationFloating" | "TaskGoalFloating" | "TaskAnswerFloating"
+        ) {
+            self.float_agent_conversation();
+        }
     }
 
     /// The panels, menus and call state of `scenario`.
@@ -1488,6 +1530,18 @@ impl ChatApp {
     )]
     pub(crate) fn stage_view(&mut self, scenario: &str) {
         match scenario {
+            "TaskGoalBeforeSetup" | "TaskGoalCompact" | "TaskGoalFloating" => {
+                self.begin_task_goal(None);
+                if let Some(goal) = &self.task_goal {
+                    self.composer_main.set_conversation_text(
+                        &goal.key(),
+                        "Example: Review the document before publishing.",
+                    );
+                }
+                self.left_flap.snap(false);
+                self.right_flap.snap(false);
+                self.call = CallState::default();
+            }
             "narrow" => {
                 // Overlay-collapsed conversation: both flaps closed, no thread,
                 // no floating call — the clean single-column reading state.
@@ -1540,7 +1594,14 @@ impl ChatApp {
                 self.right_flap.snap(true);
                 self.call = CallState::default();
             }
-            "agent-task"
+            "QueuedTask"
+            | "TaskTreeCompact"
+            | "Subtask"
+            | "RunningSteering"
+            | "TaskConversationFloating"
+            | "TaskAnswer"
+            | "TaskAnswerFloating"
+            | "agent-task"
             | "agent-task-compact"
             | "agent-task-queued"
             | "agent-task-queued-compact" => {
@@ -1551,15 +1612,23 @@ impl ChatApp {
                 self.capture_agent_presence = Some(presence);
                 self.room_agents = vec!["scribe".into()];
                 self.room_names.insert("scribe".into(), "Scribe".into());
-                if scenario.starts_with("agent-task-queued") {
+                if scenario.starts_with("agent-task-queued") || scenario == "QueuedTask" {
                     self.agent_tasks
                         .stage_queued_capture(&self.active_ws, "scribe");
+                } else if matches!(scenario, "TaskAnswer" | "TaskAnswerFloating") {
+                    self.agent_tasks
+                        .stage_answer_capture(&self.active_ws, "scribe");
+                } else if matches!(scenario, "Subtask" | "TaskTreeCompact") {
+                    self.agent_tasks
+                        .stage_subtask_capture(&self.active_ws, "scribe");
+                    self.expanded_tasks.insert("task:review".into());
                 } else {
                     self.agent_tasks.stage_capture(&self.active_ws, "scribe");
                 }
                 self.open_agent_conversation("scribe");
                 self.set_direct_agent_intent(AgentComposerIntent::Steer);
-                self.left_flap.snap(false);
+                self.left_flap
+                    .snap(matches!(scenario, "Subtask" | "TaskTreeCompact"));
                 self.right_flap.snap(false);
                 self.call = CallState::default();
             }
@@ -2005,11 +2074,36 @@ impl ChatApp {
             .unwrap_or_else(|| crate::i18n::t("chat-agent-kind"))
     }
 
+    pub(crate) fn toggle_task_children(&mut self, task: &str) {
+        if !self.expanded_tasks.remove(task) {
+            self.expanded_tasks.insert(task.to_owned());
+        }
+        if let Some(preferences) = &self.preferences {
+            let expanded = self.expanded_tasks.clone();
+            let _ = preferences.update(|stored| stored.expanded_tasks = expanded);
+        }
+        self.request_relayout();
+    }
+
     pub(crate) fn open_agent_conversation(&mut self, agent: &str) -> bool {
-        if !self.room_agents.iter().any(|known| known == agent) {
+        // An existing task remains readable after its executor leaves the room.
+        // Live mutation still requires the owner's exact current frontier.
+        let pending_task = self
+            .agent_tasks
+            .all_tasks()
+            .iter()
+            .any(|task| task.assigned_agent == agent);
+        if !pending_task
+            && !self.room_agents.iter().any(|known| known == agent)
+            && self
+                .agent_tasks
+                .eligible_compute(&self.active_ws)
+                .is_none_or(|worker| worker.agent_id != agent)
+        {
             return false;
         }
         self.close_person_conversation();
+        self.task_goal = None;
         self.direct_agent = Some(agent.to_owned());
         self.active_channel =
             crate::record::agent_conversation_channel_id(&self.active_ws, agent).to_string();
@@ -2017,6 +2111,7 @@ impl ChatApp {
         self.thread_open = None;
         self.focus = Focus::Main;
         self.agent_tasks.observe(&self.active_ws, agent);
+        self.sync_task_channel();
         self.sync_agent_route();
         self.scroll = 0.0;
         let channel = self.active_channel.clone();
@@ -2049,6 +2144,7 @@ impl ChatApp {
         view.context_ws.clone_from(&parent.context_ws);
         view.active_ws.clone_from(&parent.active_ws);
         view.direct_agent.clone_from(&parent.direct_agent);
+        view.task_goal.clone_from(&parent.task_goal);
         view.person_subscription = parent.person_subscription;
         view.direct_person = parent
             .direct_person
@@ -2087,10 +2183,11 @@ impl ChatApp {
             .direct_agent
             .clone()
             .or_else(|| self.direct_person.clone())
+            .or_else(|| self.task_goal.as_ref().map(|goal| goal.key().draft_key()))
         else {
             return false;
         };
-        let available = if self.direct_person.is_some() {
+        let available = if self.direct_person.is_some() || self.task_goal.is_some() {
             self.main_composer_can_edit()
         } else {
             self.direct_agent_is_available()
@@ -2124,6 +2221,7 @@ impl ChatApp {
     }
 
     pub(crate) fn leave_floated_agent_route(&mut self) {
+        self.task_goal = None;
         let fallback = self
             .channels
             .iter()
@@ -2154,6 +2252,7 @@ impl ChatApp {
             .direct_agent
             .clone()
             .or_else(|| self.direct_person.clone())
+            .or_else(|| self.task_goal.as_ref().map(|goal| goal.key().draft_key()))
         else {
             return;
         };
@@ -2247,6 +2346,7 @@ impl ChatApp {
         self.active_ws.clone_from(&surface.view.active_ws);
         channel.clone_into(&mut self.active_channel);
         self.direct_agent.clone_from(&surface.view.direct_agent);
+        self.task_goal.clone_from(&surface.view.task_goal);
         self.person_subscription = surface.view.person_subscription;
         self.direct_person = surface
             .view
@@ -2316,9 +2416,19 @@ impl ChatApp {
     }
 
     pub(crate) fn direct_agent_is_available(&self) -> bool {
-        self.direct_agent
-            .as_ref()
-            .is_some_and(|agent| self.room_agents.contains(agent))
+        self.direct_agent.as_ref().is_some_and(|agent| {
+            (agent.is_empty()
+                && self
+                    .agent_tasks
+                    .view(agent)
+                    .and_then(AgentTaskView::current)
+                    .is_some())
+                || self.room_agents.contains(agent)
+                || self
+                    .agent_tasks
+                    .eligible_compute(&self.active_ws)
+                    .is_some_and(|worker| &worker.agent_id == agent)
+        })
     }
 
     pub(crate) fn direct_agent_intent(&self) -> AgentComposerIntent {
@@ -2388,6 +2498,15 @@ impl ChatApp {
         self.agent_tasks.view(self.direct_agent.as_deref()?)
     }
 
+    pub(crate) fn sync_task_channel(&mut self) {
+        if let Some((task, epoch)) = self
+            .direct_agent_tasks()
+            .and_then(AgentTaskView::selected_identity)
+        {
+            self.active_channel = format!("task-conversation:{}:{task}:{epoch}", self.active_ws);
+        }
+    }
+
     pub(crate) fn direct_agent_intent_allowed(&self, intent: AgentComposerIntent) -> bool {
         if !self.direct_agent_is_available() {
             return false;
@@ -2396,11 +2515,15 @@ impl ChatApp {
             AgentComposerIntent::Queue => self.direct_agent_tasks().is_some(),
             AgentComposerIntent::Steer => self
                 .direct_agent_tasks()
-                .is_some_and(AgentTaskView::can_steer),
+                .and_then(AgentTaskView::selected_identity)
+                .is_some(),
         }
     }
 
     pub(crate) fn main_composer_can_edit(&self) -> bool {
+        if let Some(goal) = &self.task_goal {
+            return goal.workspace == self.active_ws && !goal.saving;
+        }
         if let Some(peer) = &self.direct_person {
             return self
                 .person_contacts
@@ -2478,6 +2601,25 @@ impl ChatApp {
     /// name like anyone else, and an honest placeholder for someone the room
     /// has not named yet — nobody is ever shown their raw routing id.
     pub(crate) fn user_name(&self, id: &str) -> String {
+        if let Some(task) = id
+            .strip_prefix("task-message:")
+            .or_else(|| id.strip_prefix("task-report:"))
+        {
+            if let Some(selected) = self.direct_agent_tasks().and_then(AgentTaskView::current)
+                && selected.task_id == task
+                && !selected.title.trim().is_empty()
+            {
+                return selected.title.clone();
+            }
+            return self
+                .agent_tasks
+                .all_tasks()
+                .into_iter()
+                .find(|known| known.task_id == task)
+                .map(|known| known.title.clone())
+                .filter(|title| !title.trim().is_empty())
+                .unwrap_or_else(|| crate::i18n::t("chat-task-kind"));
+        }
         if self
             .native_voice
             .snapshot
@@ -2498,13 +2640,19 @@ impl ChatApp {
             }
             return crate::identity::unnamed_label(id);
         }
-        if let Some(agent) = id.strip_prefix("agent:")
-            && self.room_agents.iter().any(|known| known == agent)
-        {
-            return crate::i18n::t_args(
-                "chat-agent-task-author",
-                &[("name", self.agent_display_name(agent).into())],
-            );
+        if let Some(agent) = id.strip_prefix("agent:") {
+            // Name this conversation's assistant after its exact selected task,
+            // not whichever task the same worker happens to be running now.
+            // Keep the recorded author id intact for grouping and audit.
+            if let Some(task) = self.direct_agent_tasks().and_then(AgentTaskView::current)
+                && (task.assigned_agent == agent || task.active_agent.as_deref() == Some(agent))
+                && !task.title.trim().is_empty()
+            {
+                return task.title.clone();
+            }
+            if self.room_agents.iter().any(|known| known == agent) {
+                return self.agent_display_name(agent);
+            }
         }
         if let Some(agent) = self.agent_authors.get(id) {
             return format!("{agent} (agent)");
@@ -2691,6 +2839,7 @@ impl ChatApp {
             || !self.can_participate()
             || self.direct_agent.is_some()
             || self.direct_person.is_some()
+            || self.task_goal.is_some()
         {
             return None;
         }
@@ -2777,6 +2926,7 @@ impl ChatApp {
         // Keep the active channel valid (e.g. after a workspace switch).
         if self.direct_agent.is_none()
             && self.direct_person.is_none()
+            && self.task_goal.is_none()
             && self
                 .channel(&self.active_channel)
                 .map(|c| c.workspace.clone())
@@ -2844,7 +2994,9 @@ impl ChatApp {
     fn sync_reload_composers(&mut self, doc: &AutoCommit) {
         // Point each composer at its surface's draft; the editors read it on
         // their next sync (`sync_composers`), keeping the caret while typing.
-        if self.direct_person.is_some() {
+        if self.task_goal.is_some() {
+            self.sync_task_goal();
+        } else if self.direct_person.is_some() {
             self.sync_person_draft();
         } else if self.direct_agent.is_some() {
             self.sync_agent_route();
@@ -2869,6 +3021,10 @@ impl ChatApp {
             },
         );
         self.composer_main.set_placeholder(&placeholder);
+        if self.task_goal.is_some() {
+            self.composer_main
+                .set_placeholder(&crate::i18n::t("chat-agent-task-placeholder"));
+        }
         if self.direct_person.is_some() {
             self.composer_main
                 .set_placeholder(&crate::i18n::t("chat-person-chat-placeholder"));
@@ -2991,7 +3147,12 @@ impl ChatApp {
     /// navigates away. Idempotent (a no-op when nothing new arrived), so it is
     /// safe to call every frame.
     pub(crate) fn mark_active_read(&mut self, doc: &AutoCommit) {
-        if self.direct_person.is_some() || self.active_channel.is_empty() || !self.timeline_at_end {
+        if self.task_goal.is_some()
+            || self.direct_agent.is_some()
+            || self.direct_person.is_some()
+            || self.active_channel.is_empty()
+            || !self.timeline_at_end
+        {
             return;
         }
         let chat = crate::projection::read(doc);
@@ -3232,7 +3393,14 @@ impl ChatApp {
         let pad = chrome.composer_min_h - chrome.body_line;
         let input = (self.composer_main.measured_height() + pad)
             .clamp(chrome.composer_min_h, chrome.composer_max_h);
-        if self.direct_agent.is_some() {
+        if self.task_goal.is_some() {
+            input
+                + self.task_goal_controls_height(
+                    tr,
+                    theme,
+                    (self.center_right() - self.center_left() - 2.0 * chrome.gutter).max(0.0),
+                )
+        } else if self.direct_agent.is_some() {
             input
                 + self.agent_task_controls_height(
                     tr,
@@ -3547,15 +3715,6 @@ impl ChatApp {
                         )
                     }
                     Hit::DirectPerson(key) => (self.person_display_name(key), Role::Button, false),
-                    Hit::Agent(agent) => (
-                        format!(
-                            "{}, {}",
-                            self.agent_display_name(agent),
-                            crate::i18n::t("chat-agent-kind")
-                        ),
-                        Role::ListItem,
-                        self.direct_agent.as_deref() == Some(agent.as_str()),
-                    ),
                     Hit::AgentWindow => (
                         if self.conversation_surface {
                             crate::i18n::t("chat-agent-return")
@@ -3583,9 +3742,39 @@ impl ChatApp {
                                     && current.after_revision == task.after_revision
                             }),
                     ),
+                    Hit::TaskOutput(output) => (
+                        crate::agent_tasks::output_label(output),
+                        Role::Button,
+                        false,
+                    ),
                     Hit::AgentTaskMore => {
                         (crate::i18n::t("chat-agent-task-next"), Role::Button, false)
                     }
+                    Hit::TaskLabel(label) => (
+                        if label.is_empty() {
+                            crate::i18n::t("chat-task-all-labels")
+                        } else {
+                            label.clone()
+                        },
+                        Role::Button,
+                        self.task_label == *label,
+                    ),
+                    Hit::TaskFilter(filter) => (
+                        crate::i18n::t(&format!("chat-tasks-filter-{filter}")),
+                        Role::Button,
+                        self.task_filter == *filter,
+                    ),
+                    Hit::TaskExpand(_) => (
+                        crate::i18n::t("chat-task-toggle-children"),
+                        Role::Button,
+                        false,
+                    ),
+                    Hit::AgentSubtask => {
+                        (crate::i18n::t("chat-task-add-subtask"), Role::Button, false)
+                    }
+                    Hit::AgentSetup => (self.agent_tasks.setup_label(), Role::Button, false),
+                    Hit::NewTask => (crate::i18n::t("chat-agent-mode-queue"), Role::Button, false),
+                    Hit::Tasks => (crate::i18n::t("chat-agents-section"), Role::Button, false),
                     Hit::AgentStart => (crate::i18n::t("chat-agent-start"), Role::Button, false),
                     Hit::AgentStop => (crate::i18n::t("chat-agent-stop"), Role::Button, false),
                     Hit::CategoryToggle(id) => {
@@ -4419,6 +4608,9 @@ impl Widget for ChatApp {
         self.set_composer_focus();
     }
     fn ime_content(&self) -> Option<ui::ime::InputContent> {
+        if self.task_search_focused {
+            return self.task_search.ime_content();
+        }
         if let Some(id) = self.focused_agent_surface.as_deref()
             && let Some(surface) = self
                 .agent_surfaces
@@ -4430,6 +4622,9 @@ impl Widget for ChatApp {
         self.host_focused.then_some(ui::ime::InputContent::TEXT)
     }
     fn ime_cursor_rect(&self) -> Option<Rect> {
+        if self.task_search_focused {
+            return self.task_search.ime_cursor_rect();
+        }
         if let Some(id) = self.focused_agent_surface.as_deref()
             && let Some(surface) = self
                 .agent_surfaces
@@ -4470,9 +4665,16 @@ impl Widget for ChatApp {
         self.settle_attachment_import();
         self.refresh_person_conversation();
         self.canonical_dirty |= self.agent_tasks.pump();
+        self.settle_task_goal();
         self.settle_agent_drafts();
+        self.refresh_person_conversation();
+        self.agent_tasks.observe_tasks(&self.active_ws);
+        for agent in self.room_agents.clone() {
+            self.agent_tasks.observe(&self.active_ws, &agent);
+        }
         if let Some(agent) = self.direct_agent.clone() {
             self.agent_tasks.observe(&self.active_ws, &agent);
+            self.sync_task_channel();
             self.sync_agent_route();
         }
         {
@@ -4764,6 +4966,42 @@ impl Widget for ChatApp {
             self.settle_agent_surface_commands();
             return;
         }
+        if self.left_flap.is_open() && (self.task_goal.is_some() || self.direct_agent.is_some()) {
+            if self
+                .task_navigation
+                .handle_event(event, ctx, &self.task_navigation_theme)
+            {
+                self.canonical_dirty = true;
+            }
+            if *ctx.handled {
+                return;
+            }
+        }
+        if self.left_flap.is_open() && self.task_search.get_rect().area() > 0.0 {
+            if matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: winit::event::ElementState::Pressed,
+                    ..
+                }
+            ) {
+                self.task_search_focused = self.task_search.get_rect().contains(self.last_mouse);
+                self.task_search.set_focused(self.task_search_focused);
+            }
+            self.task_search.handle_event(event, ctx);
+            if self.task_search.take_dirty().is_some() {
+                self.request_relayout();
+            }
+            if *ctx.handled
+                || (self.task_search_focused
+                    && matches!(
+                        event,
+                        WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
+                    ))
+            {
+                return;
+            }
+        }
         // Embedded inputs request focus with a temporary layout node. Map
         // that actual request to Chat's retained keyboard/IME owner.
         let was_handled = *ctx.handled;
@@ -4855,22 +5093,23 @@ impl Widget for ChatApp {
 
         let conversation = self.conversation_accessibility();
         let mut children: Vec<AccessNode> = controls;
+        if self.left_flap.is_open()
+            && let Some(mut search) = self.task_search.accessibility()
+        {
+            qualify_task_search(&mut search);
+            children.push(search);
+        }
         children.extend(self.left_flap.resize_accessibility());
         children.extend(self.right_flap.resize_accessibility());
-        if let Some(peer) = &self.direct_person {
-            children.push(
-                AccessNode::new(Role::Heading { level: 1 })
-                    .with_name(self.person_display_name(peer))
-                    .with_description(crate::i18n::t("chat-person-chat-private"))
-                    .with_bounds(self.header_rect())
-                    .with_hashed_key(("person-conversation-heading", &self.active_channel)),
-            );
-        }
-        if let Some(agent) = self.direct_agent.as_deref() {
+        if self.direct_agent.is_some() || self.task_goal.is_some() || self.direct_person.is_some() {
+            let identity = self.header_identity_text();
             let mut heading = AccessNode::new(Role::Heading { level: 1 })
-                .with_name(self.header_identity_text().name)
+                .with_name(identity.name)
                 .with_bounds(self.header_rect())
-                .with_hashed_key(("agent-conversation-heading", agent));
+                .with_hashed_key(("private-conversation-heading", &self.active_channel));
+            if let Some(kind) = identity.kind {
+                heading = heading.with_description(kind);
+            }
             if let Some(tasks) = self.direct_agent_tasks() {
                 let lines = crate::render_chat::agent_task_status_lines(tasks);
                 let description = lines.receipt.map_or_else(
@@ -4928,20 +5167,11 @@ impl Widget for ChatApp {
         let [index] = path else {
             return None;
         };
-        self.semantic_hits()
-            .get(*index)
-            .map(|(rect, ..)| *rect)
-            .or_else(|| {
-                let offset = index.checked_sub(self.semantic_hits().len())?;
-                [
-                    self.left_flap.resize_accessibility(),
-                    self.right_flap.resize_accessibility(),
-                ]
-                .into_iter()
-                .flatten()
-                .nth(offset)
-                .and_then(|node| node.bounds.map(ui::a11y::AccessBounds::to_rect))
-            })
+        self.accessibility()?
+            .children
+            .get(*index)?
+            .bounds
+            .map(ui::a11y::AccessBounds::to_rect)
     }
 
     fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
@@ -4949,15 +5179,11 @@ impl Widget for ChatApp {
             return false;
         };
         if *index >= self.semantic_hits().len() {
-            let offset = index.saturating_sub(self.semantic_hits().len());
-            let target = [
-                self.left_flap.resize_accessibility(),
-                self.right_flap.resize_accessibility(),
-            ]
-            .into_iter()
-            .flatten()
-            .nth(offset)
-            .and_then(|node| node.action_target);
+            let target = self.accessibility().and_then(|node| {
+                node.children
+                    .get(*index)
+                    .and_then(|child| child.action_target.clone())
+            });
             return target.is_some_and(|target| {
                 self.perform_drawer_resize(&target, &ui::a11y::Action::Focus)
             });
@@ -4980,6 +5206,14 @@ impl Widget for ChatApp {
         state: &mut ui::widget::Edits<'_>,
         path: &ui::widget::ModelPath,
     ) -> bool {
+        if let Some(target) = target.strip_prefix("task-search:") {
+            let handled = self
+                .task_search
+                .perform_semantic_action(target, action, state, path);
+            self.task_search_focused |= handled;
+            self.request_relayout();
+            return handled;
+        }
         if self.perform_drawer_resize(target, action) {
             return true;
         }
@@ -5022,6 +5256,9 @@ impl Widget for ChatApp {
         }
         if matches!(hit, Hit::Send) && self.direct_person.is_some() {
             return self.send_person_focused();
+        }
+        if matches!(hit, Hit::Send) && self.task_goal.is_some() {
+            return self.save_task_goal();
         }
         if matches!(hit, Hit::Send) && self.direct_agent.is_some() {
             return self.send_agent_focused(state);
@@ -5096,6 +5333,7 @@ impl Widget for ChatApp {
             .as_deref()
             .and_then(|agent| self.agent_tasks.next_refresh_deadline(agent))
             .into_iter()
+            .chain(self.agent_tasks.task_list_deadline())
             .chain(
                 self.agent_surfaces
                     .values()
@@ -5155,7 +5393,13 @@ impl ChatApp {
             Action::SetValue(_) | Action::SetSelection { .. } => match hit {
                 Hit::FocusMain => {
                     self.focus = Focus::Main;
-                    self.composer_main.ensure_draft(state);
+                    if self.direct_agent.is_none()
+                        && self.direct_person.is_none()
+                        && self.task_goal.is_none()
+                    {
+                        self.composer_main.ensure_draft(state);
+                    }
+                    self.composer_main.sync(state);
                     if !self.composer_main.perform_action(action, state, path) {
                         return false;
                     }
@@ -5410,6 +5654,15 @@ impl ChatApp {
     }
 }
 
+fn qualify_task_search(node: &mut ui::a11y::AccessNode) {
+    if let Some(target) = &mut node.action_target {
+        *target = format!("task-search:{target}");
+    }
+    for child in &mut node.children {
+        qualify_task_search(child);
+    }
+}
+
 #[cfg(test)]
 mod identity_on_screen {
     use super::*;
@@ -5491,6 +5744,80 @@ mod identity_on_screen {
             status: crate::model::Presence::Online,
             is_agent,
         }
+    }
+
+    #[test]
+    fn answer_scenarios_retain_the_same_private_run_when_floated() {
+        let mut normal = ChatApp::new_ephemeral();
+        normal.stage_view("TaskAnswer");
+        let normal_view = normal.agent_tasks.view("scribe").unwrap();
+        let route = normal_view.draft_route();
+        assert_eq!(route.as_deref(), Some("task:task:review:7"));
+        let messages = normal_view.conversation_messages("private", "me");
+
+        let mut floating = ChatApp::new_ephemeral();
+        floating.stage_view("TaskAnswerFloating");
+        floating.rect = Rect::new(0.0, 0.0, 1000.0, 700.0);
+        assert!(floating.float_agent_conversation());
+        let surface = floating.agent_surfaces.values().next().unwrap();
+        let retained = surface.view.agent_tasks.view("scribe").unwrap();
+        assert_eq!(retained.draft_route(), route);
+        assert_eq!(retained.selected_identity(), Some(("task:review", 7)));
+        assert_eq!(retained.current().unwrap().status, "done");
+        let floated_messages = retained.conversation_messages("private", "me");
+        assert_eq!(floated_messages.len(), messages.len());
+        for (normal, floated) in messages.iter().zip(&floated_messages) {
+            assert_eq!(normal.id, floated.id);
+            assert_eq!(normal.author, floated.author);
+            assert_eq!(normal.text, floated.text);
+            assert_eq!(normal.ts, floated.ts);
+        }
+    }
+
+    #[test]
+    fn task_output_author_uses_the_selected_task_title_without_a_roster_entry() {
+        let mut app = ChatApp::new_ephemeral();
+        app.direct_agent = Some("scribe".into());
+        let view = app.agent_tasks.stage_capture("room", "scribe");
+        let original = view.current().unwrap().clone();
+        let mut other = original.clone();
+        other.task_id = "task:other".into();
+        other.title = "Another task on the same worker".into();
+        view.tasks.push(other.clone());
+
+        assert_eq!(
+            app.user_name("agent:scribe"),
+            "Example: Review search actions"
+        );
+        assert_ne!(app.user_name("agent:unrelated"), other.title);
+        assert_eq!(app.user_name(&app.me.id), "You");
+
+        assert!(app.agent_tasks.select("scribe", &other));
+        assert_eq!(app.user_name("agent:scribe"), other.title);
+        assert!(app.agent_tasks.select("scribe", &original));
+        assert_eq!(
+            app.user_name("agent:scribe"),
+            "Example: Review search actions"
+        );
+
+        app.direct_agent = None;
+        assert_ne!(
+            app.user_name("agent:scribe"),
+            "Example: Review search actions"
+        );
+    }
+
+    #[test]
+    fn blank_task_title_does_not_replace_the_agent_name() {
+        let mut app = ChatApp::new_ephemeral();
+        app.direct_agent = Some("scribe".into());
+        app.room_agents.push("scribe".into());
+        let view = app.agent_tasks.stage_capture("room", "scribe");
+        view.tasks[0].title = "  ".into();
+        assert_eq!(
+            app.user_name("agent:scribe"),
+            app.agent_display_name("scribe")
+        );
     }
 
     #[test]

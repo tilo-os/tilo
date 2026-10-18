@@ -15,7 +15,7 @@ pub use reservation::{authority_limit, preflight_storage, reserved_file_bytes};
 
 pub(crate) const MAX_ENTRIES: usize = 64;
 pub(crate) const MAX_BYTES: usize = 4 * 1024 * 1024;
-pub(crate) const MAX_VISIBLE_ENTRIES: usize = MAX_ENTRIES * 2 + 1;
+pub(crate) const MAX_VISIBLE_ENTRIES: usize = MAX_ENTRIES * 2 + 2;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct StoredPublication {
     version: u32,
@@ -107,7 +107,10 @@ impl<'a> NativeOutgoingEntry<'a> {
     }
     #[must_use]
     pub fn retention(&self) -> Retention {
-        Retention::Delta
+        match postcard::from_bytes::<NeighbourMsg>(&self.0.bytes) {
+            Ok(NeighbourMsg::SanitizedRoomBaseline { .. }) => Retention::Checkpoint,
+            _ => Retention::Delta,
+        }
     }
 }
 fn read_entries<'de, D: serde::Deserializer<'de>>(
@@ -245,7 +248,8 @@ fn allowed(
     let mut allowed = [false; MAX_VISIBLE_ENTRIES];
     for (index, entry) in publication.governance.iter().enumerate() {
         if let Some(slot) = allowed.get_mut(index) {
-            *slot = validate_governance(view, entry).is_ok();
+            *slot = view.device().device_public_key == view.governor().device_public_key
+                && validate_governance(view, entry).is_ok();
         }
     }
     let governance_len = publication.governance.len();
@@ -316,6 +320,7 @@ pub fn validate_file_layout(
         match (version, room.version, room.publication.is_some()) {
             (3, 2, true) if room.effect_history_root.is_none() => {}
             (3, 3, true) if room.effect_history_root.is_some() => {}
+            (3, 4 | 5, true) => {}
             _ => return Err("native publication record/file layout mismatch".into()),
         }
         if let Some(publication) = &room.publication {
@@ -331,7 +336,7 @@ fn bounds(publication: &StoredPublication) -> Result<usize, String> {
         || publication.next_ordinal == 0
         || publication.entries.len() > MAX_ENTRIES
         || publication.projection.len() > MAX_ENTRIES
-        || publication.governance.len() > 1
+        || publication.governance.len() > 2
     {
         return Err("invalid native outgoing publication or entry capacity".into());
     }
@@ -476,11 +481,116 @@ pub(crate) fn reserve(view: &NativeCommittedView, bytes: &[u8]) -> Result<(), St
     Ok(())
 }
 
+/// Only the selected governor's exact signed baseline may replace retained history.
+pub(crate) fn authorize_baseline_checkpoint(
+    view: &NativeCommittedView,
+    bytes: &[u8],
+    channel: [u8; 32],
+) -> Result<(), String> {
+    if view.device().device_public_key != view.governor().device_public_key {
+        return Err("native member checkpoint publication refused".into());
+    }
+    let message: NeighbourMsg = postcard::from_bytes(bytes).map_err(|e| e.to_string())?;
+    let NeighbourMsg::SanitizedRoomBaseline { room, baseline } = message else {
+        return Err("native checkpoint is not a privacy baseline".into());
+    };
+    let (decoded, tail) =
+        postcard::take_from_bytes::<tilo_peer_state::SanitizedRoomBaseline>(&baseline)
+            .map_err(|e| e.to_string())?;
+    let stored = view
+        .record
+        .sanitized_baseline
+        .as_ref()
+        .ok_or("missing native baseline")?;
+    if !tail.is_empty() || room != view.record.room.to_string() || &decoded != stored {
+        return Err("native checkpoint differs from selected baseline".into());
+    }
+    let entry = state(view)?
+        .governance
+        .iter()
+        .find(|entry| entry.bytes == bytes && entry.channel == channel)
+        .ok_or("native checkpoint is not in committed custody")?;
+    validate_governance(view, entry)
+}
+
+fn baseline_message(view: &NativeCommittedView) -> Result<NeighbourMsg, String> {
+    Ok(NeighbourMsg::SanitizedRoomBaseline {
+        room: view.record.room.to_string(),
+        baseline: postcard::to_allocvec(
+            view.record
+                .sanitized_baseline
+                .as_ref()
+                .ok_or("missing native baseline")?,
+        )
+        .map_err(|e| e.to_string())?,
+    })
+}
+
+fn refresh_sanitized_checkpoint(view: &mut NativeCommittedView) -> Result<(), String> {
+    let baseline = view
+        .record
+        .sanitized_baseline
+        .as_ref()
+        .ok_or("missing native baseline")?;
+    let binding = crate::checkpoint::binding(view.record.room, baseline.anchor().document_hash);
+    let messages = [baseline_message(view)?, view.peer.room_message()];
+    let old = state(view)?.governance.clone();
+    let mut governance = Vec::new();
+    for message in messages {
+        let bytes = encode(&message, MAX_BYTES)?;
+        if let Some(entry) = old.iter().find(|entry| entry.bytes == bytes) {
+            governance.push(entry.clone());
+            continue;
+        }
+        let (channel, retention) =
+            neighbour_wire::retention(&message, true).ok_or("unsupported sanitized checkpoint")?;
+        if retention != Retention::Checkpoint {
+            return Err("sanitized baseline must be a checkpoint".into());
+        }
+        let publication = view
+            .record
+            .publication
+            .as_mut()
+            .ok_or("publication absent")?;
+        let ordinal = publication.next_ordinal;
+        publication.next_ordinal = ordinal
+            .checked_add(1)
+            .ok_or("publication ordinal exhausted")?;
+        governance.push(StoredOutgoing {
+            ordinal,
+            id: *blake3::hash(&bytes).as_bytes(),
+            bytes,
+            binding: binding.clone(),
+            timestamp_ns: view.record.enrolled_at_ns,
+            channel,
+            incremental: false,
+        });
+    }
+    let publication = view
+        .record
+        .publication
+        .as_mut()
+        .ok_or("publication absent")?;
+    if publication.governance != governance {
+        publication.version = 3;
+        publication.revision = publication
+            .revision
+            .checked_add(1)
+            .ok_or("publication revision exhausted")?;
+        publication.governance = governance;
+    }
+    bounds(publication)?;
+    Ok(())
+}
+
 pub(crate) fn replace_governance_checkpoint(
     view: &mut NativeCommittedView,
     binding: CommitBinding,
     now: SystemTime,
 ) -> Result<(), String> {
+    if view.record.sanitized_baseline.is_some() {
+        return refresh_sanitized_checkpoint(view);
+    }
     let message = view.peer.room_message();
     let bytes = encode(&message, MAX_BYTES)?;
     let existing = state(view)?.governance.first();
@@ -528,6 +638,9 @@ pub(crate) fn replace_governance_checkpoint(
 }
 
 pub(crate) fn refresh_governance_checkpoint(view: &mut NativeCommittedView) -> Result<(), String> {
+    if view.record.sanitized_baseline.is_some() {
+        return refresh_sanitized_checkpoint(view);
+    }
     let Some(existing) = state(view)?.governance.first().cloned() else {
         return Ok(());
     };
@@ -665,8 +778,87 @@ pub(crate) fn decode_entries(entries: &[StoredOutgoing]) -> Result<Vec<Neighbour
 }
 
 pub(crate) fn validate(view: &NativeCommittedView) -> Result<(), String> {
+    validate_inner(view, false)
+}
+
+pub(crate) fn validate_private_recovery(
+    view: &NativeCommittedView,
+    key: &SigningKey,
+) -> Result<(), String> {
+    if key.verifying_key().to_bytes() != view.governor().device_public_key {
+        return Err("private history recovery requires exact governor custody".into());
+    }
+    validate_inner(view, true)
+}
+
+/// Authenticate an old checkpoint for owner-local private-history recovery only.
+/// This does not admit the checkpoint, authorize replay, or validate current ancestry.
+/// The caller must prove ancestry before replacing history and retain extracted text.
+/// # Errors
+/// Refuses foreign signing custody, bad signatures or framing; only recognized
+/// historical privacy-policy violations can pass the strict document check.
+pub fn verify_private_recovery_baseline(
+    baseline: &tilo_peer_state::SanitizedRoomBaseline,
+    room: &str,
+    governor: [u8; 32],
+    key: &SigningKey,
+) -> Result<automerge::AutoCommit, String> {
+    if key.verifying_key().to_bytes() != governor {
+        return Err("private history recovery requires exact governor custody".into());
+    }
+    recovery_checkpoint(baseline, room, governor)
+}
+
+// This exception is only for authenticated local recovery, never receive or replay.
+// Verification checks signature, anchor and checkpoint framing before privacy.
+pub(crate) fn recovery_checkpoint(
+    baseline: &tilo_peer_state::SanitizedRoomBaseline,
+    room: &str,
+    governor: [u8; 32],
+) -> Result<automerge::AutoCommit, String> {
+    match baseline.verify_anchored_document(room, governor, &baseline.anchor()) {
+        Ok(doc) => Ok(doc),
+        Err(error) if recoverable_private_baseline(&error) => {
+            tilo_automerge_isolate::load(&baseline.document).map_err(|e| e.to_string())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+pub(crate) fn recoverable_private_baseline(error: &str) -> bool {
+    matches!(
+        error,
+        "baseline contains private model authority contract"
+            | "baseline contains private automatic task reports"
+            | "baseline contains private task presentation bodies"
+            | "baseline contains private task confirmation bodies"
+    )
+}
+
+fn validate_inner(view: &NativeCommittedView, private_recovery: bool) -> Result<(), String> {
     let publication = state(view)?;
     bounds(publication)?;
+    if matches!(view.record.version, 4 | 5) != view.record.sanitized_baseline.is_some()
+        || view.peer.sanitized_room_generation()?
+            != view
+                .record
+                .sanitized_baseline
+                .as_ref()
+                .map_or(0, |baseline| baseline.generation)
+    {
+        return Err("native room baseline custody or generation mismatch".into());
+    }
+    if view.record.sanitized_baseline.is_some() {
+        let invalid = "native sanitized publication is missing its baseline or current deltas";
+        let [baseline, current] = publication.governance.as_slice() else {
+            return Err(invalid.into());
+        };
+        if baseline.bytes != encode(&baseline_message(view)?, MAX_BYTES)?
+            || current.bytes != encode(&view.peer.room_message(), MAX_BYTES)?
+        {
+            return Err(invalid.into());
+        }
+    }
     let mut ids = BTreeSet::new();
     let mut ordinals = BTreeSet::new();
     for entry in publication
@@ -690,7 +882,7 @@ pub(crate) fn validate(view: &NativeCommittedView) -> Result<(), String> {
             .iter()
             .any(|item| item.id == entry.id)
         {
-            validate_governance(view, entry)?;
+            validate_governance_inner(view, entry, private_recovery)?;
         } else if encode(&message, MAX_BYTES)? != entry.bytes
             || request(&message)?.binding()? != entry.binding
             || metadata(&message)? != (entry.timestamp_ns, entry.channel, entry.incremental)
@@ -723,7 +915,58 @@ pub(crate) fn validate(view: &NativeCommittedView) -> Result<(), String> {
 }
 
 fn validate_governance(view: &NativeCommittedView, entry: &StoredOutgoing) -> Result<(), String> {
+    validate_governance_inner(view, entry, false)
+}
+
+fn validate_governance_inner(
+    view: &NativeCommittedView,
+    entry: &StoredOutgoing,
+    private_recovery: bool,
+) -> Result<(), String> {
     let message: NeighbourMsg = postcard::from_bytes(&entry.bytes).map_err(|e| e.to_string())?;
+    if let Some(baseline) = &view.record.sanitized_baseline {
+        let mut checkpoint = if private_recovery {
+            recovery_checkpoint(
+                baseline,
+                &view.record.room.to_string(),
+                view.governor().device_public_key,
+            )?
+        } else {
+            baseline.verify_anchored_document(
+                &view.record.room.to_string(),
+                view.governor().device_public_key,
+                &baseline.anchor(),
+            )?
+        };
+        let mut current = view
+            .peer
+            .admitted_room()
+            .ok_or("native room absent")?
+            .clone();
+        tilo_peer_state::validate_sanitized_room_sync(Some(&checkpoint), &mut current)?;
+        if checkpoint
+            .get_heads()
+            .iter()
+            .any(|head| current.get_change_by_hash(head).is_none())
+        {
+            return Err("native baseline is not an ancestor of the admitted room".into());
+        }
+        if view.peer.sanitized_room_generation()? != baseline.generation {
+            return Err("native baseline generation differs from admitted room".into());
+        }
+        let canonical = baseline_message(view)?;
+        if entry.bytes != encode(&canonical, MAX_BYTES)?
+            && entry.bytes != encode(&view.peer.room_message(), MAX_BYTES)?
+        {
+            return Err("native sanitized checkpoint differs from committed room".into());
+        }
+        let (channel, retention) =
+            neighbour_wire::retention(&message, true).ok_or("unsupported sanitized checkpoint")?;
+        if retention != Retention::Checkpoint || channel != entry.channel || entry.incremental {
+            return Err("invalid sanitized checkpoint transport".into());
+        }
+        return Ok(());
+    }
     if !matches!(&message, NeighbourMsg::SyncResp { room, .. } if room == &view.record.room.to_string())
         || encode(&view.peer.room_message(), MAX_BYTES)? != entry.bytes
         || entry.id != *blake3::hash(&entry.bytes).as_bytes()
@@ -774,8 +1017,10 @@ pub(crate) fn exact_replay_unchanged(view: &NativeCommittedView) -> Result<bool,
     {
         return Ok(false);
     }
-    if let Some(checkpoint) = publication.governance.first()
-        && encode(&view.peer.room_message(), MAX_BYTES)? != checkpoint.bytes
+    if publication
+        .governance
+        .iter()
+        .any(|entry| validate_governance(view, entry).is_err())
     {
         return Ok(false);
     }
@@ -864,6 +1109,9 @@ impl NativeWorkspaceOwner {
         read: impl FnOnce(&NativeCommittedView, NativeOutgoing<'_>) -> Result<T, String>,
     ) -> Result<T, String> {
         self.with_current(room, |view| {
+            if view.record.sanitized_baseline.is_none() {
+                return Err("public history requires an authenticated privacy baseline".into());
+            }
             view.peer
                 .permissions(view.device().device_public_key, now)?;
             read(
@@ -897,6 +1145,7 @@ impl NativeWorkspaceOwner {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<(), String> {
+        self.ensure_private_task_baseline(room, key, now)?;
         let _turn = self.0.mutation.lock();
         let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
         if key.verifying_key().to_bytes() != candidate.device().device_public_key {

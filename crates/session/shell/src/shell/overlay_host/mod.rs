@@ -2172,6 +2172,7 @@ impl ShellOverlayHost {
         &mut self,
         review: crate::shell::task_review::NativeTaskReview,
     ) {
+        self.attach_agent_marker_task_review(review.clone());
         self.room_activity.attach_task_review(review.clone());
         self.search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::task_review::TaskReviewProvider::new(review),
@@ -18994,6 +18995,7 @@ impl Widget for ShellOverlayHost {
             self.person_quick_composer.pump(person_source)
         };
         let (doc, path) = ui::doc::document_ref(doc, path);
+        self.validate_painted_composer();
         let action_dirty = self
             .agent_actions
             .values_mut()
@@ -19013,7 +19015,8 @@ impl Widget for ShellOverlayHost {
             self.bar_popovers.profile.is_open() && self.bar_popovers.profile.update(doc, path);
         let marker_dirty = self
             .agent_markers
-            .retain(|source| source.is_fresh(Instant::now()));
+            .retain(|source| source.is_fresh(Instant::now()))
+            | self.retain_current_agent_marker_tasks();
         if let Some(chrome) = &self.chrome
             && let Some(apps) = chrome.borrow().hosted_inputs.in_process()
         {
@@ -19767,6 +19770,8 @@ impl Widget for ShellOverlayHost {
             || self.inner_surface_captures_input()
             || self.modal_sheet_owns_keyboard();
         self.agent_markers.refresh(presence, suppress_agent_markers);
+        self.agent_markers
+            .draw(scene, transform, text_renderer, theme, presence);
         self.person_markers.refresh(suppress_agent_markers);
         self.person_markers
             .draw(scene, transform, text_renderer, theme, presence);

@@ -739,7 +739,28 @@ fn authenticate_service(
             };
             return handoff_failure(required, error, "optional model gateway skipped");
         };
-        return match write_model_gateway_handoff(stream, launch.app_id) {
+        let handoff = match crate::registration_gate::protected_model_launch() {
+            Some(protected) => protected
+                .validate(launch.app_id, launch.workspace_id)
+                .and_then(|()| {
+                    let binding = crate::managed::ManagedBinding {
+                        room: protected.room.clone(),
+                        app: protected.app.clone(),
+                        agent: protected.agent.clone(),
+                        scope: crate::managed::ManagedLaunchScope::AgentSession,
+                        launch: protected.launch.clone(),
+                        generation: 1,
+                    };
+                    write_managed_model_gateway_handoff(
+                        stream,
+                        &binding,
+                        "shell",
+                        &protected.launch,
+                    )
+                }),
+            None => write_model_gateway_handoff(stream, launch.app_id),
+        };
+        return match handoff {
             Ok(()) => Ok(HandoffOutcome::Ready),
             Err(source) => handoff_failure(
                 required,
@@ -975,6 +996,39 @@ fn write_model_gateway_handoff(stream: &mut UnixStream, app_id: &str) -> std::io
     let bytes = serde_json::to_vec(&serde_json::json!({
         "protocol": 1,
         "app_id": app_id,
+    }))
+    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    MODEL_GATEWAY_HANDOFF_FRAMING.write(stream, &bytes)?;
+    stream.flush()
+}
+
+/// Correlation metadata is installed before the app receives its descriptor.
+/// It is not authority: a protected gateway without host lease custody must
+/// refuse inference rather than falling back to the ordinary provider path.
+fn write_managed_model_gateway_handoff(
+    stream: &mut UnixStream,
+    binding: &crate::managed::ManagedBinding,
+    runtime_epoch: &str,
+    channel_id: &str,
+) -> std::io::Result<()> {
+    let scope = match &binding.scope {
+        crate::managed::ManagedLaunchScope::AgentSession => serde_json::Value::Null,
+        crate::managed::ManagedLaunchScope::Task { task, run } => {
+            serde_json::json!({"task":task, "run":run})
+        }
+    };
+    let bytes = serde_json::to_vec(&serde_json::json!({
+        "protocol": 1,
+        "app_id": binding.app,
+        "managed_actor_binding": {
+            "room": binding.room,
+            "agent": binding.agent,
+            "launch": binding.launch,
+            "generation": binding.generation,
+            "runtime_epoch": runtime_epoch,
+            "channel_id": channel_id,
+            "scope": scope,
+        },
     }))
     .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
     MODEL_GATEWAY_HANDOFF_FRAMING.write(stream, &bytes)?;
@@ -1220,6 +1274,25 @@ mod tests {
                 serde_json::from_slice::<serde_json::Value>(&bytes[4..]).unwrap(),
                 app_only
             );
+
+            let binding = crate::managed::ManagedBinding {
+                room: "11111111-1111-4111-8111-111111111111".into(),
+                app: "so.tilo.agent".into(),
+                agent: "helper".into(),
+                scope: crate::managed::ManagedLaunchScope::AgentSession,
+                launch: "launch-one".into(),
+                generation: 1,
+            };
+            let managed = written(|stream| {
+                write_managed_model_gateway_handoff(stream, &binding, "epoch", "channel")
+            });
+            let managed: serde_json::Value = serde_json::from_slice(&managed[4..]).unwrap();
+            assert_eq!(managed["managed_actor_binding"]["agent"], "helper");
+            assert_eq!(managed["managed_actor_binding"]["room"], binding.room);
+            assert_eq!(managed["managed_actor_binding"]["generation"], 1);
+            assert!(managed.get("native").is_none());
+            assert!(managed.get("endpoint").is_none());
+            assert!(managed.get("api_key").is_none());
 
             let bytes = written(|stream| write_ush_handoff(stream, "so.tilo.notes"));
             assert_eq!(bytes[..8], *b"QUS1\x27\0\0\0");
@@ -1924,7 +1997,8 @@ impl EnrolledServiceContext {
         model
             .set_write_timeout(Some(std::time::Duration::from_secs(5)))
             .map_err(|e| e.to_string())?;
-        write_model_gateway_handoff(&mut model, &binding.app).map_err(|e| e.to_string())?;
+        write_managed_model_gateway_handoff(&mut model, &binding, &runtime_epoch, &channel_id)
+            .map_err(|e| e.to_string())?;
         model.set_write_timeout(None).map_err(|e| e.to_string())?;
         Ok(Self {
             binding,

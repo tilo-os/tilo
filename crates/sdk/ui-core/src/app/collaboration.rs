@@ -818,6 +818,7 @@ impl App {
                 | CollabEvent::TaskActionInvocationResult { .. }
                 | CollabEvent::TaskRunCancellation { .. }
                 | CollabEvent::TaskRunControl { .. }
+                | CollabEvent::NativeModelResult { .. }
                 | CollabEvent::TaskRunReportResult { .. }
                 | CollabEvent::WorkspaceControl { .. }
                 | CollabEvent::RealtimeCommandResult { .. }
@@ -920,6 +921,7 @@ impl App {
             | CollabEvent::TaskActionInvocationResult { .. }
             | CollabEvent::TaskRunCancellation { .. }
             | CollabEvent::TaskRunControl { .. }
+            | CollabEvent::NativeModelResult { .. }
             | CollabEvent::TaskRunReportResult { .. }
             | CollabEvent::WorkspaceControl { .. }
             | CollabEvent::RealtimeCommandResult { .. }

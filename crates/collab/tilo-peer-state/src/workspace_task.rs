@@ -19,13 +19,21 @@ use tilo_desktop_model::{
     WorkspaceTaskRoute, WorkspaceTaskStatus,
 };
 
+mod metadata;
 mod presentation;
+mod private_binding;
+mod private_text;
+pub(crate) use private_binding::bind_private_instruction;
+pub use private_text::{
+    NativeTaskPrivateReferences, NativeTaskPrivateText, is_private_model_contract_reference,
+    legacy_private_task_title, private_instruction_reference, private_model_contract_reference,
+};
 
 pub const TASK_CONTROL_KEY: &str = "task_control_v1";
 const MAX_TASK_TITLE_CHARS: usize = 240;
 const MAX_TASK_RECEIPTS: usize = 4096;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceTaskSnapshot {
     pub tasks: Vec<WorkspaceTask>,
     pub controls: std::collections::BTreeMap<String, WorkspaceTaskControl>,
@@ -245,6 +253,52 @@ pub enum WorkspaceTaskCommand {
         sequence: u64,
         presentation: collab_types::task_presentation::TaskPresentation,
     },
+    // Append only: shipped postcard variant positions must not change.
+    CreateSubtask {
+        parent_task_id: String,
+        title: String,
+        assigned_agent: Option<String>,
+        route: Option<WorkspaceTaskRoute>,
+    },
+    MoveTask {
+        task_id: String,
+        parent_task_id: Option<String>,
+        child_order: Option<i64>,
+    },
+    SetLabels {
+        task_id: String,
+        labels: Vec<String>,
+    },
+    SetAssignees {
+        task_id: String,
+        responsible_assignees: Vec<String>,
+    },
+    /// Raw private payload: only the private owner store may prepare this.
+    QueuePrivateSubtask {
+        parent_task_id: String,
+        title: String,
+        instruction: String,
+        assigned_agent: String,
+        route: WorkspaceTaskRoute,
+    },
+    BindExecutor {
+        task_id: String,
+        agent_id: String,
+        expected_run_epoch: u64,
+        after_revision: u64,
+    },
+    /// Replace all coordination fields atomically, never run controls.
+    SetMetadata {
+        task_id: String,
+        metadata: tilo_desktop_model::task::WorkspaceTaskMetadata,
+    },
+    /// Public-safe half of owner-private queue preparation. Contains no goal body.
+    QueueWithMetadata {
+        title: String,
+        assigned_agent: Option<String>,
+        route: WorkspaceTaskRoute,
+        metadata: tilo_desktop_model::task::WorkspaceTaskMetadata,
+    },
 }
 
 impl WorkspaceTaskCommand {
@@ -254,6 +308,11 @@ impl WorkspaceTaskCommand {
             Self::Queue { assigned_agent, .. }
             | Self::QueueInstruction { assigned_agent, .. }
             | Self::QueueInstructionAbout { assigned_agent, .. }
+            | Self::QueuePrivateSubtask { assigned_agent, .. }
+            | Self::BindExecutor {
+                agent_id: assigned_agent,
+                ..
+            }
             | Self::StartRun {
                 agent_id: assigned_agent,
                 ..
@@ -261,7 +320,11 @@ impl WorkspaceTaskCommand {
             | Self::ApproveRun {
                 agent_id: assigned_agent,
                 ..
-            } => Some(assigned_agent),
+            } => Some(assigned_agent.as_str()).filter(|agent| !agent.is_empty()),
+            Self::CreateSubtask { assigned_agent, .. }
+            | Self::QueueWithMetadata { assigned_agent, .. } => {
+                assigned_agent.as_deref().filter(|agent| !agent.is_empty())
+            }
             _ => None,
         }
     }
@@ -366,6 +429,18 @@ fn dispatch(
     command: &WorkspaceTaskCommand,
 ) -> Result<(String, WorkspaceTaskMutationResult), String> {
     match command {
+        WorkspaceTaskCommand::QueuePrivateSubtask { .. } => {
+            Err("private subtask commands require owner-private preparation".into())
+        }
+        command @ (WorkspaceTaskCommand::CreateSubtask { .. }
+        | WorkspaceTaskCommand::MoveTask { .. }
+        | WorkspaceTaskCommand::SetLabels { .. }
+        | WorkspaceTaskCommand::SetAssignees { .. }
+        | WorkspaceTaskCommand::BindExecutor { .. }
+        | WorkspaceTaskCommand::SetMetadata { .. }
+        | WorkspaceTaskCommand::QueueWithMetadata { .. }) => {
+            metadata::metadata_command(tasks, controls, context, command)
+        }
         command @ (WorkspaceTaskCommand::CreateManual { .. }
         | WorkspaceTaskCommand::AttachResource { .. }) => {
             manual_command(tasks, controls, context, command)
@@ -785,6 +860,10 @@ fn manual_command(
                 title: title.into(),
                 created_by: author.clone(),
                 assigned_agent: None,
+                parent_task_id: None,
+                child_order: None,
+                labels: Vec::new(),
+                responsible_assignees: Vec::new(),
                 route: WorkspaceTaskRoute::Manual,
                 status: WorkspaceTaskStatus::Queued,
                 resource: resource.as_deref().cloned(),
@@ -923,7 +1002,7 @@ fn queue(
     if title.is_empty() || title.chars().count() > MAX_TASK_TITLE_CHARS {
         return Err("task title is empty or too long".into());
     }
-    if assigned_agent.is_empty()
+    if (assigned_agent.is_empty() && route != WorkspaceTaskRoute::Model)
         || assigned_agent.len() > 256
         || route == WorkspaceTaskRoute::Manual
     {
@@ -976,7 +1055,11 @@ fn queue(
         id: task_id.clone(),
         title: title.to_owned(),
         created_by: author.clone(),
-        assigned_agent: Some(assigned_agent.to_owned()),
+        assigned_agent: (!assigned_agent.is_empty()).then(|| assigned_agent.to_owned()),
+        parent_task_id: None,
+        child_order: None,
+        labels: Vec::new(),
+        responsible_assignees: Vec::new(),
         route,
         status: WorkspaceTaskStatus::Queued,
         resource,
@@ -1092,6 +1175,16 @@ fn approve_run(
     )
 }
 
+/// Host snapshot supplied outside the task command wire format. Only the
+/// trusted approved-start entrypoint may supply this; reducers never read it
+/// from a person's or agent's arguments.
+#[derive(Clone, Debug)]
+pub struct WorkspaceTaskModelStart {
+    pub request_model: tilo_action_policy::TreePath,
+    pub kind: tilo_action_policy::ActionKind,
+    pub contract: serde_json::Value,
+}
+
 fn begin_run(
     tasks: &mut [WorkspaceTask],
     controls: &mut std::collections::BTreeMap<String, WorkspaceTaskControl>,
@@ -1128,6 +1221,9 @@ fn begin_run(
         approval,
     });
     control.execution = None;
+    // Every run needs its own conscious model approval; never inherit it from
+    // an earlier epoch, a host start, or the resource execution ceiling.
+    control.model_authority = None;
     control.presentations.clear();
     task.status = WorkspaceTaskStatus::InProgress;
     task.updated_at = now;

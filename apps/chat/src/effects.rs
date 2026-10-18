@@ -136,12 +136,71 @@ pub enum ChatEffect {
         task: String,
         run_epoch: u64,
     },
-    /// Start the selected saved task with explicit run approval.
+    /// Start task
     ///
     /// Saving a message never invokes this action: the caller must consciously
     /// approve starting the selected task in the open Agent conversation.
     #[effect(device_only)]
     StartAgentTask,
+    /// Stop task
+    ///
+    /// Requests a stop for the selected exact run; completed changes are not undone.
+    #[effect(device_only)]
+    StopAgentTask,
+    /// New task
+    ///
+    /// Opens a private goal composer without starting execution.
+    #[effect(device_only)]
+    NewTask,
+    /// Add subtask
+    ///
+    /// Opens a private goal under an existing parent; creates nothing yet.
+    #[effect(device_only)]
+    NewSubtaskGoal { task: String },
+    /// Edit private goal
+    ///
+    /// Replaces only this device's pending private task goal.
+    #[effect(device_only)]
+    SetTaskGoal { text: String },
+    /// Save private goal
+    ///
+    /// Saves the pending goal as queued work. Never starts execution.
+    #[effect(device_only)]
+    SaveTaskGoal,
+    /// Open output
+    ///
+    /// Opens only a retained receipt's exact registered resource view.
+    #[effect(device_only)]
+    OpenTaskOutput {
+        task: String,
+        run_epoch: u64,
+        invocation: String,
+    },
+    /// Open task settings
+    ///
+    /// Opens model or worker configuration; never grants task authority.
+    #[effect(device_only)]
+    SetupTaskModels,
+    /// Filter tasks
+    ///
+    /// Changes only this device's task list.
+    #[effect(device_only)]
+    FilterTasks { filter: String },
+    /// Find task
+    ///
+    /// Narrows tasks by public titles and labels, never private goals.
+    #[effect(device_only)]
+    QueryTasks { query: String, label: String },
+    /// Expand or collapse subtasks
+    ///
+    /// Changes only this device's hierarchy navigation.
+    #[effect(device_only)]
+    ToggleTaskChildren { task: String },
+    /// Add subtask with public title
+    ///
+    /// Adds a queued child. Its title is public, not a private goal.
+    #[effect(device_only)]
+    CreateSubtask { task: String, title: String },
     /// Read message
     ///
     /// The message as a value: who wrote it, whether that is an agent, its
@@ -230,17 +289,83 @@ pub enum ChatEffect {
     },
 }
 
+/// Typed dispatch for private task goal editing.
+enum TaskGoalEffect {
+    NewTask,
+    NewSubtaskGoal { task: String },
+    SetTaskGoal { text: String },
+    SaveTaskGoal,
+}
+
+/// Typed dispatch for task navigation and execution.
+enum TaskEffect {
+    OpenTaskConversation {
+        workspace: String,
+        agent: String,
+        task: String,
+        run_epoch: u64,
+    },
+    OpenAgentConversation {
+        workspace: String,
+        agent: String,
+    },
+    OpenTaskOutput {
+        task: String,
+        run_epoch: u64,
+        invocation: String,
+    },
+    SetupTaskModels,
+    QueryTasks {
+        query: String,
+        label: String,
+    },
+    FilterTasks {
+        filter: String,
+    },
+    ToggleTaskChildren {
+        task: String,
+    },
+    CreateSubtask {
+        task: String,
+        title: String,
+    },
+    StartAgentTask,
+}
+
+/// Typed dispatch for native call controls.
+enum CallEffect {
+    JoinCall { channel: String },
+    LeaveCall { channel: String },
+    Mute { channel: String },
+    Unmute { channel: String },
+    CallStatus { channel: String },
+    StartCall,
+    StartVideoCall,
+    SelectInput { channel: String, input: String },
+}
+
 impl ChatApp {
-    fn open_task_conversation_effect(
+    pub(crate) fn open_task_conversation_effect(
         &mut self,
         workspace: &str,
         agent: &str,
         task: &str,
         run_epoch: u64,
     ) -> Result<(), String> {
-        if workspace != self.active_ws || !self.open_agent_conversation(agent) {
-            return Err("the task's agent is not in this workspace".into());
+        if workspace != self.active_ws || task.strip_prefix("task:").is_none_or(str::is_empty) {
+            return Err("the exact task is not in this workspace".into());
         }
+        // Reading a historical run must not depend on its executor still being
+        // registered. The owner authenticates this exact task/run read; steering
+        // and Stop separately require its live assignment and revision.
+        self.leave_floated_agent_route();
+        self.close_person_conversation();
+        self.task_goal = None;
+        self.direct_agent = Some(agent.to_owned());
+        self.inbox_open = false;
+        self.thread_open = None;
+        self.focus = Focus::Main;
+        self.scroll = 0.0;
         if !self.agent_tasks.follow(workspace, agent, task, run_epoch) {
             return Err("the exact task identity is invalid".into());
         }
@@ -250,7 +375,10 @@ impl ChatApp {
                 crate::agent_tasks::AgentComposerIntent::Steer,
             );
         });
+        self.sync_task_channel();
         self.sync_agent_route();
+        let channel = self.active_channel.clone();
+        self.restore_attached_agent_surface(&channel);
         Ok(())
     }
 
@@ -258,44 +386,215 @@ impl ChatApp {
     pub(crate) fn answer_effect(&mut self, effect: ChatEffect) -> EffectAnswer {
         match effect {
             ChatEffect::ModelControl { channel, command } => {
-                return self.model_command(&channel, &command).map(Effected::value);
+                self.model_command(&channel, &command).map(Effected::value)
             }
             ChatEffect::ShowAgentReasoning { message, expanded } => {
                 self.show_agent_reasoning(message, expanded)?;
+                Ok(Effected::done())
             }
-            ChatEffect::OpenWorkspace { workspace } => {
-                self.reveal_workspace_resource(workspace)?;
-                self.reselect();
+            ChatEffect::OpenWorkspace { workspace } => self.open_workspace_effect(workspace),
+            ChatEffect::OpenChannel { channel } => {
+                self.open_channel(&channel).map(|()| Effected::done())
             }
-            ChatEffect::OpenChannel { channel } => self.open_channel(&channel)?,
-            ChatEffect::OpenCategory { category } => self.reveal_category(&category)?,
-            ChatEffect::ToggleCategory { category } => {
-                if !self.categories.iter().any(|item| item.id == category) {
-                    return Err("category no longer exists".into());
-                }
-                self.toggle_category(&category);
+            ChatEffect::OpenCategory { category } => {
+                self.reveal_category(&category).map(|()| Effected::done())
             }
-            ChatEffect::RevealMessage { message } => self.reveal_message(&message)?,
+            ChatEffect::ToggleCategory { category } => self.toggle_category_effect(&category),
+            ChatEffect::RevealMessage { message } => {
+                self.reveal_message(&message).map(|()| Effected::done())
+            }
             ChatEffect::RevealMessageRange {
                 message,
                 start,
                 end,
                 unit,
-            } => return self.reveal_message_range(&message, start, end, &unit),
-            ChatEffect::OpenPerson { user } => self.open_person(&user)?,
-            ChatEffect::OpenDirectConversation { public_key } => {
-                self.open_person_conversation(&public_key)?;
-            }
+            } => self.reveal_message_range(&message, start, end, &unit),
+            ChatEffect::OpenDirectConversation { public_key } => self
+                .open_person_conversation(&public_key)
+                .map(|()| Effected::done()),
             ChatEffect::AdoptPrivateDraft { .. } => {
-                return Err("private draft adoption requires its original effect context".into());
+                Err("private draft adoption requires its original effect context".into())
             }
             ChatEffect::SendDirectMessage { public_key, text } => {
-                return self.send_person_message(&public_key, &text);
+                self.send_person_message(&public_key, &text)
             }
             ChatEffect::ReadDirectConversation { public_key } => {
-                return self.read_person_conversation(&public_key);
+                self.read_person_conversation(&public_key)
             }
+            ChatEffect::OpenPerson { user } => self.open_person(&user).map(|()| Effected::done()),
+            ChatEffect::NewTask => self.answer_task_goal_effect(TaskGoalEffect::NewTask),
+            ChatEffect::NewSubtaskGoal { task } => {
+                self.answer_task_goal_effect(TaskGoalEffect::NewSubtaskGoal { task })
+            }
+            ChatEffect::SetTaskGoal { text } => {
+                self.answer_task_goal_effect(TaskGoalEffect::SetTaskGoal { text })
+            }
+            ChatEffect::SaveTaskGoal => self.answer_task_goal_effect(TaskGoalEffect::SaveTaskGoal),
             ChatEffect::OpenTaskConversation {
+                workspace,
+                agent,
+                task,
+                run_epoch,
+            } => self.answer_task_conversation(workspace, agent, task, run_epoch),
+            ChatEffect::OpenAgentConversation { workspace, agent } => {
+                self.answer_task_effect(TaskEffect::OpenAgentConversation { workspace, agent })
+            }
+            ChatEffect::OpenTaskOutput {
+                task,
+                run_epoch,
+                invocation,
+            } => self.answer_task_output(task, run_epoch, invocation),
+            ChatEffect::SetupTaskModels => self.answer_task_effect(TaskEffect::SetupTaskModels),
+            ChatEffect::QueryTasks { query, label } => {
+                self.answer_task_effect(TaskEffect::QueryTasks { query, label })
+            }
+            ChatEffect::FilterTasks { filter } => {
+                self.answer_task_effect(TaskEffect::FilterTasks { filter })
+            }
+            ChatEffect::ToggleTaskChildren { task } => {
+                self.answer_task_effect(TaskEffect::ToggleTaskChildren { task })
+            }
+            ChatEffect::CreateSubtask { task, title } => {
+                self.answer_task_effect(TaskEffect::CreateSubtask { task, title })
+            }
+            ChatEffect::StartAgentTask => self.answer_task_effect(TaskEffect::StartAgentTask),
+            ChatEffect::StopAgentTask => {
+                if !self.stop_agent_task() {
+                    return Err(crate::i18n::t("chat-agent-stop-unavailable"));
+                }
+                self.request_relayout();
+                Ok(Effected::done())
+            }
+            ChatEffect::ReadMessage { message } => self.read_message(&message).map(Effected::value),
+            ChatEffect::AttachFile { channel, path } => self
+                .attach_file_effect(&channel, &path)
+                .map(|()| Effected::done()),
+            ChatEffect::ShareLiveContext => self.share_live_context(),
+            ChatEffect::StopSharingLiveContext => Ok(self.set_context_sharing(false)),
+            ChatEffect::LiveContextStatus => Ok(self.live_context_status()),
+            ChatEffect::ReadWorkspace { .. } => Err("the record answers this read".into()),
+            ChatEffect::OpenSlackChannel { .. } | ChatEffect::OpenDiscordChannel { .. } => {
+                Err("Browser navigation requires the owning host".into())
+            }
+            ChatEffect::JoinCall { channel } => {
+                self.answer_call_effect(CallEffect::JoinCall { channel })
+            }
+            ChatEffect::LeaveCall { channel } => {
+                self.answer_call_effect(CallEffect::LeaveCall { channel })
+            }
+            ChatEffect::Mute { channel } => self.answer_call_effect(CallEffect::Mute { channel }),
+            ChatEffect::Unmute { channel } => {
+                self.answer_call_effect(CallEffect::Unmute { channel })
+            }
+            ChatEffect::CallStatus { channel } => {
+                self.answer_call_effect(CallEffect::CallStatus { channel })
+            }
+            ChatEffect::StartCall => self.answer_call_effect(CallEffect::StartCall),
+            ChatEffect::StartVideoCall => self.answer_call_effect(CallEffect::StartVideoCall),
+            ChatEffect::SelectInput { channel, input } => {
+                self.answer_call_effect(CallEffect::SelectInput { channel, input })
+            }
+        }
+    }
+
+    fn open_workspace_effect(&mut self, workspace: String) -> EffectAnswer {
+        self.reveal_workspace_resource(workspace)?;
+        self.reselect();
+        Ok(Effected::done())
+    }
+
+    fn toggle_category_effect(&mut self, category: &str) -> EffectAnswer {
+        if !self.categories.iter().any(|item| item.id == category) {
+            return Err("category no longer exists".into());
+        }
+        self.toggle_category(category);
+        Ok(Effected::done())
+    }
+
+    fn answer_task_conversation(
+        &mut self,
+        workspace: String,
+        agent: String,
+        task: String,
+        run_epoch: u64,
+    ) -> EffectAnswer {
+        self.answer_task_effect(TaskEffect::OpenTaskConversation {
+            workspace,
+            agent,
+            task,
+            run_epoch,
+        })
+    }
+
+    fn answer_task_output(
+        &mut self,
+        task: String,
+        run_epoch: u64,
+        invocation: String,
+    ) -> EffectAnswer {
+        self.answer_task_effect(TaskEffect::OpenTaskOutput {
+            task,
+            run_epoch,
+            invocation,
+        })
+    }
+
+    fn live_context_status(&self) -> Effected {
+        Effected::value(serde_json::json!({
+            "sharing": self.sharing_context,
+            "following": self.following_context,
+            "channel": self.active_channel,
+            "videoCapture": false,
+        }))
+    }
+
+    fn share_live_context(&mut self) -> EffectAnswer {
+        self.set_live_context_sharing(true)?;
+        Ok(Effected::done())
+    }
+
+    fn set_context_sharing(&mut self, sharing: bool) -> Effected {
+        self.sharing_context = sharing;
+        self.request_relayout();
+        Effected::done()
+    }
+
+    fn answer_task_goal_effect(&mut self, effect: TaskGoalEffect) -> EffectAnswer {
+        match effect {
+            TaskGoalEffect::NewTask => self.begin_task_goal(None),
+            TaskGoalEffect::NewSubtaskGoal { task } => {
+                if !self
+                    .agent_tasks
+                    .all_tasks()
+                    .iter()
+                    .any(|known| known.task_id == task)
+                {
+                    return Err(crate::i18n::t("chat-task-save-refused"));
+                }
+                self.begin_task_goal(Some(task));
+            }
+            TaskGoalEffect::SetTaskGoal { text } => {
+                let goal = self
+                    .task_goal
+                    .as_ref()
+                    .filter(|goal| !goal.saving)
+                    .ok_or_else(|| crate::i18n::t("chat-task-save-refused"))?;
+                self.composer_main.set_conversation_text(&goal.key(), &text);
+                self.draft_main = text;
+                self.request_relayout();
+            }
+            TaskGoalEffect::SaveTaskGoal => {
+                if !self.save_task_goal() {
+                    return Err(crate::i18n::t("chat-task-save-refused"));
+                }
+            }
+        }
+        Ok(Effected::done())
+    }
+
+    fn answer_task_effect(&mut self, effect: TaskEffect) -> EffectAnswer {
+        match effect {
+            TaskEffect::OpenTaskConversation {
                 workspace,
                 agent,
                 task,
@@ -303,54 +602,106 @@ impl ChatApp {
             } => {
                 self.open_task_conversation_effect(&workspace, &agent, &task, run_epoch)?;
             }
-            ChatEffect::OpenAgentConversation { workspace, agent } => {
+            TaskEffect::OpenAgentConversation { workspace, agent } => {
                 if workspace != self.active_ws || !self.open_agent_conversation(&agent) {
                     return Err("agent is not admitted to this workspace".into());
                 }
             }
-            ChatEffect::StartAgentTask => {
+            TaskEffect::OpenTaskOutput {
+                task,
+                run_epoch,
+                invocation,
+            } => {
+                let output = self
+                    .agent_tasks
+                    .outputs()
+                    .into_iter()
+                    .find(|output| {
+                        output.task_run.task_id == task
+                            && output.task_run.run_epoch == run_epoch
+                            && output.invocation == invocation
+                    })
+                    .cloned()
+                    .ok_or_else(|| crate::i18n::t("chat-task-output-unavailable"))?;
+                if !self.agent_tasks.open_output(&output) {
+                    return Err(crate::i18n::t("chat-task-output-unavailable"));
+                }
+            }
+            TaskEffect::SetupTaskModels => {
+                if !self.agent_tasks.needs_setup() {
+                    return Err(crate::i18n::t("chat-agent-start-unavailable"));
+                }
+                ui::widget::try_open_external_url("settings://agent_models")
+                    .map_err(|error| error.to_string())?;
+            }
+            TaskEffect::QueryTasks { query, label } => {
+                self.task_search.set_query(&query);
+                self.task_label = label;
+                self.request_relayout();
+            }
+            TaskEffect::FilterTasks { filter } => {
+                if !["all", "active", "completed", "mine"].contains(&filter.as_str()) {
+                    return Err("Unknown task filter".into());
+                }
+                self.task_filter = filter;
+                self.request_relayout();
+            }
+            TaskEffect::ToggleTaskChildren { task } => {
+                if !self
+                    .agent_tasks
+                    .all_tasks()
+                    .iter()
+                    .any(|known| known.task_id == task)
+                {
+                    return Err("Task is no longer available".into());
+                }
+                self.toggle_task_children(&task);
+            }
+            TaskEffect::CreateSubtask { task, title } => {
+                let frontier = self
+                    .agent_tasks
+                    .all_tasks()
+                    .into_iter()
+                    .find(|known| known.task_id == task)
+                    .cloned()
+                    .ok_or("Task is no longer available")?;
+                if !self.select_agent_task(&frontier)
+                    || !self
+                        .agent_tasks
+                        .create_subtask(&frontier.assigned_agent, title)
+                {
+                    return Err("Subtask could not be created".into());
+                }
+            }
+            TaskEffect::StartAgentTask => {
                 if !self.start_agent_task() {
                     return Err(crate::i18n::t("chat-agent-start-unavailable"));
                 }
                 self.request_relayout();
             }
-            ChatEffect::ReadMessage { message } => {
-                return self.read_message(&message).map(Effected::value);
-            }
-            ChatEffect::AttachFile { channel, path } => self.attach_file_effect(&channel, &path)?,
-            ChatEffect::ShareLiveContext => self.set_live_context_sharing(true)?,
-            ChatEffect::StopSharingLiveContext => self.set_live_context_sharing(false)?,
-            ChatEffect::LiveContextStatus => {
-                return Ok(Effected::value(serde_json::json!({
-                    "sharing": self.sharing_context,
-                    "following": self.following_context,
-                    "channel": self.active_channel,
-                    "videoCapture": false,
-                })));
-            }
-            ChatEffect::ReadWorkspace { .. } => {
-                return Err("the record answers this read".into());
-            }
-            ChatEffect::OpenSlackChannel { .. } | ChatEffect::OpenDiscordChannel { .. } => {
-                return Err("Browser navigation requires the owning host".into());
-            }
-            ChatEffect::JoinCall { channel } => {
+        }
+        Ok(Effected::done())
+    }
+
+    fn answer_call_effect(&mut self, effect: CallEffect) -> EffectAnswer {
+        match effect {
+            CallEffect::JoinCall { channel } => {
                 let channel_id = channel.clone();
                 self.native_voice_command(&channel, Command::Join { channel_id })?;
             }
-            ChatEffect::LeaveCall { channel } => {
+            CallEffect::LeaveCall { channel } => {
                 self.native_voice_command(&channel, Command::Leave)?;
             }
-            ChatEffect::Mute { channel } => {
+            CallEffect::Mute { channel } => {
                 self.native_voice_command(&channel, Command::SetMuted { muted: true })?;
             }
-            ChatEffect::Unmute { channel } => {
+            CallEffect::Unmute { channel } => {
                 self.native_voice_command(&channel, Command::SetMuted { muted: false })?;
             }
-            ChatEffect::CallStatus { channel } => return self.native_call_status(&channel),
-            ChatEffect::StartCall => self.start_call(None)?,
-            ChatEffect::StartVideoCall => return Err(video_call_unavailable_reason()),
-            ChatEffect::SelectInput { channel, input } => {
+            CallEffect::CallStatus { channel } => return self.native_call_status(&channel),
+            CallEffect::StartCall => self.start_call(None)?,
+            CallEffect::StartVideoCall => return Err(video_call_unavailable_reason()),
+            CallEffect::SelectInput { channel, input } => {
                 self.select_voice_input(&channel, &input)?;
             }
         }
@@ -517,6 +868,37 @@ impl ChatApp {
             video_call_unavailable_reason(),
         );
         let mut unavailable = vec![video];
+        if !self
+            .direct_agent_tasks()
+            .is_some_and(crate::agent_tasks::AgentTaskView::can_stop)
+        {
+            unavailable.push(EffectStatus::unavailable(
+                ChatEffect::STOP_AGENT_TASK,
+                "task_run_not_current",
+                crate::i18n::t("chat-agent-stop-unavailable"),
+            ));
+        }
+        if !self.agent_tasks.needs_setup() {
+            unavailable.push(EffectStatus::unavailable(
+                ChatEffect::SETUP_TASK_MODELS,
+                "model_setup_not_required",
+                crate::i18n::t("chat-agent-start-unavailable"),
+            ));
+        }
+        if self.task_goal.as_ref().is_none_or(|goal| goal.saving) {
+            unavailable.push(EffectStatus::unavailable(
+                ChatEffect::SAVE_TASK_GOAL,
+                "no_private_goal_draft",
+                crate::i18n::t("chat-task-save-refused"),
+            ));
+        }
+        if self.task_goal.as_ref().is_none_or(|goal| goal.saving) {
+            unavailable.push(EffectStatus::unavailable(
+                ChatEffect::SET_TASK_GOAL,
+                "no_private_goal_draft",
+                crate::i18n::t("chat-task-save-refused"),
+            ));
+        }
         if !self.direct_agent_is_available()
             || !self
                 .direct_agent_tasks()
@@ -563,6 +945,7 @@ impl ChatApp {
             .map(|item| item.workspace.clone())
             .ok_or("conversation no longer exists")?;
         self.close_person_conversation();
+        self.task_goal = None;
         self.active_ws = workspace;
         channel.clone_into(&mut self.active_channel);
         self.inbox_open = false;
@@ -640,6 +1023,7 @@ impl ChatApp {
             .find(|item| item.id == channel)
             .map(|item| item.workspace.clone())
             .ok_or("conversation no longer exists")?;
+        self.task_goal = None;
         self.active_ws = workspace;
         self.active_channel = channel;
         self.inbox_open = false;
@@ -831,7 +1215,26 @@ impl ChatApp {
             .reports
             .iter()
             .filter_map(|(report, _)| self.report_row(report));
-        let agents = self.room_agents.iter().filter_map(|agent| {
+        let agents = self.agent_rows();
+        let tasks = self.task_rows();
+        let task_list = Self::task_list_row();
+        let outputs = self.task_output_rows();
+        workspaces
+            .chain(outputs)
+            .chain(std::iter::once(task_list))
+            .chain(categories)
+            .chain(channels)
+            .chain(messages)
+            .chain(people)
+            .chain(reports)
+            .chain(agents)
+            .chain(Self::person_conversation_rows())
+            .chain(tasks)
+            .collect()
+    }
+
+    fn agent_rows(&self) -> impl Iterator<Item = LiveRow> + '_ {
+        self.room_agents.iter().filter_map(|agent| {
             let identity = agent_semantic_identity(agent)?;
             Some(
                 LiveRow::new(
@@ -854,45 +1257,98 @@ impl ChatApp {
                     .bound_asking(&["task", "run_epoch"]),
                 ),
             )
-        });
-        let tasks = self.direct_agent.as_deref().into_iter().flat_map(|agent| {
-            self.agent_tasks
-                .view(agent)
-                .into_iter()
-                .flat_map(move |view| {
-                    view.tasks.iter().filter_map(move |task| {
-                        let epoch = task.run_epoch?;
-                        let id = format!("chat.task:{}:{epoch}", task.task_id);
-                        let identity =
-                            ui::tilo_actions::ResourceSemanticIdentity::new("chat.task", &id)?;
-                        Some(
-                            LiveRow::new(id, "chat.task", &task.title)
-                                .semantic_identity(identity)
-                                .effect(&ChatEffect::OpenTaskConversation {
-                                    workspace: self.active_ws.clone(),
-                                    agent: agent.to_owned(),
-                                    task: task.task_id.clone(),
-                                    run_epoch: epoch,
-                                }),
-                        )
+        })
+    }
+
+    fn task_rows(&self) -> impl Iterator<Item = LiveRow> + '_ {
+        self.agent_tasks.all_tasks().into_iter().filter_map(|task| {
+            let agent = &task.assigned_agent;
+            let epoch = task.run_epoch?;
+            let id = format!("chat.task:{}:{epoch}", task.task_id);
+            let identity = ui::tilo_actions::ResourceSemanticIdentity::new("chat.task", &id)?;
+            Some(
+                LiveRow::new(id, "chat.task", &task.title)
+                    .semantic_identity(identity)
+                    .effect(&ChatEffect::OpenTaskConversation {
+                        workspace: self.active_ws.clone(),
+                        agent: agent.to_owned(),
+                        task: task.task_id.clone(),
+                        run_epoch: epoch,
                     })
-                })
-        });
-        workspaces
-            .chain(categories)
-            .chain(channels)
-            .chain(messages)
-            .chain(people)
-            .chain(reports)
-            .chain(agents)
-            .chain(Self::person_conversation_rows())
-            .chain(tasks)
-            .collect()
+                    .effect(&ChatEffect::NewSubtaskGoal {
+                        task: task.task_id.clone(),
+                    })
+                    .operation(
+                        ChatEffect::CreateSubtask {
+                            task: task.task_id.clone(),
+                            title: String::new(),
+                        }
+                        .bound_asking(&["title"]),
+                    )
+                    .effect(&ChatEffect::ToggleTaskChildren {
+                        task: task.task_id.clone(),
+                    }),
+            )
+        })
+    }
+
+    fn task_list_row() -> LiveRow {
+        LiveRow::new(
+            "chat.tasks",
+            "chat.task-list",
+            crate::i18n::t("chat-agents-section"),
+        )
+        .effect(&ChatEffect::NewTask)
+        .operation(
+            ChatEffect::SetTaskGoal {
+                text: String::new(),
+            }
+            .bound_asking(&["text"]),
+        )
+        .effect(&ChatEffect::SaveTaskGoal)
+        .effect(&ChatEffect::StartAgentTask)
+        .effect(&ChatEffect::StopAgentTask)
+        .effect(&ChatEffect::SetupTaskModels)
+        .operation(
+            ChatEffect::QueryTasks {
+                query: String::new(),
+                label: String::new(),
+            }
+            .bound_asking(&["query", "label"]),
+        )
+        .operation(
+            ChatEffect::FilterTasks {
+                filter: String::new(),
+            }
+            .bound_asking(&["filter"]),
+        )
+    }
+
+    fn task_output_rows(&self) -> impl Iterator<Item = LiveRow> + '_ {
+        self.agent_tasks.outputs().into_iter().map(|output| {
+            LiveRow::new(
+                format!(
+                    "chat.task-output:{}:{}:{}",
+                    output.task_run.task_id, output.task_run.run_epoch, output.invocation
+                ),
+                "chat.task-output",
+                crate::agent_tasks::output_label(output),
+            )
+            .effect(&ChatEffect::OpenTaskOutput {
+                task: output.task_run.task_id.clone(),
+                run_epoch: output.task_run.run_epoch,
+                invocation: output.invocation.clone(),
+            })
+        })
     }
 
     /// The row `id`, when [`Self::published_rows`] leaves it out.
     pub(crate) fn published_row(&self, id: &str) -> Option<LiveRow> {
-        if id.starts_with("chat.person:") || id.starts_with("chat.task:") {
+        if id.starts_with("chat.person:")
+            || id == "chat.tasks"
+            || id.starts_with("chat.task:")
+            || id.starts_with("chat.task-output:")
+        {
             return self.published_rows().into_iter().find(|row| row.id() == id);
         }
         if let Some(agent) = id.strip_prefix("chat.agent:") {

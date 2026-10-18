@@ -64,6 +64,8 @@ tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-net = { path = "../../platform/tilo-net", optional = true }
 
 agent-provider-config = { path = "../../agent/provider-config" }
+# Native task HTTP stays in the trusted host, behind the owner fence.
+tilo-model-gateway = { path = "../../agent/model-gateway", features = ["server"] }
 fnv.workspace = true
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
 tilo-clock = { path = "../../platform/tilo-clock" }

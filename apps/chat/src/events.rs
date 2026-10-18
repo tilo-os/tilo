@@ -890,7 +890,10 @@ impl ChatApp {
         self.menu = None;
         match hit {
             Hit::Inbox => {
-                if self.direct_person.is_some() {
+                if self.direct_person.is_some()
+                    || self.direct_agent.is_some()
+                    || self.task_goal.is_some()
+                {
                     self.leave_floated_agent_route();
                     self.close_person_conversation();
                 }
@@ -908,8 +911,11 @@ impl ChatApp {
                     self.person_error = Some(error);
                 }
             }
-            Hit::Agent(agent) => {
-                self.open_agent_conversation(&agent);
+            Hit::NewTask => self.begin_task_goal(None),
+            Hit::Tasks => {
+                if self.task_goal.is_none() && self.direct_agent.is_none() {
+                    self.begin_task_goal(None);
+                }
             }
             Hit::AgentWindow => {
                 if self.conversation_surface {
@@ -918,9 +924,41 @@ impl ChatApp {
                     self.float_agent_conversation();
                 }
             }
+            Hit::AgentIntent(crate::agent_tasks::AgentComposerIntent::Queue) => {
+                self.begin_task_goal(None)
+            }
             Hit::AgentIntent(intent) => self.set_direct_agent_intent(intent),
             Hit::AgentTask(frontier) => {
                 self.select_agent_task(&frontier);
+            }
+            Hit::TaskLabel(label) => {
+                self.task_label = label;
+                self.request_relayout();
+            }
+            Hit::TaskFilter(filter) => {
+                self.task_filter = filter;
+                self.request_relayout();
+            }
+            Hit::TaskExpand(task) => self.toggle_task_children(&task),
+            Hit::AgentSetup => {
+                if self.agent_tasks.needs_setup() {
+                    let _ = self.answer_effect(crate::effects::ChatEffect::SetupTaskModels);
+                } else {
+                    self.agent_tasks.refresh_compute(&self.active_ws);
+                    self.request_relayout();
+                }
+            }
+            Hit::AgentSubtask => {
+                if let Some(parent) = self
+                    .direct_agent_tasks()
+                    .and_then(crate::agent_tasks::AgentTaskView::current)
+                    .map(|task| task.task_id.clone())
+                {
+                    self.begin_task_goal(Some(parent));
+                }
+            }
+            Hit::TaskOutput(output) => {
+                self.agent_tasks.open_output(&output);
             }
             Hit::AgentTaskMore => {
                 if let Some(agent) = self.direct_agent.clone() {
@@ -1041,9 +1079,10 @@ impl ChatApp {
     }
 
     fn on_hit_workspace(&mut self, id: Id) {
-        if self.direct_person.is_some() {
+        if self.direct_person.is_some() || self.direct_agent.is_some() || self.task_goal.is_some() {
             self.leave_floated_agent_route();
         }
+        self.task_goal = None;
         self.close_person_conversation();
         if self.active_ws != id {
             self.active_ws = id;
@@ -1055,9 +1094,10 @@ impl ChatApp {
     }
 
     fn on_hit_channel(&mut self, id: Id, doc: &mut ui::widget::Edits<'_>) {
-        if self.direct_person.is_some() {
+        if self.direct_person.is_some() || self.direct_agent.is_some() || self.task_goal.is_some() {
             self.leave_floated_agent_route();
         }
+        self.task_goal = None;
         self.close_person_conversation();
         self.not_sent = None;
         let kind = self.channel(&id).map(|c| c.kind);
@@ -1663,6 +1703,10 @@ impl ChatApp {
     }
 
     fn send_focused(&mut self, doc: &mut ui::widget::Edits<'_>) {
+        if self.task_goal.is_some() {
+            self.save_task_goal();
+            return;
+        }
         if self.direct_person.is_some() {
             self.send_person_focused();
             return;
@@ -1754,13 +1798,25 @@ impl ChatApp {
         &mut self,
         frontier: &crate::agent_tasks::AgentTaskFrontier,
     ) -> bool {
-        let Some(agent) = self.direct_agent.clone() else {
+        let agent = frontier.assigned_agent.clone();
+        if self.direct_agent.as_deref() != Some(agent.as_str())
+            && !self.open_agent_conversation(&agent)
+        {
             return false;
-        };
+        }
         let selected = self.agent_tasks.select(&agent, frontier);
         if selected {
-            self.set_direct_agent_intent(crate::agent_tasks::AgentComposerIntent::Steer);
+            self.agent_intents.update(|intents| {
+                intents.insert(
+                    (self.active_ws.clone(), agent),
+                    crate::agent_tasks::AgentComposerIntent::Steer,
+                );
+            });
+            self.sync_task_channel();
             self.sync_agent_route();
+            let channel = self.active_channel.clone();
+            self.restore_attached_agent_surface(&channel);
+            self.request_relayout();
         }
         selected
     }
@@ -3784,6 +3840,376 @@ mod tests {
     }
 
     #[test]
+    fn private_headers_never_publish_channel_calls_or_invites() {
+        for scenario in ["TaskGoalBeforeSetup", "agent-task", "Subtask"] {
+            let (mut app, mut doc) = app_with_doc();
+            app.stage_scenario(scenario);
+            render_frame(&mut app, 1280.0, 800.0);
+            assert!(app.task_goal.is_some() || app.direct_agent.is_some());
+            assert!(
+                !app.hits
+                    .iter()
+                    .any(|(_, hit)| matches!(hit, Hit::StartCall | Hit::ToggleRightFlap))
+            );
+            assert!(
+                app.hits
+                    .iter()
+                    .any(|(_, hit)| matches!(hit, Hit::AgentWindow))
+            );
+            let controls = app.published_rows();
+            assert!(!controls.iter().any(|row| row.id() == "chat.start-call"));
+            app.on_hit(Hit::CurrentContext, &mut ui::widget::Edits::lend(&mut doc));
+            app.left_flap.snap(true);
+            render_frame(&mut app, 1280.0, 800.0);
+            assert!(app.task_goal.is_none() && app.direct_agent.is_none());
+            assert!(app.has_other_collaborator());
+            assert!(
+                app.hits
+                    .iter()
+                    .any(|(_, hit)| matches!(hit, Hit::StartCall))
+            );
+            assert!(
+                app.hits
+                    .iter()
+                    .any(|(_, hit)| matches!(hit, Hit::ToggleRightFlap))
+            );
+            assert!(
+                app.hits
+                    .iter()
+                    .any(|(_, hit)| matches!(hit, Hit::VoiceChannel(_)))
+            );
+        }
+    }
+
+    #[test]
+    fn private_person_header_publishes_private_identity_without_channel_controls() {
+        let (mut app, _doc) = app_with_doc();
+        app.direct_person = Some("certified-person-key".into());
+        app.sync_person_draft();
+        render_frame(&mut app, 1280.0, 800.0);
+        assert!(app.has_other_collaborator());
+        assert!(
+            !app.hits
+                .iter()
+                .any(|(_, hit)| matches!(hit, Hit::StartCall | Hit::ToggleRightFlap))
+        );
+        assert!(
+            app.hits
+                .iter()
+                .any(|(_, hit)| matches!(hit, Hit::AgentWindow))
+        );
+        let semantics = ui::Widget::accessibility(&app).unwrap();
+        assert!(
+            semantics
+                .children
+                .iter()
+                .any(|node| node.description.as_deref() == Some("Private conversation"))
+        );
+    }
+
+    #[test]
+    fn narrow_task_tree_scrolls_to_last_child_without_clipped_hit_targets() {
+        let (mut app, mut doc) = app_with_doc();
+        app.stage_scenario("Subtask");
+        let workspace = app.active_ws.clone();
+        let view = app.agent_tasks.stage_capture(&workspace, "scribe");
+        let parent = view.current().unwrap().clone();
+        for index in 0..20 {
+            let mut child = parent.clone();
+            child.task_id = format!("task:child-{index}");
+            child.title = format!("Example child {index}");
+            child.parent_task_id = Some(parent.task_id.clone());
+            view.tasks.push(child);
+        }
+        app.expanded_tasks.insert(parent.task_id);
+        app.left_flap.snap(true);
+        render_frame(&mut app, 420.0, 680.0);
+        assert!(app.task_navigation.overflows_vertically());
+        assert!(
+            !app.hits
+                .iter()
+                .any(|(_, hit)| matches!(hit, Hit::VoiceChannel(_)))
+        );
+        let viewport = app.task_navigation.content_rect();
+        assert!(viewport.y1 <= app.rect.y1);
+        let center = viewport.center();
+        drive_retained_control(
+            &mut app,
+            &cursor_moved(center.x, center.y),
+            1.0,
+            Modifiers::default(),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        drive_retained_control(
+            &mut app,
+            &wheel(-100.0),
+            1.0,
+            Modifiers::default(),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        assert!(app.task_navigation.offset().y > 0.0);
+        render_frame(&mut app, 420.0, 680.0);
+        let rows = app
+            .hits
+            .iter()
+            .filter_map(|(rect, hit)| match hit {
+                Hit::AgentTask(task) => Some((rect, task)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(rows.iter().any(|(_, task)| task.task_id == "task:child-19"));
+        for (rect, _) in rows {
+            assert!(rect.y0 >= viewport.y0 && rect.y1 <= viewport.y1);
+            assert!(rect.x0 >= viewport.x0 && rect.x1 <= viewport.x1);
+            assert!(rect.height() > 0.0);
+        }
+    }
+
+    #[test]
+    fn narrow_private_goal_editor_and_controls_stay_inside_the_viewport() {
+        for goal in ["A private goal", "A private goal\nwith a second line"] {
+            let (mut app, doc) = app_with_doc();
+            app.begin_task_goal(None);
+            app.answer_effect(crate::effects::ChatEffect::SetTaskGoal { text: goal.into() })
+                .unwrap();
+            app.composer_main.sync(&doc);
+            app.set_composer_focus();
+            render_frame(&mut app, 420.0, 680.0);
+            assert_eq!(app.composer_main.private_plain().as_deref(), Some(goal));
+            let input = app.composer_main.rect();
+            let retry = app
+                .hits
+                .iter()
+                .find_map(|(rect, hit)| matches!(hit, Hit::AgentSetup).then_some(*rect))
+                .unwrap();
+            let send = app
+                .hits
+                .iter()
+                .find_map(|(rect, hit)| matches!(hit, Hit::Send).then_some(*rect))
+                .unwrap();
+            assert!(retry.y1 <= input.y0);
+            assert!(input.y1 <= app.rect.y1 && input.y0 >= app.header_rect().y1);
+            assert!(send.x0 >= input.x1 && send.x1 <= app.rect.x1);
+            assert!(!crate::projection::has_draft(&doc, &app.active_channel));
+        }
+    }
+
+    #[test]
+    fn new_task_accepts_private_goal_before_any_worker_or_model_exists() {
+        let (mut app, mut doc) = app_with_doc();
+        app.room_agents.clear();
+        app.answer_effect(crate::effects::ChatEffect::NewTask)
+            .unwrap();
+        app.composer_main.sync(&doc);
+        app.set_composer_focus();
+        type_str(
+            &mut app,
+            &mut doc,
+            "Keep the actual goal private before model setup.",
+        );
+        app.composer_main.select(5, 15);
+        let selection = app.composer_main.selection();
+        let channel = app.active_channel.clone();
+        let text = app.composer_main.private_plain().unwrap();
+        assert!(app.direct_agent.is_none());
+        assert!(app.direct_person.is_none());
+        assert!(app.task_goal.is_some());
+        assert!(!crate::projection::has_draft(&doc, &channel));
+        assert!(app.composer_presence().is_none());
+        assert!(app.save_task_goal());
+        assert!(app.task_goal.as_ref().unwrap().saving);
+        assert!(app.task_goal.as_ref().unwrap().error.is_none());
+        assert!(app.agent_tasks.all_tasks().is_empty());
+        assert!(app.direct_agent.is_none());
+        app.reload(&doc);
+        render_frame(&mut app, 900.0, 800.0);
+        assert_eq!(
+            app.composer_main.private_plain().as_deref(),
+            Some(text.as_str())
+        );
+        assert_eq!(app.composer_main.selection(), selection);
+        assert!(
+            app.hits
+                .iter()
+                .any(|(_, hit)| matches!(hit, Hit::AgentSetup))
+        );
+        assert!(
+            !app.hits
+                .iter()
+                .any(|(_, hit)| matches!(hit, Hit::AgentStart))
+        );
+        assert!(app.messages.is_empty());
+        assert!(!crate::projection::has_draft(&doc, &channel));
+    }
+
+    #[test]
+    fn private_subtask_composer_does_not_create_illustrative_or_empty_children() {
+        let (mut app, mut doc) = app_with_doc();
+        app.stage_scenario("Subtask");
+        let parent = app
+            .agent_tasks
+            .all_tasks()
+            .into_iter()
+            .find(|task| task.parent_task_id.is_none())
+            .unwrap()
+            .task_id
+            .clone();
+        let before = app.agent_tasks.all_tasks().len();
+        app.answer_effect(crate::effects::ChatEffect::NewSubtaskGoal {
+            task: parent.clone(),
+        })
+        .unwrap();
+        app.composer_main.sync(&doc);
+        app.set_composer_focus();
+        type_str(
+            &mut app,
+            &mut doc,
+            "Private child instruction, not its public label.",
+        );
+        let child_key = app.active_channel.clone();
+        let child_text = app.composer_main.private_plain().unwrap();
+        assert_eq!(
+            app.task_goal.as_ref().unwrap().parent.as_deref(),
+            Some(parent.as_str())
+        );
+        assert_eq!(app.agent_tasks.all_tasks().len(), before);
+        assert!(app.save_task_goal());
+        assert!(app.task_goal.as_ref().unwrap().saving);
+        assert_eq!(app.agent_tasks.all_tasks().len(), before);
+        app.answer_effect(crate::effects::ChatEffect::NewTask)
+            .unwrap();
+        assert!(
+            app.composer_main
+                .private_plain()
+                .unwrap_or_default()
+                .is_empty()
+        );
+        app.answer_effect(crate::effects::ChatEffect::NewSubtaskGoal { task: parent })
+            .unwrap();
+        app.composer_main.sync(&doc);
+        assert_eq!(app.active_channel, child_key);
+        assert_eq!(
+            app.composer_main.private_plain().as_deref(),
+            Some(child_text.as_str())
+        );
+        assert!(!crate::projection::has_draft(&doc, &child_key));
+        assert_eq!(app.agent_tasks.all_tasks().len(), before);
+    }
+
+    #[test]
+    fn task_actions_and_render_keep_shared_compute_conversations_and_carets_separate() {
+        let (mut app, mut doc) = app_with_doc();
+        app.stage_scenario("Subtask");
+        app.composer_main.sync(&doc);
+        app.set_composer_focus();
+        type_str(&mut app, &mut doc, "Only the parent may see this draft.");
+        app.composer_main.select(5, 12);
+        let selection = app.composer_main.selection();
+        let parent_channel = app.active_channel.clone();
+        app.answer_effect(crate::effects::ChatEffect::OpenTaskConversation {
+            workspace: app.active_ws.clone(),
+            agent: "scribe".into(),
+            task: "task:review-child".into(),
+            run_epoch: 0,
+        })
+        .unwrap();
+        assert_ne!(app.active_channel, parent_channel);
+        assert_eq!(
+            app.agent_draft_route().as_deref(),
+            Some("task:task:review-child:0")
+        );
+        assert_eq!(app.composer_main.private_plain().unwrap_or_default(), "");
+        render_frame(&mut app, 1280.0, 800.0);
+        assert!(
+            app.messages
+                .iter()
+                .all(|message| !message.text.contains("Keep the existing open action"))
+        );
+        app.answer_effect(crate::effects::ChatEffect::OpenTaskConversation {
+            workspace: app.active_ws.clone(),
+            agent: "scribe".into(),
+            task: "task:review".into(),
+            run_epoch: 7,
+        })
+        .unwrap();
+        assert_eq!(app.active_channel, parent_channel);
+        assert_eq!(
+            app.composer_main.private_plain().as_deref(),
+            Some("Only the parent may see this draft.")
+        );
+        assert_eq!(app.composer_main.selection(), selection);
+        render_frame(&mut app, 1280.0, 800.0);
+        assert_eq!(
+            app.header_identity_text().name,
+            "Example: Review search actions"
+        );
+        assert!(
+            app.published_rows()
+                .iter()
+                .any(|row| row.id() == "chat.task:task:review-child:0")
+        );
+    }
+
+    #[test]
+    fn task_hierarchy_and_filters_use_live_actions_and_production_rows() {
+        let (mut app, _doc) = app_with_doc();
+        app.stage_scenario("Subtask");
+        render_frame(&mut app, 1280.0, 800.0);
+        assert!(app.hits.iter().any(
+            |(_, hit)| matches!(hit, Hit::AgentTask(task) if task.task_id == "task:review-child")
+        ));
+        app.answer_effect(crate::effects::ChatEffect::ToggleTaskChildren {
+            task: "task:review".into(),
+        })
+        .unwrap();
+        render_frame(&mut app, 1280.0, 800.0);
+        assert!(!app.hits.iter().any(
+            |(_, hit)| matches!(hit, Hit::AgentTask(task) if task.task_id == "task:review-child")
+        ));
+        app.answer_effect(crate::effects::ChatEffect::FilterTasks {
+            filter: "completed".into(),
+        })
+        .unwrap();
+        render_frame(&mut app, 1280.0, 800.0);
+        assert!(
+            !app.hits
+                .iter()
+                .any(|(_, hit)| matches!(hit, Hit::AgentTask(_)))
+        );
+        app.answer_effect(crate::effects::ChatEffect::FilterTasks {
+            filter: "all".into(),
+        })
+        .unwrap();
+        app.answer_effect(crate::effects::ChatEffect::CreateSubtask {
+            task: "task:review".into(),
+            title: "Explicit public label".into(),
+        })
+        .unwrap();
+        assert!(
+            app.published_rows()
+                .iter()
+                .any(|row| row.id() == "chat.tasks")
+        );
+    }
+
+    #[test]
+    fn stop_pending_paints_stopping_without_claiming_external_undo() {
+        let (mut app, _doc) = app_with_doc();
+        app.stage_scenario("RunningSteering");
+        assert!(app.stop_agent_task());
+        render_frame(&mut app, 420.0, 680.0);
+        let lines = crate::render_chat::agent_task_status_lines(app.direct_agent_tasks().unwrap());
+        let receipt = lines.receipt.unwrap();
+        assert!(receipt.contains("Stopping"));
+        assert!(receipt.contains("not undone"));
+        assert!(
+            !app.hits
+                .iter()
+                .any(|(_, hit)| matches!(hit, Hit::AgentStop))
+        );
+    }
+
+    #[test]
     fn agent_task_conversation_normal_and_compact_keep_exact_control_and_private_editor() {
         for (scenario, width) in [("agent-task", 1280.0), ("agent-task-compact", 420.0)] {
             let (mut app, mut doc) = app_with_doc();
@@ -3816,7 +4242,7 @@ mod tests {
             assert_eq!(
                 app.messages.len(),
                 5,
-                "public work turns reach the real timeline"
+                "private reports and directions reach the real timeline"
             );
             assert!(
                 app.messages
@@ -3828,7 +4254,10 @@ mod tests {
                     .iter()
                     .any(|message| message.text.contains("Example resource output"))
             );
-            assert_eq!(app.user_name("agent:scribe"), "Scribe (agent)");
+            assert_eq!(
+                app.user_name("agent:scribe"),
+                "Example: Review search actions"
+            );
             let lines =
                 crate::render_chat::agent_task_status_lines(app.direct_agent_tasks().unwrap());
             assert!(lines.primary.contains("Working"));
@@ -3863,7 +4292,15 @@ mod tests {
                 "Keep this private clarification."
             );
             assert_eq!(surface.view.composer_main.selection(), selection);
-            assert!(surface.request().title.contains("Run 7"));
+            assert_eq!(surface.request().title, "Example: Review search actions");
+            assert_eq!(
+                surface
+                    .view
+                    .direct_agent_tasks()
+                    .unwrap()
+                    .selected_identity(),
+                Some(("task:review", 7))
+            );
             surface.move_editor_to_parent(&mut app);
             assert_eq!(app.agent_draft_route().as_deref(), Some(route.as_str()));
             assert_eq!(app.composer_main.selection(), selection);
@@ -3877,6 +4314,91 @@ mod tests {
                 Some(7)
             );
         }
+    }
+
+    #[test]
+    fn private_reports_survive_cursor_editor_adoption_and_surface_round_trip() {
+        let (mut app, doc) = app_with_doc();
+        app.stage_scenario("agent-task");
+        app.composer_main.sync(&doc);
+        render_frame(&mut app, 1280.0, 680.0);
+        let before = app
+            .messages
+            .iter()
+            .map(|message| {
+                (
+                    message.id.clone(),
+                    message.author.clone(),
+                    message.text.clone(),
+                    message.ts,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            before
+                .iter()
+                .any(|(_, author, _, _)| author == "task-report:task:review")
+        );
+        let key = crate::composer::ConversationKey::Agent {
+            workspace: app.active_ws.clone(),
+            route: app.agent_draft_route().unwrap(),
+        };
+        let editor = ui::private_draft::Editor {
+            text: "Cursor clarification".into(),
+            anchor: 8,
+            caret: 2,
+            preedit: "候補".into(),
+            preedit_cursor: Some((0, 3)),
+        };
+        app.composer_main
+            .adopt_private_editor(&key, &editor)
+            .unwrap();
+        let mut surface =
+            crate::agent_conversation_surface::AgentConversationSurface::from_attached(
+                &mut app, "scribe",
+            );
+        render_frame(&mut surface.view, 420.0, 680.0);
+        let floated = surface
+            .view
+            .messages
+            .iter()
+            .map(|message| {
+                (
+                    message.id.clone(),
+                    message.author.clone(),
+                    message.text.clone(),
+                    message.ts,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(before, floated);
+        assert_eq!(surface.view.composer_main.selection(), (8, 2));
+        surface.move_editor_to_parent(&mut app);
+        render_frame(&mut app, 1280.0, 680.0);
+        let restored = app
+            .messages
+            .iter()
+            .map(|message| {
+                (
+                    message.id.clone(),
+                    message.author.clone(),
+                    message.text.clone(),
+                    message.ts,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(before, restored);
+        assert_eq!(app.composer_main.value(), "Cursor clarification");
+        assert_eq!(app.composer_main.selection(), (8, 2));
+        assert!(!crate::projection::has_draft(&doc, &app.active_channel));
+        // The shared room projection has neither private report ids nor bodies.
+        let shared = app.held_messages();
+        assert!(shared.iter().all(|(id, message)| {
+            !id.to_string().starts_with("task-report:")
+                && !before.iter().any(|(_, author, body, _)| {
+                    author.starts_with("task-report:") && body == &message.text
+                })
+        }));
     }
 
     #[test]

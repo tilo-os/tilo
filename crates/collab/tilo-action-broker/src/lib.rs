@@ -10,6 +10,7 @@ pub mod collab_inbound;
 pub mod collab_outbound;
 pub mod collab_presence;
 pub mod collaboration_admin;
+pub mod native_model;
 pub mod peer_actions;
 pub mod policy_schedule;
 pub mod published_authorization;
@@ -17,6 +18,7 @@ pub mod record_content;
 pub mod route;
 pub mod services;
 pub mod task_runs;
+pub use collab_broker_capnp::workspace_tasks;
 #[cfg(test)]
 mod test_owner;
 #[cfg(any(test, feature = "test-support"))]

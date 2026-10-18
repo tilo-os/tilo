@@ -26,6 +26,8 @@ pub struct Link {
     /// Wakes from the transport when an event arrives, so a receive blocks
     /// instead of polling. `None` for a transport that cannot wake.
     wake: Option<Wake>,
+    /// A task mailbox has no reconnect path once its owner is gone.
+    task_mailbox: bool,
 }
 
 enum LastPublication {
@@ -88,6 +90,42 @@ fn take_next_polled(
 const RECV_POLL: Duration = Duration::from_millis(1);
 
 impl Link {
+    /// Build a test task facade over a transport without wake notifications.
+    #[cfg(test)]
+    pub(crate) fn for_task(transport: impl ui::collaboration::PeerTransport + 'static) -> Self {
+        let mut link =
+            Self::with_manager(CollaborationManager::with_peer_transport(transport), None);
+        link.task_mailbox = true;
+        link
+    }
+
+    pub(crate) fn wake_handle(&self) -> Option<ui::wake::WakeHandle> {
+        let wake = self.wake.as_ref()?;
+        let _entered = wake._scope.enter();
+        Some(ui::wake::WakeHandle::new())
+    }
+
+    /// Task mailboxes register their wake in this link's private scope.
+    pub(crate) fn for_task_waking(
+        transport: impl ui::collaboration::PeerTransport + 'static,
+        register: impl FnOnce(ui::wake::WakeHandle),
+    ) -> Self {
+        let (manager, wake) = Wake::around(|| {
+            register(ui::wake::WakeHandle::new());
+            CollaborationManager::with_peer_transport(transport)
+        });
+        let mut link = Self::with_manager(manager, Some(wake));
+        link.task_mailbox = true;
+        link
+    }
+
+    /// Wrap a host-authenticated SDK connection without replacing its transport.
+    /// Native model requests still pass through that connection's broker custody.
+    #[doc(hidden)]
+    pub fn from_service(manager: CollaborationManager) -> Self {
+        Self::with_manager(manager, None)
+    }
+
     fn with_manager(manager: CollaborationManager, wake: Option<Wake>) -> Self {
         Self {
             manager,
@@ -95,6 +133,7 @@ impl Link {
             last_publication: LastPublication::None,
             detached: HashMap::new(),
             wake,
+            task_mailbox: false,
         }
     }
 
@@ -249,6 +288,9 @@ impl Link {
             if let Some(event) = take_next_polled(&mut self.pending, polled) {
                 return Ok(Some(event));
             }
+            if self.task_mailbox && !self.manager.is_connected() {
+                anyhow::bail!("task connection owner stopped");
+            }
             let now = ui::time::now();
             if now >= deadline {
                 return Ok(None);
@@ -367,7 +409,9 @@ impl Link {
             if let Some(reply) = self.take_detached(request_id) {
                 return Some(reply);
             }
-            if !matches!(self.detached.get(&request_id), Some(Slot::Awaiting { .. })) {
+            if !matches!(self.detached.get(&request_id), Some(Slot::Awaiting { .. }))
+                || (self.task_mailbox && !self.manager.is_connected())
+            {
                 return None;
             }
             let now = ui::time::now();

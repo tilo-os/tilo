@@ -9,6 +9,10 @@ use tilo_desktop_model::{
 
 fn task(id: &str, agent: &str, route: WorkspaceTaskRoute) -> WorkspaceTask {
     WorkspaceTask {
+        parent_task_id: None,
+        child_order: None,
+        labels: Vec::new(),
+        responsible_assignees: Vec::new(),
         id: format!("task:{id}"),
         title: format!("Task {id}"),
         created_by: "person".into(),
@@ -91,6 +95,170 @@ fn envelope(
     }
 }
 
+#[test]
+fn registered_metadata_actions_parse_and_filter_real_task_frontiers() {
+    let mut state = snapshot();
+    state.tasks[1].parent_task_id = Some(state.tasks[0].id.clone());
+    state.tasks[1].labels = vec!["review".into()];
+    state.tasks[1].responsible_assignees = vec!["person".into()];
+    let catalogue = actions(
+        &state,
+        "Workspace",
+        &std::collections::BTreeSet::from(["scribe".into(), "reed".into()]),
+    );
+    for verb in ["create-subtask", "move-task", "set-labels", "set-assignees"] {
+        assert!(
+            catalogue
+                .iter()
+                .any(|action| action.resource == "desktop:task:model" && action.action == verb)
+        );
+    }
+    assert!(
+        catalogue
+            .iter()
+            .any(|action| action.resource == COLLECTION && action.action == "list-tasks")
+    );
+    let request = envelope(
+        "desktop:task:model",
+        "create-subtask",
+        Some(serde_json::json!({"title":"Child", "assigned_agent":"reed", "route":"rules_only"})),
+    );
+    assert!(
+        matches!(command(&request).unwrap(), Some(WorkspaceTaskCommand::CreateSubtask { assigned_agent: Some(agent), route: Some(WorkspaceTaskRoute::RulesOnly), .. }) if agent == "reed")
+    );
+    let request = envelope(
+        COLLECTION,
+        "list-tasks",
+        Some(
+            serde_json::json!({"parent_task_id":"task:model", "label":"review", "assignee":"person"}),
+        ),
+    );
+    assert!(is_inspect(&request));
+    let value = inspect(&state, &request).unwrap();
+    assert_eq!(value["total"], 1);
+    assert_eq!(value["tasks"][0]["task_id"], "task:rules");
+    assert_eq!(
+        value["tasks"][0]["responsible_assignees"],
+        serde_json::json!(["person"])
+    );
+    let parent = inspect(&state, &envelope("desktop:task:model", "read-task", None)).unwrap();
+    assert_eq!(parent["child_progress"]["in_progress"], 1);
+    assert!(!value.to_string().contains("Private"));
+}
+
+#[test]
+fn unassigned_model_task_publishes_approval_with_optional_executor() {
+    let mut state = snapshot();
+    state.tasks[0].assigned_agent = None;
+    state.tasks[0].status = WorkspaceTaskStatus::Queued;
+    state.controls.get_mut("task:model").unwrap().active_run = None;
+    let catalogue = actions(&state, "Workspace", &Default::default());
+    let approve = catalogue
+        .iter()
+        .find(|row| row.resource == "desktop:task:model" && row.action == "approve-run")
+        .expect("unassigned model tasks must offer conscious Start before an executor exists");
+    let agent = approve
+        .params
+        .iter()
+        .find(|param| param.name == "agent_id")
+        .unwrap();
+    assert!(!agent.required);
+    for name in ["expected_run_epoch", "after_revision"] {
+        assert!(
+            approve
+                .params
+                .iter()
+                .find(|param| param.name == name)
+                .unwrap()
+                .required
+        );
+    }
+    assert!(
+        catalogue
+            .iter()
+            .any(|row| row.resource == COLLECTION && row.action == "read-task-compute")
+    );
+}
+
+#[test]
+fn omitted_approval_executor_is_stable_per_invocation_not_per_task() {
+    let mut request = envelope(
+        "desktop:task:model",
+        "approve-run",
+        Some(serde_json::json!({"expected_run_epoch":0,"after_revision":0})),
+    );
+    let selected = |request: &InvocationEnvelope| {
+        let Some(WorkspaceTaskCommand::ApproveRun {
+            task_id,
+            agent_id,
+            expected_run_epoch,
+            after_revision,
+        }) = command(request).unwrap()
+        else {
+            panic!("approval command")
+        };
+        assert_eq!(task_id, "task:model");
+        assert_eq!((expected_run_epoch, after_revision), (0, 0));
+        agent_id
+    };
+    let first = selected(&request);
+    assert_eq!(first, format!("native-{}", request.invocation.0));
+    request.id += 1;
+    assert_eq!(
+        selected(&request),
+        first,
+        "transport retry preserves actor selection"
+    );
+    request.invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(92));
+    assert_ne!(
+        selected(&request),
+        first,
+        "a new conscious Start selects a fresh actor"
+    );
+    request.argument = Some(format!(
+        "{}{}",
+        tilo_actions::ARGUMENTS_JSON_PREFIX,
+        serde_json::json!({"agent_id":"scribe","expected_run_epoch":0,"after_revision":0})
+    ));
+    assert_eq!(selected(&request), "scribe");
+}
+
+#[test]
+fn private_children_are_queued_without_approving_a_run() {
+    let request = envelope(
+        "desktop:task:model",
+        "queue-private-subtask",
+        Some(serde_json::json!({
+            "title": "Review section",
+            "instruction": "Private review goal",
+            "route": "model"
+        })),
+    );
+    assert!(matches!(
+        command(&request).unwrap(),
+        Some(WorkspaceTaskCommand::QueuePrivateSubtask {
+            parent_task_id, title, instruction, assigned_agent, route: WorkspaceTaskRoute::Model,
+        }) if parent_task_id == "task:model" && title == "Review section"
+            && instruction == "Private review goal" && assigned_agent.is_empty()
+    ));
+    for invalid in [
+        serde_json::json!({"title":"Child","instruction":"Goal","route":"manual"}),
+        serde_json::json!({"title":"Child","instruction":"Goal","route":"model","approval":true}),
+    ] {
+        assert!(
+            command(&envelope(
+                "desktop:task:model",
+                "queue-private-subtask",
+                Some(invalid)
+            ))
+            .is_err()
+        );
+    }
+    let catalogue = action_ids(&snapshot());
+    assert!(catalogue.contains(&("desktop:task:model".into(), "queue-private-subtask".into())));
+    assert!(catalogue.contains(&("desktop:task:model".into(), "send-message".into())));
+}
+
 fn action_ids(snapshot: &WorkspaceTaskSnapshot) -> Vec<(String, String)> {
     actions(
         snapshot,
@@ -113,11 +281,37 @@ fn removed_agent_withdraws_its_task_controls_from_the_current_surface() {
     .into_iter()
     .map(|action| (action.resource, action.action))
     .collect::<Vec<_>>();
+    assert!(ids.contains(&("desktop:task:model".into(), "read-task".into())));
     assert!(
         !ids.iter()
-            .any(|(resource, _)| resource == "desktop:task:model")
+            .any(|(resource, action)| resource == "desktop:task:model" && action != "read-task")
     );
     assert!(ids.contains(&("desktop:task:rules".into(), "stop".into())));
+}
+
+#[test]
+fn windowless_task_source_is_the_real_published_task_resource() {
+    let snapshot = snapshot();
+    let source = model_source(&snapshot, "room", "task:model").unwrap();
+    let tilo_joined_room::task_admission::model::NativeModelSource::Task { task_id, resource } =
+        source
+    else {
+        panic!("semantic task source")
+    };
+    assert_eq!(task_id, "task:model");
+    assert_eq!(
+        resource,
+        tilo_joined_room::NativeModelContract::task_resource("room", &task_id)
+    );
+    let published = actions(&snapshot, "Workspace", &Default::default());
+    assert!(
+        published
+            .iter()
+            .any(|action| action.resource == task_resource_id(&task_id)
+                && action.resource_kind == tilo_desktop_model::task::TASK_KIND
+                && action.action == "read-task")
+    );
+    assert!(model_source(&snapshot, "room", "task:absent").is_err());
 }
 
 #[test]
@@ -251,16 +445,21 @@ fn current_owner_surface_offers_only_controls_the_exact_run_supports() {
     let ids = action_ids(&snapshot);
     assert!(ids.contains(&(COLLECTION.into(), "read-current-tasks".into())));
     assert!(ids.contains(&("desktop:task:model".into(), "read-task".into())));
+    assert!(ids.contains(&("desktop:task:model".into(), "steer".into())));
     assert!(ids.contains(&("desktop:task:model".into(), "direct".into())));
+    assert!(ids.contains(&("desktop:task:model".into(), "wait-task-message".into())));
     assert!(ids.contains(&("desktop:task:model".into(), "stop".into())));
     assert!(ids.contains(&("desktop:task:rules".into(), "read-task".into())));
     assert!(!ids.contains(&("desktop:task:rules".into(), "direct".into())));
+    assert!(!ids.contains(&("desktop:task:rules".into(), "steer".into())));
     assert!(ids.contains(&("desktop:task:rules".into(), "stop".into())));
 
     let mut withdrawn = snapshot;
     withdrawn.controls.get_mut("task:model").unwrap().active_run = None;
     let withdrawn = action_ids(&withdrawn);
     assert!(!withdrawn.contains(&("desktop:task:model".into(), "direct".into())));
+    assert!(!withdrawn.contains(&("desktop:task:model".into(), "steer".into())));
+    assert!(!withdrawn.contains(&("desktop:task:model".into(), "wait-task-message".into())));
     assert!(!withdrawn.contains(&("desktop:task:model".into(), "stop".into())));
 }
 
@@ -329,14 +528,18 @@ fn private_conversation_is_exact_run_scoped_and_absent_from_public_reads() {
         "read-conversation",
         Some(serde_json::json!({"run_epoch":7})),
     );
-    // The broker routes this through owner-person certificate custody and the
-    // current assigned-agent membership check, just like task control reads.
+    // The broker obtains private text only through exact owner-person custody;
+    // public task projections cannot recover this private initial instruction.
     assert!(is_inspect(&private));
     assert_eq!(
         inspection_agent(&snapshot, &private).unwrap().as_deref(),
         Some("scribe")
     );
-    let conversation = inspect(&snapshot, &private).unwrap();
+    let instructions = crate::services::NativeTaskPrivateInstructions {
+        instruction: Some("Private full task instruction".into()),
+        ..Default::default()
+    };
+    let conversation = private_conversation(&snapshot, &private, Some(&instructions)).unwrap();
     assert_eq!(conversation["turns"].as_array().unwrap().len(), 4);
     assert_eq!(
         conversation["turns"][3]["presentation"]["reasoning"],
@@ -352,7 +555,7 @@ fn private_conversation_is_exact_run_scoped_and_absent_from_public_reads() {
         .unwrap()
         .sequence = 2;
     assert_eq!(
-        inspect(&snapshot, &private).unwrap()["turns"][3]["id"],
+        private_conversation(&snapshot, &private, Some(&instructions)).unwrap()["turns"][3]["id"],
         stable_id
     );
     assert_eq!(
@@ -380,6 +583,31 @@ fn private_conversation_is_exact_run_scoped_and_absent_from_public_reads() {
             .is_err()
         );
     }
+}
+
+#[test]
+fn canonical_steer_retains_direct_arguments_and_contract() {
+    let snapshot = snapshot();
+    let actions = actions(
+        &snapshot,
+        "Workspace",
+        &std::collections::BTreeSet::from(["scribe".into()]),
+    );
+    let find = |name: &str| {
+        actions
+            .iter()
+            .find(|action| action.resource == "desktop:task:model" && action.action == name)
+            .unwrap()
+    };
+    assert_eq!(find("steer").params, find("direct").params);
+    assert_eq!(find("steer").contract, find("direct").contract);
+    let args = serde_json::json!({"run_epoch":7,"after_revision":2,"text":"Use the smaller proof"});
+    let steer = envelope("desktop:task:model", "steer", Some(args.clone()));
+    let direct = envelope("desktop:task:model", "direct", Some(args));
+    assert_eq!(
+        serde_json::to_value(command(&steer).unwrap()).unwrap(),
+        serde_json::to_value(command(&direct).unwrap()).unwrap()
+    );
 }
 
 #[test]

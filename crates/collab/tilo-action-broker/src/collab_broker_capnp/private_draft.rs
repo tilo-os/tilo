@@ -33,7 +33,18 @@ impl CapnpBrokerState {
                     && public_key
                         .bytes()
                         .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) => {}
-            Target::Person { .. } => return Err("invalid private draft target".into()),
+            Target::Task {
+                agent,
+                task,
+                run_epoch,
+            } if tilo_actions::task_messaging::TaskRunAddress {
+                task_id: task.clone(),
+                agent_id: agent.clone(),
+                run_epoch: *run_epoch,
+            }
+            .validate()
+            .is_ok() => {}
+            _ => return Err("invalid private draft target".into()),
         }
         let worker = {
             let workers = self

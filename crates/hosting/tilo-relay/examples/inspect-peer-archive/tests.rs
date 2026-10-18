@@ -315,7 +315,14 @@ fn readable_export_contains_sent_content_and_shared_draft_without_changing_heads
         "Sent archive content",
     )
     .unwrap();
-    chat::demo::set_draft(&mut chat, "test-person", &channel, "Unsent shared draft").unwrap();
+    // Historical archives can contain drafts from before drafts became private.
+    // Build that legacy shape without restoring a shared-draft live API.
+    let mut drafts = chat::drafts::ChatDrafts::default();
+    drafts.drafts.insert(
+        channel.clone(),
+        tilo_document::RichText::from_markdown("Unsent shared draft"),
+    );
+    tilo_resource::Fields::write_fields(&drafts, &mut chat, &automerge::ROOT).unwrap();
     chat.commit();
     let before = chat.base_heads();
     let export = readable("so.tilo.chat", "", &chat).unwrap();

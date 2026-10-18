@@ -63,6 +63,10 @@ impl Host {
 }
 
 impl SettingsSource for Host {
+    fn load_committed(&self) -> Option<Map<String, Value>> {
+        self.source.load_committed()
+    }
+
     fn load(&self) -> Map<String, Value> {
         self.source.load()
     }

@@ -4,6 +4,22 @@
 use std::collections::BTreeMap;
 use tilo_desktop_model::{WorkspaceTask, WorkspaceTaskControl};
 
+/// Governor admission-barrier truth, never inferred from a model acknowledgement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskAdmissionState {
+    Open,
+    Stopping,
+    Stopped,
+    Unknown,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct TaskAdmissionView {
+    pub run_epoch: u64,
+    pub state: TaskAdmissionState,
+}
+
 #[derive(Clone, Debug)]
 pub struct TaskReviewSnapshot {
     pub room: String,
@@ -13,6 +29,8 @@ pub struct TaskReviewSnapshot {
     pub writable: bool,
     pub tasks: Vec<WorkspaceTask>,
     pub controls: BTreeMap<String, WorkspaceTaskControl>,
+    /// Only a governing owner's exact run ledger may populate a known state.
+    pub admissions: BTreeMap<String, TaskAdmissionView>,
 }
 
 /// Every edit carries the run and instruction frontier the person reviewed.

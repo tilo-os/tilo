@@ -105,11 +105,21 @@ fn read_owner(path: &std::path::Path) -> Result<NativeWorkspaceOwner, Box<dyn st
             .ok_or("actual native owner record is absent")?
             .take(),
     )?;
-    Ok(NativeWorkspaceOwner::restore(
-        Arc::new(ReadOnlyStore),
-        authority,
-        SystemTime::now(),
-    )?)
+    let paths = shell::firstboot::collaboration_identity_paths();
+    let now = SystemTime::now();
+    let owner = match tilo_user_identity::persist::read_device_key(&paths.device_privkey) {
+        Ok(key) => NativeWorkspaceOwner::restore_with_private_recovery(
+            Arc::new(ReadOnlyStore),
+            authority,
+            &key,
+            now,
+        )?,
+        Err(_) => NativeWorkspaceOwner::restore(Arc::new(ReadOnlyStore), authority, now)?,
+    };
+    // Inspection must not repair a live session behind its writer's back.
+    // If recovery needs publication, ReadOnlyStore refuses it; the shell
+    // must durably recover the record before this proof can observe it.
+    Ok(owner)
 }
 
 struct InspectionRoute {

@@ -52,6 +52,7 @@ fn capture(out: &Path, theme: Theme, viewport: (u32, u32)) -> CaptureResult<()> 
         None,
     )?;
     let interaction = tilo_actions::SemanticInteraction {
+        paint_origin: None,
         version: tilo_actions::INTERACTION_VERSION,
         invocation: tilo_actions::InvocationId::new(),
         sequence: 1,

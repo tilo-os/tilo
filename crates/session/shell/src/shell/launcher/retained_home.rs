@@ -639,6 +639,14 @@ impl Registration {
             return Err(refused());
         }
         drop(launch);
+        // Resolve from the registered process, never the retained command's
+        // arguments. A managed launch without its record cannot be released as
+        // an ordinary credential-bearing model connection.
+        let protected_model = if command.managed_agent_id.is_some() {
+            Some(super::registered_protected_model_launch(pid).ok_or_else(refused)?)
+        } else {
+            None
+        };
         lease.ok_or_else(refused)?.retained_release(
             pid,
             self.prepared.room(),
@@ -652,7 +660,7 @@ impl Registration {
             &[self.prepared.opcode()],
             self.endpoint.as_fd(),
         )?;
-        let launcher = self.root.release(gate, pid)?;
+        let launcher = self.root.release(gate, pid, protected_model)?;
         child.check_peer(&launcher)?;
         match &self.prepared {
             PreparedRegistration::Home(_) => {

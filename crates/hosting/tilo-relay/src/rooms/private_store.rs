@@ -414,7 +414,7 @@ impl GovernedRoom {
                 self.private_notify(id, sequence);
                 Ok(PrivateReply::Sent)
             }
-            PrivateOperation::Contacts => Err("invalid private operation".into()),
+            _ => Err("invalid private operation".into()),
         }
     }
 

@@ -47,14 +47,19 @@ impl AgentConversationSurface {
         let compact = f64::from(ui::tokens::Metrics::BASE.panel_width_sheet);
         Self {
             id: format!("chat-conversation:{}", uuid::Uuid::new_v4()),
-            conversation: parent.direct_person.as_ref().map_or_else(
-                || crate::composer::ConversationKey::Agent {
-                    workspace: parent.active_ws.clone(),
-                    route: parent
-                        .agent_draft_route()
-                        .unwrap_or_else(|| agent.to_owned()),
+            conversation: parent.task_goal.as_ref().map_or_else(
+                || {
+                    parent.direct_person.as_ref().map_or_else(
+                        || crate::composer::ConversationKey::Agent {
+                            workspace: parent.active_ws.clone(),
+                            route: parent
+                                .agent_draft_route()
+                                .unwrap_or_else(|| agent.to_owned()),
+                        },
+                        |public_key| parent.person_conversation_key(public_key),
+                    )
                 },
-                |public_key| parent.person_conversation_key(public_key),
+                crate::task_onboarding::TaskGoalDraft::key,
             ),
             view: Box::new(view),
             placement,
@@ -71,8 +76,10 @@ impl AgentConversationSurface {
         if !self.view_owns_editor {
             return;
         }
+        self.view.agent_tasks.merge_retained(&parent.agent_tasks);
         std::mem::swap(&mut parent.agent_tasks, &mut self.view.agent_tasks);
         std::mem::swap(&mut parent.composer_main, &mut self.view.composer_main);
+        parent.task_goal.clone_from(&self.view.task_goal);
         parent.focus = self.view.focus;
         parent.draft_main.clone_from(&self.view.draft_main);
         parent.scroll = self.view.scroll;
@@ -83,11 +90,13 @@ impl AgentConversationSurface {
         if self.view_owns_editor {
             return;
         }
+        parent.agent_tasks.merge_retained(&self.view.agent_tasks);
         std::mem::swap(&mut self.view.agent_tasks, &mut parent.agent_tasks);
         std::mem::swap(&mut self.view.composer_main, &mut parent.composer_main);
         parent
             .composer_main
             .share_private_store_from(&self.view.composer_main);
+        self.view.task_goal.clone_from(&parent.task_goal);
         self.view.focus = parent.focus;
         self.view.draft_main.clone_from(&parent.draft_main);
         self.view.scroll = parent.scroll;
@@ -106,7 +115,12 @@ impl AgentConversationSurface {
     pub(crate) fn request(&self) -> FloatingSurfaceRequest {
         FloatingSurfaceRequest {
             id: self.id.clone(),
-            title: if let crate::composer::ConversationKey::Person { public_key, .. } =
+            title: if matches!(
+                self.conversation,
+                crate::composer::ConversationKey::TaskDraft { .. }
+            ) {
+                crate::i18n::t("chat-agent-mode-queue")
+            } else if let crate::composer::ConversationKey::Person { public_key, .. } =
                 &self.conversation
             {
                 self.view.person_display_name(public_key)

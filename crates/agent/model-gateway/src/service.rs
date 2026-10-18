@@ -20,6 +20,8 @@ use std::time::{Duration, Instant};
 #[cfg(feature = "host-backend")]
 #[path = "host_backend.rs"]
 pub mod host_backend;
+#[path = "native.rs"]
+pub mod native;
 #[path = "rig_adapter.rs"]
 mod rig_adapter;
 
@@ -107,6 +109,35 @@ type Emit<'a> = &'a mut (dyn FnMut(&Response) -> bool + Send);
 struct Handoff {
     protocol: u16,
     app_id: String,
+    // Installed by EnrolledServiceContext before the app receives its FD.
+    // Presence restricts this connection; it never grants native custody.
+    #[serde(default, deserialize_with = "managed_handoff_present")]
+    managed_actor_binding: bool,
+}
+
+fn managed_handoff_present<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<bool, D::Error> {
+    // Even malformed/null metadata must not downgrade a protected connection.
+    let _ = <serde::de::IgnoredAny as serde::Deserialize>::deserialize(deserializer)?;
+    Ok(true)
+}
+
+impl Handoff {
+    fn gateway_source(&self) -> native::GatewaySource<'_> {
+        if self.managed_actor_binding {
+            native::GatewaySource::NativeUnavailable
+        } else {
+            native::GatewaySource::Ordinary
+        }
+    }
+
+    async fn execute(&self, request: Request, http: &reqwest::Client, emit: Emit<'_>) -> Response {
+        if !matches!(self.gateway_source(), native::GatewaySource::Ordinary) {
+            return protected_selection(&self.app_id, request).await;
+        }
+        handle_streaming(&self.app_id, request, http, emit).await
+    }
 }
 
 pub fn main() {
@@ -199,13 +230,34 @@ impl Gateway {
         let revoked = async {
             loop {
                 if !session.active() {
-                    break;
+                    // Cancel undispatched native preparation promptly, allowing
+                    // a fresh desired frontier. An already enqueued request may
+                    // complete solely to retain historical delivery evidence.
+                    if !matches!(session.gateway_source(), native::GatewaySource::Native(source) if source.dispatched())
+                    {
+                        break;
+                    }
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
         };
         tokio::select! {
-            response = handle_streaming(caller, request, &self.http, emit) => response,
+            response = async {
+                match session.gateway_source() {
+                    native::GatewaySource::Ordinary => {
+                        handle_streaming(caller, request, &self.http, emit).await
+                    }
+                    native::GatewaySource::Native(_) | native::GatewaySource::NativeUnavailable
+                        if matches!(&request, Request::SelectionConfigured { .. }) => {
+                            protected_selection(caller, request).await
+                        }
+                    native::GatewaySource::Native(source)
+                        if matches!(session.caller(), crate::caller::Caller::Agent) => {
+                            source.execute(request, emit).await
+                        }
+                    _ => permission_denied(),
+                }
+            } => response,
             () = revoked => Response::failure(ModelError::new(ErrorKind::PermissionDenied)),
         }
     }
@@ -399,7 +451,9 @@ async fn serve_connection(mut stream: tokio::net::UnixStream, http: &reqwest::Cl
                 serde_json::to_vec(event)
                     .is_ok_and(|body| events.try_send(Zeroizing::new(body)).is_ok())
             };
-            handle_streaming(&handoff.app_id, request, http, &mut emit).await
+            // Cancellation envelopes have already been unwrapped. The launch
+            // role is connection metadata, not a field in the request body.
+            handoff.execute(request, http, &mut emit).await
         };
         // Dropping handling immediately drops the provider future. Writes are
         // outside select, so cancellation never truncates a response frame.
@@ -540,6 +594,9 @@ pub(super) async fn handle_streaming(
     let done = |()| succeeded(None, None);
     let configured = |configured| succeeded(None, Some(configured));
     let result = match request {
+        Request::NativePlan { .. }
+        | Request::NativeTransform { .. }
+        | Request::NativeComplete { .. } => return permission_denied(),
         Request::SelectionConfigured {
             profile_id,
             model_id,
@@ -982,13 +1039,36 @@ fn secret_status(profile_id: &str) -> Result<bool, String> {
     }
 }
 
-/// Check only prerequisites available locally. No HTTP client is created and
-/// no request is sent; credential and loopback rules match Plan.
-fn selection_configured(
+// Protected standalone connections have correlation metadata, not credential
+// custody. Their preflight may inspect public selection metadata only.
+async fn protected_selection(app_id: &str, request: Request) -> Response {
+    let Request::SelectionConfigured {
+        profile_id,
+        model_id,
+        protocol,
+    } = request
+    else {
+        return permission_denied();
+    };
+    if app_id != AGENT_APP {
+        return permission_denied();
+    }
+    let mut response =
+        blocking(move || selection_metadata(&profile_id, &model_id, protocol).map(|_| ()))
+            .await
+            .map_or_else(|error| rejected(&error), |()| succeeded(None, Some(true)));
+    // This is connection metadata, not caller metadata or a grant. Report it
+    // even when selection validation fails so clients never infer a legacy
+    // credential path from an unavailable protected provider.
+    response.output = Some(serde_json::json!({"model_role": "protected"}).to_string());
+    response
+}
+
+fn selection_metadata(
     profile_id: &str,
     model_id: &str,
     protocol: ProviderProtocol,
-) -> Result<(), String> {
+) -> Result<ProviderProfile, String> {
     if model_id.is_empty() || model_id.len() > 256 || model_id.chars().any(char::is_control) {
         return Err("invalid selected model id".into());
     }
@@ -1004,6 +1084,17 @@ fn selection_configured(
     if !matches!(endpoint.scheme(), "http" | "https") || endpoint.host().is_none() {
         return Err("provider endpoint is invalid".into());
     }
+    Ok(profile)
+}
+
+/// Check only prerequisites available locally. No HTTP client is created and
+/// no request is sent; credential and loopback rules match Plan.
+fn selection_configured(
+    profile_id: &str,
+    model_id: &str,
+    protocol: ProviderProtocol,
+) -> Result<(), String> {
+    let profile = selection_metadata(profile_id, model_id, protocol)?;
     if profile.sign_in.is_some() {
         return match sign_in_state(&profile)? {
             GrantState::Usable => Ok(()),
@@ -1165,9 +1256,12 @@ type ResolvedProfile = (ProviderProfile, Option<Zeroizing<String>>);
 /// The configured profile for a planning call and its API key, as
 /// [`PLAN_PROFILES`] keeps them between model turns.
 fn plan_profile(profile_id: &str, model_id: &str) -> Result<ResolvedProfile, ModelError> {
+    // A host Settings source can change without replacing the settings copy.
+    // File stamps alone cannot authorize reusing another account's cached key.
+    let selected = configured_profile(profile_id)?;
     // Stamped before reading, so a change made while reading is a miss next time.
     let stamp = ProfileSources::current().and_then(|sources| sources.stamp());
-    PLAN_PROFILES.resolve((profile_id, model_id), stamp, Instant::now(), || {
+    let resolved = PLAN_PROFILES.resolve((profile_id, model_id), stamp, Instant::now(), || {
         let profile = configured_profile(profile_id)?;
         if !profile.models.iter().any(|model| model.id == model_id) {
             return Err(resolution_error(
@@ -1183,7 +1277,15 @@ fn plan_profile(profile_id: &str, model_id: &str) -> Result<ResolvedProfile, Mod
             (plan_secret(&profile)?, None)
         };
         Ok(((profile, secret), until))
-    })
+    })?;
+    if resolved.0 != selected {
+        PLAN_PROFILES.forget(profile_id);
+        return Err(resolution_error(
+            ErrorKind::InvalidRequest,
+            "provider selection changed; retry with the current selection",
+        ));
+    }
+    Ok(resolved)
 }
 
 /// What a Google sign-in's provider asks for when it has to be renewed
@@ -2564,6 +2666,11 @@ async fn unary_with_retries(
     body: &serde_json::Value,
     timeout: Duration,
 ) -> Result<String, String> {
+    if native::context().is_some() {
+        return rig_adapter::legacy(client, profile, secret, body.clone(), timeout, None, false)
+            .await
+            .map_err(ProviderFailure::message);
+    }
     let began = Instant::now();
     while_busy(
         || timeout.checked_sub(began.elapsed()),
@@ -3621,3 +3728,7 @@ mod profile_tests;
 #[cfg(test)]
 #[path = "administration_tests.rs"]
 mod administration_tests;
+
+#[cfg(test)]
+#[path = "protected_handoff_tests.rs"]
+mod protected_handoff_tests;

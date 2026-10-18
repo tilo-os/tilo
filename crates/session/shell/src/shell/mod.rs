@@ -87,6 +87,7 @@ pub mod heap_trim;
 pub mod history_narrative;
 pub mod host_apps;
 pub mod host_shell_allow;
+pub(crate) mod host_window_contracts;
 pub mod hosted_inputs;
 pub mod i18n;
 pub(crate) mod identity_admin;

@@ -22,6 +22,9 @@ pub struct TaskRunControl {
     pub latest_revision: u64,
     pub directions: Vec<TaskDirection>,
     pub has_more: bool,
+    /// Exact-run untrusted context, never a direction or a capability grant.
+    #[serde(default)]
+    pub messages: Vec<crate::TaskMessage>,
 }
 impl TaskRunControl {
     pub const MAX_BYTES: usize = 64 * 1024;
@@ -40,6 +43,17 @@ impl TaskRunControl {
             || self.directions.len() > Self::MAX_DIRECTIONS
         {
             return Err("invalid native task control".into());
+        }
+        if self.messages.len() > 4 {
+            return Err("oversized task inbox page".into());
+        }
+        for message in &self.messages {
+            message.validate()?;
+            if message.recipient.task_id != self.task_id
+                || message.recipient.run_epoch != self.run_epoch
+            {
+                return Err("task inbox page belongs to another run".into());
+            }
         }
         let mut prior = self.from_revision;
         for direction in &self.directions {

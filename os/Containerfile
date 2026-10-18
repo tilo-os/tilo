@@ -1127,6 +1127,7 @@ RUN --mount=type=secret,id=app_publisher_identity \
     BUNDLE_BIN=/out/tilo-runtime-bundle \
     SHIM_BIN=/out/tilo-cli-shim \
     PUBKEY_OUT=/out/app-publisher.hex \
+    MANAGED_AGENT_HASH_OUT=/out/managed-agent-package-hash \
     RUNTIME_ID="tilo-runtime/$(cat /out/runtime-version)" \
     /build/os/scripts/pack-apps.sh
 
@@ -3231,12 +3232,30 @@ COPY --from=native-builder-payload \
 # Read-only, being inside the image. That is the *only* way these packages
 # differ from a user's: the sandbox is still built from the manifest, the
 # payload is still ro-bound, and the single writable directory still comes from
-# the launcher's per-room app dir. Nothing here is trusted for being shipped.
+# the launcher's per-room app dir. Ordinary app grants do not trust shipment;
+# managed task execution additionally requires the independent pin below.
 # Which key signed them, for auditing a built image. Not a trust root: package
 # trust is the user's `~/.config/tilo/trusted-attestors.toml`, and this key is
 # deliberately absent from it — a preinstalled package is self-signed by the
 # image build, and claims nothing more.
 COPY --from=app-store /out/usr/share/tilo-apps/ /usr/share/tilo-apps/
+# Managed execution pins the exact verified archive shipped by this image.
+# Keep this independent of both the image and per-user package registries:
+# installing a user package must never authorize a replacement executor.
+COPY --from=native-builder-payload --chown=0:0 --chmod=0644 \
+    /out/managed-agent-package-hash /usr/lib/tilo/managed-agent-package-hash
+RUN python3 - <<'PY'
+import stat
+from pathlib import Path
+pin = Path('/usr/lib/tilo/managed-agent-package-hash')
+for path in (pin, *pin.parents):
+    info = path.lstat()
+    assert info.st_uid == 0 and not info.st_mode & 0o022, path
+    assert stat.S_ISREG(info.st_mode) if path == pin else stat.S_ISDIR(info.st_mode), path
+value = pin.read_bytes()
+assert len(value) == 65 and value[-1:] == b'\n'
+assert all(byte in b'0123456789abcdef' for byte in value[:-1])
+PY
 # The shell and the browser engine must resolve every library they load from
 # this rootfs: a gap is a loader error at the first launch, on a device.
 ARG TILO_WITH_BROWSER

@@ -1240,6 +1240,7 @@ mod tests {
 
     fn interaction(actor: &str) -> PresencePayload {
         PresencePayload::Interaction(Box::new(tilo_actions::SemanticInteraction {
+            paint_origin: None,
             version: tilo_actions::INTERACTION_VERSION,
             invocation: tilo_actions::InvocationId::new(),
             sequence: 1,

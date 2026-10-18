@@ -343,6 +343,8 @@ impl LauncherServices for Apps {
             return Ok(None);
         }
         Ok(Some(AuthenticatedApplicationLaunch {
+            managed_task_agent: None,
+            managed_identity: None,
             creation: self.launched.creation(pid, app, room),
             continuation_instance: None,
             launch_ticket: self.launched.ticket(pid),

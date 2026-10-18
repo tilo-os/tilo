@@ -337,8 +337,53 @@ pub fn verify_room(
         RoomInput::Delta => Some(&prior.ok_or(ProofError::Unpaired)?.doc),
     };
     // The isolate decodes the changes first; only then are they parsed here.
-    let doc = tilo_peer_state::room::candidate(base, &changes).map_err(|_| ProofError::Unknown)?;
+    let mut doc =
+        tilo_peer_state::room::candidate(base, &changes).map_err(|_| ProofError::Unknown)?;
     admitted_changes(&changes)?;
+    tilo_peer_state::validate_sanitized_room_sync(prior.map(|prior| &prior.doc), &mut doc)
+        .map_err(|_| ProofError::Unknown)?;
+    verify_room_document(authority, source, body, kind, prior, doc)
+}
+
+/// Verify replay against a pin committed by authenticated local retirement.
+/// The incoming envelope never supplies its own initial trust anchor.
+/// # Errors
+/// Rejects unanchored replacements and predecessor checkpoints after retirement.
+pub fn verify_room_anchored(
+    authority: &RetentionAuthority,
+    source: [u8; 32],
+    channel: [u8; 32],
+    body: &[u8],
+    kind: RoomInput,
+    prior: Option<&VerifiedRoom>,
+    anchor: Option<&tilo_peer_state::SanitizedRoomBaselineAnchor>,
+) -> Result<VerifiedRoom, ProofError> {
+    if matches!(decode(body)?, NeighbourMsg::SanitizedRoomBaseline { .. }) {
+        if kind != RoomInput::Checkpoint {
+            return Err(ProofError::Unknown);
+        }
+        return verify_anchored_room_baseline(
+            authority,
+            source,
+            channel,
+            body,
+            anchor.ok_or(ProofError::Unpaired)?,
+        );
+    }
+    if anchor.is_some() && (kind == RoomInput::Checkpoint || prior.is_none()) {
+        return Err(ProofError::Unknown);
+    }
+    verify_room(authority, source, channel, body, kind, prior)
+}
+
+fn verify_room_document(
+    authority: &RetentionAuthority,
+    source: [u8; 32],
+    body: &[u8],
+    kind: RoomInput,
+    prior: Option<&VerifiedRoom>,
+    doc: AutoCommit,
+) -> Result<VerifiedRoom, ProofError> {
     if !doc.get_missing_deps(&[]).is_empty() {
         return Err(ProofError::Unknown);
     }
@@ -409,6 +454,143 @@ pub fn verify_room(
             None
         },
     })
+}
+
+/// Verify a signed replacement against the exact independently verified predecessor.
+/// This proves replacement authority, not publication or file retirement: the store
+/// must atomically persist the replacement and its current-chain pin before removing
+/// any of the predecessor's retained publications.
+///
+/// # Errors
+/// Rejects foreign sources, generation replays, wrong predecessors and altered
+/// governance, receipts or monotonic metadata.
+pub fn verify_room_replacement(
+    prior: &VerifiedRoom,
+    source: [u8; 32],
+    channel: [u8; 32],
+    body: &[u8],
+) -> Result<VerifiedRoom, ProofError> {
+    let authority = &prior.authority;
+    if source != authority.governor().device_public_key
+        || channel != *blake3::hash(b"shell-tree").as_bytes()
+    {
+        return Err(ProofError::Unknown);
+    }
+    let NeighbourMsg::SanitizedRoomBaseline { room, baseline } = decode(body)? else {
+        return Err(ProofError::Unknown);
+    };
+    if room != authority.room() {
+        return Err(ProofError::Unknown);
+    }
+    let (baseline, rest) =
+        postcard::take_from_bytes::<tilo_peer_state::SanitizedRoomBaseline>(&baseline)
+            .map_err(|_| ProofError::Unknown)?;
+    if !rest.is_empty() {
+        return Err(ProofError::Unknown);
+    }
+    validate_baseline_predecessor(prior, &baseline)?;
+    let doc = baseline
+        .verify_anchored_document(authority.room(), source, &baseline.anchor())
+        .map_err(|_| ProofError::Unknown)?;
+    verify_room_document(
+        authority,
+        source,
+        body,
+        RoomInput::Checkpoint,
+        Some(prior),
+        doc,
+    )
+}
+
+/// Verify an initial replacement checkpoint against an independently authenticated
+/// current-chain pin. Never construct `anchor` from the incoming envelope: without
+/// a predecessor this is the only evidence that a signed old generation is current.
+/// Ordinary room sync can subsequently extend the returned proof, but cannot alter
+/// its replacement binding or resurrect an additional root.
+///
+/// # Errors
+/// Rejects a foreign source, mismatched pin, invalid signature, framing or schema.
+pub fn verify_anchored_room_baseline(
+    authority: &RetentionAuthority,
+    source: [u8; 32],
+    channel: [u8; 32],
+    body: &[u8],
+    anchor: &tilo_peer_state::SanitizedRoomBaselineAnchor,
+) -> Result<VerifiedRoom, ProofError> {
+    if source != authority.governor().device_public_key
+        || channel != *blake3::hash(b"shell-tree").as_bytes()
+    {
+        return Err(ProofError::Unknown);
+    }
+    let NeighbourMsg::SanitizedRoomBaseline { room, baseline } = decode(body)? else {
+        return Err(ProofError::Unknown);
+    };
+    if room != authority.room() {
+        return Err(ProofError::Unknown);
+    }
+    let (baseline, rest) =
+        postcard::take_from_bytes::<tilo_peer_state::SanitizedRoomBaseline>(&baseline)
+            .map_err(|_| ProofError::Unknown)?;
+    if !rest.is_empty() {
+        return Err(ProofError::Unknown);
+    }
+    let doc = baseline
+        .verify_anchored_document(authority.room(), source, anchor)
+        .map_err(|_| ProofError::Unknown)?;
+    verify_room_document(authority, source, body, RoomInput::Checkpoint, None, doc)
+}
+
+fn validate_baseline_predecessor(
+    prior: &VerifiedRoom,
+    baseline: &tilo_peer_state::SanitizedRoomBaseline,
+) -> Result<(), ProofError> {
+    #[derive(serde::Deserialize)]
+    struct Binding {
+        room: String,
+        generation: u64,
+        prior_chain_hash: [u8; 32],
+    }
+    let generation = match prior.doc.get(ROOT, "sanitized_room_baseline_v1") {
+        Ok(None) => 0,
+        Ok(Some((Value::Scalar(value), _))) => {
+            let ScalarValue::Bytes(bytes) = value.as_ref() else {
+                return Err(ProofError::Unknown);
+            };
+            let (binding, rest) =
+                postcard::take_from_bytes::<Binding>(bytes).map_err(|_| ProofError::Unknown)?;
+            if !rest.is_empty() || binding.room != prior.authority.room() {
+                return Err(ProofError::Unknown);
+            }
+            // Decode every field, including the predecessor fence, strictly.
+            let _ = binding.prior_chain_hash;
+            binding.generation
+        }
+        _ => return Err(ProofError::Unknown),
+    };
+    let mut heads = prior.doc.base_heads();
+    heads.sort();
+    let mut hash = blake3::Hasher::new_derive_key("Tilo room predecessor chain v1");
+    for head in heads {
+        hash.update(&head.0);
+    }
+    if generation.checked_add(1) != Some(baseline.generation)
+        || baseline.prior_chain_hash != *hash.finalize().as_bytes()
+    {
+        return Err(ProofError::Unknown);
+    }
+    let candidate = baseline
+        .verify_anchored_document(
+            prior.authority.room(),
+            prior.authority.governor().device_public_key,
+            &baseline.anchor(),
+        )
+        .map_err(|_| ProofError::Unknown)?;
+    if tilo_peer_state::room::governance_of(Some(&prior.doc))
+        != tilo_peer_state::room::governance_of(Some(&candidate))
+    {
+        return Err(ProofError::Unknown);
+    }
+    Ok(())
 }
 
 fn signed_document(

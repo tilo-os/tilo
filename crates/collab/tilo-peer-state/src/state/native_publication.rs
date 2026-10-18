@@ -173,7 +173,9 @@ impl StatePeer {
                 // untrusted DTO field alone cannot establish this carrier.
                 self.validate_native_publisher(publisher, now)?;
                 let source = match message {
-                    NeighbourMsg::SyncResp { .. } => publisher,
+                    NeighbourMsg::SyncResp { .. } | NeighbourMsg::SanitizedRoomBaseline { .. } => {
+                        publisher
+                    }
                     // Existing admission independently verifies this original
                     // signer, route, peer handle and current policy. Hosting a
                     // retained packet does not change its signed authorship.
@@ -186,7 +188,9 @@ impl StatePeer {
             TransportOrigin::UntrustedPresence(source) => {
                 if matches!(
                     message,
-                    NeighbourMsg::SyncResp { .. } | NeighbourMsg::AppDocument { .. }
+                    NeighbourMsg::SyncResp { .. }
+                        | NeighbourMsg::AppDocument { .. }
+                        | NeighbourMsg::SanitizedRoomBaseline { .. }
                 ) {
                     return Err("state requires relay-authenticated Delta carrier".into());
                 }

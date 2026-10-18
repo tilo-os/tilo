@@ -42,6 +42,49 @@ pub const LAUNCH_REGISTRATION_FD_ENV: &str = "TILO_INTERNAL_LAUNCH_REGISTRATION_
 #[derive(Debug)]
 pub struct RegistrationGate(UnixStream);
 
+/// Host-issued correlation for a protected model descriptor. This can only
+/// restrict the gateway; native inference still requires the broker's lease.
+/// It travels on the private registration gate, never an app CLI flag.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProtectedModelLaunch {
+    pub app: String,
+    pub room: String,
+    pub agent: String,
+    pub launch: String,
+}
+
+static PROTECTED_MODEL: std::sync::OnceLock<ProtectedModelLaunch> = std::sync::OnceLock::new();
+
+pub fn protected_model_launch() -> Option<&'static ProtectedModelLaunch> {
+    PROTECTED_MODEL.get()
+}
+
+/// Both private registration transports install only host-issued context.
+/// A duplicate or invalid context is fatal, never an ordinary-model fallback.
+pub(crate) fn install_protected_model_launch(context: ProtectedModelLaunch) -> io::Result<()> {
+    context.validate(&context.app, Some(&context.room))?;
+    PROTECTED_MODEL
+        .set(context)
+        .map_err(|_| io::Error::other("protected model context already installed"))
+}
+
+impl ProtectedModelLaunch {
+    /// Reject accidental reuse for a different launch, rather than downgrading
+    /// that connection to the ordinary credential-bearing gateway.
+    pub fn validate(&self, app: &str, room: Option<&str>) -> io::Result<()> {
+        if self.app != app
+            || room != Some(self.room.as_str())
+            || [&self.app, &self.room, &self.agent, &self.launch]
+                .iter()
+                .any(|s| s.is_empty() || s.len() > 256 || s.chars().any(char::is_control))
+        {
+            return Err(io::Error::other("protected model launch mismatch"));
+        }
+        Ok(())
+    }
+}
+
 impl RegistrationGate {
     /// Let the launcher go on. Call only once the launch is recorded.
     ///
@@ -50,6 +93,20 @@ impl RegistrationGate {
     /// The write error when the launcher is already gone.
     pub fn release(mut self) -> io::Result<()> {
         self.0.write_all(&[1])
+    }
+
+    /// Release a registered managed actor with a protected model connection.
+    /// The host calls this only after recording the process identity.
+    ///
+    /// # Errors
+    /// Invalid context, serialization or a closed registration gate.
+    pub fn release_protected(mut self, context: &ProtectedModelLaunch) -> io::Result<()> {
+        context.validate(&context.app, Some(&context.room))?;
+        let bytes = serde_json::to_vec(context).map_err(io::Error::other)?;
+        self.0.write_all(&[2])?;
+        self.0
+            .write_all(&(u32::try_from(bytes.len()).map_err(io::Error::other)?).to_le_bytes())?;
+        self.0.write_all(&bytes)
     }
 }
 
@@ -85,6 +142,23 @@ pub fn wait_on_stdin() -> io::Result<()> {
     let mut gate = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(0) });
     let mut release = [0_u8; 1];
     gate.read_exact(&mut release)?;
+    match release[0] {
+        1 => {}
+        2 => {
+            let mut length = [0; 4];
+            gate.read_exact(&mut length)?;
+            let length = u32::from_le_bytes(length);
+            if length > 4096 {
+                return Err(io::Error::other("protected model context exceeds limit"));
+            }
+            let mut bytes = vec![0; length as usize];
+            gate.read_exact(&mut bytes)?;
+            let context: ProtectedModelLaunch =
+                serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+            install_protected_model_launch(context)?;
+        }
+        _ => return Err(io::Error::other("invalid registration release")),
+    }
     let null = std::fs::File::open("/dev/null")?;
     // SAFETY: both are descriptors this process owns. Replacing fd 0 closes
     // the gate in one step, so no later child can inherit it.

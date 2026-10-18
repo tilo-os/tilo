@@ -204,8 +204,325 @@ fn approve_task(
             privileged: false,
         },
         consequential: false,
-        confirmed: false,
+        confirmation: None,
+        invocation: None,
     }
+}
+
+/// Exercise the reducer's real host request and starter answer, not a caller flag.
+fn record_person_confirmation(
+    peer: &mut StatePeer,
+    person: &WorkspaceTaskAuthority,
+    requirement: &mut NativeTaskActionRequirement,
+    now: std::time::SystemTime,
+) {
+    let contract = tilo_actions::ActionContract {
+        kind: requirement.need.kind,
+        ..Default::default()
+    };
+    requirement.invocation = Some(
+        super::NativeTaskInvocation::new(
+            uuid::Uuid::new_v4(),
+            "42",
+            Some("{}"),
+            &contract,
+            "native:test:0",
+        )
+        .unwrap(),
+    );
+    record_person_confirmation_for_request(peer, person, requirement, uuid::Uuid::new_v4(), now);
+}
+
+/// Preserve the broker's child UUID and request-time metadata through the real answer.
+fn record_person_confirmation_for_request(
+    peer: &mut StatePeer,
+    person: &WorkspaceTaskAuthority,
+    requirement: &mut NativeTaskActionRequirement,
+    asking: uuid::Uuid,
+    now: std::time::SystemTime,
+) {
+    use tilo_desktop_model::{
+        WorkspaceTaskConfirmation, WorkspaceTaskConfirmationAnswer, WorkspaceTaskConfirmationState,
+    };
+    let binding = requirement.binding.as_ref().unwrap();
+    let task_id = binding.task_id.clone();
+    let epoch = binding.epoch;
+    let host = WorkspaceTaskAuthority::Host {
+        attestor: peer.authority().clone(),
+    };
+    let prior = tilo_peer_state::workspace_task::snapshot(peer.admitted_room().unwrap())
+        .unwrap()
+        .controls[&task_id]
+        .confirmation
+        .clone();
+    if let Some(prior) = prior {
+        peer.workspace_mut()
+            .apply_workspace_task_command(
+                uuid::Uuid::new_v4(),
+                [7; 32],
+                &host,
+                &WorkspaceTaskCommand::SettleConfirmation {
+                    task_id: task_id.clone(),
+                    run_epoch: epoch,
+                    confirmation_id: prior.id,
+                },
+                now,
+            )
+            .unwrap();
+    }
+    let arguments = serde_json::Map::new();
+    let digest = tilo_actions::draft::arguments_digest(&arguments);
+    let id = WorkspaceTaskConfirmation::id_for(&requirement.resource, &requirement.action, &digest);
+    let contract = &requirement.invocation.as_ref().unwrap().contract;
+    let confirmation = WorkspaceTaskConfirmation {
+        id: id.clone(),
+        asking,
+        run_epoch: epoch,
+        agent_id: binding.agent_id.clone(),
+        app: requirement.app.clone(),
+        resource_kind: requirement.resource_kind.clone(),
+        resource: requirement.resource.clone(),
+        action: requirement.action.clone(),
+        kind: contract.kind,
+        risk: contract.risk,
+        draft: tilo_actions::Draft::default(),
+        arguments_digest: digest,
+        requested_at: 1,
+        state: WorkspaceTaskConfirmationState::Waiting,
+    };
+    for (authority, command) in [
+        (
+            &host,
+            WorkspaceTaskCommand::RequestConfirmation {
+                task_id: task_id.clone(),
+                run_epoch: epoch,
+                confirmation: Box::new(confirmation),
+            },
+        ),
+        (
+            person,
+            WorkspaceTaskCommand::AnswerConfirmation {
+                task_id,
+                run_epoch: epoch,
+                confirmation_id: id,
+                answer: WorkspaceTaskConfirmationAnswer::Confirm { edits: Vec::new() },
+            },
+        ),
+    ] {
+        peer.workspace_mut()
+            .apply_workspace_task_command(uuid::Uuid::new_v4(), [8; 32], authority, &command, now)
+            .unwrap();
+    }
+    requirement.confirmation = Some(asking.to_string());
+}
+
+/// Match the broker's exact child metadata, with an action-local Ask gate.
+fn prepare_exact_confirmation(
+    peer: &mut StatePeer,
+    requirement: &mut NativeTaskActionRequirement,
+    key: &SigningKey,
+    now: std::time::SystemTime,
+) {
+    let contract = tilo_actions::ActionContract {
+        kind: tilo_action_policy::ActionKind::Undoable,
+        ..Default::default()
+    };
+    requirement.invocation = Some(
+        super::NativeTaskInvocation::new(
+            uuid::Uuid::new_v4(),
+            "42",
+            Some("{}"),
+            &contract,
+            "native:test:0",
+        )
+        .unwrap(),
+    );
+    let node = action_node(peer.room(), requirement);
+    peer.governance_mut()
+        .put_governed_grants(
+            &[Grant::new(
+                "exact-action-asks",
+                Subject::agent("scribe"),
+                node,
+                KindSet::UNDOABLE,
+                Answer::Ask,
+                Subject::person("governor"),
+            )],
+            key,
+            now,
+        )
+        .unwrap();
+}
+
+fn exact_confirmation_binding(
+    peer: &StatePeer,
+    requirement: &NativeTaskActionRequirement,
+) -> tilo_joined_room::task_admission::NativeInvocationBinding {
+    let run = requirement.binding.as_ref().unwrap();
+    let invocation = requirement.invocation.as_ref().unwrap();
+    tilo_joined_room::task_admission::NativeInvocationBinding {
+        room: tilo_desktop_model::RoomId::parse(peer.room()).unwrap(),
+        task: run.task_id.clone(),
+        agent: run.agent_id.clone(),
+        epoch: run.epoch,
+        revision: run.revision,
+        invocation: invocation.id,
+        request: invocation.request,
+        host: peer.authority().device_public_key,
+        app: requirement.app.clone(),
+        provider: invocation.provider.clone(),
+        resource: requirement.resource.clone(),
+        action: requirement.action.clone(),
+        arguments_digest: invocation.arguments_digest,
+        contract_digest: invocation.contract_digest,
+        ceiling_digest: requirement.ceiling_digest().unwrap(),
+        private_run_digest: invocation.private_run_digest,
+    }
+}
+
+#[test]
+fn request_time_confirmation_custody_binds_one_exact_child_across_restart() {
+    use tilo_joined_room::task_admission::{NativeGovernorAdmission, TaskAdmissionLedger};
+    let room = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    let (mut peer, starter, key, now) = policy_fixture(room);
+    let person = WorkspaceTaskAuthority::Person { caller: starter };
+    let mut requirement = approve_task(&mut peer, &person, now);
+    prepare_exact_confirmation(&mut peer, &mut requirement, &key, now);
+    let host = peer.authority().clone();
+    let asking = uuid::Uuid::new_v4();
+    let snapshot =
+        tilo_peer_state::workspace_task::snapshot(peer.admitted_room().unwrap()).unwrap();
+    let mut ledger = TaskAdmissionLedger::default();
+    let error = requirement
+        .check_invocation(&peer, &exact_confirmation_binding(&peer, &requirement), now)
+        .unwrap_err();
+    assert!(
+        NativeTaskActionRequirement::awaits_confirmation(&error),
+        "{error}"
+    );
+    ledger
+        .freeze_confirmation(&peer, &snapshot, asking, &requirement, &host, now)
+        .unwrap();
+    let child = requirement.invocation.as_ref().unwrap().id;
+    record_person_confirmation_for_request(&mut peer, &person, &mut requirement, asking, now);
+    assert_eq!(requirement.invocation.as_ref().unwrap().id, child);
+    let snapshot =
+        tilo_peer_state::workspace_task::snapshot(peer.admitted_room().unwrap()).unwrap();
+    let exact = exact_confirmation_binding(&peer, &requirement);
+    ledger
+        .check_action(&peer, &snapshot, &requirement, &exact, now)
+        .unwrap();
+    let reservation = NativeGovernorAdmission {
+        room: exact.room,
+        peer: &peer,
+        ledger: &mut ledger,
+        key: &key,
+        continuity: 1,
+    }
+    .reserve(exact.clone(), &host, now, |peer, binding| {
+        requirement.check_invocation(peer, binding, now)
+    })
+    .unwrap();
+    assert_eq!(reservation.binding, exact);
+
+    let mut another_child = requirement.clone();
+    let invocation = another_child.invocation.as_mut().unwrap();
+    invocation.id = uuid::Uuid::new_v4();
+    invocation.request = invocation.id;
+    let another_exact = exact_confirmation_binding(&peer, &another_child);
+    assert!(
+        ledger
+            .check_action(&peer, &snapshot, &another_child, &another_exact, now)
+            .is_err()
+    );
+    let restarted: TaskAdmissionLedger =
+        serde_json::from_slice(&serde_json::to_vec(&ledger).unwrap()).unwrap();
+    restarted
+        .check_action(&peer, &snapshot, &requirement, &exact, now)
+        .unwrap();
+    assert!(
+        restarted
+            .check_action(&peer, &snapshot, &another_child, &another_exact, now)
+            .is_err()
+    );
+
+    // Rebuild coherent exact bindings: failures must not merely be stale digests.
+    for change in [
+        "contract",
+        "provider",
+        "private run",
+        "revision",
+        "resource",
+        "arguments",
+    ] {
+        let mut changed = requirement.clone();
+        let original = changed.invocation.as_ref().unwrap();
+        let mut contract = original.contract.clone();
+        if change == "contract" {
+            contract.kind = tilo_action_policy::ActionKind::Outside;
+        }
+        changed.invocation = Some(
+            super::NativeTaskInvocation::new(
+                child,
+                if change == "provider" { "43" } else { "42" },
+                Some(if change == "arguments" {
+                    "{\"extra\":true}"
+                } else {
+                    "{}"
+                }),
+                &contract,
+                if change == "private run" {
+                    "native:test:1"
+                } else {
+                    "native:test:0"
+                },
+            )
+            .unwrap(),
+        );
+        if change == "revision" {
+            changed.binding.as_mut().unwrap().revision += 1;
+        }
+        if change == "resource" {
+            changed.resource = "notes:other".into();
+        }
+        let changed_exact = exact_confirmation_binding(&peer, &changed);
+        assert!(
+            restarted
+                .check_action(&peer, &snapshot, &changed, &changed_exact, now)
+                .is_err(),
+            "accepted changed {change}"
+        );
+    }
+}
+
+#[test]
+fn an_answer_cannot_be_retroactively_given_request_time_custody() {
+    use tilo_joined_room::task_admission::TaskAdmissionLedger;
+    let room = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    let (mut peer, starter, key, now) = policy_fixture(room);
+    let person = WorkspaceTaskAuthority::Person { caller: starter };
+    let mut requirement = approve_task(&mut peer, &person, now);
+    prepare_exact_confirmation(&mut peer, &mut requirement, &key, now);
+    let original = requirement.clone();
+    let host = peer.authority().clone();
+    let asking = uuid::Uuid::new_v4();
+    record_person_confirmation_for_request(&mut peer, &person, &mut requirement, asking, now);
+    let snapshot =
+        tilo_peer_state::workspace_task::snapshot(peer.admitted_room().unwrap()).unwrap();
+    let mut ledger = TaskAdmissionLedger::default();
+    let exact = exact_confirmation_binding(&peer, &requirement);
+    requirement.check_invocation(&peer, &exact, now).unwrap();
+    assert!(
+        ledger
+            .check_action(&peer, &snapshot, &requirement, &exact, now)
+            .is_err()
+    );
+    // Even the original pre-answer requirement cannot create missing custody now.
+    assert!(
+        ledger
+            .freeze_confirmation(&peer, &snapshot, asking, &original, &host, now)
+            .is_err()
+    );
 }
 
 fn assert_exact_binding(
@@ -411,7 +728,7 @@ fn an_action_asking_first_pauses_until_confirmed_and_deny_still_refuses() {
     let mut purge = requirement.clone();
     purge.consequential = true;
     assert!(awaits(&purge, &peer));
-    purge.confirmed = true;
+    record_person_confirmation(&mut peer, &authority, &mut purge, now);
     purge.check(&peer, room, "scribe", now).unwrap();
 
     // The person tells the agent Notes asks first.
@@ -434,8 +751,14 @@ fn an_action_asking_first_pauses_until_confirmed_and_deny_still_refuses() {
     set(Answer::Ask, &mut peer);
     assert!(awaits(&requirement, &peer));
     let mut confirmed = requirement.clone();
-    confirmed.confirmed = true;
+    record_person_confirmation(&mut peer, &authority, &mut confirmed, now);
     confirmed.check(&peer, room, "scribe", now).unwrap();
+    let mut forged = confirmed.clone();
+    forged.confirmation = Some(uuid::Uuid::new_v4().to_string());
+    assert!(forged.check(&peer, room, "scribe", now).is_err());
+    let mut changed = confirmed.clone();
+    changed.invocation.as_mut().unwrap().arguments = Some(r#"{"extra":true}"#.into());
+    assert!(changed.check(&peer, room, "scribe", now).is_err());
 
     // Not allowed: refused outright, confirmed or not.
     set(Answer::Deny, &mut peer);

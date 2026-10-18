@@ -773,6 +773,7 @@ impl AdmittedRootHelper {
         &self,
         gate: &UnixStream,
         launcher_pid: u32,
+        protected_model: Option<launcher::registration_gate::ProtectedModelLaunch>,
     ) -> io::Result<Arc<process_binding::ExecutingPeer>> {
         self.check()?;
         let mut gate = gate.try_clone()?;
@@ -794,10 +795,13 @@ impl AdmittedRootHelper {
         gate.write_all(&[1])?;
         self.check()?;
         let facts = self.helper.file.metadata()?;
-        let expectation = serde_json::to_vec(&serde_json::json!({
-            "pid": self.peer.pid(), "start": self.start,
-            "helper_dev": facts.dev(), "helper_ino": facts.ino()
-        }))
+        let expectation = serde_json::to_vec(&launcher::retained_view::RootHelperExpectation {
+            pid: self.peer.pid(),
+            start: self.start,
+            helper_dev: facts.dev(),
+            helper_ino: facts.ino(),
+            protected_model,
+        })
         .map_err(io::Error::other)?;
         wire_frame::Framing::big_endian(4096)
             .reject_empty()

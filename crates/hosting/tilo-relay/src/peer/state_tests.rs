@@ -23,6 +23,7 @@ use tilo_user_identity::{RevocationList, UserIdentity};
 
 mod presence_cost;
 mod recovery;
+mod room_retirement;
 
 struct Fixture {
     workers: Arc<tokio::sync::Semaphore>,

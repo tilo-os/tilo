@@ -135,6 +135,7 @@ fn framework_item_view_opens_exact_owner_item_in_live_ui() {
     // Exact Widget metadata links this freshly published item address to
     // its control. Presence painting is narration, not another invocation.
     let interaction = tilo_actions::SemanticInteraction {
+        paint_origin: None,
         version: tilo_actions::INTERACTION_VERSION,
         invocation: tilo_actions::InvocationId::new(),
         sequence: 1,

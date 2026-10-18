@@ -35,6 +35,19 @@ pub fn fetch(token: uuid::Uuid, invocation: tilo_actions::InvocationId) -> Resul
     let draft: Draft =
         serde_json::from_slice(&bytes).map_err(|_| "invalid private editor reply")?;
     draft.editor.validate()?;
+    if let Target::Task {
+        agent,
+        task,
+        run_epoch,
+    } = &draft.target
+    {
+        tilo_actions::task_messaging::TaskRunAddress {
+            agent_id: agent.clone(),
+            task_id: task.clone(),
+            run_epoch: *run_epoch,
+        }
+        .validate()?;
+    }
     Ok(draft)
 }
 

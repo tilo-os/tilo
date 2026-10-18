@@ -9,8 +9,9 @@
 # `tilo-install install` path a user's own package goes through, and ends up
 # described by the same registry rows. Being preinstalled changes where the
 # payload lives and nothing else — no extra grants, no trust bypass, no
-# first-party branch anywhere in the launcher. The one difference the store
-# has at all is that it is read-only, being inside the image.
+# first-party branch in ordinary app launching. Managed task execution also
+# requires an independent image-owned pin of the fixed executor's signed-root
+# hash; that pin is emitted from the verified archive, never a user's registry.
 #
 # Envs:
 #   REPO           repo root, holding apps/*/tilo-app.toml   [default: /build]
@@ -27,6 +28,9 @@
 #                  SOURCE_DATE_EPOCH for independently reproduced OS images
 #   IDENTITY_JSON  signing key; generated if absent    [default: $STAGE/id.json]
 #   PUBKEY_OUT     write the signing pubkey here (optional)
+#   MANAGED_AGENT_HASH_OUT write the verified, installed so.tilo.agent signed-root
+#                  hash for the image's protected launcher pin (optional;
+#                  requires that exactly one such package ships successfully)
 #   RUNTIME_ID     the runtime build the apps in BIN_DIR were linked against,
 #                  `tilo-runtime/<release>+native.<digest>`; stamped over each
 #                  manifest's authored release (required unless TAPP_DIR)
@@ -85,6 +89,21 @@ EXPECTED_PUBKEY="${EXPECTED_PUBKEY:-}"
 REQUIRE_MIN="${REQUIRE_MIN:-1}"
 msg() { printf '[pack-apps] %s\n' "$*" >&2; }
 die() { printf '[pack-apps] ERROR: %s\n' "$*" >&2; exit 1; }
+
+# Only the trusted image build requests this output. Runtime installation
+# continues to use the ordinary package registry and cannot update this pin.
+managed_agent_hash=''
+record_managed_agent() {
+    [ -n "${MANAGED_AGENT_HASH_OUT:-}" ] || return 0
+    local details app_id hash
+    details=$("$PKG_BIN" inspect "$1") || die "cannot inspect installed archive $1"
+    app_id=$(printf '%s\n' "$details" | sed -n 's/^id  *= *"\([^"]*\)".*/\1/p')
+    [ "$app_id" = so.tilo.agent ] || return 0
+    [ -z "$managed_agent_hash" ] || die "multiple managed executor archives"
+    hash=$(printf '%s\n' "$details" | sed -n 's/^package-id: tapp:\([0-9a-f]\{64\}\)$/\1/p')
+    [[ "$hash" =~ ^[0-9a-f]{64}$ ]] || die "managed executor has no unique signed-root hash"
+    managed_agent_hash=$hash
+}
 
 SIZE_POLICY="$(dirname "${BASH_SOURCE[0]}")/../../crates/packaging/tilo-app-package/max-app-bytes"
 POLICY_MAX_TAPP_BYTES="$(cat "$SIZE_POLICY" 2>/dev/null)" \
@@ -187,6 +206,7 @@ if [ "$prebuilt" = 1 ]; then
             mkdir -p "$COHORT_TAPP_DIR"
             cp "$tapp" "$COHORT_TAPP_DIR/$package_id.tapp"
         fi
+        record_managed_agent "$tapp"
         shipped+=("$(basename "$tapp")")
     done
     [ -z "$PUBKEY_OUT" ] || { mkdir -p "$(dirname "$PUBKEY_OUT")"; printf '%s\n' "$PUBKEY" > "$PUBKEY_OUT"; }
@@ -275,6 +295,7 @@ for manifest in "$REPO"/apps/*/tilo-app.toml; do
         [ -n "${APP_DIR:-}" ] || die "TAPP_OUT requires a selected APP_DIR"
         cp "$tapp" "$TAPP_OUT"
     fi
+    record_managed_agent "$tapp"
     shipped+=("$id ($tapp_bytes bytes)")
 done
 fi
@@ -312,3 +333,13 @@ msg "registry.toml lists $rows package(s)"
 STORE="$STORE" RUNTIME_ROOT="${RUNTIME_ROOT:-/usr/lib/tilo-runtime}" BUNDLE_BIN="$BUNDLE_BIN" \
     "$(dirname "${BASH_SOURCE[0]}")/check-shipped-runtimes.sh" \
     || die "an app pins a runtime build the image does not ship"
+
+# Publish only after the entire verified collection and its runtime checks
+# succeed. This value is copied into /usr/lib by the image, not read from a
+# registry row or supplied by a running app.
+if [ -n "${MANAGED_AGENT_HASH_OUT:-}" ]; then
+    [ -n "$managed_agent_hash" ] || die "image is missing the fixed so.tilo.agent executor"
+    mkdir -p "$(dirname "$MANAGED_AGENT_HASH_OUT")"
+    printf '%s\n' "$managed_agent_hash" > "$STAGE/managed-agent-package-hash"
+    install -m 0644 "$STAGE/managed-agent-package-hash" "$MANAGED_AGENT_HASH_OUT"
+fi

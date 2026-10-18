@@ -945,6 +945,7 @@ impl WorkspaceStore {
         device: [u8; 32],
         held: Option<PathBuf>,
     ) -> Result<ReplayBuild, StoreError> {
+        self.room_retirement_ready()?;
         let pending_only = held.is_some();
         let root = self.root.join(WORK_DIR);
         fs::create_dir_all(&root)?;

@@ -21,10 +21,24 @@ mod enrollment;
 mod file_store;
 mod history_content;
 mod limits;
+mod prepared_task_start;
 mod private_direct_conversations;
+mod private_model_authority;
+pub use prepared_task_start::PreparedNativeTaskStart;
+mod private_task_confirmation;
+mod private_task_mailboxes;
+mod private_task_outputs;
+mod private_task_text;
 mod publication;
 mod record;
 pub mod session;
+pub mod task_admission;
+pub mod task_policy;
+pub use task_admission::model::{
+    FrozenNativeModelSelection, HostDispatchModel, NativeModelAuthority, NativeModelContext,
+    NativeModelContract, NativeModelGovernorCustody, NativeModelHttpAttempt, NativeModelPlanning,
+    NativeModelSource, NativeModelStartAuthority, TypedNativeModelRequirement,
+};
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 #[cfg(test)]
@@ -42,13 +56,22 @@ pub use checkpoint::{
     CheckpointSchema, MaterializedCheckpoint, NativeCheckpoint,
 };
 pub use document_read::{ChangesRead, CommittedDocument, DocumentChanges, DocumentRead};
-pub use file_store::open_file;
+pub use file_store::{open_file, open_file_with_private_recovery};
 pub use history_content::HistoryContent;
 pub use limits::{LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_BYTES, preflight};
 pub use private_direct_conversations::{
     DirectContact, DirectConversation, DirectConversationPage, DirectMessage, DirectMessageReceipt,
     DirectMessageSend, DirectMessageStatus, PrivateDirectConversationStore,
 };
+pub use private_task_confirmation::PrivateTaskConfirmationStore;
+pub use private_task_mailboxes::PrivateTaskMailboxStore;
+pub use private_task_outputs::{
+    NativePrivateTaskReport, NativePrivateTaskReportKind, NativePrivateTaskReportRole,
+};
+pub use private_task_text::{
+    NativePrivateInstructionWrite, NativePrivateTaskInstructions, PrivateTaskTextStore,
+};
+pub use publication::verify_private_recovery_baseline;
 pub use publication::{
     NativeOutgoing, NativeOutgoingEntry, authority_limit, preflight_storage, reserved_file_bytes,
     validate_file_layout,
@@ -133,6 +156,8 @@ struct SharedOwner {
     listeners: Mutex<Vec<Weak<dyn NativeFenceObserver>>>,
     /// Process-local private pair notifications, never serialized or replicated.
     direct_changes: Mutex<BTreeMap<String, tokio::sync::watch::Sender<u64>>>,
+    /// Wake hints only, including owner-private commits; no private data leaves custody.
+    task_changes: tokio::sync::watch::Sender<()>,
 }
 #[derive(Default)]
 struct Current {
@@ -167,6 +192,19 @@ impl NativeCommittedView {
     #[must_use]
     pub fn workspace(&self) -> u64 {
         self.record.workspace
+    }
+    #[must_use]
+    pub fn room(&self) -> RoomId {
+        self.record.room
+    }
+    /// The task's owner-private Chat origin, available only on the owner view.
+    #[must_use]
+    pub fn task_origin(&self, task_id: &str) -> Option<&tilo_desktop_model::WorkspaceAgentRequest> {
+        self.record
+            .private_task_text
+            .instructions()
+            .get(task_id)
+            .and_then(|text| text.agent_request.as_ref())
     }
     #[must_use]
     pub fn generation(&self) -> u64 {
@@ -244,6 +282,7 @@ pub struct NativeFenceSubscription {
 }
 impl SharedOwner {
     fn notify(&self, room: RoomId, continuity: u64) {
+        self.task_changes.send_replace(());
         let observers: Vec<_> = {
             let mut listeners = self.listeners.lock();
             let live = listeners.iter().filter_map(Weak::upgrade).collect();
@@ -303,6 +342,29 @@ impl NativeWorkspaceOwner {
         authority: NativeAuthorityStorage,
         now: SystemTime,
     ) -> Result<Self, String> {
+        Self::restore_inner(store, authority, now, None)
+    }
+
+    /// Recover old private task history with the exact governor key before strict
+    /// restore. Replacement bytes and private archives commit together; failures
+    /// never expose the contaminated predecessor to callers.
+    /// # Errors
+    /// Refuses changed enrollment, signatures, ancestry, missing custody or storage failure.
+    pub fn restore_with_private_recovery(
+        store: Arc<dyn Store>,
+        authority: NativeAuthorityStorage,
+        key: &ed25519_dalek::SigningKey,
+        now: SystemTime,
+    ) -> Result<Self, String> {
+        Self::restore_inner(store, authority, now, Some(key))
+    }
+
+    fn restore_inner(
+        store: Arc<dyn Store>,
+        authority: NativeAuthorityStorage,
+        now: SystemTime,
+        recovery_key: Option<&ed25519_dalek::SigningKey>,
+    ) -> Result<Self, String> {
         if authority.pending.len() > limits::MAX_PENDING {
             return Err("native pending enrollment quota exceeded".into());
         }
@@ -320,20 +382,35 @@ impl NativeWorkspaceOwner {
         for (room, pending) in &authority.pending {
             enrollment::validate_pending(*room, pending)?;
         }
+        let mut recovered = Vec::new();
         for (room, record) in &authority.rooms {
-            let view = enrollment::restore(*room, record, now)?;
+            let view = if let Some(key) = recovery_key
+                && key.verifying_key().to_bytes() == record.governor.device_public_key
+            {
+                enrollment::restore_private_recovery(*room, record, now, key)?
+            } else {
+                enrollment::restore(*room, record, now)?
+            };
+            if view.generation() != record.generation {
+                recovered.push((*room, view.clone()));
+            }
             effect_receipt::validate_history(&view, store.as_ref())?;
             checkpoint::validate_restore(&view, store.as_ref())?;
             current.rooms.insert(*room, Arc::new(view));
         }
-        Ok(Self(Arc::new(SharedOwner {
+        let owner = Self(Arc::new(SharedOwner {
             store,
             authority: RwLock::new(authority),
             mutation: Mutex::new(()),
             current: RwLock::new(current),
             listeners: Mutex::new(Vec::new()),
             direct_changes: Mutex::new(BTreeMap::new()),
-        })))
+            task_changes: tokio::sync::watch::channel(()).0,
+        }));
+        for (room, view) in recovered {
+            owner.publish_room(room, view, None)?;
+        }
+        Ok(owner)
     }
     #[must_use]
     pub fn downgrade(&self) -> WeakNativeWorkspaceOwner {
@@ -367,7 +444,9 @@ impl NativeWorkspaceOwner {
                 .peer()
                 .admitted_room()
                 .ok_or("native room has no admitted task document")?;
-            tilo_peer_state::workspace_task::snapshot(document)
+            let mut snapshot = tilo_peer_state::workspace_task::snapshot(document)?;
+            private_task_text::redact_snapshot(&mut snapshot, view);
+            Ok(snapshot)
         })
     }
 
@@ -413,6 +492,11 @@ impl NativeWorkspaceOwner {
     ) -> Result<T, String> {
         let _turn = self.0.mutation.lock();
         self.with_current(room, |view| {
+            if view.device() != view.governor()
+                || view.record.task_admission.is_fenced(task_id, run_epoch)
+            {
+                return Err("native task requires governor custody and an unfenced run".into());
+            }
             let document = view
                 .peer()
                 .admitted_room()
@@ -514,7 +598,9 @@ impl NativeWorkspaceOwner {
     ) -> Result<AdmissionReport, String> {
         if !matches!(
             message,
-            NeighbourMsg::SyncResp { .. } | NeighbourMsg::AppDocument { .. }
+            NeighbourMsg::SyncResp { .. }
+                | NeighbourMsg::AppDocument { .. }
+                | NeighbourMsg::SanitizedRoomBaseline { .. }
         ) {
             return Err("native owner admits only workspace state messages".into());
         }
@@ -535,11 +621,40 @@ impl NativeWorkspaceOwner {
         {
             return Ok(report);
         }
+        if matches!(&message, NeighbourMsg::SanitizedRoomBaseline { .. })
+            && let Some(report) = self.with_current(room, |view| {
+                view.record
+                    .sanitized_baseline
+                    .as_ref()
+                    .map_or(Ok(None), |installed| {
+                        view.peer
+                            .lookup_exact_baseline_report(origin, &message, installed, now)
+                            .map_err(|e| e.to_string())
+                    })
+            })?
+        {
+            return Ok(report);
+        }
         let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
+        let replacement = if let NeighbourMsg::SanitizedRoomBaseline { baseline, .. } = &message {
+            let (baseline, tail) =
+                postcard::take_from_bytes::<tilo_peer_state::SanitizedRoomBaseline>(baseline)
+                    .map_err(|e| e.to_string())?;
+            if !tail.is_empty() {
+                return Err("trailing native baseline bytes".into());
+            }
+            Some(baseline)
+        } else {
+            None
+        };
         let report = candidate
             .peer
             .receive_from_report(origin, message, now)
             .map_err(|e| e.to_string())?;
+        if let Some(baseline) = replacement {
+            candidate.record.version = candidate.record.version.max(4);
+            candidate.record.sanitized_baseline = Some(baseline);
+        }
         let previous_publication = candidate.record.publication.clone();
         publication::retire(&mut candidate)?;
         publication::refresh_governance_checkpoint(&mut candidate)?;
@@ -631,6 +746,7 @@ impl NativeWorkspaceOwner {
                 current.required.insert(room);
                 current.rooms.insert(room, Arc::clone(&candidate));
                 *self.0.authority.write() = next.clone();
+                self.0.task_changes.send_replace(());
             },
         )
     }

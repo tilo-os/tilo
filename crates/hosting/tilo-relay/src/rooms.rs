@@ -35,12 +35,19 @@ mod desktop_writes;
 pub(crate) use desktop_writes::writes_desktop;
 mod member_records;
 pub use member_records::PreparedRecord;
+mod native_task;
 mod pages;
 mod peer_parts;
 mod private;
+mod private_baseline;
+#[cfg(test)]
+mod private_baseline_tests;
 #[cfg(test)]
 mod private_network_tests;
 mod private_store;
+mod private_task_confirmations;
+mod private_task_reports;
+mod private_tasks;
 pub use private::PrivateProtocol;
 mod publisher;
 #[cfg(any(feature = "agents", feature = "web"))]
@@ -329,7 +336,8 @@ impl GovernedRoom {
             _ => postcard::to_stdvec(&self.record),
         }
         .map_err(|error| error.to_string())?;
-        tilo_files::native::atomic::write(&self.path, &bytes).map_err(|error| error.to_string())?;
+        tilo_files::native::atomic::write_private(&self.path, &bytes)
+            .map_err(|error| error.to_string())?;
         self.parts.collect(&self.record.peer);
         Ok(())
     }
@@ -457,7 +465,7 @@ impl GovernedRoom {
             .rev()
             .take_while(|publication| !publication.checkpoint)
             .count();
-        if tail >= MAX_PUBLICATION_TAIL {
+        if tail >= MAX_PUBLICATION_TAIL && candidate.sanitized_room_generation()? == 0 {
             // Keep unchanged record checkpoints on their own channels; replacing
             // those baselines could discard member writes. A record changed by
             // this commit must still publish at the governance rollover.
@@ -819,6 +827,7 @@ impl Rooms {
             .collect::<Vec<_>>();
         for room in rooms {
             let mut room = room.lock().await;
+            this.prepare_private_baseline(&mut room).await?;
             this.bind(&room).await?;
             this.settle(&mut room).await?;
             this.recall(&mut room).await?;
@@ -833,13 +842,14 @@ impl Rooms {
     ///
     /// Returns why the room could not be created, persisted or bound.
     pub async fn create(&self, name: &str) -> Result<RoomSummary, String> {
-        let room = GovernedRoom::create(
+        let mut room = GovernedRoom::create(
             &self.inner.dir,
             name,
             &self.inner.host.cert,
             &self.inner.host.key,
             SystemTime::now(),
         )?;
+        self.prepare_private_baseline(&mut room).await?;
         self.bind(&room).await?;
         let summary = room.summary();
         let room = Arc::new(AsyncMutex::new(room));

@@ -798,6 +798,7 @@ pub trait TransformModel: Send + Sync {
 #[derive(Default)]
 pub struct GatewayModel {
     pub launched: Option<crate::providers::ProviderSelection>,
+    pub native: Option<crate::model::native::Scope>,
 }
 
 impl TransformModel for GatewayModel {
@@ -813,6 +814,16 @@ impl TransformModel for GatewayModel {
             .clone()
             .or_else(crate::providers::default_selection)
             .ok_or_else(|| "no model provider is configured in Settings".to_string())?;
+        if let Some(native) = &self.native {
+            return native.transform(
+                &selection.profile_id,
+                &selection.model.id,
+                instructions,
+                input,
+                max_output_tokens,
+                timeout,
+            );
+        }
         if !tilo_model_gateway::available() {
             return Err("the model gateway is not available to the agent".into());
         }
@@ -953,6 +964,23 @@ impl TransformService {
             running: HashMap::new(),
             cancelled: HashSet::new(),
         }
+    }
+
+    /// Capture a task-bound model in this invocation's worker only. The
+    /// service's ordinary model is restored before another invocation starts.
+    pub fn start_with_model(
+        &mut self,
+        model: Arc<dyn TransformModel>,
+        directed: Directed,
+        target: (&str, &str),
+        argument: Option<&str>,
+        actor: &str,
+        context: Option<&ActionContext>,
+    ) -> Option<InvocationUpdate> {
+        let ordinary = std::mem::replace(&mut self.model, model);
+        let result = self.start(directed, target.0, target.1, argument, actor, context);
+        self.model = ordinary;
+        result
     }
 
     /// Start one directed invocation. Returns the update to send now: a

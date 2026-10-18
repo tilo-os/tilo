@@ -815,6 +815,10 @@ impl SessionSettings {
 }
 
 impl SettingsSource for SessionSettings {
+    fn load_committed(&self) -> Option<Map<String, Value>> {
+        Some(self.committed.lock_recover().document.clone())
+    }
+
     fn load(&self) -> Map<String, Value> {
         self.refresh();
         self.state.lock_recover().projection()

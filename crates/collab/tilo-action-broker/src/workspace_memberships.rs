@@ -278,6 +278,48 @@ impl CapnpBrokerState {
             move |state, envelope| {
                 let (service, room) = (service.clone(), serve_room.clone());
                 async move {
+                    if (envelope.action == "approve-run"
+                        && state.services.native_task_executors.is_some())
+                        || envelope.action == "wait-task-message"
+                    {
+                        // Enrollment and private inbox observation retain their
+                        // invocation without blocking this room's Stop/revoke.
+                        tokio::task::spawn_local(async move {
+                            let (id, invocation) = (envelope.id, envelope.invocation);
+                            let mut outcome = match state
+                                .execute_workspace_membership(
+                                    peer,
+                                    &room,
+                                    &envelope,
+                                    service.as_ref(),
+                                )
+                                .await
+                            {
+                                Ok(value) => ServiceOutcome::Succeeded(value),
+                                Err(error) => refused("workspace_membership_refused", error),
+                            };
+                            if envelope.action == "wait-task-message" {
+                                let cancelled =
+                                    state.pending_invocations.lock().ok().map(|pending| {
+                                        pending.get(&id).map(|pending| {
+                                            pending
+                                                .cancellation_fence
+                                                .load(std::sync::atomic::Ordering::Acquire)
+                                        })
+                                    });
+                                match cancelled {
+                                    Some(None) => return, // Already terminal.
+                                    Some(Some(true)) => outcome = ServiceOutcome::Cancelled,
+                                    _ => {}
+                                }
+                            }
+                            let _ = state
+                                .finish_room_service_invocation(peer, id, invocation, outcome)
+                                .await;
+                        });
+                        return ServiceOutcome::Pending;
+                    }
+
                     match state
                         .execute_workspace_membership(peer, &room, &envelope, service.as_ref())
                         .await
@@ -339,8 +381,115 @@ impl CapnpBrokerState {
             .await
     }
 
-    async fn execute_workspace_membership(
+    fn read_workspace_task_compute(
         &self,
+        room: &str,
+        envelope: &InvocationEnvelope,
+        pending: &super::PendingInvocation,
+        service: &dyn crate::services::WorkspaceMemberships,
+    ) -> Result<serde_json::Value, String> {
+        if envelope.argument.is_some() {
+            return Err("task compute read accepts no arguments".into());
+        }
+        let original = pending
+            .original
+            .as_ref()
+            .ok_or("task compute custody unavailable")?;
+        let caller = original.owner_person_certificate(self, room, envelope)?;
+        if !service.requires_room(room) {
+            return Err("task compute room changed".into());
+        }
+        service.health()?;
+        let now = self.policy_now_ns()? / 1_000_000_000;
+        let current_agents = self
+            .membership
+            .as_ref()
+            .ok_or("task compute workspace authority unavailable")?
+            .decide_in_room(room, |workspace| {
+                workspace.map(|workspace| {
+                    workspace
+                        .agent_members_at(now)
+                        .into_iter()
+                        .map(|(agent, _)| agent)
+                        .collect()
+                })
+            })?
+            .ok_or("task compute workspace unavailable")?;
+        super::workspace_tasks::compute::read(service, room, &caller, &current_agents)
+    }
+
+    fn inspect_workspace_task(
+        &self,
+        room: &str,
+        envelope: &InvocationEnvelope,
+        pending: &super::PendingInvocation,
+        service: &dyn crate::services::WorkspaceMemberships,
+    ) -> Result<serde_json::Value, String> {
+        let original = pending
+            .original
+            .as_ref()
+            .ok_or("task inspection custody unavailable")?;
+        let caller = original.owner_person_certificate(self, room, envelope)?;
+        if !service.requires_room(room) {
+            return Err("task inspection room changed".into());
+        }
+        service.health()?;
+        let snapshot = service.task_snapshot(room)?;
+        if !matches!(envelope.action.as_str(), "read-conversation" | "read-task")
+            && let Some(agent) = super::workspace_tasks::inspection_agent(&snapshot, envelope)?
+        {
+            let now = self.policy_now_ns()? / 1_000_000_000;
+            let membership = self
+                .membership
+                .as_ref()
+                .ok_or("task inspection workspace authority unavailable")?;
+            let current = membership.decide_in_room(room, |workspace| {
+                workspace.is_some_and(|workspace| {
+                    workspace
+                        .agent_members_at(now)
+                        .iter()
+                        .any(|(current, _)| current == &agent)
+                })
+            })?;
+            if !current {
+                return Err("task inspection agent is not a current room member".into());
+            }
+        }
+        if envelope.action == "read-conversation" {
+            let (task_id, epoch) = super::workspace_tasks::conversation_target(envelope)?;
+            let private = service.task_private_instructions(room, &task_id, epoch, &caller)?;
+            let mut conversation = super::workspace_tasks::private_conversation(
+                &snapshot,
+                envelope,
+                private.as_ref(),
+            )?;
+            super::workspace_tasks::messaging::append_conversation(
+                &mut conversation,
+                service.task_messages(room, &task_id, epoch, &caller)?,
+                super::workspace_tasks::conversation_message_cursor(envelope)?,
+            )?;
+            let outputs =
+                serde_json::to_value(service.task_outputs(room, &task_id, epoch, &caller)?)
+                    .map_err(|error| error.to_string())?;
+            conversation
+                .as_object_mut()
+                .ok_or("conversation is not an object")?
+                .insert("outputs".into(), outputs);
+            let reports = serde_json::to_value(
+                service.task_report_transcript(room, &task_id, epoch, &caller)?,
+            )
+            .map_err(|error| error.to_string())?;
+            conversation
+                .as_object_mut()
+                .ok_or("conversation is not an object")?
+                .insert("reports".into(), reports);
+            return Ok(conversation);
+        }
+        super::workspace_tasks::inspect(&snapshot, envelope)
+    }
+
+    async fn execute_workspace_membership(
+        self: &Arc<Self>,
         peer: u64,
         room: &str,
         envelope: &InvocationEnvelope,
@@ -356,36 +505,33 @@ impl CapnpBrokerState {
             })
             .cloned()
             .ok_or("membership invocation is no longer admitted")?;
+        if let Some(page) = self
+            .execute_task_message_wait(room, envelope, &pending)
+            .await?
+        {
+            return Ok(page);
+        }
+        if envelope.action == "send-message" {
+            let state = self.clone();
+            let room = room.to_owned();
+            let envelope = envelope.clone();
+            let pending = pending.clone();
+            // This room service runs on the LocalSet; sending also performs
+            // synchronous current-owner and source admission checks.
+            if let Some(receipt) = tokio::task::spawn_blocking(move || {
+                state.execute_task_message(&room, &envelope, &pending)
+            })
+            .await
+            .map_err(|_| "task mail owner operation interrupted")??
+            {
+                return Ok(receipt);
+            }
+        }
+        if envelope.resource == "desktop:tasks" && envelope.action == "read-task-compute" {
+            return self.read_workspace_task_compute(room, envelope, &pending, service);
+        }
         if super::workspace_tasks::is_inspect(envelope) {
-            let original = pending
-                .original
-                .as_ref()
-                .ok_or("task inspection custody unavailable")?;
-            original.owner_person_certificate(self, room, envelope)?;
-            if !service.requires_room(room) {
-                return Err("task inspection room changed".into());
-            }
-            service.health()?;
-            let snapshot = service.task_snapshot(room)?;
-            if let Some(agent) = super::workspace_tasks::inspection_agent(&snapshot, envelope)? {
-                let now = self.policy_now_ns()? / 1_000_000_000;
-                let membership = self
-                    .membership
-                    .as_ref()
-                    .ok_or("task inspection workspace authority unavailable")?;
-                let current = membership.decide_in_room(room, |workspace| {
-                    workspace.is_some_and(|workspace| {
-                        workspace
-                            .agent_members_at(now)
-                            .iter()
-                            .any(|(current, _)| current == &agent)
-                    })
-                })?;
-                if !current {
-                    return Err("task inspection agent is not a current room member".into());
-                }
-            }
-            return super::workspace_tasks::inspect(&snapshot, envelope);
+            return self.inspect_workspace_task(room, envelope, &pending, service);
         }
         if let Some(command) = super::workspace_checkpoints::command(envelope)? {
             return self
@@ -419,7 +565,13 @@ impl CapnpBrokerState {
                     command,
                 },
             };
-            let receipt = service.execute(request.clone()).await?;
+            let receipt = match self
+                .complete_native_compute_start(room, envelope, &pending, &request, service)
+                .await?
+            {
+                Some(receipt) => receipt,
+                None => service.execute(request.clone()).await?,
+            };
             receipt.validate_for(&request)?;
             let snapshot = service.task_snapshot(room)?;
             return super::workspace_tasks::result(

@@ -71,7 +71,10 @@ impl Route {
 }
 
 /// Selects the gateway-held profile, then answers instructions.
+pub mod native;
+
 pub struct Chooser {
+    native: Option<native::Scope>,
     /// A Settings-selected provider. Its credential remains in the gateway.
     provider: Option<ProviderConnection>,
     neutral: bool,
@@ -97,10 +100,37 @@ impl Chooser {
         self.provider.as_ref().map(|provider| &provider.selection)
     }
 
+    /// Whether the launcher's connected gateway requires invocation-bound
+    /// model custody. Only the host response selects this route; launch flags
+    /// and action metadata cannot enable or disable it.
+    pub fn protected_model_role(&self) -> bool {
+        let Some(selection) = self.selection() else {
+            return false;
+        };
+        if !tilo_model_gateway::available() {
+            return false;
+        }
+        tilo_model_gateway::request(tilo_model_gateway::Request::SelectionConfigured {
+            profile_id: selection.profile_id.clone(),
+            model_id: selection.model.id.clone(),
+            protocol: selection.protocol,
+        })
+        .is_ok_and(|response| {
+            response
+                .output
+                .as_deref()
+                .and_then(|output| serde_json::from_str::<Value>(output).ok())
+                .is_some_and(|output| {
+                    output.get("model_role").and_then(Value::as_str) == Some("protected")
+                })
+        })
+    }
+
     /// `enabled` false forces the keyword vocabulary — for a run that must be
     /// reproducible, and for proving the fallback works.
     pub fn new(enabled: bool, timeout: Duration) -> Self {
         Self {
+            native: None,
             provider: None,
             neutral: false,
             timeout,
@@ -119,8 +149,10 @@ impl Chooser {
             profile_id: selection.profile_id.clone(),
             model_id: selection.model.id.clone(),
             marks: Arc::clone(&marks),
+            native: None,
         });
         Self {
+            native: None,
             provider: Some(ProviderConnection { selection }),
             neutral: true,
             timeout,
@@ -129,6 +161,21 @@ impl Chooser {
             turns: Some(turns),
             marks,
         }
+    }
+
+    /// Bind every model turn, including spawned turns, to one delivered task.
+    /// No native call falls back to the ordinary launcher descriptor.
+    pub fn with_native_model(mut self, scope: native::Scope) -> Self {
+        self.native = Some(scope.clone());
+        if let Some(provider) = &self.provider {
+            self.turns = Some(Arc::new(GatewayTurns {
+                profile_id: provider.selection.profile_id.clone(),
+                model_id: provider.selection.model.id.clone(),
+                marks: Arc::clone(&self.marks),
+                native: Some(scope),
+            }));
+        }
+        self
     }
 
     /// A chooser whose loop turns are answered by `turns` instead of the
@@ -143,6 +190,7 @@ impl Chooser {
         profile.models.push(model.clone());
         let selection = ProviderSelection::from_profile(&profile, model);
         Self {
+            native: None,
             provider: Some(ProviderConnection { selection }),
             neutral: !cfg!(test),
             timeout,
@@ -202,7 +250,8 @@ impl Chooser {
     }
 
     /// Start one streamed turn. Its events arrive on the returned channel,
-    /// ending with exactly one [`TurnEvent::Finished`].
+    /// ending with exactly one [`TurnEvent::Finished`] (inside a single
+    /// [`TurnEvent::Buffered`] packet for an already-buffered native response).
     pub fn start_turn(
         &self,
         body: Value,
@@ -230,7 +279,9 @@ impl Chooser {
     /// logging at startup so an operator knows before the beat which path
     /// this run will take.
     pub fn is_live(&self) -> bool {
-        self.enabled && self.provider.is_some() && tilo_model_gateway::available()
+        self.enabled
+            && self.provider.is_some()
+            && (self.native.is_some() || tilo_model_gateway::available())
     }
 
     /// Decide through the live resource/action catalogue. There is no
@@ -288,7 +339,7 @@ impl Chooser {
             return fallback(Fallback::Disabled);
         }
         let answer = if let Some(provider) = &self.provider {
-            if !tilo_model_gateway::available() {
+            if self.native.is_none() && !tilo_model_gateway::available() {
                 return fallback(Fallback::NoKey);
             }
             self.ask_actions_provider(provider, rest, catalogue, most_steps, live, observe)
@@ -364,7 +415,8 @@ impl Chooser {
             let mut previews = NeutralPreviews::default();
             let mut scanners = BTreeMap::new();
             let mut reply = String::new();
-            let response = tilo_model_gateway::complete_streaming(
+            let response = complete_streaming(
+                self.native.as_ref(),
                 &provider.selection.profile_id,
                 &provider.selection.model.id,
                 request,
@@ -389,10 +441,7 @@ impl Chooser {
                     }
                 },
             )
-            .map_err(|error| {
-                let error = error.model_error();
-                AskError::Failed(format!("{error} {}", error.recovery().guidance()))
-            })?;
+            .map_err(AskError::Failed)?;
             let calls = conversation
                 .validate_response(&response)
                 .map_err(|error| AskError::Failed(error.to_string()))?;
@@ -944,6 +993,9 @@ pub fn action_user_turn(rest: &str, catalogue: &Catalogue, revealed: &mut Reveal
 #[derive(Clone, Debug, PartialEq)]
 pub enum TurnEvent {
     Neutral(agent_provider_config::protocol::StreamEvent),
+    /// A native response already buffered by the host. Apply its ordered events
+    /// and terminal result in one drain, rather than persisting replay fragments.
+    Buffered(Vec<TurnEvent>),
     /// An intermediate gateway frame: `event` is
     /// [`tilo_model_gateway::EVENT_TOOL_CALL_DELTA`] or
     /// [`tilo_model_gateway::EVENT_TOOL_CALL`], `output` its JSON.
@@ -968,7 +1020,8 @@ pub struct TurnRequest {
 /// activity and read the collaboration link while the model still writes.
 pub trait TurnTransport: Send + Sync {
     /// Start `request`; every event goes to the returned receiver, ending
-    /// with exactly one [`TurnEvent::Finished`].
+    /// with exactly one [`TurnEvent::Finished`], directly for live streams or
+    /// inside [`TurnEvent::Buffered`] for an already-buffered native response.
     fn start(&self, request: TurnRequest) -> std::sync::mpsc::Receiver<TurnEvent>;
 }
 
@@ -1061,8 +1114,28 @@ impl MarkGate {
     }
 }
 
+fn complete_streaming(
+    native: Option<&native::Scope>,
+    profile: &str,
+    model: &str,
+    request: agent_provider_config::protocol::ModelRequest,
+    timeout: Duration,
+    observe: &mut dyn FnMut(&agent_provider_config::protocol::StreamEvent),
+) -> Result<agent_provider_config::protocol::ModelResponse, String> {
+    if let Some(native) = native {
+        return native.complete(profile, model, request, timeout, observe);
+    }
+    tilo_model_gateway::complete_streaming(profile, model, request, timeout, observe).map_err(
+        |error| {
+            let error = error.model_error();
+            format!("{error} {}", error.recovery().guidance())
+        },
+    )
+}
+
 /// Turns over the launcher-issued model gateway. Both dialects stream.
 struct GatewayTurns {
+    native: Option<native::Scope>,
     profile_id: String,
     model_id: String,
     marks: Arc<MarkGate>,
@@ -1071,6 +1144,9 @@ struct GatewayTurns {
 impl TurnTransport for GatewayTurns {
     fn start(&self, request: TurnRequest) -> std::sync::mpsc::Receiver<TurnEvent> {
         let (tx, rx) = std::sync::mpsc::channel();
+        // Capture on the caller thread before any queue/thread delay. A clone
+        // would retain the mutable session frontier and relabel an old prompt.
+        let native = self.native.as_ref().map(native::Scope::snapshot);
         let profile_id = self.profile_id.clone();
         let model_id = self.model_id.clone();
         let marks = Arc::clone(&self.marks);
@@ -1081,20 +1157,29 @@ impl TurnTransport for GatewayTurns {
                 let tx = tx.clone();
                 let marks = Arc::clone(&marks);
                 move || {
+                    let mut buffered = native.as_ref().map(|_| Vec::new());
+                    let mut deliver = |event| {
+                        if let Some(events) = &mut buffered {
+                            events.push(event);
+                        } else {
+                            let _ = tx.send(event);
+                        }
+                    };
                     let result = if let Ok(neutral) = serde_json::from_value::<
                         agent_provider_config::protocol::ModelRequest,
                     >(request.body.clone())
                     {
                         let mut previews = NeutralPreviews::default();
-                        tilo_model_gateway::complete_streaming(
+                        complete_streaming(
+                            native.as_ref(),
                             &profile_id,
                             &model_id,
                             neutral,
                             request.timeout,
                             &mut |event| {
-                                let _ = tx.send(TurnEvent::Neutral(event.clone()));
+                                deliver(TurnEvent::Neutral(event.clone()));
                                 if let Some(output) = previews.frame(event) {
-                                    let _ = tx.send(TurnEvent::Frame {
+                                    deliver(TurnEvent::Frame {
                                         event: tilo_model_gateway::EVENT_TOOL_CALL_DELTA.into(),
                                         output,
                                     });
@@ -1102,10 +1187,12 @@ impl TurnTransport for GatewayTurns {
                             },
                         )
                         .map(|response| serde_json::json!(response).to_string())
-                        .inspect_err(|error| {
-                            let _ = tx.send(TurnEvent::Neutral(
+                        .inspect_err(|_| {
+                            deliver(TurnEvent::Neutral(
                                 agent_provider_config::protocol::StreamEvent::Failed {
-                                    error: error.model_error(),
+                                    error: agent_provider_config::protocol::ModelError::invalid(
+                                        "model completion failed",
+                                    ),
                                 },
                             ));
                         })
@@ -1116,7 +1203,12 @@ impl TurnTransport for GatewayTurns {
                     // The loop hears the turn is over first; the marks held
                     // while it ran (round trips to the gateway) follow.
                     marks.plan_over(ticket);
-                    let _ = tx.send(TurnEvent::Finished(result));
+                    if let Some(mut events) = buffered {
+                        events.push(TurnEvent::Finished(result));
+                        let _ = tx.send(TurnEvent::Buffered(events));
+                    } else {
+                        let _ = tx.send(TurnEvent::Finished(result));
+                    }
                     marks.release(ticket);
                 }
             });

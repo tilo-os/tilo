@@ -514,6 +514,12 @@ pub struct RootHelperExpectation {
     pub start: u64,
     pub helper_dev: u64,
     pub helper_ino: u64,
+    /// Restriction from the Shell's actual registered managed launch, not the
+    /// consuming helper's command or application-supplied metadata. Ordinary
+    /// launches keep the earlier wire shape; older receivers must reject the
+    /// new field on protected launches instead of silently losing protection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protected_model: Option<crate::registration_gate::ProtectedModelLaunch>,
 }
 
 /// Opaque admission minted only from actual pinned Shell execution and its
@@ -571,6 +577,13 @@ impl RetainedLaunchGate {
             expected,
         };
         result.check()?;
+        // The installed Shell and its exact root child have both been checked.
+        // Install before main can resolve any service, just as the stdin gate
+        // does. Missing context preserves ordinary retained launches; malformed
+        // context must fail rather than select the legacy model gateway.
+        if let Some(context) = result.expected.protected_model.clone() {
+            crate::registration_gate::install_protected_model_launch(context)?;
+        }
         Ok(result)
     }
     fn check(&self) -> io::Result<()> {

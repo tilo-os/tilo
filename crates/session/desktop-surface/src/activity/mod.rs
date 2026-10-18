@@ -18,7 +18,9 @@ pub use view_actions::WorkspaceViewRequest;
 mod pane;
 mod replay;
 mod task_review;
-pub use task_review::{TaskReviewCommand, TaskReviewRequest, TaskReviewSnapshot};
+pub use task_review::{
+    TaskAdmissionState, TaskAdmissionView, TaskReviewCommand, TaskReviewRequest, TaskReviewSnapshot,
+};
 #[cfg(test)]
 mod testing;
 pub use index::*;

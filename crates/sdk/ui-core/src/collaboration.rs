@@ -475,6 +475,16 @@ pub enum CollabRequest {
     },
     /// Lifecycle record for a broker-minted task lease. Only an admitted
     /// agent connection can make this request; the broker checks the lease.
+    NativeModel {
+        request_id: u64,
+        /// Incoming directed wire id; the host resolves its native task custody.
+        /// When present, caller-provided run/lease fields are not used.
+        invocation_id: Option<u64>,
+        run_id: u64,
+        lease: String,
+        request: serde_json::Value,
+        timeout_ms: u64,
+    },
     ReportTaskRun {
         request_id: Option<u64>,
         run_id: u64,
@@ -824,6 +834,10 @@ pub enum CollabEvent {
     TaskRunControl {
         request_id: u64,
         control: runtime_collab::TaskRunControl,
+    },
+    NativeModelResult {
+        request_id: u64,
+        result: Result<serde_json::Value, String>,
     },
     TaskRunReportResult {
         request_id: u64,

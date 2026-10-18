@@ -8,6 +8,10 @@ use super::{Arc, CapnpBrokerState, InvocationEnvelope, PublishedSurface};
 pub(super) enum ServiceOutcome {
     Succeeded(serde_json::Value),
     Failed(tilo_actions::ActionFailure),
+    /// A cancellable retained observation ended without an effect.
+    Cancelled,
+    /// Completion is retained by a detached owner operation.
+    Pending,
 }
 
 /// A refusal carrying only a code and the message shown to the caller.
@@ -64,7 +68,13 @@ impl CapnpBrokerState {
                     ServiceOutcome::Failed(error) => {
                         tilo_actions::InvocationUpdate::Failed { invocation, error }
                     }
+                    ServiceOutcome::Cancelled => tilo_actions::InvocationUpdate::Cancelled {
+                        invocation,
+                        message: None,
+                    },
+                    ServiceOutcome::Pending => continue,
                 };
+                state.refresh_task_control();
                 if let Err(error) = state
                     .apply_invocation_update(peer_id, id, update, None)
                     .await
@@ -80,6 +90,39 @@ impl CapnpBrokerState {
             stopped(&state, removed);
         });
         Ok(())
+    }
+
+    pub(super) async fn finish_room_service_invocation(
+        self: &Arc<Self>,
+        peer: u64,
+        id: u64,
+        invocation: tilo_actions::InvocationId,
+        outcome: ServiceOutcome,
+    ) -> Result<(), String> {
+        let update = match outcome {
+            ServiceOutcome::Succeeded(value) => tilo_actions::InvocationUpdate::Succeeded {
+                invocation,
+                output: tilo_actions::ActionOutput {
+                    value: Some(value),
+                    resources: Vec::new(),
+                },
+            },
+            ServiceOutcome::Failed(error) => {
+                tilo_actions::InvocationUpdate::Failed { invocation, error }
+            }
+            ServiceOutcome::Cancelled => tilo_actions::InvocationUpdate::Cancelled {
+                invocation,
+                message: None,
+            },
+            ServiceOutcome::Pending => return Ok(()),
+        };
+        self.refresh_task_control();
+        self.apply_invocation_update(peer, id, update, None)
+            .await
+            .map_err(|error| {
+                self.record_owner_commit_failure(error.to_string());
+                error.to_string()
+            })
     }
 
     fn record_owner_commit_failure(&self, reason: String) {

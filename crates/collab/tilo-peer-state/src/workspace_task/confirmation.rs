@@ -116,7 +116,7 @@ fn request(
         || !confirmation.is_waiting()
         || confirmation.id
             != WorkspaceTaskConfirmation::id_for(
-                &confirmation.resource,
+                &tilo_actions::selection::logical_resource_id(&confirmation.resource),
                 &confirmation.action,
                 &confirmation.arguments_digest,
             )
@@ -145,10 +145,7 @@ fn request(
         context.now,
         actor,
         "ask-confirmation",
-        [(
-            "action",
-            tilo_actions::Scalar::text(&confirmation.draft.action_label),
-        )],
+        [("action", tilo_actions::Scalar::text(&confirmation.action))],
     ));
     Ok(recorded(task_id))
 }
@@ -180,7 +177,7 @@ fn answer(
     if !confirmation.is_waiting() {
         return Err("task confirmation was already answered".into());
     }
-    let (verb, note) = match answer {
+    let verb = match answer {
         WorkspaceTaskConfirmationAnswer::Confirm { edits } => {
             confirmation.draft.check_edits(edits)?;
             confirmation.state = WorkspaceTaskConfirmationState::Confirmed {
@@ -188,7 +185,7 @@ fn answer(
                 at: context.now,
                 edits: edits.clone(),
             };
-            ("confirm-action", None)
+            "confirm-action"
         }
         WorkspaceTaskConfirmationAnswer::Decline { reason } => {
             let reason = reason
@@ -207,18 +204,17 @@ fn answer(
                 at: context.now,
                 reason: reason.clone(),
             };
-            ("decline-action", reason)
+            "decline-action"
         }
     };
-    let label = confirmation.draft.action_label.clone();
+    let label = confirmation.action.clone();
     task.updated_at = context.now;
-    let mut event = WorkspaceTaskAuditEvent::new(
+    let event = WorkspaceTaskAuditEvent::new(
         context.now,
         person.clone(),
         verb,
         [("action", tilo_actions::Scalar::text(&label))],
     );
-    event.note = note;
     task.audit.push(event);
     Ok(recorded(task_id))
 }

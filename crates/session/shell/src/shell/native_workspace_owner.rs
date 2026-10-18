@@ -178,7 +178,7 @@ impl Store for TreeStore {
 pub(crate) fn open(tree: WorkspaceTreeHandle) -> Result<NativeWorkspaceOwner, String> {
     let runtime = tree.read().native_runtime.clone();
     let _opening = runtime.opening();
-    let (path, authority, encoded, sequence) = {
+    let (path, authority) = {
         let native = tree.read();
         if !native.native_runtime.is(&runtime) {
             return Err("native state writer replaced while the owner was opening".into());
@@ -196,26 +196,56 @@ pub(crate) fn open(tree: WorkspaceTreeHandle) -> Result<NativeWorkspaceOwner, St
             return Err("native pending enrollment has no local slot".into());
         }
         store::preflight(&*native, store::MAX_STATE_BYTES).map_err(|e| e.to_string())?;
-        let encoded = persist::encode_tree(&native).map_err(|e| e.to_string())?;
-        // Taken while the tree is held, so a save of any later state of it
-        // carries a later sequence.
-        let sequence = runtime.next_sequence();
-        (path, native.native_authority.clone(), encoded, sequence)
+        (path, native.native_authority.clone())
     };
     runtime.bind(&path, &authority).map_err(|e| e.to_string())?;
-    let owner = NativeWorkspaceOwner::restore(
-        std::sync::Arc::new(TreeStore {
-            tree: tree.clone(),
-            runtime: runtime.clone(),
-            history: tilo_joined_room::HistoryContent::for_state_file(&path),
-        }),
-        authority.clone(),
-        std::time::SystemTime::now(),
-    )?;
-    // Re-establish the publication barrier before exposing a reopened generation.
-    // The reopened record is the one the file holds.
+    let store = std::sync::Arc::new(TreeStore {
+        tree: tree.clone(),
+        runtime: runtime.clone(),
+        history: tilo_joined_room::HistoryContent::for_state_file(&path),
+    });
+    let paths = crate::firstboot::collaboration_identity_paths();
+    let now = std::time::SystemTime::now();
+    let owner = match tilo_user_identity::persist::read_device_key(&paths.device_privkey) {
+        Ok(key) => {
+            NativeWorkspaceOwner::restore_with_private_recovery(store, authority, &key, now)?
+        }
+        // Without signing custody, only an already-clean record may open.
+        Err(_) => NativeWorkspaceOwner::restore(store, authority, now)?,
+    };
+    finish_reopen(&tree, &runtime, &path, owner)
+}
+
+/// Finish under the caller's opening guard. Keyed restore may already have
+/// published replacements through TreeStore, so no pre-restore encoding or
+/// authority may cross this barrier.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the tree is held from the authority check through owner attachment and capability export"
+)]
+fn finish_reopen(
+    tree: &WorkspaceTreeHandle,
+    runtime: &NativeStateRuntime,
+    path: &std::path::Path,
+    owner: NativeWorkspaceOwner,
+) -> Result<NativeWorkspaceOwner, String> {
+    let (authority, encoded, sequence) = {
+        let native = tree.read();
+        if !native.native_runtime.is(runtime) {
+            return Err("native state writer replaced while the owner was opening".into());
+        }
+        let encoded = persist::encode_tree(&native).map_err(|e| e.to_string())?;
+        if !runtime.holds(encoded.authority) {
+            return Err("reopened native authority is not the published record".into());
+        }
+        // Order this snapshot after any recovery publication, while holding
+        // the tree so a later save receives a later sequence.
+        let sequence = runtime.next_sequence();
+        (native.native_authority.clone(), encoded, sequence)
+    };
+    // Re-establish the barrier using the recovered record, never its predecessor.
     let published = runtime
-        .publish(&path, encoded.authority, &authority, &encoded, sequence)
+        .publish(path, encoded.authority, &authority, &encoded, sequence)
         .map_err(|e| e.to_string())?;
     // A save of a later state of the tree landed first. No owner exists to
     // change the record, so that save carried this same record and is the
@@ -224,7 +254,7 @@ pub(crate) fn open(tree: WorkspaceTreeHandle) -> Result<NativeWorkspaceOwner, St
         return Err("reopened native generation was superseded".into());
     }
     let mut native = tree.write();
-    if !native.native_runtime.is(&runtime) {
+    if !native.native_runtime.is(runtime) {
         return Err("native state writer replaced while the owner was opening".into());
     }
     if store::digest(&native.native_authority).map_err(|e| e.to_string())? != encoded.authority {
@@ -236,7 +266,7 @@ pub(crate) fn open(tree: WorkspaceTreeHandle) -> Result<NativeWorkspaceOwner, St
             Ok(())
         })?;
     }
-    runtime.attach(&owner, &tree);
+    runtime.attach(&owner, tree);
     native.export_fs_capabilities();
     drop(native);
     Ok(owner)
@@ -276,4 +306,66 @@ pub(crate) fn test_open_in_progress(
 #[cfg(test)]
 pub(crate) fn test_tree_of(owner: &NativeWorkspaceOwner) -> WorkspaceTreeHandle {
     tests::tree_of(owner)
+}
+
+#[cfg(test)]
+mod reopen_barrier_tests {
+    use super::*;
+
+    #[test]
+    fn reopen_barrier_keeps_a_replacement_published_before_attachment() {
+        let (directory, owner, room, now, device_key) = test_enrolled_owner();
+        let path = directory.path().join("state.json");
+        drop(owner);
+        let mut loaded = persist::load_tree_from(&path).unwrap();
+        loaded.persist_path = Some(path.clone());
+        let tree = loaded.shared();
+        let runtime = tree.read().native_runtime.clone();
+        let opening = runtime.opening();
+        let predecessor = tree.read().native_authority.clone();
+        let predecessor_digest = store::digest(&predecessor).unwrap();
+        runtime.bind(&path, &predecessor).unwrap();
+        let owner = NativeWorkspaceOwner::restore_with_private_recovery(
+            std::sync::Arc::new(TreeStore {
+                tree: tree.clone(),
+                runtime: runtime.clone(),
+                history: tilo_joined_room::HistoryContent::for_state_file(&path),
+            }),
+            predecessor,
+            &ed25519_dalek::SigningKey::from_bytes(&[61; 32]),
+            now,
+        )
+        .unwrap();
+        // Exercise the real TreeStore publication that recovery uses before
+        // attachment. A normal admitted edit isolates the outer barrier from
+        // the joined-room tests' legacy checkpoint construction.
+        let (request, _) = test_document_edit(&owner, room, &device_key, now, 47);
+        owner.commit_document(request, now).unwrap();
+        let replacement_digest = store::digest(&tree.read().native_authority).unwrap();
+        assert_ne!(replacement_digest, predecessor_digest);
+        let generation = owner
+            .with_current(room, |view| Ok(view.generation()))
+            .unwrap();
+        let owner = finish_reopen(&tree, &runtime, &path, owner).unwrap();
+        assert!(runtime.holds(replacement_digest));
+        assert_eq!(
+            store::digest(&persist::load_tree_from(&path).unwrap().native_authority).unwrap(),
+            replacement_digest,
+            "the outer barrier must never republish the pre-restore record"
+        );
+        drop(opening);
+        drop(owner);
+        drop(tree);
+        drop(runtime);
+        let mut loaded = persist::load_tree_from(&path).unwrap();
+        loaded.persist_path = Some(path);
+        let reopened = open(loaded.shared()).unwrap();
+        assert_eq!(
+            reopened
+                .with_current(room, |view| Ok(view.generation()))
+                .unwrap(),
+            generation,
+            "ordinary reopen retains the replacement generation"
+        );
+    }
 }

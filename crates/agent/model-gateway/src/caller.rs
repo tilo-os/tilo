@@ -21,6 +21,12 @@ pub fn provider_admin_app(app_id: &str) -> bool {
 /// session state rather than just checking the original token expiry.
 pub trait Session: Send + Sync {
     fn caller(&self) -> Caller;
+    /// Launcher-authenticated connection role; never chosen by an RPC field.
+    /// NativeUnavailable deliberately refuses legacy inference too.
+    #[cfg(all(unix, feature = "server"))]
+    fn gateway_source(&self) -> crate::GatewaySource<'_> {
+        crate::GatewaySource::Ordinary
+    }
     fn may_manage_credentials(&self) -> bool {
         false
     }

@@ -67,7 +67,7 @@ pub(crate) struct ComposerRequest {
     /// The conversation before this request, oldest first.
     pub conversation: Vec<ComposerTurn>,
     /// The selection the request is about, when the composer was opened
-    /// on one ([`AgentQuickComposer::open_about`]).
+    /// on one ([`SelectionComposer::open_about`]).
     pub about: Option<super::selection_agent::SelectionSeed>,
 }
 
@@ -257,7 +257,7 @@ fn take(flag: &LocalState<bool>) -> bool {
     pressed
 }
 
-pub(crate) struct AgentQuickComposer {
+pub(crate) struct SelectionComposer {
     popover: Popover<Container>,
     owner: Option<ComposerOwner>,
     label: String,
@@ -294,7 +294,7 @@ pub(crate) struct AgentQuickComposer {
     draft_answer: Option<DraftAnswer>,
 }
 
-impl Default for AgentQuickComposer {
+impl Default for SelectionComposer {
     fn default() -> Self {
         let mut composer = Self {
             popover: Popover::with_content(Container::new()),
@@ -333,7 +333,7 @@ fn wrapped(text: Text) -> Box<dyn Widget> {
     )))
 }
 
-impl AgentQuickComposer {
+impl SelectionComposer {
     fn header(&self) -> Row {
         let close = self.presses.close.clone();
         Row::new()
@@ -1174,7 +1174,7 @@ fn restore_editor(widget: &mut dyn Widget, state: &str) -> bool {
         .any(|child| restore_editor(child, state))
 }
 
-impl Decorator for AgentQuickComposer {
+impl Decorator for SelectionComposer {
     type Inner = Popover<Container>;
     fn inner(&self) -> &Self::Inner {
         &self.popover
@@ -1183,7 +1183,7 @@ impl Decorator for AgentQuickComposer {
         &mut self.popover
     }
     fn name(&self) -> &'static str {
-        "AgentQuickComposer"
+        "SelectionComposer"
     }
     fn sync(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
         if self.owner.is_none() {
@@ -1248,7 +1248,7 @@ mod tests {
         }
     }
 
-    fn open(composer: &mut AgentQuickComposer, owner: ComposerOwner) {
+    fn open(composer: &mut SelectionComposer, owner: ComposerOwner) {
         composer.open(
             owner,
             "Tide",
@@ -1281,7 +1281,7 @@ mod tests {
             .any(|child| self::action(child, id, action, doc))
     }
 
-    fn edit(composer: &mut AgentQuickComposer, doc: &mut automerge::AutoCommit, text: &str) {
+    fn edit(composer: &mut SelectionComposer, doc: &mut automerge::AutoCommit, text: &str) {
         Widget::sync(composer, doc, &automerge::ROOT);
         assert!(action(
             composer,
@@ -1292,7 +1292,7 @@ mod tests {
         Widget::sync(composer, doc, &automerge::ROOT);
     }
 
-    fn press(composer: &mut AgentQuickComposer, doc: &mut automerge::AutoCommit, id: &str) {
+    fn press(composer: &mut SelectionComposer, doc: &mut automerge::AutoCommit, id: &str) {
         Widget::sync(composer, doc, &automerge::ROOT);
         assert!(
             action(composer, id, &ui::a11y::Action::Activate, doc),
@@ -1301,7 +1301,7 @@ mod tests {
     }
 
     fn submit(
-        composer: &mut AgentQuickComposer,
+        composer: &mut SelectionComposer,
         doc: &mut automerge::AutoCommit,
     ) -> ComposerRequest {
         press(composer, doc, "agent-quick-send");
@@ -1310,7 +1310,7 @@ mod tests {
             .expect("the enabled ordinary button emits one intention")
     }
 
-    fn shown(composer: &mut AgentQuickComposer, id: &str) -> bool {
+    fn shown(composer: &mut SelectionComposer, id: &str) -> bool {
         fn find(widget: &dyn Widget, id: &str) -> bool {
             widget.test_id() == Some(id) || widget.children().into_iter().any(|c| find(c, id))
         }
@@ -1333,7 +1333,7 @@ mod tests {
 
     #[test]
     fn one_field_sends_a_request_the_agent_answers_and_a_follow_up_carries_it() {
-        let mut composer = AgentQuickComposer::default();
+        let mut composer = SelectionComposer::default();
         let mut doc = automerge::AutoCommit::new();
         let heads = doc.get_heads();
         let tide = owner("tide");
@@ -1395,7 +1395,7 @@ mod tests {
     /// it says the step the run is at.
     #[test]
     fn a_run_waiting_on_the_person_shows_its_draft_and_takes_the_answer() {
-        let mut composer = AgentQuickComposer::default();
+        let mut composer = SelectionComposer::default();
         let mut doc = automerge::AutoCommit::new();
         let tide = owner("tide");
         open(&mut composer, tide.clone());
@@ -1481,7 +1481,7 @@ mod tests {
 
     #[test]
     fn work_runs_as_a_task_the_same_field_steers_and_stop_appears_while_it_runs() {
-        let mut composer = AgentQuickComposer::default();
+        let mut composer = SelectionComposer::default();
         let mut doc = automerge::AutoCommit::new();
         let tide = owner("tide");
         open(&mut composer, tide.clone());
@@ -1577,7 +1577,7 @@ mod tests {
 
     #[test]
     fn a_finished_run_is_told_once_as_the_agents_turn() {
-        let mut composer = AgentQuickComposer::default();
+        let mut composer = SelectionComposer::default();
         let tide = owner("tide");
         open(&mut composer, tide.clone());
         composer.set_about_selection(true);
@@ -1602,7 +1602,7 @@ mod tests {
 
     #[test]
     fn a_refused_request_keeps_the_draft_and_an_unknown_one_is_never_resent() {
-        let mut composer = AgentQuickComposer::default();
+        let mut composer = SelectionComposer::default();
         let mut doc = automerge::AutoCommit::new();
         let tide = owner("tide");
         open(&mut composer, tide.clone());
@@ -1633,7 +1633,7 @@ mod tests {
 
     #[test]
     fn drafts_and_conversations_stay_with_their_agent() {
-        let mut composer = AgentQuickComposer::default();
+        let mut composer = SelectionComposer::default();
         let mut doc = automerge::AutoCommit::new();
         let tide = owner("tide");
         open(&mut composer, tide.clone());
@@ -1647,7 +1647,7 @@ mod tests {
 
     #[test]
     fn a_text_answer_about_a_selection_can_be_inserted_or_kept_as_a_note() {
-        let mut composer = AgentQuickComposer::default();
+        let mut composer = SelectionComposer::default();
         let mut doc = automerge::AutoCommit::new();
         let tide = owner("tide");
         open(&mut composer, tide.clone());
@@ -1676,7 +1676,7 @@ mod tests {
 
     #[test]
     fn the_composer_is_anchored_beside_what_it_is_about() {
-        let mut composer = AgentQuickComposer::default();
+        let mut composer = SelectionComposer::default();
         let selection = Rect::new(560.0, 180.0, 700.0, 240.0);
         composer.open(
             owner("tide"),
@@ -1731,7 +1731,7 @@ mod tests {
     /// it.
     #[test]
     fn the_composer_opens_above_a_selected_paragraph_with_no_room_beside_or_below() {
-        let mut composer = AgentQuickComposer::default();
+        let mut composer = SelectionComposer::default();
         let paragraph = Rect::new(8.0, 470.0, 1272.0, 790.0);
         composer.open(
             owner("tide"),
@@ -1762,7 +1762,7 @@ mod tests {
     #[test]
     fn a_composer_opened_on_a_selection_carries_it_with_the_request() {
         use super::super::selection_agent::SelectionSeed;
-        let mut composer = AgentQuickComposer::default();
+        let mut composer = SelectionComposer::default();
         let mut doc = automerge::AutoCommit::new();
         let tide = owner("tide");
         let seed = SelectionSeed::new(
@@ -1863,6 +1863,2065 @@ mod tests {
                     "{retired} is retired from {locale}"
                 );
             }
+        }
+    }
+}
+
+/// One chrome host for the two explicit entry points. A painted marker keeps
+/// its exact task/run controls and private conversation handoff; asking about
+/// a selection uses the answer-and-work conversation.
+#[derive(Default)]
+pub(crate) struct AgentQuickComposer {
+    pub(crate) marker: marker::AgentQuickComposer,
+    pub(crate) selection_composer: SelectionComposer,
+    selection_mode: bool,
+}
+
+impl AgentQuickComposer {
+    pub(crate) fn followed(&self) -> Option<&ComposerRun> {
+        self.selection_mode
+            .then(|| self.selection_composer.followed())
+            .flatten()
+    }
+
+    pub(crate) fn glance(
+        &mut self,
+        owner: &ComposerOwner,
+        glance: Option<tilo_desktop::activity::RunGlance>,
+    ) {
+        if self.selection_mode {
+            self.selection_composer.glance(owner, glance);
+        }
+    }
+
+    pub(crate) fn reveal_run(&mut self, task_id: &str) -> bool {
+        self.selection_mode && self.selection_composer.reveal_run(task_id)
+    }
+
+    pub(crate) fn shows_paused_any(&self) -> bool {
+        self.selection_mode && self.selection_composer.shows_paused_any()
+    }
+
+    pub(crate) fn take_draft_answer(&mut self) -> Option<DraftAnswer> {
+        if self.selection_mode {
+            self.selection_composer.take_draft_answer()
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn open(
+        &mut self,
+        owner: ComposerOwner,
+        label: &str,
+        origin: AgentQuickComposerOrigin,
+        viewport: Rect,
+    ) {
+        self.dismiss();
+        self.selection_mode = false;
+        self.selection_composer
+            .open(owner.clone(), label, origin.clone(), viewport);
+        self.selection_composer.dismiss();
+        self.marker.open(owner, label, origin, viewport);
+    }
+
+    pub(crate) fn open_about(
+        &mut self,
+        owner: ComposerOwner,
+        label: &str,
+        origin: &AgentQuickComposerOrigin,
+        viewport: Rect,
+        about: super::selection_agent::SelectionSeed,
+    ) {
+        self.dismiss();
+        self.selection_mode = true;
+        self.selection_composer
+            .open_about(owner, label, origin, viewport, about);
+    }
+
+    pub(crate) fn owner(&self) -> Option<&ComposerOwner> {
+        if self.selection_mode {
+            self.selection_composer.owner()
+        } else {
+            self.marker.owner()
+        }
+    }
+
+    pub(crate) fn is_open(&self) -> bool {
+        if self.selection_mode {
+            self.selection_composer.is_open()
+        } else {
+            self.marker.is_open()
+        }
+    }
+
+    pub(crate) fn dismiss(&mut self) {
+        self.marker.dismiss();
+        self.selection_composer.dismiss();
+    }
+
+    pub(crate) fn about_selection(&self) -> bool {
+        self.selection_mode && self.selection_composer.about_selection()
+    }
+
+    pub(crate) fn bind_marker_task(&mut self, task: ComposerTask) {
+        self.marker.bind_marker_task(task);
+    }
+
+    pub(crate) fn bind_painted_task(
+        &mut self,
+        task: ComposerTask,
+        app: String,
+        interaction: tilo_actions::SemanticInteraction,
+    ) {
+        self.marker.bind_painted_task(task, app, interaction);
+    }
+
+    pub(crate) fn marker_task(&self) -> Option<&ComposerTask> {
+        if self.selection_mode {
+            None
+        } else {
+            self.marker.marker_task()
+        }
+    }
+
+    pub(crate) fn marker_origin(&self) -> Option<&(String, tilo_actions::SemanticInteraction)> {
+        if self.selection_mode {
+            None
+        } else {
+            self.marker.marker_origin()
+        }
+    }
+
+    pub(crate) fn follow_anchor(&mut self, marker: Rect, protected: Rect) {
+        if !self.selection_mode {
+            self.marker.follow_anchor(marker, protected);
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    pub(crate) fn set_about_selection(&mut self, selection: bool) {
+        self.marker.dismiss();
+        self.selection_mode = true;
+        self.selection_composer.popover.set_open(true);
+        self.selection_composer.set_about_selection(selection);
+    }
+
+    #[cfg(debug_assertions)]
+    pub(crate) fn stage_for_shots(
+        &mut self,
+        draft: &str,
+        conversation: Vec<ComposerTurn>,
+        run: Option<ComposerRun>,
+    ) {
+        self.selection_composer
+            .stage_for_shots(draft, conversation, run);
+    }
+
+    #[cfg(any(test, debug_assertions))]
+    pub(crate) fn project(
+        &mut self,
+        owner: &ComposerOwner,
+        available: [bool; 3],
+        tasks: Vec<ComposerTask>,
+        can_stop: bool,
+    ) {
+        self.marker.project(owner, available, tasks, can_stop);
+    }
+}
+
+impl Decorator for AgentQuickComposer {
+    type Inner = dyn Widget;
+    fn inner(&self) -> &Self::Inner {
+        if self.selection_mode {
+            &self.selection_composer
+        } else {
+            &self.marker
+        }
+    }
+    fn inner_mut(&mut self) -> &mut Self::Inner {
+        if self.selection_mode {
+            &mut self.selection_composer
+        } else {
+            &mut self.marker
+        }
+    }
+    fn name(&self) -> &'static str {
+        "AgentQuickComposer"
+    }
+}
+
+#[cfg(test)]
+mod entry_point_tests {
+    use super::*;
+
+    #[test]
+    fn a_selection_and_a_painted_task_never_share_a_recipient_or_visible_host() {
+        let mut composer = AgentQuickComposer::default();
+        let owner = ComposerOwner {
+            room: "room".into(),
+            agent: "scribe".into(),
+            person: "person".into(),
+            identity_revision: 1,
+        };
+        let origin = AgentQuickComposerOrigin {
+            marker: Rect::new(10.0, 10.0, 40.0, 40.0),
+            protected: Rect::ZERO,
+            context: String::new(),
+        };
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let task = ComposerTask {
+            task_id: "exact-task".into(),
+            run_epoch: 3,
+            revision: 8,
+            label: "Exact task".into(),
+        };
+        composer.open(owner.clone(), "Scribe", origin.clone(), viewport);
+        composer.bind_marker_task(task.clone());
+        assert_eq!(composer.marker_task(), Some(&task));
+        assert!(composer.marker.is_open());
+        assert!(!composer.selection_composer.is_open());
+
+        composer.open_about(
+            owner.clone(),
+            "Scribe",
+            &origin,
+            viewport,
+            super::super::selection_agent::SelectionSeed::new("so.tilo.notes", "Notes", None),
+        );
+        assert!(composer.about_selection());
+        assert!(composer.marker_task().is_none());
+        assert!(!composer.marker.is_open());
+        assert!(composer.selection_composer.is_open());
+
+        composer.open(owner, "Scribe", origin, viewport);
+        composer.bind_marker_task(task.clone());
+        assert!(!composer.about_selection());
+        assert_eq!(composer.marker_task(), Some(&task));
+        assert!(!composer.selection_composer.is_open());
+    }
+}
+
+pub(crate) mod marker {
+    //! Private, marker-adjacent controls. The owner adapter, not marker geometry,
+    //! resolves and admits the ordinary published Chat and Task actions.
+
+    use std::collections::HashMap;
+
+    use ui::widget::{
+        Actions, Button, ButtonRole, Column, Container, Decorator, Dropdown, Popover, PopoverSide,
+        Row, Segment, Text, TextInput, ToggleGroup, When, Widget,
+    };
+    use ui::{LocalState, Theme};
+    use vello::kurbo::Rect;
+
+    pub(crate) use super::{AgentQuickComposerOrigin, ComposerOwner, ComposerTask};
+    use crate::shell::i18n::{t, t_args};
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+    pub(crate) enum ComposerIntent {
+        #[default]
+        Message,
+        Queue,
+        Steer,
+    }
+
+    /// Descriptive custody of a selected certified action session. This is a
+    /// draft partition, never a capability or a substitute for broker admission.
+
+    impl ComposerTask {
+        fn key(&self) -> String {
+            format!("{}:{}:{}", self.task_id, self.run_epoch, self.revision)
+        }
+    }
+
+    /// A user's intention, not an execution authority. The adapter re-resolves
+    /// offers and rechecks this exact owner/run/revision before submitting it.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub(crate) struct ComposerRequest {
+        pub owner: ComposerOwner,
+        pub intent: ComposerIntent,
+        pub submission: u64,
+        pub text: String,
+        pub task: Option<ComposerTask>,
+        pub stop: bool,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub(crate) enum ComposerOutcome {
+        Queued { task_id: String },
+        DirectionSaved(ComposerTask),
+        DirectionApplied(ComposerTask),
+        StopRequested(ComposerTask),
+        Refused,
+        Unknown,
+    }
+
+    /// Only the adapter's owner-correlated observation may produce this receipt.
+    pub(crate) struct ComposerReceipt {
+        pub owner: ComposerOwner,
+        pub submission: u64,
+        pub outcome: ComposerOutcome,
+    }
+
+    /// Private UI state stays out of public action arguments and descriptions.
+    #[derive(Clone)]
+    pub(crate) struct ComposerExpansion {
+        pub owner: ComposerOwner,
+        pub task: (String, u64),
+        pub editor: ui::private_draft::Editor,
+        context: u64,
+    }
+
+    /// Revisions are admission guards, not conversation identities. A draft
+    /// belongs to one task/run even if its public revision advances.
+    type TaskRun = (String, u64);
+    type DraftIdentity = (String, String, String);
+    type DraftKey = (DraftIdentity, ComposerIntent, Option<TaskRun>);
+    type SubmissionKey = (ComposerOwner, ComposerIntent, Option<TaskRun>);
+
+    fn draft_identity(owner: &ComposerOwner) -> DraftIdentity {
+        (
+            owner.person.clone(),
+            owner.room.clone(),
+            owner.agent.clone(),
+        )
+    }
+
+    fn private_key(key: &SubmissionKey) -> DraftKey {
+        (draft_identity(&key.0), key.1, key.2.clone())
+    }
+
+    #[derive(Clone)]
+    struct Draft {
+        text: String,
+        revision: u64,
+        editor: Option<String>,
+        private_editor: Option<ui::private_draft::Editor>,
+    }
+
+    struct RetainedEditor {
+        revision: u64,
+        caret: String,
+        private: Option<ui::private_draft::Editor>,
+    }
+
+    struct Submission {
+        key: SubmissionKey,
+        revision: u64,
+        task: Option<ComposerTask>,
+        stop: bool,
+        applied: bool,
+        busy: bool,
+    }
+
+    /// Tracks only real input to the retained shared editor. Focus alone is not
+    /// editing; selection, a context-menu press and IME preedit are.
+    #[derive(Default)]
+    pub(crate) struct ComposerAnchor {
+        pub(crate) frozen: bool,
+        pointer: Option<vello::kurbo::Point>,
+    }
+
+    impl ComposerAnchor {
+        pub(crate) fn observe(
+            &mut self,
+            editor: &dyn Widget,
+            event: &winit::event::WindowEvent,
+            ctx: &ui::widget::EventCtx<'_>,
+        ) {
+            use winit::event::{ElementState, Ime, TouchPhase, WindowEvent};
+            match event {
+                WindowEvent::CursorMoved { position, .. } => {
+                    self.pointer = Some(ctx.logical(position));
+                }
+                WindowEvent::CursorLeft { .. } => self.pointer = None,
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    ..
+                } => {
+                    self.frozen |= self.pointer.is_some_and(|p| editor.get_rect().contains(p));
+                }
+                WindowEvent::Touch(touch) if touch.phase == TouchPhase::Started => {
+                    self.frozen |= editor.get_rect().contains(ctx.logical(touch.location));
+                }
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state == ElementState::Pressed =>
+                {
+                    use winit::keyboard::{Key, NamedKey};
+                    let editing = matches!(
+                        event.logical_key,
+                        Key::Character(_)
+                            | Key::Named(
+                                NamedKey::ArrowLeft
+                                    | NamedKey::ArrowRight
+                                    | NamedKey::ArrowUp
+                                    | NamedKey::ArrowDown
+                                    | NamedKey::Home
+                                    | NamedKey::End
+                                    | NamedKey::PageUp
+                                    | NamedKey::PageDown
+                                    | NamedKey::Backspace
+                                    | NamedKey::Delete
+                                    | NamedKey::Enter
+                                    | NamedKey::Insert
+                                    | NamedKey::ContextMenu
+                            )
+                    ) || event.text.as_ref().is_some_and(|text| !text.is_empty());
+                    self.frozen |= editor.is_focused() && editing;
+                }
+                WindowEvent::Ime(Ime::Preedit(..) | Ime::Commit(..)) => {
+                    self.frozen |= editor.is_focused();
+                }
+                _ => {}
+            }
+        }
+    }
+
+    pub(crate) fn composer_editor<'a>(widget: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
+        if widget.test_id() == Some(id) {
+            return Some(widget);
+        }
+        widget
+            .children()
+            .into_iter()
+            .find_map(|child| composer_editor(child, id))
+    }
+
+    pub(crate) struct AgentQuickComposer {
+        anchor: ComposerAnchor,
+        popover: Popover<Container>,
+        owner: Option<ComposerOwner>,
+        intent: LocalState<ComposerIntent>,
+        shown: ComposerIntent,
+        shown_task: Option<TaskRun>,
+        draft: LocalState<String>,
+        title: LocalState<String>,
+        context: LocalState<String>,
+        status: LocalState<String>,
+        enabled: LocalState<bool>,
+        conversation_enabled: LocalState<bool>,
+        stop_enabled: LocalState<bool>,
+        submit: LocalState<bool>,
+        stop: LocalState<bool>,
+        conversation: LocalState<bool>,
+        close: LocalState<bool>,
+        expanded: LocalState<bool>,
+        task_visible: LocalState<bool>,
+        task_options: LocalState<Vec<(String, String)>>,
+        selected: LocalState<String>,
+        tasks: Vec<ComposerTask>,
+        marker_binding: Option<ComposerTask>,
+        marker_origin: Option<(String, tilo_actions::SemanticInteraction)>,
+        conversation_authorized: bool,
+        expansion_editor: Option<ui::private_draft::Editor>,
+        input_context: u64,
+        remembered_selection: HashMap<DraftIdentity, ComposerTask>,
+        queued_conversations: HashMap<DraftIdentity, String>,
+        available: [bool; 3],
+        can_stop: bool,
+        drafts: HashMap<DraftKey, Draft>,
+        submissions: HashMap<u64, Submission>,
+        next_submission: u64,
+        pending_editor: Option<RetainedEditor>,
+        focus_reset: bool,
+    }
+
+    impl Default for AgentQuickComposer {
+        fn default() -> Self {
+            let mut composer = Self {
+                anchor: ComposerAnchor::default(),
+                popover: Popover::with_content(Container::new()),
+                owner: None,
+                intent: LocalState::new(ComposerIntent::Message),
+                shown: ComposerIntent::Message,
+                shown_task: None,
+                draft: LocalState::new(String::new()),
+                title: LocalState::new(t("agent-quick-accessible-name")),
+                context: LocalState::new(String::new()),
+                status: LocalState::new(t("task-cursor-checking")),
+                enabled: LocalState::new(false),
+                conversation_enabled: LocalState::new(false),
+                stop_enabled: LocalState::new(false),
+                submit: LocalState::new(false),
+                stop: LocalState::new(false),
+                conversation: LocalState::new(false),
+                close: LocalState::new(false),
+                expanded: LocalState::new(false),
+                task_visible: LocalState::new(false),
+                task_options: LocalState::new(Vec::new()),
+                selected: LocalState::new(String::new()),
+                tasks: Vec::new(),
+                marker_binding: None,
+                marker_origin: None,
+                conversation_authorized: false,
+                expansion_editor: None,
+                input_context: 0,
+                remembered_selection: HashMap::new(),
+                queued_conversations: HashMap::new(),
+                available: [false; 3],
+                can_stop: false,
+                drafts: HashMap::new(),
+                submissions: HashMap::new(),
+                next_submission: 0,
+                pending_editor: None,
+                focus_reset: false,
+            };
+            composer.popover = composer.controls();
+            composer
+        }
+    }
+
+    impl AgentQuickComposer {
+        fn controls(&self) -> Popover<Container> {
+            let submit = self.submit.clone();
+            let stop = self.stop.clone();
+            let conversation = self.conversation.clone();
+            let close = self.close.clone();
+            let enter = self.submit.clone();
+            let expanded = self.expanded.clone();
+            let modes = ToggleGroup::from_state(
+                vec![
+                    (
+                        ComposerIntent::Message,
+                        Segment::new(t("agent-quick-message")),
+                    ),
+                    (ComposerIntent::Queue, Segment::new(t("task-cursor-queue"))),
+                    (ComposerIntent::Steer, Segment::new(t("task-cursor-steer"))),
+                ],
+                &self.intent,
+            )
+            .with_id("agent-quick-intent")
+            .with_accessible_name(t("agent-quick-intent"))
+            .fill();
+            let picker = Dropdown::from_state(Vec::new(), &self.selected)
+                .with_id("agent-quick-task")
+                .with_resolved_accessible_name(t("agent-quick-task-label"))
+                .caption(t("agent-quick-task-label"))
+                .fill();
+            let actions = Actions::new(
+                Button::new("agent-quick-stop", &t("agent-quick-stop"))
+                    .with_icon(ui::icons::Icon::Square)
+                    .role(ButtonRole::Secondary)
+                    .enabled_from(&self.stop_enabled)
+                    .on_click(move || stop.set(true)),
+            )
+            .secondary(
+                Button::new("agent-quick-close", &t("agent-quick-close"))
+                    .with_icon(ui::icons::Icon::X)
+                    .on_click(move || close.set(true)),
+            );
+            // Keep one editor mounted while auxiliary controls are disclosed.
+            // The outer anchor host paints nothing: only the standard field and
+            // buttons occupy the desktop, not a rectangular owner panel.
+            let bar = Row::new()
+                .no_wrap()
+                .push(Box::new(
+                    Text::from_state(&self.title, Clone::clone).with_role(ui::TextRole::Caption),
+                ))
+                .push(Box::new(
+                    Container::new()
+                        .with_no_padding()
+                        .with_flex_grow()
+                        .with_min_width(0.0)
+                        .with_child(Box::new(
+                            TextInput::from_state(&self.draft)
+                                .with_id("agent-quick-editor")
+                                .with_placeholder(t("agent-quick-placeholder"))
+                                .with_accessible_name(t("agent-quick-editor-name"))
+                                .on_submit(move |_| enter.set(true)),
+                        )),
+                ))
+                .push(Box::new(
+                    Button::icon_only(
+                        "agent-quick-send",
+                        ui::icons::Icon::Send,
+                        &t("agent-quick-send"),
+                    )
+                    .enabled_from(&self.enabled)
+                    .on_click(move || submit.set(true)),
+                ))
+                .push(Box::new(
+                    Button::icon_only(
+                        "agent-quick-open-conversation",
+                        ui::icons::Icon::MessageSquare,
+                        &t("agent-quick-open-conversation"),
+                    )
+                    .enabled_from(&self.conversation_enabled)
+                    .on_click(move || conversation.set(true)),
+                ))
+                .push(Box::new(
+                    Button::icon_only(
+                        "agent-quick-more",
+                        ui::icons::Icon::ChevronDown,
+                        &t("agent-quick-more"),
+                    )
+                    .on_click(move || expanded.set(!expanded.get())),
+                ));
+            let details = Column::new()
+                .with_rhythm(ui::tokens::Rhythm::Related)
+                .push(Box::new(
+                    Text::from_state(&self.context, Clone::clone)
+                        .with_wrap_mode(ui::text_render::TextWrapMode::WordOrGlyph)
+                        .dimmed(),
+                ))
+                .push(Box::new(modes))
+                .push(Box::new(When::from_state(
+                    &self.task_visible,
+                    |visible| *visible,
+                    Box::new(picker),
+                )))
+                .push(Box::new(
+                    Text::from_state(&self.status, Clone::clone)
+                        .with_id("agent-quick-status")
+                        .with_wrap_mode(ui::text_render::TextWrapMode::WordOrGlyph)
+                        .dimmed(),
+                ))
+                .push(Box::new(actions));
+            let body = Column::new()
+                .with_no_padding()
+                .with_rhythm(ui::tokens::Rhythm::Related)
+                .push(Box::new(bar))
+                .push(Box::new(When::from_state(
+                    &self.expanded,
+                    |expanded| *expanded,
+                    Box::new(details),
+                )));
+            Popover::with_content(
+                Container::new()
+                    .with_no_padding()
+                    .with_child(Box::new(body)),
+            )
+            .transparent_content()
+            .side(PopoverSide::Right)
+            .fallback_side(PopoverSide::Below)
+            .confined_to_viewport()
+            .with_label(t("agent-quick-accessible-name"))
+        }
+
+        pub(crate) fn open(
+            &mut self,
+            owner: ComposerOwner,
+            label: &str,
+            origin: AgentQuickComposerOrigin,
+            viewport: Rect,
+        ) {
+            self.save_draft();
+            let remembered = self
+                .remembered_selection
+                .get(&draft_identity(&owner))
+                .cloned();
+            self.owner = Some(owner);
+            self.title
+                .set(t_args("agent-quick-title", &[("agent", label.into())]));
+            self.context.set(origin.context);
+            self.anchor = ComposerAnchor::default();
+            self.available = [false; 3];
+            self.tasks.clear();
+            self.marker_binding = None;
+            self.marker_origin = None;
+            self.conversation_authorized = true;
+            self.input_context = self.input_context.saturating_add(1);
+            self.expansion_editor = None;
+            self.selected.set(
+                remembered
+                    .as_ref()
+                    .map_or_else(String::new, ComposerTask::key),
+            );
+            self.shown_task = if self.shown == ComposerIntent::Queue {
+                None
+            } else {
+                remembered.map(|task| (task.task_id, task.run_epoch))
+            };
+            self.expanded.set(false);
+            self.status.set(t("task-cursor-checking"));
+            self.load_draft();
+            self.popover.set_viewport(viewport);
+            self.popover.set_anchor(origin.marker);
+            self.popover.set_avoid(Some(origin.protected));
+            self.popover.set_open(true);
+            self.refresh_enabled();
+            self.focus_reset = true;
+        }
+
+        /// Follow geometry only: never reload the editor or change its recipient.
+        pub(crate) fn follow_anchor(&mut self, marker: Rect, protected: Rect) {
+            if self.is_open() && !self.anchor.frozen {
+                self.popover.set_anchor(marker);
+                self.popover.set_avoid(Some(protected));
+            }
+        }
+
+        /// Called immediately after opening from an admitted painted marker.
+        /// This exact authorized run overrides any remembered task for the agent.
+        pub(crate) fn bind_marker_task(&mut self, task: ComposerTask) {
+            self.save_draft();
+            self.selected.set(task.key());
+            self.tasks = vec![task.clone()];
+            self.marker_binding = Some(task);
+            self.intent.set(ComposerIntent::Message);
+            self.tick();
+            self.load_draft();
+            self.refresh_enabled();
+        }
+
+        pub(crate) fn bind_painted_task(
+            &mut self,
+            task: ComposerTask,
+            app: String,
+            interaction: tilo_actions::SemanticInteraction,
+        ) {
+            self.bind_marker_task(task);
+            self.marker_origin = Some((app, interaction));
+        }
+
+        pub(crate) fn marker_origin(&self) -> Option<&(String, tilo_actions::SemanticInteraction)> {
+            self.marker_origin.as_ref()
+        }
+
+        pub(crate) fn marker_task(&self) -> Option<&ComposerTask> {
+            self.marker_binding.as_ref()
+        }
+
+        pub(crate) fn owner(&self) -> Option<&ComposerOwner> {
+            self.owner.as_ref()
+        }
+        pub(crate) fn is_open(&self) -> bool {
+            self.popover.is_open()
+        }
+
+        pub(crate) fn dismiss(&mut self) {
+            self.input_context = self.input_context.saturating_add(1);
+            self.save_draft();
+            self.popover.close();
+            self.focus_reset = true;
+        }
+
+        /// Replace current offers atomically. Selection never silently retargets
+        /// a replaced run or revision; the person chooses the new exact option.
+        pub(crate) fn project(
+            &mut self,
+            owner: &ComposerOwner,
+            available: [bool; 3],
+            tasks: Vec<ComposerTask>,
+            can_stop: bool,
+        ) {
+            if self.owner.as_ref() != Some(owner) {
+                return;
+            }
+            self.tick();
+            let tasks: Vec<_> = tasks
+                .into_iter()
+                .filter(|task| {
+                    self.marker_binding.as_ref().is_none_or(|bound| {
+                        task.task_id == bound.task_id && task.run_epoch == bound.run_epoch
+                    })
+                })
+                .collect();
+            if let Some(bound) = &self.marker_binding {
+                let selected = tasks.first().unwrap_or(bound).key();
+                if self.selected.get() != selected {
+                    self.selected.set(selected);
+                }
+            }
+            let selected = self.selected.get();
+            if self.marker_binding.is_none()
+                && !selected.is_empty()
+                && !tasks.iter().any(|task| task.key() == selected)
+            {
+                self.selected.set(String::new());
+            }
+            let options = tasks
+                .iter()
+                .map(|task| (task.key(), task.label.clone()))
+                .collect::<Vec<_>>();
+            if self.task_options.get() != options {
+                self.task_options.set(options);
+            }
+            self.tasks = tasks;
+            self.available = available;
+            self.can_stop = can_stop;
+            self.refresh_enabled();
+        }
+
+        pub(crate) fn observe_ended(&mut self) {
+            if self.conversation_authorized {
+                self.status.set(t("agent-quick-run-ended"));
+            }
+        }
+
+        #[cfg(debug_assertions)]
+        pub(crate) fn stage_for_shots(&mut self, text: &str) {
+            self.draft.set(text.to_owned());
+            self.refresh_enabled();
+        }
+
+        fn chosen_task(&self) -> Option<ComposerTask> {
+            self.tasks
+                .iter()
+                .find(|task| task.key() == self.selected.get())
+                .cloned()
+        }
+
+        pub(crate) fn selected_task(&self) -> Option<ComposerTask> {
+            self.chosen_task()
+        }
+
+        pub(crate) fn take_request(&mut self) -> Option<ComposerRequest> {
+            self.tick();
+            let stop = self.stop.get();
+            let submit = self.submit.get();
+            if stop {
+                self.stop.set(false);
+            }
+            if submit {
+                self.submit.set(false);
+            }
+            if !self.is_open()
+                || (!stop && !submit)
+                || (stop && !self.stop_enabled.get())
+                || (!stop && !self.enabled.get())
+            {
+                return None;
+            }
+            let owner = self.owner.clone()?;
+            let task = self.chosen_task();
+            if (stop || self.shown != ComposerIntent::Queue) && task.is_none() {
+                return None;
+            }
+            self.next_submission = self.next_submission.checked_add(1)?;
+            self.save_draft();
+            self.submissions.insert(
+                self.next_submission,
+                Submission {
+                    key: (owner.clone(), self.shown, self.shown_task.clone()),
+                    revision: self.draft.revision(),
+                    task: task.clone(),
+                    stop,
+                    applied: false,
+                    busy: true,
+                },
+            );
+            self.enabled.set(false);
+            self.stop_enabled.set(false);
+            self.status.set(t(if stop {
+                "agent-quick-stop-submitting"
+            } else {
+                match self.shown {
+                    ComposerIntent::Message => "agent-quick-message-submitting",
+                    ComposerIntent::Queue => "agent-quick-queue-submitting",
+                    ComposerIntent::Steer => "agent-quick-guide-submitting",
+                }
+            }));
+            Some(ComposerRequest {
+                owner,
+                intent: self.shown,
+                submission: self.next_submission,
+                text: self.draft.get(),
+                task,
+                stop,
+            })
+        }
+
+        pub(crate) fn conversation_task(&self) -> Option<(String, u64)> {
+            if !self.conversation_authorized {
+                return None;
+            }
+            self.marker_binding
+                .clone()
+                .or_else(|| self.chosen_task())
+                .map(|task| (task.task_id, task.run_epoch))
+                .or_else(|| {
+                    (self.shown == ComposerIntent::Queue)
+                        .then(|| {
+                            self.owner
+                                .as_ref()
+                                .and_then(|owner| {
+                                    self.queued_conversations.get(&draft_identity(owner))
+                                })
+                                .map(|task| (task.clone(), 0))
+                        })
+                        .flatten()
+                })
+        }
+
+        pub(crate) fn take_conversation_request(&self) -> bool {
+            let requested = self.conversation.get();
+            if requested {
+                self.conversation.set(false);
+            }
+            requested && self.is_open() && self.conversation_task().is_some()
+        }
+
+        pub(crate) fn revoke_conversation(&mut self) {
+            self.conversation_authorized = false;
+            self.status.set(t("agent-quick-source-unavailable"));
+            self.expanded.set(true);
+            self.refresh_enabled();
+        }
+
+        pub(crate) fn expansion_request(&mut self) -> Option<ComposerExpansion> {
+            let editor = self
+                .expansion_editor
+                .take()
+                .or_else(|| self.editor_snapshot())?;
+            // Restore preedit cleared by the expansion button's blur before any
+            // fallible provider lookup/staging. Failure leaves a usable editor.
+            restore_preedit(&mut self.popover, &editor);
+            Some(ComposerExpansion {
+                owner: self.owner.clone()?,
+                task: self.conversation_task()?,
+                editor,
+                context: self.input_context,
+            })
+        }
+
+        fn editor_snapshot(&self) -> Option<ui::private_draft::Editor> {
+            Some(
+                composer_editor(&self.popover, "agent-quick-editor")?
+                    .as_any()?
+                    .downcast_ref::<TextInput>()?
+                    .private_draft_editor(),
+            )
+        }
+
+        pub(crate) fn observe_expansion(&mut self, request: &ComposerExpansion, accepted: bool) {
+            if self.input_context != request.context
+                || self.owner.as_ref() != Some(&request.owner)
+                || self.conversation_task().as_ref() != Some(&request.task)
+            {
+                return;
+            }
+            let editor = &request.editor;
+            let unchanged = self.editor_snapshot().as_ref() == Some(editor);
+            if accepted && unchanged {
+                self.draft.set(String::new());
+                self.save_draft();
+                self.dismiss();
+            } else if !accepted {
+                if unchanged {
+                    restore_preedit(&mut self.popover, editor);
+                }
+                self.status.set(t("agent-quick-source-unavailable"));
+                self.expanded.set(true);
+            }
+        }
+
+        pub(crate) fn observe_receipt(&mut self, receipt: ComposerReceipt) {
+            let Some(pending) = self.submissions.get_mut(&receipt.submission) else {
+                return;
+            };
+            if pending.key.0 != receipt.owner {
+                return;
+            }
+            let success = match &receipt.outcome {
+                ComposerOutcome::Queued { task_id } => {
+                    pending.key.1 == ComposerIntent::Queue && !pending.stop && !task_id.is_empty()
+                }
+                ComposerOutcome::DirectionSaved(task) | ComposerOutcome::DirectionApplied(task) => {
+                    pending.key.1 != ComposerIntent::Queue
+                        && !pending.stop
+                        && matches_next_revision(pending.task.as_ref(), task)
+                }
+                ComposerOutcome::StopRequested(task) => {
+                    pending.stop
+                        && pending.task.as_ref().is_some_and(|before| {
+                            before.task_id == task.task_id
+                                && before.run_epoch == task.run_epoch
+                                && before.revision == task.revision
+                        })
+                }
+                ComposerOutcome::Refused | ComposerOutcome::Unknown => false,
+            };
+            if !success
+                && !matches!(
+                    receipt.outcome,
+                    ComposerOutcome::Refused | ComposerOutcome::Unknown
+                )
+            {
+                return;
+            }
+            if matches!(receipt.outcome, ComposerOutcome::DirectionSaved(_)) && pending.applied {
+                return;
+            }
+            pending.applied |= matches!(receipt.outcome, ComposerOutcome::DirectionApplied(_));
+            if success || matches!(receipt.outcome, ComposerOutcome::Refused) {
+                pending.busy = false;
+            }
+            let key = pending.key.clone();
+            let revision = pending.revision;
+            let stop = pending.stop;
+            let current = self.owner.as_ref() == Some(&key.0)
+                && self.shown == key.1
+                && self.shown_task == key.2;
+            if success && !stop {
+                if current && self.draft.revision() == revision {
+                    self.draft.set(String::new());
+                }
+                if let Some(draft) = self.drafts.get_mut(&private_key(&key))
+                    && draft.revision == revision
+                {
+                    draft.text.clear();
+                    draft.editor = None;
+                    draft.private_editor = None;
+                    draft.revision = draft.revision.saturating_add(1);
+                }
+            }
+            if success && let ComposerOutcome::Queued { task_id } = &receipt.outcome {
+                self.queued_conversations
+                    .insert(draft_identity(&receipt.owner), task_id.clone());
+                if self.owner.as_ref() == Some(&receipt.owner) {
+                    self.selected.set(String::new());
+                }
+            }
+            if current {
+                let status = match receipt.outcome {
+                    ComposerOutcome::Queued { task_id } if success => {
+                        t_args("agent-quick-queue-accepted", &[("task", task_id.into())])
+                    }
+                    ComposerOutcome::DirectionSaved(task) if success => {
+                        task_receipt("agent-quick-guide-saved", &task)
+                    }
+                    ComposerOutcome::DirectionApplied(task) if success => {
+                        task_receipt("agent-quick-guide-applied", &task)
+                    }
+                    ComposerOutcome::StopRequested(task) if success => {
+                        let _ = task;
+                        t("agent-quick-stop-requested")
+                    }
+                    ComposerOutcome::Unknown => t(if stop {
+                        "agent-quick-stop-outcome-unknown"
+                    } else {
+                        match key.1 {
+                            ComposerIntent::Message => "agent-quick-message-outcome-unknown",
+                            ComposerIntent::Queue => "agent-quick-queue-outcome-unknown",
+                            ComposerIntent::Steer => "agent-quick-guide-outcome-unknown",
+                        }
+                    }),
+                    _ => t("agent-quick-work-refused"),
+                };
+                self.status.set(status);
+            }
+        }
+
+        fn refresh_enabled(&self) {
+            let index = match self.shown {
+                ComposerIntent::Message => 0,
+                ComposerIntent::Queue => 1,
+                ComposerIntent::Steer => 2,
+            };
+            let busy = self.submissions.values().any(|submission| {
+                submission.busy && self.owner.as_ref() == Some(&submission.key.0)
+            });
+            set_flag(
+                &self.enabled,
+                self.conversation_authorized
+                    && !busy
+                    && self.available.get(index).copied().unwrap_or(false)
+                    && !self.draft.get().trim().is_empty()
+                    && (self.shown == ComposerIntent::Queue || self.chosen_task().is_some()),
+            );
+            set_flag(
+                &self.stop_enabled,
+                self.conversation_authorized
+                    && !busy
+                    && self.can_stop
+                    && self.chosen_task().is_some(),
+            );
+            set_flag(
+                &self.conversation_enabled,
+                self.conversation_task().is_some(),
+            );
+            set_flag(&self.task_visible, self.shown != ComposerIntent::Queue);
+        }
+
+        fn tick(&mut self) {
+            let next = self.intent.get();
+            let task = if next == ComposerIntent::Queue {
+                None
+            } else {
+                self.chosen_task()
+                    .or_else(|| self.marker_binding.clone())
+                    .or_else(|| {
+                        self.owner
+                            .as_ref()
+                            .and_then(|owner| self.remembered_selection.get(&draft_identity(owner)))
+                            .filter(|task| task.key() == self.selected.get())
+                            .cloned()
+                    })
+                    .map(|task| (task.task_id, task.run_epoch))
+            };
+            if let Some(selected) = self.chosen_task()
+                && self.title.get() != selected.label
+            {
+                self.title.set(selected.label);
+            }
+            if next != self.shown || task != self.shown_task {
+                self.save_draft();
+                self.shown = next;
+                self.shown_task = task;
+                self.load_draft();
+            }
+            if self.close.get() {
+                self.close.set(false);
+                self.dismiss();
+            }
+            self.refresh_enabled();
+        }
+
+        fn save_draft(&mut self) {
+            if let (Some(owner), Some(task)) = (self.owner.as_ref(), self.chosen_task()) {
+                self.remembered_selection
+                    .insert(draft_identity(owner), task);
+            }
+            let private_editor = self.editor_snapshot();
+            if let Some(owner) = &self.owner {
+                self.drafts.insert(
+                    (draft_identity(owner), self.shown, self.shown_task.clone()),
+                    Draft {
+                        text: self.draft.get(),
+                        revision: self.draft.revision(),
+                        editor: editor_state(&self.popover),
+                        private_editor,
+                    },
+                );
+            }
+        }
+
+        fn load_draft(&mut self) {
+            let Some(owner) = &self.owner else {
+                return;
+            };
+            let key = (draft_identity(owner), self.shown, self.shown_task.clone());
+            let saved = self.drafts.get(&key).cloned();
+            self.draft.set(
+                saved
+                    .as_ref()
+                    .map_or_else(String::new, |draft| draft.text.clone()),
+            );
+            let revision = self.draft.revision();
+            self.pending_editor = None;
+            if let Some(saved) = saved {
+                for pending in self.submissions.values_mut().filter(|pending| {
+                    pending.key.0 == *owner
+                        && private_key(&pending.key) == key
+                        && pending.revision == saved.revision
+                }) {
+                    pending.revision = revision;
+                }
+                self.pending_editor = saved.editor.map(|caret| RetainedEditor {
+                    revision,
+                    caret,
+                    private: saved.private_editor,
+                });
+            }
+        }
+    }
+
+    fn set_flag(state: &LocalState<bool>, value: bool) {
+        if state.get() != value {
+            state.set(value);
+        }
+    }
+
+    fn matches_next_revision(before: Option<&ComposerTask>, after: &ComposerTask) -> bool {
+        before.is_some_and(|before| {
+            before.task_id == after.task_id
+                && before.run_epoch == after.run_epoch
+                && before.revision.checked_add(1) == Some(after.revision)
+        })
+    }
+
+    fn task_receipt(key: &str, task: &ComposerTask) -> String {
+        t_args(
+            key,
+            &[
+                ("task", task.task_id.clone().into()),
+                ("run", task.run_epoch.to_string().into()),
+                ("revision", task.revision.to_string().into()),
+            ],
+        )
+    }
+
+    fn editor_state(widget: &dyn Widget) -> Option<String> {
+        if widget.test_id() == Some("agent-quick-editor") {
+            return ui::undo::get_state(widget);
+        }
+        widget.children().into_iter().find_map(editor_state)
+    }
+
+    fn restore_preedit(widget: &mut dyn Widget, editor: &ui::private_draft::Editor) -> bool {
+        if widget.test_id() == Some("agent-quick-editor") {
+            if let Some(input) = widget
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<TextInput>())
+            {
+                input.restore_private_preedit(&editor.preedit, editor.preedit_cursor);
+                return true;
+            }
+            return false;
+        }
+        widget
+            .children_mut()
+            .into_iter()
+            .any(|child| restore_preedit(child, editor))
+    }
+
+    fn configure_editor(widget: &mut dyn Widget, multiline: bool) {
+        if widget.test_id() == Some("agent-quick-editor")
+            && let Some(input) = widget
+                .as_any_mut()
+                .and_then(|widget| widget.downcast_mut::<TextInput>())
+        {
+            input.set_multiline(multiline);
+            return;
+        }
+        for child in widget.children_mut() {
+            configure_editor(child, multiline);
+        }
+    }
+
+    fn refresh_task_picker(widget: &mut dyn Widget, options: &[(String, String)]) {
+        if widget.test_id() == Some("agent-quick-task")
+            && let Some(picker) = widget
+                .as_any_mut()
+                .and_then(|widget| widget.downcast_mut::<Dropdown>())
+        {
+            picker.set_value_options(options.to_vec());
+            return;
+        }
+        for child in widget.children_mut() {
+            refresh_task_picker(child, options);
+        }
+    }
+
+    fn restore_editor(widget: &mut dyn Widget, state: &str) -> bool {
+        if widget.test_id() == Some("agent-quick-editor") {
+            ui::undo::set_state(widget, state);
+            return true;
+        }
+        widget
+            .children_mut()
+            .into_iter()
+            .any(|child| restore_editor(child, state))
+    }
+
+    impl Decorator for AgentQuickComposer {
+        type Inner = Popover<Container>;
+        fn inner(&self) -> &Self::Inner {
+            &self.popover
+        }
+        fn inner_mut(&mut self) -> &mut Self::Inner {
+            &mut self.popover
+        }
+        fn name(&self) -> &'static str {
+            "AgentQuickComposer"
+        }
+        fn sync(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
+            if self.owner.is_none() {
+                return;
+            }
+            self.tick();
+            configure_editor(&mut self.popover, self.shown != ComposerIntent::Message);
+            self.popover.sync(state, path);
+            self.task_options
+                .with(|options| refresh_task_picker(&mut self.popover, options));
+            if let Some(editor) = self.pending_editor.take()
+                && editor.revision == self.draft.revision()
+            {
+                restore_editor(&mut self.popover, &editor.caret);
+                if let Some(private) = editor.private {
+                    restore_preedit(&mut self.popover, &private);
+                }
+            }
+        }
+        fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
+            if self.owner.is_none() {
+                return false;
+            }
+            self.tick();
+            configure_editor(&mut self.popover, self.shown != ComposerIntent::Message);
+            let changed = self.popover.update(state, path);
+            self.task_options
+                .with(|options| refresh_task_picker(&mut self.popover, options));
+            changed
+        }
+        fn build_layout(
+            &mut self,
+            taffy: &mut taffy::TaffyTree<()>,
+            theme: &Theme,
+            nodes: &mut HashMap<taffy::NodeId, *mut dyn Widget>,
+        ) -> taffy::NodeId {
+            let width = theme.tokens.metrics.panel_width_sheet * theme.text_scale.max(1.0);
+            let capacity = self.popover.available_content_width(theme);
+            self.popover.content_mut().set_width(width.min(capacity));
+            self.popover.build_layout(taffy, theme, nodes)
+        }
+        fn ime_cursor_rect(&self) -> Option<Rect> {
+            if !self.is_open() {
+                return None;
+            }
+            composer_editor(&self.popover, "agent-quick-editor")?.ime_cursor_rect()
+        }
+
+        fn take_focus_reset(&mut self) -> bool {
+            std::mem::take(&mut self.focus_reset) | self.popover.take_focus_reset()
+        }
+        fn handle_event(
+            &mut self,
+            event: &winit::event::WindowEvent,
+            ctx: &mut ui::widget::EventCtx<'_>,
+        ) {
+            let open = self.is_open();
+            if open && let Some(editor) = composer_editor(&self.popover, "agent-quick-editor") {
+                self.anchor.observe(editor, event, ctx);
+            }
+            // Expansion can blur the retained editor before the adapter runs.
+            // Keep preedit/selection before dispatch, not the post-blur snapshot.
+            if open
+                && composer_editor(&self.popover, "agent-quick-editor")
+                    .is_some_and(Widget::is_focused)
+            {
+                self.expansion_editor = self.editor_snapshot();
+            }
+            self.popover.handle_event(event, ctx);
+            if !self.conversation.get()
+                && composer_editor(&self.popover, "agent-quick-editor")
+                    .is_some_and(Widget::is_focused)
+            {
+                self.expansion_editor = self.editor_snapshot();
+            }
+            if open && !self.is_open() {
+                self.input_context = self.input_context.saturating_add(1);
+                self.save_draft();
+                self.focus_reset = true;
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn painted_anchor_follows_until_real_editor_input_and_stays_frozen() {
+            use ui::synthetic_input as input;
+            use winit::event::{ElementState, Ime, MouseButton, WindowEvent};
+            for event in [
+                input::char_key("x"),
+                input::named_key(winit::keyboard::NamedKey::ArrowLeft),
+                WindowEvent::Ime(Ime::Commit("x".into())),
+                WindowEvent::Ime(Ime::Preedit("composing".into(), Some((0, 9)))),
+                input::mouse_press(),
+                input::mouse_input(ElementState::Pressed, MouseButton::Right),
+                input::mouse_input(ElementState::Pressed, MouseButton::Middle),
+            ] {
+                let mut composer = AgentQuickComposer::default();
+
+                open(&mut composer, owner("tide"));
+                let mut doc = automerge::AutoCommit::new();
+                edit(&mut composer, &mut doc, "private draft");
+                let mut frame = ui::headless::FrameHarness::for_root(
+                    ui::State::new(),
+                    composer,
+                    (800, 600),
+                    Theme::dark(),
+                );
+                let initial = frame.root::<AgentQuickComposer>().popover.rect();
+                let moved = Rect::new(300.0, 220.0, 332.0, 252.0);
+                {
+                    let composer = frame.root_mut::<AgentQuickComposer>();
+                    composer.follow_anchor(moved, moved);
+                }
+                frame.recompose().unwrap();
+                let followed = frame.root::<AgentQuickComposer>().popover.rect();
+                assert_ne!(
+                    initial, followed,
+                    "untouched editor follows its painted cursor"
+                );
+                // Focus by itself must not freeze the anchor. The event below
+                // reaches the real retained TextInput through the popover.
+                fn focus(widget: &mut dyn Widget) -> bool {
+                    if widget.test_id() == Some("agent-quick-editor") {
+                        widget.set_focus(true);
+                        return true;
+                    }
+                    widget.children_mut().into_iter().any(focus)
+                }
+                assert!(focus(frame.root_mut::<AgentQuickComposer>()));
+                frame.recompose().unwrap();
+                assert!(!frame.root::<AgentQuickComposer>().anchor.frozen);
+                let editor =
+                    composer_editor(frame.root::<AgentQuickComposer>(), "agent-quick-editor")
+                        .unwrap()
+                        .get_rect()
+                        .center();
+                frame.dispatch_to_root(&input::cursor_moved(editor.x, editor.y));
+                frame.dispatch_to_root(&event);
+                assert!(
+                    frame.root::<AgentQuickComposer>().anchor.frozen,
+                    "{event:?}"
+                );
+                let draft = frame.root::<AgentQuickComposer>().draft.get();
+                if matches!(&event, WindowEvent::Ime(Ime::Preedit(..))) {
+                    assert_eq!(
+                        draft, "private draft",
+                        "preedit freezes before a committed text change"
+                    );
+                }
+                if matches!(&event, WindowEvent::KeyboardInput { event, .. } if event.text.as_deref() == Some("x"))
+                {
+                    assert!(draft.contains('x'), "the shared editor received the typing");
+                    assert_eq!(draft.len(), "private draft".len() + 1);
+                }
+                let later = Rect::new(500.0, 400.0, 532.0, 432.0);
+                {
+                    let composer = frame.root_mut::<AgentQuickComposer>();
+                    composer.follow_anchor(later, later);
+                }
+                frame.recompose().unwrap();
+                assert_eq!(frame.root::<AgentQuickComposer>().popover.rect(), followed);
+                assert_eq!(frame.root::<AgentQuickComposer>().draft.get(), draft);
+                frame.dispatch_to_root(&input::cursor_moved(790.0, 590.0));
+                frame.dispatch_to_root(&input::mouse_press());
+                let composer = frame.root_mut::<AgentQuickComposer>();
+                assert!(!composer.is_open(), "outside click only dismisses");
+                composer.follow_anchor(later, later);
+                assert_eq!(
+                    composer.popover.rect(),
+                    followed,
+                    "closed composer never retargets"
+                );
+                assert!(
+                    Widget::children(composer).is_empty(),
+                    "closed editor has no hit targets"
+                );
+                assert!(
+                    Widget::ime_cursor_rect(composer).is_none(),
+                    "closed editor has no IME caret"
+                );
+                assert_eq!(composer.draft.get(), draft, "dismissal preserves the draft");
+            }
+        }
+
+        fn owner(agent: &str) -> ComposerOwner {
+            ComposerOwner {
+                room: "room".into(),
+                agent: agent.into(),
+                person: "certified-person".into(),
+                identity_revision: 7,
+            }
+        }
+
+        fn open(composer: &mut AgentQuickComposer, owner: ComposerOwner) {
+            composer.open(
+                owner,
+                "Agent",
+                AgentQuickComposerOrigin {
+                    marker: Rect::new(100.0, 100.0, 132.0, 132.0),
+                    protected: Rect::new(100.0, 100.0, 220.0, 164.0),
+                    context: String::new(),
+                },
+                Rect::new(0.0, 0.0, 800.0, 600.0),
+            );
+        }
+
+        fn action(
+            widget: &mut dyn Widget,
+            id: &str,
+            action: &ui::a11y::Action,
+            doc: &mut automerge::AutoCommit,
+        ) -> bool {
+            if widget.test_id() == Some(id) {
+                return widget.perform_action(
+                    action,
+                    &[],
+                    &mut ui::widget::Edits::lend(doc),
+                    &automerge::ROOT,
+                );
+            }
+            widget
+                .children_mut()
+                .into_iter()
+                .any(|child| self::action(child, id, action, doc))
+        }
+
+        fn edit(composer: &mut AgentQuickComposer, doc: &mut automerge::AutoCommit, text: &str) {
+            Widget::sync(composer, doc, &automerge::ROOT);
+            assert!(action(
+                composer,
+                "agent-quick-editor",
+                &ui::a11y::Action::SetValue(text.into()),
+                doc
+            ));
+            Widget::sync(composer, doc, &automerge::ROOT);
+        }
+
+        fn submit(
+            composer: &mut AgentQuickComposer,
+            doc: &mut automerge::AutoCommit,
+        ) -> ComposerRequest {
+            Widget::sync(composer, doc, &automerge::ROOT);
+            assert!(action(
+                composer,
+                "agent-quick-send",
+                &ui::a11y::Action::Activate,
+                doc
+            ));
+            composer
+                .take_request()
+                .expect("the enabled ordinary button emits one intention")
+        }
+
+        #[test]
+        fn painted_marker_overrides_remembered_work_and_never_follows_a_replacement_run() {
+            let mut composer = AgentQuickComposer::default();
+            let owner = owner("agent");
+            let previous = ComposerTask {
+                task_id: "task:previous".into(),
+                run_epoch: 4,
+                revision: 0,
+                label: "Previously selected task".into(),
+            };
+            composer
+                .remembered_selection
+                .insert(draft_identity(&owner), previous.clone());
+            open(&mut composer, owner.clone());
+            let exact = ComposerTask {
+                task_id: "task:painted".into(),
+                run_epoch: 9,
+                revision: 2,
+                label: "Authorized task title".into(),
+            };
+            composer.bind_marker_task(exact.clone());
+            assert_eq!(
+                composer.conversation_task(),
+                Some((exact.task_id.clone(), 9))
+            );
+            assert_eq!(composer.title.get(), exact.label);
+            composer.project(
+                &owner,
+                [true; 3],
+                vec![previous.clone(), exact.clone()],
+                true,
+            );
+            let mut doc = automerge::AutoCommit::new();
+            edit(&mut composer, &mut doc, "Original A's unsent private draft");
+            assert!(action(
+                &mut composer,
+                "agent-quick-editor",
+                &ui::a11y::Action::SetSelection {
+                    anchor: 12,
+                    focus: 3
+                },
+                &mut doc
+            ));
+            let editor = composer.editor_snapshot().unwrap();
+            assert_eq!((editor.anchor, editor.caret), (12, 3));
+            assert_eq!(composer.selected_task(), Some(exact.clone()));
+            assert_eq!(composer.tasks.len(), 1);
+            let replacement = ComposerTask {
+                run_epoch: 10,
+                ..exact
+            };
+            composer.project(&owner, [true; 3], vec![previous, replacement], true);
+            assert!(composer.selected_task().is_none());
+            Widget::sync(&mut composer, &doc, &automerge::ROOT);
+            assert!(composer.editor_snapshot().as_ref() == Some(&editor));
+            assert_eq!(
+                composer.conversation_task(),
+                Some(("task:painted".into(), 9))
+            );
+            assert!(!composer.enabled.get());
+            assert!(!composer.stop_enabled.get());
+            assert!(composer.conversation_enabled.get());
+            composer.revoke_conversation();
+            assert!(composer.conversation_task().is_none());
+            assert!(!composer.conversation_enabled.get());
+        }
+
+        #[test]
+        fn ordinary_editor_and_submit_keep_unknown_outcomes_private_and_partition_agents() {
+            let mut composer = AgentQuickComposer::default();
+            let mut doc = automerge::AutoCommit::new();
+            let heads = doc.get_heads();
+            let tide = owner("tide");
+            open(&mut composer, tide.clone());
+            let task = ComposerTask {
+                task_id: "task".into(),
+                run_epoch: 3,
+                revision: 8,
+                label: "Exact task".into(),
+            };
+            composer.project(&tide, [true, false, false], vec![task.clone()], false);
+            composer.selected.set(task.key());
+            edit(&mut composer, &mut doc, "Tide's private draft");
+            let request = submit(&mut composer, &mut doc);
+            assert_eq!(request.owner, tide);
+            assert_eq!(request.text, "Tide's private draft");
+            composer.observe_receipt(ComposerReceipt {
+                owner: request.owner.clone(),
+                submission: request.submission,
+                outcome: ComposerOutcome::Unknown,
+            });
+            assert_eq!(composer.draft.get(), request.text);
+            assert!(
+                composer.take_request().is_none(),
+                "uncertain work is not replayed"
+            );
+            open(&mut composer, owner("reed"));
+            assert!(composer.draft.get().is_empty());
+            edit(&mut composer, &mut doc, "Reed's private draft");
+            open(&mut composer, tide);
+            assert_eq!(composer.draft.get(), "Tide's private draft");
+            assert_eq!(
+                doc.get_heads(),
+                heads,
+                "private editor input never writes collaborative content"
+            );
+        }
+
+        #[test]
+        fn actual_submit_receipt_does_not_clear_a_newer_edit_or_another_custody() {
+            let mut composer = AgentQuickComposer::default();
+            let mut doc = automerge::AutoCommit::new();
+            let tide = owner("tide");
+            open(&mut composer, tide.clone());
+            let task = ComposerTask {
+                task_id: "task".into(),
+                run_epoch: 3,
+                revision: 8,
+                label: "Exact task".into(),
+            };
+            composer.project(&tide, [true, false, false], vec![task.clone()], false);
+            composer.selected.set(task.key());
+            edit(&mut composer, &mut doc, "Submitted");
+            let request = submit(&mut composer, &mut doc);
+            edit(&mut composer, &mut doc, "Newer draft");
+            composer.observe_receipt(ComposerReceipt {
+                owner: owner("reed"),
+                submission: request.submission,
+                outcome: ComposerOutcome::DirectionSaved(ComposerTask {
+                    revision: 9,
+                    ..task.clone()
+                }),
+            });
+            assert_eq!(composer.draft.get(), "Newer draft");
+            composer.observe_receipt(ComposerReceipt {
+                owner: tide,
+                submission: request.submission,
+                outcome: ComposerOutcome::DirectionSaved(ComposerTask {
+                    revision: 9,
+                    ..task
+                }),
+            });
+            assert_eq!(composer.draft.get(), "Newer draft");
+        }
+
+        #[test]
+        fn message_requires_explicit_task_and_saved_receipt_clears_only_its_private_draft() {
+            let mut composer = AgentQuickComposer::default();
+            let mut doc = automerge::AutoCommit::new();
+            let heads = doc.get_heads();
+            let tide = owner("tide");
+            open(&mut composer, tide.clone());
+            let task = ComposerTask {
+                task_id: "task".into(),
+                run_epoch: 3,
+                revision: 8,
+                label: "Exact task".into(),
+            };
+            composer.project(&tide, [true, false, true], vec![task.clone()], false);
+            edit(&mut composer, &mut doc, "Exact direction");
+            assert!(!composer.enabled.get());
+            composer.selected.set(task.key());
+            Widget::sync(&mut composer, &doc, &automerge::ROOT);
+            assert!(
+                composer.draft.get().is_empty(),
+                "unaddressed text is not a task's draft"
+            );
+            edit(&mut composer, &mut doc, "Exact direction");
+            let request = submit(&mut composer, &mut doc);
+            assert_eq!(request.intent, ComposerIntent::Message);
+            assert_eq!(request.task, Some(task.clone()));
+            composer.observe_receipt(ComposerReceipt {
+                owner: tide.clone(),
+                submission: request.submission,
+                outcome: ComposerOutcome::DirectionSaved(ComposerTask {
+                    run_epoch: 4,
+                    revision: 9,
+                    ..task.clone()
+                }),
+            });
+            assert_eq!(composer.draft.get(), "Exact direction");
+            composer.observe_receipt(ComposerReceipt {
+                owner: tide,
+                submission: request.submission,
+                outcome: ComposerOutcome::DirectionSaved(ComposerTask {
+                    revision: 9,
+                    ..task
+                }),
+            });
+            assert!(composer.draft.get().is_empty());
+            assert_eq!(doc.get_heads(), heads);
+        }
+
+        #[test]
+        fn genuine_queue_receipt_preserves_exact_conversation_target_through_refresh() {
+            let mut composer = AgentQuickComposer::default();
+            let mut doc = automerge::AutoCommit::new();
+            let tide = owner("tide");
+            open(&mut composer, tide.clone());
+            composer.intent.set(ComposerIntent::Queue);
+            composer.project(&tide, [false, true, false], Vec::new(), false);
+            edit(
+                &mut composer,
+                &mut doc,
+                "Full instruction\nincluding its second line",
+            );
+            let request = submit(&mut composer, &mut doc);
+            composer.observe_receipt(ComposerReceipt {
+                owner: tide.clone(),
+                submission: request.submission,
+                outcome: ComposerOutcome::Queued {
+                    task_id: "task:new".into(),
+                },
+            });
+            composer.project(&tide, [false, true, false], Vec::new(), false);
+            assert_eq!(composer.conversation_task(), Some(("task:new".into(), 0)));
+            assert!(composer.draft.get().is_empty());
+            open(&mut composer, owner("reed"));
+            assert!(composer.conversation_task().is_none());
+            open(&mut composer, tide);
+            assert_eq!(composer.conversation_task(), Some(("task:new".into(), 0)));
+        }
+
+        #[test]
+        fn task_and_run_switches_keep_separate_private_editors() {
+            let mut composer = AgentQuickComposer::default();
+            let mut doc = automerge::AutoCommit::new();
+            let owner = owner("tide");
+            open(&mut composer, owner.clone());
+            let first = ComposerTask {
+                task_id: "first".into(),
+                run_epoch: 3,
+                revision: 8,
+                label: "First task".into(),
+            };
+            let second = ComposerTask {
+                task_id: "second".into(),
+                label: "Second task".into(),
+                ..first.clone()
+            };
+            let rerun = ComposerTask {
+                run_epoch: 4,
+                ..first.clone()
+            };
+            composer.project(
+                &owner,
+                [true, false, false],
+                vec![first.clone(), second.clone(), rerun.clone()],
+                false,
+            );
+            composer.selected.set(first.key());
+            edit(&mut composer, &mut doc, "First private draft");
+            let first_editor = editor_state(&composer).expect("shared editor state");
+            composer.selected.set(second.key());
+            Widget::sync(&mut composer, &doc, &automerge::ROOT);
+            assert!(composer.draft.get().is_empty());
+            edit(&mut composer, &mut doc, "Second private draft");
+            composer.selected.set(rerun.key());
+            Widget::sync(&mut composer, &doc, &automerge::ROOT);
+            assert!(
+                composer.draft.get().is_empty(),
+                "a restarted run is not the previous conversation"
+            );
+            composer.selected.set(first.key());
+            Widget::sync(&mut composer, &doc, &automerge::ROOT);
+            assert_eq!(composer.draft.get(), "First private draft");
+            assert_eq!(editor_state(&composer), Some(first_editor));
+            assert_eq!(composer.conversation_task(), Some(("first".into(), 3)));
+            assert!(action(
+                &mut composer,
+                "agent-quick-more",
+                &ui::a11y::Action::Activate,
+                &mut doc
+            ));
+            Widget::sync(&mut composer, &doc, &automerge::ROOT);
+            assert_eq!(composer.draft.get(), "First private draft");
+            composer.project(&owner, [false; 3], Vec::new(), false);
+            Widget::sync(&mut composer, &doc, &automerge::ROOT);
+            assert!(!composer.enabled.get());
+            assert!(composer.conversation_task().is_none());
+            composer.conversation.set(true);
+            assert!(
+                !composer.take_conversation_request(),
+                "never fall back to an agent-global chat"
+            );
+        }
+
+        #[test]
+        fn certificate_refresh_preserves_principal_scoped_private_draft_without_authorizing_old_calls()
+         {
+            let mut composer = AgentQuickComposer::default();
+            let mut doc = automerge::AutoCommit::new();
+            let original = owner("scribe");
+            let task = ComposerTask {
+                task_id: "task".into(),
+                run_epoch: 3,
+                revision: 0,
+                label: "Task".into(),
+            };
+            open(&mut composer, original.clone());
+            composer.bind_marker_task(task.clone());
+            edit(&mut composer, &mut doc, "Keep this private text");
+            let old = composer.expansion_request().unwrap();
+            let renewed = ComposerOwner {
+                identity_revision: original.identity_revision + 1,
+                ..original
+            };
+            open(&mut composer, renewed);
+            composer.bind_marker_task(task);
+            Widget::sync(&mut composer, &doc, &automerge::ROOT);
+            assert_eq!(composer.draft.get(), "Keep this private text");
+            composer.observe_expansion(&old, true);
+            assert_eq!(composer.draft.get(), "Keep this private text");
+            assert!(composer.is_open());
+        }
+
+        #[test]
+        fn private_expansion_is_bound_to_the_original_input_context_and_composition() {
+            let mut composer = AgentQuickComposer::default();
+            let mut doc = automerge::AutoCommit::new();
+            let owner = owner("scribe");
+            let task = ComposerTask {
+                task_id: "original".into(),
+                run_epoch: 3,
+                revision: 0,
+                label: "Original".into(),
+            };
+            open(&mut composer, owner.clone());
+            composer.bind_marker_task(task.clone());
+            edit(&mut composer, &mut doc, "Unsent original text");
+            assert!(action(
+                &mut composer,
+                "agent-quick-editor",
+                &ui::a11y::Action::SetSelection {
+                    anchor: 11,
+                    focus: 3
+                },
+                &mut doc
+            ));
+            let mut editor = composer.editor_snapshot().unwrap();
+            editor.preedit = "候補".into();
+            editor.preedit_cursor = Some((0, 3));
+            restore_preedit(&mut composer.popover, &editor);
+            let request = composer.expansion_request().unwrap();
+            assert!(request.editor == editor);
+            composer.observe_expansion(&request, false);
+            assert!(composer.editor_snapshot().as_ref() == Some(&editor));
+            assert!(composer.is_open());
+            // A newer IME selection is an edit even when committed text is unchanged.
+            let mut newer = editor.clone();
+            newer.preedit_cursor = Some((3, 6));
+            restore_preedit(&mut composer.popover, &newer);
+            composer.observe_expansion(&request, true);
+            assert!(composer.is_open());
+            assert!(composer.editor_snapshot().as_ref() == Some(&newer));
+            composer.dismiss();
+            open(&mut composer, owner);
+            composer.bind_marker_task(task);
+            edit(&mut composer, &mut doc, &editor.text);
+            assert!(action(
+                &mut composer,
+                "agent-quick-editor",
+                &ui::a11y::Action::SetSelection {
+                    anchor: 11,
+                    focus: 3
+                },
+                &mut doc
+            ));
+            restore_preedit(&mut composer.popover, &editor);
+            composer.observe_expansion(&request, true);
+            assert!(
+                composer.is_open(),
+                "a late receipt cannot clear a reopened editor"
+            );
+            assert!(composer.editor_snapshot().as_ref() == Some(&editor));
+            let current = composer.expansion_request().unwrap();
+            composer.observe_expansion(&current, true);
+            assert!(!composer.is_open());
+            assert!(composer.draft.get().is_empty());
+            assert!(
+                doc.get_heads().is_empty(),
+                "no collaborative document contains the draft"
+            );
+        }
+
+        #[test]
+        fn unchanged_projection_and_idle_poll_do_not_publish_updates() {
+            let mut composer = AgentQuickComposer::default();
+            let owner = owner("tide");
+            open(&mut composer, owner.clone());
+            composer.project(&owner, [false; 3], Vec::new(), false);
+            let revisions = |composer: &AgentQuickComposer| {
+                [
+                    composer.title.revision(),
+                    composer.enabled.revision(),
+                    composer.stop_enabled.revision(),
+                    composer.conversation_enabled.revision(),
+                    composer.task_visible.revision(),
+                    composer.task_options.revision(),
+                    composer.selected.revision(),
+                    composer.submit.revision(),
+                    composer.stop.revision(),
+                    composer.conversation.revision(),
+                ]
+            };
+            let before = revisions(&composer);
+            composer.project(&owner, [false; 3], Vec::new(), false);
+            assert!(composer.take_request().is_none());
+            assert!(!composer.take_conversation_request());
+            assert_eq!(
+                revisions(&composer),
+                before,
+                "idle bars must not request another frame"
+            );
+        }
+
+        fn named_rect(widget: &dyn Widget, id: &str) -> Option<Rect> {
+            if widget.test_id() == Some(id) {
+                return Some(widget.get_rect());
+            }
+            widget
+                .children()
+                .into_iter()
+                .find_map(|child| named_rect(child, id))
+        }
+
+        #[test]
+        fn compact_frames_leave_desktop_transparent_in_both_themes_and_at_edges() {
+            for (name, theme) in [("light", Theme::light()), ("dark", Theme::dark())] {
+                for reduced in [false, true] {
+                    for edge in [false, true] {
+                        let mut theme = theme.clone();
+                        theme.reduce_motion = reduced;
+                        let mut composer = AgentQuickComposer::default();
+                        composer.open(
+                            owner("tide"),
+                            "Release notes",
+                            AgentQuickComposerOrigin {
+                                marker: if edge {
+                                    Rect::new(760.0, 560.0, 792.0, 592.0)
+                                } else {
+                                    Rect::new(100.0, 100.0, 132.0, 132.0)
+                                },
+                                protected: Rect::ZERO,
+                                context: String::new(),
+                            },
+                            Rect::new(0.0, 0.0, 800.0, 600.0),
+                        );
+                        let frame = ui::headless::FrameHarness::for_root(
+                            ui::State::new(),
+                            composer,
+                            (800, 600),
+                            theme,
+                        );
+                        let composer = frame.root::<AgentQuickComposer>();
+                        let bar = composer.popover.rect();
+                        assert!(
+                            Rect::new(0.0, 0.0, 800.0, 600.0).contains_rect(bar),
+                            "{name}: {bar:?}"
+                        );
+                        let editor =
+                            named_rect(composer, "agent-quick-editor").expect("shared editor");
+                        let send =
+                            named_rect(composer, "agent-quick-send").expect("shared send control");
+                        assert!(
+                            bar.height() <= editor.height() + 1.0,
+                            "one control row, no popup chrome: {bar:?}"
+                        );
+                        assert!(
+                            send.x0 > editor.x1,
+                            "there is a genuine transparent control gap"
+                        );
+                        let rgba = frame.render_rgba_transparent();
+                        let pixel = ui::offscreen::OffscreenRenderer::sample(
+                            &rgba,
+                            800,
+                            ui::num::u32_of_f64((editor.x1 + send.x0) / 2.0),
+                            ui::num::u32_of_f64(editor.center().y),
+                        );
+                        assert_eq!(
+                            pixel.3, 0,
+                            "{name}: outer host must not paint a panel between controls"
+                        );
+                        assert!(
+                            rgba.chunks_exact(4)
+                                .any(|pixel| pixel.get(3).is_some_and(|alpha| *alpha > 0)),
+                            "the production bar actually painted"
+                        );
+                        if let Ok(dir) = std::env::var("TILO_UI_SCREENSHOT_DIR") {
+                            let dir = std::path::Path::new(&dir);
+                            std::fs::create_dir_all(dir).expect("capture directory");
+                            ui::png::write_rgba8(
+                                dir.join(format!(
+                                    "cursor-bar-{name}-reduced-{reduced}-edge-{edge}.png"
+                                )),
+                                800,
+                                600,
+                                &rgba,
+                            )
+                            .expect("production widget capture");
+                        }
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn direction_receipts_require_exact_run_successor_and_never_regress_applied_to_saved() {
+            let mut composer = AgentQuickComposer::default();
+            let mut doc = automerge::AutoCommit::new();
+            let tide = owner("tide");
+            open(&mut composer, tide.clone());
+            composer.intent.set(ComposerIntent::Steer);
+            let before = ComposerTask {
+                task_id: "task".into(),
+                run_epoch: 3,
+                revision: 8,
+                label: "Exact task".into(),
+            };
+            composer.project(&tide, [false, false, true], vec![before.clone()], true);
+            composer.selected.set(before.key());
+            edit(&mut composer, &mut doc, "Direction");
+            let request = submit(&mut composer, &mut doc);
+            let after = ComposerTask {
+                revision: 9,
+                ..before
+            };
+            composer.observe_receipt(ComposerReceipt {
+                owner: tide.clone(),
+                submission: request.submission,
+                outcome: ComposerOutcome::DirectionApplied(ComposerTask {
+                    run_epoch: 4,
+                    ..after.clone()
+                }),
+            });
+            assert_eq!(composer.draft.get(), "Direction");
+            composer.observe_receipt(ComposerReceipt {
+                owner: tide.clone(),
+                submission: request.submission,
+                outcome: ComposerOutcome::DirectionApplied(after.clone()),
+            });
+            assert!(composer.draft.get().is_empty());
+            let applied = composer.status.get();
+            composer.observe_receipt(ComposerReceipt {
+                owner: tide,
+                submission: request.submission,
+                outcome: ComposerOutcome::DirectionSaved(after),
+            });
+            assert_eq!(composer.status.get(), applied);
         }
     }
 }

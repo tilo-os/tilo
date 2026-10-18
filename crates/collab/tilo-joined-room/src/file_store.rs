@@ -21,6 +21,24 @@ use std::{
 /// # Errors
 /// The file cannot be read or holds an invalid record.
 pub fn open_file(path: &Path) -> Result<NativeWorkspaceOwner, String> {
+    open_file_inner(path, None)
+}
+
+/// Recover and atomically retire historical private task text before opening.
+/// The caller must hold exclusive access, just as for `open_file`.
+/// # Errors
+/// Authentication, migration or durable publication fails. Existing data is retained.
+pub fn open_file_with_private_recovery(
+    path: &Path,
+    key: &ed25519_dalek::SigningKey,
+) -> Result<NativeWorkspaceOwner, String> {
+    open_file_inner(path, Some(key))
+}
+
+fn open_file_inner(
+    path: &Path,
+    key: Option<&ed25519_dalek::SigningKey>,
+) -> Result<NativeWorkspaceOwner, String> {
     let authority = match std::fs::File::open(path) {
         Ok(file) => {
             let mut bytes = Vec::new();
@@ -43,7 +61,16 @@ pub fn open_file(path: &Path) -> Result<NativeWorkspaceOwner, String> {
         healthy: AtomicBool::new(true),
         uncertain: RwLock::new(BTreeSet::new()),
     };
-    NativeWorkspaceOwner::restore(Arc::new(store), authority, SystemTime::now())
+    if let Some(key) = key {
+        NativeWorkspaceOwner::restore_with_private_recovery(
+            Arc::new(store),
+            authority,
+            key,
+            SystemTime::now(),
+        )
+    } else {
+        NativeWorkspaceOwner::restore(Arc::new(store), authority, SystemTime::now())
+    }
 }
 
 struct FileStore {

@@ -152,6 +152,25 @@ impl ActionSessionSource {
 }
 
 impl DesktopActionSession {
+    pub(crate) fn stage_private_task_draft(
+        &self,
+        draft: runtime_collab::private_draft::Draft,
+        app: String,
+        interaction: tilo_actions::SemanticInteraction,
+    ) -> Result<uuid::Uuid, String> {
+        match self {
+            Self::Certified(session) => session.broker.state().stage_private_painted_draft(
+                &session.caller,
+                &session.presentation,
+                draft,
+                app,
+                interaction,
+            ),
+            #[cfg(test)]
+            _ => Err("task editor transfer requires actual native paint custody".into()),
+        }
+    }
+
     pub(crate) fn stage_private_draft(
         &self,
         draft: runtime_collab::private_draft::Draft,

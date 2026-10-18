@@ -400,6 +400,20 @@ impl WeakAppActionBroker {
 }
 
 impl AppActionBroker {
+    /// Exact original run behind a host-minted painted correlation.
+    pub fn certified_painted_task(
+        &self,
+        room: &str,
+        app: &str,
+        agent: &str,
+        interaction: &tilo_actions::SemanticInteraction,
+    ) -> Option<(String, u64)> {
+        self.state
+            .while_live(|state| Ok(state.certified_painted_task(room, app, agent, interaction)))
+            .ok()
+            .flatten()
+    }
+
     /// Exact current owner-backed agent identity while the session is live.
     pub fn certified_agent_identity(
         &self,

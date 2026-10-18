@@ -74,6 +74,7 @@ impl ChatApp {
         // Open acquires the new owner first, including when reopening the same
         // peer. Release this view's previous selection without touching floats.
         self.close_person_conversation();
+        self.task_goal = None;
         self.direct_agent = None;
         self.direct_person = Some(public_key.to_owned());
         self.person_subscription = ui::person_chat::subscription_token(public_key);

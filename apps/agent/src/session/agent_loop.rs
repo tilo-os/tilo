@@ -190,6 +190,11 @@ impl ActiveTurn {
             return;
         }
         match event {
+            TurnEvent::Buffered(events) => {
+                for event in events {
+                    self.absorb(event);
+                }
+            }
             TurnEvent::Neutral(event) => {
                 self.presentation.apply(&event);
                 if let Some(error) = &self.presentation.error {
@@ -1181,11 +1186,16 @@ impl Session {
         timeout: Duration,
     ) -> Result<Option<LoopEnd>> {
         if self.native_task.is_some() {
+            // A lookup-only turn still needs fresh owner context: a child's
+            // reply can arrive without a local action settling.
+            self.step_settled();
             if self.task_cancelled(run)? {
                 return Ok(Some(LoopEnd::Cancelled("Cancelled before planning".into())));
             }
             self.incorporate_native_directions(run, conversation)?;
+            self.incorporate_native_messages(conversation)?;
         }
+        let frontier = self.capture_turn_frontier(run);
         let body = conversation.body(&tools::typed_loop_definitions());
         // The model starts first. The cancellation poll is a round trip to
         // the host and is not waited for: its answer is read while the model
@@ -1271,7 +1281,32 @@ impl Session {
                     }
                 }
             }
+            if validated {
+                // Recheck at the owner after HTTP, even for a lookup-only or
+                // finish response. Never apply a stale batch with a newer lease.
+                self.step_settled();
+                if self.task_cancelled(run)? {
+                    self.interrupt_turn_presentation(run, "Cancelled after planning", true)?;
+                    return Ok(Some(LoopEnd::Cancelled("Cancelled after planning".into())));
+                }
+                if !self.turn_frontier_current(&frontier) {
+                    self.interrupt_turn_presentation(run, "Superseded by task context", true)?;
+                    return Ok(None);
+                }
+                self.acknowledge_incorporated_messages(run, &frontier)?;
+            }
             while let Some(call) = self.turn.as_mut().and_then(|turn| turn.ready.pop_front()) {
+                // A previous call can have blocked on confirmation or a child.
+                // Its successor still belongs to the original prompt frontier.
+                self.step_settled();
+                if self.task_cancelled(run)? {
+                    self.interrupt_turn_presentation(run, "Cancelled before action", true)?;
+                    return Ok(Some(LoopEnd::Cancelled("Cancelled before action".into())));
+                }
+                if !self.turn_frontier_current(&frontier) {
+                    self.interrupt_turn_presentation(run, "Superseded by task context", true)?;
+                    return Ok(None);
+                }
                 if self.task_budget_expired() {
                     self.turn = None;
                     return Ok(Some(LoopEnd::Failed(
@@ -2323,6 +2358,93 @@ mod tests {
     use uuid::Uuid;
 
     #[test]
+    fn buffered_native_turn_publishes_one_complete_private_snapshot_before_finish() {
+        use agent_provider_config::protocol::{
+            Content, Message, ModelResponse, Role, StopReason, StreamEvent, Usage,
+        };
+        let (name, input) = finish("Answer", true);
+        let response = ModelResponse {
+            message: Message {
+                role: Role::Assistant,
+                content: vec![
+                    Content::Text {
+                        text: "Answer".into(),
+                    },
+                    Content::ToolCall(crate::model::ToolCall {
+                        id: "finish".into(),
+                        name: name.into(),
+                        input,
+                        extra_content: None,
+                    }),
+                ],
+            },
+            stop_reason: StopReason::EndTurn,
+            usage: Usage::default(),
+        };
+        let mut events = Vec::new();
+        for text in ["An", "sw", "er"] {
+            events.push(TurnEvent::Neutral(StreamEvent::TextDelta {
+                text: text.into(),
+            }));
+        }
+        events.push(TurnEvent::Neutral(StreamEvent::ReasoningDelta {
+            text: "Provider summary".into(),
+        }));
+        events.push(TurnEvent::Neutral(StreamEvent::Finished {
+            response: response.clone(),
+        }));
+        events.push(TurnEvent::Finished(Ok(
+            serde_json::to_string(&response).unwrap()
+        )));
+        let mut f = fixture(
+            "answer",
+            World::default(),
+            vec![vec![TurnEvent::Buffered(events)]],
+        );
+        f.session.chooser =
+            Chooser::scripted_neutral(Duration::from_secs(5), Arc::new(Scripted(f.script.clone())));
+        f.session.run_task(&f.run).unwrap();
+        let sent = f.sent.borrow();
+        let snapshots = sent
+            .iter()
+            .enumerate()
+            .filter_map(|(index, request)| match request {
+                CollabRequest::ReportTaskRun {
+                    update:
+                        runtime_collab::TaskRunUpdate::Progress {
+                            presentation: Some(p),
+                            ..
+                        },
+                    ..
+                } => Some((index, p)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            snapshots.len(),
+            1,
+            "buffer replay emits one typed presentation report"
+        );
+        let (index, presentation) = snapshots[0];
+        assert_eq!(presentation.text, "Answer");
+        assert_eq!(presentation.reasoning, "Provider summary");
+        assert_eq!(
+            presentation.finish,
+            Some(runtime_collab::TaskPresentationFinish::Complete)
+        );
+        assert!(
+            sent.iter().skip(index + 1).any(|request| matches!(
+                request,
+                CollabRequest::ReportTaskRun {
+                    update: runtime_collab::TaskRunUpdate::Succeeded { .. },
+                    ..
+                }
+            )),
+            "final private presentation precedes task completion"
+        );
+    }
+
+    #[test]
     fn neutral_truncation_retains_output_without_dispatching_calls() {
         use agent_provider_config::protocol::{
             Content, Message, ModelResponse, Role, StopReason, StreamEvent, Usage,
@@ -2786,6 +2908,8 @@ mod tests {
         cancel_after_checks: usize,
         cancellation_checks: usize,
         native_control: Option<runtime_collab::TaskRunControl>,
+        /// Owner change arriving after the first model frame, before dispatch.
+        control_after_model: Option<runtime_collab::TaskRunControl>,
         native_applied_revision: u64,
         /// Cancel once this many steps have been applied.
         cancel_after_steps: Option<usize>,
@@ -3170,6 +3294,11 @@ mod tests {
             let (cancelled, delay, control) = {
                 let mut world = self.world.borrow_mut();
                 world.cancellation_checks += 1;
+                if world.emitted.load(std::sync::atomic::Ordering::SeqCst) > 0
+                    && let Some(control) = world.control_after_model.take()
+                {
+                    world.native_control = Some(control);
+                }
                 let cancelled = (world.cancel_after_checks != 0
                     && world.cancellation_checks > world.cancel_after_checks)
                     || world
@@ -3662,7 +3791,9 @@ mod tests {
                 agent_provider_config::ProviderProtocol::OpenAiCompatible,
                 Arc::new(Scripted(script.clone())),
             ),
+            native_model: None,
             managed: false,
+            protected_model: false,
             task_deadline: None,
             native_task: None,
             broker_surfaces: surfaces,
@@ -3731,6 +3862,7 @@ mod tests {
                 })
                 .collect(),
             has_more: latest > 8,
+            messages: Vec::new(),
         };
         let mut fixture = fixture(
             "Prepare release notes",

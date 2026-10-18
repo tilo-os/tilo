@@ -18,10 +18,12 @@ use crate::surface;
 use crate::wire::Link;
 
 mod agent_loop;
+mod concurrent;
 mod confirmation;
 mod native_task;
 mod outstanding;
 mod selection_prompt;
+mod task_messages;
 
 /// The most characters the Task Center carrier of a non-workspace task
 /// takes in one update.
@@ -233,9 +235,13 @@ pub struct Session {
     link: Link,
     /// Decides which exported action answers an instruction.
     chooser: Chooser,
+    native_model: Option<crate::model::native::Scope>,
     /// Launched by the launcher with a managed context: limited to its
     /// task-bound broker surface and to native task leases.
     managed: bool,
+    /// Host-reported model descriptor role, independent of whether the
+    /// collaboration link uses the enrolled-only launch context.
+    protected_model: bool,
     /// Monotonic deadline from an explicit broker-minted owner task policy.
     task_deadline: Option<Instant>,
     native_task: Option<native_task::NativeTaskState>,
@@ -318,6 +324,26 @@ impl Session {
             name = %cfg.name,
             "joined the room; waiting for the document"
         );
+        Self::from_connected(cfg, link, managed)
+    }
+
+    /// Run the normal service on an already authenticated host connection.
+    /// The connection, not this constructor, determines broker authority.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid managed launch context or unavailable
+    /// managed model gateway, just as [`Self::connect`] does.
+    #[doc(hidden)]
+    pub fn service(cfg: Config, link: Link) -> Result<Self> {
+        let managed = managed_context(&cfg)?;
+        Self::from_connected(cfg, link, managed)
+    }
+
+    fn from_connected(
+        cfg: Config,
+        link: Link,
+        managed: Option<crate::providers::ProviderSelection>,
+    ) -> Result<Self> {
         let is_managed = managed.is_some();
         let cfg_companions = cfg.companions.clone();
         let chooser = match managed {
@@ -331,11 +357,14 @@ impl Session {
                 |selection| Chooser::with_provider(cfg.model, cfg.model_timeout, selection),
             ),
         };
+        let protected_model = is_managed || chooser.protected_model_role();
         Ok(Self {
             cfg,
             link,
             chooser,
+            native_model: None,
             managed: is_managed,
+            protected_model,
             task_deadline: None,
             native_task: None,
             broker_surfaces: Vec::new(),
@@ -358,9 +387,21 @@ impl Session {
     /// Returns an error when receiving catalogue updates or reporting task
     /// progress through the collaboration link fails.
     pub fn run_task_runs(&mut self) -> Result<()> {
+        self.run_task_runs_until(|| false)
+    }
+
+    /// Host-controlled service lifetime; uses the same concurrent task queue as
+    /// the unattended runner. Stopping does not manufacture terminal reports.
+    ///
+    /// # Errors
+    /// Returns an error if the collaboration connection cannot receive an
+    /// update or send a task report.
+    #[doc(hidden)]
+    pub fn run_task_runs_until(&mut self, stop: impl Fn() -> bool) -> Result<()> {
         let mut transforms = crate::transform::TransformService::new(
             std::sync::Arc::new(crate::transform::GatewayModel {
                 launched: self.chooser.selection().cloned(),
+                native: None,
             }),
             self.cfg.content.clone(),
         );
@@ -374,8 +415,14 @@ impl Session {
             );
         }
         tracing::info!(agent = %self.cfg.name, "waiting for broker-addressed task runs");
-        loop {
-            match self.link.recv(Duration::from_millis(100))? {
+        let mut tasks = concurrent::Tasks::new();
+        while !stop() {
+            tasks.pump(self)?;
+            let event = self
+                .link
+                .recv(tasks.receive_wait())?
+                .filter(|event| !tasks.route(event));
+            match event {
                 Some(CollabEvent::ActionCatalogue { surfaces }) => {
                     self.set_broker_surfaces(surfaces);
                 }
@@ -383,14 +430,12 @@ impl Session {
                     if !self.managed
                         || runtime_collab::native_task_revision(&run.lease).is_some() =>
                 {
-                    if let Err(error) = self.run_task(&run) {
-                        if runtime_collab::native_task_revision(&run.lease).is_none() {
-                            return Err(error);
-                        }
-                        tracing::warn!(run_id = run.run_id, %error, "native task stopped before completion");
-                        if let Err(report_error) = self.fail_task(&run, &error.to_string()) {
-                            tracing::warn!(%report_error, "native task review report was refused");
-                        }
+                    if runtime_collab::native_task_revision(&run.lease).is_some() {
+                        tasks.start(self, run)?;
+                    } else {
+                        // Keep the older conversation's shared memory and undo
+                        // history; native tasks never read or write that memory.
+                        self.run_task(&run)?;
                     }
                 }
                 Some(CollabEvent::Invocation {
@@ -402,14 +447,34 @@ impl Session {
                     actor,
                     context,
                 }) => {
-                    if let Some(update) = transforms.start(
-                        crate::transform::Directed { id, invocation },
-                        &resource,
-                        &action,
-                        argument.as_deref(),
-                        &actor,
-                        context.as_deref(),
-                    ) {
+                    let directed = crate::transform::Directed { id, invocation };
+                    let update = if self.protected_model {
+                        // The broker resolves this wire id against its private
+                        // admitted child provenance. Caller ActionContext is
+                        // presentation only, never a source of model authority.
+                        let model = std::sync::Arc::new(crate::transform::GatewayModel {
+                            launched: self.chooser.selection().cloned(),
+                            native: Some(tasks.native_transform_scope(id)),
+                        });
+                        transforms.start_with_model(
+                            model,
+                            directed,
+                            (&resource, &action),
+                            argument.as_deref(),
+                            &actor,
+                            context.as_deref(),
+                        )
+                    } else {
+                        transforms.start(
+                            directed,
+                            &resource,
+                            &action,
+                            argument.as_deref(),
+                            &actor,
+                            context.as_deref(),
+                        )
+                    };
+                    if let Some(update) = update {
                         self.link
                             .send(&CollabRequest::UpdateInvocation { id, update })?;
                     }
@@ -427,6 +492,7 @@ impl Session {
                     .send(&CollabRequest::UpdateInvocation { id, update })?;
             }
         }
+        Ok(())
     }
 
     #[allow(
@@ -467,12 +533,10 @@ impl Session {
         )?;
         self.poll_cancellation(run)?;
         self.wait_for_task_catalogue()?;
-        // A model task is a discover → invoke → observe loop over the live
-        // catalogue. A managed agent has no other planner; a legacy one
-        // without a model falls back to the rules-only survey below.
-        if matches!(run.planning, runtime_collab::TaskRunPlanning::Model)
-            && (self.chooser.loop_model().is_ok() || self.managed)
-        {
+        // Planning is a property of the admitted run, not this worker's
+        // launch defaults. An unavailable model fails honestly in the loop;
+        // it must never turn a model task into a keyword-selected action.
+        if matches!(run.planning, runtime_collab::TaskRunPlanning::Model) {
             return match self.run_task_loop(run)? {
                 agent_loop::LoopEnd::Finished(finish, completed) => {
                     if self.native_task.is_some() && !finish.done {
@@ -613,6 +677,15 @@ impl Session {
         run: &runtime_collab::TaskRunEnvelope,
         update: runtime_collab::TaskRunUpdate,
     ) -> Result<()> {
+        self.report_task_with_lease(run, &self.task_lease(run), update)
+    }
+
+    fn report_task_with_lease(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        lease: &str,
+        update: runtime_collab::TaskRunUpdate,
+    ) -> Result<()> {
         let request_id = self.native_task.as_ref().map(|_| self.next_broker_request);
         if request_id.is_some() {
             self.next_request_id();
@@ -620,7 +693,7 @@ impl Session {
         self.link.send(&CollabRequest::ReportTaskRun {
             request_id,
             run_id: run.run_id,
-            lease: self.task_lease(run),
+            lease: lease.to_owned(),
             update,
         })?;
         match request_id {
@@ -1012,6 +1085,9 @@ impl Session {
         let interaction = tilo_actions::SemanticInteraction {
             version: tilo_actions::INTERACTION_VERSION,
             invocation: update.invocation(),
+            // This is non-paint runner status. The owner binds any painted
+            // child update to its retained admission before publishing it.
+            paint_origin: None,
             sequence,
             // The local broker replaces these fields from the authenticated
             // admission before fan-out. They are populated only so the
@@ -1397,7 +1473,9 @@ mod tests {
                     },
                     link,
                     chooser: Chooser::new(false, Duration::ZERO),
+                    native_model: None,
                     managed,
+                    protected_model: managed,
                     task_deadline: None,
                     native_task: None,
                     broker_surfaces: Vec::new(),

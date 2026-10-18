@@ -1324,6 +1324,10 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
             meter.string_capacity(action);
             json_map_bytes(arguments, &mut meter);
         }
+        CollabRequest::NativeModel { lease, request, .. } => {
+            meter.string_capacity(lease);
+            serialized_bytes(request, &mut meter);
+        }
         CollabRequest::TaskRunCancellation { lease, .. } => meter.string_capacity(lease),
     }
     meter.finish()
@@ -1801,6 +1805,10 @@ fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<usize>) {
                 meter.string_capacity(error);
             }
             "TaskRunCancellation"
+        }
+        CollabEvent::NativeModelResult { result, .. } => {
+            serialized_bytes(result, &mut meter);
+            "NativeModelResult"
         }
         CollabEvent::TaskRunReportResult { result, .. } => {
             if let Err(error) = result {
@@ -5811,6 +5819,18 @@ async fn spawn_task_run_stream(
     inbound_tx: &InboundBridge,
 ) {
     if let Ok(stream) = channel.subscribe_task_runs().await {
+        let control_stream = stream.clone();
+        let control_tx = inbound_tx.clone();
+        tokio::task::spawn_local(async move {
+            while let Ok(control) = control_stream.read_control().await {
+                if !control_tx.send_durable(CollabEvent::TaskRunControl {
+                    request_id: 0,
+                    control,
+                }) {
+                    break;
+                }
+            }
+        });
         let tx = inbound_tx.clone();
         tokio::task::spawn_local(async move {
             while let Ok(run) = stream.read().await {
@@ -7333,6 +7353,40 @@ async fn dispatch_sdk_request(
                 });
             let _ = inbound_tx
                 .send_durable(CollabEvent::InstalledApplicationLaunchResult { request_id, result });
+        }
+        CollabRequest::NativeModel {
+            request_id,
+            invocation_id,
+            run_id,
+            lease,
+            mut request,
+            timeout_ms,
+        } => {
+            let channel = route.channel.clone();
+            let inbound = inbound_tx.clone();
+            // Inference must not occupy the route's ordered dispatch loop:
+            // cancellation, direction updates and other tasks keep flowing.
+            tokio::task::spawn_local(async move {
+                let result =
+                    tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), async {
+                        let invocation = match invocation_id {
+                            Some(id) => channel.claim_native_model_for_invocation(id).await,
+                            None => channel.claim_native_model(run_id, &lease).await,
+                        }
+                        .map_err(|error| error.to_string())?;
+                        let object = request
+                            .as_object_mut()
+                            .ok_or("invalid native model request")?;
+                        object.insert("invocation".into(), invocation);
+                        channel
+                            .execute_native_model(&request)
+                            .await
+                            .map_err(|error| error.to_string())
+                    })
+                    .await
+                    .unwrap_or_else(|_| Err("native model request timed out".into()));
+                let _ = inbound.send_durable(CollabEvent::NativeModelResult { request_id, result });
+            });
         }
         CollabRequest::ReportTaskRun {
             request_id,

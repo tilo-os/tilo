@@ -103,6 +103,7 @@ tilo-paths.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
 web-time = { version = "1", features = ["serde"] }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
+tilo-joined-room = { path = "../../collab/tilo-joined-room" }
 tilo-automerge-isolate.workspace = true
 # Remote-action vocabulary: the relay routes these frames between devices and,
 # only when an app-serving plane is supplied, answers them through ActionHost.
@@ -289,6 +290,7 @@ tilo-relay-store = { path = "../tilo-relay-store", features = ["test-support"] }
 chat = { path = "../../../apps/chat", default-features = false }
 word-processor = { path = "../../../apps/word-processor" }
 tilo-doc = { path = "../../doc/tilo-doc" }
+tilo-document = { path = "../../doc/tilo-document" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 iroh-relay = { version = "1.0.3", features = ["server"] }

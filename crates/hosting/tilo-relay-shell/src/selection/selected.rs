@@ -2,7 +2,7 @@
 use super::{
     Basis, CoeditPayload, CoverageDecision, DIRECTORY, File, Invariant, PathBuf,
     RetentionAuthority, Seek, ShellStore, Step, StoreError, durable, frame, frames, fs, invalid,
-    read_meta, route_key, verify_room, verify_snapshot,
+    read_meta, route_key, verify_room_anchored, verify_snapshot,
 };
 
 /// Reads one immutable selected reference per quantum, including prerequisites.
@@ -11,6 +11,7 @@ pub struct SelectedRead {
     root: PathBuf,
     authority: RetentionAuthority,
     workspace: u64,
+    anchor: Option<tilo_peer_state::SanitizedRoomBaselineAnchor>,
     input: Option<File>,
     pub(super) basis: Basis,
     generation: Option<PathBuf>,
@@ -38,6 +39,7 @@ impl SelectedRead {
             root: store.root().to_path_buf(),
             authority,
             workspace: store.workspace_id(),
+            anchor: super::room_anchor(store)?,
             input: selected
                 .as_ref()
                 .map(|p| File::open(p.join("basis.manifest")))
@@ -80,13 +82,14 @@ impl SelectedRead {
         let value = frame(&self.root.join(&meta.source), self.workspace)?
             .ok_or_else(|| invalid("invalid selected shell frame"))?;
         if meta.key.first().is_some_and(|v| v == "room") {
-            let room = verify_room(
+            let room = verify_room_anchored(
                 &self.authority,
                 value.source,
                 value.channel,
                 &value.body,
                 value.kind,
                 self.basis.room.as_ref(),
+                self.anchor.as_ref(),
             )
             .map_err(|_| invalid("invalid selected room prerequisite"))?;
             self.basis.set_room(room)?;

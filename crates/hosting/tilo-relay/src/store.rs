@@ -28,6 +28,7 @@ pub(crate) mod record_sync;
 pub(crate) mod replay;
 pub(crate) mod resume;
 pub(crate) mod retained;
+pub(crate) mod room_retirement;
 /// The seam this store drives native shell replay selection through. The
 /// selection itself, and the retention authority behind a
 /// [`ShellBinding`](shell_selection::ShellBinding), belong to the embedder's
@@ -307,7 +308,7 @@ impl WorkspaceStore {
         fs::create_dir_all(root.join(COMPUTE_DIR))?;
         fs::create_dir_all(root.join(COMPUTE_PENDING_DIR))?;
         remove_legacy_delta_log(&root);
-        Ok(Self {
+        let store = Self {
             tail_cache: SharedTailCache::for_root(&root),
             capture_leases: replay::CaptureLeases::for_root(&root),
             root,
@@ -315,7 +316,9 @@ impl WorkspaceStore {
             pinned,
             shell_binding: None,
             payloads,
-        })
+        };
+        store.finish_room_retirement()?;
+        Ok(store)
     }
 
     /// The adapter this store classifies retained co-edit bodies with.
@@ -426,6 +429,7 @@ impl WorkspaceStore {
     ///
     /// Returns an error if the snapshot file exists but can't be read.
     pub fn load_snapshot(&self) -> Result<Option<Vec<u8>>, StoreError> {
+        self.room_retirement_ready()?;
         let p = self.root.join(SNAPSHOT_FILE);
         if !p.exists() {
             return Ok(None);
@@ -755,6 +759,11 @@ impl WorkspaceStore {
     ) -> Result<PathBuf, StoreError> {
         #[cfg(test)]
         test_barrier::pause(&self.root, "pending-persist");
+        // Legacy opaque pending records remain supported before retirement.
+        if self.sanitized_room_baseline()?.is_some() {
+            self.fence_room_input(bytes)?;
+        }
+        self.room_retirement_ready()?;
         let pending_dir = self.pending_dir_for(device_pubkey);
         fs::create_dir_all(&pending_dir)?;
         let filename = format!("{seq:016x}-{}.delta", blake3::hash(bytes).to_hex());
@@ -790,6 +799,8 @@ impl WorkspaceStore {
         bytes: &[u8],
         receipt: &continuity::Receipt,
     ) -> Result<PathBuf, StoreError> {
+        self.room_retirement_ready()?;
+        self.fence_room_input(bytes)?;
         let directory = self.pending_dir_for(device);
         fs::create_dir_all(&directory)?;
         let path = directory.join(format!(
@@ -811,6 +822,7 @@ impl WorkspaceStore {
         &self,
         device_pubkey: &[u8; 32],
     ) -> Result<Vec<PendingEntry>, StoreError> {
+        self.room_retirement_ready()?;
         let dir = self.pending_dir_for(device_pubkey);
         if !dir.exists() {
             return Ok(Vec::new());
@@ -908,6 +920,7 @@ impl WorkspaceStore {
     /// Returns an error if a channel directory can't be listed, or a
     /// checkpoint / tail file can't be read.
     pub fn load_retained(&self) -> Result<Vec<Vec<u8>>, StoreError> {
+        self.room_retirement_ready()?;
         let mut out = self.load_shared()?;
         let mut seen = std::collections::HashSet::new();
         out.retain(|bytes| seen.insert(bytes.clone()));

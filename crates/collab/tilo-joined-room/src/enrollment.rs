@@ -6,6 +6,59 @@ use crate::{
 };
 use record::{StoredPendingEnrollment, StoredRoom};
 use tilo_user_identity::RevocationList;
+mod sanitized_anchor;
+use sanitized_anchor::sanitized_anchor_from_authenticated_bootstrap;
+
+impl NativeWorkspaceOwner {
+    /// Enroll a protected managed actor through the actual governing writer.
+    /// The certificate and signed delegation become visible only after durable publication.
+    /// # Errors
+    /// Refuses foreign signing custody, invalid/revoked actors or failed publication.
+    pub fn admit_managed_agent(
+        &self,
+        room: RoomId,
+        certificate: tilo_user_identity::DeviceCert,
+        delegation: tilo_relay_protocol::delegation::Delegation,
+        governor: &tilo_user_identity::DeviceCert,
+        key: &ed25519_dalek::SigningKey,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        let _turn = self.0.mutation.lock();
+        let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
+        if candidate.governor() != governor
+            || candidate.device() != governor
+            || key.verifying_key().to_bytes() != governor.device_public_key
+        {
+            return Err("managed admission lacks exact current governor signing custody".into());
+        }
+        let mut peer = candidate.peer.clone();
+        if !peer
+            .governance_mut()
+            .admit_agent(certificate, delegation, key, now)?
+        {
+            return Ok(());
+        }
+        let generation = candidate
+            .generation()
+            .checked_add(1)
+            .ok_or("native membership generation exhausted")?;
+        let messages = peer.durable_mutation_messages(&candidate.peer, key, now, generation)?;
+        for message in &messages {
+            if matches!(message, neighbour_wire::NeighbourMsg::AppDocument { .. }) {
+                let outgoing = crate::publication::prepare(&crate::publication::request(message)?)?;
+                crate::publication::reserve(&candidate, &outgoing)?;
+                crate::publication::append_local(&mut candidate, outgoing)?;
+            }
+        }
+        candidate.peer = peer;
+        candidate.record.peer = candidate.peer.durable()?;
+        candidate.record.generation = generation;
+        let binding =
+            crate::checkpoint::binding(room, *blake3::hash(&candidate.record.peer).as_bytes());
+        crate::publication::replace_governance_checkpoint(&mut candidate, binding, now)?;
+        self.publish_room(room, candidate, None)
+    }
+}
 
 pub(crate) fn validate_pending(
     room: RoomId,
@@ -30,8 +83,27 @@ pub(crate) fn restore(
     record: &StoredRoom,
     now: SystemTime,
 ) -> Result<NativeCommittedView, String> {
-    if !matches!(record.version, 2 | 3)
-        || (record.version == 3) != record.effect_history_root.is_some()
+    restore_inner(room, record, now, None)
+}
+
+pub(crate) fn restore_private_recovery(
+    room: RoomId,
+    record: &StoredRoom,
+    now: SystemTime,
+    key: &ed25519_dalek::SigningKey,
+) -> Result<NativeCommittedView, String> {
+    restore_inner(room, record, now, Some(key))
+}
+
+fn restore_inner(
+    room: RoomId,
+    record: &StoredRoom,
+    now: SystemTime,
+    recovery_key: Option<&ed25519_dalek::SigningKey>,
+) -> Result<NativeCommittedView, String> {
+    if !matches!(record.version, 2..=5)
+        || (record.version == 2 && record.effect_history_root.is_some())
+        || (record.version == 3 && record.effect_history_root.is_none())
         || room != record.room
         || record.generation == 0
         || record.continuity == 0
@@ -80,13 +152,44 @@ pub(crate) fn restore(
     if !peer.admission_v5_selected() {
         return Err("native committed room requires durable admission v5".into());
     }
-    let view = NativeCommittedView {
+    let mut view = NativeCommittedView {
         peer,
         record: record.clone(),
     };
-    publication::validate(&view)?;
+    if let Some(key) = recovery_key {
+        publication::validate_private_recovery(&view, key)?;
+    } else {
+        publication::validate(&view)?;
+    }
+    view.record.private_task_text.validate()?;
+    view.record.private_task_mailboxes.validate()?;
     view.record.private_direct_conversations.validate()?;
     crate::effect_receipt::validate(&view)?;
+    crate::task_admission::validate(&view)?;
+    if let Some(key) = recovery_key
+        && ensure_private_task_baseline(&mut view, key, now)?
+    {
+        view.record.peer = view.peer.durable()?;
+        view.record.generation = view
+            .record
+            .generation
+            .checked_add(1)
+            .ok_or("native owner generation exhausted")?;
+        publication::refresh_governance_checkpoint(&mut view)?;
+        publication::validate(&view)?;
+    }
+    if view.record.sanitized_baseline.is_some()
+        && (recovery_key.is_some() || view.device() == view.governor())
+    {
+        crate::PrivateTaskConfirmationStore::from_confirmations(
+            view.record.private_task_text.confirmations.clone(),
+        )?
+        .validate_document(
+            view.peer
+                .admitted_room()
+                .ok_or("private task room absent")?,
+        )?;
+    }
     Ok(view)
 }
 impl NativeWorkspaceOwner {
@@ -102,7 +205,30 @@ impl NativeWorkspaceOwner {
         &self,
         intent: &VerifiedNativeEnrollmentIntent,
         local: Option<WorkspaceId>,
+        now: SystemTime,
+    ) -> Result<PendingEnrollmentId, String> {
+        self.prepare_enrollment(intent, local, now, false)
+    }
+
+    /// Persist an explicit recovery enrollment for an existing lagging replica.
+    /// Identity, governor and delivery pins cannot change through this operation.
+    /// Completion requires an authenticated newer sanitized current-chain anchor.
+    /// # Errors
+    /// Refuses changed custody, missing enrollment, fencing or conflicting proofs.
+    pub fn prepare_reenrollment(
+        &self,
+        intent: &VerifiedNativeEnrollmentIntent,
+        now: SystemTime,
+    ) -> Result<PendingEnrollmentId, String> {
+        self.prepare_enrollment(intent, None, now, true)
+    }
+
+    fn prepare_enrollment(
+        &self,
+        intent: &VerifiedNativeEnrollmentIntent,
+        local: Option<WorkspaceId>,
         _now: SystemTime,
+        recovery: bool,
     ) -> Result<PendingEnrollmentId, String> {
         let bytes = intent.durable_bytes()?;
         if intent.complete_bytes().len()
@@ -124,7 +250,21 @@ impl NativeWorkspaceOwner {
             }
         }
         let mut next = self.0.authority.read().clone();
-        if next.rooms.contains_key(&room) {
+        if recovery {
+            let old = next
+                .rooms
+                .get(&room)
+                .ok_or("re-enrollment requires an enrolled room")?;
+            let grant = intent.verified_join().grant();
+            if old.device != *intent.local_device()
+                || old.governor != grant.authority
+                || old.workspace != grant.workspace_id
+                || old.host.as_ref() != intent.delivery_host()
+                || old.locator.as_ref() != intent.delivery_locator()
+            {
+                return Err("re-enrollment cannot replace identity or authority custody".into());
+            }
+        } else if next.rooms.contains_key(&room) {
             return Err(
                 "room is already enrolled; identity replacement requires explicit custody handoff"
                     .into(),
@@ -308,6 +448,10 @@ impl NativeWorkspaceOwner {
     /// # Errors
     /// The Complete does not match the persisted proof, the admitted role
     /// differs from the signed one, or the record cannot be published.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "keep enrollment verification and publication together in one serialized custody transaction"
+    )]
     pub fn install(
         &self,
         enrollment: &VerifiedNativeEnrollment,
@@ -344,20 +488,88 @@ impl NativeWorkspaceOwner {
                 .insert(entry.clone())
                 .map_err(|e| e.to_string())?;
         }
-        let mut peer = StatePeer::new(
-            &bootstrap.room,
-            bootstrap.authority.clone(),
-            bootstrap.certified_roster.clone(),
-            revocations,
-            now,
-        )?;
+        let existing = self.0.current.read().rooms.get(&room).cloned();
+        let mut peer = if let Some(view) = &existing {
+            if view.record.device != *enrollment.local_device()
+                || view.record.governor != bootstrap.authority
+                || view.record.workspace != bootstrap.workspace_id
+                || view.record.host.as_ref() != intent.delivery_host()
+                || view.record.locator.as_ref() != intent.delivery_locator()
+            {
+                return Err("re-enrollment Complete changed pinned custody".into());
+            }
+            for entry in view.peer.revocations() {
+                revocations.insert(entry).map_err(|e| e.to_string())?;
+            }
+            let mut certificates = std::collections::BTreeMap::new();
+            for cert in view
+                .peer
+                .certificates()
+                .into_iter()
+                .chain(bootstrap.certified_roster.clone())
+            {
+                if let Some(old) = certificates.insert(cert.device_public_key, cert.clone())
+                    && old != cert
+                {
+                    return Err("re-enrollment certificate equivocation".into());
+                }
+            }
+            StatePeer::restore(
+                &view.peer.durable()?,
+                &bootstrap.room,
+                bootstrap.authority.clone(),
+                certificates.into_values().collect(),
+                revocations,
+                now,
+            )?
+        } else {
+            StatePeer::new(
+                &bootstrap.room,
+                bootstrap.authority.clone(),
+                bootstrap.certified_roster.clone(),
+                revocations,
+                now,
+            )?
+        };
         peer.select_admission_v5().map_err(|e| e.to_string())?;
         // Only B's closed, pinned Complete evidence selects historical bootstrap
         // admission. Ongoing relay input uses strict receive_from_report instead.
         // This legacy enum labels canonical admission context, not fabricated
         // gossip provenance or a claim that Complete arrived as a relay frame.
+        let anchor = sanitized_anchor_from_authenticated_bootstrap(
+            &bootstrap.room,
+            &bootstrap.authority,
+            &bootstrap.governance_messages,
+        )?;
+        let mut sanitized_baseline = None;
+        // Admit the authenticated replacement before any subsequent room deltas.
         for bytes in &bootstrap.governance_messages {
             let message: NeighbourMsg = postcard::from_bytes(bytes).map_err(|e| e.to_string())?;
+            if let NeighbourMsg::SanitizedRoomBaseline { baseline, .. } = message {
+                let (baseline, tail) =
+                    postcard::take_from_bytes(&baseline).map_err(|e| e.to_string())?;
+                if !tail.is_empty() {
+                    return Err("trailing bootstrap baseline bytes".into());
+                }
+                let anchor = anchor
+                    .as_ref()
+                    .ok_or("missing authenticated baseline anchor")?;
+                if existing.is_some() {
+                    peer.reenroll_sanitized_room_baseline(&baseline, anchor, now)?;
+                } else {
+                    peer.admit_sanitized_room_baseline_bootstrap(&baseline, anchor, now)?;
+                }
+                sanitized_baseline = Some(baseline);
+            }
+        }
+        if existing.is_some() && sanitized_baseline.is_none() {
+            return Err("re-enrollment requires an authenticated current baseline".into());
+        }
+        for bytes in &bootstrap.governance_messages {
+            let message: NeighbourMsg = postcard::from_bytes(bytes).map_err(|e| e.to_string())?;
+            if matches!(message, NeighbourMsg::SanitizedRoomBaseline { .. }) {
+                continue;
+            }
             peer.receive_from(
                 TransportOrigin::RetainedRelayDelta(bootstrap.authority.device_public_key),
                 message,
@@ -382,8 +594,27 @@ impl NativeWorkspaceOwner {
             return Err("actual admitted role differs from signed enrollment role".into());
         }
 
+        if let Some(view) = existing {
+            let mut candidate = view.as_ref().clone();
+            candidate.peer = peer;
+            candidate.record.version = candidate.record.version.max(4);
+            candidate.record.sanitized_baseline = sanitized_baseline;
+            candidate
+                .record
+                .enrollment_intent
+                .clone_from(&pending.intent);
+            candidate.record.invitation = enrollment.verified_join().signed_invitation().to_vec();
+            candidate.record.peer = candidate.peer.durable()?;
+            candidate.record.generation = candidate
+                .record
+                .generation
+                .checked_add(1)
+                .ok_or("native owner generation exhausted")?;
+            publication::retire(&mut candidate)?;
+            return self.publish_room(room, candidate, Some(&pending));
+        }
         let record = StoredRoom {
-            version: 2,
+            version: if sanitized_baseline.is_some() { 4 } else { 2 },
             room,
             workspace: bootstrap.workspace_id,
             governor: bootstrap.authority.clone(),
@@ -396,6 +627,10 @@ impl NativeWorkspaceOwner {
             locator: intent.delivery_locator().cloned(),
             hint: enrollment.delivery_hint().cloned(),
             peer: peer.durable()?,
+            sanitized_baseline,
+            task_admission: crate::task_admission::TaskAdmissionLedger::default(),
+            private_task_text: crate::PrivateTaskTextStore::default(),
+            private_task_mailboxes: crate::PrivateTaskMailboxStore::default(),
             private_direct_conversations: crate::PrivateDirectConversationStore::default(),
             generation: 1,
             continuity: 0,
@@ -517,6 +752,76 @@ impl NativeWorkspaceOwner {
         request: tilo_owner_commit::OwnerCommitRequest,
         now: SystemTime,
     ) -> Result<tilo_owner_commit::OwnerCommitReceipt, String> {
+        self.commit_workspace_task_command_inner(request, None, None, now)
+    }
+
+    /// Ensure public history has a signed privacy baseline before publication.
+    /// The extracted private text, replacement document and retired outgoing
+    /// custody are persisted together; failure leaves the predecessor untouched.
+    ///
+    /// # Errors
+    /// A missing baseline requires the exact governor key, settled history and
+    /// successful durable storage. Members must install an authenticated baseline.
+    pub fn ensure_private_task_baseline(
+        &self,
+        room: RoomId,
+        key: &ed25519_dalek::SigningKey,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        let _turn = self.0.mutation.lock();
+        let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
+        if key.verifying_key().to_bytes() != candidate.device().device_public_key {
+            return Err("native privacy signer differs from selected device".into());
+        }
+        candidate
+            .peer
+            .permissions(candidate.device().device_public_key, now)?;
+        if !ensure_private_task_baseline(&mut candidate, key, now)? {
+            return Ok(());
+        }
+        candidate.record.peer = candidate.peer.durable()?;
+        candidate.record.generation = candidate
+            .generation()
+            .checked_add(1)
+            .ok_or("native owner generation exhausted")?;
+        self.publish_room(room, candidate, None)
+    }
+
+    /// Commit private task text and, when needed, migrate historical room text
+    /// into a signed sanitized replacement in the same durable owner turn.
+    ///
+    /// # Errors
+    /// Refuses invalid governor signing custody, unsettled migration input,
+    /// unauthorized commands or failed durable publication.
+    pub fn commit_workspace_task_command_with_key(
+        &self,
+        request: tilo_owner_commit::OwnerCommitRequest,
+        key: &ed25519_dalek::SigningKey,
+        now: SystemTime,
+    ) -> Result<tilo_owner_commit::OwnerCommitReceipt, String> {
+        self.commit_workspace_task_command_inner(request, Some(key), None, now)
+    }
+
+    /// Commit a conscious person start with a host-selected MODEL ceiling.
+    /// The shell hook runs under the same owner turn as the actual approval;
+    /// neither the request nor a later worker claim can choose the profile.
+    pub fn commit_workspace_task_command_with_model_start(
+        &self,
+        request: tilo_owner_commit::OwnerCommitRequest,
+        key: &ed25519_dalek::SigningKey,
+        model_start: &dyn crate::task_admission::model::NativeModelStartAuthority,
+        now: SystemTime,
+    ) -> Result<tilo_owner_commit::OwnerCommitReceipt, String> {
+        self.commit_workspace_task_command_inner(request, Some(key), Some(model_start), now)
+    }
+
+    fn commit_workspace_task_command_inner(
+        &self,
+        request: tilo_owner_commit::OwnerCommitRequest,
+        key: Option<&ed25519_dalek::SigningKey>,
+        model_start: Option<&dyn crate::task_admission::model::NativeModelStartAuthority>,
+        now: SystemTime,
+    ) -> Result<tilo_owner_commit::OwnerCommitReceipt, String> {
         use tilo_owner_commit::{CommitOperation, OwnerCommitReceipt};
         let binding = request.binding()?;
         let room = RoomId::parse(&request.room).ok_or("invalid native task room")?;
@@ -542,17 +847,150 @@ impl NativeWorkspaceOwner {
                 return Err("task command attestor is not the exact pinned workspace host".into());
             }
         }
-        let (changed, _) = candidate
+        let migrated = match key {
+            Some(key) => ensure_private_task_baseline(&mut candidate, key, now)?,
+            None => false,
+        };
+        let (confirmation_command, private_confirmation) =
+            crate::private_task_confirmation::prepare(&candidate, &command)?;
+        let (report_command, private_report) = crate::private_task_outputs::prepare_report(
+            &confirmation_command,
+            &candidate.peer,
+            &authority,
+            invocation,
+        )?;
+        if private_report.is_some()
+            && candidate
+                .record
+                .private_task_text
+                .reports
+                .contains_key(&invocation.to_string())
+        {
+            return Err("private report invocation already belongs to another source".into());
+        }
+        if let tilo_peer_state::workspace_task::WorkspaceTaskCommand::RequestConfirmation {
+            task_id,
+            run_epoch,
+            confirmation,
+        } = &report_command
+        {
+            candidate
+                .record
+                .task_admission
+                .validate_confirmation_request(task_id, *run_epoch, confirmation)?;
+        }
+        let (public_command, private_write) = candidate
+            .record
+            .private_task_text
+            .prepare_private_command(&report_command, &candidate.peer)?;
+        let model_snapshot = match (&authority, &public_command, model_start) {
+            (
+                tilo_peer_state::workspace_task::WorkspaceTaskAuthority::Person { caller },
+                tilo_peer_state::workspace_task::WorkspaceTaskCommand::ApproveRun {
+                    task_id, ..
+                },
+                Some(hook),
+            ) => {
+                let state = tilo_peer_state::workspace_task::snapshot(
+                    candidate
+                        .peer
+                        .admitted_room()
+                        .ok_or("model start room absent")?,
+                )?;
+                let task = state
+                    .tasks
+                    .iter()
+                    .find(|task| task.id == *task_id)
+                    .ok_or("model start task absent")?;
+                if task.route == tilo_desktop_model::WorkspaceTaskRoute::Model {
+                    let contract = hook.approved_model_start(&candidate, task_id, caller, now)?;
+                    contract.source_for(&request.room, task_id)?;
+                    if contract.selection.app.is_empty()
+                        || contract.selection.provider.is_empty()
+                        || contract.selection.model.is_empty()
+                        || !contract.selection.contract.is_object()
+                    {
+                        return Err("approved MODEL full selection snapshot incomplete".into());
+                    }
+                    Some(tilo_peer_state::workspace_task::WorkspaceTaskModelStart {
+                        request_model: contract.request_model.clone(),
+                        kind: contract.kind,
+                        contract: serde_json::to_value(contract).map_err(|e| e.to_string())?,
+                    })
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        // Only the scrubbed command reaches the reducer and its audit/history.
+        // The original request survives outside private storage only as a digest.
+        let (changed, result) = candidate
             .peer
             .workspace_mut()
-            .apply_workspace_task_command(
+            .apply_workspace_task_command_with_model_start(
                 invocation,
                 binding.request_digest,
                 &authority,
-                &command,
+                &public_command,
                 now,
+                model_snapshot.as_ref(),
             )?;
+        if changed && let Some(model) = model_snapshot {
+            let tilo_peer_state::workspace_task::WorkspaceTaskCommand::ApproveRun {
+                task_id, ..
+            } = &public_command
+            else {
+                return Err("private model snapshot lacks person start".into());
+            };
+            let state = tilo_peer_state::workspace_task::snapshot(
+                candidate
+                    .peer
+                    .admitted_room()
+                    .ok_or("model start room absent")?,
+            )?;
+            let mut full = state
+                .controls
+                .get(task_id)
+                .and_then(|control| control.model_authority.clone())
+                .ok_or("approved model authority absent")?;
+            full.contract = model.contract;
+            candidate
+                .record
+                .private_task_text
+                .model_authorities
+                .insert(task_id.clone(), full);
+            candidate.record.private_task_text.validate()?;
+        }
+        if changed && let Some(mut report) = private_report {
+            report.sequence = u64::try_from(candidate.record.private_task_text.reports.len())
+                .ok()
+                .and_then(|sequence| sequence.checked_add(1))
+                .ok_or("private task report sequence exhausted")?;
+            candidate
+                .record
+                .private_task_text
+                .reports
+                .insert(invocation.to_string(), report);
+            candidate.record.private_task_text.validate()?;
+        }
+        if changed && let Some(write) = private_write {
+            if let Some(reference) = write.instruction_reference() {
+                candidate
+                    .peer
+                    .workspace_mut()
+                    .bind_workspace_task_private_instruction(&result, &reference)?;
+            }
+            candidate
+                .record
+                .private_task_text
+                .retain_private_instruction(&result, write)?;
+        }
         if changed {
+            crate::private_task_confirmation::retain(&mut candidate, private_confirmation)?;
+        }
+        let admission_changed = stop_task_admission(&mut candidate, room, &command, key)?;
+        if changed || migrated || admission_changed {
             candidate.record.peer = candidate.peer.durable()?;
             candidate.record.generation = candidate
                 .record
@@ -568,6 +1006,102 @@ impl NativeWorkspaceOwner {
         })
     }
 }
+fn stop_task_admission(
+    candidate: &mut NativeCommittedView,
+    room: RoomId,
+    command: &tilo_peer_state::workspace_task::WorkspaceTaskCommand,
+    key: Option<&ed25519_dalek::SigningKey>,
+) -> Result<bool, String> {
+    if let tilo_peer_state::workspace_task::WorkspaceTaskCommand::CancelForRun {
+        task_id,
+        run_epoch,
+        ..
+    } = command
+    {
+        let key = key.ok_or("Stop requires exact governor custody")?;
+        let was_fenced = candidate
+            .record
+            .task_admission
+            .is_fenced(task_id, *run_epoch);
+        let local_host = (candidate.device() == candidate.governor())
+            .then_some(candidate.device().device_public_key);
+        crate::task_admission::NativeGovernorAdmission {
+            room,
+            peer: &candidate.peer,
+            ledger: &mut candidate.record.task_admission,
+            continuity: candidate.record.continuity,
+            key,
+        }
+        .stop_with_local_host(task_id, *run_epoch, local_host)?;
+        candidate.record.version = 5;
+        return Ok(!was_fenced);
+    }
+    Ok(false)
+}
+
+pub(crate) fn ensure_private_task_baseline(
+    candidate: &mut NativeCommittedView,
+    key: &ed25519_dalek::SigningKey,
+    now: SystemTime,
+) -> Result<bool, String> {
+    // A checkpoint produced before automatic report privacy was enforced may
+    // still contain report bodies. Its presence alone is not migration proof.
+    let mut clean_baseline = false;
+    if let Some(baseline) = &candidate.record.sanitized_baseline {
+        match baseline.verify_anchored_document(
+            &candidate.record.room.to_string(),
+            candidate.governor().device_public_key,
+            &baseline.anchor(),
+        ) {
+            Ok(_) => clean_baseline = true,
+            // Authentication and checkpoint framing passed before this check.
+            // Other failures must not be disguised as privacy upgrades.
+            Err(error) if publication::recoverable_private_baseline(&error) => {
+                publication::validate_private_recovery(candidate, key)?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    if key.verifying_key().to_bytes() != candidate.governor().device_public_key {
+        return Err("task history requires a signed privacy migration by its governor".into());
+    }
+    let references = candidate.record.private_task_text.private_references();
+    let mut peer = candidate.peer.clone();
+    let (text, baseline) = peer.extract_native_task_private_baseline(key, now, &references)?;
+    if clean_baseline && !crate::PrivateTaskTextStore::migration_has_private_text(&text) {
+        crate::PrivateTaskConfirmationStore::from_confirmations(
+            candidate.record.private_task_text.confirmations.clone(),
+        )?
+        .validate_document(
+            candidate
+                .peer
+                .admitted_room()
+                .ok_or("private task room absent")?,
+        )?;
+        return Ok(false);
+    }
+    candidate.peer = peer;
+    candidate
+        .record
+        .private_task_text
+        .retain_migrated_text(text)?;
+    candidate.record.sanitized_baseline = Some(baseline);
+    // A scrubbed placeholder is not recoverable private custody. Refuse rather
+    // than silently replacing a live review whose original body is unavailable.
+    crate::PrivateTaskConfirmationStore::from_confirmations(
+        candidate.record.private_task_text.confirmations.clone(),
+    )?
+    .validate_document(
+        candidate
+            .peer
+            .admitted_room()
+            .ok_or("private task room absent")?,
+    )?;
+    candidate.record.version = candidate.record.version.max(4);
+    publication::retire(candidate)?;
+    Ok(true)
+}
+
 pub(crate) fn ns(now: SystemTime) -> Result<u64, String> {
     u64::try_from(
         now.duration_since(SystemTime::UNIX_EPOCH)

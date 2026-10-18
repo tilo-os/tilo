@@ -87,6 +87,7 @@ pub mod render_chat;
 pub mod resource;
 pub mod semantic_read;
 mod shared_resources;
+mod task_onboarding;
 
 pub use app::ChatApp;
 

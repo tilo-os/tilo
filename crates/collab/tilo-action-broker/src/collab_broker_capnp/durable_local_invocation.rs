@@ -8,6 +8,7 @@ use super::{
     PublishedAction, PublishedSurface, Rc, VerifiedActionCaller, channel_handle, mpsc,
     resolved_invocation, validate_directory_identifier, validate_directory_text,
 };
+use crate::services::NativeTaskBindingActor;
 use resolved_invocation::ResolvedOffer;
 
 #[derive(Clone)]
@@ -52,6 +53,28 @@ impl LocalCaller {
         owner.validate()?;
         Ok(owner)
     }
+    /// Owned evidence for the worker's final check under the owner guard.
+    pub(super) fn admission_caller(
+        &self,
+    ) -> Result<crate::services::NativeTaskAdmissionCaller, String> {
+        if self.admitted.host_scope.is_some() {
+            return Err("host worker cannot act as a native task caller".into());
+        }
+        Ok(crate::services::NativeTaskAdmissionCaller {
+            certificate: self
+                .admitted
+                .certificate
+                .clone()
+                .ok_or("native task caller certificate missing")?,
+            agent_id: self
+                .admitted
+                .agent_id
+                .clone()
+                .ok_or("native task caller agent missing")?,
+            room: self.route.cluster_id.clone(),
+            capped: self.admitted.verified.capped,
+        })
+    }
     pub(super) fn owner(&self) -> InvocationOwner {
         self.owner.clone()
     }
@@ -90,7 +113,15 @@ impl LocalCaller {
                 );
                 // An answer asking first admits what the person confirmed;
                 // it is then refused only when no longer allowed at all.
-                let admitted = if requirement.confirmed {
+                // This helper is used only inside checked host admission.
+                // The reference is resolved by the owner, not accepted as a
+                // caller assertion or a stand-alone confirmation grant.
+                let reviewed_activation = requirement
+                    .invocation
+                    .as_ref()
+                    .and_then(|invocation| invocation.activation_for.as_deref())
+                    .is_some_and(|child| child.confirmation.is_some());
+                let admitted = if requirement.confirmation.is_some() || reviewed_activation {
                     answer != tilo_action_policy::Answer::Deny
                 } else {
                     answer.admits(actor.direct())
@@ -110,36 +141,16 @@ impl LocalCaller {
         (record, actor): (&DurableInvocation, &super::BrokerActor),
     ) -> Result<crate::services::NativeTaskActionRequirement, String> {
         self.current(state)?;
-        let contract: tilo_actions::ActionContract = serde_json::from_value(
+        let requirement: crate::services::NativeTaskActionRequirement = serde_json::from_value(
             record
                 .intent
-                .get("contract")
+                .get("native_requirement")
+                .filter(|value| !value.is_null())
                 .cloned()
-                .ok_or("retained task contract absent")?,
+                .ok_or("retained task exact native requirement absent; legacy custody cannot be observed")?,
         )
-        .map_err(|_| "retained task contract invalid")?;
-        let app = record
-            .intent
-            .get("app_id")
-            .and_then(serde_json::Value::as_str)
-            .ok_or("retained task app absent")?;
-        let action = record
-            .intent
-            .get("action")
-            .and_then(serde_json::Value::as_str)
-            .ok_or("retained task action absent")?;
-        let resource = record
-            .intent
-            .get("resource")
-            .and_then(serde_json::Value::as_str)
-            .ok_or("retained task resource absent")?;
-        let resource_kind = record
-            .intent
-            .get("resource_kind")
-            .and_then(serde_json::Value::as_str)
-            .ok_or("retained task resource kind absent")?;
+        .map_err(|_| "retained task exact native requirement invalid")?;
         let now = state.checked_policy_time(Some(&self.time))?.1 / 1_000_000_000;
-        let need = contract.need();
         // A task's child was admitted for an agent, which an answer asking
         // first admits only on its person's confirmation: observing what was
         // admitted needs the action not to be refused since, for the run's
@@ -152,9 +163,13 @@ impl LocalCaller {
                 let workspace = workspace.ok_or("workspace no longer hosted")?;
                 if actor.action_answer_in(
                     workspace,
-                    app,
-                    (resource_kind, resource, action),
-                    &need,
+                    &requirement.app,
+                    (
+                        &requirement.resource_kind,
+                        &requirement.resource,
+                        &requirement.action,
+                    ),
+                    &requirement.need,
                     now,
                 ) == tilo_action_policy::Answer::Deny
                 {
@@ -162,30 +177,30 @@ impl LocalCaller {
                 }
                 Ok(())
             })??;
-        Ok(crate::services::NativeTaskActionRequirement {
-            binding: match &record.key.owner {
-                InvocationOwner::NativeTask { task, agent, epoch } => {
-                    Some(crate::services::NativeTaskBinding {
-                        task_id: task.clone(),
-                        agent_id: agent.clone(),
-                        epoch: *epoch,
-                        revision: 0,
-                        starter: None,
-                    })
-                }
-                _ => None,
-            },
-            app: app.into(),
-            resource_kind: resource_kind.into(),
-            resource: resource.into(),
-            action: action.into(),
-            need,
-            // Observing what was admitted: an admission that asked first
-            // was answered by the person.
-            consequential: false,
-            confirmed: true,
-        })
+        Ok(requirement)
     }
+    /// Connection fence while the owner worker holds native task admission.
+    /// Never re-enter certificate authority or the owner-backed room snapshot.
+    pub(super) fn current_task_connection(&self, state: &CapnpBrokerState) -> Result<(), String> {
+        if !state.is_accepting() {
+            return Err("invocation broker retired".into());
+        }
+        state.checked_policy_time(Some(&self.time))?;
+        let subscribers = state
+            .task_subscribers
+            .lock()
+            .map_err(|_| "task connection registry unavailable")?;
+        let unchanged = subscribers.get(&self.peer).is_some_and(|subscriber| {
+            subscriber.route == self.route
+                && subscriber.identity == self.admitted
+                && !subscriber.tx.is_closed()
+        });
+        if !unchanged {
+            return Err("original task caller connection retired or replaced".into());
+        }
+        Ok(())
+    }
+
     pub(super) fn current(&self, state: &CapnpBrokerState) -> Result<AdmittedJoinIdentity, String> {
         if !state.is_accepting() {
             return Err("invocation broker retired".into());
@@ -243,6 +258,7 @@ pub(super) enum DurableContext<'a> {
     Task {
         caller: &'a LocalCaller,
         binding: &'a crate::services::NativeTaskBinding,
+        requirement: &'a crate::services::NativeTaskActionRequirement,
         invocation: tilo_actions::InvocationId,
         intent: &'a serde_json::Value,
     },
@@ -285,6 +301,14 @@ impl<'a> DurableContext<'a> {
             Self::Task { intent, .. } => intent.clone(),
         }
     }
+    pub(super) fn native_requirement(
+        self,
+    ) -> Option<&'a crate::services::NativeTaskActionRequirement> {
+        match self {
+            Self::Task { requirement, .. } => Some(requirement),
+            Self::Peer(..) | Self::Local { .. } => None,
+        }
+    }
     pub(super) fn origin(self) -> InvocationCaller {
         match self {
             Self::Peer(c, _) => InvocationCaller::Certified {
@@ -309,9 +333,17 @@ impl<'a> DurableContext<'a> {
         offered: &(PublishedSurface, PublishedAction),
         sender: &mpsc::UnboundedSender<InvocationEnvelope>,
     ) -> Result<(), String> {
+        if let Self::Task { caller, .. } = self {
+            // The owner already checked this exact requirement and retains its
+            // guard. Only the original connection and stream may change here.
+            caller.current_task_connection(state)?;
+            state.require_current_stable_sender(peer, sender)?;
+            state.checked_policy_time(self.time())?;
+            return Ok(());
+        }
         let current = match self {
             Self::Peer(c, _) => state.current_action_caller(c)?,
-            Self::Task { caller, .. } => caller.current(state)?,
+            Self::Task { .. } => unreachable!("native task admission handled above"),
             Self::Local {
                 caller,
                 request,
@@ -338,40 +370,13 @@ impl<'a> DurableContext<'a> {
             offered.1.action.as_str(),
         );
         let need = offered.1.contract.need();
-        if let Self::Task { binding, .. } = self {
-            // The child serves the run's task: it is admitted for its starter.
-            let actor = binding.actor()?;
-            // A task's child was admitted in its run's serialized turn, which
-            // pauses an action asking first until its person answers; the
-            // dispatch then takes a token bound to exactly what they
-            // confirmed. Here it is only refused when no longer allowed at all.
-            state
-                .membership
-                .as_ref()
-                .ok_or("workspace authority unavailable")?
-                .decide_in_room(&offered.0.route.cluster_id, |workspace| {
-                    let workspace = workspace.ok_or("workspace no longer hosted")?;
-                    if actor.action_answer_in(
-                        workspace,
-                        target.0,
-                        (target.1, target.2, target.3),
-                        &need,
-                        now,
-                    ) == tilo_action_policy::Answer::Deny
-                    {
-                        return Err("caller no longer authorized for invocation".to_string());
-                    }
-                    Ok(())
-                })??;
-        } else {
-            state.authorize_invocation_permission(
-                &offered.0.route.cluster_id,
-                target,
-                &need,
-                &current.broker_actor(),
-                now,
-            )?;
-        }
+        state.authorize_invocation_permission(
+            &offered.0.route.cluster_id,
+            target,
+            &need,
+            &current.broker_actor(),
+            now,
+        )?;
         state.checked_policy_time(self.time())?;
         Ok(())
     }

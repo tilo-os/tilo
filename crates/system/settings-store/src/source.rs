@@ -128,6 +128,13 @@ pub trait SettingsSource: Send + Sync {
     /// The whole document. Forgiving like the file: never fails.
     fn load(&self) -> Map<String, Value>;
 
+    /// Read the last committed in-memory document without touching storage or
+    /// scheduling refresh work. Authority callbacks use this while holding
+    /// their mutation gates. Sources without such a snapshot must refuse.
+    fn load_committed(&self) -> Option<Map<String, Value>> {
+        None
+    }
+
     /// Merge `values` into section `name` as [`crate::update_section`] does.
     ///
     /// # Errors
@@ -435,6 +442,10 @@ impl HostDocument {
 }
 
 impl SettingsSource for HostDocument {
+    fn load_committed(&self) -> Option<Map<String, Value>> {
+        Some(self.doc.lock_recover().clone())
+    }
+
     fn load(&self) -> Map<String, Value> {
         self.doc.lock_recover().clone()
     }

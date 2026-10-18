@@ -18,8 +18,8 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
 
 use crate::shell::agent_quick_composer::{
-    AgentQuickComposer, AnswerUse, ComposerIntent, ComposerOutcome, ComposerOwner, ComposerReceipt,
-    ComposerRequest, ComposerRun, ComposerTask, ComposerTurn, RunPhase,
+    AnswerUse, ComposerIntent, ComposerOutcome, ComposerOwner, ComposerReceipt, ComposerRequest,
+    ComposerRun, ComposerTask, ComposerTurn, RunPhase, SelectionComposer,
 };
 use crate::shell::certified_action_session::{ActionSessionSource, DesktopActionSession};
 use crate::shell::search::invocation_wake::{poll, waker, watch};
@@ -211,7 +211,7 @@ impl Followed {
 }
 
 #[derive(Default)]
-pub(super) struct AgentActions {
+pub(super) struct SelectionActions {
     owner: Option<ComposerOwner>,
     source: Option<ActionSessionSource>,
     session: Option<DesktopActionSession>,
@@ -225,7 +225,7 @@ pub(super) struct AgentActions {
     follows: Vec<(ComposerRequest, ComposerTask, Instant, Instant)>,
 }
 
-impl AgentActions {
+impl SelectionActions {
     pub(super) fn open(&mut self, source: ActionSessionSource, owner: ComposerOwner) -> bool {
         // Opening chrome must not retire a still-observable mutation or an
         // exact-run Saved receipt. It is never a cancellation or a retry.
@@ -343,7 +343,7 @@ impl AgentActions {
 
     /// The run the composer shows: the followed one, or the agent's single
     /// current run, which the composer then follows.
-    fn run(&mut self, owner: &ComposerOwner, composer: &AgentQuickComposer) -> Option<ComposerRun> {
+    fn run(&mut self, owner: &ComposerOwner, composer: &SelectionComposer) -> Option<ComposerRun> {
         if self.followed.is_none()
             && let [task] = self.tasks.as_slice()
             && !self.retired.contains(&task.task_id)
@@ -367,7 +367,7 @@ impl AgentActions {
         self.followed.as_ref().map(|followed| followed.run(owner))
     }
 
-    pub(super) fn pump(&mut self, composer: &mut AgentQuickComposer) -> bool {
+    pub(super) fn pump(&mut self, composer: &mut SelectionComposer) -> bool {
         let Some(owner) = self.owner.clone() else {
             return false;
         };
@@ -474,7 +474,7 @@ impl AgentActions {
         self.begin(queue_operation(owner, None, title, &instruction, about));
     }
 
-    fn advance(&mut self, call: &mut Call, composer: &mut AgentQuickComposer) -> bool {
+    fn advance(&mut self, call: &mut Call, composer: &mut SelectionComposer) -> bool {
         let Some(session) = self.session.as_ref() else {
             self.refuse(&call.operation, composer, true);
             return false;
@@ -520,7 +520,7 @@ impl AgentActions {
         &mut self,
         operation: &Operation,
         value: Option<Value>,
-        composer: &mut AgentQuickComposer,
+        composer: &mut SelectionComposer,
     ) {
         match &operation.purpose {
             Purpose::Current => {
@@ -648,7 +648,7 @@ impl AgentActions {
         }
     }
 
-    fn refuse(&mut self, operation: &Operation, composer: &mut AgentQuickComposer, unknown: bool) {
+    fn refuse(&mut self, operation: &Operation, composer: &mut SelectionComposer, unknown: bool) {
         match &operation.purpose {
             Purpose::Current => self.tasks.clear(),
             // The agent could not be asked: the run decides instead. Asking
@@ -960,7 +960,7 @@ fn submission_operation(request: ComposerRequest) -> Option<Operation> {
         "stop"
     } else {
         arguments.insert("text".into(), request.text.clone().into());
-        "direct"
+        "steer"
     };
     Some(Operation {
         resource: format!("desktop:{}", task.task_id),
@@ -1370,7 +1370,7 @@ mod tests {
             room: host.room.clone(),
             ..owner("room")
         };
-        let mut actions = AgentActions::default();
+        let mut actions = SelectionActions::default();
         assert!(actions.open(
             ActionSessionSource::with_mock(
                 crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
@@ -1378,7 +1378,7 @@ mod tests {
             ),
             owner.clone(),
         ));
-        let mut composer = AgentQuickComposer::default();
+        let mut composer = SelectionComposer::default();
         composer.open(
             owner,
             "Tide",
@@ -1498,7 +1498,7 @@ mod tests {
         let steer = request(ComposerIntent::Steer);
         let operation = submission_operation(steer.clone()).unwrap();
         assert_eq!(operation.resource, "desktop:task:one");
-        assert_eq!(operation.action, "direct");
+        assert_eq!(operation.action, "steer");
         assert_eq!(operation.app, None);
         assert_eq!(operation.arguments["run_epoch"], 7);
         assert_eq!(operation.arguments["after_revision"], 2);
@@ -1872,7 +1872,7 @@ mod tests {
                 "read-conversation" => {
                     serde_json::json!({"turns": self.said.lock().unwrap().clone()})
                 }
-                "direct" => {
+                "steer" => {
                     let revision = arguments["after_revision"]
                         .as_u64()
                         .unwrap()
@@ -1908,9 +1908,9 @@ mod tests {
         }
     }
 
-    fn composer_in(room: &Arc<Room>) -> (AgentActions, AgentQuickComposer, ComposerOwner) {
+    fn composer_in(room: &Arc<Room>) -> (SelectionActions, SelectionComposer, ComposerOwner) {
         let owner = owner(&room.id);
-        let mut actions = AgentActions::default();
+        let mut actions = SelectionActions::default();
         assert!(actions.open(
             ActionSessionSource::with_mock(
                 crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
@@ -1918,7 +1918,7 @@ mod tests {
             ),
             owner.clone(),
         ));
-        let mut composer = AgentQuickComposer::default();
+        let mut composer = SelectionComposer::default();
         composer.open(
             owner.clone(),
             "Tide",
@@ -1932,7 +1932,7 @@ mod tests {
         (actions, composer, owner)
     }
 
-    fn perform(composer: &mut AgentQuickComposer, id: &str, action: &ui::a11y::Action) {
+    fn perform(composer: &mut SelectionComposer, id: &str, action: &ui::a11y::Action) {
         fn find(
             widget: &mut dyn ui::widget::Widget,
             id: &str,
@@ -1958,7 +1958,7 @@ mod tests {
         ui::widget::Widget::sync(composer, &doc, &automerge::ROOT);
     }
 
-    fn send(composer: &mut AgentQuickComposer, text: &str) {
+    fn send(composer: &mut SelectionComposer, text: &str) {
         perform(
             composer,
             "agent-quick-editor",
@@ -1967,7 +1967,7 @@ mod tests {
         perform(composer, "agent-quick-send", &ui::a11y::Action::Activate);
     }
 
-    fn settle(actions: &mut AgentActions, composer: &mut AgentQuickComposer) {
+    fn settle(actions: &mut SelectionActions, composer: &mut SelectionComposer) {
         for _ in 0..32 {
             actions.refresh_at = Some(Instant::now());
             actions.pump(composer);
@@ -2015,7 +2015,8 @@ mod tests {
 
         send(&mut composer, "Use the https address");
         settle(&mut actions, &mut composer);
-        let direction = room.arguments("direct");
+        let direction = room.arguments("steer");
+        assert!(room.invoked().iter().all(|call| !call.ends_with("#direct")));
         assert_eq!(direction["text"], "Use the https address");
         assert_eq!(direction["run_epoch"], 1);
         assert!(
@@ -2063,5 +2064,1240 @@ mod tests {
                 .starts_with("Tidy the notes\nall of them")
         );
         assert!(composer.followed().is_some());
+    }
+}
+
+/// Both entry points retain their outstanding calls when chrome switches.
+/// Pumping the hidden composer still observes receipts, never resubmits work.
+#[derive(Default)]
+pub(super) struct AgentActions {
+    marker: marker_actions::AgentActions,
+    selection: SelectionActions,
+}
+
+impl AgentActions {
+    pub(super) fn open(&mut self, source: ActionSessionSource, owner: ComposerOwner) -> bool {
+        // Neither open dispatches an action. Refuse a switch while either
+        // adapter still owns a mutation whose outcome must be observed.
+        self.marker.open(source.clone(), owner.clone()) && self.selection.open(source, owner)
+    }
+
+    pub(super) fn pump(
+        &mut self,
+        composer: &mut crate::shell::agent_quick_composer::AgentQuickComposer,
+    ) -> bool {
+        self.marker.pump(&mut composer.marker)
+            | self.selection.pump(&mut composer.selection_composer)
+    }
+
+    pub(super) fn deadline(&self) -> Option<Instant> {
+        self.marker
+            .deadline()
+            .into_iter()
+            .chain(self.selection.deadline())
+            .min()
+    }
+}
+
+mod marker_actions {
+    //! Nonblocking adapter from private composer intentions to the existing
+    //! certified semantic action door. It owns no task or Chat document state.
+
+    use std::collections::HashMap;
+    use std::time::{Duration, Instant};
+
+    use serde::Deserialize;
+    use serde_json::{Map, Value};
+    use tilo_actions::remote::{
+        ActionHostError, CanonicalActionRoute, CataloguePage, CatalogueQuery, InvocationReceipt,
+        InvokeArgument, InvokeRequest, Pending, PendingPoll, ReceiptStatus, RemoteActionTarget,
+        workspace_provider,
+    };
+    use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
+
+    use crate::shell::agent_quick_composer::marker::{
+        AgentQuickComposer, ComposerExpansion, ComposerIntent, ComposerOutcome, ComposerOwner,
+        ComposerReceipt, ComposerRequest, ComposerTask,
+    };
+    use crate::shell::certified_action_session::{ActionSessionSource, DesktopActionSession};
+    use crate::shell::search::invocation_wake::{poll, waker, watch};
+
+    const REFRESH: Duration = Duration::from_secs(1);
+    const TIMEOUT: Duration = Duration::from_secs(30);
+    const TASKS: &str = "desktop:tasks";
+    const CHAT: &str = "so.tilo.chat";
+
+    #[derive(Clone)]
+    enum Purpose {
+        Current,
+        Offer,
+        Submit(ComposerRequest),
+        Applied {
+            request: ComposerRequest,
+            saved: ComposerTask,
+        },
+        Expand {
+            request: ComposerExpansion,
+            token: uuid::Uuid,
+        },
+    }
+
+    #[derive(Clone)]
+    struct Operation {
+        resource: String,
+        action: String,
+        arguments: Map<String, Value>,
+        purpose: Purpose,
+        chat: bool,
+    }
+
+    enum Phase {
+        Providers(Pending<Result<CataloguePage, ActionHostError>>),
+        Resolve {
+            provider: String,
+            answer: Pending<Result<CataloguePage, ActionHostError>>,
+            pages: u8,
+            matched: Vec<tilo_actions::remote::CatalogueRow>,
+        },
+        Invoke {
+            invocation: InvocationId,
+            answer: Pending<Result<InvocationReceipt, ActionHostError>>,
+        },
+        Observe {
+            invocation: InvocationId,
+            changed: Option<Pending<()>>,
+        },
+    }
+
+    struct Call {
+        operation: Operation,
+        phase: Phase,
+        deadline: Instant,
+    }
+
+    #[derive(Clone)]
+    struct Offer {
+        target: RemoteActionTarget,
+        revision: String,
+    }
+
+    #[derive(Deserialize)]
+    struct Frontier {
+        task_id: String,
+        title: String,
+        assigned_agent: Option<String>,
+        active_agent: Option<String>,
+        status: String,
+        route: String,
+        run_epoch: Option<u64>,
+        after_revision: Option<u64>,
+        applied_revision: Option<u64>,
+    }
+
+    impl Frontier {
+        fn choice(&self, owner: &ComposerOwner) -> Option<ComposerTask> {
+            let epoch = self.run_epoch?;
+            let revision = self.after_revision?;
+            (epoch > 0
+                && self.assigned_agent.as_deref() == Some(&owner.agent)
+                && self.active_agent.as_deref() == Some(&owner.agent)
+                && self.status == "in_progress"
+                && self.route == "model")
+                .then(|| ComposerTask {
+                    task_id: self.task_id.clone(),
+                    run_epoch: epoch,
+                    revision,
+                    label: self.title.clone(),
+                })
+        }
+    }
+
+    #[derive(Default)]
+    pub(crate) struct AgentActions {
+        owner: Option<ComposerOwner>,
+        source: Option<ActionSessionSource>,
+        session: Option<DesktopActionSession>,
+        calls: Vec<Call>,
+        offers: HashMap<ActionAddress, Offer>,
+        tasks: Vec<ComposerTask>,
+        selected: Option<ComposerTask>,
+        refresh_at: Option<Instant>,
+        follows: Vec<(ComposerRequest, ComposerTask, Instant, Instant)>,
+    }
+
+    impl AgentActions {
+        pub(crate) fn open(&mut self, source: ActionSessionSource, owner: ComposerOwner) -> bool {
+            // Opening chrome must not retire a still-observable mutation or an
+            // exact-run Saved receipt. It is never a cancellation or a retry.
+            if self.owner.as_ref() == Some(&owner) && self.session.is_some() {
+                return true;
+            }
+            if self
+                .calls
+                .iter()
+                .any(|call| matches!(call.operation.purpose, Purpose::Submit(_)))
+                || !self.follows.is_empty()
+            {
+                return false;
+            }
+            let Some(revision) = source.identity_revision(&owner.room) else {
+                return false;
+            };
+            if revision != owner.identity_revision {
+                return false;
+            }
+            let Ok(session) = source.open(&owner.room, Some(&owner.person)) else {
+                return false;
+            };
+            self.owner = Some(owner);
+            self.source = Some(source);
+            self.session = Some(session);
+            self.calls.clear();
+            self.offers.clear();
+            self.tasks.clear();
+            self.follows.clear();
+            self.selected = None;
+            self.refresh_at = Some(Instant::now());
+            true
+        }
+
+        fn begin(&mut self, operation: Operation) {
+            if self
+                .calls
+                .iter()
+                .any(|call| same_read(&call.operation, &operation))
+            {
+                return;
+            }
+            let (Some(session), Some(owner)) = (&self.session, &self.owner) else {
+                return;
+            };
+            let phase = if operation.chat {
+                Phase::Providers(watch(session.query(CatalogueQuery {
+                    canonical_route: Some(CanonicalActionRoute {
+                        room: owner.room.clone(),
+                        app_id: CHAT.into(),
+                        record_id: String::new(),
+                    }),
+                    max_results: 0,
+                    ..CatalogueQuery::default()
+                })))
+            } else {
+                let provider = workspace_provider(&owner.room);
+                let answer = watch(session.query(CatalogueQuery {
+                    provider: Some(provider.clone()),
+                    target: Some(ActionAddress::new(&operation.resource, &operation.action)),
+                    max_results: 1,
+                    ..CatalogueQuery::default()
+                }));
+                Phase::Resolve {
+                    provider,
+                    answer,
+                    pages: 1,
+                    matched: Vec::new(),
+                }
+            };
+            self.calls.push(Call {
+                operation,
+                phase,
+                deadline: deadline_after(TIMEOUT),
+            });
+        }
+
+        fn refresh(&mut self) {
+            let Some(owner) = &self.owner else {
+                return;
+            };
+            let agent = owner.agent.clone();
+            self.offers.clear();
+            self.begin(Operation {
+                resource: TASKS.into(),
+                action: "read-current-tasks".into(),
+                arguments: Map::from_iter([("agent".into(), agent.into())]),
+                purpose: Purpose::Current,
+                chat: false,
+            });
+            self.begin(Operation {
+                resource: TASKS.into(),
+                action: "queue".into(),
+                arguments: Map::new(),
+                purpose: Purpose::Offer,
+                chat: false,
+            });
+            if let Some(task) = self.selected.clone() {
+                self.task_offers(&task);
+            }
+            self.refresh_at = Some(deadline_after(REFRESH));
+        }
+
+        pub(crate) fn pump(&mut self, composer: &mut AgentQuickComposer) -> bool {
+            let Some(owner) = self.owner.clone() else {
+                return false;
+            };
+            let active = composer.owner() == Some(&owner) && composer.is_open();
+            if !active {
+                self.refresh_at = None;
+            }
+            if self
+                .source
+                .as_ref()
+                .and_then(|source| source.identity_revision(&owner.room))
+                != Some(owner.identity_revision)
+            {
+                let changed = self.session.is_some();
+                for call in std::mem::take(&mut self.calls) {
+                    self.refuse(&call.operation, composer, true);
+                }
+                self.offers.clear();
+                self.tasks.clear();
+                self.session = None;
+                self.refresh_at = None;
+                self.follows.clear();
+                composer.project(&owner, [false; 3], Vec::new(), false);
+                composer.revoke_conversation();
+                return changed && active;
+            }
+            if active && self.refresh_at.is_none_or(|due| Instant::now() >= due) {
+                self.refresh();
+            }
+            let pending = std::mem::take(&mut self.calls);
+            let mut changed = false;
+            for mut call in pending {
+                if Instant::now() >= call.deadline {
+                    self.refuse(&call.operation, composer, true);
+                    changed = true;
+                    continue;
+                }
+                if self.advance(&mut call, composer) {
+                    self.calls.push(call);
+                } else {
+                    changed = true;
+                }
+            }
+            self.follow_applied();
+            if !active {
+                return changed;
+            }
+            let selected = composer.selected_task();
+            if selected != self.selected {
+                self.selected.clone_from(&selected);
+                if let Some(task) = &selected {
+                    self.task_offers(task);
+                }
+            }
+            let queue = self
+                .offers
+                .contains_key(&ActionAddress::new(TASKS, "queue"));
+            let steer = selected.as_ref().is_some_and(|task| {
+                self.offers.contains_key(&ActionAddress::new(
+                    format!("desktop:{}", task.task_id),
+                    "steer",
+                ))
+            });
+            let stop = selected.as_ref().is_some_and(|task| {
+                self.offers.contains_key(&ActionAddress::new(
+                    format!("desktop:{}", task.task_id),
+                    "stop",
+                ))
+            });
+            composer.project(&owner, [steer, queue, steer], self.tasks.clone(), stop);
+            if let Some(request) = composer.take_request() {
+                self.submit(request);
+                changed = true;
+            }
+            if composer.take_conversation_request() {
+                if let (Some(request), Some(session)) =
+                    (composer.expansion_request(), self.session.as_ref())
+                {
+                    let draft = ui::private_draft::Draft {
+                        workspace: owner.room.clone(),
+                        target: ui::private_draft::Target::Task {
+                            agent: owner.agent.clone(),
+                            task: request.task.0.clone(),
+                            run_epoch: request.task.1,
+                        },
+                        editor: request.editor.clone(),
+                    };
+                    let staged = composer
+                        .marker_origin()
+                        .cloned()
+                        .ok_or_else(|| "original task paint source unavailable".to_owned())
+                        .and_then(|(app, interaction)| {
+                            session.stage_private_task_draft(draft, app, interaction)
+                        });
+                    match staged {
+                        Ok(token) => self.begin(expansion_operation(request, token)),
+                        Err(_) => composer.observe_expansion(&request, false),
+                    }
+                }
+                changed = true;
+            }
+            changed
+        }
+
+        fn task_offers(&mut self, task: &ComposerTask) {
+            for action in ["steer", "stop"] {
+                self.begin(Operation {
+                    resource: format!("desktop:{}", task.task_id),
+                    action: action.into(),
+                    arguments: Map::new(),
+                    purpose: Purpose::Offer,
+                    chat: false,
+                });
+            }
+        }
+
+        fn submit(&mut self, request: ComposerRequest) {
+            if let Some(operation) = submission_operation(request) {
+                self.begin(operation);
+            }
+        }
+
+        fn advance(&mut self, call: &mut Call, composer: &mut AgentQuickComposer) -> bool {
+            let Some(session) = self.session.as_ref() else {
+                self.refuse(&call.operation, composer, true);
+                return false;
+            };
+            let step = match &mut call.phase {
+                Phase::Providers(answer) => {
+                    provider_step(session, self.owner.as_ref(), &call.operation, answer)
+                }
+                Phase::Resolve {
+                    provider,
+                    answer,
+                    pages,
+                    matched,
+                } => resolve_step(session, &call.operation, provider, answer, pages, matched),
+                Phase::Invoke { invocation, answer } => invoke_step(session, *invocation, answer),
+                Phase::Observe {
+                    invocation,
+                    changed,
+                } => observe_step(session, *invocation, changed),
+            };
+            match step {
+                Step::Waiting => true,
+                Step::Next(phase) => {
+                    call.phase = phase;
+                    true
+                }
+                Step::Offer(offer) => {
+                    self.offers.insert(
+                        ActionAddress::new(&call.operation.resource, &call.operation.action),
+                        offer,
+                    );
+                    false
+                }
+                Step::Complete(value) => {
+                    self.complete(&call.operation, value, composer);
+                    false
+                }
+                Step::Refused(unknown) => {
+                    self.refuse(&call.operation, composer, unknown);
+                    false
+                }
+            }
+        }
+
+        fn complete(
+            &mut self,
+            operation: &Operation,
+            value: Option<Value>,
+            composer: &mut AgentQuickComposer,
+        ) {
+            match &operation.purpose {
+                Purpose::Current => {
+                    let (Some(value), Some(owner)) = (value, &self.owner) else {
+                        self.tasks.clear();
+                        return;
+                    };
+                    let Some(rows) = value.get("tasks").and_then(Value::as_array) else {
+                        self.tasks.clear();
+                        return;
+                    };
+                    if value.get("complete").and_then(Value::as_bool) != Some(true)
+                        || value.get("total").and_then(Value::as_u64)
+                            != u64::try_from(rows.len()).ok()
+                        || rows.len() > 64
+                    {
+                        self.tasks.clear();
+                        return;
+                    }
+                    let frontiers: Option<Vec<Frontier>> = rows
+                        .iter()
+                        .map(|row| serde_json::from_value(row.clone()).ok())
+                        .collect();
+                    let Some(frontiers) = frontiers else {
+                        self.tasks.clear();
+                        return;
+                    };
+                    self.tasks = frontiers
+                        .iter()
+                        .filter_map(|row| row.choice(owner))
+                        .collect();
+                    if composer.marker_task().is_some_and(|bound| {
+                        !self.tasks.iter().any(|task| {
+                            task.task_id == bound.task_id && task.run_epoch == bound.run_epoch
+                        })
+                    }) {
+                        composer.observe_ended();
+                    }
+                }
+                Purpose::Submit(request) => {
+                    let outcome = mutation_outcome(request, value.as_ref());
+                    if let ComposerOutcome::DirectionSaved(saved) = &outcome {
+                        self.follows.push((
+                            request.clone(),
+                            saved.clone(),
+                            deadline_after(TIMEOUT),
+                            Instant::now(),
+                        ));
+                    }
+                    composer.observe_receipt(ComposerReceipt {
+                        owner: request.owner.clone(),
+                        submission: request.submission,
+                        outcome,
+                    });
+                    self.refresh_at = Some(Instant::now());
+                }
+                Purpose::Applied { request, saved } => {
+                    let matched = value
+                        .and_then(|value| serde_json::from_value::<Frontier>(value).ok())
+                        .is_some_and(|row| {
+                            row.task_id == saved.task_id
+                                && row.run_epoch == Some(saved.run_epoch)
+                                && row.active_agent.as_deref() == Some(&request.owner.agent)
+                                && row.assigned_agent.as_deref() == Some(&request.owner.agent)
+                                && row.route == "model"
+                                && row
+                                    .applied_revision
+                                    .is_some_and(|revision| revision >= saved.revision)
+                        });
+                    if matched {
+                        composer.observe_receipt(ComposerReceipt {
+                            owner: request.owner.clone(),
+                            submission: request.submission,
+                            outcome: ComposerOutcome::DirectionApplied(saved.clone()),
+                        });
+                        self.follows
+                            .retain(|(pending, _, _, _)| pending.submission != request.submission);
+                    }
+                }
+                Purpose::Expand { request, token } => {
+                    let accepted = value.as_ref().and_then(|value| value["adopted"].as_str())
+                        == Some(token.to_string().as_str());
+                    composer.observe_expansion(request, accepted);
+                }
+                Purpose::Offer => {}
+            }
+        }
+
+        fn refuse(
+            &mut self,
+            operation: &Operation,
+            composer: &mut AgentQuickComposer,
+            unknown: bool,
+        ) {
+            if matches!(operation.purpose, Purpose::Current) {
+                self.tasks.clear();
+            }
+            if let Purpose::Expand { request, .. } = &operation.purpose {
+                composer.observe_expansion(request, false);
+            }
+            if let Purpose::Submit(request) = &operation.purpose {
+                composer.observe_receipt(ComposerReceipt {
+                    owner: request.owner.clone(),
+                    submission: request.submission,
+                    outcome: if unknown {
+                        ComposerOutcome::Unknown
+                    } else {
+                        ComposerOutcome::Refused
+                    },
+                });
+            }
+        }
+
+        fn follow_applied(&mut self) {
+            self.follows
+                .retain(|(_, _, deadline, _)| Instant::now() < *deadline);
+            let mut reads = Vec::new();
+            for (request, saved, _, next) in &mut self.follows {
+                if Instant::now() >= *next {
+                    *next = deadline_after(REFRESH);
+                    reads.push((request.clone(), saved.clone()));
+                }
+            }
+            for (request, saved) in reads {
+                self.begin(Operation {
+                    resource: format!("desktop:{}", saved.task_id),
+                    action: "read-task".into(),
+                    arguments: Map::new(),
+                    purpose: Purpose::Applied { request, saved },
+                    chat: false,
+                });
+            }
+        }
+
+        pub(crate) fn deadline(&self) -> Option<Instant> {
+            self.calls
+                .iter()
+                .map(|call| call.deadline)
+                .chain(self.refresh_at)
+                .chain(
+                    self.follows
+                        .iter()
+                        .flat_map(|(_, _, until, next)| [*until, *next]),
+                )
+                .min()
+        }
+    }
+
+    fn deadline_after(duration: Duration) -> Instant {
+        let now = Instant::now();
+        now.checked_add(duration).unwrap_or(now)
+    }
+
+    fn submission_operation(request: ComposerRequest) -> Option<Operation> {
+        let (resource, action, arguments, chat) = if request.stop {
+            let Some(task) = &request.task else {
+                return None;
+            };
+            (
+                format!("desktop:{}", task.task_id),
+                "stop",
+                task_arguments(task),
+                false,
+            )
+        } else {
+            match request.intent {
+                ComposerIntent::Queue => {
+                    let title: String = request
+                        .text
+                        .lines()
+                        .next()
+                        .unwrap_or("")
+                        .chars()
+                        .take(256)
+                        .collect();
+                    (
+                        TASKS.into(),
+                        "queue",
+                        Map::from_iter([
+                            ("title".into(), title.into()),
+                            ("instruction".into(), request.text.clone().into()),
+                            ("assigned_agent".into(), request.owner.agent.clone().into()),
+                            ("planning".into(), "model".into()),
+                        ]),
+                        false,
+                    )
+                }
+                ComposerIntent::Message | ComposerIntent::Steer => {
+                    let Some(task) = &request.task else {
+                        return None;
+                    };
+                    let mut arguments = task_arguments(task);
+                    arguments.insert("text".into(), request.text.clone().into());
+                    (
+                        format!("desktop:{}", task.task_id),
+                        "steer",
+                        arguments,
+                        false,
+                    )
+                }
+            }
+        };
+        Some(Operation {
+            resource,
+            action: action.into(),
+            arguments,
+            purpose: Purpose::Submit(request),
+            chat,
+        })
+    }
+
+    fn expansion_operation(request: ComposerExpansion, token: uuid::Uuid) -> Operation {
+        Operation {
+            resource: String::new(),
+            action: "adopt-private-draft".into(),
+            arguments: Map::from_iter([("token".into(), token.to_string().into())]),
+            purpose: Purpose::Expand { request, token },
+            chat: true,
+        }
+    }
+
+    enum Step {
+        Waiting,
+        Next(Phase),
+        Offer(Offer),
+        Complete(Option<Value>),
+        Refused(bool),
+    }
+
+    fn provider_step(
+        session: &DesktopActionSession,
+        owner: Option<&ComposerOwner>,
+        operation: &Operation,
+        answer: &mut Pending<Result<CataloguePage, ActionHostError>>,
+    ) -> Step {
+        let page = match poll(answer, &waker()) {
+            PendingPoll::Waiting => return Step::Waiting,
+            PendingPoll::Ready(Ok(page)) => page,
+            PendingPoll::Ready(Err(_)) | PendingPoll::Abandoned => return Step::Refused(false),
+        };
+        let Some(owner) = owner else {
+            return Step::Refused(false);
+        };
+        if !page.exhausted || page.stale_cursor || page.budget_exhausted {
+            return Step::Refused(false);
+        }
+        let providers: Vec<_> = page
+            .providers
+            .iter()
+            .filter(|provider| provider.app_id == CHAT && provider.room == owner.room)
+            .collect();
+        let [provider] = providers.as_slice() else {
+            return Step::Refused(false);
+        };
+        let answer = watch(session.query(CatalogueQuery {
+            provider: Some(provider.provider.clone()),
+            needle: operation.action.clone(),
+            max_results: 128,
+            ..CatalogueQuery::default()
+        }));
+        Step::Next(Phase::Resolve {
+            provider: provider.provider.clone(),
+            answer,
+            pages: 16,
+            matched: Vec::new(),
+        })
+    }
+
+    fn resolve_step(
+        session: &DesktopActionSession,
+        operation: &Operation,
+        provider: &str,
+        answer: &mut Pending<Result<CataloguePage, ActionHostError>>,
+        pages: &mut u8,
+        matched: &mut Vec<tilo_actions::remote::CatalogueRow>,
+    ) -> Step {
+        let page = match poll(answer, &waker()) {
+            PendingPoll::Waiting => return Step::Waiting,
+            PendingPoll::Ready(Ok(page)) => page,
+            PendingPoll::Ready(Err(_)) | PendingPoll::Abandoned => return Step::Refused(false),
+        };
+        if page.stale_cursor || page.budget_exhausted {
+            return Step::Refused(false);
+        }
+        matched.extend(
+            page.rows
+                .iter()
+                .filter(|row| row.provider == provider && exact_row(row, operation))
+                .cloned(),
+        );
+        if matched.len() > 1 {
+            return Step::Refused(false);
+        }
+        if !page.exhausted && !page.next_cursor.is_empty() && *pages > 1 {
+            *pages = pages.saturating_sub(1);
+            *answer = watch(session.query(CatalogueQuery {
+                provider: Some(provider.into()),
+                needle: operation.action.clone(),
+                revision: Some(page.revision),
+                cursor: page.next_cursor,
+                max_results: 128,
+                ..CatalogueQuery::default()
+            }));
+            return Step::Waiting;
+        }
+        if !page.exhausted {
+            return Step::Refused(false);
+        }
+        let [row] = matched.as_slice() else {
+            return Step::Refused(false);
+        };
+        let Some(target) = row.target() else {
+            return Step::Refused(false);
+        };
+        let offer = Offer {
+            target,
+            revision: page.revision,
+        };
+        if matches!(operation.purpose, Purpose::Offer) {
+            return Step::Offer(offer);
+        }
+        let invocation = InvocationId::new();
+        let argument = if operation.arguments.is_empty() {
+            InvokeArgument::None
+        } else {
+            InvokeArgument::Json(operation.arguments.clone())
+        };
+        let answer = watch(session.invoke(InvokeRequest {
+            invocation,
+            target: offer.target,
+            argument,
+            context: None,
+            confirmation: None,
+            revision: Some(offer.revision),
+            on_behalf_of: None,
+            appearance: None,
+            wait_ms: Some(1_000),
+        }));
+        Step::Next(Phase::Invoke { invocation, answer })
+    }
+
+    fn invoke_step(
+        session: &DesktopActionSession,
+        invocation: InvocationId,
+        answer: &mut Pending<Result<InvocationReceipt, ActionHostError>>,
+    ) -> Step {
+        let receipt = match poll(answer, &waker()) {
+            PendingPoll::Waiting => return Step::Waiting,
+            PendingPoll::Ready(Ok(receipt)) if receipt.invocation == invocation => receipt,
+            _ => return Step::Refused(true),
+        };
+        match receipt.status {
+            ReceiptStatus::Completed { output } => Step::Complete(output.value),
+            ReceiptStatus::Accepted => Step::Next(Phase::Observe {
+                invocation,
+                changed: session.next_change(&invocation).map(watch),
+            }),
+            ReceiptStatus::Rejected { .. } => Step::Refused(false),
+            ReceiptStatus::Failed { .. } | ReceiptStatus::Cancelled { .. } => Step::Refused(true),
+        }
+    }
+
+    fn observe_step(
+        session: &DesktopActionSession,
+        invocation: InvocationId,
+        changed: &mut Option<Pending<()>>,
+    ) -> Step {
+        if let Some(change) = changed
+            && matches!(poll(change, &waker()), PendingPoll::Waiting)
+        {
+            return Step::Waiting;
+        }
+        let Some(observed) = session.observe(&invocation) else {
+            return Step::Refused(true);
+        };
+        match observed.update {
+            InvocationUpdate::Succeeded {
+                invocation: returned,
+                output,
+            } if returned == invocation => Step::Complete(output.value),
+            InvocationUpdate::Failed { .. } | InvocationUpdate::Cancelled { .. } => {
+                Step::Refused(true)
+            }
+            _ => {
+                *changed = session.next_change(&invocation).map(watch);
+                Step::Waiting
+            }
+        }
+    }
+
+    fn same_read(left: &Operation, right: &Operation) -> bool {
+        left.resource == right.resource
+            && left.action == right.action
+            && !matches!(left.purpose, Purpose::Submit(_))
+            && !matches!(right.purpose, Purpose::Submit(_))
+    }
+
+    fn task_arguments(task: &ComposerTask) -> Map<String, Value> {
+        Map::from_iter([
+            ("run_epoch".into(), task.run_epoch.into()),
+            ("after_revision".into(), task.revision.into()),
+        ])
+    }
+
+    fn exact_row(row: &tilo_actions::remote::CatalogueRow, operation: &Operation) -> bool {
+        row.action.as_ref().is_some_and(|action| {
+            action.address.action == operation.action
+                && if operation.chat {
+                    row.app_id == CHAT
+                        && if matches!(operation.purpose, Purpose::Expand { .. }) {
+                            action.params.len() == 1
+                                && action
+                                    .params
+                                    .first()
+                                    .is_some_and(|param| param.name == "token")
+                        } else {
+                            action.semantic_identity.as_ref().is_some_and(|identity| {
+                                identity.kind == "chat.agent" && identity.key == operation.resource
+                            })
+                        }
+                } else {
+                    row.resource.id == operation.resource
+                        && action.address.resource == operation.resource
+                }
+        })
+    }
+
+    fn mutation_outcome(request: &ComposerRequest, value: Option<&Value>) -> ComposerOutcome {
+        let Some(value) = value else {
+            return ComposerOutcome::Unknown;
+        };
+        if request.intent == ComposerIntent::Queue && !request.stop {
+            let Some(task_id) = value.pointer("/task/id").and_then(Value::as_str) else {
+                return ComposerOutcome::Unknown;
+            };
+            if !task_id.is_empty()
+                && value
+                    .pointer("/result/queued/task_id")
+                    .and_then(Value::as_str)
+                    == Some(task_id)
+                && value["resource"].as_str() == Some(format!("desktop:{task_id}").as_str())
+                && value["managed_route"] == true
+                && value
+                    .pointer("/task/assigned_agent")
+                    .and_then(Value::as_str)
+                    == Some(&request.owner.agent)
+                && value.pointer("/task/route").and_then(Value::as_str) == Some("model")
+            {
+                return ComposerOutcome::Queued {
+                    task_id: task_id.to_owned(),
+                };
+            }
+            return ComposerOutcome::Unknown;
+        }
+        let Some(before) = &request.task else {
+            return ComposerOutcome::Unknown;
+        };
+        if value["resource"].as_str() != Some(&format!("desktop:{}", before.task_id)) {
+            return ComposerOutcome::Unknown;
+        }
+        if request.stop && value["cancelled"] == true {
+            return ComposerOutcome::StopRequested(before.clone());
+        }
+        let Some(next_revision) = before.revision.checked_add(1) else {
+            return ComposerOutcome::Unknown;
+        };
+        if !request.stop
+            && value["saved"] == true
+            && value["run_epoch"].as_u64() == Some(before.run_epoch)
+            && value["revision"].as_u64() == Some(next_revision)
+            && value
+                .pointer("/result/direction_added/task_id")
+                .and_then(Value::as_str)
+                == Some(before.task_id.as_str())
+            && value
+                .pointer("/result/direction_added/revision")
+                .and_then(Value::as_u64)
+                == Some(next_revision)
+        {
+            return ComposerOutcome::DirectionSaved(ComposerTask {
+                revision: next_revision,
+                ..before.clone()
+            });
+        }
+        ComposerOutcome::Unknown
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn completed_and_queued_tasks_do_not_hide_an_active_composer_target() {
+            let owner = request(ComposerIntent::Message).owner;
+            let mut actions = AgentActions {
+                owner: Some(owner.clone()),
+                ..AgentActions::default()
+            };
+            let operation = Operation {
+                resource: TASKS.into(),
+                action: "read-current-tasks".into(),
+                arguments: Map::new(),
+                purpose: Purpose::Current,
+                chat: false,
+            };
+            let mut composer = AgentQuickComposer::default();
+            let active = serde_json::json!({
+                "task_id":"task:active", "title":"Active", "assigned_agent":owner.agent,
+                "active_agent":owner.agent, "status":"in_progress", "route":"model",
+                "run_epoch":7, "after_revision":2, "applied_revision":1,
+            });
+            let mut queued = active.clone();
+            queued["task_id"] = "task:queued".into();
+            queued["status"] = "todo".into();
+            queued["run_epoch"] = 0.into();
+            queued["active_agent"] = Value::Null;
+            let mut finished = queued.clone();
+            finished["task_id"] = "task:finished".into();
+            finished["status"] = "done".into();
+            actions.complete(
+                &operation,
+                Some(
+                    serde_json::json!({"complete":true,"total":3,"tasks":[active,queued,finished]}),
+                ),
+                &mut composer,
+            );
+            assert_eq!(actions.tasks.len(), 1);
+            assert_eq!(actions.tasks[0].task_id, "task:active");
+            actions.complete(
+                &operation,
+                Some(serde_json::json!({"complete":true,"total":1,"tasks":[{"malformed":true}]})),
+                &mut composer,
+            );
+            let empty = actions.tasks.is_empty();
+            drop(actions);
+            assert!(empty, "malformed inventories still fail closed");
+        }
+
+        fn request(intent: ComposerIntent) -> ComposerRequest {
+            ComposerRequest {
+                owner: ComposerOwner {
+                    room: "room".into(),
+                    agent: "tide".into(),
+                    person: "person".into(),
+                    identity_revision: 0,
+                },
+                intent,
+                submission: 4,
+                text: "private direction".into(),
+                stop: false,
+                task: Some(ComposerTask {
+                    task_id: "task:one".into(),
+                    run_epoch: 7,
+                    revision: 2,
+                    label: "Current task".into(),
+                }),
+            }
+        }
+
+        #[test]
+        fn expansion_publishes_only_an_opaque_token_not_the_private_editor() {
+            use crate::shell::agent_quick_composer::marker::AgentQuickComposerOrigin;
+            use ui::widget::Widget;
+            use vello::kurbo::Rect;
+            let setup = request(ComposerIntent::Message);
+            let mut composer = AgentQuickComposer::default();
+            composer.open(
+                setup.owner,
+                "Agent",
+                AgentQuickComposerOrigin {
+                    marker: Rect::new(10.0, 10.0, 40.0, 40.0),
+                    protected: Rect::new(10.0, 10.0, 40.0, 40.0),
+                    context: String::new(),
+                },
+                Rect::new(0.0, 0.0, 800.0, 600.0),
+            );
+            composer.bind_marker_task(setup.task.unwrap());
+            let mut doc = automerge::AutoCommit::new();
+            composer.sync(&doc, &automerge::ROOT);
+            fn type_private(widget: &mut dyn Widget, doc: &mut automerge::AutoCommit) -> bool {
+                if widget.test_id() == Some("agent-quick-editor") {
+                    return widget.perform_action(
+                        &ui::a11y::Action::SetValue("unsent secret body".into()),
+                        &[],
+                        &mut ui::widget::Edits::lend(doc),
+                        &automerge::ROOT,
+                    );
+                }
+                widget
+                    .children_mut()
+                    .into_iter()
+                    .any(|child| type_private(child, doc))
+            }
+            assert!(type_private(&mut composer, &mut doc));
+            composer.sync(&doc, &automerge::ROOT);
+            let private = composer.expansion_request().unwrap();
+            assert_eq!(private.editor.text, "unsent secret body");
+            let token = uuid::Uuid::new_v4();
+            let operation = expansion_operation(private, token);
+            assert_eq!(
+                operation.arguments,
+                Map::from_iter([("token".into(), token.to_string().into())])
+            );
+            assert!(
+                !serde_json::to_string(&operation.arguments)
+                    .unwrap()
+                    .contains("unsent secret body")
+            );
+            assert!(
+                doc.get_heads().is_empty(),
+                "the real editor never writes room state"
+            );
+            assert_eq!(operation.action, "adopt-private-draft");
+        }
+
+        #[test]
+        fn message_dispatches_exact_task_direction_and_requires_durable_receipt() {
+            let request = request(ComposerIntent::Message);
+            let operation = submission_operation(request.clone()).unwrap();
+            assert_eq!(operation.resource, "desktop:task:one");
+            assert_eq!(operation.action, "steer");
+            assert!(!operation.chat);
+            assert_eq!(operation.arguments["run_epoch"], 7);
+            assert_eq!(operation.arguments["after_revision"], 2);
+            assert_eq!(operation.arguments["text"], request.text);
+            let mut steer = request.clone();
+            steer.intent = ComposerIntent::Steer;
+            let steered = submission_operation(steer).unwrap();
+            assert_eq!(steered.action, "steer");
+            assert_eq!(steered.arguments, operation.arguments);
+            assert_eq!(mutation_outcome(&request, None), ComposerOutcome::Unknown);
+            assert_eq!(
+                mutation_outcome(&request, Some(&serde_json::json!({}))),
+                ComposerOutcome::Unknown
+            );
+            let value = serde_json::json!({
+                "resource":"desktop:task:one", "saved":true, "run_epoch":7, "revision":3,
+                "result":{"direction_added":{"task_id":"task:one","revision":3}}
+            });
+            assert!(matches!(
+                mutation_outcome(&request, Some(&value)),
+                ComposerOutcome::DirectionSaved(_)
+            ));
+            let mut wrong = value;
+            wrong["result"]["direction_added"]["task_id"] = "task:other".into();
+            assert_eq!(
+                mutation_outcome(&request, Some(&wrong)),
+                ComposerOutcome::Unknown
+            );
+            let mut missing = request;
+            missing.task = None;
+            assert!(submission_operation(missing).is_none());
+        }
+
+        #[test]
+        fn queue_keeps_full_instruction_without_start_or_execution() {
+            let mut request = request(ComposerIntent::Queue);
+            request.text = format!("{}\nFull second line", "x".repeat(300));
+            let operation = submission_operation(request.clone()).unwrap();
+            assert_eq!(operation.resource, TASKS);
+            assert_eq!(operation.action, "queue");
+            assert_eq!(operation.arguments["instruction"], request.text);
+            assert_eq!(
+                operation.arguments["title"]
+                    .as_str()
+                    .unwrap()
+                    .chars()
+                    .count(),
+                256
+            );
+            assert_eq!(operation.arguments["assigned_agent"], "tide");
+            assert_eq!(operation.arguments["planning"], "model");
+            assert!(!operation.chat);
+        }
+
+        #[test]
+        fn conversation_opens_exact_queued_task_without_starting_it() {
+            use crate::shell::agent_quick_composer::marker::AgentQuickComposerOrigin;
+            use vello::kurbo::Rect;
+            let owner = request(ComposerIntent::Queue).owner;
+            let mut composer = AgentQuickComposer::default();
+            let marker = Rect::new(10.0, 10.0, 40.0, 40.0);
+            composer.open(
+                owner.clone(),
+                "Agent",
+                AgentQuickComposerOrigin {
+                    marker,
+                    protected: marker,
+                    context: String::new(),
+                },
+                Rect::new(0.0, 0.0, 800.0, 600.0),
+            );
+            composer.bind_marker_task(ComposerTask {
+                task_id: "task:new".into(),
+                run_epoch: 0,
+                revision: 0,
+                label: "Queued".into(),
+            });
+            let request = composer.expansion_request().unwrap();
+            assert_eq!(request.owner, owner);
+            assert_eq!(request.task, ("task:new".into(), 0));
+            let token = uuid::Uuid::new_v4();
+            let operation = expansion_operation(request, token);
+            assert_eq!(operation.action, "adopt-private-draft");
+            assert!(operation.chat);
+            assert_eq!(
+                operation.arguments,
+                Map::from_iter([("token".into(), token.to_string().into())])
+            );
+            let Purpose::Expand { request, .. } = operation.purpose else {
+                panic!("private expansion")
+            };
+            assert_eq!(request.task, ("task:new".into(), 0));
+            assert_eq!(request.owner.agent, "tide");
+        }
+
+        #[test]
+        fn queue_receipt_requires_exact_owner_and_canonical_queued_result() {
+            let request = request(ComposerIntent::Queue);
+            let value = serde_json::json!({
+                "resource":"desktop:task:new", "result":{"queued":{"task_id":"task:new"}},
+                "managed_route":true,
+                "task":{"id":"task:new", "assigned_agent":"tide", "route":"model"}
+            });
+            assert_eq!(
+                mutation_outcome(&request, Some(&value)),
+                ComposerOutcome::Queued {
+                    task_id: "task:new".into()
+                }
+            );
+            for (pointer, replacement) in [
+                ("/task/assigned_agent", Value::from("reed")),
+                ("/result/queued/task_id", Value::from("task:other")),
+                ("/resource", Value::from("desktop:task:other")),
+                ("/managed_route", Value::from(false)),
+            ] {
+                let mut wrong = value.clone();
+                *wrong.pointer_mut(pointer).unwrap() = replacement;
+                assert_eq!(
+                    mutation_outcome(&request, Some(&wrong)),
+                    ComposerOutcome::Unknown
+                );
+            }
+            assert_eq!(mutation_outcome(&request, None), ComposerOutcome::Unknown);
+        }
+
+        #[test]
+        fn direction_ack_is_saved_not_applied_and_rejects_another_run_or_revision() {
+            let request = request(ComposerIntent::Steer);
+            let value = serde_json::json!({
+                "resource":"desktop:task:one", "saved":true, "applied":true,
+                "run_epoch":7, "revision":3,
+                "result":{"direction_added":{"task_id":"task:one","revision":3}}
+            });
+            let mut saved = request.task.clone().unwrap();
+            saved.revision = 3;
+            assert_eq!(
+                mutation_outcome(&request, Some(&value)),
+                ComposerOutcome::DirectionSaved(saved)
+            );
+            for (pointer, replacement) in [
+                ("/run_epoch", Value::from(8)),
+                ("/revision", Value::from(4)),
+                ("/resource", Value::from("desktop:task:other")),
+            ] {
+                let mut wrong = value.clone();
+                *wrong.pointer_mut(pointer).unwrap() = replacement;
+                assert_eq!(
+                    mutation_outcome(&request, Some(&wrong)),
+                    ComposerOutcome::Unknown
+                );
+            }
+        }
+
+        #[test]
+        fn owner_frontier_never_retargets_steer_to_another_agent_or_inactive_run() {
+            let owner = request(ComposerIntent::Steer).owner;
+            let value = serde_json::json!({
+                "task_id":"task:one", "title":"Current task", "assigned_agent":"tide",
+                "active_agent":"tide", "status":"in_progress", "route":"model",
+                "run_epoch":7, "after_revision":2, "applied_revision":1
+            });
+            let row: Frontier = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(row.choice(&owner).unwrap().revision, 2);
+            for (pointer, replacement) in [
+                ("/assigned_agent", Value::from("reed")),
+                ("/active_agent", Value::Null),
+                ("/run_epoch", Value::from(0)),
+                ("/status", Value::from("queued")),
+            ] {
+                let mut wrong = value.clone();
+                *wrong.pointer_mut(pointer).unwrap() = replacement;
+                let row: Frontier = serde_json::from_value(wrong).unwrap();
+                assert!(row.choice(&owner).is_none());
+            }
+        }
     }
 }

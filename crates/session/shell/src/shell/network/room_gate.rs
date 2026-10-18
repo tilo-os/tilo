@@ -31,6 +31,7 @@ impl ShellNetwork {
             // Room governance, published media, injected input and control
             // consent change what other members see or run.
             NeighbourMsg::SyncResp { .. }
+            | NeighbourMsg::SanitizedRoomBaseline { .. }
             | NeighbourMsg::SurfaceFrame { .. }
             | NeighbourMsg::SurfaceStreamStart { .. }
             | NeighbourMsg::SurfaceStreamEnd { .. }

@@ -7643,6 +7643,7 @@ impl ShellNetwork {
             | NeighbourMsg::MlsAccessRequest { .. }
             | NeighbourMsg::MlsRoutedAccessRequest { .. }
             | NeighbourMsg::MlsGovernanceAck { .. }
+            | NeighbourMsg::SanitizedRoomBaseline { .. }
             | NeighbourMsg::PersonalWorkspaces { .. } => None,
         }
     }

@@ -52,6 +52,7 @@ server = [
     "dep:futures-util",
     "dep:tilo-files",
     "dep:rustix",
+    "dep:tokio-rustls",
 ]
 # Trusted host CLIs share the server's provider transport and credential policy.
 host-backend = ["server"]
@@ -86,8 +87,9 @@ accounts = { path = "../../system/accounts", optional = true }
 account-custody = { path = "../../system/account-custody", optional = true }
 settings-store = { path = "../../system/settings-store", optional = true }
 reqwest = { workspace = true, features = ["json"], optional = true }
-hyper = { optional = true, version = "1", features = ["server", "http1"] }
+hyper = { optional = true, version = "1", features = ["server", "client", "http1"] }
 hyper-util = { optional = true, version = "0.1", features = ["tokio"] }
+tokio-rustls = { workspace = true, optional = true }
 http-body-util = { version = "0.1", optional = true }
 tilo-rt = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }

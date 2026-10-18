@@ -8,12 +8,12 @@ use tilo_peer_state::workspace_task::{
     WorkspaceTaskCommand, WorkspaceTaskSnapshot, validate_manual_resource,
 };
 
-/// Task ceilings selected by broker custody, not by action arguments.
-/// A named legacy task only narrows authority; it need not have a task record.
+/// Legacy task ceilings; a named task only narrows authority and need not have a record.
+/// Native runs instead use the canonical owner's guarded `check_native_task_action`,
+/// which enforces the exact run's task grants together with its frozen authority.
 #[derive(Clone, Copy)]
 pub(crate) enum TaskAdmission<'a> {
     Legacy(Option<&'a str>),
-    Native(&'a crate::services::NativeTaskBinding),
 }
 
 impl TaskAdmission<'_> {
@@ -27,16 +27,6 @@ impl TaskAdmission<'_> {
     ) -> Option<tilo_action_policy::Answer> {
         let cx = tilo_desktop_model::context_at(now);
         match self {
-            Self::Native(binding) => {
-                if agent != Some(binding.agent_id.as_str()) {
-                    return Some(tilo_action_policy::Answer::Deny);
-                }
-                // The native service checks the exact live run, starter and
-                // frozen scope. Other tasks cannot bound this authenticated run.
-                workspace
-                    .policy
-                    .task_answer(&binding.task_id, node, kind, &cx)
-            }
             Self::Legacy(named) => {
                 let running = workspace.tasks.iter().filter(|task| {
                     matches!(
@@ -56,9 +46,44 @@ impl TaskAdmission<'_> {
     }
 }
 
+#[path = "workspace_tasks/compute.rs"]
+pub(super) mod compute;
+
+#[path = "workspace_tasks/messaging.rs"]
+pub(super) mod messaging;
+#[path = "workspace_tasks/metadata.rs"]
+mod metadata;
+#[path = "workspace_tasks/private_subtask.rs"]
+mod private_subtask;
+pub use private_subtask::queue_private_subtask;
+
 const WORKSPACE: &str = "desktop:workspace";
 const COLLECTION: &str = "desktop:tasks";
 const TASK_PREFIX: &str = "desktop:task:";
+
+/// Resource identity published by the real workspace task provider. It is not
+/// an application window and remains available for windowless semantic tasks.
+pub fn task_resource_id(task_id: &str) -> String {
+    format!("desktop:{task_id}")
+}
+
+/// Resolve an existing semantic task, never invent a source for an absent id.
+/// MODEL admission still requires the separate trusted person-start ceiling.
+pub fn model_source(
+    snapshot: &WorkspaceTaskSnapshot,
+    room: &str,
+    task_id: &str,
+) -> Result<tilo_joined_room::task_admission::model::NativeModelSource, String> {
+    if !snapshot.tasks.iter().any(|task| task.id == task_id) {
+        return Err("native MODEL task resource is not published".into());
+    }
+    Ok(
+        tilo_joined_room::task_admission::model::NativeModelSource::Task {
+            task_id: task_id.into(),
+            resource: tilo_joined_room::NativeModelContract::task_resource(room, task_id),
+        },
+    )
+}
 const MAX_ARGUMENT_BYTES: usize = 8192;
 const MAX_QUEUE_ARGUMENT_BYTES: usize =
     tilo_desktop_model::MAX_WORKSPACE_TASK_INSTRUCTION_BYTES * 6 + 4096;
@@ -111,7 +136,11 @@ fn argument(envelope: &InvocationEnvelope) -> Result<&str, String> {
         .argument
         .as_deref()
         .ok_or("task arguments missing")?;
-    let maximum = if envelope.resource == COLLECTION && envelope.action == "queue" {
+    let maximum = if envelope.action == "send-message" {
+        tilo_actions::task_messaging::TaskMessageSend::MAX_TEXT_BYTES * 6 + 4096
+    } else if (envelope.resource == COLLECTION && envelope.action == "queue")
+        || (canonical_task_id(envelope).is_some() && envelope.action == "queue-private-subtask")
+    {
         MAX_QUEUE_ARGUMENT_BYTES
     } else {
         MAX_ARGUMENT_BYTES
@@ -162,6 +191,7 @@ fn queue_instruction_command(
     struct Input {
         title: String,
         instruction: String,
+        #[serde(default)]
         assigned_agent: String,
         planning: String,
         #[serde(default)]
@@ -193,7 +223,7 @@ fn queue_instruction_command(
 
 fn run_command(envelope: &InvocationEnvelope) -> Result<Option<WorkspaceTaskCommand>, String> {
     if let Some(task_id) = canonical_task_id(envelope)
-        && envelope.action == "direct"
+        && matches!(envelope.action.as_str(), "steer" | "direct")
     {
         #[derive(serde::Deserialize)]
         #[serde(deny_unknown_fields)]
@@ -234,6 +264,9 @@ fn run_command(envelope: &InvocationEnvelope) -> Result<Option<WorkspaceTaskComm
 pub(super) fn command(
     envelope: &InvocationEnvelope,
 ) -> Result<Option<WorkspaceTaskCommand>, String> {
+    if let Some(command) = metadata::command(envelope)? {
+        return Ok(Some(command));
+    }
     if envelope.resource == COLLECTION && envelope.action == "queue" {
         return queue_instruction_command(envelope).map(Some);
     }
@@ -246,6 +279,7 @@ pub(super) fn command(
         #[derive(serde::Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Input {
+            #[serde(default)]
             agent_id: String,
             expected_run_epoch: u64,
             after_revision: u64,
@@ -254,7 +288,13 @@ pub(super) fn command(
             serde_json::from_str(argument(envelope)?).map_err(|error| error.to_string())?;
         return Ok(Some(WorkspaceTaskCommand::ApproveRun {
             task_id: format!("task:{id}"),
-            agent_id: input.agent_id,
+            // An unassigned conscious Start selects a host-private actor, not
+            // a roster entry. The invocation makes retry selection stable.
+            agent_id: if input.agent_id.is_empty() {
+                format!("native-{}", envelope.invocation.0)
+            } else {
+                input.agent_id
+            },
             expected_run_epoch: input.expected_run_epoch,
             after_revision: input.after_revision,
         }));
@@ -441,11 +481,16 @@ pub(super) fn actions(
     use tilo_actions::{ActionParam, ParamType};
     let mut result = vec![
         current_tasks_action(),
+        compute::action(),
         queue_instruction_action(),
         create_manual_task_action(workspace_label),
     ];
     result.push(queue_action(workspace_label));
+    result.push(metadata::list_action());
     for task in &snapshot.tasks {
+        // The resource belongs to the workspace, not to the assigned worker.
+        // Keep its read publication even when that worker is offline/removed.
+        result.push(task_read_action(task));
         if task
             .assigned_agent
             .as_ref()
@@ -453,21 +498,10 @@ pub(super) fn actions(
         {
             continue;
         }
-        let target = format!("desktop:{}", task.id);
-        result.push(task_read_action(task));
+        let target = task_resource_id(&task.id);
+        result.extend(metadata::actions(task));
         if !manual(task) {
-            result.push(action(
-                &target,
-                "read-conversation",
-                &task.title,
-                "Read private task conversation",
-                vec![ActionParam::required(
-                    "run_epoch",
-                    ParamType::Integer,
-                    "Exact conversation run epoch",
-                )],
-                true,
-            ));
+            result.push(conversation_read_action(&target, task));
         }
         result.push(action(
             &target,
@@ -487,9 +521,12 @@ pub(super) fn actions(
                 .is_some_and(|control| control.active_run.is_some())
         {
             if task.route == WorkspaceTaskRoute::Model {
-                result.push(direct_action(&target, &task.title));
+                result.push(direction_action(&target, &task.title, "steer"));
+                result.push(direction_action(&target, &task.title, "direct"));
             }
             result.push(stop_action(&target, &task.title));
+            result.push(messaging::send_action(&target, &task.title));
+            result.push(messaging::wait_action(&target, &task.title));
             if snapshot
                 .controls
                 .get(&task.id)
@@ -501,7 +538,7 @@ pub(super) fn actions(
         }
         if task.status == tilo_desktop_model::WorkspaceTaskStatus::Queued
             && !manual(task)
-            && task.assigned_agent.is_some()
+            && (task.assigned_agent.is_some() || task.route == WorkspaceTaskRoute::Model)
             && task
                 .resource
                 .as_ref()
@@ -512,6 +549,9 @@ pub(super) fn actions(
                 .is_some_and(|value| value.active_run.is_none())
         {
             result.push(approve_action(&target, &task.title));
+            // Enrollment may be pending while the task remains queued. Stop
+            // must stay callable so its changed frontier defeats late approval.
+            result.push(stop_action(&target, &task.title));
         }
         if !manual(task)
             && !task.status.is_finished()
@@ -536,6 +576,29 @@ pub(super) fn actions(
         }
     }
     result
+}
+
+fn conversation_read_action(target: &str, task: &WorkspaceTask) -> PublishedAction {
+    use tilo_actions::{ActionParam, ParamType};
+    action(
+        target,
+        "read-conversation",
+        &task.title,
+        "Read private task conversation",
+        vec![
+            ActionParam::required(
+                "run_epoch",
+                ParamType::Integer,
+                "Exact conversation run epoch",
+            ),
+            ActionParam::optional(
+                "after_message_sequence",
+                ParamType::Integer,
+                "Private inbox page cursor; reading does not acknowledge mail",
+            ),
+        ],
+        true,
+    )
 }
 
 fn execution_budget_action(target: &str, title: &str) -> PublishedAction {
@@ -620,10 +683,10 @@ fn queue_instruction_action() -> PublishedAction {
                 ParamType::Text,
                 "Full private instruction; retained by the task owner",
             ),
-            ActionParam::required(
+            ActionParam::optional(
                 "assigned_agent",
                 ParamType::Text,
-                "Exact current workspace agent",
+                "Configured executor, or empty to save an unassigned model task",
             ),
             ActionParam::required(
                 "planning",
@@ -651,13 +714,13 @@ fn task_read_action(task: &WorkspaceTask) -> PublishedAction {
     )
 }
 
-fn direct_action(target: &str, title: &str) -> PublishedAction {
+fn direction_action(target: &str, title: &str, operation: &str) -> PublishedAction {
     use tilo_actions::{ActionParam, ParamType};
     action(
         target,
-        "direct",
+        operation,
         title,
-        "Direct task",
+        "Steer task",
         vec![
             ActionParam::required("run_epoch", ParamType::Integer, "Exact current run epoch"),
             ActionParam::required(
@@ -773,7 +836,11 @@ fn approve_action(target: &str, title: &str) -> PublishedAction {
         title,
         "Approve this task run",
         vec![
-            ActionParam::required("agent_id", ParamType::Text, "Exact assigned agent"),
+            ActionParam::optional(
+                "agent_id",
+                ParamType::Text,
+                "Exact assigned agent; omit for protected first-use model setup",
+            ),
             ActionParam::required(
                 "expected_run_epoch",
                 ParamType::Integer,
@@ -800,7 +867,7 @@ fn action(
     PublishedAction {
         semantic_identity: None,
         resource: target.into(), action: operation.into(), resource_kind: if target == WORKSPACE { "workspace-membership" } else { "workspace-task" }.into(), resource_label: label.into(), action_label: operation_label.into(),
-        description: Some(if inspect { "Inspect current task coordination and execution policy; no execution result is asserted." } else if operation == "approve-run" { "Approve the observed queued task for its assigned agent. Existing workspace and action permissions still apply; approval does not assert execution or completion." } else if matches!(operation, "queue" | "direct" | "stop") { "Change owner-backed managed task state. Exact task, run, revision, membership and caller authority are revalidated before the mutation." } else { "Manual coordination only. Attachments are shared resource references; no agent run, execution, integration or verification is asserted." }.into()),
+        description: Some(if inspect { "Inspect current task coordination and execution policy; no execution result is asserted." } else if operation == "approve-run" { "Approve the observed queued task for its assigned agent. Existing workspace and action permissions still apply; approval does not assert execution or completion." } else if matches!(operation, "queue" | "steer" | "direct" | "stop") { "Change owner-backed managed task state. Exact task, run, revision, membership and caller authority are revalidated before the mutation." } else { "Manual coordination only. Attachments are shared resource references; no agent run, execution, integration or verification is asserted." }.into()),
         operation_kind: if inspect { tilo_actions::OperationKind::View } else { tilo_actions::OperationKind::Document }, params,
         contract: tilo_actions::ActionContract {
             kind: if inspect { tilo_actions::ActionKind::Read } else { tilo_actions::ActionKind::Undoable },
@@ -811,7 +878,11 @@ fn action(
 }
 
 pub(super) fn is_inspect(envelope: &InvocationEnvelope) -> bool {
-    (envelope.resource == COLLECTION && envelope.action == "read-current-tasks")
+    (envelope.resource == COLLECTION
+        && matches!(
+            envelope.action.as_str(),
+            "read-current-tasks" | "list-tasks" | "read-task-compute"
+        ))
         || (envelope.resource.starts_with(TASK_PREFIX)
             && matches!(
                 envelope.action.as_str(),
@@ -823,6 +894,9 @@ pub(super) fn inspect(
     snapshot: &WorkspaceTaskSnapshot,
     envelope: &InvocationEnvelope,
 ) -> Result<serde_json::Value, String> {
+    if envelope.resource == COLLECTION && envelope.action == "list-tasks" {
+        return metadata::list(snapshot, envelope);
+    }
     if envelope.resource == COLLECTION && envelope.action == "read-current-tasks" {
         return read_current_tasks(snapshot, envelope);
     }
@@ -923,14 +997,44 @@ fn read_conversation(
     snapshot: &WorkspaceTaskSnapshot,
     envelope: &InvocationEnvelope,
 ) -> Result<serde_json::Value, String> {
-    #[derive(serde::Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Query {
-        run_epoch: u64,
+    let (task_id, run_epoch) = conversation_target(envelope)?;
+    if snapshot
+        .controls
+        .get(&task_id)
+        .is_none_or(|control| control.run_epoch != run_epoch)
+    {
+        return Err("conversation run changed".into());
     }
-    let query: Query =
-        serde_json::from_str(argument(envelope)?).map_err(|error| error.to_string())?;
-    let task_id = canonical_task_id(envelope).ok_or("conversation target is invalid")?;
+    private_conversation(snapshot, envelope, None)
+}
+
+/// Select exactly one private run; never accept an authority from arguments.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConversationQuery {
+    run_epoch: u64,
+    #[serde(default)]
+    after_message_sequence: u64,
+}
+fn conversation_query(envelope: &InvocationEnvelope) -> Result<ConversationQuery, String> {
+    serde_json::from_str(argument(envelope)?).map_err(|error| error.to_string())
+}
+pub(super) fn conversation_target(envelope: &InvocationEnvelope) -> Result<(String, u64), String> {
+    Ok((
+        canonical_task_id(envelope).ok_or("conversation target is invalid")?,
+        conversation_query(envelope)?.run_epoch,
+    ))
+}
+pub(super) fn conversation_message_cursor(envelope: &InvocationEnvelope) -> Result<u64, String> {
+    Ok(conversation_query(envelope)?.after_message_sequence)
+}
+
+pub(super) fn private_conversation(
+    snapshot: &WorkspaceTaskSnapshot,
+    envelope: &InvocationEnvelope,
+    private: Option<&crate::services::NativeTaskPrivateInstructions>,
+) -> Result<serde_json::Value, String> {
+    let (task_id, run_epoch) = conversation_target(envelope)?;
     let task = snapshot
         .tasks
         .iter()
@@ -943,29 +1047,112 @@ fn read_conversation(
         .controls
         .get(&task_id)
         .ok_or("task control is absent")?;
-    if control.run_epoch != query.run_epoch {
-        return Err("conversation run changed".into());
+    if run_epoch > control.run_epoch {
+        return Err("conversation run has not existed".into());
     }
     let mut turns = Vec::new();
-    if let Some(instruction) = &control.instruction {
+    if let Some(instruction) = private.and_then(|text| text.instruction.as_ref()) {
         turns.push(serde_json::json!({
             "task_id": task.id, "run_epoch": 0, "revision": 0,
             "text": instruction, "author": task.created_by, "received_at": task.created_at,
         }));
     }
+    // Directions are task-level revisions. For a replaced run, the ordered
+    // audit is the durable boundary: never relabel a later run's directions
+    // as turns in the selected historical conversation.
+    let next_run = run_epoch
+        .checked_add(1)
+        .and_then(|epoch| tilo_actions::Scalar::of(&epoch));
+    let historical_events = task
+        .audit
+        .iter()
+        .take_while(|event| {
+            !matches!(&event.what, tilo_actions::Did::Verb(verb)
+            if matches!(event.action(), "start-run" | "approve-run")
+                && verb.args.get("run") == next_run.as_ref())
+        })
+        .collect::<Vec<_>>();
     for direction in &control.directions {
+        if run_epoch != control.run_epoch
+            && direction.applied.as_ref().is_none_or(|ack| ack.run_epoch != run_epoch)
+            && !historical_events.iter().any(|event| {
+                matches!(&event.what, tilo_actions::Did::Verb(verb)
+                    if event.action() == "add-direction"
+                        && verb.args.get("revision") == tilo_actions::Scalar::of(&direction.revision).as_ref())
+            })
+        {
+            continue;
+        }
+        let text = if direction.text.starts_with("private-instruction:") {
+            let Some(private) = private else {
+                continue;
+            };
+            let text = private
+                .directions
+                .get(&direction.revision)
+                .ok_or("private task direction unavailable")?;
+            if tilo_peer_state::workspace_task::private_instruction_reference(text)
+                != direction.text
+            {
+                return Err("private task direction binding changed".into());
+            }
+            text
+        } else {
+            &direction.text
+        };
         turns.push(serde_json::json!({
-            "task_id": task.id, "run_epoch": query.run_epoch, "revision": direction.revision,
-            "text": direction.text, "author": direction.author, "received_at": direction.created_at,
-            "applied": direction.applied.as_ref().filter(|ack| ack.run_epoch == query.run_epoch),
+            "task_id": task.id, "run_epoch": run_epoch, "revision": direction.revision,
+            "text": text, "author": direction.author, "received_at": direction.created_at,
+            "applied": direction.applied.as_ref().filter(|ack| ack.run_epoch == run_epoch),
         }));
     }
+    append_public_conversation_turns(task, run_epoch, &mut turns);
+    if control.run_epoch == run_epoch {
+        for presentation in control.presentations.values() {
+            turns.push(serde_json::json!({
+                "task_id": task.id, "run_epoch": run_epoch,
+                "revision": presentation.sequence,
+                "id": format!("{}:{}:{}", task.id, run_epoch, presentation.run),
+                "kind": "agent-output", "text": presentation.text,
+                "presentation": presentation,
+                "received_at": presentation.received_at.unwrap_or(task.updated_at),
+                "author": format!("agent:{}", task.assigned_agent.as_deref().unwrap_or_default()),
+            }));
+        }
+    }
+
+    // The selected view belongs to the requested run, not the Agent's latest
+    // assignment. Keep the live frontier separate for mutation admission.
+    let mut frontier = task_frontier(snapshot, task);
+    let fields = frontier
+        .as_object_mut()
+        .ok_or("task frontier is not an object")?;
+    fields.insert("run_epoch".into(), serde_json::json!(run_epoch));
+    if control.run_epoch != run_epoch
+        || (control.active_run.is_none()
+            && task.status != tilo_desktop_model::WorkspaceTaskStatus::Queued)
+    {
+        fields.insert("active_agent".into(), serde_json::Value::Null);
+        fields.insert("execution".into(), serde_json::Value::Null);
+        fields.insert("status".into(), serde_json::json!("ended"));
+    }
+    Ok(
+        serde_json::json!({"task_id": task.id, "run_epoch": run_epoch,
+        "frontier": frontier, "turns": turns}),
+    )
+}
+
+fn append_public_conversation_turns(
+    task: &WorkspaceTask,
+    run_epoch: u64,
+    turns: &mut Vec<serde_json::Value>,
+) {
     for (ordinal, event) in task
         .audit
         .iter()
         .enumerate()
         .filter(|(_, event)| {
-            event.for_run(query.run_epoch)
+            event.for_run(run_epoch)
                 && matches!(event.action(), "public-progress" | "finish" | "abandon")
         })
         .take(tilo_desktop_model::task::MAX_WORKSPACE_TASK_PUBLIC_UPDATES + 1)
@@ -976,25 +1163,13 @@ fn read_conversation(
             .filter(|text| text.len() <= tilo_desktop_model::MAX_WORKSPACE_TASK_SUMMARY_BYTES)
         {
             turns.push(serde_json::json!({
-                "task_id": task.id, "run_epoch": query.run_epoch, "revision": ordinal,
+                "task_id": task.id, "run_epoch": run_epoch, "revision": ordinal,
                 "kind": "agent-output", "text": text,
-                "author": format!("agent:{}", task.assigned_agent.as_deref().unwrap_or_default()),
+                "author": event.actor,
                 "received_at": event.at,
             }));
         }
     }
-    for presentation in control.presentations.values() {
-        turns.push(serde_json::json!({
-            "task_id": task.id, "run_epoch": query.run_epoch,
-            "revision": presentation.sequence,
-            "id": format!("{}:{}:{}", task.id, query.run_epoch, presentation.run),
-            "kind": "agent-output", "text": presentation.text,
-            "presentation": presentation,
-            "received_at": presentation.received_at.unwrap_or(task.updated_at),
-            "author": format!("agent:{}", task.assigned_agent.as_deref().unwrap_or_default()),
-        }));
-    }
-    Ok(serde_json::json!({"task_id": task.id, "run_epoch": query.run_epoch, "turns": turns}))
 }
 
 fn read_current_tasks(
@@ -1072,6 +1247,11 @@ fn task_frontier(snapshot: &WorkspaceTaskSnapshot, task: &WorkspaceTask) -> serd
         "task_id": task.id,
         "title": task.title,
         "assigned_agent": task.assigned_agent,
+        "parent_task_id": task.parent_task_id,
+        "child_order": task.child_order,
+        "labels": task.labels,
+        "responsible_assignees": task.responsible_assignees,
+        "child_progress": task.child_progress(&snapshot.tasks),
         "route": task.route,
         "status": task.status,
         "run_epoch": control.map(|control| control.run_epoch),
@@ -1136,7 +1316,8 @@ pub(super) fn result(
     let (task_id, budget_change) = match &result.result {
         WorkspaceTaskMutationResult::Queued { task_id }
         | WorkspaceTaskMutationResult::ResourceAttached { task_id }
-        | WorkspaceTaskMutationResult::RunStarted { task_id, .. } => (task_id, false),
+        | WorkspaceTaskMutationResult::RunStarted { task_id, .. }
+        | WorkspaceTaskMutationResult::MetadataUpdated { task_id } => (task_id, false),
         WorkspaceTaskMutationResult::ExecutionBudgetSet { task_id } => (task_id, true),
         WorkspaceTaskMutationResult::ConfirmationRecorded { task_id }
             if envelope.action == "answer-confirmation"
@@ -1156,7 +1337,7 @@ pub(super) fn result(
             }));
         }
         WorkspaceTaskMutationResult::DirectionAdded { task_id, revision }
-            if envelope.action == "direct"
+            if matches!(envelope.action.as_str(), "steer" | "direct")
                 && task_target(envelope) == task_id.strip_prefix("task:") =>
         {
             let task = snapshot
@@ -1202,7 +1383,28 @@ pub(super) fn result(
     let queued_agent = envelope.resource == WORKSPACE && envelope.action == "queue-agent-task";
     let queued_instruction = envelope.resource == COLLECTION && envelope.action == "queue";
     let approved = envelope.action == "approve-run";
-    if (!approved && !budget_change && !queued_agent && !queued_instruction && !manual(task))
+    let metadata_change = matches!(
+        result.result,
+        WorkspaceTaskMutationResult::MetadataUpdated { .. }
+    ) && matches!(
+        envelope.action.as_str(),
+        "move-task" | "set-labels" | "set-assignees" | "bind-executor"
+    ) && envelope.resource == format!("desktop:{task_id}");
+    let created_child = matches!(
+        envelope.action.as_str(),
+        "create-subtask" | "queue-private-subtask"
+    ) && matches!(result.result, WorkspaceTaskMutationResult::Queued { .. })
+        && task
+            .parent_task_id
+            .as_ref()
+            .is_some_and(|parent| envelope.resource == format!("desktop:{parent}"));
+    if (!approved
+        && !budget_change
+        && !queued_agent
+        && !queued_instruction
+        && !metadata_change
+        && !created_child
+        && !manual(task))
         || (queued_agent
             && (manual(task)
                 || !matches!(result.result, WorkspaceTaskMutationResult::Queued { .. })))
@@ -1313,6 +1515,10 @@ mod tests {
         };
         let snapshot = WorkspaceTaskSnapshot {
             tasks: vec![WorkspaceTask {
+                parent_task_id: None,
+                child_order: None,
+                labels: Vec::new(),
+                responsible_assignees: Vec::new(),
                 id: "task:output".into(),
                 title: "Update".into(),
                 created_by: "person".into(),
@@ -1346,12 +1552,26 @@ mod tests {
             inspection_agent(&snapshot, &request).unwrap().as_deref(),
             Some("scribe")
         );
-        let read = inspect(&snapshot, &request).unwrap();
+        let private = crate::services::NativeTaskPrivateInstructions {
+            instruction: Some("Private full instruction".into()),
+            ..Default::default()
+        };
+        let read = private_conversation(&snapshot, &request, Some(&private)).unwrap();
+        assert!(
+            !inspect(&snapshot, &request)
+                .unwrap()
+                .to_string()
+                .contains("Private full instruction")
+        );
         assert_eq!(read["turns"].as_array().unwrap().len(), 3);
         assert_eq!(read["turns"][1]["text"], "Appended the paragraph.");
         assert_eq!(read["turns"][2]["text"], "The document is updated.");
         request.argument = envelope(&serde_json::json!({"run_epoch":1})).argument;
         assert!(inspect(&snapshot, &request).is_err());
+        let historical = private_conversation(&snapshot, &request, Some(&private)).unwrap();
+        assert_eq!(historical["turns"][1]["text"], "Old run");
+        assert_eq!(historical["turns"].as_array().unwrap().len(), 2);
+        assert_eq!(historical["frontier"]["status"], "ended");
         request.action = "inspect".into();
         request.argument = None;
         assert!(
@@ -1613,6 +1833,10 @@ mod tests {
         // Project the real typed production document shape, then read through
         // the same canonical snapshot function used by the installed service.
         let mut task = WorkspaceTask {
+            parent_task_id: None,
+            child_order: None,
+            labels: Vec::new(),
+            responsible_assignees: Vec::new(),
             id: "task:00000000-0000-4000-8000-000000000001".into(),
             title: "Review report".into(),
             created_by: "person".into(),

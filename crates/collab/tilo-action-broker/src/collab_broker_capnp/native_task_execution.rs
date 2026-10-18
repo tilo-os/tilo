@@ -5,14 +5,64 @@ use super::{
     InvocationKey, InvocationOwner, PendingTaskRun, TaskRunEnvelope, WorkspaceTaskStatus,
     durable_local_invocation,
 };
-use crate::services::NativeTaskBinding;
+use crate::services::{NativeTaskBinding, NativeTaskBindingActor};
 use std::sync::Arc;
 use tilo_peer_state::workspace_task::{WorkspaceTaskCommand, WorkspaceTaskFinish};
 use tokio::sync::mpsc;
 #[cfg(test)]
+#[path = "native_task_instruction_tests.rs"]
+mod instruction_tests;
+#[cfg(test)]
 #[path = "native_task_tests.rs"]
 mod tests;
 
+/// A private read result, not a grant. Delivery still requires a fresh worker
+/// check of the actual subscriber and owner, followed by a local stream fence.
+struct PreparedNativeTask {
+    room: String,
+    snapshot: tilo_peer_state::workspace_task::WorkspaceTaskSnapshot,
+    binding: NativeTaskBinding,
+    envelope: TaskRunEnvelope,
+    subscriber: (u64, mpsc::UnboundedSender<TaskRunEnvelope>),
+    route: super::CrdtRoute,
+    identity: super::AdmittedJoinIdentity,
+}
+
+struct DeliveryRefreshGuard(Arc<CapnpBrokerState>);
+impl Drop for DeliveryRefreshGuard {
+    fn drop(&mut self) {
+        self.0
+            .task_delivery_refresh
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+fn bound_private_instruction(
+    control: &tilo_desktop_model::WorkspaceTaskControl,
+    private: Option<&crate::services::NativeTaskPrivateInstructions>,
+    title: &str,
+) -> Result<String, String> {
+    let instruction = private.and_then(|text| text.instruction.as_deref());
+    if let Some(reference) = &control.private_instruction_ref {
+        let instruction = instruction.ok_or("private task instruction unavailable")?;
+        if tilo_peer_state::workspace_task::private_instruction_reference(instruction) != *reference
+            || private
+                .and_then(|text| text.agent_request.as_ref())
+                .is_some_and(|request| {
+                    tilo_peer_state::workspace_task::private_instruction_reference(
+                        &request.instruction,
+                    ) != *reference
+                })
+        {
+            return Err("private task instruction does not match public binding".into());
+        }
+    } else if control.instruction.is_some() && instruction.is_none() {
+        return Err("private task instruction unavailable".into());
+    }
+    Ok(instruction.unwrap_or(title).to_owned())
+}
+
+// The owner retains exact automatic prose before publishing a neutral phase.
 fn bounded_public_task_message(message: &str) -> Result<String, String> {
     if message.trim().is_empty()
         || message.len() > tilo_desktop_model::MAX_WORKSPACE_TASK_SUMMARY_BYTES
@@ -30,6 +80,7 @@ const CANCELLATION_SAMPLE: std::time::Duration = std::time::Duration::from_milli
 
 /// What a native task's re-ask of its child asked to wait for: the child
 /// moving past `seen` (with no `seen`, settling), until `until`.
+#[derive(Clone)]
 pub(super) struct ChildWait {
     seen: Option<tilo_actions::remote::UpdateMark>,
     until: tokio::time::Instant,
@@ -138,17 +189,16 @@ fn native_request(
     app: &str,
     record: &str,
 ) -> serde_json::Value {
-    let mut request = serde_json::json!({"task":run.task_id,
+    let provider = if target.provider.is_empty() {
+        format!("launch:{}:{app}:{record}", run.cluster_id)
+    } else {
+        target.provider.to_owned()
+    };
+    serde_json::json!({"task":run.task_id,
         "epoch":run.native.as_ref().map(|binding| binding.epoch),
-        "peer_id":target.peer_id,"app":app,"record":record,
-        "resource":target.resource,"action":target.action,"argument":target.argument});
-    if !target.provider.is_empty()
-        && let Some(request) = request.as_object_mut()
-    {
-        request.remove("peer_id");
-        request.insert("provider".into(), target.provider.into());
-    }
-    request
+        "provider":provider,"app":app,"record":record,
+        "resource":tilo_actions::selection::logical_resource_id(target.resource),
+        "action":target.action,"argument":target.argument})
 }
 
 impl CapnpBrokerState {
@@ -158,7 +208,10 @@ impl CapnpBrokerState {
         wait: Option<ChildWait>,
         admission: (&super::CrdtRoute, &super::AdmittedJoinIdentity),
     ) -> Result<(u64, tilo_actions::InvocationUpdate), capnp::Error> {
-        if let Some(observed) = self.observe_native_child(reask, wait, admission).await? {
+        if let Some(observed) = self
+            .observe_native_child(reask, wait.clone(), admission)
+            .await?
+        {
             return Ok(observed);
         }
         if !reask.target.provider.is_empty() {
@@ -171,18 +224,40 @@ impl CapnpBrokerState {
             .native_confirmation_gate(reask)
             .await
             .map_err(capnp::Error::failed)?;
-        let (argument, confirmation) = match gate {
-            super::native_task_confirmation::NativeGate::Proceed => (None, None),
+        let (invocation, argument, reference, confirmation) = match gate {
+            super::native_task_confirmation::NativeGate::Proceed => {
+                (reask.invocation, None, None, None)
+            }
             super::native_task_confirmation::NativeGate::Confirmed {
+                invocation,
                 argument,
+                reference,
                 confirmation,
-            } => (Some(argument), Some(confirmation)),
+            } => (
+                tilo_actions::InvocationId(invocation),
+                Some(argument),
+                Some(reference),
+                Some(confirmation),
+            ),
         };
+        // A crash can leave a confirmed answer held after its child started.
+        // Observe its frozen identity before attempting any new admission.
+        let canonical = ChildReask {
+            invocation,
+            ..*reask
+        };
+        if confirmation.is_some()
+            && let Some(observed) = self
+                .observe_native_child(&canonical, wait, admission)
+                .await?
+        {
+            return Ok(observed);
+        }
         let mut target = reask.target;
         if let Some(argument) = argument.as_deref() {
             target.argument = Some(argument);
         }
-        let provenance = (reask.caller.clone(), reask.invocation);
+        let provenance = (reask.caller.clone(), invocation, reask.target.argument);
         let job = self
             .start_task_action(
                 reask.peer_id,
@@ -190,8 +265,9 @@ impl CapnpBrokerState {
                 reask.run_id,
                 reask.lease,
                 target,
-                (Some(&provenance), confirmation.is_some()),
+                (Some(&provenance), reference.as_deref()),
             )
+            .await
             .map_err(capnp::Error::failed)?;
         if let Some(confirmation) = confirmation {
             let run = self
@@ -206,6 +282,18 @@ impl CapnpBrokerState {
         let update = self.invocation_status(job.id).ok_or_else(|| {
             capnp::Error::failed("accepted task action has no broker state".into())
         })?;
+        if update.is_terminal() {
+            // A fast child may settle before its initial invocation returns.
+            // Deliver it through the same freshly authorized, durable-output
+            // observation as a re-ask; the runner need not ask again.
+            self.revalidate_native_child_admission(admission).await?;
+            return self
+                .observe_native_child(&canonical, None, admission)
+                .await?
+                .ok_or_else(|| {
+                    capnp::Error::failed("accepted native task child is no longer recorded".into())
+                });
+        }
         Ok((job.id, update))
     }
 
@@ -216,27 +304,73 @@ impl CapnpBrokerState {
     /// and authorized afresh, with the connection's admission revalidated
     /// (`admission`); a held re-ask never starts the child anew.
     pub(super) async fn observe_native_child(
-        &self,
+        self: &Arc<Self>,
         reask: &ChildReask<'_>,
         wait: Option<ChildWait>,
         admission: (&super::CrdtRoute, &super::AdmittedJoinIdentity),
     ) -> Result<Option<(u64, tilo_actions::InvocationUpdate)>, capnp::Error> {
-        let observe = || {
-            let run =
-                self.task_run_for(reask.peer_id, reask.agent_id, reask.run_id, reask.lease)?;
-            self.native_task_observation(&run, reask.invocation, reask.target, reask.caller)
-        };
-        let (observed, wait) = match (observe().map_err(capnp::Error::failed)?, wait) {
+        let observed = self.native_child_observation_worker(reask).await?;
+        self.revalidate_native_child_admission(admission).await?;
+        let (observed, wait) = match (observed, wait) {
             (Some(observed), Some(wait)) => (observed, wait),
             (observed, _) => return Ok(observed),
         };
         self.hold_native_observation(reask, observed, wait).await;
-        let (route, identity) = admission;
-        self.revalidate_admission(route, identity)?;
-        observe()
-            .map_err(capnp::Error::failed)?
+        self.revalidate_native_child_admission(admission).await?;
+        let observed = self.native_child_observation_worker(reask).await?;
+        self.revalidate_native_child_admission(admission).await?;
+        observed
             .ok_or_else(|| capnp::Error::failed("native task child is no longer recorded".into()))
             .map(Some)
+    }
+
+    /// Current source and authorization checks can consult remote owners.
+    async fn revalidate_native_child_admission(
+        self: &Arc<Self>,
+        admission: (&super::CrdtRoute, &super::AdmittedJoinIdentity),
+    ) -> Result<(), capnp::Error> {
+        let state = self.clone();
+        let route = admission.0.clone();
+        let identity = admission.1.clone();
+        tokio::task::spawn_blocking(move || {
+            state.revalidate_admission(&route, &identity).map(|_| ())
+        })
+        .await
+        .map_err(|error| capnp::Error::failed(format!("native child admission worker: {error}")))?
+    }
+
+    /// Freeze request identity before leaving the local executor. Retained
+    /// authorization and synchronous owner output writes both run on the worker.
+    async fn native_child_observation_worker(
+        self: &Arc<Self>,
+        reask: &ChildReask<'_>,
+    ) -> Result<Option<(u64, tilo_actions::InvocationUpdate)>, capnp::Error> {
+        let state = self.clone();
+        let peer_id = reask.peer_id;
+        let agent_id = reask.agent_id.to_owned();
+        let run_id = reask.run_id;
+        let lease = reask.lease.to_owned();
+        let invocation = reask.invocation;
+        let caller = reask.caller.clone();
+        let target_peer = reask.target.peer_id;
+        let provider = reask.target.provider.to_owned();
+        let resource = reask.target.resource.to_owned();
+        let action = reask.target.action.to_owned();
+        let argument = reask.target.argument.map(str::to_owned);
+        tokio::task::spawn_blocking(move || {
+            let run = state.task_run_for(peer_id, &agent_id, run_id, &lease)?;
+            let target = runtime_collab::TaskAction {
+                peer_id: target_peer,
+                provider: &provider,
+                resource: &resource,
+                action: &action,
+                argument: argument.as_deref(),
+            };
+            state.native_task_observation(&run, invocation, target, &caller)
+        })
+        .await
+        .map_err(|error| capnp::Error::failed(format!("native child observation worker: {error}")))?
+        .map_err(capnp::Error::failed)
     }
 
     /// Hold a native task's re-ask of its child, observed as `observed`,
@@ -246,7 +380,7 @@ impl CapnpBrokerState {
     /// child afresh once it returns. Between wakes it only looks at the
     /// child's status; it never starts, admits or authorizes anything.
     pub(super) async fn hold_native_observation(
-        &self,
+        self: &Arc<Self>,
         reask: &ChildReask<'_>,
         observed: (u64, tilo_actions::InvocationUpdate),
         wait: ChildWait,
@@ -271,14 +405,16 @@ impl CapnpBrokerState {
                     signalled = signal.is_ok();
                 }
                 () = tilo_rt::sleep(sample) => {
-                    match self.task_run_cancelled(
-                        reask.peer_id,
-                        reask.agent_id,
-                        reask.run_id,
-                        reask.lease,
-                    ) {
-                        Ok(false) => {}
-                        Ok(true) | Err(_) => return,
+                    let state = self.clone();
+                    let peer_id = reask.peer_id;
+                    let agent_id = reask.agent_id.to_owned();
+                    let run_id = reask.run_id;
+                    let lease = reask.lease.to_owned();
+                    match tokio::task::spawn_blocking(move || {
+                        state.task_run_cancelled(peer_id, &agent_id, run_id, &lease)
+                    }).await {
+                        Ok(Ok(false)) => {}
+                        Ok(Ok(true) | Err(_)) | Err(_) => return,
                     }
                 }
             }
@@ -349,32 +485,18 @@ impl CapnpBrokerState {
         )?;
         self.native_tasks(&run.cluster_id)
             .ok_or("native task owner unavailable")?
-            .authorize_action(&run.cluster_id, &run.agent_id, &requirement)?;
-        let (app, record_id) = if target.provider.is_empty() {
-            let offered = self
-                .surfaces
-                .lock()
-                .map_err(|_| "native task target surface unavailable")?
-                .get(&target.peer_id)
-                .and_then(|surface| surface.action_projection(target.resource, target.action))
-                .ok_or("native task target was removed")?;
-            (offered.0.app_id, offered.0.route.record_id)
-        } else {
-            let app = record
-                .intent
-                .get("app_id")
-                .and_then(serde_json::Value::as_str)
-                .ok_or("retained task app absent")?
-                .to_owned();
-            let record_id = record
-                .intent
-                .get("record_id")
-                .and_then(serde_json::Value::as_str)
-                .ok_or("retained task record absent")?
-                .to_owned();
-            (app, record_id)
-        };
-        let request = native_request(run, target, &app, &record_id);
+            .authorize_retained_action(
+                &run.cluster_id,
+                &run.agent_id,
+                &requirement,
+                record.key.invocation.0,
+            )?;
+        let record_id = record
+            .intent
+            .get("record_id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("retained task record absent")?;
+        let request = native_request(run, target, &requirement.app, record_id);
         if !record.admitted_request_is(&request) {
             return Err("native task child identity was reused with another request".into());
         }
@@ -383,13 +505,21 @@ impl CapnpBrokerState {
                 "native task action outcome is uncertain; review history before retrying".into(),
             );
         }
+        self.retain_native_output_links(run, &record, &requirement)?;
         let update = self
             .invocation_status_for_owner(record.wire_id, &record.key.owner)
-            .unwrap_or(record.update);
+            .unwrap_or_else(|| record.update.clone());
+        // A terminal published after this journal snapshot must be observed
+        // again with its durable record before it can bypass output retention.
+        let update = if update.is_terminal() {
+            record.update
+        } else {
+            update
+        };
         Ok(Some((record.wire_id, update)))
     }
 
-    fn cancel_native_children(&self, run: &PendingTaskRun) -> Result<(), String> {
+    pub(super) fn cancel_native_children(&self, run: &PendingTaskRun) -> Result<(), String> {
         let binding = run.native.as_ref().ok_or("native task binding absent")?;
         let owner = InvocationOwner::NativeTask {
             agent: run.agent_id.clone(),
@@ -427,21 +557,34 @@ impl CapnpBrokerState {
         }
         Ok(())
     }
-    pub(super) fn start_native_task_invocation(
+    #[expect(
+        clippy::too_many_lines,
+        reason = "freeze the original native invocation once, write only journal metadata off-thread, then fence and enqueue under the same owner readiness"
+    )]
+    pub(super) async fn start_native_task_invocation(
         &self,
         run: &PendingTaskRun,
         target: runtime_collab::TaskAction<'_>,
         caller: &durable_local_invocation::LocalCaller,
         invocation: tilo_actions::InvocationId,
         offered: (super::PublishedSurface, super::PublishedAction),
-        confirmed: bool,
+        (confirmed, original_argument, requirement): (
+            bool,
+            Option<&str>,
+            &crate::services::NativeTaskActionRequirement,
+        ),
     ) -> Result<InvocationJob, String> {
         // Dispatch the exact contract checked by native task admission. A
         // concurrent publication must not replace it with a broader need.
         if offered.0.route.cluster_id != run.cluster_id {
             return Err("task target changed workspace".into());
         }
-        let intent = native_request(run, target, &offered.0.app_id, &offered.0.route.record_id);
+        // Durable identity is the agent's original request; the admitted effect
+        // below uses the person's edits. Re-asking the original draft observes
+        // this child rather than executing it again or reporting a mismatch.
+        let mut original = target;
+        original.argument = original_argument;
+        let intent = native_request(run, original, &offered.0.app_id, &offered.0.route.record_id);
         let actor = run
             .native
             .as_ref()
@@ -455,36 +598,77 @@ impl CapnpBrokerState {
             })
             .transpose()?;
         let app = offered.0.app_id.clone();
-        let _admission = self
-            .admission_lock
+        let frozen_offer = offered.clone();
+        let (journal_admission, check, enqueue) = {
+            let _admission = self
+                .admission_lock
+                .lock()
+                .map_err(|_| "task action admission unavailable")?;
+            let prepared = self.prepare_invocation_from_offered_owned(
+                target.peer_id,
+                offered,
+                InvocationInputs {
+                    original_request: None,
+                    requested: Some(invocation),
+                    caller: None,
+                    execution: None,
+                    argument: target.argument,
+                    actor: &actor,
+                    confirmation_token: token.as_deref(),
+                    context: Some(run.action_context.clone()),
+                },
+                AdmissionProvenance {
+                    durable: Some(DurableContext::Task {
+                        caller,
+                        binding: requirement
+                            .binding
+                            .as_ref()
+                            .ok_or("native binding absent")?,
+                        requirement,
+                        invocation,
+                        intent: &intent,
+                    }),
+                    revision: None,
+                    origin: None,
+                    retained_time: None,
+                },
+            )?;
+            let super::PreparedInvocation {
+                journal_admission,
+                check,
+                enqueue,
+            } = prepared;
+            (journal_admission, check.into_task()?, enqueue)
+        };
+        // Only owned, frozen journal metadata moves to the blocking worker.
+        // The original check and enqueue stay on this invocation's executor.
+        let journal = self.journal.clone();
+        let key = tokio::task::spawn_blocking(move || {
+            let mut guard = journal
+                .lock()
+                .map_err(|_| "invocation journal unavailable")?;
+            let journal = guard.as_mut().map_err(|error| error.clone())?;
+            journal_admission.admit(journal.as_mut())
+        })
+        .await
+        .map_err(|_| "native task journal admission interrupted")??;
+        let host = key.as_ref().ok_or("durable admission unavailable")?.host;
+        // Ready still owns the exact admission sample. Recheck only original
+        // connection/stream, clock and frozen publication, never owner authority.
+        check(host)?;
+        let fresh = self
+            .surfaces
             .lock()
-            .map_err(|_| "task action admission unavailable")?;
-        self.dispatch_invocation_from_offered_owned(
-            target.peer_id,
-            offered,
-            InvocationInputs {
-                original_request: None,
-                requested: Some(invocation),
-                caller: None,
-                execution: None,
-                argument: target.argument,
-                actor: &actor,
-                confirmation_token: token.as_deref(),
-                context: Some(run.action_context.clone()),
-            },
-            AdmissionProvenance {
-                durable: Some(DurableContext::Task {
-                    caller,
-                    binding: run.native.as_ref().ok_or("native binding absent")?,
-                    invocation,
-                    intent: &intent,
-                }),
-                revision: None,
-                origin: None,
-                retained_time: None,
-            },
-        )
-        .inspect(|_| {
+            .map_err(|_| "task action surface unavailable")?
+            .get(&target.peer_id)
+            .and_then(|surface| surface.action_projection(target.resource, target.action))
+            .ok_or("task action publisher retired during journal admission")?;
+        if fresh != frozen_offer {
+            return Err(
+                "task action publisher or contract changed during journal admission".into(),
+            );
+        }
+        enqueue(key).inspect(|_| {
             self.launchable.note_view(&run.cluster_id, &actor.id, &app);
         })
     }
@@ -500,6 +684,16 @@ impl CapnpBrokerState {
     }
 
     pub(super) fn dispatch_native_task(&self, room: &str, task_id: &str) -> Result<u64, String> {
+        let prepared = self.prepare_native_task(room, task_id)?;
+        self.validate_prepared_task(&prepared)?;
+        self.offer_prepared_task(prepared)
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "prepare the existing native envelope without retaining owner locks or dispatch authority"
+    )]
+    fn prepare_native_task(&self, room: &str, task_id: &str) -> Result<PreparedNativeTask, String> {
         let service = self
             .native_tasks(room)
             .ok_or("native task execution unavailable")?;
@@ -528,6 +722,25 @@ impl CapnpBrokerState {
             return Err("task does not carry ordinary native run approval".into());
         }
         service.agent_snapshot(room, &run.agent_id)?;
+        let binding = NativeTaskBinding {
+            task_id: task_id.into(),
+            agent_id: run.agent_id.clone(),
+            epoch: run.epoch,
+            revision: 0,
+            starter: run
+                .approval
+                .as_ref()
+                .map(|approval| approval.person.clone()),
+        };
+        let private = service.private_instructions(room, &binding)?;
+        // Public controls intentionally contain no draft or answer edits. Restore
+        // only this authenticated run's private confirmation for resume delivery.
+        let mut delivery_control = control.clone();
+        delivery_control.confirmation = service.private_confirmation(room, &binding)?;
+        // An owner-retained Chat parent is provenance, not a second runner.
+        // Explicit person approval above and the exact private instruction
+        // binding below are still required for attached-resource native runs.
+        let instruction = bound_private_instruction(control, private.as_ref(), &task.title)?;
         let planning = match task.route {
             tilo_desktop_model::WorkspaceTaskRoute::Model => runtime_collab::TaskRunPlanning::Model,
             tilo_desktop_model::WorkspaceTaskRoute::RulesOnly => {
@@ -538,19 +751,30 @@ impl CapnpBrokerState {
             }
         };
         let execution_budget = self.admitted_task_execution_budget(room, task)?;
-        let (peer_id, tx) = self
-            .task_subscribers
-            .lock()
-            .map_err(|_| "task subscribers unavailable")?
-            .iter()
-            .filter(|(_, subscriber)| {
-                subscriber.cluster_id == room
-                    && subscriber.agent_id == run.agent_id
-                    && !subscriber.tx.is_closed()
-            })
-            .min_by_key(|(peer, _)| **peer)
-            .map(|(peer, subscriber)| (*peer, subscriber.tx.clone()))
-            .ok_or("assigned agent is offline")?;
+        let (peer_id, tx, route, identity) =
+            self.task_subscribers
+                .lock()
+                .map_err(|_| "task subscribers unavailable")?
+                .iter()
+                .filter(|(peer, subscriber)| {
+                    subscriber.cluster_id == room
+                        && subscriber.agent_id == run.agent_id
+                        && !subscriber.tx.is_closed()
+                        && (task.route != tilo_desktop_model::WorkspaceTaskRoute::Model
+                            || self.services.native_task_executors.as_ref().is_none_or(
+                                |registry| registry.registered_peer(**peer, room, &run.agent_id),
+                            ))
+                })
+                .min_by_key(|(peer, _)| **peer)
+                .map(|(peer, subscriber)| {
+                    (
+                        *peer,
+                        subscriber.tx.clone(),
+                        subscriber.route.clone(),
+                        subscriber.identity.clone(),
+                    )
+                })
+                .ok_or("assigned agent is offline")?;
         let digest =
             blake3::hash(format!("native-task-v1\0{room}\0{task_id}\0{}", run.epoch).as_bytes());
         let run_id = u64::from_le_bytes(
@@ -565,37 +789,74 @@ impl CapnpBrokerState {
             hex.as_str().get(..32).ok_or("invalid run digest")?
         );
         let context = task.action_context();
-        self.offer_native_run(
-            room,
-            NativeTaskBinding {
-                task_id: task_id.into(),
-                agent_id: run.agent_id.clone(),
-                epoch: run.epoch,
-                revision: 0,
-                starter: run
-                    .approval
-                    .as_ref()
-                    .map(|approval| approval.person.clone()),
-            },
-            TaskRunEnvelope {
-                paused: paused_step(control, run.epoch),
-                task_id: task_id.into(),
-                title: task.title.clone(),
-                instruction: Some(
-                    control
-                        .instruction
-                        .clone()
-                        .unwrap_or_else(|| task.title.clone()),
-                ),
-                subject: task.subject.clone(),
-                run_id,
-                lease,
-                planning,
-                execution_budget,
-                action_context: context,
-            },
-            (peer_id, tx),
-        )
+        let envelope = TaskRunEnvelope {
+            paused: paused_step(&delivery_control, run.epoch),
+            task_id: task_id.into(),
+            title: task.title.clone(),
+            instruction: Some(instruction),
+            subject: task.subject.clone(),
+            run_id,
+            lease,
+            planning,
+            execution_budget,
+            action_context: context,
+        };
+        Ok(PreparedNativeTask {
+            room: room.into(),
+            snapshot,
+            binding,
+            envelope,
+            subscriber: (peer_id, tx),
+            route,
+            identity,
+        })
+    }
+
+    fn validate_prepared_task(&self, prepared: &PreparedNativeTask) -> Result<(), String> {
+        let current = self
+            .revalidate_admission(&prepared.route, &prepared.identity)
+            .map_err(|error| error.to_string())?;
+        if current.agent_id.as_deref() != Some(prepared.binding.agent_id.as_str()) {
+            return Err("native task subscriber identity changed".into());
+        }
+        let snapshot = self
+            .native_tasks(&prepared.room)
+            .ok_or("native task owner unavailable")?
+            .agent_snapshot(&prepared.room, &prepared.binding.agent_id)?;
+        let task = &prepared.binding.task_id;
+        if snapshot.controls.get(task) != prepared.snapshot.controls.get(task)
+            || snapshot.tasks.iter().find(|item| &item.id == task)
+                != prepared.snapshot.tasks.iter().find(|item| &item.id == task)
+        {
+            return Err("native task authority changed during preparation".into());
+        }
+        self.revalidate_admission(&prepared.route, &prepared.identity)
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    fn offer_prepared_task(&self, prepared: PreparedNativeTask) -> Result<u64, String> {
+        // No owner/network callbacks here. A replacement subscription has a new
+        // sender even when the peer, actor, run and base lease are unchanged.
+        let subscribers = self
+            .task_subscribers
+            .lock()
+            .map_err(|_| "task subscribers unavailable")?;
+        if !self.is_accepting()
+            || !subscribers
+                .get(&prepared.subscriber.0)
+                .is_some_and(|current| current.tx.same_channel(&prepared.subscriber.1))
+        {
+            return Err("native task subscription changed during preparation".into());
+        }
+        let result = self.offer_native_run(
+            &prepared.room,
+            prepared.binding,
+            prepared.envelope,
+            prepared.subscriber,
+        );
+        drop(subscribers);
+        result
     }
 
     fn offer_native_run(
@@ -657,36 +918,92 @@ impl CapnpBrokerState {
         })
     }
 
-    pub(super) fn refresh_native_task_delivery(&self) {
-        let rooms = match self.task_subscribers.lock() {
-            Ok(subscribers) => {
-                let rooms = subscribers
-                    .values()
-                    .map(|subscriber| subscriber.cluster_id.clone())
-                    .collect::<std::collections::BTreeSet<_>>();
-                drop(subscribers);
-                rooms
+    pub(super) fn refresh_native_task_delivery(self: &Arc<Self>) {
+        // The one-second refresh is another synchronous governor-read caller.
+        // Coalesce hints while it is running; do not accumulate a worker queue.
+        // Queue identity, ordering, deduplication and admission stay unchanged.
+        if self
+            .task_delivery_refresh
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return;
+        }
+        let state = self.clone();
+        tokio::task::spawn_local(async move {
+            let _refresh = DeliveryRefreshGuard(state.clone());
+            if let Err(_error) = state.refresh_native_task_delivery_async().await {
+                // Error bodies can describe private owner state. The failure
+                // class is enough here; no refusal is treated as an empty read.
+                tracing::debug!("native task delivery observation refused");
             }
-            Err(_) => return,
-        };
+        });
+    }
+
+    async fn refresh_native_task_delivery_async(self: &Arc<Self>) -> Result<(), capnp::Error> {
+        let rooms = self
+            .task_subscribers
+            .lock()
+            .map_err(|_| capnp::Error::failed("task subscribers unavailable".into()))?
+            .values()
+            .map(|subscriber| subscriber.cluster_id.clone())
+            .collect::<std::collections::BTreeSet<_>>();
         for room in rooms {
-            let Some(service) = self.native_tasks(&room) else {
-                continue;
-            };
-            let Ok(snapshot) = service.snapshot(&room) else {
-                continue;
-            };
+            let service = self
+                .native_tasks(&room)
+                .ok_or_else(|| capnp::Error::failed("native task owner unavailable".into()))?
+                .clone();
+            let observed_room = room.clone();
+            let snapshot = super::native_task_control::blocking(move || {
+                service
+                    .snapshot(&observed_room)
+                    .map_err(capnp::Error::failed)
+            })
+            .await?;
             self.prune_native_run_routes(&room, &snapshot);
             for task in snapshot
                 .tasks
                 .iter()
                 .filter(|task| task.status == WorkspaceTaskStatus::InProgress)
             {
-                if let Err(error) = self.dispatch_native_task(&room, &task.id) {
-                    tracing::debug!(%error, task = %task.id, "native approved task not delivered");
-                }
+                let (state, room, task_id) = (self.clone(), room.clone(), task.id.clone());
+                let prepared = super::native_task_control::blocking(move || {
+                    state
+                        .prepare_native_task(&room, &task_id)
+                        .map_err(capnp::Error::failed)
+                })
+                .await;
+                let prepared = match prepared {
+                    Ok(prepared) => prepared,
+                    Err(_error) => {
+                        // Offline subscriptions remain pending; test diagnostics
+                        // distinguish this from an owner admission refusal.
+                        #[cfg(test)]
+                        eprintln!("native approved task preparation refused: {_error}");
+                        tracing::debug!("native approved task preparation refused");
+                        continue;
+                    }
+                };
+                let state = self.clone();
+                let prepared = super::native_task_control::blocking(move || {
+                    state
+                        .validate_prepared_task(&prepared)
+                        .map_err(capnp::Error::failed)?;
+                    Ok(prepared)
+                })
+                .await?;
+                // The worker returns inert data. Only the broker mutates the
+                // existing delivery registry, after the fresh authority check.
+                self.offer_prepared_task(prepared)
+                    .map_err(capnp::Error::failed)?;
             }
         }
+        Ok(())
     }
 
     fn prune_native_run_routes(
@@ -721,6 +1038,61 @@ impl CapnpBrokerState {
         run: &PendingTaskRun,
         lease: &str,
     ) -> Result<runtime_collab::TaskRunStatus, String> {
+        let status = self.read_native_task_status(run, lease)?;
+        if status.cancelled {
+            self.cancel_native_children(run)?;
+        }
+        Ok(status)
+    }
+
+    /// Read-only observation: a blocking worker must never cancel children or
+    /// otherwise turn an inert owner snapshot into dispatch authority.
+    pub(super) fn read_native_task_status(
+        &self,
+        run: &PendingTaskRun,
+        lease: &str,
+    ) -> Result<runtime_collab::TaskRunStatus, String> {
+        let result = self.read_native_task_status_snapshot(run, lease);
+        if result.as_ref().is_err_and(|error| {
+            matches!(
+                error.as_str(),
+                "private task has no active run"
+                    | "private task run ended"
+                    | "task run ended"
+                    | "native task authority changed during private observation"
+            )
+        }) {
+            // A cancellation may land between the public and private reads.
+            // Discard the captured context and report only the fresh exact-run
+            // cancellation fact, rather than turning Stop into a runner failure.
+            let binding = run.native.as_ref().ok_or("not a native task run")?;
+            let fresh = self
+                .native_tasks(&run.cluster_id)
+                .ok_or("native task owner unavailable")?
+                .agent_snapshot(&run.cluster_id, &run.agent_id)?;
+            if fresh.tasks.iter().any(|task| {
+                task.id == binding.task_id
+                    && task.assigned_agent.as_deref() == Some(binding.agent_id.as_str())
+                    && task.status == WorkspaceTaskStatus::Cancelled
+            }) && fresh
+                .controls
+                .get(&binding.task_id)
+                .is_some_and(|control| control.run_epoch == binding.epoch)
+            {
+                return Ok(runtime_collab::TaskRunStatus {
+                    cancelled: true,
+                    control: None,
+                });
+            }
+        }
+        result
+    }
+
+    fn read_native_task_status_snapshot(
+        &self,
+        run: &PendingTaskRun,
+        lease: &str,
+    ) -> Result<runtime_collab::TaskRunStatus, String> {
         let binding = run.native.as_ref().ok_or("not a native task run")?;
         let (_, revision) =
             runtime_collab::native_task_revision(lease).ok_or("invalid native task lease")?;
@@ -741,7 +1113,6 @@ impl CapnpBrokerState {
             if control.run_epoch != binding.epoch {
                 return Err("native cancellation belongs to another run".into());
             }
-            self.cancel_native_children(run)?;
             return Ok(runtime_collab::TaskRunStatus {
                 cancelled: true,
                 control: None,
@@ -751,6 +1122,7 @@ impl CapnpBrokerState {
         if active.epoch != binding.epoch
             || active.agent_id != run.agent_id
             || active.approval.is_none()
+            || active.approval.as_ref().map(|approval| &approval.person) != binding.starter.as_ref()
         {
             return Err("native task run was replaced".into());
         }
@@ -758,25 +1130,47 @@ impl CapnpBrokerState {
             .directions
             .last()
             .map_or(0, |direction| direction.revision);
-        if revision > active.applied_direction_revision {
-            return Err("task lease claims an unacknowledged direction".into());
+        // A prepared lease can read control before acknowledging its plan.
+        // Applied still gates actions; status only rejects an unknown frontier.
+        if revision > latest {
+            return Err("task lease claims an unknown direction".into());
         }
+        let private = self
+            .native_tasks(&run.cluster_id)
+            .ok_or("native task owner unavailable")?
+            .private_instructions(&run.cluster_id, binding)?;
         let directions = control
             .directions
             .iter()
             .filter(|direction| direction.revision > revision)
             .take(runtime_collab::TaskRunControl::MAX_DIRECTIONS)
-            .map(|direction| runtime_collab::TaskDirection {
-                revision: direction.revision,
-                author: direction.author.clone(),
-                text: direction.text.clone(),
-                issued_at: direction.created_at,
+            .map(|direction| {
+                let text = if direction.text.starts_with("private-instruction:") {
+                    let text = private
+                        .as_ref()
+                        .and_then(|text| text.directions.get(&direction.revision))
+                        .ok_or("private task direction unavailable")?;
+                    if tilo_peer_state::workspace_task::private_instruction_reference(text)
+                        != direction.text
+                    {
+                        return Err("private task direction does not match public binding".into());
+                    }
+                    text.clone()
+                } else {
+                    direction.text.clone()
+                };
+                Ok(runtime_collab::TaskDirection {
+                    revision: direction.revision,
+                    author: direction.author.clone(),
+                    text,
+                    issued_at: direction.created_at,
+                })
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, String>>()?;
         let last = directions
             .last()
             .map_or(revision, |direction| direction.revision);
-        let control = runtime_collab::TaskRunControl {
+        let result_control = runtime_collab::TaskRunControl {
             version: 1,
             task_id: run.task_id.clone(),
             run_epoch: binding.epoch,
@@ -785,7 +1179,42 @@ impl CapnpBrokerState {
             latest_revision: latest,
             directions,
             has_more: last < latest,
+            messages: self
+                .native_tasks(&run.cluster_id)
+                .ok_or("native task mailbox owner unavailable")?
+                .messages(&run.cluster_id, binding)?,
         };
+        // Private reads can cross several synchronous remote calls. Recheck
+        // current governor custody and the exact task/run at the end, without
+        // holding an owner lock across any transport operation.
+        let fresh = self
+            .native_tasks(&run.cluster_id)
+            .ok_or("native task owner unavailable")?
+            .agent_snapshot(&run.cluster_id, &run.agent_id)?;
+        if fresh.controls.get(&run.task_id) != Some(control)
+            || fresh
+                .tasks
+                .iter()
+                .find(|candidate| candidate.id == run.task_id)
+                != Some(task)
+        {
+            return Err("native task authority changed during private observation".into());
+        }
+        Self::bounded_native_task_status(result_control)
+    }
+
+    fn bounded_native_task_status(
+        mut control: runtime_collab::TaskRunControl,
+    ) -> Result<runtime_collab::TaskRunStatus, String> {
+        // Reading is not consumption: only prompt incorporation acknowledges mail.
+        while serde_json::to_vec(&control)
+            .map_err(|error| error.to_string())?
+            .len()
+            > runtime_collab::TaskRunControl::MAX_BYTES
+            && !control.messages.is_empty()
+        {
+            control.messages.pop();
+        }
         control.validate()?;
         Ok(runtime_collab::TaskRunStatus {
             cancelled: false,
@@ -807,9 +1236,25 @@ impl CapnpBrokerState {
         let binding = run.native.clone().ok_or("not a native task run")?;
         let service = self
             .native_tasks(&run.cluster_id)
-            .ok_or("native task owner unavailable")?;
-        if matches!(update, runtime_collab::TaskRunUpdate::Cancelled { .. }) {
-            let snapshot = service.snapshot(&run.cluster_id)?;
+            .ok_or("native task owner unavailable")?
+            .clone();
+        // Owner reads can wait for admission whose callback runs on this
+        // LocalSet. Never block that callback's executor while waiting for it.
+        let snapshot = || {
+            let service = service.clone();
+            let room = run.cluster_id.clone();
+            async move {
+                tokio::task::spawn_blocking(move || service.snapshot(&room))
+                    .await
+                    .map_err(|_| "native task report observation interrupted".to_owned())?
+            }
+        };
+        if matches!(
+            update,
+            runtime_collab::TaskRunUpdate::Cancelled { .. }
+                | runtime_collab::TaskRunUpdate::Progress { .. }
+        ) {
+            let snapshot = snapshot().await?;
             if snapshot
                 .tasks
                 .iter()
@@ -819,7 +1264,12 @@ impl CapnpBrokerState {
                     .get(&run.task_id)
                     .is_some_and(|control| control.run_epoch == binding.epoch)
             {
-                self.note_ended_task_run(&run, "cancelled");
+                if matches!(update, runtime_collab::TaskRunUpdate::Cancelled { .. }) {
+                    self.note_ended_task_run(&run, "cancelled").await;
+                }
+                // A buffered progress frame cannot revive a cancelled run.
+                // Quiesce it without interrupting the runner's cancellation
+                // observation; no new report, action or authority is committed.
                 return Ok(());
             }
         }
@@ -833,7 +1283,29 @@ impl CapnpBrokerState {
             self.cancel_native_children(&run)?;
         }
         let command = match update {
+            runtime_collab::TaskRunUpdate::InboxIncorporated { message_ids } => {
+                self.check_native_model_receipt(&run, binding.revision, &message_ids)
+                    .await?;
+                let room = run.cluster_id.clone();
+                return tokio::task::spawn_blocking(move || {
+                    service.acknowledge_messages(&room, &binding, &message_ids)
+                })
+                .await
+                .map_err(|_| "native task mailbox acknowledgement interrupted".to_owned())?;
+            }
             runtime_collab::TaskRunUpdate::DirectionsApplied { revision } => {
+                let snapshot = snapshot().await?;
+                let task = snapshot
+                    .tasks
+                    .iter()
+                    .find(|task| task.id == task_id)
+                    .ok_or("direction acknowledgement task absent")?;
+                if task.route == tilo_desktop_model::WorkspaceTaskRoute::Model {
+                    self.check_native_model_receipt(&run, revision, &[]).await?;
+                } else if binding.revision != revision {
+                    return Err("direction acknowledgement differs from request lease".into());
+                }
+                // Deterministic execution does not manufacture MODEL receipts.
                 WorkspaceTaskCommand::AppliedAck {
                     task_id,
                     run_epoch: binding.epoch,
@@ -850,7 +1322,7 @@ impl CapnpBrokerState {
                 message,
                 presentation,
             } => {
-                let snapshot = service.snapshot(&run.cluster_id)?;
+                let snapshot = snapshot().await?;
                 let execution = snapshot
                     .controls
                     .get(&task_id)
@@ -862,11 +1334,17 @@ impl CapnpBrokerState {
                     .checked_add(1)
                     .ok_or("task sequence exhausted")?;
                 if let Some(presentation) = presentation {
+                    let exact: tilo_actions::task_messaging::TaskReportPresentation =
+                        serde_json::from_value(
+                            serde_json::to_value(&presentation).map_err(|e| e.to_string())?,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    exact.validate()?;
                     WorkspaceTaskCommand::Presentation {
                         task_id,
                         run_epoch: binding.epoch,
                         sequence,
-                        presentation: presentation.bounded()?,
+                        presentation,
                     }
                 } else {
                     WorkspaceTaskCommand::PublicProgress {
@@ -892,11 +1370,20 @@ impl CapnpBrokerState {
                 }
             }
         };
-        let receipt = service.report(&run.cluster_id, binding, command).await;
+        let room = run.cluster_id.clone();
+        // Constructing the future may synchronously prepare an owner commit.
+        // Only polling the returned commit future belongs on the local task.
+        let report = tokio::task::spawn_blocking(move || service.report(&room, binding, command))
+            .await
+            .map_err(|_| "native task report preparation interrupted".to_owned());
+        let receipt = match report {
+            Ok(report) => report.await,
+            Err(error) => Err(error),
+        };
         // What the run changed is in the documents whether or not its
         // report was acknowledged: it is recorded for undo either way.
         if let Some(outcome) = ended {
-            self.note_ended_task_run(&run, outcome);
+            self.note_ended_task_run(&run, outcome).await;
         }
         if receipt?.binding.room != run.cluster_id {
             return Err("native task report receipt room differs".into());
@@ -906,11 +1393,17 @@ impl CapnpBrokerState {
 
     /// Hand the run that ended to history, which records what it changed as
     /// one run of the agent's, attributed to it and undoable as a unit.
-    fn note_ended_task_run(&self, run: &PendingTaskRun, outcome: &str) {
+    async fn note_ended_task_run(&self, run: &PendingTaskRun, outcome: &str) {
+        if let Some(binding) = &run.native {
+            self.revoke_native_model_run(&run.cluster_id, &binding.task_id, binding.epoch);
+        }
         let Some(service) = self.native_tasks(&run.cluster_id) else {
             return;
         };
-        let Ok(snapshot) = service.snapshot(&run.cluster_id) else {
+        let service = service.clone();
+        let room = run.cluster_id.clone();
+        let Ok(Ok(snapshot)) = tokio::task::spawn_blocking(move || service.snapshot(&room)).await
+        else {
             return;
         };
         let Some(task) = snapshot.tasks.iter().find(|task| task.id == run.task_id) else {

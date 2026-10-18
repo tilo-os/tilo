@@ -12,6 +12,9 @@ pub struct ChatPreferences {
     /// The categories folded in the sidebar, by id.
     #[serde(default)]
     pub collapsed_categories: BTreeSet<String>,
+    /// Task branches expanded by this person; private presentation state.
+    #[serde(default)]
+    pub expanded_tasks: BTreeSet<String>,
 }
 
 impl SettingsSchema for ChatPreferences {

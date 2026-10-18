@@ -86,6 +86,10 @@ impl HostView {
 }
 
 impl SettingsSource for HostView {
+    fn load_committed(&self) -> Option<Map<String, Value>> {
+        Some(self.session.committed.lock_recover().document.clone())
+    }
+
     fn load(&self) -> Map<String, Value> {
         self.snapshot().document.clone()
     }

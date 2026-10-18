@@ -157,11 +157,18 @@ impl Delegation {
             signature: [0; 64],
         };
         delegation.validate()?;
-        delegation.signature = root.sign(&delegation.signing_bytes()).to_bytes();
+        delegation.signature = root.sign(&delegation.signing_bytes()?).to_bytes();
         Ok(delegation)
     }
 
-    fn signing_bytes(&self) -> Vec<u8> {
+    /// Canonical, domain-separated Ed25519 signing input for external custody.
+    /// This is the message itself, not a prehash. The signature field is ignored.
+    /// Fields are validated before encoding, bounding the returned allocation.
+    ///
+    /// # Errors
+    /// [`DelegationError::Invalid`] for invalid fields or encoding failure.
+    pub fn signing_bytes(&self) -> Result<Vec<u8>, DelegationError> {
+        self.validate()?;
         let unsigned = Unsigned {
             user_public_key: &self.user_public_key,
             device_public_key: &self.device_public_key,
@@ -173,8 +180,10 @@ impl Delegation {
             expires_at_ns: self.expires_at_ns,
         };
         let mut bytes = DELEGATION_DOMAIN.to_vec();
-        bytes.extend(postcard::to_allocvec(&unsigned).unwrap_or_default());
-        bytes
+        bytes.extend(
+            postcard::to_allocvec(&unsigned).map_err(|_| DelegationError::Invalid("encoding"))?,
+        );
+        Ok(bytes)
     }
 
     fn validate(&self) -> Result<(), DelegationError> {
@@ -241,7 +250,7 @@ impl Delegation {
         let key =
             VerifyingKey::from_bytes(user_public_key).map_err(|_| DelegationError::Signature)?;
         key.verify(
-            &self.signing_bytes(),
+            &self.signing_bytes()?,
             &Signature::from_bytes(&self.signature),
         )
         .map_err(|_| DelegationError::Signature)?;
@@ -304,6 +313,33 @@ pub struct DelegateProposal {
 }
 
 impl DelegateProposal {
+    /// Construct a bounded delegation for signing by external root custody.
+    /// The zero signature is a placeholder, not an authorization. Sign
+    /// [`Delegation::signing_bytes`] and then verify the completed delegation.
+    ///
+    /// # Errors
+    /// [`DelegationError::Invalid`] for out-of-bounds fields.
+    pub fn unsigned(
+        &self,
+        user_public_key: [u8; 32],
+        device_public_key: [u8; 32],
+        now_ns: u64,
+    ) -> Result<Delegation, DelegationError> {
+        let delegation = Delegation {
+            user_public_key,
+            device_public_key,
+            delegate: self.delegate.clone(),
+            label: self.label.clone(),
+            color: self.color,
+            scope: self.scope.clone(),
+            issued_at_ns: now_ns,
+            expires_at_ns: self.expires_at_ns,
+            signature: [0; 64],
+        };
+        delegation.validate()?;
+        Ok(delegation)
+    }
+
     /// The delegation of this proposal for `device_public_key`, signed with
     /// the person's `root`.
     ///
@@ -426,6 +462,79 @@ mod tests {
         assert_eq!(
             decoded.verify(&[2; 32], 15),
             Err(DelegationError::WrongUser)
+        );
+    }
+
+    #[test]
+    fn external_custody_signs_the_same_canonical_message_as_local_custody() {
+        let proposal = DelegateProposal {
+            delegate: Delegate::Agent {
+                agent_id: "scribe".into(),
+            },
+            label: "Scribe".into(),
+            color: [10, 20, 30],
+            scope: scope(&[ROOM]),
+            expires_at_ns: 20,
+        };
+        let root = root();
+        let user = root.verifying_key().to_bytes();
+        let mut external = proposal.unsigned(user, [8; 32], 10).unwrap();
+        assert_eq!(external.verify(&user, 15), Err(DelegationError::Signature));
+        external.signature = root.sign(&external.signing_bytes().unwrap()).to_bytes();
+        external.verify(&user, 15).unwrap();
+        let local = proposal.sign(&root, [8; 32], 10).unwrap();
+        assert_eq!(external, local);
+        assert_eq!(external.encode(), local.encode());
+
+        // Every authorization and display field is bound by the real signature.
+        for field in 0..8 {
+            let mut changed = external.clone();
+            match field {
+                0 => changed.device_public_key = [9; 32],
+                1 => {
+                    changed.delegate = Delegate::Agent {
+                        agent_id: "other".into(),
+                    }
+                }
+                2 => changed.label = "Other".into(),
+                3 => changed.color = [0; 3],
+                4 => changed.scope.rooms = vec![OTHER_ROOM.into()],
+                5 => changed.scope.apps = vec!["notes".into()],
+                6 => changed.issued_at_ns = 11,
+                _ => changed.expires_at_ns = 21,
+            }
+            assert_eq!(changed.verify(&user, 15), Err(DelegationError::Signature));
+        }
+    }
+
+    #[test]
+    fn external_signing_refuses_out_of_bounds_fields_before_encoding() {
+        let mut proposal = DelegateProposal {
+            delegate: Delegate::Agent {
+                agent_id: "scribe".into(),
+            },
+            label: "x".repeat(MAX_DELEGATE_TEXT_BYTES + 1),
+            color: [0; 3],
+            scope: scope(&[ROOM]),
+            expires_at_ns: 20,
+        };
+        let user = root().verifying_key().to_bytes();
+        assert_eq!(
+            proposal.unsigned(user, [8; 32], 10),
+            Err(DelegationError::Invalid("label"))
+        );
+        proposal.label = "Scribe".into();
+        let mut unsigned = proposal.unsigned(user, [8; 32], 10).unwrap();
+        unsigned.scope.apps = vec!["notes".into(); MAX_DELEGATED_APPS + 1];
+        assert_eq!(
+            unsigned.signing_bytes(),
+            Err(DelegationError::Invalid("apps"))
+        );
+        unsigned.scope = scope(&[ROOM]);
+        unsigned.expires_at_ns = unsigned.issued_at_ns;
+        assert_eq!(
+            unsigned.signing_bytes(),
+            Err(DelegationError::Invalid("validity window"))
         );
     }
 

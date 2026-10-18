@@ -4090,6 +4090,7 @@ mod task_review_tests {
         let room = tree.active_workspace().unwrap().room.to_string();
         let host = Rc::new(ReviewHost {
             snapshot: RefCell::new(crate::activity::TaskReviewSnapshot {
+                admissions: Default::default(),
                 room,
                 generation: 7,
                 sampled_at_secs: 100,

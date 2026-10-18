@@ -501,6 +501,16 @@ fn validate_interfaces(manifest: &ManifestView) -> Result<(), RunError> {
 }
 
 fn validate_launch_mode(manifest: &ManifestView, opts: &RunOptions) -> Result<(), RunError> {
+    if let Some(protected) = crate::registration_gate::protected_model_launch() {
+        protected
+            .validate(&manifest.package_id, opts.workspace_id.as_deref())
+            .map_err(|error| RunError::InvalidServiceLaunch(error.to_string()))?;
+        if opts.no_services || !matches!(&opts.mode, LaunchMode::Service { .. }) {
+            return Err(RunError::InvalidServiceLaunch(
+                "protected model launch requires its registered service descriptors".into(),
+            ));
+        }
+    }
     if let LaunchMode::Host { desktop_id } = &opts.mode {
         return Err(RunError::HostAppNotAPackage {
             desktop_id: desktop_id.clone(),

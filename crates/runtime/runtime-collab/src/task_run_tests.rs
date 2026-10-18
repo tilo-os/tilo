@@ -3,6 +3,59 @@ use super::{
 };
 
 #[test]
+fn task_control_mailbox_is_optional_bounded_and_exact_run() {
+    let legacy = serde_json::json!({
+        "version": 1, "task_id": "task:recipient", "run_epoch": 2,
+        "from_revision": 0, "applied_revision": 0, "latest_revision": 0,
+        "directions": [], "has_more": false
+    });
+    let mut control: super::TaskRunControl = serde_json::from_value(legacy).unwrap();
+    assert!(control.messages.is_empty());
+    control.validate().unwrap();
+    let message = super::TaskMessage {
+        version: 1,
+        message_id: "00000000-0000-4000-8000-000000000001".into(),
+        source: super::TaskRunAddress {
+            task_id: "task:source".into(),
+            run_epoch: 1,
+            agent_id: "source-agent".into(),
+        },
+        recipient: super::TaskRunAddress {
+            task_id: "task:recipient".into(),
+            run_epoch: 2,
+            agent_id: "recipient-agent".into(),
+        },
+        received_at: 1,
+        sequence: 1,
+        text: "Context, not instructions".into(),
+        status: super::TaskMessageStatus::Accepted,
+    };
+    control.messages = vec![message.clone(); 4];
+    control.validate().unwrap();
+    control.messages.push(message.clone());
+    assert!(control.validate().is_err());
+    control.messages = vec![message];
+    control.messages[0].recipient.run_epoch = 3;
+    assert!(control.validate().is_err());
+    control.messages[0].recipient.run_epoch = 2;
+    control.messages[0].recipient.task_id = "task:other".into();
+    assert!(control.validate().is_err());
+}
+
+#[test]
+fn inbox_incorporation_update_preserves_message_ids() {
+    let update = TaskRunUpdate::InboxIncorporated {
+        message_ids: vec!["00000000-0000-4000-8000-000000000001".into()],
+    };
+    let value = serde_json::to_value(&update).unwrap();
+    assert_eq!(value["kind"], "inbox_incorporated");
+    assert_eq!(
+        serde_json::from_value::<TaskRunUpdate>(value).unwrap(),
+        update
+    );
+}
+
+#[test]
 fn task_run_wire_is_typed_and_rejects_unknown_fields() {
     let envelope = TaskRunEnvelope {
         paused: None,

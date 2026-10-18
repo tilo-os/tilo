@@ -151,7 +151,9 @@ impl GatewayHttp {
         let body = outbound_body(&self.profile, &self.model, body, self.streaming)
             .map_err(|_| http::Error::instance(std::io::Error::other("invalid request body")))?;
         let body = self.target.shape(body);
-        if !self.retry_refusals {
+        // Native custody is per actual attempt. Never replay a paid native
+        // turn through the ordinary refusal/backoff helper.
+        if !self.retry_refusals || super::native::context().is_some() {
             return self
                 .dispatch_once(&head.headers, &body, self.budget)
                 .await
@@ -180,24 +182,41 @@ impl GatewayHttp {
             .timeout(budget)
             .headers(headers.clone())
             .json(body);
-        let response = outgoing.send().await.map_err(|error| ProviderFailure {
-            model_error: crate::openai::Failure::transport(error.is_timeout(), error.is_connect())
+        let response = if let Some(native) = super::native::context() {
+            let request = outgoing.build().map_err(|_| ProviderFailure {
+                model_error: ModelError::new(neutral::ErrorKind::InvalidRequest),
+                why: "invalid native provider request".into(),
+                again: Again::Never,
+                outcome_unknown: false,
+                unprocessed: true,
+                status: None,
+            })?;
+            native
+                .send(&self.client, request, &self.profile, &self.model)
+                .await?
+        } else {
+            outgoing.send().await.map_err(|error| ProviderFailure {
+                model_error: crate::openai::Failure::transport(
+                    error.is_timeout(),
+                    error.is_connect(),
+                )
                 .model_error(),
-            why: if error.is_timeout() {
-                "provider request timed out"
-            } else {
-                "provider transport failed"
-            }
-            .into(),
-            again: if error.is_timeout() || error.is_connect() {
-                Again::Soon(None)
-            } else {
-                Again::Never
-            },
-            outcome_unknown: !error.is_builder() && !error.is_connect(),
-            unprocessed: error.is_connect(),
-            status: None,
-        })?;
+                why: if error.is_timeout() {
+                    "provider request timed out"
+                } else {
+                    "provider transport failed"
+                }
+                .into(),
+                again: if error.is_timeout() || error.is_connect() {
+                    Again::Soon(None)
+                } else {
+                    Again::Never
+                },
+                outcome_unknown: !error.is_builder() && !error.is_connect(),
+                unprocessed: error.is_connect(),
+                status: None,
+            })?
+        };
         let status = response.status();
         *self
             .status
@@ -636,6 +655,7 @@ use agent_provider_config::protocol::{self as neutral, ModelError};
 use rig_core::message;
 
 /// Host custody uses the same neutral codec and provider execution as Complete.
+#[cfg(any(test, feature = "host-backend"))]
 pub(super) async fn host_complete(
     client: &reqwest::Client,
     profile: &ProviderProfile,

@@ -201,7 +201,9 @@ pub fn admit_room_changes(
     if !governs {
         may_write(before, room, &source, caps_now)?;
     }
-    let candidate = super::candidate(before, changes).map_err(RoomRefusal::Malformed)?;
+    let mut candidate = super::candidate(before, changes).map_err(RoomRefusal::Malformed)?;
+    crate::state::sanitized_baseline::validate_sync(before, &mut candidate)
+        .map_err(RoomRefusal::Malformed)?;
     let declared = uuid::Uuid::parse_str(room).map_err(|_| RoomRefusal::DeclaredRoomMismatch)?;
     if super::declared_room_mismatches(&candidate, declared) {
         return Err(RoomRefusal::DeclaredRoomMismatch);

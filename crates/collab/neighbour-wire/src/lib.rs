@@ -469,6 +469,10 @@ pub enum NeighbourMsg {
         surface: SurfaceId,
         seq: u64,
     },
+    /// Governor-signed history replacement, not an ordinary mergeable room delta.
+    /// Fresh receivers require an independently authenticated current-chain anchor.
+    /// Appended to preserve every existing wire discriminant.
+    SanitizedRoomBaseline { room: String, baseline: Vec<u8> },
 }
 
 impl NeighbourMsg {
@@ -529,7 +533,8 @@ impl NeighbourMsg {
             | Self::PersonalWorkspaces { .. }
             | Self::RecordContentWant { .. }
             | Self::RecordContentPiece { .. }
-            | Self::SurfaceKeyframeRequest { .. } => false,
+            | Self::SurfaceKeyframeRequest { .. }
+            | Self::SanitizedRoomBaseline { .. } => false,
         }
     }
 
@@ -580,6 +585,7 @@ impl NeighbourMsg {
             Self::RecordContentPiece { .. } => "RecordContentPiece",
             Self::MlsRoutedAccessRequest { .. } => "MlsRoutedAccessRequest",
             Self::SurfaceKeyframeRequest { .. } => "SurfaceKeyframeRequest",
+            Self::SanitizedRoomBaseline { .. } => "SanitizedRoomBaseline",
         }
     }
 }
@@ -903,6 +909,13 @@ mod tests {
                 },
             ),
             (
+                "sanitized room baseline",
+                NeighbourMsg::SanitizedRoomBaseline {
+                    room: "room".into(),
+                    baseline: vec![1, 2, 3],
+                },
+            ),
+            (
                 "remote action",
                 NeighbourMsg::RemoteAction {
                     frame: b"{}".to_vec(),
@@ -1175,6 +1188,7 @@ mod tests {
             ),
         ),
         ("remote action", "14027b7d"),
+        ("sanitized room baseline", "1e04726f6f6d03010203"),
         (
             "media capabilities",
             concat!(

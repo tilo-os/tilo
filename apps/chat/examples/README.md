@@ -1,5 +1,28 @@
 # Task conversation acceptance
 
+## Task-first views
+
+The production Chat surface also exposes these explicit capture scenarios:
+
+- `TaskGoalBeforeSetup`, `TaskGoalCompact` (420×680), `TaskGoalFloating`: private goal before worker/model setup.
+- `QueuedTask`: an owner-acknowledged saved goal; starting is separate.
+- `Subtask`, `TaskTreeCompact` (420×680): hierarchy, public labels and actual child completion counts.
+- `RunningSteering`, `TaskConversationFloating`: the same exact task/run editor and controls.
+- `TaskAnswer`, `TaskAnswerFloating`: owner-private assistant prose, not public progress summaries.
+
+With an existing matching executable, for example:
+
+```sh
+/path/to/chat --shots target/chat-task-shots/goal.png --scenario TaskGoalCompact
+/path/to/chat --shots target/chat-task-shots/tree.png --scenario TaskTreeCompact
+/path/to/chat --shots target/chat-task-shots/answer.png --scenario TaskAnswerFloating
+```
+
+Repeat with `TILO_SHOTS_THEME=light`, `dark`, and `high-contrast`. These commands
+are capture instructions, not a claim that screenshots or live native execution
+have been verified. Floating scenarios use the existing Conversation surface;
+a full desktop-hosted cursor-to-window check additionally needs the native host.
+
 ## Offscreen captures
 
 No root-checkout compilation is needed. With an **existing, current-source**
@@ -32,7 +55,7 @@ that font environment unchanged when comparing captures. Repeat under light,
 dark and high-contrast themes (`TILO_SHOTS_THEME`).
 
 These are **explicit examples**, not evidence of a live model session. The
-active fixture has the original instruction, three public work updates
+active fixture has the original instruction, three owner-private assistant reports
 (including example action/resource output descriptions), and a saved direction
 at revision 6 awaiting application; revision 1 is applied. **Stop**, not
 **Start task**, is correct for that active run. The queued fixtures have just

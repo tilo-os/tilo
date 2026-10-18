@@ -122,6 +122,8 @@ pub(super) struct ActivityTarget {
 
 #[derive(Clone)]
 pub(super) struct ShownActor {
+    /// Fresh for each admitted execution, even if its caller reuses a UUID.
+    pub(super) paint_origin: uuid::Uuid,
     pub(super) actor: tilo_actions::InteractionActor,
     pub(super) action: tilo_actions::InteractionAction,
     pub(super) resource: tilo_actions::ActionResource,
@@ -161,6 +163,7 @@ impl ShownActor {
             return None;
         }
         Some(Self {
+            paint_origin: uuid::Uuid::new_v4(),
             actor: shown,
             action: tilo_actions::InteractionAction {
                 id: action.action.clone(),

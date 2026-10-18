@@ -553,7 +553,8 @@ async fn a_capped_authenticated_task_cannot_activate_outside_its_connection_ceil
                         action: "open".into(),
                         need: tilo_actions::ActionNeed::of(tilo_actions::ActionKind::Undoable),
                         consequential: false,
-                        confirmed: false,
+                        confirmation: None,
+                        invocation: None,
                     },
                 )
                 .expect("canonical starter/task authority alone would permit this activation");
@@ -744,13 +745,7 @@ fn ask_first_for_writer(f: &Fixture) {
 }
 
 fn held_confirmation(f: &Fixture) -> Option<tilo_desktop_model::WorkspaceTaskConfirmation> {
-    f.native
-        .owner
-        .workspace_task_snapshot(room())
-        .unwrap()
-        .controls
-        .get(&f.task)
-        .and_then(|control| control.confirmation.clone())
+    f.private_confirmation()
 }
 
 /// A retained action whose grants ask first pauses at a reviewable draft

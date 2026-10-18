@@ -1787,7 +1787,7 @@ impl CapnpBrokerState {
                 let mut delivered = request.clone();
                 delivered.target.provider = peer_id.to_string();
                 if let Some(native) = native {
-                    return native.deliver(self, peer_id).map_err(refusal);
+                    return native.deliver(self, peer_id).await.map_err(refusal);
                 }
                 return self.start_for(caller, None, None, origin, &delivered, request);
             }
@@ -1883,30 +1883,30 @@ impl CapnpBrokerState {
             .clone()
             .filter(|record| !record.is_empty());
         let native = native.cloned();
-        let mut launch = tokio::task::spawn_blocking(move || {
-            let _permit = permit;
+        let mut launch = Box::pin(async move {
             match native {
-                Some(native) => native.launch(&state, &current, &place),
-                None => state.launch_retained(&app, &current.workspace, record.as_deref(), &place),
+                Some(native) => native.launch(&state, &current, &place, Some(permit)).await,
+                None => tokio::task::spawn_blocking(move || {
+                    let _permit = permit;
+                    state.launch_retained(&app, &current.workspace, record.as_deref(), &place)
+                })
+                .await
+                .unwrap_or_else(|error| Err(error.to_string())),
             }
         });
         let launched_result = tokio::select! {
             biased;
             () = &mut abandoned => {
-                launch.abort();
                 return Err(stopped_waiting());
             }
             () = &mut deadline => {
-                launch.abort();
                 return Err(expired());
             }
             result = &mut launch => result,
         };
-        launched_result
-            .unwrap_or_else(|error| Err(error.to_string()))
-            .map_err(|reason| ActionHostError::Refused {
-                reason: format!("{app_id} could not be launched: {reason}"),
-            })?;
+        launched_result.map_err(|reason| ActionHostError::Refused {
+            reason: format!("{app_id} could not be launched: {reason}"),
+        })?;
         Ok(())
     }
 

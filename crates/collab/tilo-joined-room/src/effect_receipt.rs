@@ -134,7 +134,7 @@ fn archive_one(
     view.record.effect_history_root = Some(root);
     // Older readers must refuse an archived owner record, not ignore the
     // index and mint a different original receipt for an already-known UUID.
-    view.record.version = 3;
+    view.record.version = view.record.version.max(3);
     view.record.effect_receipts.remove(&id);
     Ok(())
 }

@@ -374,6 +374,7 @@ files = [
   { from = "registry-runtime-publisher.hex", to = "/usr/share/tilo/registry-runtime-publisher.hex", mode = "0644" },
   { from = "/usr/share/tilo-apps/", to = "/usr/share/tilo-apps/", tree = true },
   { from = "app-publisher.hex", to = "/usr/share/tilo/app-publisher.hex", mode = "0644" },
+  { from = "managed-agent-package-hash", to = "/usr/lib/tilo/managed-agent-package-hash", mode = "0644" },
 ]
 
 # ---- VM-wide: system services, login and boot tooling ----------------------

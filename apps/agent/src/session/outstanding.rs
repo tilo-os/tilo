@@ -108,6 +108,14 @@ impl Session {
     ///
     /// When the broker refused to answer a poll, as the old in-line poll did.
     pub(super) fn cancellation_known(&mut self) -> Result<bool> {
+        for event in self
+            .link
+            .take_queued(|event| matches!(event, CollabEvent::TaskRunControl { request_id: 0, .. }))
+        {
+            if let CollabEvent::TaskRunControl { control, .. } = event {
+                self.observe_native_control(control)?;
+            }
+        }
         let polls = std::mem::take(&mut self.outstanding.cancel.polls);
         for (request_id, at) in polls {
             match self.link.take_detached(request_id) {

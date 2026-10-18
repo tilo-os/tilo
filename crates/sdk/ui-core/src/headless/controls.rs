@@ -661,6 +661,7 @@ mod locus_tests {
 
     fn interaction(resource: &str) -> tilo_actions::SemanticInteraction {
         tilo_actions::SemanticInteraction {
+            paint_origin: None,
             version: tilo_actions::INTERACTION_VERSION,
             invocation: tilo_actions::InvocationId::new(),
             sequence: 1,

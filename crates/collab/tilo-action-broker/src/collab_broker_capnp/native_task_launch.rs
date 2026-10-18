@@ -5,6 +5,7 @@ use super::{
     CapnpBrokerState, InvocationKey, InvocationOwner, PendingTaskRun, PublishedAction,
     durable_local_invocation::LocalCaller,
 };
+use crate::services::NativeTaskBindingActor;
 use crate::services::{LaunchPlace, NativeTaskActionRequirement};
 use std::sync::{Arc, atomic::Ordering};
 use tilo_actions::remote::{
@@ -24,13 +25,14 @@ pub(super) struct NativeLaunch {
     resource: String,
     action: String,
     argument: Option<String>,
+    original_argument: Option<String>,
     app: String,
     record: Option<String>,
     retained: Option<PublishedAction>,
     bootstrap: bool,
     /// The person confirmed this retained action as asked first; `argument`
     /// is then what they confirmed.
-    confirmed: bool,
+    confirmation: Option<String>,
 }
 
 impl NativeLaunch {
@@ -46,18 +48,61 @@ impl NativeLaunch {
         Ok(binding)
     }
 
-    fn requirement(&self) -> Result<NativeTaskActionRequirement, String> {
+    fn requirement(&self, state: &CapnpBrokerState) -> Result<NativeTaskActionRequirement, String> {
+        let binding = self.binding()?;
+        let private_run_digest = state.native_private_run_digest(&self.run, &binding)?;
+        // Match the existing durable journal's activation identity exactly.
+        let digest =
+            blake3::hash(format!("native-host-activation:{}", self.invocation.0).as_bytes());
+        let id = uuid::Uuid::from_bytes(
+            *digest
+                .as_bytes()
+                .first_chunk::<16>()
+                .ok_or("activation digest invalid")?,
+        );
+        let need = tilo_actions::ActionNeed::of(tilo_actions::ActionKind::Undoable);
+        let mut invocation = crate::services::NativeTaskInvocation::new(
+            id,
+            &self.provider,
+            self.argument.as_deref(),
+            &tilo_actions::ActionContract::default(),
+            &self.lease,
+        )?;
+        invocation.request = self.invocation.0;
+        invocation.private_run_digest = private_run_digest;
+        if let Some(retained) = &self.retained {
+            let mut child = crate::services::NativeTaskInvocation::new(
+                self.invocation.0,
+                &self.provider,
+                self.argument.as_deref(),
+                &retained.contract,
+                &self.lease,
+            )?;
+            child.private_run_digest = private_run_digest;
+            invocation.activation_for = Some(Box::new(NativeTaskActionRequirement {
+                binding: Some(self.binding()?),
+                app: self.app.clone(),
+                resource_kind: retained.resource_kind.clone(),
+                resource: tilo_actions::selection::logical_resource_id(&self.resource).into_owned(),
+                action: self.action.clone(),
+                need: retained.contract.need(),
+                consequential: false,
+                confirmation: self.confirmation.clone(),
+                invocation: Some(child),
+            }));
+        }
         Ok(NativeTaskActionRequirement {
             binding: Some(self.binding()?),
             app: self.app.clone(),
             resource_kind: "applications.app".into(),
             resource: format!("app.{}", self.app),
             action: "open".into(),
-            need: tilo_actions::ActionNeed::of(tilo_actions::ActionKind::Undoable),
+            need,
+            invocation: Some(invocation),
             consequential: false,
-            // Opening the application is part of the action the person
-            // confirmed, not a second question.
-            confirmed: self.confirmed,
+            // A child's approval is not an independent approval to open apps.
+            // The owner resolves the exact activation_for workflow above.
+            confirmation: None,
         })
     }
 
@@ -68,7 +113,7 @@ impl NativeLaunch {
             return Err("task stopped while waiting for its application".into());
         }
         if let Some(retained) = &self.retained {
-            if !self.confirmed
+            if self.confirmation.is_none()
                 && !matches!(
                     retained
                         .contract
@@ -78,6 +123,15 @@ impl NativeLaunch {
             {
                 return Err("closed task action requires person confirmation".into());
             }
+            let mut invocation = crate::services::NativeTaskInvocation::new(
+                self.invocation.0,
+                &self.provider,
+                self.argument.as_deref(),
+                &retained.contract,
+                &self.lease,
+            )?;
+            invocation.private_run_digest =
+                state.native_private_run_digest(&self.run, &self.binding()?)?;
             state
                 .native_tasks(&self.run.cluster_id)
                 .ok_or("native launch owner unavailable")?
@@ -88,11 +142,13 @@ impl NativeLaunch {
                         binding: Some(self.binding()?),
                         app: self.app.clone(),
                         resource_kind: retained.resource_kind.clone(),
-                        resource: self.resource.clone(),
+                        resource: tilo_actions::selection::logical_resource_id(&self.resource)
+                            .into_owned(),
                         action: self.action.clone(),
                         need: retained.contract.need(),
                         consequential: false,
-                        confirmed: self.confirmed,
+                        confirmation: self.confirmation.clone(),
+                        invocation: Some(invocation),
                     },
                 )?;
         }
@@ -105,7 +161,7 @@ impl NativeLaunch {
                 .authorize_action(
                     &self.run.cluster_id,
                     &self.run.agent_id,
-                    &self.requirement()?,
+                    &self.requirement(state)?,
                 )?;
         }
         Ok(())
@@ -173,100 +229,141 @@ impl NativeLaunch {
         host_activation_key(state, &self.run, self.invocation)
     }
 
-    pub(super) fn launch(
+    pub(super) async fn launch(
         &self,
-        state: &CapnpBrokerState,
+        state: &Arc<CapnpBrokerState>,
         destination: &LaunchDestination,
         place: &LaunchPlace,
+        permit: Option<tokio::sync::OwnedSemaphorePermit>,
     ) -> Result<(), String> {
-        let binding = self.binding()?;
-        state
+        // All owner reads and caller authorization happen before transferring
+        // the guarded turn. Only owned metadata crosses the blocking boundary.
+        let preparation_state = Arc::clone(state);
+        let launch = self.clone();
+        let (binding, requirement, spent, key, intent) = tokio::task::spawn_blocking(move || {
+            let binding = launch.binding()?;
+            let requirement = launch.requirement(&preparation_state)?;
+            let spent = launch.caller.authorize_host_action(
+                &preparation_state,
+                &launch.run.cluster_id,
+                &requirement,
+            )?;
+            let key = launch.launch_key(&preparation_state)?;
+            let intent = serde_json::json!({"host_activation":true,"app_id":launch.app,
+                    "task":binding.task_id,"epoch":binding.epoch,"revision":binding.revision,
+                    "caller":launch.caller.owner(),"native_requirement":requirement,
+                    "retained_contract":launch.retained.as_ref().map(|action| &action.contract),
+                    "retained_params":launch.retained.as_ref().map(|action| &action.params),
+                    "request":{"provider":launch.provider,
+                        "resource":tilo_actions::selection::logical_resource_id(&launch.resource),
+                        "action":launch.action,"argument":launch.original_argument}});
+            Ok::<_, String>((binding, requirement, spent, key, intent))
+        })
+        .await
+        .map_err(|_| "native host launch preparation interrupted")??;
+        let ready = state
             .native_tasks(&self.run.cluster_id)
             .ok_or("native launch owner absent")?
-            .admit_host_launch(
-                &self.run.cluster_id,
-                &binding,
-                &self.requirement()?,
-                &mut || {
-                    let spent = self.caller.authorize_host_action(
-                        state,
-                        &self.run.cluster_id,
-                        &self.requirement()?,
-                    )?;
-                    let key = self.launch_key(state)?;
-                    let intent = serde_json::json!({"host_activation":true,"app_id":self.app,
-                    "task":binding.task_id,"epoch":binding.epoch,"revision":binding.revision,
-                    "caller":self.caller.owner(),
-                    "retained_contract":self.retained.as_ref().map(|action| &action.contract),
-                    "retained_params":self.retained.as_ref().map(|action| &action.params),
-                    "request":{"provider":self.provider,"resource":self.resource,
-                        "action":self.action,"argument":self.argument}});
-                    let mut guard = state
-                        .journal
-                        .lock()
-                        .map_err(|_| "launch journal unavailable")?;
-                    let journal = guard
-                        .as_mut()
-                        .map_err(|error| error.clone())?
-                        .as_mut()
-                        .ok_or("durable launch journal absent")?;
-                    let wire = state.invocation_id.fetch_add(1, Ordering::Relaxed);
-                    if !journal.admit(key.clone(), intent, wire)? {
-                        let retained = journal.lookup(&key)?.ok_or("launch custody disappeared")?;
-                        return if !retained.uncertain
-                            && matches!(
-                                retained.update,
-                                tilo_actions::InvocationUpdate::Succeeded { .. }
-                            ) {
-                            Ok(())
-                        } else {
-                            Err("host activation outcome uncertain; review before retrying".into())
-                        };
-                    }
-                    drop(guard);
-                    state.spend_once_grants(&self.run.cluster_id, &spent);
-                    // Custody is on disk before the existing on-system host path runs.
-                    let result = if self.ready(state).is_some() {
+            .prepare_admission(
+                self.run.cluster_id.clone(),
+                binding,
+                requirement,
+                self.caller.admission_caller()?,
+            )
+            .await?;
+        // Ready holds the canonical owner's final current policy check. This
+        // fence samples broker memory only; never re-enter that owner here.
+        if let Err(error) = self.caller.current_task_connection(state) {
+            return ready.complete(Err(error)).await;
+        }
+        let already_ready = self.ready(state).is_some();
+        let worker_state = Arc::clone(state);
+        let app = self.app.clone();
+        let workspace = destination.workspace.clone();
+        let record = destination.record.clone();
+        let place = place.clone();
+        let runtime = tokio::runtime::Handle::current();
+        let room = self.run.cluster_id.clone();
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            // Keep readiness with the worker even if the local future is
+            // cancelled: custody and launch must finish before releasing it.
+            let state = &worker_state;
+            let mut admitted = false;
+            let result = (|| {
+                let mut guard = state
+                    .journal
+                    .lock()
+                    .map_err(|_| "launch journal unavailable")?;
+                let journal = guard
+                    .as_mut()
+                    .map_err(|error| error.clone())?
+                    .as_mut()
+                    .ok_or("durable launch journal absent")?;
+                let wire = state.invocation_id.fetch_add(1, Ordering::Relaxed);
+                if !journal.admit(key.clone(), intent, wire)? {
+                    let retained = journal.lookup(&key)?.ok_or("launch custody disappeared")?;
+                    return if !retained.uncertain
+                        && matches!(
+                            retained.update,
+                            tilo_actions::InvocationUpdate::Succeeded { .. }
+                        ) {
                         Ok(())
                     } else {
-                        state.launch_retained(
-                            &self.app,
-                            &destination.workspace,
-                            destination
-                                .record
-                                .as_deref()
-                                .filter(|record| !record.is_empty()),
-                            place,
-                        )
+                        Err("host activation outcome uncertain; review before retrying".into())
                     };
-                    let update = match &result {
-                        Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
-                            invocation: key.invocation,
-                            output: tilo_actions::ActionOutput::default(),
+                }
+                drop(guard);
+                admitted = true;
+                // Custody is on disk before the existing on-system host path runs.
+                let result = if already_ready {
+                    Ok(())
+                } else {
+                    state.launch_retained(
+                        &app,
+                        &workspace,
+                        record.as_deref().filter(|record| !record.is_empty()),
+                        &place,
+                    )
+                };
+                let update = match &result {
+                    Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
+                        invocation: key.invocation,
+                        output: tilo_actions::ActionOutput::default(),
+                    },
+                    Err(message) => tilo_actions::InvocationUpdate::Failed {
+                        invocation: key.invocation,
+                        error: tilo_actions::ActionFailure {
+                            code: "host_activation_failed".into(),
+                            message: message.clone(),
+                            details: None,
+                            retryable: false,
                         },
-                        Err(message) => tilo_actions::InvocationUpdate::Failed {
-                            invocation: key.invocation,
-                            error: tilo_actions::ActionFailure {
-                                code: "host_activation_failed".into(),
-                                message: message.clone(),
-                                details: None,
-                                retryable: false,
-                            },
-                        },
-                    };
-                    let mut guard = state
-                        .journal
-                        .lock()
-                        .map_err(|_| "launch journal unavailable")?;
-                    guard
-                        .as_mut()
-                        .map_err(|error| error.clone())?
-                        .as_mut()
-                        .ok_or("durable launch journal absent")?
-                        .update(&key, update, false)?;
-                    result
-                },
-            )
+                    },
+                };
+                let mut guard = state
+                    .journal
+                    .lock()
+                    .map_err(|_| "launch journal unavailable")?;
+                guard
+                    .as_mut()
+                    .map_err(|error| error.clone())?
+                    .as_mut()
+                    .ok_or("durable launch journal absent")?
+                    .update(&key, update, false)?;
+                result
+            })();
+            // Grant mutation can re-enter the owner. Finish the guarded turn
+            // first, and keep cleanup on this worker even if the caller leaves.
+            let completion = runtime.block_on(ready.complete(result.clone()));
+            if admitted {
+                state.spend_once_grants(&room, &spent);
+            }
+            completion?;
+            result
+        })
+        .await
+        .map_err(|_| "native host launch interrupted; outcome unknown")?
     }
 
     fn check_retained_contract(
@@ -287,8 +384,9 @@ impl NativeLaunch {
         let record = journal.lookup(&key)?;
         drop(guard);
         if let Some(record) = record {
-            let request = serde_json::json!({"provider":self.provider,"resource":self.resource,
-                "action":self.action,"argument":self.argument});
+            let request = serde_json::json!({"provider":self.provider,
+                "resource":tilo_actions::selection::logical_resource_id(&self.resource),
+                "action":self.action,"argument":self.original_argument});
             if !record.admitted_request_is(&request)
                 || record.intent.get("caller")
                     != Some(
@@ -322,7 +420,11 @@ impl NativeLaunch {
         Ok(())
     }
 
-    pub(super) fn deliver(&self, state: &CapnpBrokerState, peer: u64) -> Result<u64, String> {
+    pub(super) async fn deliver(
+        &self,
+        state: &Arc<CapnpBrokerState>,
+        peer: u64,
+    ) -> Result<u64, String> {
         self.check(state)?;
         if self.bootstrap {
             let caller = Caller::local_agent(&self.run.agent_id).in_room(&self.run.cluster_id);
@@ -330,7 +432,9 @@ impl NativeLaunch {
                 state,
                 &self.destination(state)?,
                 &state.launch_place(&caller, &self.run.cluster_id, None),
-            )?;
+                None,
+            )
+            .await?;
             let key = self.launch_key(state)?;
             let guard = state
                 .journal
@@ -380,11 +484,16 @@ impl NativeLaunch {
                     argument: self.argument.as_deref(),
                 },
                 (
-                    Some(&(self.caller.clone(), self.invocation)),
-                    self.confirmed,
+                    Some(&(
+                        self.caller.clone(),
+                        self.invocation,
+                        self.original_argument.as_deref(),
+                    )),
+                    self.confirmation.as_deref(),
                 ),
                 offered,
             )
+            .await
             .map(|job| job.id)
     }
 }
@@ -426,9 +535,9 @@ impl CapnpBrokerState {
         {
             return Ok(None);
         }
-        let Some(app) = target.resource.strip_prefix("app.") else {
+        if !target.resource.starts_with("app.") {
             return Ok(None);
-        };
+        }
         caller.current(self)?;
         let key = host_activation_key(self, run, invocation)?;
         let guard = self
@@ -445,7 +554,8 @@ impl CapnpBrokerState {
         let Some(record) = record else {
             return Ok(None);
         };
-        let request = serde_json::json!({"provider":target.provider,"resource":target.resource,
+        let request = serde_json::json!({"provider":target.provider,
+            "resource":tilo_actions::selection::logical_resource_id(target.resource),
             "action":target.action,"argument":target.argument});
         if !record.admitted_request_is(&request)
             || record.uncertain
@@ -457,28 +567,23 @@ impl CapnpBrokerState {
         let service = self
             .native_tasks(&run.cluster_id)
             .ok_or("native launch owner absent")?;
-        let mut binding = run.native.clone().ok_or("native launch binding absent")?;
-        binding.revision = service
-            .snapshot(&run.cluster_id)?
-            .controls
-            .get(&binding.task_id)
-            .and_then(|control| control.active_run.as_ref())
-            .ok_or("native task run ended")?
-            .applied_direction_revision;
-        let requirement = NativeTaskActionRequirement {
-            binding: Some(binding.clone()),
-            app: app.into(),
-            resource_kind: "applications.app".into(),
-            resource: target.resource.into(),
-            action: target.action.into(),
-            need: tilo_actions::ActionNeed::of(tilo_actions::ActionKind::Undoable),
-            consequential: false,
-            confirmed: false,
-        };
-        service.admit_host_launch(&run.cluster_id, &binding, &requirement, &mut || {
-            caller.authorize_host_action(self, &run.cluster_id, &requirement)?;
-            Ok(())
-        })?;
+        let requirement = caller.authorize_retained_task(
+            self,
+            (
+                &record,
+                &run.native
+                    .as_ref()
+                    .ok_or("native launch binding absent")?
+                    .actor()?,
+            ),
+        )?;
+        // Observing a retained activation never reserves or dispatches again.
+        service.authorize_retained_action(
+            &run.cluster_id,
+            &run.agent_id,
+            &requirement,
+            record.key.invocation.0,
+        )?;
         Ok(Some((
             record.wire_id,
             record.update.with_invocation(invocation),
@@ -535,11 +640,12 @@ impl CapnpBrokerState {
             resource: target.resource.into(),
             action: target.action.into(),
             argument: target.argument.map(str::to_owned),
+            original_argument: target.argument.map(str::to_owned),
             app,
             record,
             retained,
             bootstrap,
-            confirmed: false,
+            confirmation: None,
         })
     }
 
@@ -554,28 +660,50 @@ impl CapnpBrokerState {
         let mut confirmation = None;
         if let Some(retained) = native.retained.clone()
             && let super::native_task_confirmation::NativeGate::Confirmed {
+                invocation,
                 argument,
+                reference,
                 confirmation: id,
             } = self
                 .native_confirmation_for(
                     &native.run,
-                    reask.lease,
+                    super::native_task_confirmation::ConfirmationContext {
+                        lease: reask.lease,
+                        invocation: reask.invocation.0,
+                        provider: &native.provider,
+                    },
                     (&native.app, &retained),
                     (target.resource, target.action),
                     target.argument,
                 )
                 .await?
         {
+            native.invocation = tilo_actions::InvocationId(invocation);
+            // Resolve a previously started child before checking activation or
+            // attempting to consume this still-held answer again.
+            if let Some(observed) = self.native_task_observation(
+                &native.run,
+                native.invocation,
+                target,
+                &native.caller,
+            )? {
+                return Ok(observed);
+            }
             native.argument = Some(argument);
-            native.confirmed = true;
+            native.confirmation = Some(reference);
             confirmation = Some(id);
         }
-        let destination = native.destination(self)?;
+        let preparation_state = Arc::clone(self);
+        let preparation = native.clone();
+        let destination =
+            tokio::task::spawn_blocking(move || preparation.destination(&preparation_state))
+                .await
+                .map_err(|_| "native task destination preparation interrupted".to_owned())??;
         // The ordinary delivery loop uses this label only for actor-view placement.
         // Authority comes from the captured signed LocalCaller and native owner admission.
         let caller = Caller::local_agent(&native.run.agent_id).in_room(&native.run.cluster_id);
         let request = InvokeRequest {
-            invocation: reask.invocation,
+            invocation: native.invocation,
             target: RemoteActionTarget {
                 provider: native.provider.clone(),
                 address: tilo_actions::ActionAddress::new(target.resource, target.action),
@@ -594,6 +722,7 @@ impl CapnpBrokerState {
             wait_ms: None,
         };
         let launch_key = native.launch_key(self)?;
+        let invocation = native.invocation;
         let (completer, answer) = pending::<Result<u64, tilo_actions::remote::ActionHostError>>();
         let run = native.run.clone();
         let state = Arc::clone(self);
@@ -632,7 +761,7 @@ impl CapnpBrokerState {
                     .as_ref()?
                     .lookup(&launch_key)
                     .ok()?
-                    .map(|record| record.update.with_invocation(reask.invocation))
+                    .map(|record| record.update.with_invocation(invocation))
             })
             .ok_or("native activation state absent")?;
         Ok((id, update))

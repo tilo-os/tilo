@@ -435,6 +435,103 @@ impl OriginalInvocationData {
         }
         Ok(())
     }
+    /// Revalidate the original caller and exact admitted child, never action context.
+    pub(super) fn check_native_model_source(
+        &self,
+        state: &CapnpBrokerState,
+        requirement: &crate::services::NativeTaskActionRequirement,
+    ) -> Result<(), String> {
+        self.check_native_model_custody(requirement)?;
+        let InvocationCaller::Local { route, admitted } = &self.caller else {
+            return Err("native MODEL requires authenticated native task origin".into());
+        };
+        state
+            .revalidate_admission(route, admitted)
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    /// Revalidate against the already locked owner, without entering membership.
+    pub(super) fn check_native_model_current_source(
+        &self,
+        requirement: &crate::services::NativeTaskActionRequirement,
+        view: &tilo_joined_room::NativeCommittedView,
+        now: std::time::SystemTime,
+    ) -> Result<(), String> {
+        self.check_native_model_custody(requirement)?;
+        let InvocationCaller::Local { admitted, .. } = &self.caller else {
+            return Err("native MODEL original authenticated caller absent".into());
+        };
+        let certificate = admitted
+            .certificate
+            .as_ref()
+            .ok_or("native MODEL original certificate absent")?;
+        view.peer()
+            .permissions(certificate.device_public_key, now)?;
+        Ok(())
+    }
+
+    /// Check delivered custody without entering the membership owner again.
+    fn check_native_model_custody(
+        &self,
+        requirement: &crate::services::NativeTaskActionRequirement,
+    ) -> Result<(), String> {
+        let binding = requirement
+            .binding
+            .as_ref()
+            .ok_or("native MODEL binding absent")?;
+        let child = requirement
+            .invocation
+            .as_ref()
+            .ok_or("native MODEL child absent")?;
+        let InvocationCaller::Local { admitted, .. } = &self.caller else {
+            return Err("native MODEL requires authenticated native task origin".into());
+        };
+        if admitted.agent_id.as_deref() != Some(binding.agent_id.as_str())
+            || self.request.invocation.0 != child.id
+            || self.route.app_id != requirement.app
+            || self.resource_kind != requirement.resource_kind
+            || self.request.address.resource != requirement.resource
+            || self.request.address.action != requirement.action
+            || self.request.argument != child.arguments
+            || self.spec.contract != child.contract
+            || self
+                .execution
+                .as_ref()
+                .is_some_and(|lease| !lease.is_live())
+        {
+            return Err("native MODEL original child custody mismatch".into());
+        }
+        Ok(())
+    }
+
+    /// Only the transport-authenticated native Agent channel can send task mail.
+    /// The public action's payload has no actor, role or permission fields.
+    pub(super) fn check_native_mailbox_source(
+        &self,
+        state: &CapnpBrokerState,
+        binding: &crate::services::NativeTaskBinding,
+    ) -> Result<(), String> {
+        let InvocationCaller::Local { route, admitted } = &self.caller else {
+            return Err("task messages require the native Agent transport".into());
+        };
+        if admitted.agent_id.as_deref() != Some(binding.agent_id.as_str())
+            || !matches!(
+                self.request.address.action.as_str(),
+                "send-message" | "wait-task-message"
+            )
+            || (self.request.address.action == "wait-task-message"
+                && self.spec.contract.kind != tilo_actions::ActionKind::Read)
+            || self.spec.contract.field.as_deref() != Some("inbox")
+        {
+            return Err("task message source custody mismatch".into());
+        }
+        state
+            .revalidate_admission(route, admitted)
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     pub(super) fn permits_clipboard(&self, needed: tilo_actions::ActionKind) -> bool {
         self.spec.contract.kind >= needed
             && self
@@ -475,15 +572,19 @@ impl OriginalInvocationData {
                     .ok_or("original person certificate unavailable")?
             }
             InvocationCaller::Local { route, admitted } => {
-                if route != &self.route {
-                    return Err("original local caller route changed".into());
+                // The retained route identifies the invoking app; self.route
+                // identifies the target (for example Chat reading a desktop
+                // task). Revalidate the original app, within the same room.
+                if route.cluster_id != self.route.cluster_id {
+                    return Err("original local caller room changed".into());
                 }
                 if admitted.agent_id.is_some() {
                     return Err("this action requires an authenticated person".into());
                 }
-                admitted
+                state
+                    .revalidate_admission(route, admitted)
+                    .map_err(|error| error.to_string())?
                     .certificate
-                    .clone()
                     .ok_or("original person certificate unavailable")?
             }
         };

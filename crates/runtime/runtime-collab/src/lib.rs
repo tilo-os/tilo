@@ -41,6 +41,10 @@
 pub mod private_draft;
 pub mod task_control;
 pub use task_control::{TaskDirection, TaskRunControl, TaskRunStatus, native_task_revision};
+pub use tilo_actions::task_messaging::{
+    TaskMessage, TaskMessageSend, TaskMessageStatus, TaskOutputRef, TaskOutputStatus, TaskReport,
+    TaskReportKind, TaskReportRole, TaskRunAddress,
+};
 
 #[cfg(feature = "client")]
 use std::rc::Rc;
@@ -2012,16 +2016,115 @@ impl ChannelHandle {
         ))
     }
 
+    /// Claim one opaque native inference attempt for the delivered lease.
+    /// # Errors
+    /// Refuses non-native, stale, replaced or unauthorized leases.
+    pub async fn claim_native_model(
+        &self,
+        run_id: u64,
+        lease: &str,
+    ) -> Result<serde_json::Value, NotAvailable> {
+        self.native_model_rpc(&serde_json::json!({
+            "command": "claim", "run_id": run_id, "lease": lease
+        }))
+        .await
+    }
+
+    /// Claim native inference for a child delivered to this connection. The host
+    /// resolves its exact task/run from private admission data, not action context.
+    /// # Errors
+    /// Refuses foreign, cancelled, non-native or unjournaled invocations.
+    pub async fn claim_native_model_for_invocation(
+        &self,
+        invocation_id: u64,
+    ) -> Result<serde_json::Value, NotAvailable> {
+        self.native_model_rpc(&serde_json::json!({
+            "command": "claim_invocation", "invocation_id": invocation_id
+        }))
+        .await
+    }
+
+    /// Execute a NativePlan/NativeTransform/NativeComplete through host custody.
+    /// The response contains bounded `events` and the final gateway `response`.
+    /// # Errors
+    /// Refuses lost custody, oversized data or invalid protected requests.
+    pub async fn execute_native_model(
+        &self,
+        request: &serde_json::Value,
+    ) -> Result<serde_json::Value, NotAvailable> {
+        self.native_model_rpc(&serde_json::json!({
+            "command": "execute", "request": request
+        }))
+        .await
+    }
+
+    async fn native_model_rpc(
+        &self,
+        command: &serde_json::Value,
+    ) -> Result<serde_json::Value, NotAvailable> {
+        let bytes =
+            serde_json::to_vec(command).map_err(|error| capnp::Error::failed(error.to_string()))?;
+        if bytes.len() > 8 * 1024 * 1024 {
+            return Err(capnp::Error::failed("native model request too large".into()).into());
+        }
+        let mut request = self.inner.native_model_request();
+        request.get().set_command(&bytes);
+        let reply = request.send().promise.await?;
+        let value = reply.get()?;
+        let bytes = value.get_reply()?;
+        if bytes.len() > 16 * 1024 * 1024 {
+            return Err(capnp::Error::failed("native model reply too large".into()).into());
+        }
+        serde_json::from_slice(bytes)
+            .map_err(|error| capnp::Error::failed(error.to_string()).into())
+    }
+
     /// Whether Task Center requested cooperative cancellation for this exact
     /// leased run. A `true` response is advisory to a running action, but an
     /// agent must not start another action after observing it.
     ///
     /// # Errors
-    ///
     /// Returns [`NotAvailable`] if the broker connection is unavailable or
     /// drops during the call.
     pub async fn task_run_cancelled(&self, run_id: u64, lease: &str) -> Result<bool, NotAvailable> {
         Ok(self.task_run_status(run_id, lease).await?.cancelled)
+    }
+
+    /// Read original owner-private automatic reports for this exact leased run.
+    ///
+    /// # Errors
+    /// Refuses stale leases, unavailable owners, and malformed transcript data.
+    pub async fn task_report_transcript(
+        &self,
+        run_id: u64,
+        lease: &str,
+    ) -> Result<Vec<TaskReport>, NotAvailable> {
+        let mut request = self.inner.task_report_transcript_request();
+        request.get().set_run_id(run_id);
+        request.get().set_lease(lease);
+        let reply = request.send().promise.await?;
+        let value = reply.get()?;
+        let json = value
+            .get_reports_json()?
+            .to_str()
+            .map_err(|_| capnp::Error::failed("invalid task transcript UTF-8".into()))?;
+        if json.len() > 40 * 1024 * 1024 {
+            return Err(capnp::Error::failed("oversized task transcript".into()).into());
+        }
+        let reports: Vec<TaskReport> = serde_json::from_str(json)
+            .map_err(|_| capnp::Error::failed("invalid task transcript".into()))?;
+        if reports.len() > 4096 {
+            return Err(capnp::Error::failed("oversized task transcript".into()).into());
+        }
+        let mut prior = 0;
+        for report in &reports {
+            report.validate().map_err(capnp::Error::failed)?;
+            if report.sequence <= prior {
+                return Err(capnp::Error::failed("invalid task transcript ordering".into()).into());
+            }
+            prior = report.sequence;
+        }
+        Ok(reports)
     }
 
     /// Observe cancellation and bounded steering on this authenticated run.
@@ -2891,6 +2994,11 @@ pub enum TaskRunUpdate {
     DirectionsApplied {
         revision: u64,
     },
+    /// Internal native runner report, never an action argument or model output.
+    /// Emitted only after these exact messages entered the model request.
+    InboxIncorporated {
+        message_ids: Vec<String>,
+    },
     Progress {
         message: String,
         /// Private full model-turn snapshot. With `Some`, the native owner
@@ -2951,6 +3059,39 @@ pub struct TaskRunStream {
 
 #[cfg(feature = "client")]
 impl TaskRunStream {
+    /// Observe new private context for this subscription's accepted runs.
+    /// Reading never acknowledges messages or advances instruction revisions.
+    ///
+    /// # Errors
+    /// Rejects unavailable streams and malformed or oversized control pages.
+    pub async fn read_control(&self) -> Result<TaskRunControl, NotAvailable> {
+        let reply = loop {
+            match self.inner.read_control_request().send().promise.await {
+                Err(error)
+                    if error.kind == capnp::ErrorKind::Overloaded
+                        && error.extra == "task control observation superseded" =>
+                {
+                    // The owner changed during the read. The rejected private
+                    // page is never delivered; ask for a freshly authorized one.
+                    tokio::task::yield_now().await;
+                }
+                result => break result?,
+            }
+        };
+        let result = reply.get()?;
+        let json = result
+            .get_control_json()?
+            .to_str()
+            .map_err(|error| capnp::Error::failed(error.to_string()))?;
+        if json.len() > TaskRunControl::MAX_BYTES {
+            return Err(capnp::Error::failed("task control exceeds size limit".into()).into());
+        }
+        let control: TaskRunControl =
+            serde_json::from_str(json).map_err(|error| capnp::Error::failed(error.to_string()))?;
+        control.validate().map_err(capnp::Error::failed)?;
+        Ok(control)
+    }
+
     /// Pull the next task run, rejecting malformed broker data rather than
     /// presenting an agent with an ambiguous authority envelope.
     ///

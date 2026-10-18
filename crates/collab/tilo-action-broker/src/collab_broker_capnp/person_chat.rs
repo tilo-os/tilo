@@ -148,7 +148,10 @@ impl CapnpChannelHandle {
             drop(pending);
             if let Some(token) = original.private_draft_token() {
                 let (actor, draft) = self.private_draft_authority(token, id.as_bytes())?;
-                let runtime_collab::private_draft::Target::Person { public_key } = draft.target;
+                let runtime_collab::private_draft::Target::Person { public_key } = draft.target
+                else {
+                    return Err("task draft cannot enter a person conversation".into());
+                };
                 if !matches!(&command,
                     PersonChatCommand::Open { public_key: peer } | PersonChatCommand::Read { public_key: peer }
                         if peer == &public_key)

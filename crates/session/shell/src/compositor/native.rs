@@ -1432,8 +1432,15 @@ fn publish_native_agent_markers(
                     .intersect(source.painted_rect);
                 (placed.width() > 0.0 && placed.height() > 0.0).then_some(placed)
             };
+            let task = frame.host().certified_marker_task(
+                &room,
+                &source.app_id,
+                &identity.agent_key,
+                &painted.interaction,
+            )?;
             let user = ui::permissions::UserId(identity.participant_id);
             Some(crate::shell::overlay_host::AccessibleAgentMarker {
+                task,
                 connection,
                 surface: source.surface,
                 app_id: source.app_id.clone(),
@@ -1510,25 +1517,10 @@ fn revalidate_native_agent_markers(
                 })
                 .is_some_and(|identity| identity.agent_key == marker.agent)
     });
-    // A composer opened on a selection stands beside no marker, so only the
-    // agent's admission (the identity revision) and suppression close it.
-    let about_selection = frame
-        .host_mut()
-        .agent_quick_composer_mut()
-        .about_selection();
+    // Marker presence expires independently of a retained private editor.
+    // Revocation disables its controls; disappearance never erases or retargets it.
     if let Some(owner) = frame.host_mut().agent_quick_composer_mut().owner().cloned()
         && (suppressed
-            || !about_selection
-                && !current.values().any(|source| {
-                    source.launch.workspace_id == owner.room
-                        && source
-                            .agents
-                            .get(&owner.agent)
-                            .and_then(|actor| {
-                                broker.as_ref()?.certified_marker_agent(&owner.room, actor)
-                            })
-                            .is_some_and(|identity| identity.agent_key == owner.agent)
-                })
             || broker
                 .as_ref()
                 .and_then(|source| source.identity_revision(&owner.room))
@@ -1560,7 +1552,22 @@ fn revalidate_native_agent_markers(
     };
     drop(broker);
     let person = frame.chrome_handle().borrow().active_local_user();
-    frame.host_mut().open_agent_quick_composer(
+    if frame
+        .host()
+        .certified_marker_task(
+            &marker.room,
+            &marker.app_id,
+            &marker.agent,
+            &marker.interaction,
+        )
+        .as_ref()
+        != Some(&marker.task)
+    {
+        return changed;
+    }
+    let task = marker.task.clone();
+    let painted_origin = (marker.app_id.clone(), marker.interaction.clone());
+    let opened = frame.host_mut().open_agent_quick_composer(
         crate::shell::agent_quick_composer::ComposerOwner {
             room: marker.room,
             agent: identity.agent_key,
@@ -1573,7 +1580,14 @@ fn revalidate_native_agent_markers(
             protected: marker.protected,
             context: marker.description,
         },
-    ) || changed
+    );
+    if opened {
+        frame
+            .host_mut()
+            .agent_quick_composer_mut()
+            .bind_painted_task(task, painted_origin.0, painted_origin.1);
+    }
+    opened || changed
 }
 
 fn external_floating_parts(id: &str) -> Option<(u64, &str)> {
@@ -3487,9 +3501,9 @@ impl ControlState for FrameBuilderControlState<'_> {
     fn windows_json(&self) -> Result<serde_json::Value, String> {
         let chrome = self.fb.chrome();
         let tree = chrome.tree();
-        Ok(serde_json::Value::Array(test_control::window_rows(
-            &tree.desktop,
-        )))
+        Ok(serde_json::Value::Array(
+            crate::shell::host_window_contracts::window_rows(&tree),
+        ))
     }
 
     /// Report the compositor's own frame bookkeeping for every foreign toplevel.

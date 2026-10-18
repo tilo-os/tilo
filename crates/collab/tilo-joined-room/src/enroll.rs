@@ -50,10 +50,6 @@ fn active(
 /// or answers out of scope, custody changes during the exchange, or the
 /// Complete is not acknowledged (its proof is then retained for an exact
 /// retry).
-#[allow(
-    clippy::too_many_lines,
-    reason = "one ordered exchange: prepare, persist, send, verify and hand back closed evidence"
-)]
 pub async fn prepare_and_complete(
     client: WorkspaceJoinClient,
     identity: HostIdentity,
@@ -61,6 +57,55 @@ pub async fn prepare_and_complete(
     local: Option<WorkspaceId>,
     invitation: String,
     owner: NativeWorkspaceOwner,
+) -> Result<VerifiedNativeEnrollment, String> {
+    exchange(
+        client,
+        identity,
+        identity_topic,
+        local,
+        invitation,
+        owner,
+        false,
+    )
+    .await
+}
+
+/// Explicitly re-enroll a lagging room through its authenticated pinned host.
+/// The owner retains resource state and installs only a newer current-chain
+/// baseline; ordinary enrollment and room sync never reset an existing replica.
+/// # Errors
+/// Refuses changed custody, an unanchored response, replay, or a failed exchange.
+pub async fn prepare_reenrollment_and_complete(
+    client: WorkspaceJoinClient,
+    identity: HostIdentity,
+    identity_topic: u64,
+    invitation: String,
+    owner: NativeWorkspaceOwner,
+) -> Result<VerifiedNativeEnrollment, String> {
+    exchange(
+        client,
+        identity,
+        identity_topic,
+        None,
+        invitation,
+        owner,
+        true,
+    )
+    .await
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ordered exchange: prepare, persist, send, verify and hand back closed evidence"
+)]
+async fn exchange(
+    client: WorkspaceJoinClient,
+    identity: HostIdentity,
+    identity_topic: u64,
+    local: Option<WorkspaceId>,
+    invitation: String,
+    owner: NativeWorkspaceOwner,
+    recovery: bool,
 ) -> Result<VerifiedNativeEnrollment, String> {
     if invitation.len() > 384 * 1024 {
         return Err("native invitation exceeds bound".into());
@@ -91,7 +136,11 @@ pub async fn prepare_and_complete(
         }
         // Reuse the recorded proof even when its original challenge has expired.
         // The issuing host alone resolves durable Complete idempotency/current membership.
-        let id = owner.prepare_enrollment_into(&intent, local, SystemTime::now())?;
+        let id = if recovery {
+            owner.prepare_reenrollment(&intent, SystemTime::now())?
+        } else {
+            owner.prepare_enrollment_into(&intent, local, SystemTime::now())?
+        };
         if &id != pending.id() {
             return Err("native retry changed pending generation".into());
         }
@@ -180,7 +229,11 @@ pub async fn prepare_and_complete(
             hint,
             prepared,
         )?;
-        let id = owner.prepare_enrollment_into(&intent, local, prepared)?;
+        let id = if recovery {
+            owner.prepare_reenrollment(&intent, prepared)?
+        } else {
+            owner.prepare_enrollment_into(&intent, local, prepared)?
+        };
         (intent, id)
     };
     current(&identity, identity_topic, &device)?;

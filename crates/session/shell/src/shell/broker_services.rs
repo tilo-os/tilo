@@ -22,10 +22,15 @@ mod owner_source;
 mod person_chat;
 #[cfg(test)]
 pub(crate) use owner_source::OPENING as NATIVE_OWNER_OPENING;
+mod model_start;
+mod native_model;
 mod resource_views;
 #[cfg(target_os = "linux")]
 mod service_sessions;
+mod task_compute;
+mod task_custody;
 mod task_execution;
+mod task_mailboxes;
 pub use nearby_transfer::NativeNearbyTransfer;
 use std::sync::Arc;
 use tilo_action_broker::services::{
@@ -42,11 +47,13 @@ use tilo_action_broker::services::{
 /// Built on the compositor's loop, so building it only starts the owner's
 /// open ([`owner_source`]): synchronous questions answer from an owner
 /// already open, commits wait for the open inside their futures.
+#[derive(Clone)]
 pub(crate) struct NativeOwnerCommitService {
     tree: WorkspaceTreeHandle,
     owner: owner_source::OwnerSource,
     network: Option<Arc<super::network::ShellNetwork>>,
     history_keys: Option<tilo_action_broker::channel_encryption::ChannelKeyProvider>,
+    task_executors: Arc<tilo_action_broker::services::NativeTaskExecutorRegistry>,
 }
 impl NativeOwnerCommitService {
     pub(crate) fn new(
@@ -58,6 +65,7 @@ impl NativeOwnerCommitService {
             tree,
             network,
             history_keys: None,
+            task_executors: Arc::default(),
         }
     }
     /// The owner, waiting for its open: for a worker thread, never the loop.
@@ -83,7 +91,7 @@ impl tilo_owner_commit::OwnerCommitService for NativeOwnerCommitService {
     ) -> tilo_owner_commit::CommitFuture {
         let owner = self.owner.clone();
         let network = self.network.clone();
-        Box::pin(async move {
+        Box::pin(task_custody::on_owner_worker(move || async move {
             let owner = owner
                 .resolve()
                 .map_err(|error| format!("native effect governor unavailable: {error}"))?;
@@ -107,7 +115,7 @@ impl tilo_owner_commit::OwnerCommitService for NativeOwnerCommitService {
                 network.schedule_native_owner_publication(room);
             }
             Ok(receipt)
-        })
+        }))
     }
     fn requires_room(&self, room: &str) -> bool {
         super::state::RoomId::parse(room)
@@ -121,14 +129,15 @@ impl tilo_owner_commit::OwnerCommitService for NativeOwnerCommitService {
         &self,
         request: tilo_owner_commit::OwnerCommitRequest,
     ) -> tilo_owner_commit::CommitFuture {
+        let service = self.clone();
         let owner = self.owner.clone();
         let network = self.network.clone();
-        Box::pin(async move {
+        Box::pin(task_custody::on_owner_worker(move || async move {
             let owner = owner
                 .resolve()
                 .map_err(|error| format!("native durable owner unavailable: {error}"))?;
             let room = super::state::RoomId::parse(&request.room).ok_or("invalid native room")?;
-            if let Some(network) = network {
+            if let Some(network) = network.as_ref() {
                 network.check_native_custody(&owner, room)?;
                 // The room's receipts are its governor's to record.
                 if let tilo_owner_commit::CommitOperation::EffectReceipt { redacted, .. } =
@@ -143,7 +152,24 @@ impl tilo_owner_commit::OwnerCommitService for NativeOwnerCommitService {
                 request.operation,
                 tilo_owner_commit::CommitOperation::WorkspaceTaskCommand { .. }
             ) {
-                return owner.commit_workspace_task_command(request, std::time::SystemTime::now());
+                if network
+                    .as_ref()
+                    .is_some_and(|network| network.governed_elsewhere(room))
+                {
+                    return service.forward_task_command(&request).await;
+                }
+                let (key, _) = tilo_identity_host::broker::trusted_current_device(&request.room)
+                    .map_err(|error| format!("task governor custody unavailable: {error}"))?;
+                let receipt = service.commit_task_with_model_start(
+                    &owner,
+                    request,
+                    &key,
+                    std::time::SystemTime::now(),
+                )?;
+                if let Some(network) = network.as_ref() {
+                    network.schedule_native_owner_publication(room);
+                }
+                return Ok(receipt);
             }
             if matches!(
                 request.operation,
@@ -156,11 +182,41 @@ impl tilo_owner_commit::OwnerCommitService for NativeOwnerCommitService {
             } else {
                 owner.commit_document(request, std::time::SystemTime::now())
             }
-        })
+        }))
     }
 }
 
 impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitService {
+    fn prepare_task_start(
+        &self,
+        request: tilo_owner_commit::OwnerCommitRequest,
+    ) -> Result<Box<dyn tilo_action_broker::services::PendingNativeTaskStart>, String> {
+        self.prepare_native_task_start(request)
+    }
+
+    fn task_compute(
+        &self,
+        room: &str,
+        caller: &tilo_user_identity::DeviceCert,
+    ) -> Result<Option<Vec<tilo_action_broker::services::NativeTaskComputeRegistration>>, String>
+    {
+        self.current_task_compute(room, caller)
+    }
+
+    fn task_compute_configuration(
+        &self,
+        room: &str,
+        caller: &tilo_user_identity::DeviceCert,
+    ) -> Result<Option<String>, String> {
+        if let Some(sample) = self.governor_task_compute(room, caller)? {
+            return Ok(sample.configured_model);
+        }
+        if self.current_task_compute(room, caller)?.is_none() {
+            return Ok(None);
+        }
+        Ok(task_compute::configured_model().ok())
+    }
+
     fn checkpoint_result_access(
         &self,
         room: &str,
@@ -208,7 +264,7 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
     ) -> tilo_peer_state::workspace_checkpoint::CheckpointFuture {
         let owner = self.owner.clone();
         let network = self.network.clone();
-        Box::pin(async move {
+        Box::pin(task_custody::on_owner_worker(move || async move {
             let owner = owner
                 .resolve()
                 .map_err(|error| format!("native checkpoint governor unavailable: {error}"))?;
@@ -242,7 +298,7 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
                 network.schedule_native_owner_publication(room);
             }
             Ok(result)
-        })
+        }))
     }
 
     fn requires_room(&self, room: &str) -> bool {
@@ -272,13 +328,78 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
             .workspace_task_snapshot(room)
     }
 
+    fn task_model_contract(
+        &self,
+        room: &str,
+        binding: &tilo_action_broker::services::NativeTaskBinding,
+    ) -> Result<tilo_action_broker::services::NativeModelContract, String> {
+        self.read_task_model_contract(room, binding)
+    }
+
+    fn task_private_instructions(
+        &self,
+        room: &str,
+        task_id: &str,
+        run_epoch: u64,
+        caller: &tilo_user_identity::DeviceCert,
+    ) -> Result<Option<tilo_action_broker::services::NativeTaskPrivateInstructions>, String> {
+        if let Some(text) =
+            task_mailboxes::remote::person_instructions(self, room, task_id, run_epoch, caller)?
+        {
+            return Ok(Some(task_execution::private_text(text)));
+        }
+        let (owner, room) = task_mailboxes::owner(self, room)?;
+        owner
+            .workspace_task_private_instructions(
+                room,
+                task_id,
+                run_epoch,
+                &tilo_peer_state::workspace_task::WorkspaceTaskAuthority::Person {
+                    caller: caller.clone(),
+                },
+                std::time::SystemTime::now(),
+            )
+            .map(|text| text.map(task_execution::private_text))
+    }
+
+    fn task_messages(
+        &self,
+        room: &str,
+        task_id: &str,
+        run_epoch: u64,
+        caller: &tilo_user_identity::DeviceCert,
+    ) -> Result<Vec<tilo_actions::task_messaging::TaskMessage>, String> {
+        task_mailboxes::person_messages(self, room, task_id, run_epoch, caller)
+    }
+
+    fn task_outputs(
+        &self,
+        room: &str,
+        task_id: &str,
+        run_epoch: u64,
+        caller: &tilo_user_identity::DeviceCert,
+    ) -> Result<Vec<tilo_actions::task_messaging::TaskOutputRef>, String> {
+        task_mailboxes::person_outputs(self, room, task_id, run_epoch, caller)
+    }
+
+    fn task_report_transcript(
+        &self,
+        room: &str,
+        task_id: &str,
+        run_epoch: u64,
+        caller: &tilo_user_identity::DeviceCert,
+    ) -> Result<Vec<tilo_actions::task_messaging::TaskReport>, String> {
+        task_mailboxes::person_reports(self, room, task_id, run_epoch, caller)
+    }
+
     fn execute(
         &self,
         request: tilo_owner_commit::OwnerCommitRequest,
     ) -> tilo_owner_commit::CommitFuture {
+        let service = self.clone();
         let owner = self.owner.clone();
         let network = self.network.clone();
-        Box::pin(async move {
+        Box::pin(task_custody::on_owner_worker(move || async move {
             let owner = owner
                 .resolve()
                 .map_err(|error| format!("native membership owner unavailable: {error}"))?;
@@ -287,6 +408,12 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
             if let Some(network) = network.as_ref() {
                 network.check_native_custody(&owner, room)?;
                 if network.governed_elsewhere(room) {
+                    if matches!(
+                        &request.operation,
+                        tilo_owner_commit::CommitOperation::WorkspaceTaskCommand { .. }
+                    ) {
+                        return service.forward_task_command(&request).await;
+                    }
                     return grant_authorship_at_host(network, &owner, room, &request).await;
                 }
             }
@@ -294,7 +421,14 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
                 request.operation,
                 tilo_owner_commit::CommitOperation::WorkspaceTaskCommand { .. }
             ) {
-                owner.commit_workspace_task_command(request, std::time::SystemTime::now())?
+                let (key, _) = tilo_identity_host::broker::trusted_current_device(&request.room)
+                    .map_err(|error| format!("task governor custody unavailable: {error}"))?;
+                service.commit_task_with_model_start(
+                    &owner,
+                    request,
+                    &key,
+                    std::time::SystemTime::now(),
+                )?
             } else {
                 let (key, governor) =
                     tilo_identity_host::broker::trusted_current_device(&request.room)
@@ -310,7 +444,7 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
                 network.schedule_native_owner_publication(room);
             }
             Ok(receipt)
-        })
+        }))
     }
 }
 
@@ -863,6 +997,30 @@ fn launch_host_application(
 }
 
 impl LauncherServices for NativeLauncher {
+    fn launch_task_executor(
+        &self,
+        agent: &str,
+        workspace: &tilo_desktop_model::Workspace,
+    ) -> Result<(), String> {
+        let owner = match &self.1 {
+            Some(network) => network.native_owner()?,
+            None => super::native_workspace_owner::open(
+                self.0
+                    .as_ref()
+                    .ok_or("managed agent membership unavailable")?
+                    .clone(),
+            )?,
+        };
+        let launched = super::launcher::launch_workspace_agent_with_owner(agent, workspace, &owner)
+            .map(drop)
+            .map_err(|error| error.user_message());
+        // Admission can have committed even if spawning the process failed.
+        if let Some(network) = &self.1 {
+            network.schedule_native_owner_publication(workspace.room);
+        }
+        launched
+    }
+
     fn begin_executing_binding_observation(&self, launcher_pid: u32) -> Option<u64> {
         super::launcher::LaunchSession::current()
             .launch_history
@@ -1075,6 +1233,20 @@ impl LauncherServices for NativeLauncher {
                 .map_err(|e| e.to_string())
         })
         .map(|ticket| Launched::Started { ticket })
+    }
+    fn protected_model_launch(
+        &self,
+        pid: u32,
+        app: &str,
+        room: &str,
+    ) -> Result<Option<launcher::registration_gate::ProtectedModelLaunch>, String> {
+        let context = super::launcher::registered_protected_model_launch(pid);
+        if let Some(context) = &context {
+            context
+                .validate(app, Some(room))
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(context)
     }
     fn authenticated_launch(
         &self,
@@ -1786,8 +1958,12 @@ fn native_document_reads(
 fn native_workspace_memberships(
     tree: &WorkspaceTreeHandle,
     network: Option<Arc<super::network::ShellNetwork>>,
+    task_executors: Arc<tilo_action_broker::services::NativeTaskExecutorRegistry>,
 ) -> Arc<dyn tilo_action_broker::services::WorkspaceMemberships> {
-    Arc::new(NativeOwnerCommitService::new(tree.clone(), network))
+    Arc::new(NativeOwnerCommitService {
+        task_executors,
+        ..NativeOwnerCommitService::new(tree.clone(), network)
+    })
 }
 
 fn native_task_execution(
@@ -1827,12 +2003,18 @@ pub fn native_services(
     let committed_documents = membership
         .as_ref()
         .map(|tree| native_document_reads(tree, network.clone(), history_keys));
-    let workspace_memberships = membership
-        .as_ref()
-        .map(|tree| native_workspace_memberships(tree, network.clone()));
+    let task_executors = Arc::default();
+    let workspace_memberships = membership.as_ref().map(|tree| {
+        native_workspace_memberships(tree, network.clone(), Arc::clone(&task_executors))
+    });
     let task_execution = membership
         .as_ref()
         .map(|tree| native_task_execution(tree, network.clone()));
+    let native_model = membership.as_ref().map(|tree| {
+        Arc::new(native_model::NativeModels::new(Arc::new(
+            NativeOwnerCommitService::new(tree.clone(), network.clone()),
+        ))) as Arc<dyn tilo_action_broker::native_model::NativeModelHost>
+    });
     let resource_views = native_resource_views(membership.as_ref(), network.as_ref());
     let governance = membership.as_ref().map(|tree| {
         Arc::new(NativeWorkspaceGovernance(tree.clone(), network.clone()))
@@ -1896,6 +2078,8 @@ pub fn native_services(
         committed_documents,
         workspace_memberships,
         task_execution,
+        native_task_executors: Some(task_executors),
+        native_model,
         person_chat: membership
             .as_ref()
             .map(|tree| native_person_chat(tree, network.clone())),
