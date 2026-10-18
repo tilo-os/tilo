@@ -141,6 +141,24 @@ fn launcher_outcome_completes_signed_child_not_parent() {
     }
 }
 
+struct NativePerson;
+
+impl crate::services::LocalPersonServices for NativePerson {
+    fn certificate(
+        &self,
+        room: &str,
+        person: &str,
+    ) -> Result<tilo_user_identity::DeviceCert, String> {
+        let (_, certificate) = tilo_identity_host::broker::trusted_current_device(room)
+            .map_err(|error| error.to_string())?;
+        if crate::collab_broker_capnp::principal_id_for_root(certificate.user_public_key) != person
+        {
+            return Err("different person".into());
+        }
+        Ok(certificate)
+    }
+}
+
 #[test]
 fn protected_native_parent_is_checked_before_child_rebind() {
     let launcher = Arc::new(Launcher {
@@ -149,6 +167,7 @@ fn protected_native_parent_is_checked_before_child_rebind() {
     });
     let fixture = Fixture::new(HostServices {
         launcher: Some(launcher.clone()),
+        local_person: Some(Arc::new(NativePerson)),
         ..Default::default()
     });
     let InvocationCaller::Local { admitted, .. } = &fixture.origin else {
