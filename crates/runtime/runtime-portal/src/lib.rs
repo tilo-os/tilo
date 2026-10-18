@@ -22,6 +22,8 @@
 //! expected to fall back to a local-only mode.
 
 pub mod agent_transport;
+#[cfg(target_os = "linux")]
+pub mod jobs;
 pub mod local_socket;
 pub mod pending_connection;
 pub mod process_binding;

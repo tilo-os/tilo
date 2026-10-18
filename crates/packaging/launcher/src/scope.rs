@@ -17,22 +17,17 @@
 //! it forks the app, so the app and every process it starts are inside it
 //! rather than chased into it afterwards.
 //!
-//! Either way `OOMPolicy` is `continue`. An app is often many processes the
-//! person runs side by side: a terminal and every shell, build and language
-//! server in its tabs, a browser and its renderers, an editor and its
-//! plugins. When memory runs out, the kernel picks one victim, the process
-//! with the worst OOM score, and killing it is what frees the memory.
-//! systemd's default policy (`stop`) would then tear down the whole unit, so
-//! one runaway language server would close the terminal and every session in
-//! it. With `continue` only the victim dies and the app, which sees its child
-//! exit like any other crash, keeps running. A sandboxed Tilo app gets the
-//! same: when the victim is its main process the sandbox ends with it and the
-//! cgroup empties on its own, and when it is a helper the app decides how to
-//! recover, as it would on any helper crash. `kill` (the whole unit as one
-//! OOM group, `memory.oom.group=1`) would be worse than `stop`, so the
-//! delegated app cgroups leave `memory.oom.group` at 0 as well.
-//! systemd-oomd never acts on apps: `app.slice` is not one of its targets
-//! (see `os/etc/systemd/user/app.slice.d`).
+//! Either way `OOMPolicy` is `continue`: systemd never tears a unit down on
+//! its own when the kernel's OOM killer acts in it. What ends together is
+//! decided inside the delegated tree instead ([`crate::app_cgroup`]): a Tilo
+//! app's main leaf is one OOM group, so an app that runs out of memory ends
+//! completely, while each independent job it started (a terminal session, a
+//! build, a language server) is an OOM group of its own beside it and ends
+//! alone. A host app keeps one victim. A launcher in a scope of its own (the
+//! fallback) gets no grouping: its scope is not delegated. systemd-oomd never
+//! acts on apps: `app.slice` is not one of its targets (see
+//! `os/etc/systemd/user/app.slice.d`); the session's app spawner watches
+//! memory pressure for them ([`crate::memory_pressure`]).
 //!
 //! A manager that is unreachable (a headless test host, a session without a
 //! user manager) or refuses costs the scope, never the launch: the caller

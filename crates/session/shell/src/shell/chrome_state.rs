@@ -991,6 +991,9 @@ pub struct ChromeState {
     /// Toasts that undo a workspace deletion, by toast id: where the
     /// workspace was and what it held.
     workspace_undo_toasts: BTreeMap<u64, (usize, crate::shell::state::Workspace)>,
+    /// Notices of an app that ran out of memory, by toast id: the closed-tab
+    /// serials of its windows, which Reopen puts back where they were.
+    memory_reopen_toasts: BTreeMap<u64, Vec<u64>>,
     /// Banners pointing at a task whose run waits for the person's answer,
     /// by banner, to the task they open.
     task_confirmation_toasts: BTreeMap<u64, String>,
@@ -1165,6 +1168,7 @@ impl ChromeState {
             closed_tabs: crate::shell::closed_tabs::ClosedTabStack::default(),
             pending_closed_tabs: Vec::new(),
             workspace_undo_toasts: BTreeMap::new(),
+            memory_reopen_toasts: BTreeMap::new(),
             task_confirmation_toasts: BTreeMap::new(),
             device_asking_toasts: BTreeMap::new(),
             device_asking_seen: std::collections::BTreeSet::new(),
@@ -2261,6 +2265,48 @@ impl ChromeState {
         true
     }
 
+    /// Tell the person memory ended an app or one of its jobs (`notice`
+    /// says which and why). The app's windows that went with it (`lost`)
+    /// are remembered as closed tabs, so Reopen Closed Tab brings them back
+    /// too, and the notice's Reopen puts them all back where they were.
+    /// Returns the notice's id.
+    pub(crate) fn push_out_of_memory_notice(
+        &mut self,
+        notice: crate::shell::launcher::LaunchFailureNotice,
+        lost: Vec<crate::shell::closed_tabs::ClosedTab>,
+    ) -> u64 {
+        let serials: Vec<u64> = lost
+            .into_iter()
+            .map(|entry| self.closed_tabs.push(entry))
+            .collect();
+        let mut toast = Notification::new(notice.title, notice.body)
+            .with_severity(NotificationSeverity::Error)
+            .with_app_name(crate::shell::i18n::t("host-source-applications"));
+        toast.dismiss_after = crate::shell::launcher::LAUNCH_FAILURE_NOTICE_LIFETIME;
+        if !serials.is_empty() {
+            toast.actions = vec![("default".into(), crate::shell::i18n::t("memory-app-reopen"))];
+            self.memory_reopen_toasts.insert(toast.id, serials);
+        }
+        self.push_notification_full(toast)
+    }
+
+    /// The out-of-memory notice's Reopen: the app's windows back where they
+    /// were, relaunched. Returns how many came back.
+    pub(crate) fn reopen_after_memory(&mut self, toast: u64) -> usize {
+        let Some(serials) = self.memory_reopen_toasts.remove(&toast) else {
+            return 0;
+        };
+        let mut reopened = 0_usize;
+        for serial in serials {
+            if let Some(entry) = self.closed_tabs.take(serial)
+                && self.restore_closed_tab(entry).is_some()
+            {
+                reopened = reopened.saturating_add(1);
+            }
+        }
+        reopened
+    }
+
     /// Tell the person a task's run paused at an action that asks them
     /// first, without interrupting them: a banner whose Review opens Task
     /// Center on that task, where they answer it.
@@ -3085,6 +3131,8 @@ impl ChromeState {
         }
         self.task_confirmation_toasts.remove(&n.id);
         self.device_asking_toasts.remove(&n.id);
+        // The windows stay among the closed tabs; only the notice's offer lapses.
+        self.memory_reopen_toasts.remove(&n.id);
         self.notification_log.retain(n);
     }
 
@@ -3161,6 +3209,12 @@ impl ChromeState {
         };
         if self.workspace_undo_toasts.contains_key(&id) {
             self.undo_deleted_workspace(id);
+            return true;
+        }
+        if self.memory_reopen_toasts.contains_key(&id) {
+            self.reopen_after_memory(id);
+            self.record_history(removed);
+            self.bump();
             return true;
         }
         // The desktop's own request to restart into a staged system update:
@@ -4498,6 +4552,55 @@ mod active_tab_tests {
             ..WorkspaceTree::default()
         };
         (tree, strip_id, group_id, tab_id)
+    }
+
+    // USER REQUIREMENT (2026-10-19): "failures are bugs: disk full/OOM
+    // crashing or blocking login is a bug to fix, never normal". An app that
+    // runs out of memory is closed cleanly, the person is told ("Mail ran out
+    // of memory and was closed"), and Reopen puts it back where it was.
+    #[test]
+    fn an_app_ended_for_memory_is_named_and_reopens_where_it_was() {
+        let (tree, _strip_id, group_id, tab_id) = tree_with_single_tab(TileContent::Foreign {
+            app_id: "so.tilo.mail".into(),
+            surface_id: 77,
+        });
+        let handle = crate::shell::state::WorkspaceTreeHandle::new(tree);
+        let chrome = ChromeState::new_with_handle(handle);
+        let lost = crate::shell::closed_tabs::capture_surface(&chrome.borrow().tree(), 77)
+            .expect("the window's tab, before it goes");
+        assert!(crate::shell::closed_tabs::capture_surface(&chrome.borrow().tree(), 78).is_none());
+        {
+            // The window goes away with the app.
+            let st = chrome.borrow();
+            let mut tree = st.tree_mut();
+            assert!(
+                crate::shell::tab_binding::close_tab_for_destroyed_surface_and_persist(
+                    &mut tree, 77
+                )
+            );
+        }
+        let notice = crate::shell::launcher::memory_notice(
+            "Mail",
+            &crate::shell::launcher::MemoryEnd {
+                cause: ::launcher::memory_pressure::Cause::Kernel,
+                job: None,
+            },
+        );
+        assert_eq!(notice.title, "Mail ran out of memory and was closed");
+        let id = chrome
+            .borrow_mut()
+            .push_out_of_memory_notice(notice, vec![lost]);
+        assert!(chrome.borrow_mut().activate_notification(id), "Reopen");
+        let st = chrome.borrow();
+        let tree = st.tree();
+        let group = &tree.desktop.workspaces[0].strips[0].window_groups[0];
+        assert_eq!(group.id, group_id, "in its own group, where it was");
+        assert_eq!(group.tabs[0].id, tab_id, "the same tab, with its document");
+        assert!(
+            matches!(&group.tabs[0].tile, TileContent::LocalApp { app_id, .. } if app_id == "so.tilo.mail"),
+            "relaunched as the same app: {:?}",
+            group.tabs[0].tile
+        );
     }
 
     #[test]

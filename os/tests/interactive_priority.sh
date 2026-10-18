@@ -49,7 +49,10 @@ if [ "$mode" = static ]; then
   has "$etc/system/user-.slice.d/50-tilo-interactive.conf" MemoryMin=256M
   has "$etc/system/fs.service.d/30-tilo-priority.conf" ManagedOOMPreference=avoid
   has "$etc/oomd.conf.d/50-tilo.conf" SwapUsedLimitPercent=80%
-  ok 'session tier: weights, floors, io delegation, oomd limits'
+  # The kernel's OOM killer never chooses the session (the compositor greetd
+  # starts inherits it); apps leave it before they start.
+  has "$etc/system/greetd.service.d/50-tilo-oom.conf" OOMScoreAdjust=-1000
+  ok 'session tier: weights, floors, io delegation, oomd limits, OOM score'
   grep -Fqx 'Slice=session.slice' "$repo/os/usr/lib/systemd/user/tilo-app-host.service" \
     || bad 'tilo-app-host is not in session.slice'
   grep -Fqx 'Slice=session.slice' "$repo/os/usr/lib/systemd/user/tilo-fs-recipient.service" \
@@ -89,6 +92,9 @@ else
     scope=$(sed -n 's#.*/\(session-[0-9]*\.scope\)$#\1#p' "/proc/$shell_pid/cgroup")
     prop --system "$scope" CPUWeight 1000
     prop --system "$scope" MemorySwapMax 0
+    [ "$(cat "/proc/$shell_pid/oom_score_adj")" = -1000 ] \
+      && ok 'the compositor is never the OOM killer'"'"'s choice' \
+      || bad "compositor oom_score_adj is $(cat "/proc/$shell_pid/oom_score_adj"), not -1000"
   else bad 'no compositor running'; fi
   # Every app is a cgroup of the session's delegated tree, with a tier, and
   # the tree's scope keeps one OOM kill from stopping every app.
@@ -104,8 +110,15 @@ else
       w=$(cat "$app/cpu.weight")
       case "$w" in 800) boosted=$((boosted + 1)) ;; 50) ;;
         *) bad "${app##*/} has no foreground/background tier (cpu.weight=$w)" ;; esac
-      # One process the kernel kills for memory must not take the whole app.
-      [ "$(cat "$app/memory.oom.group")" = 0 ] || bad "${app##*/} memory.oom.group is set"
+      # The app's own cgroup holds no process and is no OOM group: its main
+      # leaf is (a Tilo app, 1; a host app, 0) and each job is its own (1).
+      [ "$(cat "$app/memory.oom.group")" = 0 ] || bad "${app##*/} is one OOM group with its jobs"
+      [ -z "$(cat "$app/cgroup.procs")" ] || bad "${app##*/} holds processes outside its leaves"
+      [ -d "$app/main" ] || bad "${app##*/} has no main leaf"
+      for job in "$app"/job-*; do
+        [ -d "$job" ] || continue
+        [ "$(cat "$job/memory.oom.group")" = 1 ] || bad "${job#"$slice"/} is no OOM group of its own"
+      done
     done
   done
   # Exactly one app is boosted: the focused one.

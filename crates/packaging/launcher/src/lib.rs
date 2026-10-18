@@ -46,6 +46,8 @@ mod headless_console;
 #[cfg(target_os = "linux")]
 pub mod host;
 #[cfg(target_os = "linux")]
+pub mod job_door;
+#[cfg(target_os = "linux")]
 pub mod landlock;
 #[cfg(target_os = "linux")]
 pub mod landlock_shim;
@@ -55,6 +57,9 @@ pub mod lease;
 pub mod loader_preflight;
 pub mod managed;
 pub mod manifest;
+#[cfg(target_os = "linux")]
+pub mod memory_monitor;
+pub mod memory_pressure;
 pub mod mesa_seed;
 pub mod netgate;
 #[cfg(target_os = "linux")]
