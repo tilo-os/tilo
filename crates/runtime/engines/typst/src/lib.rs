@@ -18,6 +18,11 @@
 // link then refuses (each crate may show up once).
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
+// syntect and the grammars Typst's raw blocks use come from the highlight
+// engine, which this library chains on (DT_NEEDED), not from a copy of its
+// own.
+#[cfg(feature = "thin")]
+extern crate tilo_highlight_engine;
 
 #[cfg(feature = "thin")]
 pub use comemo;

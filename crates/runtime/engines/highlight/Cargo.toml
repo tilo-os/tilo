@@ -1,0 +1,61 @@
+[package]
+name = "tilo-highlight-engine"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Tilo's grammar set for syntax highlighting (syntect over two-face's grammars) as an engine library beside the shared runtime: libtilo_highlight_engine.so, which the toolkit opens the first time code is highlighted."
+
+# A runtime engine the toolkit opens on first use rather than one an app
+# names DT_NEEDED: the code editor's highlighter loads it through
+# tilo-engine-loader the first time a line of code is highlighted, so an app
+# that never shows code never maps it. The Typst engine chains on it (Typst's
+# raw blocks use the same syntect and grammar set), so Typst Editor maps one
+# copy. Like every engine it is a Rust dylib chained on libruntime_dylib.so,
+# built in the same Cargo graph (os/scripts/build-thin-apps.sh) and shipped
+# under the runtime bundle's lib/.
+#
+# Everything sits behind `thin`, which only that build enables: a Rust dylib
+# that links another Rust dylib needs `-C prefer-dynamic`, which only
+# tools/ci/rustc-thin-app-wrapper.sh gives it. `thin` also turns on the
+# toolkit's `lazy-highlight`, so the runtime built in that graph opens this
+# library instead of linking the grammars. Any other build is an empty
+# library.
+[lib]
+name = "tilo_highlight_engine"
+path = "src/lib.rs"
+crate-type = ["dylib"]
+
+# Built with every runtime: build-thin-apps.sh runs it to prove the engine
+# loads and runs against the runtime it ships with.
+[[bin]]
+name = "tilo-highlight-engine-check"
+path = "src/check.rs"
+required-features = ["thin"]
+
+[features]
+thin = [
+    "dep:runtime-dylib",
+    "dep:tilo-ui",
+    "tilo-ui/lazy-highlight",
+    "dep:tilo-highlight",
+    "dep:tilo-highlight-grammars",
+    "dep:workspace-hack",
+]
+
+[dependencies]
+runtime-dylib = { path = "../../runtime-dylib", optional = true }
+# The toolkit the runtime carries, only to turn on its `lazy-highlight`.
+tilo-ui = { path = "../../../sdk/ui-core", optional = true, default-features = false }
+tilo-highlight = { path = "../../../text/highlight", optional = true }
+tilo-highlight-grammars = { path = "../../../text/highlight-grammars", optional = true }
+# Optional like everything else: an empty build must not link the hack's whole
+# dependency set into a shared object.
+workspace-hack = { version = "0.1", optional = true }
+
+[package.metadata.cargo-machete]
+# Named only to turn on its `lazy-highlight` in the runtime's build.
+ignored = ["tilo-ui"]
+
+[lints]
+workspace = true

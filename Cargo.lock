@@ -17592,6 +17592,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-highlight"
+version = "0.1.0"
+dependencies = [
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-highlight-engine"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-highlight",
+ "tilo-highlight-grammars",
+ "tilo-ui",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-highlight-grammars"
+version = "0.1.0"
+dependencies = [
+ "syntect",
+ "tilo-highlight",
+ "two-face",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-history"
 version = "0.1.0"
 dependencies = [
@@ -19422,6 +19450,7 @@ version = "0.1.0"
 dependencies = [
  "comemo",
  "runtime-dylib",
+ "tilo-highlight-engine",
  "typst",
  "typst-assets",
  "typst-layout",
@@ -19491,7 +19520,6 @@ dependencies = [
  "settings-store",
  "sha2 0.11.0",
  "skrifa 0.44.0",
- "syntect",
  "taffy",
  "tempfile",
  "thiserror 2.0.21",
@@ -19513,6 +19541,8 @@ dependencies = [
  "tilo-files",
  "tilo-font-catalog",
  "tilo-headless-schema",
+ "tilo-highlight",
+ "tilo-highlight-grammars",
  "tilo-history",
  "tilo-host",
  "tilo-host-search",
@@ -19540,7 +19570,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "two-face",
  "unic-langid",
  "unicode-linebreak",
  "unicode-normalization",
