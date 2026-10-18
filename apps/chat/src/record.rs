@@ -96,8 +96,8 @@ const OLD_STARTER_CATEGORIES: [(&str, &str); 2] =
 ///
 /// Two devices made that starter concurrently, each its own copy under the
 /// same ids, and a category left with one copy's fields only did not read
-/// at all ("categories.cat_home_text.v.workspace: required value is
-/// missing"): such a category is dropped with the rest of the starter.
+/// at all (`categories.cat_home_text.v.workspace: required value is
+/// missing`): such a category is dropped with the rest of the starter.
 ///
 /// # Errors
 /// The document's read or write error.
@@ -184,14 +184,15 @@ fn drop_workspaces(doc: &mut ui::tilo_resource::Doc) -> Result<(), ui::tilo_reso
 }
 
 /// Give a room without channels its first two: `#chat` to talk in and
-/// `#voice` to call in, under fixed ids, so every device that opens the
-/// room first makes the very same two. Whether it made them.
-fn open_room(channels: &mut Collection<Channel>) -> bool {
+/// `#voice` to call in, under fixed ids and with the same values, so every
+/// device that opens the room first makes the very same two, and their
+/// copies are one item each.
+fn open_room(channels: &mut Collection<Channel>) {
     if channels
         .values()
         .any(|channel| channel.conversation_with.is_none())
     {
-        return false;
+        return;
     }
     for (id, name, kind) in [
         (CHAT_CHANNEL, "chat", ChannelKind::Text),
@@ -206,7 +207,6 @@ fn open_room(channels: &mut Collection<Channel>) -> bool {
             },
         );
     }
-    true
 }
 
 /// The room's chat. See the module docs.
