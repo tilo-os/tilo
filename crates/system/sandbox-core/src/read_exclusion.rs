@@ -280,6 +280,7 @@ mod tests {
                 connect_ports: Vec::new(),
                 rules,
                 trim_file_rights: true,
+                scoped: landlock::BitFlags::EMPTY,
             };
             let status = crate::landlock::restrict_self(&specification, |_, error| {
                 panic!("outer policy object missing: {error}")
