@@ -803,8 +803,11 @@ retained window can only be restored from backups.
 
 Every entry keeps up to 128 versions, and every client fetches the snapshot
 at least daily, so the full snapshot grows with each release. Each signing
-command therefore also signs a compact form (protocol 4,
-`registry_types::compact`) with the same key, owner or channel:
+command therefore also signs a compact form (`registry_types::compact`)
+with the same key, owner or channel. Both forms, the version indexes and the
+channel authorizations carry the Store package format's one version
+(`registry_types::PACKAGE_FORMAT_VERSION`) in `protocol`, and a client reads
+that number only (docs/architecture/compatibility.md):
 
 - Per entry it keeps only the newest release and the newest pre-release of
   each exact target (`newest_versions`), in their original order. Any

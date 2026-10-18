@@ -1719,7 +1719,7 @@ mod tests {
                 .submit(change(&key, EntryAction::Add, 10), 100)
                 .unwrap();
             let candidate = registry_types::SignedRegistrySnapshot {
-                protocol: registry_types::SNAPSHOT_PROTOCOL,
+                protocol: registry_types::PACKAGE_FORMAT_VERSION,
                 sequence: 1,
                 issued_at_unix: 101,
                 expires_at_unix: 201,
@@ -1807,7 +1807,7 @@ mod tests {
                 .submit(change(&key, EntryAction::Add, 10), 100)
                 .unwrap();
             let candidate = registry_types::SignedRegistrySnapshot {
-                protocol: registry_types::SNAPSHOT_PROTOCOL,
+                protocol: registry_types::PACKAGE_FORMAT_VERSION,
                 sequence: 1,
                 issued_at_unix: 101,
                 expires_at_unix: 201,

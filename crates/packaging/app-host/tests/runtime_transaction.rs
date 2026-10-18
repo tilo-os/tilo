@@ -270,7 +270,7 @@ fn snapshot(
 ) -> SignedRegistrySnapshot {
     let now = tilo_clock::unix_now();
     let mut snapshot = SignedRegistrySnapshot {
-        protocol: registry_types::SNAPSHOT_PROTOCOL,
+        protocol: registry_types::PACKAGE_FORMAT_VERSION,
         sequence: previous.map_or(1, |previous| previous.sequence.saturating_add(1)),
         issued_at_unix: now,
         expires_at_unix: now.saturating_add(3600),

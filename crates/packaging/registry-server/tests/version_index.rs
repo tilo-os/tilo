@@ -234,7 +234,7 @@ fn released_clients_keep_the_full_snapshot_while_new_clients_read_compact_and_in
     let full_bytes = response.bytes().unwrap();
     let served: SignedRegistrySnapshot = serde_json::from_slice(&full_bytes).unwrap();
     assert_eq!(served, full);
-    assert_eq!(served.protocol, registry_types::SNAPSHOT_PROTOCOL);
+    assert_eq!(served.protocol, registry_types::PACKAGE_FORMAT_VERSION);
     registry_types::verify_snapshot(&served, &registry.owner_hex, tilo_clock::unix_now()).unwrap();
     assert_eq!(served.entries[0].versions.len(), 40);
     assert_eq!(
@@ -251,7 +251,7 @@ fn released_clients_keep_the_full_snapshot_while_new_clients_read_compact_and_in
     let compact_bytes = response.bytes().unwrap();
     let served: CompactRegistrySnapshot = serde_json::from_slice(&compact_bytes).unwrap();
     assert_eq!(served, compact);
-    assert_eq!(served.protocol, registry_types::COMPACT_SNAPSHOT_PROTOCOL);
+    assert_eq!(served.protocol, registry_types::PACKAGE_FORMAT_VERSION);
     assert_eq!(served.entries[0].entry.versions, vec![version("1.39.0")]);
     assert!(
         compact_bytes.len() * 4 < full_bytes.len(),

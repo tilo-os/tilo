@@ -3,9 +3,9 @@
 //! A snapshot carries app entries under `entries`, signed exactly as every
 //! released client checks them, and bot entries under `bots` with a second
 //! signature by the same key (`bots_signature_hex`) that binds them to the
-//! snapshot's signed content. A client that predates bots ignores both
-//! fields, so the owner signature and the snapshot's hash (its identity in
-//! the chain and in client checkpoints) cover app entries only. In memory
+//! snapshot's signed content. The owner signature and the snapshot's hash
+//! (its identity in the chain and in client checkpoints) cover app entries
+//! only. In memory
 //! [`SignedRegistrySnapshot::entries`] holds both kinds.
 
 use std::collections::HashSet;
@@ -14,11 +14,8 @@ use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{INDEX_DOMAIN, RegistryEntry, verify_entry_signature};
+use crate::{INDEX_DOMAIN, PACKAGE_FORMAT_VERSION, RegistryEntry, verify_entry_signature};
 
-pub const SNAPSHOT_PROTOCOL: u16 = 2;
-pub const DELEGATED_SNAPSHOT_PROTOCOL: u16 = 3;
-pub const CHANNEL_AUTHORIZATION_PROTOCOL: u16 = 1;
 const CHANNEL_AUTHORIZATION_DOMAIN: &[u8] = b"tilo-registry-channel-authorization-v1\0";
 const DELEGATED_INDEX_DOMAIN: &[u8] = b"tilo-registry-index-v3\0";
 const BOTS_DOMAIN: &[u8] = b"tilo-registry-bots-v1\0";
@@ -41,7 +38,7 @@ pub struct PublisherAuthorization {
 /// so possession of the delegated key cannot add publishers or widen policy.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChannelAuthorization {
-    pub protocol: u16,
+    pub protocol: u32,
     pub generation: u64,
     pub channel_pubkey_hex: String,
     pub not_before_unix: u64,
@@ -57,7 +54,7 @@ pub struct ChannelAuthorization {
 /// head; `bots_signature_hex` binds the bot entries to all of that.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SignedRegistrySnapshot {
-    pub protocol: u16,
+    pub protocol: u32,
     pub sequence: u64,
     pub issued_at_unix: u64,
     pub expires_at_unix: u64,
@@ -108,7 +105,7 @@ pub(crate) fn join_kinds<T, E: serde::de::Error>(
 #[derive(Serialize)]
 #[serde(rename = "SignedRegistrySnapshot")]
 struct SnapshotOut<'a> {
-    protocol: u16,
+    protocol: u32,
     sequence: u64,
     issued_at_unix: u64,
     expires_at_unix: u64,
@@ -127,7 +124,7 @@ struct SnapshotOut<'a> {
 
 #[derive(Deserialize)]
 struct SnapshotIn {
-    protocol: u16,
+    protocol: u32,
     sequence: u64,
     issued_at_unix: u64,
     expires_at_unix: u64,
@@ -157,7 +154,8 @@ impl SignedRegistrySnapshot {
         split_kinds(&self.entries, |entry| entry).1
     }
 
-    /// The snapshot as a client that predates bots reads it.
+    /// The snapshot without its bot entries: what the owner signature and
+    /// the chain hash cover.
     fn core(&self) -> SnapshotOut<'_> {
         SnapshotOut {
             protocol: self.protocol,
@@ -232,7 +230,7 @@ pub(crate) fn bots_signing_message<T: Serialize>(
 
 #[derive(Serialize)]
 struct SnapshotSigningPayload<'a> {
-    protocol: u16,
+    protocol: u32,
     sequence: u64,
     issued_at_unix: u64,
     expires_at_unix: u64,
@@ -244,7 +242,7 @@ struct SnapshotSigningPayload<'a> {
 
 #[derive(Serialize)]
 struct DelegatedSnapshotSigningPayload<'a> {
-    protocol: u16,
+    protocol: u32,
     sequence: u64,
     issued_at_unix: u64,
     expires_at_unix: u64,
@@ -257,7 +255,7 @@ struct DelegatedSnapshotSigningPayload<'a> {
 
 #[derive(Serialize)]
 struct ChannelAuthorizationPayload<'a> {
-    protocol: u16,
+    protocol: u32,
     generation: u64,
     channel_pubkey_hex: &'a str,
     not_before_unix: u64,
@@ -267,22 +265,9 @@ struct ChannelAuthorizationPayload<'a> {
     publishers: &'a [PublisherAuthorization],
 }
 
-#[derive(Serialize)]
-struct LegacySignedSnapshot<'a> {
-    protocol: u16,
-    sequence: u64,
-    issued_at_unix: u64,
-    expires_at_unix: u64,
-    previous_snapshot_hash_hex: &'a str,
-    moderation_head_hex: &'a str,
-    publishers: &'a [PublisherAuthorization],
-    entries: Vec<&'a RegistryEntry>,
-    owner_signature_hex: &'a str,
-}
-
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum SnapshotError {
-    #[error("unsupported registry snapshot protocol")]
+    #[error("registry snapshot is not at this device's package format version")]
     Protocol,
     #[error("registry snapshot sequence or predecessor is invalid")]
     Sequence,
@@ -364,22 +349,7 @@ pub fn snapshot_signing_message(
 /// # Errors
 /// Returns an encoding error if the signed snapshot cannot be serialized.
 pub fn snapshot_hash(snapshot: &SignedRegistrySnapshot) -> Result<String, SnapshotError> {
-    let bytes = if snapshot.channel_authorization.is_some() {
-        postcard::to_stdvec(&snapshot.core()).map_err(|_| SnapshotError::Encoding)?
-    } else {
-        postcard::to_stdvec(&LegacySignedSnapshot {
-            protocol: snapshot.protocol,
-            sequence: snapshot.sequence,
-            issued_at_unix: snapshot.issued_at_unix,
-            expires_at_unix: snapshot.expires_at_unix,
-            previous_snapshot_hash_hex: &snapshot.previous_snapshot_hash_hex,
-            moderation_head_hex: &snapshot.moderation_head_hex,
-            publishers: &snapshot.publishers,
-            entries: snapshot.apps(),
-            owner_signature_hex: &snapshot.owner_signature_hex,
-        })
-        .map_err(|_| SnapshotError::Encoding)?
-    };
+    let bytes = postcard::to_stdvec(&snapshot.core()).map_err(|_| SnapshotError::Encoding)?;
     Ok(blake3::hash(&bytes).to_hex().to_string())
 }
 
@@ -392,7 +362,7 @@ pub fn sign_snapshot(
     snapshot: &mut SignedRegistrySnapshot,
     key: &SigningKey,
 ) -> Result<(), SnapshotError> {
-    snapshot.protocol = SNAPSHOT_PROTOCOL;
+    snapshot.protocol = PACKAGE_FORMAT_VERSION;
     snapshot.channel_authorization = None;
     snapshot.owner_signature_hex.clear();
     snapshot.owner_signature_hex =
@@ -467,7 +437,7 @@ pub fn sign_channel_authorization(
     Ok(())
 }
 
-/// Sign a protocol-v3 snapshot with a root-authorized channel key.
+/// Sign a snapshot with a root-authorized channel key.
 ///
 /// # Errors
 /// Returns an encoding error if the canonical snapshot cannot be serialized.
@@ -476,7 +446,7 @@ pub fn sign_snapshot_delegated(
     channel_key: &SigningKey,
     authorization: ChannelAuthorization,
 ) -> Result<(), SnapshotError> {
-    snapshot.protocol = DELEGATED_SNAPSHOT_PROTOCOL;
+    snapshot.protocol = PACKAGE_FORMAT_VERSION;
     snapshot.channel_authorization = Some(authorization);
     snapshot.owner_signature_hex.clear();
     snapshot.owner_signature_hex = hex::encode(
@@ -513,10 +483,7 @@ pub fn verify_snapshot(
     pinned_owner_pubkey_hex: &str,
     now_unix: u64,
 ) -> Result<(), SnapshotError> {
-    if snapshot.protocol != SNAPSHOT_PROTOCOL && snapshot.protocol != DELEGATED_SNAPSHOT_PROTOCOL {
-        return Err(SnapshotError::Protocol);
-    }
-    if (snapshot.protocol == SNAPSHOT_PROTOCOL) != snapshot.channel_authorization.is_none() {
+    if snapshot.protocol != PACKAGE_FORMAT_VERSION {
         return Err(SnapshotError::Protocol);
     }
     let header = SignedHeader {
@@ -718,7 +685,7 @@ fn verify_channel_authorization_scope(
     owner: &VerifyingKey,
     snapshot: &Scope<'_>,
 ) -> Result<(), SnapshotError> {
-    if authorization.protocol != CHANNEL_AUTHORIZATION_PROTOCOL
+    if authorization.protocol != PACKAGE_FORMAT_VERSION
         || authorization.generation == 0
         || !valid_hex(&authorization.channel_pubkey_hex, 32)
         || authorization.not_before_unix >= authorization.expires_at_unix
@@ -882,7 +849,7 @@ mod tests {
         };
         sign_entry(&mut entry, &publisher);
         let mut snapshot = SignedRegistrySnapshot {
-            protocol: SNAPSHOT_PROTOCOL,
+            protocol: PACKAGE_FORMAT_VERSION,
             sequence: 1,
             issued_at_unix: 10,
             expires_at_unix: 20,
@@ -1023,6 +990,23 @@ mod tests {
                 Err(SnapshotError::OwnerSignature)
             );
         }
+        // phase: another_package_format_version_is_refused
+        {
+            // USER REQUIREMENT (2026-10-18): "it's fine if we break compat with old versions every few days, people just need to update"
+            let (mut snapshot, owner) = fixture();
+            let owner_hex = hex::encode(owner.verifying_key().to_bytes());
+            for other in [0, 1, 2, 3, 4, 5] {
+                if other == PACKAGE_FORMAT_VERSION {
+                    continue;
+                }
+                snapshot.protocol = other;
+                assert_eq!(
+                    verify_snapshot(&snapshot, &owner_hex, 15),
+                    Err(SnapshotError::Protocol),
+                    "nothing is read at package format {other}"
+                );
+            }
+        }
         // phase: expired_and_unauthorized_snapshots_fail_closed
         {
             let (mut snapshot, owner) = fixture();
@@ -1062,7 +1046,7 @@ mod tests {
             let (mut snapshot, owner) = fixture();
             let channel = SigningKey::from_bytes(&[9; 32]);
             let mut authorization = ChannelAuthorization {
-                protocol: CHANNEL_AUTHORIZATION_PROTOCOL,
+                protocol: PACKAGE_FORMAT_VERSION,
                 generation: 1,
                 channel_pubkey_hex: hex::encode(channel.verifying_key().to_bytes()),
                 not_before_unix: 5,

@@ -83,11 +83,11 @@ pub mod version;
 
 pub use change::{EntryAction, EntryChangeRequest, sign_change_request};
 pub use compact::{
-    COMPACT_SNAPSHOT_PROTOCOL, CatalogueEntry, CatalogueSnapshot, CompactRegistryEntry,
-    CompactRegistrySnapshot, MAX_VERSION_INDEX_BYTES, RegistryVersionIndex, VERSION_INDEX_PROTOCOL,
-    VersionIndexError, VersionIndexFile, VersionIndexRef, compact_signing_message,
-    compact_snapshot, compact_snapshot_hash, newest_versions, sign_compact_snapshot,
-    verify_compact_snapshot, verify_version_index, version_index_bytes,
+    CatalogueEntry, CatalogueSnapshot, CompactRegistryEntry, CompactRegistrySnapshot,
+    MAX_VERSION_INDEX_BYTES, RegistryVersionIndex, VersionIndexError, VersionIndexFile,
+    VersionIndexRef, compact_signing_message, compact_snapshot, compact_snapshot_hash,
+    newest_versions, sign_compact_snapshot, verify_compact_snapshot, verify_version_index,
+    version_index_bytes,
 };
 pub use entry::{
     BOT_ENTRY_DOMAIN, BotArtifact, BotRequirements, DirectoryRef, ENTRY_DOMAIN, EntryKind,
@@ -110,9 +110,8 @@ pub use moderation::{
     verify_transparency_chain,
 };
 pub use snapshot::{
-    CHANNEL_AUTHORIZATION_PROTOCOL, ChannelAuthorization, DELEGATED_SNAPSHOT_PROTOCOL,
-    MAX_SNAPSHOT_ENCODED_BYTES, MAX_SNAPSHOT_ENTRIES, MAX_SNAPSHOT_PUBLISHERS,
-    MAX_SNAPSHOT_VALIDITY_SECONDS, PublisherAuthorization, SNAPSHOT_PROTOCOL,
+    ChannelAuthorization, MAX_SNAPSHOT_ENCODED_BYTES, MAX_SNAPSHOT_ENTRIES,
+    MAX_SNAPSHOT_PUBLISHERS, MAX_SNAPSHOT_VALIDITY_SECONDS, PublisherAuthorization,
     SignedRegistrySnapshot, SnapshotError, sign_channel_authorization, sign_snapshot,
     sign_snapshot_delegated, snapshot_hash, snapshot_signing_message, verify_channel_authorization,
     verify_snapshot, within_validity_window,
@@ -124,6 +123,15 @@ pub use target::{
     is_runtime_package_id, parse_native_runtime,
 };
 pub use verify::{VerifyError, verify_change_request, verify_entry_signature};
+
+/// The version of the Store package format: a package's archive (`.tapp`),
+/// the manifest it signs, its signed root and chunk list, and the registry's
+/// catalogue as a device reads it (full and compact snapshots, version
+/// indexes and channel authorizations). Every one of them carries this
+/// number in its `format` or `protocol` field, and a reader accepts exactly
+/// this number and nothing older (docs/architecture/compatibility.md);
+/// `crates/packaging/tilo-app-package/interface.toml` holds the schema.
+pub const PACKAGE_FORMAT_VERSION: u32 = 1;
 
 /// Length in bytes of an Ed25519 signature, once decoded from hex.
 pub const ED25519_SIGNATURE_BYTES: usize = 64;

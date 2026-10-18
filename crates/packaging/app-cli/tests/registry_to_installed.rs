@@ -214,7 +214,7 @@ fn signed_snapshot(
     let now = tilo_clock::try_unix_now().unwrap();
     let publisher = entry.publisher_pubkey_hex.clone();
     let mut snapshot = SignedRegistrySnapshot {
-        protocol: registry_types::SNAPSHOT_PROTOCOL,
+        protocol: registry_types::PACKAGE_FORMAT_VERSION,
         sequence: previous.map_or(1, |snapshot| {
             snapshot
                 .sequence
