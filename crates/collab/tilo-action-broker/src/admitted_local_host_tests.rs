@@ -778,6 +778,11 @@ async fn certified_local_host_verifies_once_per_open_listing_and_invocation() {
             let request = local_host_request(false);
             let before = verifications();
             let pending = host.invoke(&caller, request.clone());
+            assert_eq!(
+                verifications(),
+                before,
+                "UI enqueue retains inert custody without certificate work"
+            );
             let receipt = local_host_answer(pending).await.unwrap();
             assert_eq!(
                 verifications().saturating_sub(before),

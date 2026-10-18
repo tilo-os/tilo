@@ -11933,15 +11933,11 @@ impl channel_handle::Server for CapnpChannelHandle {
             Ok(request) => request.get_id(),
             Err(error) => return Promise::err(error),
         };
-        let Some(certificate) = current.certificate.as_ref() else {
-            return Promise::err(capnp::Error::failed(
-                "invocation observer certificate missing".into(),
-            ));
-        };
-        let owner = InvocationOwner::AuthenticatedLocal {
-            root: certificate.user_public_key,
-            device: certificate.device_public_key,
-            agent: current.agent_id.clone(),
+        // The legacy wire-id door observes only legacy actor-owned jobs.
+        // Certificate-owned jobs require the host/UUID durable RPC, which
+        // binds both the exact device and the authenticated agent.
+        let owner = InvocationOwner::Local {
+            actor: current.broker_actor().id,
         };
         let update = self.state.invocation_status_for_owner(id, &owner);
         let mut result = results.get();
@@ -11971,15 +11967,8 @@ impl channel_handle::Server for CapnpChannelHandle {
             Ok(request) => request.get_id(),
             Err(error) => return Promise::err(error),
         };
-        let Some(certificate) = current.certificate.as_ref() else {
-            return Promise::err(capnp::Error::failed(
-                "invocation caller certificate missing".into(),
-            ));
-        };
-        let owner = InvocationOwner::AuthenticatedLocal {
-            root: certificate.user_public_key,
-            device: certificate.device_public_key,
-            agent: current.agent_id.clone(),
+        let owner = InvocationOwner::Local {
+            actor: current.broker_actor().id,
         };
         if let Err(error) = self.state.request_cancellation_for_owner(id, &owner) {
             return Promise::err(capnp::Error::failed(error));

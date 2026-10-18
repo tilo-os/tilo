@@ -19,6 +19,11 @@ async fn reliable_resolution_binding_uses_exact_captured_signed_worker() {
                     authority,
                     ..
                 } = &room;
+                if scenario == "no-journal" {
+                    // OriginalRoom provisions a journal for signed effects by
+                    // default; explicitly remove it to test a browsing-only host.
+                    *state.journal.lock().unwrap() = Ok(None);
+                }
                 let (worker, _authorize) = room.join_worker(903).await;
                 let handle = &worker.handle;
                 let directory_state = directory_state("original-r1");

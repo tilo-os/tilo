@@ -347,6 +347,18 @@ impl CapnpBrokerState {
         origin: &InvocationCaller,
         request: &InvokeRequest,
     ) -> Result<Option<tilo_actions::remote::InvocationReceipt>, ActionHostError> {
+        // Application providers cannot admit host-service records. Do not take
+        // the durable admission lock for their UI-side replay probe: another
+        // application's signer may be stalled while this request enqueues.
+        if request.target.provider.parse::<u64>().is_ok()
+            || request.target.provider == tilo_actions::remote::OWN_PROVIDER
+            || request
+                .target
+                .provider
+                .starts_with(super::canonical_route::PROVIDER_PREFIX)
+        {
+            return Ok(None);
+        }
         let _admission = self
             .admission_lock
             .lock()
