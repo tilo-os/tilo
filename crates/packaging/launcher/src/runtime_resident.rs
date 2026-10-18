@@ -306,10 +306,11 @@ mod tests {
         let path = dir.path().join("lib.so");
         // SAFETY: sysconf has no preconditions.
         let page = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).unwrap();
-        std::fs::write(&path, vec![7u8; 3 * page + 5]).unwrap();
+        let len = page.saturating_mul(3).saturating_add(5);
+        std::fs::write(&path, vec![7u8; len]).unwrap();
         // The test runner's own RLIMIT_MEMLOCK (8 MiB by default) covers this.
         let file = map_locked(&path).unwrap();
-        assert_eq!(file.len(), 3 * page + 5);
+        assert_eq!(file.len(), len);
         let pages = file.len().div_ceil(page);
         let mut resident = vec![0u8; pages];
         // SAFETY: queries the mapping `file` holds.
@@ -322,6 +323,7 @@ mod tests {
             .find_map(|line| line.strip_prefix("VmLck:"))
             .and_then(|value| value.trim().trim_end_matches("kB").trim().parse().ok())
             .unwrap();
-        assert!(locked_kb * 1024 >= 4 * page as u64, "VmLck {locked_kb} kB");
+        let wanted = u64::try_from(page.saturating_mul(4)).unwrap();
+        assert!(locked_kb.saturating_mul(1024) >= wanted, "VmLck {locked_kb} kB");
     }
 }
