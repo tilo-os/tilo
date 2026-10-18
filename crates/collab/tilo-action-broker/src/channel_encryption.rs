@@ -2366,8 +2366,9 @@ mod tests {
         let channel = ChannelId::new();
         let policy = Policy::default();
         *policy.announces.lock().unwrap() = Some(Announcements::Process);
-        let expiry = tilo_clock::unix_now().saturating_add(3);
-        policy.until.lock().unwrap().insert(public(2), expiry);
+        // Admission is not part of the expiry latency measurement: creating
+        // identities and joining can take longer than the grant on a busy host.
+        policy.allowed.lock().unwrap().insert(public(2));
         let (owner_dir, laptop_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let owner = device(&room, room_id, 0, (1, 1), &policy, owner_dir.path());
         let laptop = device(&room, room_id, 1, (2, 1), &policy, laptop_dir.path());
@@ -2390,6 +2391,28 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(10));
         }
+
+        // Replace the admitted member's permission with an expiring grant.
+        // Announce it through the production watch and let the steward register
+        // the expiry before measuring the otherwise idle wait.
+        let expiry = tilo_clock::unix_now().saturating_add(3);
+        policy.until.lock().unwrap().insert(public(2), expiry);
+        policy.allowed.lock().unwrap().remove(&public(2));
+        tilo_identity_host::policy_change::announce();
+        let registration_started = Instant::now();
+        loop {
+            let due = owner.pump_until_due(&owner_endpoint);
+            assert!(registration_started.elapsed() < tilo_test_env::hang_bound());
+            if let Some(wait) = due {
+                let _ = wakes.recv_timeout(wait);
+            } else if owner.arm_policy_watch(&watch) {
+                break;
+            }
+        }
+        assert!(
+            tilo_clock::unix_now() < expiry,
+            "grant ended before idle wait"
+        );
 
         // Idle until the grant runs out, pumping only when woken.
         let mut owner_passes = 0_u32;
