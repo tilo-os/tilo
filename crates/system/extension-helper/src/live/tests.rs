@@ -333,6 +333,10 @@ impl LiveHost for Fake {
         fs::write(path, "whiteout").at(path)
     }
 
+    fn is_whiteout(&self, path: &Path) -> bool {
+        fs::read_to_string(path).is_ok_and(|text| text == "whiteout")
+    }
+
     fn daemon_reload(&self) -> Result<()> {
         Ok(())
     }
@@ -490,6 +494,70 @@ fn the_staged_image_applies_live_first_the_system_then_the_desktop() {
         fs::read_dir(layers(&layout)).unwrap().count(),
         1,
         "only the linked layer is kept"
+    );
+}
+
+#[test]
+fn a_newer_image_over_an_applied_one_restarts_only_what_changed_since() {
+    let (dir, layout, fake) = machine();
+    assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
+    assert_eq!(apply(&fake, &fake, &layout, Phase::Session).unwrap(), 0);
+
+    // A newer image is staged before the machine restarts: the services and
+    // the compositor as the applied one has them, a new greeter, and the
+    // library the applied one dropped back as booted.
+    let newer = dir.path().join("newer");
+    tree(
+        &newer,
+        &[
+            ("usr/bin/fs", "fs 2"),
+            ("usr/bin/shell", "shell 2"),
+            ("usr/bin/tilo-greeter", "greeter 3"),
+            ("usr/lib/old-lib.so", "old"),
+            ("usr/lib/modules/6.18/vmlinuz", "kernel"),
+            ("usr/share/tilo/components.toml", MANIFEST),
+        ],
+    );
+    let verity = "f".repeat(128);
+    fake.roots.borrow_mut().insert(verity.clone(), newer);
+    let status = fake
+        .status
+        .borrow()
+        .replace(&"d".repeat(128), &verity)
+        .replace(&"e".repeat(64), &"f".repeat(64));
+    *fake.status.borrow_mut() = status;
+    fake.restarted.borrow_mut().clear();
+    fake.desktops.borrow_mut().clear();
+
+    assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 0);
+    assert!(
+        fake.restarted.borrow().is_empty(),
+        "fs and its recipient already run this build"
+    );
+    let layer = fs::read_link(link(&layout)).unwrap();
+    assert_eq!(
+        fs::read_to_string(layer.join("usr/bin/shell")).unwrap(),
+        "shell 2",
+        "the system phase keeps the compositor the desktop already runs"
+    );
+    assert_eq!(
+        fs::read_to_string(layer.join("usr/bin/tilo-greeter")).unwrap(),
+        "greeter 3"
+    );
+    assert!(
+        !layer.join("usr/lib/old-lib.so").exists(),
+        "the library is back as booted"
+    );
+    let state = read_state(&layout).unwrap();
+    assert_eq!(state.deferred, ["greetd.service"]);
+    assert!(
+        !state.desktop_pending,
+        "nothing the desktop runs changed since it restarted"
+    );
+    assert_eq!(apply(&fake, &fake, &layout, Phase::Session).unwrap(), 0);
+    assert!(
+        fake.desktops.borrow().is_empty(),
+        "the desktop is not restarted again"
     );
 }
 

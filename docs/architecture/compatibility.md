@@ -48,6 +48,9 @@ the machinery `tilo-vm swap` uses on a development machine:
    image), and try-restarts the changed system components' units, system and
    user. Apps and the runtime need no restart. The greeter under a login
    runs its new build next time it starts.
+   A newer image staged over one already applied live restarts only the
+   components whose files differ from what is live, and the system layer
+   keeps what the desktop already runs.
 4. When part waits for the desktop and the screen is locked or blanked for
    two minutes, the shell starts `tilo-live-update-session.service`
    (`live:session`): it merges the whole update, restarts the changed session
