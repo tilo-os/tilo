@@ -49,18 +49,10 @@ use crate::namespace_binding::{
 };
 use crate::peer_auth::AuthenticatedFsPeer;
 use crate::record_access::RecordAccessRegistry;
-use crate::record_mesh::{
-    RECORD_MESH_PROTOCOL_VERSION, RecordMeshResultV1, TILO_FS_RECORD_MESH_ALPN,
-    read_record_mesh_request, serve_authorized_request, write_record_mesh_response,
-};
 use crate::record_protocol::{RecordProtocol, TILO_FS_RECORD_ALPN};
 use crate::record_replication::{RecordAction, RecordAuthorizer};
 use crate::record_repository::{RecordRepository, RecordRepositoryKey};
-use crate::replica_ack::{
-    REPLICA_ACK_TIMEOUT, ReplicaAckRequestV1, ReplicaAckResponseV1, ReplicaAckV1,
-    TILO_FS_REPLICA_ACK_ALPN, read_frame as read_replica_ack_frame,
-    write_frame as write_replica_ack_frame,
-};
+use crate::replica_ack::{ReplicaAckRequestV1, ReplicaAckResponseV1, ReplicaAckV1};
 use crate::share_authority::ShareAuthority;
 use crate::share_session::LiveActorCertification;
 use crate::store::ContentStore;
@@ -1538,7 +1530,6 @@ pub struct RecordServices {
 #[derive(Clone)]
 struct RecordPlane {
     protocol: RecordProtocol,
-    mesh_protocol: RecordMeshProtocol,
     access_registry: Arc<RecordAccessRegistry>,
     repository: Arc<RecordRepository>,
     materializer: Option<Arc<crate::record_materializer::RecordMaterializer>>,
@@ -1621,84 +1612,8 @@ fn authority_response(
     }
 }
 
-#[derive(Clone)]
-struct ReplicaAckProtocol {
-    endpoint: Endpoint,
-    identity: FsTransportIdentity,
-    policy: PeerPolicy,
-    workspace_id: uuid::Uuid,
-    repository: Arc<RecordRepository>,
-    store: Arc<ContentStore>,
-}
-
-impl std::fmt::Debug for ReplicaAckProtocol {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("ReplicaAckProtocol")
-    }
-}
-
-impl ProtocolHandler for ReplicaAckProtocol {
-    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
-        if self.identity.partitioned() {
-            connection.close(1u32.into(), b"partitioned");
-            return Ok(());
-        }
-        let (mut send, mut recv) = connection.accept_bi().await?;
-        let exchange = async {
-            let peer = authenticate_connection(
-                &self.endpoint,
-                &connection,
-                &mut recv,
-                &mut send,
-                &self.identity,
-            )
-            .await
-            .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-            let request: ReplicaAckRequestV1 = read_replica_ack_frame(&mut recv)
-                .await
-                .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-            let response = self.response(&peer, &request).await;
-            write_replica_ack_frame(&mut send, &response)
-                .await
-                .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-            send.finish().map_err(AcceptError::from_err)?;
-            Ok::<(), AcceptError>(())
-        };
-        tokio::time::timeout(REPLICA_ACK_TIMEOUT, exchange)
-            .await
-            .map_err(|_| {
-                AcceptError::from_err(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "replica acknowledgement request timed out",
-                ))
-            })??;
-        connection.closed().await;
-        Ok(())
-    }
-}
-
-impl ReplicaAckProtocol {
-    async fn response(
-        &self,
-        peer: &AuthenticatedFsPeer,
-        request: &ReplicaAckRequestV1,
-    ) -> ReplicaAckResponseV1 {
-        replica_ack_response(
-            &self.identity,
-            &self.policy,
-            self.workspace_id,
-            &self.repository,
-            &self.store,
-            peer,
-            request,
-        )
-        .await
-    }
-}
-
 /// A signed receipt for `request` if this device durably holds the exact
-/// revision and `peer` may read the record; shared by the per-request
-/// receipt protocol and the session protocol.
+/// revision and `peer` may read the record, as a session answers it.
 async fn replica_ack_response(
     identity: &FsTransportIdentity,
     policy: &PeerPolicy,
@@ -1761,75 +1676,9 @@ async fn replica_ack_response(
     }
 }
 
-#[derive(Clone)]
-struct RecordMeshProtocol {
-    endpoint: Endpoint,
-    identity: FsTransportIdentity,
-    policy: PeerPolicy,
-    workspace_id: uuid::Uuid,
-    repository: Arc<RecordRepository>,
-}
-
-impl std::fmt::Debug for RecordMeshProtocol {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("RecordMeshProtocol")
-    }
-}
-
-impl ProtocolHandler for RecordMeshProtocol {
-    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
-        if self.identity.partitioned() {
-            connection.close(1u32.into(), b"partitioned");
-            return Ok(());
-        }
-        let (mut send, mut recv) = connection.accept_bi().await?;
-        let exchange = async {
-            let peer = authenticate_connection(
-                &self.endpoint,
-                &connection,
-                &mut recv,
-                &mut send,
-                &self.identity,
-            )
-            .await
-            .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-            let request = read_record_mesh_request(&mut recv)
-                .await
-                .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-            let response = if authenticated_peer_may_read_whole_workspace(&self.policy, &peer) {
-                serve_authorized_request(&self.repository, self.workspace_id, &request)
-            } else {
-                crate::record_mesh::RecordMeshResponseV1 {
-                    protocol_version: crate::record_mesh::RECORD_MESH_PROTOCOL_VERSION,
-                    result: crate::record_mesh::RecordMeshResultV1::Denied,
-                }
-            };
-            write_record_mesh_response(&mut send, &response)
-                .await
-                .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-            send.finish().map_err(AcceptError::from_err)?;
-            Ok::<(), AcceptError>(())
-        };
-        tokio::time::timeout(Duration::from_secs(15), exchange)
-            .await
-            .map_err(|_| {
-                AcceptError::from_err(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "record mesh request timed out",
-                ))
-            })??;
-        // Returning drops the router-owned connection. Wait until the client
-        // has consumed the finished response stream, otherwise QUIC may tear
-        // down buffered response bytes as soon as this handler completes.
-        connection.closed().await;
-        Ok(())
-    }
-}
-
 fn build_record_plane(
     endpoint: &Endpoint,
     identity: &FsTransportIdentity,
-    policy: &PeerPolicy,
     store: Arc<ContentStore>,
     workspace_id: uuid::Uuid,
     records: Option<RecordServices>,
@@ -1854,16 +1703,8 @@ fn build_record_plane(
     if let Some(availability) = records.availability.clone() {
         protocol = protocol.with_availability(availability);
     }
-    let mesh_protocol = RecordMeshProtocol {
-        endpoint: endpoint.clone(),
-        identity: identity.clone(),
-        policy: policy.clone(),
-        workspace_id,
-        repository: Arc::clone(&records.repository),
-    };
     Ok(Some(RecordPlane {
         protocol,
-        mesh_protocol,
         access_registry: records.access_registry,
         repository: records.repository,
         materializer: records.materializer,
@@ -1974,7 +1815,6 @@ impl Workspace {
         let record_plane = build_record_plane(
             &endpoint,
             &identity,
-            &policy,
             Arc::clone(&store),
             ticket.workspace_id(),
             records,
@@ -2068,7 +1908,6 @@ impl Workspace {
         let record_plane = build_record_plane(
             &endpoint,
             &identity,
-            &policy,
             Arc::clone(&store),
             ticket.workspace_id(),
             records,
@@ -2163,14 +2002,6 @@ impl Workspace {
                 .as_ref()
                 .map(|records| Arc::clone(&records.repository)),
         };
-        let replica_ack_protocol = record_plane.as_ref().map(|records| ReplicaAckProtocol {
-            endpoint: endpoint.clone(),
-            identity: identity.clone(),
-            policy: policy.clone(),
-            workspace_id: records.workspace_id,
-            repository: Arc::clone(&records.repository),
-            store: Arc::clone(&store),
-        });
         let (announce_tx, announce_rx) = mpsc::unbounded_channel();
         let session_proto = SessionProtocol {
             endpoint: endpoint.clone(),
@@ -2197,12 +2028,9 @@ impl Workspace {
                     Some(identity.clone()),
                 )),
             );
-        let builder = match (&record_plane, replica_ack_protocol) {
-            (Some(records), Some(replica_ack)) => builder
-                .accept(TILO_FS_RECORD_ALPN, records.protocol.clone())
-                .accept(TILO_FS_RECORD_MESH_ALPN, records.mesh_protocol.clone())
-                .accept(TILO_FS_REPLICA_ACK_ALPN, replica_ack),
-            _ => builder,
+        let builder = match &record_plane {
+            Some(records) => builder.accept(TILO_FS_RECORD_ALPN, records.protocol.clone()),
+            None => builder,
         };
         let builder = if let Some(records) = &record_plane {
             if let Some(authority) = &records.workspace_authority {

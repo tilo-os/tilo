@@ -1992,9 +1992,43 @@ async fn pull_streams(
     Ok(pulled)
 }
 
-/// Fresh receipts from the peer for every current revision it has not
-/// acknowledged recently, many per request, committed to the availability
-/// registry in one write.
+/// The peer's verified receipts for `requests` (at most [`MAX_REPLICA_ACKS`]):
+/// one entry per request, `None` where the peer holds no exact durable copy
+/// or its receipt does not verify.
+pub(super) async fn replica_acks(
+    pool: &SessionPool,
+    session: &Session,
+    identity: &FsTransportIdentity,
+    requests: &[ReplicaAckRequestV1],
+) -> Result<Vec<Option<crate::availability::ReplicaObservation>>> {
+    let (mut send, mut recv) = session
+        .open(&pool.request(SessionOperationV1::ReplicaAcks {
+            requests: requests.to_vec(),
+        }))
+        .await?;
+    let _ = send.finish();
+    let mut responses = Vec::new();
+    while let Some(frame) = session.frames(&mut recv, MAX_FRAME_BYTES).await? {
+        if let SessionFrameV1::ReplicaAcks { responses: part } = frame {
+            responses.extend(part);
+        }
+    }
+    let local = collab_types::Ed25519PublicKey(identity.device_public_key());
+    let observed_at = unix_now_ms();
+    Ok(requests
+        .iter()
+        .enumerate()
+        .map(|(index, request)| match responses.get(index) {
+            Some(ReplicaAckResponseV1::Acknowledged(receipt)) => receipt
+                .verify_for(request, &session.peer, local, observed_at)
+                .ok(),
+            _ => None,
+        })
+        .collect())
+}
+
+/// Ask the peer for receipts of the revisions this device still awaits one
+/// for from it, and record the verified ones.
 pub(super) async fn collect_replica_acks(
     pool: &SessionPool,
     session: &Session,
@@ -2010,31 +2044,16 @@ pub(super) async fn collect_replica_acks(
             .into_iter()
             .filter_map(|revision| ReplicaAckRequestV1::new(records.workspace_id, revision).ok())
             .collect();
+    let local = collab_types::Ed25519PublicKey(identity.device_public_key());
     for chunk in requests.chunks(MAX_REPLICA_ACKS) {
-        let (mut send, mut recv) = session
-            .open(&pool.request(SessionOperationV1::ReplicaAcks {
-                requests: chunk.to_vec(),
-            }))
-            .await?;
-        let _ = send.finish();
-        let mut responses = Vec::new();
-        while let Some(frame) = session.frames(&mut recv, MAX_FRAME_BYTES).await? {
-            if let SessionFrameV1::ReplicaAcks { responses: part } = frame {
-                responses.extend(part);
-            }
-        }
-        let local = collab_types::Ed25519PublicKey(identity.device_public_key());
-        let observed_at = unix_now_ms();
-        let mut observations = Vec::new();
-        for (request, response) in chunk.iter().zip(responses) {
-            let ReplicaAckResponseV1::Acknowledged(receipt) = response else {
-                continue;
-            };
-            if let Ok(observation) = receipt.verify_for(request, &session.peer, local, observed_at)
-            {
-                observations.push((request.revision, observation));
-            }
-        }
+        let observations: Vec<_> = replica_acks(pool, session, identity, chunk)
+            .await?
+            .into_iter()
+            .zip(chunk)
+            .filter_map(|(observation, request)| {
+                observation.map(|observation| (request.revision, observation))
+            })
+            .collect();
         if observations.is_empty() {
             continue;
         }
