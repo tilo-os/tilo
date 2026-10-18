@@ -32,7 +32,7 @@ settings-host = ["client", "dep:settings-store"]
 native-retained-qualification = ["client"]
 
 [dependencies]
-registry-types = { path = "../../packaging/registry-types" }
+registry-types = { version = "0.1.0", path = "../../packaging/registry-types" }
 browser-continuity.workspace = true
 blake3.workspace = true
 zeroize.workspace = true
