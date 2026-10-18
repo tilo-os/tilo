@@ -449,6 +449,7 @@ fn manifest(net: &str) -> ManifestView {
         opens_schemes: Vec::new(),
         opens_secondary: false,
         continuity: launcher::manifest::ContinuityContract::default(),
+        capabilities: Vec::new(),
     }
 }
 
