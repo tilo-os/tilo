@@ -741,6 +741,10 @@ pub struct LiveEntry {
     pub hdr_setting: Option<f32>,
     /// The HDR request last sent to the scanout owner.
     pub hdr_requested: Option<HdrRequest>,
+    /// The software dimming last sent to the scanout owner: the share of
+    /// linear light the output lets through, `1.0` when undimmed (as a new
+    /// output starts).
+    pub software_dim: f32,
 }
 
 /// HDR is requested only for a sink whose EDID advertises PQ, on a connector
@@ -818,6 +822,12 @@ pub enum ScanoutCommand {
     SetHdr {
         output: OutputId,
         request: Option<HdrRequest>,
+    },
+    /// Dim one output in software to `light`, the share of linear light it
+    /// lets through (`1.0`: undimmed).
+    SetSoftwareDim {
+        output: OutputId,
+        light: f32,
     },
 }
 
@@ -1907,6 +1917,7 @@ impl DrmDispatchState {
                 hdr_display: build.hdr_display,
                 hdr_setting: None,
                 hdr_requested: None,
+                software_dim: 1.0,
             });
             entries.push(ScanoutEntry {
                 id,
@@ -1918,6 +1929,9 @@ impl DrmDispatchState {
                 color_buffer: Vec::new(),
                 color_lut: None,
                 direct_calibration: None,
+                software_dim: 1.0,
+                direct_dim: None,
+                cpu_dim: None,
                 direct_targets: None,
                 direct_ineligible: None,
                 present_by_readback: false,
@@ -2066,6 +2080,26 @@ impl DrmDispatchState {
         }
         for (output, request) in changes {
             self.command(ScanoutCommand::SetHdr { output, request });
+        }
+    }
+
+    /// Dim each output named in `dims` (by its KMS connector, with the share
+    /// of linear light it lets through) in software, and undim every other.
+    /// Only outputs whose level changed are sent to the scanout owner.
+    pub fn set_software_dim(&mut self, dims: &[(String, f32)]) {
+        let mut changes = Vec::new();
+        for entry in &mut self.live {
+            let light = dims
+                .iter()
+                .find(|(connector, _)| *connector == entry.connector_name)
+                .map_or(1.0, |(_, light)| *light);
+            if light.to_bits() != entry.software_dim.to_bits() {
+                entry.software_dim = light;
+                changes.push((entry.id, light));
+            }
+        }
+        for (output, light) in changes {
+            self.command(ScanoutCommand::SetSoftwareDim { output, light });
         }
     }
 
@@ -4172,6 +4206,15 @@ pub struct ScanoutEntry {
     /// profile. When it is not `color_lut`'s, the profile changed and the next frame renders
     /// in full instead of keeping the image calibrated for the old one.
     pub direct_calibration: Option<u64>,
+    /// The share of linear light software dimming lets through on this
+    /// output, `1.0` when it is not dimmed
+    /// ([`crate::shell::software_dim`]).
+    pub software_dim: f32,
+    /// The final-pass dimming (`f32` bits) the direct path last rendered
+    /// this output with: when it changes, the next frame renders in full.
+    pub direct_dim: Option<u32>,
+    /// The readback presenter's dimming tables, for the level in use.
+    pub cpu_dim: Option<crate::shell::software_dim::CpuDim>,
     /// Lazily created same-device GBM/Vulkan targets. `None` means the safe
     /// readback presenter remains authoritative.
     pub direct_targets: Option<DirectScanoutTargets>,
@@ -4242,6 +4285,22 @@ impl ScanoutEntry {
                 }
             }),
         }
+    }
+
+    /// Dim this output to `light` (`1.0`: undimmed): in the CRTC's gamma
+    /// LUT where it has one, else in the final pass ([`Self::final_pass_dim`]).
+    pub fn set_software_dim(&mut self, light: f32) {
+        self.software_dim = light;
+        self.scanout.set_software_dim(light);
+    }
+
+    /// The dimming this output's final pass applies: only where the CRTC
+    /// cannot dim it itself.
+    pub fn final_pass_dim(&self) -> Option<f32> {
+        crate::shell::software_dim::final_pass_dim(
+            self.software_dim,
+            self.scanout.software_dim_in_crtc(),
+        )
     }
 
     /// HDR is requested and has not failed on this output.
@@ -5168,6 +5227,11 @@ impl DrmRuntime {
     /// Ask the scanout owner to switch one panel off or on.
     pub fn set_fullscreen_output(&mut self, output: Option<OutputId>) {
         self.dispatch.set_fullscreen_output(output);
+    }
+
+    /// Dim outputs in software ([`DrmDispatchState::set_software_dim`]).
+    pub fn set_software_dim(&mut self, dims: &[(String, f32)]) {
+        self.dispatch.set_software_dim(dims);
     }
 
     pub fn set_output_power(&self, output: OutputId, on: bool) {
@@ -6939,6 +7003,7 @@ pub(super) mod tests {
             hdr_driver_ready: false,
             hdr_setting: None,
             hdr_requested: None,
+            software_dim: 1.0,
         }
     }
 

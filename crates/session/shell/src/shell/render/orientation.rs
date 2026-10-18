@@ -46,7 +46,8 @@ struct CopyParams {
     orientation: u32,
     // 1 when `color_lut` holds the output's ICC calibration.
     calibrated: u32,
-    _pad1: u32,
+    // The share of linear light software dimming lets through; 1 dims nothing.
+    dim: f32,
     _pad2: u32,
 };
 
@@ -67,15 +68,41 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOut {
     return out;
 }
 
+fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
+    let v = clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
+    return select(pow((v + 0.055) / 1.055, vec3<f32>(2.4)), v / 12.92, v <= vec3<f32>(0.04045));
+}
+
+fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
+    let v = clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
+    return select(1.055 * pow(v, vec3<f32>(1.0 / 2.4)) - 0.055, v * 12.92, v <= vec3<f32>(0.0031308));
+}
+
+// Interleaved gradient noise: a threshold in [0, 1) per target pixel. Added
+// before the 8-bit target rounds, it turns a dimmed gradient's banding into
+// noise too fine to see.
+fn dither(p: vec2<f32>) -> f32 {
+    return fract(52.9829189 * fract(dot(p, vec2<f32>(0.06711056, 0.00583715))));
+}
+
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let surface = vec2<i32>(textureDimensions(source));
     let px = oriented_source_pixel(vec2<i32>(in.position.xy), surface, params.orientation);
     let texel = textureLoad(source, px, 0);
-    if (params.calibrated == 0u) {
-        return texel;
+    let dimmed = params.dim < 1.0;
+    var rgb = texel.rgb;
+    if (dimmed) {
+        // Software dimming scales linear light, as a backlight would.
+        rgb = linear_to_srgb(srgb_to_linear(rgb) * params.dim);
     }
-    return vec4<f32>(icc_lut_apply(color_lut, color_lut_coordinates, texel.rgb), texel.a);
+    if (params.calibrated != 0u) {
+        rgb = icc_lut_apply(color_lut, color_lut_coordinates, rgb);
+    }
+    if (dimmed) {
+        rgb = rgb + vec3<f32>((dither(in.position.xy) - 0.5) / 255.0);
+    }
+    return vec4<f32>(rgb, texel.a);
 }
 "
 );
@@ -133,14 +160,16 @@ impl OrientedCopy {
         }
     }
 
-    /// The orientation and calibration the next copy writes, with `lut` uploaded if it is
-    /// new. Takes effect with the next submission on `queue`.
+    /// The orientation, calibration and software dimming (`dim`, the share of linear light
+    /// let through) the next copy writes, with `lut` uploaded if it is new. Takes effect
+    /// with the next submission on `queue`.
     pub fn prepare(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         transform: OutputTransform,
         lut: Option<&IccLut>,
+        dim: Option<f32>,
     ) {
         if let Some(lut) = lut
             && !self.luts.iter().any(|(id, _)| *id == lut.id())
@@ -156,6 +185,12 @@ impl OrientedCopy {
         }
         if let Some(slot) = bytes.get_mut(4..8) {
             slot.copy_from_slice(&u32::from(lut.is_some()).to_le_bytes());
+        }
+        let dim = dim
+            .filter(|dim| dim.is_finite())
+            .map_or(1.0, |dim| dim.clamp(0.0, 1.0));
+        if let Some(slot) = bytes.get_mut(8..12) {
+            slot.copy_from_slice(&dim.to_le_bytes());
         }
         queue.write_buffer(&self.params, 0, &bytes);
     }

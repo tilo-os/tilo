@@ -424,7 +424,7 @@ pub(crate) fn calibrate_on_gpu(
     };
     queue.write_texture(source.as_image_copy(), &texels, layout, extent);
     let mut pass = OrientedCopy::new(device);
-    pass.prepare(device, queue, OutputTransform::Normal, Some(lut));
+    pass.prepare(device, queue, OutputTransform::Normal, Some(lut), None);
     let readback = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("icc-lut-test-readback"),
         size: u64::try_from(texels.len()).unwrap(),

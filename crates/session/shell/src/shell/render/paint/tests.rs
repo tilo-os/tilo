@@ -333,6 +333,7 @@ fn paint_output_offscreen_with(
                 sdr_white_nits: crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS,
                 hdr_layers: &[],
                 color_lut,
+                dim: None,
                 layers,
             },
         )

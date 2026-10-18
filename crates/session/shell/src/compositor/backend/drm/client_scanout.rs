@@ -65,6 +65,11 @@ pub(super) struct ClientEligibility {
     /// calibrated output would skip the profile its composited frames go
     /// through (`shell::render::icc_lut`).
     pub uncalibrated: bool,
+    /// The compositor's final pass does not dim the output: a client buffer
+    /// flipped onto an output dimmed there would skip the dimming. Dimming
+    /// in the CRTC's gamma LUT applies to every plane, so it never stands in
+    /// the way ([`crate::shell::software_dim`]).
+    pub undimmed_by_compositor: bool,
     /// The candidate covers exactly this output, pixel for pixel.
     pub covers_output: bool,
     /// The candidate draws a client's dma-buf.
@@ -94,6 +99,9 @@ pub(super) fn client_scanout_rejection(input: ClientEligibility) -> Option<&'sta
     }
     if !input.uncalibrated {
         return Some("the output has an ICC profile");
+    }
+    if !input.undimmed_by_compositor {
+        return Some("the output is dimmed in the compositor's final pass");
     }
     if !input.covers_output {
         return Some("the fullscreen client does not cover this output pixel for pixel");
@@ -674,6 +682,7 @@ mod tests {
             enabled: true,
             upright: true,
             uncalibrated: true,
+            undimmed_by_compositor: true,
             covers_output: true,
             client_buffer: true,
             opaque: true,
@@ -697,6 +706,10 @@ mod tests {
             },
             ClientEligibility {
                 uncalibrated: false,
+                ..eligible()
+            },
+            ClientEligibility {
+                undimmed_by_compositor: false,
                 ..eligible()
             },
             ClientEligibility {
@@ -730,6 +743,34 @@ mod tests {
                 "{refusal:?} must composite"
             );
         }
+    }
+
+    // USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
+    // brightness etc. should in general be raised on the correct (?)
+    // screen(s)… in consistent positions… also how to handle brightness
+    // controls on multiple screens" — a display dimmed in software keeps
+    // scanning a fullscreen client out directly wherever its CRTC has a
+    // gamma LUT to dim it.
+    #[test]
+    fn software_dimming_in_the_crtc_keeps_direct_scanout() {
+        use crate::shell::software_dim::final_pass_dim;
+        let dimmed_by_crtc = ClientEligibility {
+            undimmed_by_compositor: final_pass_dim(0.4, true).is_none(),
+            ..eligible()
+        };
+        assert_eq!(
+            client_scanout_rejection(dimmed_by_crtc),
+            None,
+            "the CRTC dims the client's buffer too"
+        );
+        let dimmed_by_compositor = ClientEligibility {
+            undimmed_by_compositor: final_pass_dim(0.4, false).is_none(),
+            ..eligible()
+        };
+        assert!(
+            client_scanout_rejection(dimmed_by_compositor).is_some(),
+            "without a LUT the frame is composited so it stays dimmed"
+        );
     }
 
     /// How an output's flips reach KMS, for [`plane_choice`].
