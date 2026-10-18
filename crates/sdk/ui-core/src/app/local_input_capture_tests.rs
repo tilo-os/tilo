@@ -131,6 +131,70 @@ fn local_component_action_drains_exact_pre_execution_snapshot_and_alias() {
 }
 
 #[test]
+fn blocked_host_does_not_delay_local_edits_and_capacity_refusal_is_atomic() {
+    let mut fixture = ActionFixture::broker();
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    fixture.app.collaboration.manager =
+        CollaborationManager::with_peer_transport(CapturePeer(sent.clone()));
+    fixture.app.collaboration.local_author = fixture.bindings[0].author.clone();
+    fixture.app.publish_action_surface();
+    let alias = fixture
+        .app
+        .actions
+        .bound_publication
+        .alias(&fixture.bindings[0], "bound:probe")
+        .unwrap();
+    let address = tilo_actions::ActionAddress::new(alias, "apply");
+    let record = fixture.bindings[0].checkout.id.clone();
+    let heads = |fixture: &ActionFixture| {
+        fixture
+            .records
+            .read(&record, |doc| doc.clone().get_heads())
+            .unwrap()
+    };
+    // CapturePeer never returns a reply. Each synchronous call must commit a
+    // distinct edit while earlier reports still hold their capacity leases.
+    for expected in 1..=128 {
+        let before = heads(&fixture);
+        fixture
+            .app
+            .invoke_local_resource_action(&address, &serde_json::Map::new())
+            .unwrap();
+        assert_ne!(
+            heads(&fixture),
+            before,
+            "edit {expected} finished without a host reply"
+        );
+        assert_eq!(fixture.app.local_input_capture.pending_count(), expected);
+        assert_eq!(
+            sent.borrow()
+                .iter()
+                .filter(|(_, request)| matches!(
+                    request,
+                    CollabRequest::ReportLocalDocumentAction { .. }
+                ))
+                .count(),
+            expected
+        );
+        assert!(fixture.app.local_input_capture.failure.is_none());
+    }
+    let before = heads(&fixture);
+    assert!(
+        fixture
+            .app
+            .invoke_local_resource_action(&address, &serde_json::Map::new())
+            .is_err()
+    );
+    assert_eq!(
+        heads(&fixture),
+        before,
+        "capacity refusal must precede mutation"
+    );
+    assert_eq!(fixture.app.local_input_capture.pending_count(), 128);
+    assert_eq!(fixture.app.local_document_action_admissions().count(), 0);
+}
+
+#[test]
 fn disconnected_input_keeps_local_framework_edits_available() {
     let mut fixture = ActionFixture::broker();
     fixture.app.collaboration.manager = CollaborationManager::new();

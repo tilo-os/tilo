@@ -310,6 +310,54 @@ mod tests {
     }
 
     #[test]
+    fn sustained_private_actions_batch_into_one_checkpoint_per_writer_tick() {
+        let backend = Rc::new(MemoryStore::queued());
+        let store: Rc<dyn DurableStore> = backend.clone();
+        let key = StorageKey::package("so.tilo.test");
+        let owner = Rc::new(crate::DocOwner::acquire(store, key.clone()).unwrap());
+        let mut doc = owner.new_document().unwrap();
+        let mut writer = crate::DocWriter::start_new(&owner, &mut doc).unwrap();
+        for write in backend.drain() {
+            backend.acknowledge(write.revision, Ok(())).unwrap();
+        }
+        let writes = Rc::new(std::cell::Cell::new(0));
+        let observed = writes.clone();
+        backend.set_write_hook(Some(Rc::new(move || observed.set(observed.get() + 1))));
+        // Several full history windows exercise eviction as well as batching.
+        for batch in 0..4_u64 {
+            for offset in 0..LIMIT as u64 {
+                let id = batch * LIMIT as u64 + offset;
+                writer
+                    .record_private_action(PrivateAction {
+                        id: (id as u128).to_le_bytes(),
+                        hashes: vec![],
+                        intent: id.to_le_bytes().to_vec(),
+                        receipt: Some(b"private admission".to_vec()),
+                    })
+                    .unwrap();
+                assert_eq!(writes.get(), batch as usize, "no per-gesture storage write");
+                assert!(backend.drain().is_empty());
+            }
+            assert_eq!(writer.private_action_durability(), Durability::Pending);
+            writer.request(&mut doc);
+            let pending = backend.drain();
+            assert_eq!(pending.len(), 1, "one checkpoint for the entire batch");
+            assert_ne!(pending[0].key, key, "shared document is unchanged");
+            assert!(pending[0].op.is_replace());
+            assert_eq!(writes.get(), batch as usize + 1);
+            assert_eq!(writer.private_action_durability(), Durability::Pending);
+            backend.acknowledge(pending[0].revision, Ok(())).unwrap();
+            assert_eq!(writer.private_action_durability(), Durability::Durable);
+            assert_eq!(writer.private_actions(&doc).unwrap().len(), LIMIT);
+            writer.request(&mut doc);
+            assert!(
+                backend.drain().is_empty(),
+                "clean ticks do not rewrite checkpoints"
+            );
+        }
+    }
+
+    #[test]
     fn writer_tick_checkpoints_private_receipts_even_without_document_mutations() {
         let directory = tempfile::tempdir().unwrap();
         let key = StorageKey::package("so.tilo.test");
