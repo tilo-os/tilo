@@ -78,7 +78,7 @@ mod tests {
         {
             let locale: Locale = serde_json::from_str(r#"{"currency":"GBP"}"#).unwrap();
             assert_eq!(locale.currency, Currency::GBP);
-            assert_eq!(locale.date_format, DateStyle::Iso);
+            assert_eq!(locale.date_format, DateStyle::Language);
             assert_eq!(locale.measurement, Measurement::Metric);
         }
 
