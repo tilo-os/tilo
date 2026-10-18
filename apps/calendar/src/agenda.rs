@@ -24,6 +24,7 @@ use ui::widget::{Interaction, ListRowFace, RowLeading, Scrollable};
 use crate::date;
 use crate::draw_util::text_in_band;
 use crate::model::{Calendar, Event, Id, Priority, Task};
+use crate::shown::{Shown, Viewer};
 
 const DAYS_SHOWN: i64 = 21;
 
@@ -46,7 +47,7 @@ pub(crate) enum AgendaAction {
 /// One row of the agenda, in list order.
 enum Item<'a> {
     Heading(NaiveDate),
-    Event(&'a Event),
+    Event(Shown<'a>),
     Task(&'a Task),
 }
 
@@ -143,8 +144,9 @@ impl AgendaView {
                     }
                     y = band.y1 + m.heading_gap;
                 }
-                Item::Event(event) => {
-                    let time = event_time(event);
+                Item::Event(shown) => {
+                    let event = shown.event;
+                    let time = event_time(shown);
                     let face = event_face(event, &time, theme);
                     let h = face.height(ctx.text, theme);
                     let row = Rect::new(x0, y, x1, y + h);
@@ -230,12 +232,13 @@ fn paint_task_row(
     }
 }
 
-/// An event's time as its row's meta: its start, or "All day".
-fn event_time(event: &Event) -> String {
-    if event.all_day {
+/// An occurrence's time as its row's meta: its start on the viewer's
+/// clock, or "All day".
+fn event_time(shown: &Shown<'_>) -> String {
+    if shown.event.all_day {
         "All day".into()
     } else {
-        date::fmt_time(&event.start)
+        date::fmt_time(&shown.start)
     }
 }
 
@@ -318,13 +321,11 @@ pub(crate) struct AgendaSource<'a> {
     pub(crate) anchor: NaiveDate,
     pub(crate) hidden_calendars: &'a HashSet<String>,
     pub(crate) calendar_filter: Option<&'a str>,
+    /// The zone the times are shown in.
+    pub(crate) viewer: Viewer,
 }
 
 impl<'a> AgendaSource<'a> {
-    fn events_on(&self, day: NaiveDate) -> Vec<&'a Event> {
-        visible_events_on(self.model, day, self.hidden_calendars, self.calendar_filter)
-    }
-
     fn tasks_on(&self, day: NaiveDate) -> Vec<&'a Task> {
         let mut tasks: Vec<&'a Task> = self
             .model
@@ -339,10 +340,16 @@ impl<'a> AgendaSource<'a> {
     /// Every heading and row the agenda shows, in order.
     fn items(&self) -> Vec<Item<'a>> {
         let end = last_day(self.anchor);
+        let shown = visible_between(
+            self.model,
+            (self.anchor, end),
+            (self.hidden_calendars, self.calendar_filter),
+            self.viewer,
+        );
         let mut items = Vec::new();
         let mut day = self.anchor;
         while day <= end {
-            let events = self.events_on(day);
+            let events: Vec<Shown<'a>> = shown.iter().filter(|it| it.on(day)).copied().collect();
             let tasks = self.tasks_on(day);
             if !events.is_empty() || !tasks.is_empty() {
                 items.push(Item::Heading(day));
@@ -355,15 +362,17 @@ impl<'a> AgendaSource<'a> {
     }
 }
 
-fn visible_events_on<'a>(
+/// The occurrences from `from` to `to` of the calendars shown: all-day
+/// ones first, then by start.
+fn visible_between<'a>(
     model: &'a Calendar,
-    date: NaiveDate,
-    hidden_calendars: &HashSet<String>,
-    calendar_filter: Option<&str>,
-) -> Vec<&'a Event> {
-    model
-        .events_on(date)
-        .into_iter()
+    (from, to): (NaiveDate, NaiveDate),
+    (hidden_calendars, calendar_filter): (&HashSet<String>, Option<&str>),
+    viewer: Viewer,
+) -> Vec<Shown<'a>> {
+    let mut shown: Vec<Shown<'a>> = model
+        .events
+        .iter()
         .filter(|event| {
             event.visible_under(hidden_calendars)
                 && calendar_filter.is_none_or(|calendar| {
@@ -374,7 +383,15 @@ fn visible_events_on<'a>(
                     }
                 })
         })
-        .collect()
+        .flat_map(|event| crate::shown::occurrences(event, from, to, &viewer))
+        .collect();
+    shown.sort_by(|a, b| {
+        b.event
+            .all_day
+            .cmp(&a.event.all_day)
+            .then(a.start.cmp(&b.start))
+    });
+    shown
 }
 
 /// The list's full height: what [`AgendaView::draw`] paints, top to bottom.
@@ -392,9 +409,9 @@ fn content_height(source: &AgendaSource<'_>, text: &mut TextRenderer, theme: &Th
                     + m.heading_gap
                     + if index > 0 { m.group_gap } else { 0.0 }
             }
-            Item::Event(event) => {
-                let time = event_time(event);
-                event_face(event, &time, theme).height(text, theme)
+            Item::Event(shown) => {
+                let time = event_time(shown);
+                event_face(shown.event, &time, theme).height(text, theme)
             }
             Item::Task(task) => task_face(task, source, theme).height(text, theme),
         };
@@ -426,7 +443,21 @@ mod tests {
             anchor,
             hidden_calendars,
             calendar_filter: None,
+            viewer: berlin(),
         }
+    }
+
+    fn berlin() -> Viewer {
+        Viewer::named("Europe/Berlin")
+    }
+
+    fn visible_events_on<'a>(
+        model: &'a Calendar,
+        day: NaiveDate,
+        hidden: &HashSet<String>,
+        filter: Option<&str>,
+    ) -> Vec<Shown<'a>> {
+        visible_between(model, (day, day), (hidden, filter), berlin())
     }
 
     fn event(day: u32, calendar_id: Option<&str>) -> Event {

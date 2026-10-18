@@ -111,19 +111,36 @@ fn fold_timeline_drag_preserves_elapsed_duration_and_authored_zone() {
     // Move within the repeated hour: the end must still choose the later fold.
     h.drag(from, Point::new(from.x, from.y - 0.25 * g.hour_h));
     h.relayout();
-    let saved = crate::resource::read_doc(h.doc());
-    let event = saved.event(id).unwrap();
+    // The event repeats, so the drag moves this occurrence on its own.
+    let occurrence = |doc: &AutoCommit| {
+        let saved = crate::resource::read_doc(doc);
+        let event = saved.event(id).unwrap().clone();
+        let edit = event
+            .occurrence_overrides
+            .iter()
+            .find(|edit| edit.original_date == day)
+            .cloned()
+            .expect("the dragged occurrence is moved on its own");
+        (event, edit)
+    };
+    let (event, edit) = occurrence(h.doc());
     assert_eq!(
-        event.start,
-        day.and_hms_opt(2, 30, 0).unwrap(),
+        edit.start,
+        Some(day.and_hms_opt(2, 30, 0).unwrap()),
         "status={:?}, selection={:?}, dispatched={:?}",
         h.app.status,
         h.app.selection,
         h.app.last_dispatched()
     );
-    assert_eq!(event.end, day.and_hms_opt(2, 35, 0).unwrap());
-    assert!(event.end_later_fold);
-    assert_eq!(event.elapsed_duration(), Duration::minutes(65));
+    assert_eq!(edit.end, Some(day.and_hms_opt(2, 35, 0).unwrap()));
+    assert!(edit.end_later_fold);
+    let (from_at, to_at) = crate::shown::instants(&event, day).unwrap();
+    assert_eq!(to_at - from_at, Duration::minutes(65));
+    assert_eq!(
+        event.start,
+        day.and_hms_opt(2, 45, 0).unwrap(),
+        "the series stays"
+    );
     assert_eq!(event.timezone, "Europe/Berlin");
     assert_eq!(event.recurrence, Recurrence::Weekly);
     // Then leave the fold, retaining the elapsed interval through persistence.
@@ -131,12 +148,20 @@ fn fold_timeline_drag_preserves_elapsed_duration_and_authored_zone() {
     let from = Point::new(block.center().x, block.y0 + 3.0);
     h.drag(from, Point::new(from.x, from.y + 2.0 * g.hour_h));
     h.relayout();
-    let saved = crate::resource::read_doc(h.doc());
-    let event = saved.event(id).unwrap();
-    assert_eq!(event.start, day.and_hms_opt(4, 30, 0).unwrap());
-    assert_eq!(event.end, day.and_hms_opt(5, 35, 0).unwrap());
-    assert!(!event.end_later_fold);
-    assert_eq!(event.elapsed_duration(), Duration::minutes(65));
+    let (event, edit) = occurrence(h.doc());
+    assert_eq!(
+        edit.start,
+        Some(day.and_hms_opt(4, 30, 0).unwrap()),
+        "status={:?}, selection={:?}, dispatched={:?}, spans={:?}",
+        h.app.status,
+        h.app.selection,
+        h.app.last_dispatched(),
+        h.app.timeline_spans(&[day])
+    );
+    assert_eq!(edit.end, Some(day.and_hms_opt(5, 35, 0).unwrap()));
+    assert!(!edit.end_later_fold);
+    let (from_at, to_at) = crate::shown::instants(&event, day).unwrap();
+    assert_eq!(to_at - from_at, Duration::minutes(65));
     assert_eq!(event.timezone, "Europe/Berlin");
     assert!(h.app.last_dispatched().is_some());
 }
@@ -182,10 +207,20 @@ fn fold_conflicts_are_presented_after_opening_the_event() {
     let mut h = Harness::mount(app, 1200, 1900);
     h.relayout();
     let area = h.app.view_rect();
-    let g = TimelineInteraction::test_geometry(area);
+    let g = h.app.timeline.test_layout_geometry(area);
     let block = h.app.timeline.test_block_rect(area, 1, g, 0, 165, 195);
-    // Above the 02:50 event, so this gesture opens the first meeting.
-    h.click(Point::new(block.center().x, block.y0 + 1.0));
+    // The overlapping meetings share the column; aim at this one's lane,
+    // above the 02:50 event, so this gesture opens the first meeting.
+    let lane = h
+        .app
+        .timeline_spans(&[day])
+        .into_iter()
+        .find(|span| span.id == id)
+        .unwrap()
+        .lane;
+    let lane_w = block.width() / lane.of as f64;
+    let x = block.x0 + lane_w * (lane.index as f64 + 0.5);
+    h.click(Point::new(x, block.y0 + 1.0));
     h.mouse_button(ElementState::Released);
     h.relayout();
     assert_eq!(h.app.selection, Some(Sel::Event(id)));
@@ -2440,7 +2475,7 @@ fn calendar_visibility_and_account_collapse_filter_views_and_sidebar() {
         app.calendar_filter = Some("icloud/holidays".into());
 
         assert!(
-            app.visible_events_on(day).is_empty(),
+            app.visible_by_day(&[day])[0].is_empty(),
             "the collection filter narrows results but never bypasses the sidebar visibility setting"
         );
     }
@@ -2682,7 +2717,7 @@ fn week_timeline_scrolls_the_full_day_and_drags_create_and_reschedule() {
         h.app.view = View::Week;
         h.relayout();
 
-        let g = TimelineInteraction::test_geometry(h.app.view_rect());
+        let g = h.app.timeline.test_layout_geometry(h.app.view_rect());
         // The visible seven-day grid is narrow after navigation takes its
         // column. Its minimum reserves two caption lines per half hour.
         let theme = &h.app.layout_theme;
@@ -2716,7 +2751,7 @@ fn week_timeline_scrolls_the_full_day_and_drags_create_and_reschedule() {
         tall.app.show_calendar();
         tall.app.view = View::Week;
         tall.relayout();
-        let gt = TimelineInteraction::test_geometry(tall.app.view_rect());
+        let gt = tall.app.timeline.test_layout_geometry(tall.app.view_rect());
         assert!(
             gt.hour_h > TIMELINE_MIN_HOUR_H,
             "a tall window grows the hours to fill the space, got {}",
@@ -2738,7 +2773,7 @@ fn week_timeline_scrolls_the_full_day_and_drags_create_and_reschedule() {
         h.relayout();
 
         let area = h.app.view_rect();
-        let g = TimelineInteraction::test_geometry(area);
+        let g = h.app.timeline.test_layout_geometry(area);
         let days = h.app.timeline_days();
         let col = 0usize;
         let grid_x0 = area.x0 + g.gutter;
@@ -2806,7 +2841,7 @@ fn week_timeline_scrolls_the_full_day_and_drags_create_and_reschedule() {
         assert_eq!(start0.time(), min_to_time(11 * 60));
 
         let area = h.app.view_rect();
-        let g = TimelineInteraction::test_geometry(area);
+        let g = h.app.timeline.test_layout_geometry(area);
         let days = h.app.timeline_days();
         let col = days
             .iter()
@@ -2822,19 +2857,28 @@ fn week_timeline_scrolls_the_full_day_and_drags_create_and_reschedule() {
         let to = Point::new(x, block.y0 + 3.0 + 2.0 * g.hour_h);
         h.drag(from, to);
 
-        let moved = h
+        let event = h
             .app
             .model
             .event(id)
             .expect("event still present after the move");
-        assert_eq!(moved.start.date(), today, "stayed in the same day column");
+        // Design review repeats: the drag moves this occurrence, not the
+        // series.
+        assert_eq!(event.start, start0, "the series keeps its time");
+        let moved = event
+            .occurrence_overrides
+            .iter()
+            .find(|edit| edit.original_date == today)
+            .expect("the dragged occurrence is moved on its own");
+        let (start, end) = (moved.start.unwrap(), moved.end.unwrap());
+        assert_eq!(start.date(), today, "stayed in the same day column");
         assert_eq!(
-            moved.start.time(),
+            start.time(),
             min_to_time(13 * 60),
             "rescheduled two hours later (was {start0})"
         );
         assert_eq!(
-            (moved.end - moved.start).num_minutes(),
+            (end - start).num_minutes(),
             dur0,
             "duration preserved across the move"
         );
