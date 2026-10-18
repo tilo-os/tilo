@@ -1821,7 +1821,12 @@ fn invite_tokens_travel_through_the_clipboard_exactly() {
             | PeerSyncRequest::DevicesAsking
             | PeerSyncRequest::AnswerDevice { .. }
             | PeerSyncRequest::PollEnrollment(_)
-            | PeerSyncRequest::CancelEnrollment(_) => Err("not here".to_string()),
+            | PeerSyncRequest::CancelEnrollment(_)
+            | PeerSyncRequest::Directory { .. }
+            | PeerSyncRequest::JoinListed(_)
+            | PeerSyncRequest::ReportWorkspace { .. }
+            | PeerSyncRequest::Publication(_)
+            | PeerSyncRequest::Publish { .. } => Err("not here".to_string()),
             PeerSyncRequest::ListPendingInvitations => {
                 Ok(PeerSyncResponse::PendingInvitations(Vec::new()))
             }

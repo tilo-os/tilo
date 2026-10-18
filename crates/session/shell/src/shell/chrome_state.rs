@@ -713,6 +713,18 @@ pub struct FullscreenDisplay {
     pub primary: bool,
 }
 
+/// Whether a workspace is public, as the shell knows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PublicationState {
+    /// Its host is being asked.
+    Asking,
+    /// What its host answered.
+    Known(crate::shell::network::Publication),
+    /// It cannot be public (no host lists it), or its host did not answer;
+    /// why, in the person's words.
+    Unavailable(String),
+}
+
 /// Mutable chrome state shared across the shell widget tree.
 #[derive(Debug)]
 #[allow(
@@ -921,6 +933,9 @@ pub struct ChromeState {
     records_opened: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Drained once per frame by `ShellOverlayHost::pump_peer_sync`.
     peer_sync_requests: Vec<crate::shell::overlay_host::PeerSyncAction>,
+    /// Whether each workspace is public, as its host last answered, for
+    /// its settings' Public card.
+    publications: BTreeMap<crate::shell::state::RoomId, PublicationState>,
     presence_requests: Vec<PresenceRequest>,
     /// "Send…" requests for the last screenshot from the action door,
     /// drained into the capture studio by the overlay host.
@@ -1139,6 +1154,7 @@ impl ChromeState {
             peer_sync_enabled: false,
             collab_unavailable: None,
             peer_sync_requests: Vec::new(),
+            publications: BTreeMap::new(),
             presence_requests: Vec::new(),
             screenshot_sends: Vec::new(),
             strip_switcher_open: false,
@@ -1268,6 +1284,68 @@ impl ChromeState {
 
     pub fn take_peer_sync_requests(&mut self) -> Vec<crate::shell::overlay_host::PeerSyncAction> {
         std::mem::take(&mut self.peer_sync_requests)
+    }
+
+    /// Whether the workspace in `room` is public, as its host last
+    /// answered; `None` before anyone asked.
+    pub fn publication(&self, room: crate::shell::state::RoomId) -> Option<&PublicationState> {
+        self.publications.get(&room)
+    }
+
+    /// What the host answered about `room`'s publication.
+    pub fn set_publication(
+        &mut self,
+        room: crate::shell::state::RoomId,
+        answer: Result<crate::shell::network::Publication, String>,
+    ) {
+        self.publications.insert(
+            room,
+            match answer {
+                Ok(publication) => PublicationState::Known(publication),
+                Err(error) => PublicationState::Unavailable(error),
+            },
+        );
+    }
+
+    /// Ask the host of the active workspace whether it is public, unless
+    /// that is being asked already.
+    pub fn ask_active_publication(&mut self) {
+        let Some(room) = self
+            .tree()
+            .desktop
+            .active_workspace()
+            .map(|workspace| workspace.room)
+        else {
+            return;
+        };
+        if matches!(self.publications.get(&room), Some(PublicationState::Asking)) {
+            return;
+        }
+        self.publications.insert(room, PublicationState::Asking);
+        self.push_peer_sync_request(
+            crate::shell::overlay_host::PeerSyncAction::ReadPublication { room },
+        );
+    }
+
+    /// Make the active workspace public with `listing`, or private again
+    /// with `None`, on its host; its settings show the host's answer.
+    pub fn publish_active_workspace(
+        &mut self,
+        listing: Option<tilo_relay_protocol::directory::Listing>,
+    ) {
+        let Some(room) = self
+            .tree()
+            .desktop
+            .active_workspace()
+            .map(|workspace| workspace.room)
+        else {
+            return;
+        };
+        self.publications.insert(room, PublicationState::Asking);
+        self.push_peer_sync_request(crate::shell::overlay_host::PeerSyncAction::Publish {
+            room,
+            listing,
+        });
     }
 
     pub(crate) fn complete_peer_sync_request(
@@ -2042,6 +2120,7 @@ impl ChromeState {
         self.ws_settings_tab = tab;
         self.overlays.ws_settings = true;
         self.overlays.quick_settings = false;
+        self.ask_active_publication();
     }
 
     /// The top-bar workspace capsule is both the context indicator and the
@@ -2053,6 +2132,7 @@ impl ChromeState {
         self.overlays.ws_settings = opening;
         if opening {
             self.overlays.quick_settings = false;
+            self.ask_active_publication();
         }
         self.bump();
     }

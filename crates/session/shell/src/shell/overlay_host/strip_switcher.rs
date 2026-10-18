@@ -6,7 +6,7 @@
 //! it, each row level with its ribbon segment so nothing under the pointer
 //! moves: the strip's name, who is on it, a way to rename it, a row that adds
 //! a strip, and below, the workspaces, which are switched less often but
-//! must stay one click away.
+//! must stay one click away, with New workspace and "Join a workspace…".
 //!
 //! Opening follows aim, not contact ([`EdgeAim`]): a pointer that comes to
 //! rest on the ribbon opens the card, one sweeping past the screen edge on
@@ -201,6 +201,8 @@ pub(crate) enum Row {
     NewStrip,
     Workspace(usize),
     NewWorkspace,
+    /// "Join a workspace…": the directory of public workspaces.
+    JoinWorkspace,
 }
 
 /// Something in the card a press lands on.
@@ -221,6 +223,7 @@ pub(crate) enum Command {
     RenameStrip(StripId, String),
     SelectWorkspace(WorkspaceId),
     NewWorkspace,
+    JoinWorkspace,
 }
 
 /// The answer to a press.
@@ -305,6 +308,8 @@ impl Layout {
             y += ROW_H;
         }
         rows.push((Row::NewWorkspace, row(y, ROW_H)));
+        y += ROW_H;
+        rows.push((Row::JoinWorkspace, row(y, ROW_H)));
         y += ROW_H;
         let card = Rect::new(x0, header.y0 - PAD, x1, y + PAD);
         let low = content.y1 - MARGIN - card.y1;
@@ -657,6 +662,7 @@ impl StripSwitcher {
                 Press::Command(Command::SelectWorkspace(w.id))
             }),
             Row::NewWorkspace => Press::Command(Command::NewWorkspace),
+            Row::JoinWorkspace => Press::Command(Command::JoinWorkspace),
         }
     }
 
@@ -691,7 +697,7 @@ impl StripSwitcher {
             .map(Row::Strip)
             .chain([Row::NewStrip])
             .chain((0..self.model.workspaces.len()).map(Row::Workspace))
-            .chain([Row::NewWorkspace])
+            .chain([Row::NewWorkspace, Row::JoinWorkspace])
             .collect()
     }
 
@@ -893,7 +899,7 @@ impl StripSwitcher {
         let active = match row {
             Row::Strip(i) => i == self.model.focused,
             Row::Workspace(i) => i == self.model.active_workspace,
-            Row::NewStrip | Row::NewWorkspace => false,
+            Row::NewStrip | Row::NewWorkspace | Row::JoinWorkspace => false,
         };
         let hover = self.hover == Some(Target::Row(row))
             || matches!((self.hover, row), (Some(Target::Rename(a)), Row::Strip(b)) if a == b)
@@ -1030,7 +1036,7 @@ impl StripSwitcher {
                 let r = Rect::new(text_rect.x0, rect.y0, x_end, rect.y1);
                 draw_line(cx, &workspace.name, r, ink, &style);
             }
-            Row::NewStrip | Row::NewWorkspace => {
+            Row::NewStrip | Row::NewWorkspace | Row::JoinWorkspace => {
                 if row == Row::NewStrip
                     && self
                         .naming
@@ -1043,11 +1049,16 @@ impl StripSwitcher {
                     Point::new(text_rect.x0 + 7.0, rect.center().y),
                     (14.0, 14.0),
                 );
-                draw_glyph(cx, glyph, ui::icons::Icon::Plus, colors.text_dim);
-                let label = t(if row == Row::NewStrip {
-                    "strip-switcher-new-strip"
+                let icon = if row == Row::JoinWorkspace {
+                    ui::icons::Icon::Globe
                 } else {
-                    "strip-switcher-new-workspace"
+                    ui::icons::Icon::Plus
+                };
+                draw_glyph(cx, glyph, icon, colors.text_dim);
+                let label = t(match row {
+                    Row::NewStrip => "strip-switcher-new-strip",
+                    Row::JoinWorkspace => "strip-switcher-join-workspace",
+                    _ => "strip-switcher-new-workspace",
                 });
                 let r = Rect::new(glyph.x1 + 8.0, rect.y0, text_rect.x1, rect.y1);
                 draw_line(
@@ -1140,6 +1151,7 @@ impl StripSwitcher {
                 Row::NewStrip => "strip_switcher.new_strip".into(),
                 Row::Workspace(i) => format!("strip_switcher.workspace.{}", i.saturating_add(1)),
                 Row::NewWorkspace => "strip_switcher.new_workspace".into(),
+                Row::JoinWorkspace => "strip_switcher.join_workspace".into(),
             };
             out.push((name, *rect));
             if let Row::Strip(i) = row
@@ -1162,6 +1174,7 @@ impl StripSwitcher {
             Target::Row(Row::NewStrip) => format!("{TARGET_PREFIX}new-strip"),
             Target::Row(Row::Workspace(i)) => format!("{TARGET_PREFIX}workspace:{i}"),
             Target::Row(Row::NewWorkspace) => format!("{TARGET_PREFIX}new-workspace"),
+            Target::Row(Row::JoinWorkspace) => format!("{TARGET_PREFIX}join-workspace"),
             Target::Rename(i) => format!("{TARGET_PREFIX}rename:{i}"),
             Target::Field => format!("{TARGET_PREFIX}field"),
         }
@@ -1178,6 +1191,7 @@ impl StripSwitcher {
             _ => match rest {
                 "new-strip" => Target::Row(Row::NewStrip),
                 "new-workspace" => Target::Row(Row::NewWorkspace),
+                "join-workspace" => Target::Row(Row::JoinWorkspace),
                 _ => return None,
             },
         };
@@ -1207,6 +1221,7 @@ impl StripSwitcher {
                 Row::Workspace(i) => self.model.workspaces.get(*i).map(|w| w.name.clone()),
                 Row::NewStrip => Some(t("strip-switcher-new-strip")),
                 Row::NewWorkspace => Some(t("strip-switcher-new-workspace")),
+                Row::JoinWorkspace => Some(t("strip-switcher-join-workspace")),
             };
             let Some(name) = name else { continue };
             let (active, _) = self.row_state(*row);
@@ -1563,6 +1578,11 @@ impl super::ShellOverlayHost {
                 state.add_workspace(t("search-action-workspace-create-default-name"));
                 None
             }
+            Command::JoinWorkspace => {
+                state.push_peer_sync_request(super::PeerSyncAction::BrowseDirectory);
+                state.bump();
+                None
+            }
         };
         if let Some(message) = refused {
             state.push_warning_notification(t("strip-switcher-refused"), &message);
@@ -1866,6 +1886,8 @@ mod tests {
             "Escape leaves the name first"
         );
         s.key(&Key::Named(NamedKey::End), none);
+        assert_eq!(s.selected(), Some(Row::JoinWorkspace));
+        s.key(&Key::Named(NamedKey::ArrowUp), none);
         assert_eq!(s.selected(), Some(Row::NewWorkspace));
         s.key(&Key::Named(NamedKey::ArrowUp), none);
         assert_eq!(s.selected(), Some(Row::Workspace(1)));

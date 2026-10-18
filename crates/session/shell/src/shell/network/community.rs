@@ -10,9 +10,10 @@
 //! session up or shows an error; a site that lets people in by invitation
 //! only is left alone.
 //!
-//! The person can leave it (the workspace switcher's Leave). That is
-//! remembered with the rooms held through sites and never undone silently;
-//! Settings offers joining again. A host set up again behind the same site
+//! The person can leave it (the workspace's own menu, or the overview's
+//! Leave). That is remembered with the rooms held through sites and never
+//! undone silently; "Join a workspace…" lists it first, and joining it there
+//! joins it again ([`super::directory`]). A host set up again behind the same site
 //! (another device answers there) is joined anew as the same person, as a
 //! browser does: nobody is asked to fix a host's state.
 

@@ -1,8 +1,9 @@
-//! The community workspace's steps on the action door: how Settings shows
-//! where the person stands with the workspace a Tilo computer is in by
-//! default, and joins it again after they left it (or leaves it). The
-//! membership is the network's ([`ShellNetwork::join_site`]); this door
-//! only reads it and asks.
+//! The community workspace's steps on the action door: where the person
+//! stands with the workspace a Tilo computer is in by default, joining it
+//! again after they left it, and leaving it, for a script or an assistive
+//! tool acting for the person. People do the same in "Join a workspace…"
+//! and the workspace's own menu. The membership is the network's
+//! ([`ShellNetwork::join_site`]); this door only reads it and asks.
 
 use std::sync::Arc;
 

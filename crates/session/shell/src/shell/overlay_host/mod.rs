@@ -283,6 +283,50 @@ enum ComposerHit {
     Submit,
 }
 
+/// The Public card of workspace settings, from what the host last answered
+/// about the active workspace's publication.
+fn public_card(
+    state: Option<&crate::shell::chrome_state::PublicationState>,
+) -> tilo_desktop::workspace_settings::overlay::PublicCard {
+    use crate::shell::chrome_state::PublicationState;
+    use tilo_desktop::workspace_settings::overlay::PublicCard;
+    match state {
+        None | Some(PublicationState::Asking) => PublicCard::Asking,
+        Some(PublicationState::Unavailable(why)) => PublicCard::Unavailable(why.clone()),
+        Some(PublicationState::Known(known)) => PublicCard::Known {
+            public: known.public,
+            description: known.description.clone(),
+            default_role: match known.default_role {
+                tilo_relay_protocol::rooms::RoomRole::Viewer => {
+                    crate::shell::state::CapRole::Viewer
+                }
+                tilo_relay_protocol::rooms::RoomRole::Commenter => {
+                    crate::shell::state::CapRole::Commenter
+                }
+                tilo_relay_protocol::rooms::RoomRole::Editor => {
+                    crate::shell::state::CapRole::Editor
+                }
+                tilo_relay_protocol::rooms::RoomRole::Moderator => {
+                    crate::shell::state::CapRole::Moderator
+                }
+            },
+        },
+    }
+}
+
+/// The role a public workspace hands out after `role`: the card's cycle,
+/// Viewer, Commenter, Editor, and round again.
+fn next_door_role(
+    role: tilo_relay_protocol::rooms::RoomRole,
+) -> tilo_relay_protocol::rooms::RoomRole {
+    use tilo_relay_protocol::rooms::RoomRole;
+    match role {
+        RoomRole::Viewer => RoomRole::Commenter,
+        RoomRole::Commenter => RoomRole::Editor,
+        RoomRole::Editor | RoomRole::Moderator => RoomRole::Viewer,
+    }
+}
+
 fn workspace_settings_composer_hit(outcome: &WorkspaceSettingsOutcome) -> Option<ComposerHit> {
     match outcome {
         WorkspaceSettingsOutcome::ComposerSubject => Some(ComposerHit::Subject),
@@ -915,6 +959,8 @@ pub struct ShellOverlayHost {
     status_sharing: ui::StatusSharing,
     /// Owns the invite/connect prompt state, painting, hit-testing and input.
     peer_sync_overlay: PeerSyncOverlay,
+    /// "Join a workspace…": the public workspaces, as a sheet in place.
+    directory_sheet: crate::shell::directory_sheet::DirectorySheet,
     /// Top-right notification stack, above content but below the
     /// permission prompt and modals.
     notification_stack: NotificationStack,
@@ -1239,6 +1285,20 @@ pub enum PeerSyncAction {
     PromptInvite,
     /// Leave the site's workspace `room` (the overview's Leave).
     LeaveSite { room: crate::shell::state::RoomId },
+    /// Open "Join a workspace…", the directory of public workspaces.
+    BrowseDirectory,
+    /// Report the public workspace `room` to the people who run it.
+    ReportWorkspace {
+        room: crate::shell::state::RoomId,
+        reason: String,
+    },
+    /// Make the workspace `room` public with `listing`, or private again.
+    Publish {
+        room: crate::shell::state::RoomId,
+        listing: Option<tilo_relay_protocol::directory::Listing>,
+    },
+    /// Ask whether the workspace `room` is public, for its settings.
+    ReadPublication { room: crate::shell::state::RoomId },
     /// Open "Pair a new device" and make its link.
     PairDevice,
     /// User invoked `/connect`. Opens the token-input prompt
@@ -2584,6 +2644,7 @@ impl ShellOverlayHost {
             status_editing: false,
             status_sharing: collaboration_preferences.sharing,
             peer_sync_overlay: PeerSyncOverlay::default(),
+            directory_sheet: crate::shell::directory_sheet::DirectorySheet::default(),
             notification_stack: NotificationStack::new(),
             acknowledgement_reduce_motion: std::cell::Cell::new(false),
             osd_painted: std::cell::Cell::new(None),
@@ -4347,8 +4408,174 @@ impl ShellOverlayHost {
                 self.complete_peer_sync_action(request_id, output);
             }
             FollowUp::Pairing { request } => self.apply_pairing(&request, outcome),
+            FollowUp::Directory { request } => self.apply_directory(&request, outcome),
             FollowUp::Ignore => {}
         }
+    }
+
+    /// Open "Join a workspace…" and ask the directories for what they list.
+    pub(super) fn open_directory(&mut self) {
+        let request = self.directory_sheet.open();
+        self.run_directory_request(request);
+    }
+
+    /// Carry out what the directory sheet asked: reading directories and
+    /// joining off the frame loop, switching and the join field here.
+    fn run_directory_request(&mut self, request: crate::shell::directory_sheet::DirectoryRequest) {
+        use crate::shell::directory_sheet::DirectoryRequest;
+        let network = match request {
+            DirectoryRequest::Fetch { site } => PeerSyncRequest::Directory { site },
+            DirectoryRequest::Join(listing) => PeerSyncRequest::JoinListed(listing),
+            DirectoryRequest::Open(listing) => {
+                self.directory_sheet.close();
+                if let Some(room) = listing.room {
+                    self.switch_to_room(room, None);
+                }
+                return;
+            }
+            DirectoryRequest::LinkOrCode(text) => {
+                self.directory_sheet.close();
+                self.peer_sync_overlay.prompt_connect_with(&text);
+                // A link or a code the person typed joins at once; the field
+                // shows it joining, or why not.
+                let text: String = text.split_whitespace().collect();
+                if !text.is_empty() {
+                    self.run_peer_sync_request(&PeerSyncRequest::AcceptInvite(text), false);
+                }
+                return;
+            }
+        };
+        self.dispatch_directory(network);
+    }
+
+    /// Run one of the directory's network requests on the worker.
+    fn dispatch_directory(&mut self, request: PeerSyncRequest) {
+        self.dispatch_peer_sync(
+            peer_sync_dispatch::Job {
+                request: request.clone(),
+                require_pending: false,
+                workspace: self.active_workspace_id(),
+            },
+            peer_sync_dispatch::FollowUp::Directory { request },
+        );
+    }
+
+    /// Show the workspace a join or Open leads to: `workspace` when a slot
+    /// was made for it, else the one showing `room`. The workspace motion
+    /// is the one every switch takes.
+    fn switch_to_room(
+        &self,
+        room: crate::shell::state::RoomId,
+        workspace: Option<crate::shell::state::WorkspaceId>,
+    ) {
+        let Some(chrome) = self.chrome.as_ref() else {
+            return;
+        };
+        let mut state = chrome.borrow_mut();
+        let target = workspace.or_else(|| {
+            state
+                .tree()
+                .desktop
+                .workspaces
+                .iter()
+                .find(|candidate| candidate.room == room)
+                .map(|candidate| candidate.id)
+        });
+        if let Some(target) = target {
+            state.overlays.overview = false;
+            state.switch_to_workspace(target);
+        }
+    }
+
+    /// Show what a directory request answered: the listings on the sheet,
+    /// the workspace a join made, or why not; a workspace's publication in
+    /// its settings; a report's acknowledgement.
+    fn apply_directory(
+        &mut self,
+        request: &PeerSyncRequest,
+        outcome: Result<PeerSyncResponse, String>,
+    ) {
+        match (request, outcome) {
+            (PeerSyncRequest::Directory { .. }, Ok(PeerSyncResponse::Directory(listings))) => {
+                self.directory_sheet.show(listings);
+            }
+            (
+                PeerSyncRequest::JoinListed(_),
+                Ok(PeerSyncResponse::JoinedWorkspace { room, workspace }),
+            ) => {
+                self.directory_sheet.joined();
+                self.switch_to_room(room, workspace);
+            }
+            (PeerSyncRequest::Directory { .. } | PeerSyncRequest::JoinListed(_), Err(error)) => {
+                self.directory_sheet.failed(&error);
+            }
+            (
+                PeerSyncRequest::Publication(room) | PeerSyncRequest::Publish { room, .. },
+                outcome,
+            ) => {
+                if let Some(chrome) = self.chrome.as_ref() {
+                    let mut state = chrome.borrow_mut();
+                    match outcome {
+                        Ok(PeerSyncResponse::Publication(publication)) => {
+                            state.set_publication(*room, Ok(publication));
+                        }
+                        Ok(_) => {
+                            state.set_publication(*room, Err(t("peer-sync-unexpected-response")))
+                        }
+                        Err(error) => state.set_publication(*room, Err(error)),
+                    }
+                    state.bump();
+                }
+            }
+            (PeerSyncRequest::ReportWorkspace { .. }, outcome) => {
+                if let Some(chrome) = self.chrome.as_ref() {
+                    let mut state = chrome.borrow_mut();
+                    match outcome {
+                        Ok(_) => state.push_notification(
+                            t("directory-reported"),
+                            t("directory-reported-body"),
+                        ),
+                        Err(error) => {
+                            state.push_warning_notification(t("directory-report-failed"), &error)
+                        }
+                    }
+                }
+            }
+            (_, Ok(_)) => {
+                self.directory_sheet
+                    .failed(&t("peer-sync-unexpected-response"));
+            }
+            (_, Err(error)) => {
+                tracing::debug!(%error, "a directory request failed");
+            }
+        }
+    }
+
+    /// Route one event to the directory sheet while it is open; whether it
+    /// took it. Every key belongs to it, as to the join field.
+    fn handle_directory_event(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: winit::event::Modifiers,
+    ) -> bool {
+        let outcome = self
+            .directory_sheet
+            .handle_event(event, modifiers, self.last_cursor);
+        if let Some(request) = outcome.request {
+            self.run_directory_request(request);
+        }
+        outcome.consumed
+    }
+
+    fn draw_directory_sheet(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        self.directory_sheet
+            .draw(self.rect, scene, transform, text_renderer, theme);
     }
 
     /// Carry out one pairing request on the worker.
@@ -4515,6 +4742,27 @@ impl ShellOverlayHost {
                 }
                 PeerSyncAction::PromptConnect => {
                     self.peer_sync_overlay.prompt_connect();
+                    self.complete_peer_sync_action(request_id, Ok(serde_json::Value::Null));
+                }
+                PeerSyncAction::BrowseDirectory => {
+                    self.open_directory();
+                    self.complete_peer_sync_action(request_id, Ok(serde_json::Value::Null));
+                }
+                PeerSyncAction::ReportWorkspace { room, reason } => {
+                    self.dispatch_directory(PeerSyncRequest::ReportWorkspace { room, reason });
+                    self.complete_peer_sync_action(request_id, Ok(serde_json::Value::Null));
+                }
+                PeerSyncAction::Publish { room, listing } => {
+                    self.dispatch_directory(PeerSyncRequest::Publish { room, listing });
+                    self.complete_peer_sync_action(request_id, Ok(serde_json::Value::Null));
+                }
+                PeerSyncAction::ReadPublication { room } => {
+                    if !self
+                        .peer_sync
+                        .in_flight(&PeerSyncRequest::Publication(room))
+                    {
+                        self.dispatch_directory(PeerSyncRequest::Publication(room));
+                    }
                     self.complete_peer_sync_action(request_id, Ok(serde_json::Value::Null));
                 }
                 PeerSyncAction::PairDevice => {
@@ -13670,12 +13918,13 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Open the join field and close the overview.
-    fn open_join_field(&self) {
+    /// Open "Join a workspace…", the directory of public workspaces, in
+    /// place of the overview.
+    fn open_join_sheet(&self) {
         if let Some(chrome) = self.chrome.as_ref() {
             let mut state = chrome.borrow_mut();
             state.overlays.overview = false;
-            state.push_peer_sync_request(PeerSyncAction::PromptConnect);
+            state.push_peer_sync_request(PeerSyncAction::BrowseDirectory);
             state.bump();
         }
     }
@@ -14006,6 +14255,11 @@ impl ShellOverlayHost {
         // Before every other overlay: a token prompt owns the keyboard
         // outright, since a token shares characters with chords.
         if self.peer_sync_overlay.visible() && self.handle_peer_sync_event(event, *ctx.modifiers) {
+            *ctx.handled = true;
+            return true;
+        }
+        // So does the directory sheet, whose search takes pasted links.
+        if self.directory_sheet.is_open() && self.handle_directory_event(event, *ctx.modifiers) {
             *ctx.handled = true;
             return true;
         }
@@ -16176,7 +16430,7 @@ impl ShellOverlayHost {
             return;
         }
         if target == Some(count.saturating_add(1)) {
-            self.open_join_field();
+            self.open_join_sheet();
             self.settle_keyboard_overview();
             return;
         }
@@ -19062,6 +19316,46 @@ impl ShellOverlayHost {
                     st.bump();
                 }
             }
+            // The room's host decides who may: it answered the listing only
+            // to someone it lets change the room's settings, and checks the
+            // change again.
+            WorkspaceSettingsOutcome::TogglePublic | WorkspaceSettingsOutcome::CycleDefaultRole => {
+                if let Some(chrome) = self.chrome.clone() {
+                    let mut state = chrome.borrow_mut();
+                    let known = state
+                        .tree()
+                        .desktop
+                        .active_workspace()
+                        .and_then(|workspace| match state.publication(workspace.room) {
+                            Some(crate::shell::chrome_state::PublicationState::Known(known)) => {
+                                Some(known.clone())
+                            }
+                            _ => None,
+                        });
+                    if let Some(known) = known {
+                        let listing = |default_role| tilo_relay_protocol::directory::Listing {
+                            description: known.description.clone(),
+                            default_role,
+                        };
+                        let next = if matches!(outcome, WorkspaceSettingsOutcome::TogglePublic) {
+                            (!known.public).then(|| listing(known.default_role))
+                        } else {
+                            Some(listing(next_door_role(known.default_role)))
+                        };
+                        state.publish_active_workspace(next);
+                        state.bump();
+                    }
+                }
+            }
+            WorkspaceSettingsOutcome::EditDescription => {
+                // The description is typed in the palette's parameter
+                // field, where `workspace.publish` takes it, like every
+                // other text an action takes.
+                self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
+                self.palette
+                    .set_query(&crate::shell::i18n::t("search-action-workspace-publish"));
+                self.last_search_query = "\0workspace-publish\0".to_string();
+            }
             WorkspaceSettingsOutcome::ToggleDevice(index) => {
                 if let Some(chrome) = self.chrome.clone() {
                     chrome.borrow_mut().toggle_active_workspace_device(index);
@@ -19225,7 +19519,7 @@ impl ShellOverlayHost {
         }
         let join = self.join_workspace_hit_rect();
         if join.area() > 0.0 && join.contains(p) {
-            self.open_join_field();
+            self.open_join_sheet();
             return;
         }
         let site_rooms = self.site_rooms();
@@ -22487,6 +22781,7 @@ impl Widget for ShellOverlayHost {
         if self.onboarding.is_none() {
             targets.extend(self.desk_test_rects());
             targets.extend(self.strip_switcher_test_rects());
+            targets.extend(self.directory_sheet.test_rects());
         }
         targets
     }
@@ -22914,6 +23209,7 @@ impl ShellOverlayHost {
             || acknowledgement_frame
             || self.window_previews.changed()
             || self.peer_sync_overlay.needs_animation_frame()
+            || self.directory_sheet.needs_animation_frame()
     }
 }
 
@@ -23763,6 +24059,11 @@ impl ShellOverlayHost {
                     },
                 )
                 .collect();
+            let public = public_card(
+                tree.desktop
+                    .active_workspace()
+                    .and_then(|workspace| state.publication(workspace.room)),
+            );
             self.workspace_settings_overlay.draw_contents(
                 scene,
                 plan.transform,
@@ -23780,6 +24081,7 @@ impl ShellOverlayHost {
                     owner_controls,
                     apps: &crate::shell::launcher::ShellApps,
                     devices: &devices,
+                    public: &public,
                 },
             );
         }
@@ -24513,6 +24815,7 @@ impl ShellOverlayHost {
             || self.workspace_settings_overlay.member_sheet_is_open()
             || self.file_picker_overlay.widget().is_some()
             || self.peer_sync_overlay.visible()
+            || self.directory_sheet.visible()
             || self.portal_dialogs.view().is_some()
     }
 
@@ -25293,6 +25596,11 @@ impl ShellOverlayHost {
 
         // Owns the keyboard while up, so it must sit above the palette
         // that opened it.
+        overlay_part(scene, "shell.directory", desktop, |scene| {
+            self.draw_directory_sheet(scene, transform, text_renderer, theme);
+            None
+        });
+
         overlay_part(scene, "shell.peer-sync", desktop, |scene| {
             self.draw_peer_sync(scene, transform, text_renderer, theme);
             None

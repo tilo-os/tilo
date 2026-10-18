@@ -69,6 +69,9 @@ pub(super) enum FollowUp {
     /// Pairing a new device: its link, the devices asking and the answers,
     /// which the sheet and the approval notifications show.
     Pairing { request: PeerSyncRequest },
+    /// The directory of public workspaces and a workspace's publication:
+    /// the sheet, the switch a join leads to, and workspace settings.
+    Directory { request: PeerSyncRequest },
     /// Nothing comes back that anyone reads.
     Ignore,
 }
@@ -155,7 +158,8 @@ impl PeerSyncDispatch {
         self.in_flight.values().any(|follow| match follow {
             FollowUp::Card { request, .. }
             | FollowUp::Action { request, .. }
-            | FollowUp::Pairing { request } => std::mem::discriminant(request) == kind,
+            | FollowUp::Pairing { request }
+            | FollowUp::Directory { request } => std::mem::discriminant(request) == kind,
             FollowUp::Ignore => false,
         })
     }

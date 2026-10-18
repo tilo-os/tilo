@@ -1254,3 +1254,60 @@ fn the_you_are_here_chip_is_neutral_not_your_colour() {
         );
     }
 }
+
+// USER REQUIREMENT (2026-10-19): "This is collaborative... if I go to my
+// workspace overview, why isn't there a button 'Join public workspaces'?" —
+// the workspace overview offers "Join a workspace…" right beside "New
+// workspace", and it opens the directory of public workspaces in place, not a
+// field to paste a code into.
+#[test]
+fn the_workspace_overview_offers_join_a_workspace_beside_new_workspace_and_opens_the_directory() {
+    let mut h = host_with(WorkspaceTree::bootstrap_default());
+    let root = h.accessibility().unwrap();
+    let overview = root
+        .children
+        .iter()
+        .find(|n| n.name.as_deref() == Some("Workspace overview"))
+        .expect("visible overview semantics");
+    let names: Vec<&str> = overview
+        .children
+        .iter()
+        .filter_map(|n| n.name.as_deref())
+        .collect();
+    let new = names
+        .iter()
+        .position(|name| *name == "New workspace")
+        .expect("New workspace is offered");
+    let join = names
+        .iter()
+        .position(|name| *name == "Join a workspace…")
+        .expect("Join a workspace… is offered in the overview");
+    assert_eq!(join, new + 1, "right beside New workspace: {names:?}");
+
+    let at = h.join_workspace_hit_rect();
+    assert!(at.area() > 0.0, "a button to press");
+    h.overview_click_at(at.center());
+    let asked = h
+        .chrome
+        .as_ref()
+        .unwrap()
+        .borrow_mut()
+        .take_peer_sync_requests();
+    assert_eq!(
+        asked,
+        vec![PeerSyncAction::BrowseDirectory],
+        "the directory of public workspaces, not the paste field"
+    );
+    assert!(!h.chrome.as_ref().unwrap().borrow().overlays.overview);
+    h.chrome
+        .as_ref()
+        .unwrap()
+        .borrow_mut()
+        .push_peer_sync_request(PeerSyncAction::BrowseDirectory);
+    let _ = h.pump_peer_sync();
+    assert!(h.directory_sheet.is_open(), "the sheet is open in place");
+    assert!(
+        !h.peer_sync_overlay.visible(),
+        "no paste field until the person asks for one"
+    );
+}

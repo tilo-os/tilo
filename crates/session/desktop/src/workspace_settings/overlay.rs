@@ -67,6 +67,26 @@ pub struct WorkspaceSettingsModel<'a> {
     /// The person's devices and whether this workspace shows on each.
     /// Empty for a workspace that is not the person's own.
     pub devices: &'a [WorkspaceDevice],
+    /// Whether the workspace is public, as its host answered.
+    pub public: &'a PublicCard,
+}
+
+/// The General tab's Public card: whether the workspace is listed in the
+/// directory of the host it lives on, what the listing says, and the role
+/// everyone who joins from it gets.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum PublicCard {
+    /// Its host is being asked.
+    #[default]
+    Asking,
+    /// What its host answered.
+    Known {
+        public: bool,
+        description: String,
+        default_role: tilo_action_policy::Role,
+    },
+    /// It cannot be public here, or its host did not answer: why.
+    Unavailable(String),
 }
 
 /// One of the person's devices as the General tab offers it.
@@ -134,6 +154,12 @@ pub enum EventOutcome {
     CommitName,
     /// Show the workspace on the `n`th listed device, or keep it off.
     ToggleDevice(usize),
+    /// List the workspace in its host's directory, or take it out.
+    TogglePublic,
+    /// Hand out the next role to people who join from the directory.
+    CycleDefaultRole,
+    /// Write what the public workspace is, in the palette's typed field.
+    EditDescription,
     /// Move the workspace one place earlier (`-1`) or later (`1`).
     MoveWorkspace(i32),
     DeleteWorkspace,
@@ -228,6 +254,9 @@ pub struct WorkspaceSettingsOverlay {
     delete_rect: Rect,
     /// Rows the devices card had when last painted, for the scroll range.
     device_rows: usize,
+    /// The Public card's switch, role and description controls, as
+    /// painted (scroll applied); zero while they take no input.
+    public_rects: [Rect; 3],
     /// Shaped caret/scroll cache; the host owns the rename draft and selection.
     name_input: Option<ui::widget::TextInput>,
 }
@@ -260,6 +289,7 @@ impl Default for WorkspaceSettingsOverlay {
             move_rects: [Rect::ZERO; 2],
             delete_rect: Rect::ZERO,
             device_rows: 0,
+            public_rects: [Rect::ZERO; 3],
             name_input: None,
         }
     }
@@ -426,7 +456,8 @@ impl WorkspaceSettingsOverlay {
         if !delta.is_finite() || self.member_sheet.is_some() {
             return false;
         }
-        let content = 382.0 + Self::devices_card_height(self.device_rows) + 16.0;
+        let content =
+            382.0 + Self::devices_card_height(self.device_rows) + 16.0 + PUBLIC_CARD_HEIGHT + 16.0;
         let max = (content * self.general_text_scale - self.general_body_rect().height()).max(0.0);
         let old = self.general_scroll_y;
         self.general_scroll_y = (old + delta).clamp(0.0, max);
@@ -451,6 +482,37 @@ impl WorkspaceSettingsOverlay {
             body.x1,
             top + Self::devices_card_height(self.device_rows) * scale,
         )
+    }
+
+    /// The Public card under the devices card. Scroll applied.
+    pub fn public_card_rect(&self) -> Rect {
+        let devices = self.devices_card_rect();
+        let scale = self.general_text_scale;
+        let top = devices.y1 + 16.0 * scale;
+        Rect::new(
+            devices.x0,
+            top,
+            devices.x1,
+            top + PUBLIC_CARD_HEIGHT * scale,
+        )
+    }
+
+    /// The Public card's switch, role and description controls.
+    pub fn public_control_rects(&self) -> &[Rect; 3] {
+        &self.public_rects
+    }
+
+    /// The Public card's control under `point`, if any.
+    fn public_card_hit(&self, point: Point) -> Option<EventOutcome> {
+        let hit = |rect: &Rect| rect.area() > 0.0 && rect.contains(point);
+        let [switch, role, description] = &self.public_rects;
+        if hit(switch) {
+            return Some(EventOutcome::TogglePublic);
+        }
+        if hit(role) {
+            return Some(EventOutcome::CycleDefaultRole);
+        }
+        hit(description).then_some(EventOutcome::EditDescription)
     }
 
     /// The devices card's control under `point`, if any.
@@ -996,6 +1058,11 @@ impl WorkspaceSettingsOverlay {
         {
             return outcome;
         }
+        if matches!(active_tab, WsTab::General)
+            && let Some(outcome) = self.public_card_hit(point)
+        {
+            return outcome;
+        }
         if matches!(active_tab, WsTab::General) && self.invite_rect().contains(point) {
             return EventOutcome::CreateInvite;
         }
@@ -1113,6 +1180,7 @@ impl WorkspaceSettingsOverlay {
             collab_y,
         );
         self.draw_ws_settings_devices(scene, transform, text_renderer, theme, model);
+        self.draw_ws_settings_public(scene, transform, text_renderer, theme, model);
 
         scene.pop_layer();
 
@@ -2448,6 +2516,164 @@ impl WorkspaceSettingsOverlay {
         self.delete_rect = if deletable { delete } else { Rect::ZERO };
     }
 
+    /// The Public card: a switch that lists the workspace in its host's
+    /// directory, what the listing says, and the role people who join get.
+    /// Its host answers the listing only to whoever may change the
+    /// workspace's settings; everyone else sees why not.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a paint routine that lays the card out top to bottom from shared running offsets"
+    )]
+    fn draw_ws_settings_public(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        model: &WorkspaceSettingsModel<'_>,
+    ) {
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        let scale = f64::from(theme.text_scale * theme.ui_scale);
+        let card = self.public_card_rect();
+        self.public_rects = [Rect::ZERO; 3];
+        ui::surface::card(
+            scene,
+            transform,
+            card,
+            f64::from(tokens.radii.control),
+            colors.surfaces.raised,
+        );
+        let caption = theme.text(TextRole::Caption);
+        text_renderer.draw_style(
+            scene,
+            &t("workspace-settings-public-title"),
+            colors.text_primary,
+            transform.pre_translate((card.x0 + 16.0, card.y0 + 16.0 * scale).into()),
+            None,
+            &theme.text(TextRole::Body),
+        );
+        let (known, line) = match model.public {
+            PublicCard::Asking => (None, t("workspace-settings-public-asking")),
+            PublicCard::Unavailable(why) => (None, why.clone()),
+            PublicCard::Known {
+                public,
+                description,
+                default_role,
+            } => (
+                Some((*public, *default_role)),
+                if *public && !description.is_empty() {
+                    description.replace('\n', " ")
+                } else if *public {
+                    t("workspace-settings-public-on")
+                } else {
+                    t("workspace-settings-public-off")
+                },
+            ),
+        };
+        let width = ui::num::f32_of_f64((card.width() - 32.0).max(0.0));
+        let line = text_renderer.elide_to_width_style(&line, width, &caption);
+        text_renderer.draw_style(
+            scene,
+            &line,
+            colors.text_dim,
+            transform.pre_translate((card.x0 + 16.0, card.y0 + 44.0 * scale).into()),
+            None,
+            &caption,
+        );
+        let Some((public, role)) = known else {
+            return;
+        };
+        // The host answers the listing only to someone the room lets change
+        // its settings, and decides each change again: a known listing has
+        // working controls.
+        let lifted = ui::chrome::shell::selection_tier_on(
+            theme,
+            ui::chrome::SelectionState::active(true),
+            colors.surfaces.raised,
+        )
+        .fill;
+        let button =
+            |scene: &mut Scene, text_renderer: &mut TextRenderer, rect: Rect, label: &str, fill| {
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    fill,
+                    None,
+                    &RoundedRect::from_rect(
+                        rect,
+                        ui::chrome::ChromeRole::Control.radius(theme, rect.height()),
+                    ),
+                );
+                let (w, h) = text_renderer.measure_style(label, None, &caption);
+                text_renderer.draw_style(
+                    scene,
+                    label,
+                    colors.text_primary,
+                    transform.pre_translate(
+                        (
+                            rect.x0 + (rect.width() - f64::from(w)) / 2.0,
+                            rect.y0 + (rect.height() - f64::from(h)) / 2.0,
+                        )
+                            .into(),
+                    ),
+                    None,
+                    &caption,
+                );
+            };
+        // The switch, at the title's end: lifted while public.
+        let switch = Rect::new(
+            card.x1 - 16.0 - 96.0 * scale,
+            card.y0 + 12.0 * scale,
+            card.x1 - 16.0,
+            card.y0 + 44.0 * scale,
+        );
+        button(
+            scene,
+            text_renderer,
+            switch,
+            &t(if public {
+                "workspace-settings-public-switch-on"
+            } else {
+                "workspace-settings-public-switch-off"
+            }),
+            if public { lifted } else { colors.surfaces.base },
+        );
+        // Who joins as what, and what it says, once it is public.
+        let row = card.y0 + 76.0 * scale;
+        let role_label = t_args(
+            "workspace-settings-public-role",
+            &[("role", super::role_label(role).into())],
+        );
+        let role_rect = Rect::new(
+            card.x0 + 16.0,
+            row,
+            card.x0 + 16.0 + 200.0 * scale,
+            row + 32.0 * scale,
+        );
+        let description_rect = Rect::new(
+            card.x1 - 16.0 - 160.0 * scale,
+            row,
+            card.x1 - 16.0,
+            row + 32.0 * scale,
+        );
+        button(
+            scene,
+            text_renderer,
+            role_rect,
+            &role_label,
+            colors.surfaces.base,
+        );
+        button(
+            scene,
+            text_renderer,
+            description_rect,
+            &t("workspace-settings-public-describe"),
+            colors.surfaces.base,
+        );
+        self.public_rects = [switch, role_rect, description_rect];
+    }
+
     /// Live workspace summary. Detailed member management belongs to the
     /// Members tab; General stays an honest overview rather than inventing
     /// a placeholder collaborator.
@@ -2581,6 +2807,9 @@ impl WorkspaceSettingsOverlay {
 }
 
 /// Glyph size and gap for a tab pill's leading icon.
+/// The Public card: its title and switch, the listing's line, and the role
+/// and description controls.
+const PUBLIC_CARD_HEIGHT: f64 = 124.0;
 const TAB_ICON_PX: f64 = 15.0;
 const TAB_ICON_GAP: f64 = 7.0;
 /// Text inset inside a tab pill, both sides together.
@@ -2694,6 +2923,7 @@ mod tests {
             owner_controls: true,
             apps: &super::super::NoAppDirectory,
             devices: &[],
+            public: &PublicCard::Asking,
         };
         overlay.paint_name_field(
             &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme),
@@ -2732,6 +2962,7 @@ mod tests {
             owner_controls: true,
             apps: &super::super::NoAppDirectory,
             devices: &[],
+            public: &PublicCard::Asking,
         };
         let mut overlay = WorkspaceSettingsOverlay::default();
         let mut renderer = TextRenderer::new();
@@ -2833,6 +3064,7 @@ mod tests {
                 owner_controls: true,
                 apps: &super::super::NoAppDirectory,
                 devices: &[],
+                public: &PublicCard::Asking,
             };
             let mut scene = Scene::new();
             let mut text = TextRenderer::new();

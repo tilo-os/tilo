@@ -172,6 +172,34 @@ impl ShellNetwork {
                         .collect(),
                 ))
             }
+            PeerSyncRequest::Directory { site } => self
+                .directory(site.as_deref())
+                .map(PeerSyncResponse::Directory),
+            PeerSyncRequest::JoinListed(listing) => {
+                self.join_listed(&listing).map(|joined| match joined {
+                    super::site_join::SiteJoin::Held { room } => {
+                        PeerSyncResponse::JoinedWorkspace {
+                            room,
+                            workspace: None,
+                        }
+                    }
+                    super::site_join::SiteJoin::Enrolling { room, local, .. } => {
+                        PeerSyncResponse::JoinedWorkspace {
+                            room,
+                            workspace: Some(local),
+                        }
+                    }
+                })
+            }
+            PeerSyncRequest::ReportWorkspace { room, reason } => self
+                .report_workspace(room, &reason)
+                .map(|()| PeerSyncResponse::Message(String::new())),
+            PeerSyncRequest::Publication(room) => {
+                self.publication(room).map(PeerSyncResponse::Publication)
+            }
+            PeerSyncRequest::Publish { room, listing } => self
+                .publish(room, listing)
+                .map(PeerSyncResponse::Publication),
             PeerSyncRequest::ResendInvitation(id) => {
                 self.resend_invitation(&id).map(PeerSyncResponse::Message)
             }
