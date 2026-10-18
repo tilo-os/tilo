@@ -138,7 +138,6 @@ impl Fixture {
             generation: GenerationExpectation::FirstAccepted {
                 minimum_generation: 1,
             },
-            allowed_delivery_capabilities: 3,
             now: self.now,
         }
     }
@@ -149,7 +148,6 @@ impl Fixture {
     fn settings(&self) -> DescriptorSettings {
         DescriptorSettings {
             origin: "https://example.test".into(),
-            delivery_capabilities: 3,
             issued_at_ns: 1000 * NS,
             expires_at_ns: 1100 * NS,
             generation: 1,
@@ -230,7 +228,6 @@ fn real_governed_host_issues_verified_exact_browser_and_native_routes() {
         "https://example.test/peer/v3/connect"
     );
     assert_eq!(verified.host_certificate(), &f.host);
-    assert_eq!(verified.delivery_capabilities(), 3);
     assert_eq!(verified.generation(), 1);
     verified.revalidate(&f.current()).unwrap();
     assert!(issue_transport_hint(&f.settings(), &f.current(), &f.device_key).is_err());
@@ -241,7 +238,7 @@ fn every_payload_and_outer_pin_field_is_signed_and_independently_constrained() {
     let f = Fixture::new();
     let hint = f.issue();
     let payload = decode_payload(&hint.opaque_json).unwrap();
-    for field in 0..15 {
+    for field in 0..14 {
         let mut changed = payload.clone();
         match field {
             0 => changed.protocol = 4,
@@ -254,10 +251,9 @@ fn every_payload_and_outer_pin_field_is_signed_and_independently_constrained() {
             7 => changed.webtransport_path.push('x'),
             8 => changed.https_base_path.push('x'),
             9 => changed.native_endpoint.push('x'),
-            10 => changed.delivery_capabilities = 7,
-            11 => changed.media_capabilities = 4,
-            12 => changed.issued_at_ns += NS,
-            13 => changed.expires_at_ns += NS,
+            10 => changed.media_capabilities = 4,
+            11 => changed.issued_at_ns += NS,
+            12 => changed.expires_at_ns += NS,
             _ => changed.generation += 1,
         }
         let mut tampered = hint.clone();
@@ -267,7 +263,7 @@ fn every_payload_and_outer_pin_field_is_signed_and_independently_constrained() {
             verify_transport_hint(&tampered, &f.current()).is_err(),
             "unsigned field {field}"
         );
-        if field <= 11 {
+        if field <= 10 {
             assert!(
                 verify_transport_hint(&f.resign(&changed), &f.current()).is_err(),
                 "signed invalid field {field}"
@@ -287,9 +283,6 @@ fn every_payload_and_outer_pin_field_is_signed_and_independently_constrained() {
         }
         assert!(verify_transport_hint(&changed, &f.current()).is_err());
     }
-    let mut current = f.current();
-    current.allowed_delivery_capabilities = 1;
-    assert!(verify_transport_hint(&hint, &current).is_err());
 }
 
 #[test]
@@ -305,7 +298,6 @@ fn canonical_payload_literal_and_existing_signature_contract_are_preserved() {
         webtransport_path: "/peer/v3/connect".into(),
         https_base_path: "/peer/v3".into(),
         native_endpoint: "https://a.test/peer/v3/connect".into(),
-        delivery_capabilities: 3,
         media_capabilities: 0,
         issued_at_ns: 10,
         expires_at_ns: 20,
@@ -323,7 +315,7 @@ fn canonical_payload_literal_and_existing_signature_contract_are_preserved() {
     golden.extend(b"/peer/v3");
     golden.push(30);
     golden.extend(b"https://a.test/peer/v3/connect");
-    golden.extend([3, 0, 10, 20, 1]);
+    golden.extend([0, 10, 20, 1]);
     assert_eq!(encode_payload(&payload).unwrap(), golden);
     let f = Fixture::new();
     let hint = f.issue();
@@ -514,7 +506,7 @@ fn real_foreign_root_host_role_removal_invalidates_existing_descriptor() {
     assert!(verify_transport_hint(&hint, &f.current()).is_err());
     assert!(
         verified
-            .client_scope(&f.current(), &f.device, auth::Carrier::Https, 3, 1)
+            .client_scope(&f.current(), &f.device, auth::Carrier::Https)
             .is_err()
     );
 }
@@ -572,7 +564,7 @@ fn verified_descriptor_derives_scopes_for_real_asymmetric_authentication() {
     let f = Fixture::new();
     let verified = verify_transport_hint(&f.issue(), &f.current()).unwrap();
     let scope = verified
-        .client_scope(&f.current(), &f.device, auth::Carrier::Https, 7, 1)
+        .client_scope(&f.current(), &f.device, auth::Carrier::Https)
         .unwrap();
     assert_eq!(scope.host, f.host.device_public_key);
     assert_eq!(scope.device_root, f.device.user_public_key);
@@ -582,16 +574,11 @@ fn verified_descriptor_derives_scopes_for_real_asymmetric_authentication() {
     assert_eq!(scope.origin, "https://example.test");
     assert!(
         verified
-            .client_scope(&f.current(), &f.device, auth::Carrier::Https, 7, 4)
-            .is_err()
-    );
-    assert!(
-        verified
-            .server_binding(&f.current(), &f.device, auth::Carrier::Https, 7, 1, [0; 16])
+            .server_binding(&f.current(), &f.device, auth::Carrier::Https, [0; 16])
             .is_err()
     );
     let binding = verified
-        .server_binding(&f.current(), &f.device, auth::Carrier::Https, 7, 1, [9; 16])
+        .server_binding(&f.current(), &f.device, auth::Carrier::Https, [9; 16])
         .unwrap();
     let revoked = RevocationList::new();
     let credentials = auth::Credentials {
@@ -602,20 +589,12 @@ fn verified_descriptor_derives_scopes_for_real_asymmetric_authentication() {
     };
     let current = auth::VerificationContext {
         binding: &binding,
-        capabilities: auth::CapabilityPolicy {
-            supported: 3,
-            allowed: verified.delivery_capabilities(),
-        },
         credentials,
         authority: &f,
         now_ns: 1000 * NS,
     };
     let expected = auth::ClientExpectations {
         scope,
-        capabilities: auth::CapabilityPolicy {
-            supported: 7,
-            allowed: verified.delivery_capabilities(),
-        },
         credentials,
         authority: &f,
         now_ns: 1000 * NS,
@@ -626,7 +605,6 @@ fn verified_descriptor_derives_scopes_for_real_asymmetric_authentication() {
         .client_proof(&f.device_key)
         .unwrap();
     let session = challenge.finish(&client, &current).unwrap();
-    assert_eq!(session.capabilities(), 3);
     assert_eq!(session.binding().server_boot_id, [9; 16]);
 }
 
@@ -690,7 +668,7 @@ fn persisted_hint_metadata_recovers_expired_generation_without_authorizing() {
 }
 
 #[test]
-fn signed_known_media_bit_is_separate_from_delivery_and_unknown_bits_fail() {
+fn signed_known_media_bits_verify_and_unknown_bits_fail() {
     let f = Fixture::new();
     let hint = f.issue();
     let mut payload = decode_payload(&hint.opaque_json).unwrap();
@@ -719,7 +697,6 @@ fn signed_known_media_bit_is_separate_from_delivery_and_unknown_bits_fail() {
             .media_capabilities(),
         MEDIA_VOICE_V1
     );
-    assert_eq!(verified.delivery_capabilities(), 3);
     inspect_persisted_hint(&signed, &f.host).unwrap();
     payload.media_capabilities = 4;
     let unknown = f.resign(&payload);

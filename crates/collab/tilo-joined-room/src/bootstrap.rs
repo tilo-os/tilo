@@ -74,7 +74,6 @@ impl NativeCommittedView {
                 .ok_or("no independently pinned native delivery host")?,
             workspace: self.workspace(),
             generation: self.descriptor_expectation()?,
-            allowed_delivery_capabilities: tilo_delivery_protocol::capabilities::PRODUCT_DATA_V1,
             now,
         })
     }
@@ -111,7 +110,7 @@ impl NativeWorkspaceOwner {
                 );
             }
             descriptor
-                .client_scope(&authority, view.device(), Carrier::Https, 0, 0)
+                .client_scope(&authority, view.device(), Carrier::Https)
                 .map_err(|e| e.to_string())?;
             let mut request = bootstrap::BootstrapRequest {
                 version: 1,
