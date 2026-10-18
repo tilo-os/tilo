@@ -1,13 +1,23 @@
-//! Starting a job: `clone3` into its cgroup and namespaces, then the child's
-//! setup, which runs on memory [`Plan`] prepared and makes system calls only.
+//! Starting a job: `clone3` into its cgroup and namespaces, where the child
+//! at once runs the job's init as a new program; the init reads the [`Plan`]
+//! the worker prepared and makes system calls only.
+//!
+//! The child shares the worker's memory until its `execve` (`CLONE_VM` and
+//! `CLONE_VFORK`, as `posix_spawn` does), so the init never holds a copy of
+//! the worker's heap: forking a worker of tens of GiB copies its page tables
+//! on every job start, and every init would keep copy-on-write pages the
+//! worker goes on changing, charged to the worker, for as long as its job
+//! runs.
 
 use std::ffi::CString;
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, Write};
 use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
+use std::os::unix::fs::OpenOptionsExt;
 use std::time::{Duration, Instant};
 
 use super::plan::{Op, Plan};
 use super::sys;
+use super::wire::{self, Control};
 use crate::job::{ExitStatus, SpawnError, Started};
 
 /// What the job's init reports a failed setup step as: the step, the index
@@ -31,13 +41,14 @@ enum Step {
     Fork,
     Exec,
     Ids,
+    Init,
 }
 
 impl Step {
     fn from_u32(n: u32) -> Option<Self> {
         use Step::{
-            Caps, Cwd, Exec, Fork, Hostname, Ids, Landlock, LandlockRule, Loopback, NoNewPrivs, Op,
-            Pivot, PivotStage, Private, Seccomp, Stage,
+            Caps, Cwd, Exec, Fork, Hostname, Ids, Init, Landlock, LandlockRule, Loopback,
+            NoNewPrivs, Op, Pivot, PivotStage, Private, Seccomp, Stage,
         };
         [
             Private,
@@ -56,6 +67,7 @@ impl Step {
             Fork,
             Exec,
             Ids,
+            Init,
         ]
         .into_iter()
         .find(|s| *s as u32 == n)
@@ -65,12 +77,40 @@ impl Step {
 /// Exit status of the job's init when it could not report anything.
 const EXIT_UNREPORTED: i32 = 125;
 
-/// Everything the child reads, borrowed from the parent's memory (a copy of
-/// it, after `clone3`).
-struct Child<'a> {
-    plan: &'a Plan,
-    argv: &'a [*const libc::c_char],
-    envp: &'a [*const libc::c_char],
+/// The init's first argument: a program started with it runs the job's init
+/// (see [`crate::job_init`]).
+pub const INIT_ARG0: &str = "tilo-job-init";
+
+/// What the init writes on the report pipe as soon as it runs, so the worker
+/// knows the program it started is a job's init.
+const HELLO: [u8; 12] = *b"tilo-job-run";
+
+fn errno() -> u32 {
+    // SAFETY: reads this thread's errno.
+    let e = unsafe { *libc::__errno_location() };
+    u32::try_from(e).unwrap_or(0)
+}
+
+/// Write a failed step's record on the report pipe and `_exit`.
+fn report_and_exit(report: RawFd, step: Step, index: usize, errno: u32) -> ! {
+    let mut msg = [0_u8; 12];
+    let words = [step as u32, u32::try_from(index).unwrap_or(u32::MAX), errno];
+    for (chunk, w) in msg.chunks_exact_mut(4).zip(words) {
+        chunk.copy_from_slice(&w.to_ne_bytes());
+    }
+    // SAFETY: writes a stack buffer to a pipe; then `_exit`, which does
+    // not unwind or run destructors.
+    unsafe {
+        libc::write(report, msg.as_ptr().cast(), msg.len());
+        libc::_exit(EXIT_UNREPORTED)
+    }
+}
+
+/// The child of `clone3` until its `execve`. It runs on the worker's memory
+/// while the thread that made it is suspended (but the worker's other
+/// threads are not), on a stack of its own: it reads only this, takes no
+/// lock and allocates nothing.
+struct PreExec<'a> {
     /// (descriptor in the parent, descriptor number in the child).
     moves: &'a [(RawFd, RawFd)],
     /// One slot per move, for the descriptor's temporary copy.
@@ -79,42 +119,15 @@ struct Child<'a> {
     above: RawFd,
     /// Descriptors at or above this are closed.
     keep_below: RawFd,
-    sync: RawFd,
-    status: RawFd,
     report: RawFd,
-    landlock: Option<RawFd>,
-    /// Where the plan's idmapped trees are, in order.
-    trees_at: RawFd,
+    /// The init program, at its number in the child.
+    exe: RawFd,
+    cap_last: u32,
+    argv: &'a [*const libc::c_char],
+    envp: &'a [*const libc::c_char],
 }
 
-fn errno() -> u32 {
-    // SAFETY: reads this thread's errno.
-    let e = unsafe { *libc::__errno_location() };
-    u32::try_from(e).unwrap_or(0)
-}
-
-impl Child<'_> {
-    /// Report a failed step on the report pipe and end the init.
-    fn fail(&self, step: Step, index: usize, errno: u32) -> ! {
-        let mut msg = [0_u8; 12];
-        let words = [step as u32, u32::try_from(index).unwrap_or(u32::MAX), errno];
-        for (chunk, w) in msg.chunks_exact_mut(4).zip(words) {
-            chunk.copy_from_slice(&w.to_ne_bytes());
-        }
-        // SAFETY: writes a stack buffer to a pipe; then `_exit`, which does
-        // not unwind or run destructors.
-        unsafe {
-            libc::write(self.report, msg.as_ptr().cast(), msg.len());
-            libc::_exit(EXIT_UNREPORTED)
-        }
-    }
-
-    fn check(&self, rc: libc::c_long, step: Step, index: usize) {
-        if rc < 0 {
-            self.fail(step, index, errno());
-        }
-    }
-
+impl PreExec<'_> {
     /// Put every descriptor the job keeps at its number, and close the rest:
     /// another job's pipe or the worker's server connection must not stay
     /// open in this one.
@@ -149,18 +162,113 @@ impl Child<'_> {
         unsafe { libc::syscall(libc::SYS_close_range, first, u32::MAX, 0_u32) };
     }
 
+    /// Keep the namespace's capabilities across the `execve`: a process whose
+    /// uid isn't the namespace's root (it is not mapped yet) loses them all
+    /// there, unless they are ambient. The init drops every one of them
+    /// (ambient ones included) before the command runs.
+    fn keep_capabilities(&self) {
+        let header = sys::CapHeader {
+            version: sys::LINUX_CAPABILITY_VERSION_3,
+            pid: 0,
+        };
+        let mut data = [sys::CapData::default(); 2];
+        // SAFETY (this block): capget and capset on a stack header and data,
+        // prctl with integer arguments.
+        unsafe {
+            if libc::syscall(libc::SYS_capget, &raw const header, data.as_mut_ptr()) < 0 {
+                report_and_exit(self.report, Step::Init, 1, errno());
+            }
+            for d in &mut data {
+                d.inheritable = d.permitted;
+            }
+            if libc::syscall(libc::SYS_capset, &raw const header, data.as_ptr()) < 0 {
+                report_and_exit(self.report, Step::Init, 2, errno());
+            }
+            for cap in 0..=self.cap_last {
+                let raise = libc::prctl(
+                    libc::PR_CAP_AMBIENT,
+                    libc::PR_CAP_AMBIENT_RAISE,
+                    libc::c_ulong::from(cap),
+                    0,
+                    0,
+                );
+                if raise < 0 {
+                    report_and_exit(self.report, Step::Init, 3, errno());
+                }
+            }
+        }
+    }
+
+    /// The child of `clone3`, until it runs the init.
+    ///
+    /// # Safety
+    /// Only in the child of `clone3`, on its own stack.
+    unsafe fn run(&mut self) -> ! {
+        // SAFETY: the first thing the child does.
+        unsafe { self.arrange_fds() };
+        // SAFETY: a descriptor at its number in this process.
+        unsafe { libc::fcntl(self.exe, libc::F_SETFD, libc::FD_CLOEXEC) };
+        self.keep_capabilities();
+        // SAFETY: the program by descriptor, with NULL-terminated vectors
+        // the parent built; on success nothing of this process remains.
+        unsafe {
+            libc::syscall(
+                libc::SYS_execveat,
+                self.exe,
+                c"".as_ptr(),
+                self.argv.as_ptr(),
+                self.envp.as_ptr(),
+                libc::AT_EMPTY_PATH,
+            );
+        }
+        report_and_exit(self.report, Step::Init, 0, errno())
+    }
+}
+
+/// [`PreExec::run`], as `clone3_run` calls it.
+///
+/// # Safety
+/// `arg` is the `PreExec` the parent passed; only in the child of `clone3`.
+unsafe extern "C" fn pre_exec(arg: *mut libc::c_void) -> ! {
+    // SAFETY: the parent passes its `PreExec` and is suspended until this
+    // child has called `execve` or exited (`CLONE_VFORK`).
+    let pre = unsafe { &mut *arg.cast::<PreExec<'_>>() };
+    // SAFETY: we are that child.
+    unsafe { pre.run() }
+}
+
+/// Everything the init reads, decoded from the worker's plan.
+struct Child<'a> {
+    plan: &'a Plan,
+    argv: &'a [*const libc::c_char],
+    envp: &'a [*const libc::c_char],
+    control: &'a Control,
+}
+
+impl Child<'_> {
+    /// Report a failed step on the report pipe and end the init.
+    fn fail(&self, step: Step, index: usize, errno: u32) -> ! {
+        report_and_exit(self.control.report, step, index, errno)
+    }
+
+    fn check(&self, rc: libc::c_long, step: Step, index: usize) {
+        if rc < 0 {
+            self.fail(step, index, errno());
+        }
+    }
+
     /// Wait for the worker to map the job's ids and run its setup hook.
     fn await_parent(&self) {
         let mut byte = 0_u8;
         // SAFETY: reads one byte into a stack variable.
-        let n = unsafe { libc::read(self.sync, (&raw mut byte).cast(), 1) };
+        let n = unsafe { libc::read(self.control.sync, (&raw mut byte).cast(), 1) };
         if n != 1 {
             // The worker gave up on this job (and closed the pipe).
             // SAFETY: `_exit` does not unwind.
             unsafe { libc::_exit(EXIT_UNREPORTED) };
         }
         // SAFETY: closing our own descriptor.
-        unsafe { libc::close(self.sync) };
+        unsafe { libc::close(self.control.sync) };
     }
 
     /// Take on the job's ids, where it has host ids of its own: the init
@@ -264,7 +372,7 @@ impl Child<'_> {
         }
         for (i, op) in plan.ops.iter().enumerate() {
             // SAFETY: each call takes C strings the plan owns.
-            let rc = unsafe { run_op(op, self.trees_at) };
+            let rc = unsafe { run_op(op, self.control.trees_at) };
             if rc < 0 && op.fatal() {
                 self.fail(Step::Op, i, errno());
             }
@@ -383,7 +491,9 @@ impl Child<'_> {
     }
 
     fn landlock(&self) {
-        let (Some(ruleset), Some((_, rules))) = (self.landlock, self.plan.landlock.as_ref()) else {
+        let (Some(ruleset), Some((_, rules))) =
+            (self.control.landlock, self.plan.landlock.as_ref())
+        else {
             return;
         };
         for (i, rule) in rules.iter().enumerate() {
@@ -443,27 +553,11 @@ impl Child<'_> {
         }
     }
 
-    /// Hide what this process inherited from the worker: not traceable and
-    /// its `/proc` files unreadable to the job, its environment blanked.
-    fn hide_worker(&self) {
-        // SAFETY: prctl with constants; the areas are this process's own
-        // stack pages (argument and environment strings), writable.
-        unsafe {
-            libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
-            let (start, end) = self.plan.env_area;
-            if let Some(len) = end.checked_sub(start).filter(|l| *l > 0 && start > 0) {
-                std::ptr::write_bytes(std::ptr::with_exposed_provenance_mut::<u8>(start), 0, len);
-            }
-            let (start, end) = self.plan.arg_area;
-            if let Some(len) = end.checked_sub(start).filter(|l| *l > 0 && start > 0) {
-                let at = std::ptr::with_exposed_provenance_mut::<u8>(start);
-                std::ptr::write_bytes(at, 0, len);
-                let name = b"job-init";
-                if len > name.len() {
-                    std::ptr::copy_nonoverlapping(name.as_ptr(), at, name.len());
-                }
-            }
-        }
+    /// Keep the job from tracing its init or reading its `/proc` files: the
+    /// init holds the pipe the worker reads the command's status from.
+    fn hide_init() {
+        // SAFETY: prctl with constants.
+        unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) };
     }
 
     /// The command: a session of its own, its stdio, `execve`.
@@ -472,8 +566,8 @@ impl Child<'_> {
         // holds and argument vectors the parent built, NULL-terminated.
         unsafe {
             libc::setsid();
-            libc::close(self.status);
-            libc::fcntl(self.report, libc::F_SETFD, libc::FD_CLOEXEC);
+            libc::close(self.control.status);
+            libc::fcntl(self.control.report, libc::F_SETFD, libc::FD_CLOEXEC);
             let mut last = libc::ENOENT.unsigned_abs();
             for path in &self.plan.candidates {
                 libc::execve(path.as_ptr(), self.argv.as_ptr(), self.envp.as_ptr());
@@ -494,10 +588,10 @@ impl Child<'_> {
         // pipes see EOF when it exits), waits on children, writes a stack
         // buffer and exits.
         unsafe {
-            libc::close(self.report);
-            for (_, target) in self.moves {
-                if *target != self.status {
-                    libc::close(*target);
+            libc::close(self.control.report);
+            for fd in &self.control.kept {
+                if *fd != self.control.status {
+                    libc::close(*fd);
                 }
             }
             let mut status = 0;
@@ -512,7 +606,7 @@ impl Child<'_> {
                     break;
                 }
             }
-            libc::write(self.status, (&raw const status).cast(), 4);
+            libc::write(self.control.status, (&raw const status).cast(), 4);
             let code = if libc::WIFEXITED(status) {
                 libc::WEXITSTATUS(status)
             } else {
@@ -522,13 +616,8 @@ impl Child<'_> {
         }
     }
 
-    /// The job's init, from `clone3` to `_exit`.
-    ///
-    /// # Safety
-    /// Only in the child of `clone3`. Allocates nothing and takes no lock.
-    unsafe fn run(&mut self) -> ! {
-        // SAFETY: the first thing the child does.
-        unsafe { self.arrange_fds() };
+    /// The job's init, from its start to `_exit`.
+    fn run(&self) -> ! {
         self.await_parent();
         // SAFETY: tie the init to the worker: if the worker dies, so does
         // the job.
@@ -540,9 +629,9 @@ impl Child<'_> {
         self.drop_capabilities();
         self.landlock();
         self.seccomp();
-        self.hide_worker();
-        // SAFETY: a plain fork (no namespace flags), as raw `clone` so no
-        // libc fork handler runs in this copy of a threaded process.
+        Self::hide_init();
+        // SAFETY: a plain fork (no namespace flags) of this small,
+        // single-threaded program.
         let pid = unsafe { libc::syscall(libc::SYS_clone, libc::SIGCHLD, 0, 0, 0, 0) };
         self.check(pid, Step::Fork, 0);
         if pid == 0 {
@@ -550,6 +639,63 @@ impl Child<'_> {
         }
         self.reap(libc::pid_t::try_from(pid).unwrap_or(-1))
     }
+}
+
+/// Run the job's init if this process was started as one (its arguments are
+/// [`INIT_ARG0`], the plan's descriptor and the report pipe's), and never
+/// return; return at once otherwise.
+pub fn init_if_started_as_one() {
+    let Ok(cmdline) = std::fs::read("/proc/self/cmdline") else {
+        return;
+    };
+    let mut args = cmdline.split(|b| *b == 0);
+    if args.next() != Some(INIT_ARG0.as_bytes()) {
+        return;
+    }
+    let fd = |a: Option<&[u8]>| std::str::from_utf8(a?).ok()?.parse::<RawFd>().ok();
+    if let (Some(plan), Some(report)) = (fd(args.next()), fd(args.next())) {
+        init(plan, report);
+    }
+}
+
+/// The job's init: read the plan, tell the worker it runs, run the job.
+fn init(plan_fd: RawFd, report: RawFd) -> ! {
+    let os_errno = |e: &io::Error| {
+        e.raw_os_error()
+            .and_then(|n| u32::try_from(n).ok())
+            .unwrap_or(0)
+    };
+    // SAFETY: the worker put the plan's memory file at this number, for us.
+    let file = unsafe { std::fs::File::from_raw_fd(plan_fd) };
+    let mut bytes = Vec::new();
+    if let Err(e) = (&file).read_to_end(&mut bytes) {
+        report_and_exit(report, Step::Init, 4, os_errno(&e));
+    }
+    drop(file);
+    // SAFETY: this process is the init, which owns the plan's descriptors.
+    let Some((plan, control)) = (unsafe { wire::decode(&bytes) }) else {
+        report_and_exit(report, Step::Init, 5, libc::EINVAL.unsigned_abs());
+    };
+    drop(bytes);
+    // SAFETY: a static buffer to a pipe.
+    let n = unsafe { libc::write(control.report, HELLO.as_ptr().cast(), HELLO.len()) };
+    if usize::try_from(n).ok() != Some(HELLO.len()) {
+        report_and_exit(report, Step::Init, 6, errno());
+    }
+    let pointers = |v: &[CString]| -> Vec<*const libc::c_char> {
+        v.iter()
+            .map(|a| a.as_ptr())
+            .chain(std::iter::once(std::ptr::null()))
+            .collect()
+    };
+    let (argv, envp) = (pointers(&plan.argv), pointers(&plan.envp));
+    Child {
+        plan: &plan,
+        argv: &argv,
+        envp: &envp,
+        control: &control,
+    }
+    .run()
 }
 
 /// One mount operation; the plan's idmapped trees are at `trees_at` on.
@@ -872,14 +1018,14 @@ fn cpu_wait(pid: libc::pid_t, cgroup: Option<&std::path::Path>) -> Duration {
     Duration::from_nanos(ready).max(Duration::from_micros(pressure))
 }
 
-/// Wait for the report pipe to close (the command is running) or to say
-/// which step failed: `Ok(None)` when it closes, `Ok(Some(_))` with the
-/// 12-byte failure record.
+/// Read the report pipe until it closes (the command is running, or the
+/// init ended) or holds two records: the init's [`HELLO`], and the step that
+/// failed.
 ///
 /// On a busy machine the job's setup waits for a CPU, at the share its cgroup
 /// gets: the time it spends ready to run doesn't count against
 /// `SETUP_TIMEOUT`, only the time it spends waiting for anything else.
-fn read_report_bytes(report: OwnedFd, pid: libc::pid_t) -> Result<Option<[u8; 12]>, SpawnError> {
+fn read_report_bytes(report: OwnedFd, pid: libc::pid_t) -> Result<Vec<u8>, SpawnError> {
     let start = Instant::now();
     let cgroup =
         crate::job::cgroup::cgroup_of(&pid.to_string(), std::path::Path::new("/sys/fs/cgroup"))
@@ -887,7 +1033,7 @@ fn read_report_bytes(report: OwnedFd, pid: libc::pid_t) -> Result<Option<[u8; 12
     let cgroup = cgroup.as_deref();
     let before = cpu_wait(pid, cgroup);
     let mut f = std::fs::File::from(report);
-    let mut buf = [0_u8; 12];
+    let mut buf = [0_u8; 24];
     let mut got = 0_usize;
     loop {
         let runnable = cpu_wait(pid, cgroup).saturating_sub(before);
@@ -934,7 +1080,7 @@ fn read_report_bytes(report: OwnedFd, pid: libc::pid_t) -> Result<Option<[u8; 12
             Err(e) => return Err(SpawnError::Setup(format!("reading the job's report: {e}"))),
         }
     }
-    Ok((got > 0).then_some(buf))
+    Ok(buf.get(..got).unwrap_or_default().to_vec())
 }
 
 /// Turn a failed step into a message naming the step and its path.
@@ -972,6 +1118,11 @@ fn describe_failure(buf: [u8; 12], plan: &Plan) -> SpawnError {
         Some(Step::Seccomp) => "installing the seccomp filter".into(),
         Some(Step::Fork) => "starting the command".into(),
         Some(Step::Ids) => "taking on the job's own ids".into(),
+        Some(Step::Init) => match index {
+            0 => "starting the job's init (this program, again)".into(),
+            1..=3 => "keeping the init's capabilities in the job's namespace".into(),
+            _ => "reading the job's plan in its init".into(),
+        },
         Some(Step::Exec) => {
             let program = plan
                 .argv
@@ -995,11 +1146,29 @@ fn describe_failure(buf: [u8; 12], plan: &Plan) -> SpawnError {
     SpawnError::Setup(format!("{what}: {os}{hint}"))
 }
 
-fn read_report(report: OwnedFd, pid: libc::pid_t, plan: &Plan) -> Result<(), SpawnError> {
-    match read_report_bytes(report, pid)? {
-        None => Ok(()),
-        Some(buf) => Err(describe_failure(buf, plan)),
+/// The failure the report holds, if any: what [`read_report_bytes`] read.
+fn report_result(bytes: &[u8], plan: &Plan) -> Result<(), SpawnError> {
+    let record = |b: &[u8]| {
+        let mut buf = [0_u8; 12];
+        for (d, s) in buf.iter_mut().zip(b) {
+            *d = *s;
+        }
+        Err(describe_failure(buf, plan))
+    };
+    match bytes.strip_prefix(&HELLO) {
+        Some([]) => Ok(()),
+        Some(failure) => record(failure),
+        None if bytes.is_empty() => Err(SpawnError::Setup(format!(
+            "the job's init did not run: this program does not start it when run as \
+             `{INIT_ARG0}` (its crate root needs `tilo_sandbox::job_init!();`)"
+        ))),
+        // A failure before the init ran.
+        None => record(bytes),
     }
+}
+
+fn read_report(report: OwnedFd, pid: libc::pid_t, plan: &Plan) -> Result<(), SpawnError> {
+    report_result(&read_report_bytes(report, pid)?, plan)
 }
 
 /// Start `plan` as a job. See [`crate::job::Launch::spawn`].
@@ -1010,6 +1179,8 @@ struct Layout {
     sync: RawFd,
     status: RawFd,
     report: RawFd,
+    plan: RawFd,
+    exe: RawFd,
     landlock: Option<RawFd>,
     trees_at: RawFd,
     keep_below: RawFd,
@@ -1020,7 +1191,7 @@ fn plan_layout(
     plan: &Plan,
     stdio: [RawFd; 3],
     extra: &[(OwnedFd, RawFd)],
-    control: [RawFd; 3],
+    control: [RawFd; 5],
 ) -> Result<Layout, SpawnError> {
     let [in_fd, out_fd, err_fd] = stdio;
     let mut moves = vec![(in_fd, 0), (out_fd, 1), (err_fd, 2)];
@@ -1038,19 +1209,23 @@ fn plan_layout(
         n.checked_add(by)
             .ok_or_else(|| SpawnError::Invalid("descriptor numbers out of range".into()))
     };
-    let (sync, status, report) = (next(highest, 1)?, next(highest, 2)?, next(highest, 3)?);
-    moves.push((control[0], sync));
-    moves.push((control[1], status));
-    moves.push((control[2], report));
+    let [sync, status, report, plan_at, exe] = [1, 2, 3, 4, 5].map(|by| next(highest, by));
+    let (sync, status, report, plan_at, exe) = (sync?, status?, report?, plan_at?, exe?);
+    for (fd, at) in control
+        .into_iter()
+        .zip([sync, status, report, plan_at, exe])
+    {
+        moves.push((fd, at));
+    }
     let landlock = match &plan.landlock {
         Some((fd, _)) => {
-            let at = next(highest, 4)?;
+            let at = next(highest, 6)?;
             moves.push((fd.as_raw_fd(), at));
             Some(at)
         }
         None => None,
     };
-    let trees_at = next(highest, 5)?;
+    let trees_at = next(highest, 7)?;
     for (i, tree) in plan.trees.iter().enumerate() {
         let i = RawFd::try_from(i)
             .map_err(|_| SpawnError::Invalid("too many idmapped mounts".into()))?;
@@ -1071,6 +1246,8 @@ fn plan_layout(
         sync,
         status,
         report,
+        plan: plan_at,
+        exe,
         landlock,
         trees_at,
         keep_below,
@@ -1078,11 +1255,14 @@ fn plan_layout(
     })
 }
 
-/// The clone3 flags and arguments, plus where the pidfd is stored.
-fn clone_args(cgroup: Option<RawFd>, pidfd: &mut RawFd) -> sys::CloneArgs {
+/// The clone3 flags and arguments, plus where the pidfd is stored. The
+/// child shares this process's memory, on `stack`, until its `execve`.
+fn clone_args(cgroup: Option<RawFd>, pidfd: &mut RawFd, stack: &Stack) -> sys::CloneArgs {
     let bits = |f: libc::c_int| u64::from(f.unsigned_abs());
     let mut flags = bits(
-        libc::CLONE_NEWUSER
+        libc::CLONE_VM
+            | libc::CLONE_VFORK
+            | libc::CLONE_NEWUSER
             | libc::CLONE_NEWNS
             | libc::CLONE_NEWPID
             | libc::CLONE_NEWNET
@@ -1094,6 +1274,8 @@ fn clone_args(cgroup: Option<RawFd>, pidfd: &mut RawFd) -> sys::CloneArgs {
     let mut args = sys::CloneArgs {
         exit_signal: bits(libc::SIGCHLD),
         pidfd: std::ptr::from_mut(pidfd) as u64,
+        stack: stack.base as u64,
+        stack_size: STACK_SIZE as u64,
         ..sys::CloneArgs::default()
     };
     if let Some(cg) = cgroup {
@@ -1102,6 +1284,62 @@ fn clone_args(cgroup: Option<RawFd>, pidfd: &mut RawFd) -> sys::CloneArgs {
     }
     args.flags = flags;
     args
+}
+
+/// The child's stack until its `execve`: it copies a few descriptors and
+/// raises its capabilities.
+const STACK_SIZE: usize = 64 << 10;
+
+/// A stack for the child of `clone3`, with an inaccessible page below it.
+struct Stack {
+    /// The lowest usable address; the guard page is below.
+    base: *mut libc::c_void,
+    mapping: *mut libc::c_void,
+    len: usize,
+}
+
+impl Stack {
+    fn new() -> io::Result<Self> {
+        // SAFETY: sysconf has no preconditions.
+        let page = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) })
+            .map_err(|_| io::Error::other("no page size"))?;
+        let len = STACK_SIZE
+            .checked_add(page)
+            .ok_or_else(|| io::Error::other("stack size"))?;
+        // SAFETY: a new private anonymous mapping, inaccessible.
+        let mapping = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_NONE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_STACK,
+                -1,
+                0,
+            )
+        };
+        if mapping == libc::MAP_FAILED {
+            return Err(io::Error::last_os_error());
+        }
+        let stack = Self {
+            base: mapping.wrapping_byte_add(page),
+            mapping,
+            len,
+        };
+        // SAFETY: the mapping's pages above the first, made usable.
+        if unsafe { libc::mprotect(stack.base, STACK_SIZE, libc::PROT_READ | libc::PROT_WRITE) }
+            != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(stack)
+    }
+}
+
+impl Drop for Stack {
+    fn drop(&mut self) {
+        // SAFETY: the mapping `new` made; the child no longer runs on it.
+        unsafe { libc::munmap(self.mapping, self.len) };
+    }
 }
 
 /// The clone3 failure, with a hint at the usual cause.
@@ -1128,6 +1366,26 @@ fn finish(
     ids: crate::job::spec::IdMap,
     sync_w: OwnedFd,
     report_r: OwnedFd,
+    setup: Option<SetupFn<'_>>,
+) -> Result<(), SpawnError> {
+    if let Err(e) = release(job, ids, sync_w, setup) {
+        // The child may have failed before the init ran (and so be gone):
+        // then the report says why, and the error here is only its echo.
+        job.kill();
+        let bytes = read_report_bytes(report_r, job.pid()).unwrap_or_default();
+        return match report_result(&bytes, plan) {
+            Err(early) if !bytes.is_empty() => Err(early),
+            _ => Err(e),
+        };
+    }
+    read_report(report_r, job.pid(), plan)
+}
+
+/// Map the job's ids, run the caller's hook, let the init go on.
+fn release(
+    job: &Job,
+    ids: crate::job::spec::IdMap,
+    sync_w: OwnedFd,
     setup: Option<SetupFn<'_>>,
 ) -> Result<(), SpawnError> {
     let pid = job.pid();
@@ -1162,9 +1420,7 @@ fn finish(
     }
     let mut go = std::fs::File::from(sync_w);
     go.write_all(b"g")
-        .map_err(|e| SpawnError::Setup(format!("releasing the job: {e}")))?;
-    drop(go);
-    read_report(report_r, job.pid(), plan)
+        .map_err(|e| SpawnError::Setup(format!("releasing the job: {e}")))
 }
 
 /// Make the anonymous pipes the job is given its own user's, where it has a
@@ -1209,18 +1465,6 @@ pub fn spawn(
     setup: Option<SetupFn<'_>>,
 ) -> Result<Job, SpawnError> {
     let pipe_err = |e: io::Error| SpawnError::Setup(format!("a pipe: {e}"));
-    let argv: Vec<*const libc::c_char> = plan
-        .argv
-        .iter()
-        .map(|a| a.as_ptr())
-        .chain(std::iter::once(std::ptr::null()))
-        .collect();
-    let envp: Vec<*const libc::c_char> = plan
-        .envp
-        .iter()
-        .map(|a| a.as_ptr())
-        .chain(std::iter::once(std::ptr::null()))
-        .collect();
     let (sync_r, sync_w) = pipe().map_err(pipe_err)?;
     let (status_r, status_w) = pipe().map_err(pipe_err)?;
     let (report_r, report_w) = pipe().map_err(pipe_err)?;
@@ -1229,6 +1473,14 @@ pub fn spawn(
         fd.as_ref()
             .map_or_else(|| null.as_raw_fd(), AsRawFd::as_raw_fd)
     };
+    // This program, again, as the job's init.
+    let exe: OwnedFd = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_PATH)
+        .open("/proc/self/exe")
+        .map_err(|e| SpawnError::Setup(format!("opening this program for the job's init: {e}")))?
+        .into();
+    let plan_file = memfd().map_err(|e| SpawnError::Setup(format!("the job's plan: {e}")))?;
 
     if let Some(block) = ids.block {
         let given = [&fds.stdin, &fds.stdout, &fds.stderr]
@@ -1245,46 +1497,71 @@ pub fn spawn(
             sync_r.as_raw_fd(),
             status_w.as_raw_fd(),
             report_w.as_raw_fd(),
+            plan_file.as_raw_fd(),
+            exe.as_raw_fd(),
         ],
     )?;
-    let mut scratch = vec![-1; layout.moves.len()];
-    let mut pidfd: RawFd = -1;
-    let clone_cfg = clone_args(cgroup.map(|c| c.as_raw_fd()), &mut pidfd);
-
-    let mut child = Child {
-        plan,
-        argv: &argv,
-        envp: &envp,
-        moves: &layout.moves,
-        scratch: &mut scratch,
-        above: layout.above,
-        keep_below: layout.keep_below,
+    let control = Control {
         sync: layout.sync,
         status: layout.status,
         report: layout.report,
         landlock: layout.landlock,
         trees_at: layout.trees_at,
+        kept: layout.moves.iter().map(|(_, at)| *at).collect(),
     };
-    // SAFETY: clone3 without CLONE_VM: the child gets a copy of this
-    // address space and continues on a copy of this stack, like fork. It
-    // runs only `Child::run`, which never returns.
+    (&plan_file)
+        .write_all(&wire::encode(plan, &control))
+        .and_then(|()| (&plan_file).rewind())
+        .map_err(|e| SpawnError::Setup(format!("writing the job's plan: {e}")))?;
+    let init_args = init_args(&layout)?;
+    let argv: Vec<*const libc::c_char> = init_args
+        .iter()
+        .map(|a| a.as_ptr())
+        .chain(std::iter::once(std::ptr::null()))
+        .collect();
+    let envp = [std::ptr::null::<libc::c_char>()];
+    let mut scratch = vec![-1; layout.moves.len()];
+    let stack = Stack::new().map_err(|e| SpawnError::Setup(format!("the child's stack: {e}")))?;
+    let mut pidfd: RawFd = -1;
+    let clone_cfg = clone_args(cgroup.map(|c| c.as_raw_fd()), &mut pidfd, &stack);
+
+    let mut child = PreExec {
+        moves: &layout.moves,
+        scratch: &mut scratch,
+        above: layout.above,
+        keep_below: layout.keep_below,
+        report: layout.report,
+        exe: layout.exe,
+        cap_last: plan.cap_last,
+        argv: &argv,
+        envp: &envp,
+    };
+    // No signal handler of the worker's may run in the child, on its memory:
+    // every signal stays blocked until the init has reset them all.
+    // SAFETY (this block): a full set and the old mask, on the stack; then
+    // clone3 with CLONE_VM | CLONE_VFORK: the child runs `pre_exec` on
+    // `stack`, reading `child`, and this thread waits until it has called
+    // `execve` or exited, so `child` and `stack` outlive its use of them.
     let ret = unsafe {
-        libc::syscall(
-            libc::SYS_clone3,
-            &raw const clone_cfg,
-            std::mem::size_of::<sys::CloneArgs>(),
-        )
+        let mut all: libc::sigset_t = std::mem::zeroed();
+        let mut old: libc::sigset_t = std::mem::zeroed();
+        libc::sigfillset(&raw mut all);
+        libc::pthread_sigmask(libc::SIG_SETMASK, &raw const all, &raw mut old);
+        let ret = sys::clone3_run(&clone_cfg, pre_exec, (&raw mut child).cast());
+        libc::pthread_sigmask(libc::SIG_SETMASK, &raw const old, std::ptr::null_mut());
+        ret
     };
-    if ret == 0 {
-        // SAFETY: we are the child of clone3.
-        unsafe { child.run() };
-    }
+    drop(stack);
     if ret < 0 {
-        return Err(clone_error(&io::Error::last_os_error(), cgroup.is_some()));
+        let errno = i32::try_from(ret.unsigned_abs()).unwrap_or(libc::EINVAL);
+        return Err(clone_error(
+            &io::Error::from_raw_os_error(errno),
+            cgroup.is_some(),
+        ));
     }
     let pid =
         libc::pid_t::try_from(ret).map_err(|_| SpawnError::Setup("clone3: bad pid".into()))?;
-    drop((sync_r, status_w, report_w, null, fds));
+    drop((sync_r, status_w, report_w, null, fds, exe, plan_file));
     // SAFETY: CLONE_PIDFD stored a new descriptor here; nothing else owns it.
     let pidfd = unsafe { OwnedFd::from_raw_fd(pidfd) };
     let job = Job {
@@ -1297,4 +1574,27 @@ pub fn spawn(
     // From here on, an error drops `job`, which kills and reaps the init.
     finish(&job, plan, ids, sync_w, report_r, setup)?;
     Ok(job)
+}
+
+/// The init's arguments: its name, and where its plan and report pipe are.
+fn init_args(layout: &Layout) -> Result<Vec<CString>, SpawnError> {
+    [
+        CString::new(INIT_ARG0),
+        CString::new(layout.plan.to_string()),
+        CString::new(layout.report.to_string()),
+    ]
+    .into_iter()
+    .collect::<Result<Vec<_>, _>>()
+    .map_err(|e| SpawnError::Setup(format!("the init's arguments: {e}")))
+}
+
+/// A memory file for the job's plan.
+fn memfd() -> io::Result<std::fs::File> {
+    // SAFETY: a static name; the kernel returns a new descriptor or -1.
+    let fd = unsafe { libc::memfd_create(c"tilo-job-plan".as_ptr(), libc::MFD_CLOEXEC) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the descriptor is new and ours alone.
+    Ok(unsafe { std::fs::File::from_raw_fd(fd) })
 }

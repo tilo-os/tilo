@@ -1,10 +1,10 @@
-//! Everything the job's first process needs, prepared before `clone3`.
+//! Everything the job's init needs, prepared by the worker.
 //!
-//! The child is a copy of a multithreaded process: another thread may have
-//! held the allocator's lock at the moment of the copy, so the child must
-//! never allocate. This module turns a [`JobSpec`] into C strings, pointer
-//! arrays, mount operations, Landlock rules and BPF programs, so the child
-//! only reads them and makes system calls.
+//! This module turns a [`JobSpec`] into C strings, mount operations,
+//! Landlock rules and BPF programs: the worker can read the host's files and
+//! make the idmapped mounts, the init (a new program in the job's
+//! namespaces, which reads this plan from the worker, see `wire`) only makes
+//! system calls.
 
 use std::ffi::{CString, OsStr};
 use std::os::fd::{AsFd, OwnedFd};
@@ -128,10 +128,6 @@ pub struct Plan {
     /// Installed in order.
     pub seccomp: Vec<Vec<libc::sock_filter>>,
     pub cap_last: u32,
-    /// Where the caller's environment and arguments sit in its memory
-    /// (`/proc/self/stat` fields 48–51), to be blanked in the job's init.
-    pub env_area: (usize, usize),
-    pub arg_area: (usize, usize),
 }
 
 fn cstr(bytes: &[u8], what: &str) -> Result<CString, SpawnError> {
@@ -982,21 +978,6 @@ fn candidates(spec: &JobSpec) -> Result<Vec<CString>, SpawnError> {
         .collect()
 }
 
-/// Where this process's environment and arguments are in its memory.
-fn areas() -> ((usize, usize), (usize, usize)) {
-    let stat = std::fs::read_to_string("/proc/self/stat").unwrap_or_default();
-    // The command name (field 2) may contain spaces; fields after it don't.
-    let after = stat.rsplit_once(')').map_or("", |(_, rest)| rest);
-    let fields: Vec<usize> = after
-        .split_whitespace()
-        .map(|f| f.parse().unwrap_or(0))
-        .collect();
-    // Fields 48–51 of the whole line are arg_start, arg_end, env_start,
-    // env_end: indices 45–48 after the command name (field 3 is index 0).
-    let get = |i: usize| fields.get(i).copied().unwrap_or(0);
-    ((get(45), get(46)), (get(47), get(48)))
-}
-
 fn seccomp_filters(mode: Seccomp) -> Result<Vec<Vec<libc::sock_filter>>, SpawnError> {
     use sandbox_core::seccomp;
     let Seccomp::Ci(profile) = mode else {
@@ -1078,7 +1059,6 @@ impl Plan {
         };
         let (ops, rules, trees, unmapped) = filesystem(spec)?;
         let stage = stage_dir();
-        let (arg_area, env_area) = areas();
         let cap_last = std::fs::read_to_string("/proc/sys/kernel/cap_last_cap")
             .ok()
             .and_then(|s| s.trim().parse().ok())
@@ -1113,8 +1093,6 @@ impl Plan {
             landlock: landlock(landlock_mode(spec), rules)?,
             seccomp: seccomp_filters(spec.seccomp)?,
             cap_last,
-            env_area,
-            arg_area,
         })
     }
 }

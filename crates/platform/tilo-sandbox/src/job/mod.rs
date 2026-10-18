@@ -19,6 +19,10 @@
 //! # #[cfg(not(target_os = "linux"))] fn main() {}
 //! ```
 //!
+//! The job's init is this program again, run as `tilo-job-init`: a program
+//! that starts jobs puts `tilo_sandbox::job_init!();` in its crate root, which
+//! runs the init before `main` when the process is one.
+//!
 //! The module exists on Linux only. `JobSpec` is portable data, so a macOS
 //! backend (Seatbelt) can be added behind the same call.
 
@@ -40,6 +44,35 @@ pub use spec::{
 
 #[cfg(target_os = "linux")]
 pub use linux::runner::Job;
+
+/// Run the job's init if this process was started as one, and never return;
+/// return at once otherwise. [`crate::job_init`] calls it before `main`.
+#[cfg(target_os = "linux")]
+pub fn init_if_started_as_one() {
+    linux::runner::init_if_started_as_one();
+}
+
+/// Make this program able to be a job's init, which every program that
+/// starts jobs must be: a job's init is the program that started it, run
+/// again as `tilo-job-init` (a new, small process rather than a copy of the
+/// caller, whose memory may be large). Put it once in the crate root of the
+/// binary (or test) that calls [`Launch::spawn`]: it runs the init before
+/// `main` when the process is one (and before a test harness's, so tests
+/// can start jobs too), and costs a read of `/proc/self/cmdline` otherwise.
+#[macro_export]
+macro_rules! job_init {
+    () => {
+        #[cfg(target_os = "linux")]
+        #[used]
+        #[unsafe(link_section = ".init_array")]
+        static TILO_JOB_INIT: extern "C" fn() = {
+            extern "C" fn tilo_job_init() {
+                $crate::job::init_if_started_as_one();
+            }
+            tilo_job_init
+        };
+    };
+}
 
 /// Why a job could not start.
 #[derive(Debug, thiserror::Error)]
@@ -156,7 +189,8 @@ impl<'a> Launch<'a> {
     }
 
     /// Start the job. Returns once the command runs (its `execve`
-    /// succeeded), or with the step that failed.
+    /// succeeded), or with the step that failed. The calling program must
+    /// be able to be the job's init: see [`crate::job_init`].
     ///
     /// # Errors
     /// See [`SpawnError`].

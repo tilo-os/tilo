@@ -13,6 +13,9 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+// The jobs these tests start run this test binary again as their init.
+tilo_sandbox::job_init!();
+
 #[cfg(target_os = "linux")]
 mod host_ids;
 #[cfg(target_os = "linux")]
