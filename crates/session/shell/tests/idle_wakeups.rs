@@ -80,6 +80,9 @@ impl Desktop {
         ));
         let _ = std::fs::remove_dir_all(&runtime_dir);
         std::fs::create_dir_all(&runtime_dir).expect("create the private runtime dir");
+        // A login always has its home: startup resolves it as the trusted
+        // root of the settings copy and refuses to start without it.
+        std::fs::create_dir_all(runtime_dir.join("home")).expect("create the session's home");
         let state_path = runtime_dir.join("state.json");
         shell::shell::persist::save_tree_to(&tree, &state_path).expect("seed the saved session");
         seed_tab_records(&runtime_dir, &tree);
