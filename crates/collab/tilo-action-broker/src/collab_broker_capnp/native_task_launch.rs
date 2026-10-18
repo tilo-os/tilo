@@ -12,6 +12,33 @@ use tilo_actions::remote::{
     workspace_provider_room,
 };
 
+/// Invocation-scoped injection at the actual durable/effect boundary.
+#[cfg(test)]
+pub(super) mod test_barrier {
+    use std::sync::Mutex;
+    use tilo_actions::InvocationId;
+
+    type Hook = Box<dyn FnOnce() + Send>;
+    static HOOKS: Mutex<Vec<(InvocationId, Hook)>> = Mutex::new(Vec::new());
+
+    pub(super) fn run(invocation: InvocationId) {
+        let hook = {
+            let mut hooks = HOOKS.lock().unwrap();
+            hooks
+                .iter()
+                .position(|(id, _)| *id == invocation)
+                .map(|index| hooks.remove(index).1)
+        };
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+
+    pub(crate) fn install(invocation: InvocationId, hook: Hook) {
+        HOOKS.lock().unwrap().push((invocation, hook));
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct NativeLaunch {
     peer: u64,
@@ -68,6 +95,12 @@ impl NativeLaunch {
         if state.task_run_cancelled(self.peer, &self.run.agent_id, self.run_id, &self.lease)? {
             return Err("task stopped while waiting for its application".into());
         }
+        self.check_action_policy(state)
+    }
+
+    // Read-only policy checks are safe inside the owner's task admission turn.
+    // Do not use `check` there: cancellation handling can mutate the owner.
+    fn check_action_policy(&self, state: &CapnpBrokerState) -> Result<(), String> {
         if let Some(retained) = &self.retained {
             if !self.confirmed
                 && !matches!(
@@ -177,7 +210,7 @@ impl NativeLaunch {
     pub(super) fn launch(
         &self,
         state: &CapnpBrokerState,
-        destination: &LaunchDestination,
+        _destination: &LaunchDestination,
         place: &LaunchPlace,
     ) -> Result<(), String> {
         let binding = self.binding()?;
@@ -189,7 +222,7 @@ impl NativeLaunch {
                 &binding,
                 &self.requirement()?,
                 &mut || {
-                    let spent = self.caller.authorize_host_action(
+                    self.caller.authorize_host_action(
                         state,
                         &self.run.cluster_id,
                         &self.requirement()?,
@@ -233,21 +266,39 @@ impl NativeLaunch {
                         return Err("native host activation already admitted".into());
                     }
                     drop(guard);
-                    state.spend_once_grants(&self.run.cluster_id, &spent);
-                    // Custody is on disk before the existing on-system host path runs.
-                    let result = if self.ready(state).is_some() {
-                        Ok(())
-                    } else {
+                    #[cfg(test)]
+                    test_barrier::run(self.invocation);
+                    // The owner still serializes the run, but disk custody is
+                    // not authority: clocks, connection admission and the live
+                    // workspace projection can change during the barrier.
+                    let result = (|| {
+                        state.task_run_for(
+                            self.peer, &self.run.agent_id, self.run_id, &self.lease,
+                        )?;
+                        self.check_action_policy(state)?;
+                        let spent = self.caller.authorize_host_action(
+                            state, &self.run.cluster_id, &self.requirement()?,
+                        )?;
+                        let workspace = state
+                            .membership
+                            .as_ref()
+                            .ok_or("native launch membership absent")?
+                            .decide_in_room(&self.run.cluster_id, |workspace| {
+                                workspace.cloned().ok_or("native launch workspace absent")
+                            })??;
+                        // Recheck before consuming one-use authority, so this
+                        // invocation cannot revoke its own launch permission.
+                        state.spend_once_grants(&self.run.cluster_id, &spent);
+                        if self.ready(state).is_some() {
+                            return Ok(());
+                        }
                         state.launch_retained(
                             &self.app,
-                            &destination.workspace,
-                            destination
-                                .record
-                                .as_deref()
-                                .filter(|record| !record.is_empty()),
+                            &workspace,
+                            self.record.as_deref().filter(|record| !record.is_empty()),
                             place,
                         )
-                    };
+                    })();
                     let update = match &result {
                         Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
                             invocation: key.invocation,

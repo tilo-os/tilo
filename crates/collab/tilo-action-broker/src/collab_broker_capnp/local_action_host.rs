@@ -264,6 +264,7 @@ impl CapnpBrokerState {
         if checked.admission.admitted.certificate.as_ref() != Some(&certificate) {
             return Err("native seat differs from original certified admission".into());
         }
+        checked.admission.native_projection_verified = true;
         checked.effective = projection.clone();
         checked.native_projection = Some(projection);
         Ok(Arc::new(checked))

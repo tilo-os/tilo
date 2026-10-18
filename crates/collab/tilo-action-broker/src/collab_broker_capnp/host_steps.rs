@@ -113,8 +113,9 @@ impl HostSteps {
 }
 
 /// Transport keys alone never grant access to a service on this device.
-/// The certified local door retains those keys and its original admission;
-/// network admissions, including same-person devices, are not that door.
+/// The certified local door retains its original admission, even when the
+/// protected native seat projects a keyless person. Network admissions,
+/// including same-person devices, are not that door.
 pub(super) fn is_local_host_caller(
     caller: &Caller,
     origin: Option<&super::published_invocation::InvocationCaller>,
@@ -122,7 +123,12 @@ pub(super) fn is_local_host_caller(
     if caller.is_foreign_device() {
         return false;
     }
-    if caller.device_public_key().is_none() {
+    if caller.device_public_key().is_none()
+        && !matches!(
+            origin,
+            Some(super::published_invocation::InvocationCaller::Certified { .. })
+        )
+    {
         return match origin {
             Some(super::published_invocation::InvocationCaller::Local { admitted, .. }) => admitted
                 .certificate
@@ -152,8 +158,18 @@ pub(super) fn is_local_host_caller(
             .as_ref()
             .is_some_and(|certificate| {
                 !certificate.capabilities.foreign
-                    && caller.user_public_key() == Some(&certificate.user_public_key)
-                    && caller.device_public_key() == Some(&certificate.device_public_key)
+                    && if caller.device_public_key().is_none() {
+                        original.native_projection_verified
+                            && original.delegated.is_none()
+                            && caller.user_public_key().is_none()
+                            && caller.principal()
+                                == &tilo_actions::remote::CallerPrincipal::Person(
+                                    super::principal_id_for_root(certificate.user_public_key),
+                                )
+                    } else {
+                        caller.user_public_key() == Some(&certificate.user_public_key)
+                            && caller.device_public_key() == Some(&certificate.device_public_key)
+                    }
             })
 }
 

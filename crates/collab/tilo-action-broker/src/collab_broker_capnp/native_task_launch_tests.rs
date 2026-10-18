@@ -10,6 +10,7 @@ const WRITER: &str = "so.tilo.word-processor";
 struct Launcher {
     launches: tokio::sync::mpsc::UnboundedSender<String>,
     custody: Mutex<Option<std::path::PathBuf>>,
+    workspaces: Mutex<Vec<tilo_desktop_model::Workspace>>,
 }
 impl LauncherServices for Launcher {
     fn applications(&self) -> Vec<LaunchableApplication> {
@@ -63,6 +64,7 @@ impl LauncherServices for Launcher {
         let owner = &activation["intent"]["caller"]["AuthenticatedLocal"];
         assert_eq!(serde_json::to_value(root).unwrap(), owner["root"]);
         assert_eq!(serde_json::to_value(device).unwrap(), owner["device"]);
+        self.workspaces.lock().unwrap().push(workspace.clone());
         self.launches
             .send(app.into())
             .map_err(|error| error.to_string())
@@ -74,6 +76,7 @@ impl LauncherServices for Launcher {
 
 struct SignedLaunchFixture {
     fixture: Fixture,
+    launcher: Arc<Launcher>,
     _identity_env: tilo_test_env::ScopedEnv,
 }
 impl std::ops::Deref for SignedLaunchFixture {
@@ -91,6 +94,7 @@ fn fixture() -> (
     let launcher = Arc::new(Launcher {
         launches: sender,
         custody: Mutex::new(None),
+        workspaces: Mutex::new(Vec::new()),
     });
     let f = Fixture::with_launcher(Some(launcher.clone()));
     *launcher.custody.lock().unwrap() = Some(f.directory.path().join("journal/records.json"));
@@ -109,6 +113,7 @@ fn fixture() -> (
     (
         SignedLaunchFixture {
             fixture: f,
+            launcher,
             _identity_env: identity_env,
         },
         receiver,
@@ -813,6 +818,181 @@ async fn a_terminal_activation_receipt_rechecks_the_authenticated_connection_cei
             "a retained terminal receipt must not bypass the actual connection's current ceiling");
         assert!(launches.try_recv().is_err(), "receipt observation must not replay the host side effect");
     })).await;
+}
+
+/// Durable custody must not turn an expired connection or workspace decision
+/// into permission to perform the host effect. Mutate only the live projection
+/// here: canonical task mutations are serialized behind this admission turn.
+#[tokio::test(flavor = "current_thread")]
+async fn activation_rechecks_original_caller_and_live_policy_after_custody() {
+    tokio::task::LocalSet::new()
+        .run_until(Box::pin(async {
+            for change in ["connection", "policy", "workspace", "broker", "run"] {
+                let (f, mut launches) = fixture();
+                put_grant(
+                    &f,
+                    tilo_action_policy::Grant::new(
+                        "foreign-writer-barrier-denied",
+                        tilo_action_policy::Subject::ForeignDevice,
+                        tilo_action_policy::TreePath::room(room().to_string()).app(WRITER),
+                        tilo_action_policy::KindSet::UNDOABLE,
+                        tilo_action_policy::Answer::Deny,
+                        tilo_action_policy::Subject::person(hex::encode(
+                            f.native.certificate.user_public_key,
+                        )),
+                    ),
+                );
+                f.approve();
+                let agent = f.channel(100, true);
+                let run = delivered(&agent).await;
+                let id = uuid::Uuid::new_v4();
+                let native = f.native.clone();
+                let state = f.state.clone();
+                let run_id = run.run_id;
+                let crossed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let observed = crossed.clone();
+                super::super::super::native_task_launch::test_barrier::install(
+                    tilo_actions::InvocationId(id),
+                    Box::new(move || {
+                        observed.store(true, std::sync::atomic::Ordering::SeqCst);
+                        match change {
+                            "connection" => native
+                                .capped_connection
+                                .store(true, std::sync::atomic::Ordering::SeqCst),
+                            "broker" => state
+                                .accepting
+                                .store(false, std::sync::atomic::Ordering::SeqCst),
+                            "run" => {
+                                state
+                                    .pending_task_runs
+                                    .lock()
+                                    .unwrap()
+                                    .get_mut(&run_id)
+                                    .unwrap()
+                                    .terminal = true;
+                            }
+                            _ => {
+                                let mut tree = WorkspaceAuthority::snapshot(&*native).unwrap();
+                                if change == "workspace" {
+                                    tree.workspaces.clear();
+                                } else {
+                                    tree.workspaces[0].policy.grants.push(
+                                        tilo_action_policy::Grant::new(
+                                            "writer-denied-after-custody",
+                                            tilo_action_policy::Subject::agent("scribe"),
+                                            tilo_action_policy::TreePath::room(room().to_string())
+                                                .app(WRITER),
+                                            tilo_action_policy::KindSet::UNDOABLE,
+                                            tilo_action_policy::Answer::Deny,
+                                            tilo_action_policy::Subject::person(hex::encode(
+                                                native.certificate.user_public_key,
+                                            )),
+                                        ),
+                                    );
+                                }
+                                *native.cached_projection.lock().unwrap() = Some(tree);
+                            }
+                        }
+                    }),
+                );
+                let result = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    invoke_provider_id(
+                        &agent,
+                        &run,
+                        &tilo_actions::remote::workspace_provider(&room().to_string()),
+                        &format!("app.{WRITER}"),
+                        "open",
+                        serde_json::json!({}),
+                        id,
+                    ),
+                )
+                .await
+                .expect("post-custody checks must not re-enter task mutation admission");
+                assert!(result.is_err(), "{change} must revoke activation");
+                assert!(crossed.load(std::sync::atomic::Ordering::SeqCst));
+                assert!(
+                    launches.try_recv().is_err(),
+                    "{change} reached the launcher"
+                );
+                assert!(f.state.surfaces.lock().unwrap().is_empty());
+                assert!(f.state.invocation_subscribers.lock().unwrap().is_empty());
+                let digest = blake3::hash(format!("native-host-activation:{id}").as_bytes());
+                let key = InvocationKey {
+                    room: room().to_string(),
+                    host: f.state.invocation_host().unwrap(),
+                    owner: InvocationOwner::NativeTask {
+                        agent: "scribe".into(),
+                        task: f.task.clone(),
+                        epoch: 1,
+                    },
+                    invocation: tilo_actions::InvocationId(uuid::Uuid::from_bytes(
+                        digest.as_bytes()[..16].try_into().unwrap(),
+                    )),
+                };
+                let journal = super::super::super::invocation_journal::InvocationJournal::open(
+                    &f.directory.path().join("journal"),
+                )
+                .unwrap();
+                let activation = journal.lookup(&key).unwrap().unwrap();
+                assert!(
+                    matches!(activation.update, tilo_actions::InvocationUpdate::Failed { error, .. }
+                    if error.code == "host_activation_failed")
+                );
+                assert!(!activation.uncertain);
+            }
+        }))
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn activation_uses_the_current_workspace_after_custody() {
+    tokio::task::LocalSet::new()
+        .run_until(Box::pin(async {
+            let (f, mut launches) = fixture();
+            f.approve();
+            let agent = f.channel(100, true);
+            let run = delivered(&agent).await;
+            let id = uuid::Uuid::new_v4();
+            let native = f.native.clone();
+            super::super::super::native_task_launch::test_barrier::install(
+                tilo_actions::InvocationId(id),
+                Box::new(move || {
+                    let mut tree = WorkspaceAuthority::snapshot(&*native).unwrap();
+                    tree.workspaces[0].name = "Current launch workspace".into();
+                    *native.cached_projection.lock().unwrap() = Some(tree);
+                }),
+            );
+            let provider = tilo_actions::remote::workspace_provider(&room().to_string());
+            let resource = format!("app.{WRITER}");
+            let open = invoke_provider_id(
+                &agent,
+                &run,
+                &provider,
+                &resource,
+                "open",
+                serde_json::json!({}),
+                id,
+            );
+            tokio::pin!(open);
+            tokio::select! {
+                app = launches.recv() => assert_eq!(app.unwrap(), WRITER),
+                result = &mut open => panic!("answered before activation: {result:?}"),
+            }
+            assert_eq!(
+                f.launcher.workspaces.lock().unwrap()[0].name,
+                "Current launch workspace"
+            );
+            let _writer = Box::pin(Writer::mount(&f, false)).await;
+            assert!(
+                tokio::time::timeout(Duration::from_secs(2), open)
+                    .await
+                    .unwrap()
+                    .is_ok()
+            );
+            assert!(launches.try_recv().is_err());
+        }))
+        .await;
 }
 
 fn ask_first_for_writer(f: &Fixture) {

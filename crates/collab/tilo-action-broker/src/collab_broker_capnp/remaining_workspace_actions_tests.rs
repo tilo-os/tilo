@@ -5,6 +5,250 @@ use crate::test_support::WorkspaceId;
 use std::sync::Mutex;
 use tilo_actions::remote::{InvokeArgument, RemoteActionTarget};
 
+thread_local! {
+    static EFFECT_BARRIER: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = Default::default();
+}
+
+pub(super) fn at_effect_barrier() {
+    let hook = EFFECT_BARRIER.with(|hook| hook.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+#[test]
+fn registered_services_recheck_original_certificate_after_signed_admission() {
+    use super::super::host_steps::signed_test_support::Fixture;
+    for kind in 0..3 {
+        let governance = Arc::new(Governance::default());
+        let keyboard = Arc::new(Keyboard::default());
+        let library = Arc::new(Library::default());
+        let services = HostServices {
+            workspace_governance: Some(governance.clone()),
+            keyboard_shortcuts: Some(keyboard.clone()),
+            shortcut_library: Some(library.clone()),
+            ..Default::default()
+        };
+        let f = if kind == 1 {
+            Fixture::new(services)
+        } else {
+            Fixture::new_certified(services)
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let (_, _, _, _, mut request) = fixture(directory.path());
+        request.target.provider = tilo_actions::remote::workspace_provider(&f.room);
+        request.target.address = match kind {
+            0 => tilo_actions::ActionAddress::new("workspace", "inspect"),
+            1 => tilo_actions::ActionAddress::new("keyboard-shortcuts", "rebind"),
+            _ => tilo_actions::ActionAddress::new(crate::automation::LIBRARY_RESOURCE, "list"),
+        };
+        let admitted = f.admission_check(&request);
+        let authority = f.authority.clone();
+        EFFECT_BARRIER.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                admitted();
+                authority
+                    .revoked
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            }))
+        });
+        let (workspace, actor, now) = f
+            .state
+            .decide_for(&f.caller, &f.room, |workspace, actor, now| {
+                (workspace.clone(), actor.clone(), now)
+            })
+            .unwrap();
+        assert!(
+            f.state
+                .start_remaining_workspace_action(
+                    &f.caller,
+                    Some(&f.origin),
+                    (&workspace, &actor, now),
+                    &request,
+                    None
+                )
+                .unwrap()
+                .is_err()
+        );
+        assert!(governance.0.lock().unwrap().is_empty());
+        assert_eq!(keyboard.0.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert!(library.0.lock().unwrap().is_empty());
+        let record = f.assert_signed(&request, true);
+        assert!(!record.uncertain);
+        assert!(
+            matches!(record.update, InvocationUpdate::Failed { ref error, .. } if error.code == "host_action_refused")
+        );
+        assert!(EFFECT_BARRIER.with(|hook| hook.borrow().is_none()));
+    }
+}
+
+#[test]
+fn library_replans_after_custody_instead_of_applying_a_stale_delete() {
+    let directory = tempfile::tempdir().unwrap();
+    let (_, _, mut workspace, caller, mut request) = fixture(directory.path());
+    workspace.shortcuts.push(
+        serde_json::from_value(serde_json::json!({"id":"saved","name":"Saved","steps":[]}))
+            .unwrap(),
+    );
+    let mut tree = crate::test_support::WorkspaceTree::default();
+    tree.workspaces.push(workspace.clone());
+    let tree = tree.shared();
+    let library = Arc::new(Library::default());
+    let (state, _) = CapnpBrokerState::new_configured(
+        &Arc::new(FanoutState::new()),
+        Arc::new(Mutex::new(BrokerChannels::default())),
+        PeerPublisher::disabled(),
+        Some(tree.authority()),
+        None,
+        None,
+        HostServices {
+            shortcut_library: Some(library.clone()),
+            ..Default::default()
+        },
+    );
+    *state.journal.lock().unwrap() = Ok(Some(
+        super::super::invocation_journal::InvocationJournal::open(
+            &directory.path().join("library"),
+        )
+        .unwrap(),
+    ));
+    request.target.address =
+        tilo_actions::ActionAddress::new(crate::automation::LIBRARY_RESOURCE, "delete");
+    let current = tree.clone();
+    EFFECT_BARRIER.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move || {
+            current.write().workspaces[0].shortcuts.clear();
+        }))
+    });
+    let actor = BrokerActor::for_caller(&caller);
+    assert!(
+        state
+            .start_remaining_workspace_action(
+                &caller,
+                None,
+                (&workspace, &actor, 0),
+                &request,
+                Some(r#"{"id":"saved"}"#)
+            )
+            .unwrap()
+            .is_err()
+    );
+    assert!(library.0.lock().unwrap().is_empty());
+}
+
+#[test]
+fn keyboard_rechecks_live_policy_and_execution_after_custody() {
+    for change in ["policy", "execution", "workspace"] {
+        let directory = tempfile::tempdir().unwrap();
+        let (_, _, workspace, caller, mut request) = fixture(directory.path());
+        let caller = caller.in_new_execution();
+        let mut tree = crate::test_support::WorkspaceTree::default();
+        tree.workspaces.push(workspace.clone());
+        let tree = tree.shared();
+        let keyboard = Arc::new(Keyboard::default());
+        let (state, _) = CapnpBrokerState::new_configured(
+            &Arc::new(FanoutState::new()),
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(tree.authority()),
+            None,
+            None,
+            HostServices {
+                keyboard_shortcuts: Some(keyboard.clone()),
+                ..Default::default()
+            },
+        );
+        *state.journal.lock().unwrap() = Ok(Some(
+            super::super::invocation_journal::InvocationJournal::open(
+                &directory.path().join("keyboard"),
+            )
+            .unwrap(),
+        ));
+        request.target.address = tilo_actions::ActionAddress::new("keyboard-shortcuts", "rebind");
+        let current = tree.clone();
+        let execution = caller.clone();
+        let room = workspace.room.to_string();
+        EFFECT_BARRIER.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || match change {
+                "execution" => execution.retire_execution(),
+                "workspace" => current.write().workspaces.clear(),
+                _ => {
+                    let mut tree = current.write();
+                    tree.workspaces[0].set_owner("other");
+                    tree.workspaces[0]
+                        .policy
+                        .grants
+                        .push(tilo_action_policy::Grant::new(
+                            "keyboard-denied",
+                            tilo_action_policy::Subject::person("owner"),
+                            tilo_action_policy::TreePath::room(room).app("so.tilo.settings"),
+                            tilo_action_policy::KindSet::READ,
+                            tilo_action_policy::Answer::Deny,
+                            tilo_action_policy::Subject::person("owner"),
+                        ));
+                }
+            }))
+        });
+        let actor = BrokerActor::for_caller(&caller);
+        assert!(
+            state
+                .start_remaining_workspace_action(
+                    &caller,
+                    None,
+                    (&workspace, &actor, 0),
+                    &request,
+                    None
+                )
+                .unwrap()
+                .is_err()
+        );
+        assert_eq!(keyboard.0.load(std::sync::atomic::Ordering::Relaxed), 0);
+    }
+}
+
+struct LostGovernance;
+impl WorkspaceGovernanceServices for LostGovernance {
+    fn app_id(&self) -> &str {
+        "so.tilo.workspace"
+    }
+    fn handles(&self, action: &str) -> bool {
+        action == "inspect"
+    }
+    fn descriptors(&self, workspace: &Workspace) -> Vec<ActionDescriptor> {
+        Governance::default().descriptors(workspace)
+    }
+    fn start(
+        &self,
+        _: &WorkspaceGovernanceRequest<'_>,
+    ) -> Result<tilo_actions::remote::Pending<crate::services::WorkspaceGovernanceOutcome>, String>
+    {
+        let (pending, answer) = tilo_actions::remote::pending();
+        drop(answer);
+        Ok(pending)
+    }
+}
+
+#[test]
+fn lost_governance_answer_has_signed_uncertain_terminal() {
+    use super::super::host_steps::signed_test_support::Fixture;
+    let f = Fixture::new_certified(HostServices {
+        workspace_governance: Some(Arc::new(LostGovernance)),
+        ..Default::default()
+    });
+    let directory = tempfile::tempdir().unwrap();
+    let (_, _, _, _, mut request) = fixture(directory.path());
+    request.target.provider = tilo_actions::remote::workspace_provider(&f.room);
+    f.invoke(&request).unwrap();
+    let record = f.assert_signed(&request, true);
+    assert!(record.uncertain);
+    assert!(
+        matches!(record.update, InvocationUpdate::Failed { ref error, .. } if error.code == "host_step_stopped")
+    );
+    f.reopen_journal();
+    let record = f.assert_signed(&request, true);
+    assert!(record.uncertain);
+}
+
 #[derive(Default)]
 struct Governance(Mutex<Vec<(tilo_actions::InvocationId, bool)>>);
 impl WorkspaceGovernanceServices for Governance {
@@ -49,11 +293,15 @@ fn fixture(
     InvokeRequest,
 ) {
     let service = Arc::new(Governance::default());
+    let mut workspace = Workspace::new(WorkspaceId(96), "Governance");
+    workspace.set_owner("owner");
+    let mut tree = crate::test_support::WorkspaceTree::default();
+    tree.workspaces.push(workspace.clone());
     let (state, _) = CapnpBrokerState::new_configured(
         &Arc::new(FanoutState::new()),
         Arc::new(Mutex::new(BrokerChannels::default())),
         PeerPublisher::disabled(),
-        None,
+        Some(tree.shared().authority()),
         None,
         None,
         HostServices {
@@ -64,8 +312,6 @@ fn fixture(
     *state.journal.lock().unwrap() = Ok(Some(
         super::super::invocation_journal::InvocationJournal::open(&root.join("journal")).unwrap(),
     ));
-    let mut workspace = Workspace::new(WorkspaceId(96), "Governance");
-    workspace.set_owner("owner");
     let caller = Caller::local_person("owner").in_room(workspace.room.to_string());
     let request = InvokeRequest {
         invocation: tilo_actions::InvocationId::new(),
@@ -263,11 +509,17 @@ fn keyboard_and_library_effects_require_admission_and_keep_request_identity() {
             let (_, _, mut workspace, caller, mut request) = fixture(root.path());
             let keys = Arc::new(Keyboard::default());
             let library = Arc::new(Library::default());
+            workspace.shortcuts.push(
+                serde_json::from_value(serde_json::json!({"id":"saved","name":"Saved","steps":[]}))
+                    .unwrap(),
+            );
+            let mut tree = crate::test_support::WorkspaceTree::default();
+            tree.workspaces.push(workspace.clone());
             let (state, _) = CapnpBrokerState::new_configured(
                 &Arc::new(FanoutState::new()),
                 Arc::new(Mutex::new(BrokerChannels::default())),
                 PeerPublisher::disabled(),
-                None,
+                Some(tree.shared().authority()),
                 None,
                 None,
                 HostServices {
@@ -279,10 +531,6 @@ fn keyboard_and_library_effects_require_admission_and_keep_request_identity() {
             let mut journal = InvocationJournal::open(&root.path().join("effects")).unwrap();
             journal.fail_at = failure;
             *state.journal.lock().unwrap() = Ok(Some(journal));
-            workspace.shortcuts.push(
-                serde_json::from_value(serde_json::json!({"id":"saved","name":"Saved","steps":[]}))
-                    .unwrap(),
-            );
             let (resource, action, argument) = if keyboard {
                 ("keyboard-shortcuts", "rebind", None)
             } else {

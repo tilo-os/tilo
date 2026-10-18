@@ -59,9 +59,9 @@ impl CapnpBrokerState {
         authority: (&Workspace, &BrokerActor, u64),
         action: (&str, &ActionDescriptor),
         input: (&InvokeRequest, Option<&str>),
-    ) -> Result<AdmittedHostAction, ActionHostError> {
-        self.authorize_framework_descriptor(authority, action, input)?;
-        self.admit_host_action(
+    ) -> Result<(AdmittedHostAction, bool), ActionHostError> {
+        let witnessed = self.authorize_framework_descriptor(authority, action, input)?;
+        let admitted = self.admit_host_action(
             caller,
             origin,
             HostActionAdmission {
@@ -70,7 +70,10 @@ impl CapnpBrokerState {
                 descriptor: action.1,
                 request: input.0,
             },
-        )
+        )?;
+        #[cfg(test)]
+        tests::at_effect_barrier();
+        Ok((admitted, witnessed))
     }
 
     fn authorize_framework_descriptor(
@@ -78,7 +81,7 @@ impl CapnpBrokerState {
         authority: (&Workspace, &BrokerActor, u64),
         action: (&str, &ActionDescriptor),
         input: (&InvokeRequest, Option<&str>),
-    ) -> Result<(), ActionHostError> {
+    ) -> Result<bool, ActionHostError> {
         let (workspace, actor, _) = authority;
         let (request, argument) = input;
         let room = workspace.room.to_string();
@@ -95,13 +98,125 @@ impl CapnpBrokerState {
         ) {
             return Err(ActionHostError::ConfirmationRequired);
         }
-        self.admit_answer(
+        self.framework_policy(
             authority,
-            action.0,
-            action.1,
-            (argument, request.confirmation.as_ref()),
+            action,
+            request.confirmation.as_ref(),
             witnessed,
-        )
+            false,
+        )?;
+        Ok(witnessed)
+    }
+
+    // Admission may synchronously cross disk and owner-service barriers. Never
+    // reuse the workspace or certificate ceiling sampled before those calls.
+    fn current_framework_authority(
+        &self,
+        caller: &Caller,
+        origin: Option<&InvocationCaller>,
+        room: &str,
+    ) -> Result<(Workspace, BrokerActor, u64), ActionHostError> {
+        let unavailable = |reason| ActionHostError::Unavailable { reason };
+        if !self.is_accepting() || (caller.execution_id().is_some() && !caller.execution_is_live())
+        {
+            return Err(ActionHostError::NotPermitted);
+        }
+        let original = match origin {
+            Some(InvocationCaller::Certified {
+                caller: original,
+                foreign_restriction,
+            }) => {
+                self.checked_policy_time(original.policy_time.as_ref())
+                    .map_err(unavailable)?;
+                let current = self.current_action_caller(original).map_err(unavailable)?;
+                let certificate = current
+                    .certificate
+                    .as_ref()
+                    .ok_or(ActionHostError::NotPermitted)?;
+                if original.room != room {
+                    return Err(ActionHostError::NotPermitted);
+                }
+                if caller.device_public_key().is_none() {
+                    self.current_native_person(room, certificate)
+                        .map_err(unavailable)?;
+                }
+                let mut actor = current.broker_actor();
+                actor.capped |= super::cap_applies_in(
+                    self.certificate_authority.get().map(AsRef::as_ref),
+                    room,
+                    *foreign_restriction,
+                    Some(&certificate.device_public_key),
+                );
+                Some(actor)
+            }
+            Some(InvocationCaller::Local { route, admitted }) => {
+                if route.cluster_id != room {
+                    return Err(ActionHostError::NotPermitted);
+                }
+                Some(
+                    self.revalidate_admission(route, admitted)
+                        .map_err(|error| unavailable(error.to_string()))?
+                        .broker_actor(),
+                )
+            }
+            Some(InvocationCaller::NativePerson {
+                room: original,
+                certificate,
+                time,
+                ..
+            }) => {
+                if original != room {
+                    return Err(ActionHostError::NotPermitted);
+                }
+                self.checked_policy_time(Some(time)).map_err(unavailable)?;
+                self.current_native_person(room, certificate)
+                    .map_err(unavailable)?;
+                Some(self.certified_person(room, certificate))
+            }
+            None => None,
+        };
+        let (workspace, actor, now) = self
+            .decide_for(caller, room, |workspace, actor, now| {
+                (workspace.clone(), actor.clone(), now)
+            })
+            .ok_or(ActionHostError::NotPermitted)?;
+        Ok((workspace, original.unwrap_or(actor), now))
+    }
+
+    fn framework_policy(
+        &self,
+        authority: (&Workspace, &BrokerActor, u64),
+        action: (&str, &ActionDescriptor),
+        confirmation: Option<&Confirmation>,
+        witnessed: bool,
+        spend: bool,
+    ) -> Result<(), ActionHostError> {
+        let (workspace, actor, now) = authority;
+        let (answer, spent) = actor.action_verdict_in(
+            workspace,
+            action.0,
+            (
+                &action.1.resource_kind,
+                &action.1.address.resource,
+                &action.1.address.action,
+            ),
+            &action.1.contract.need(),
+            now,
+        );
+        match answer {
+            tilo_action_policy::Answer::Deny => return Err(ActionHostError::NotPermitted),
+            tilo_action_policy::Answer::Ask
+                if !(witnessed
+                    || (actor.direct() && confirmation == Some(&Confirmation::Confirmed))) =>
+            {
+                return Err(ActionHostError::ConfirmationRequired);
+            }
+            _ => {}
+        }
+        if spend {
+            self.spend_once_grants(&workspace.room.to_string(), &spent);
+        }
+        Ok(())
     }
 
     fn admitted_shortcut_library(
@@ -119,7 +234,7 @@ impl CapnpBrokerState {
             .ok_or(ActionHostError::UnknownAction)?;
         let descriptor = crate::automation::library_descriptor(&request.target.address.action)
             .ok_or(ActionHostError::UnknownAction)?;
-        self.authorize_framework_descriptor(
+        let witnessed = self.authorize_framework_descriptor(
             authority,
             (tilo_automation::SHORTCUTS_APP_ID, &descriptor),
             (request, argument),
@@ -131,7 +246,7 @@ impl CapnpBrokerState {
                 .0,
         );
         let keymap = library.keymap();
-        let plan = crate::automation::plan_library(
+        let _plan = crate::automation::plan_library(
             authority.0,
             operation,
             &crate::automation::SaveContext {
@@ -152,12 +267,57 @@ impl CapnpBrokerState {
                 request,
             },
         )?;
+        #[cfg(test)]
+        tests::at_effect_barrier();
+        let room = authority.0.room.to_string();
+        let (plan, actor) = self.framework_effect_ready(&admitted, || {
+            let (workspace, actor, _) = self.current_framework_authority(caller, origin, &room)?;
+            // Replan on the current document: a valid old plan can overwrite a
+            // concurrent shortcut edit even when the caller still has permission.
+            let operation =
+                crate::automation::decode_library(&request.target.address.action, argument)
+                    .map_err(|reason| ActionHostError::InvalidRequest { reason })?;
+            let catalog = tilo_automation::ActionCatalog::new(
+                self.eager_catalogue(caller, super::action_host::RowScope::All)
+                    .0,
+            );
+            let keymap = library.keymap();
+            let plan = crate::automation::plan_library(
+                &workspace,
+                operation,
+                &crate::automation::SaveContext {
+                    catalog: &catalog,
+                    saver: actor.id(),
+                    keymap: &keymap,
+                    fixed_label: &|fixed| library.fixed_shortcut_label(fixed),
+                },
+            )
+            .map_err(|reason| ActionHostError::Refused { reason })?;
+            let (current_workspace, actor, now) =
+                self.current_framework_authority(caller, origin, &room)?;
+            if serde_json::to_value(&workspace).ok()
+                != serde_json::to_value(&current_workspace).ok()
+            {
+                return Err(ActionHostError::Refused {
+                    reason: "shortcut library changed while planning; retry with a new invocation"
+                        .into(),
+                });
+            }
+            self.framework_policy(
+                (&current_workspace, &actor, now),
+                (tilo_automation::SHORTCUTS_APP_ID, &descriptor),
+                request.confirmation.as_ref(),
+                witnessed,
+                true,
+            )?;
+            Ok((plan, actor))
+        })?;
         let result = match plan {
             crate::automation::LibraryPlan::Answer(output) => Ok(output),
             crate::automation::LibraryPlan::Change { change, output } => library
                 .store(&crate::services::ShortcutLibraryRequest {
-                    room: &authority.0.room.to_string(),
-                    actor: authority.1,
+                    room: &room,
+                    actor: &actor,
                     change: &change,
                     context: request
                         .context
@@ -195,13 +355,32 @@ impl CapnpBrokerState {
         let descriptor = service
             .descriptor(&keymap, &request.target.address)
             .ok_or(ActionHostError::UnknownAction)?;
-        let admitted = self.admit_framework_descriptor(
+        let (admitted, witnessed) = self.admit_framework_descriptor(
             caller,
             origin,
             authority,
             (service.app_id(), &descriptor),
             (request, argument),
         )?;
+        self.framework_effect_ready(&admitted, || {
+            keymap = settings_store::hardware::ShortcutConfig::load();
+            let fresh = service
+                .descriptor(&keymap, &request.target.address)
+                .ok_or(ActionHostError::UnknownAction)?;
+            if serde_json::to_value(&fresh).ok() != serde_json::to_value(&descriptor).ok() {
+                return Err(ActionHostError::NotPermitted);
+            }
+            let (workspace, actor, now) =
+                self.current_framework_authority(caller, origin, &authority.0.room.to_string())?;
+            self.framework_policy(
+                (&workspace, &actor, now),
+                (service.app_id(), &fresh),
+                request.confirmation.as_ref(),
+                witnessed,
+                true,
+            )?;
+            Ok(())
+        })?;
         let result = service
             .apply(&mut keymap, &request.target.address, argument)
             .and_then(|(output, changed)| {
@@ -258,12 +437,12 @@ impl CapnpBrokerState {
             checked.confirmation = Some(Confirmation::Confirmed);
         }
         // Admission records the original witness-bearing request, not a rewrite.
-        self.admit_answer(
+        self.framework_policy(
             authority,
-            service.app_id(),
-            &descriptor,
-            (argument, checked.confirmation.as_ref()),
+            (service.app_id(), &descriptor),
+            checked.confirmation.as_ref(),
             witnessed,
+            false,
         )?;
         if !Self::confirmed_as_asked(
             authority.1,
@@ -284,6 +463,8 @@ impl CapnpBrokerState {
                 request,
             },
         )?;
+        #[cfg(test)]
+        tests::at_effect_barrier();
         let confirmation = match checked.confirmation.as_ref() {
             Some(Confirmation::Confirmed) => serde_json::json!({"confirm": true}),
             Some(Confirmation::Phrase(phrase)) => {
@@ -291,14 +472,40 @@ impl CapnpBrokerState {
             }
             _ => serde_json::json!({}),
         };
+        let room = authority.0.room.to_string();
+        let actor = self.framework_effect_ready(&admitted, || {
+            let (workspace, _, _) = self.current_framework_authority(caller, origin, &room)?;
+            let fresh = service
+                .descriptors(&workspace)
+                .into_iter()
+                .find(|fresh| fresh.address == descriptor.address)
+                .ok_or(ActionHostError::UnknownAction)?;
+            let (current_workspace, actor, now) =
+                self.current_framework_authority(caller, origin, &room)?;
+            if serde_json::to_value(&fresh).ok() != serde_json::to_value(&descriptor).ok()
+                || serde_json::to_value(&workspace).ok()
+                    != serde_json::to_value(&current_workspace).ok()
+                || (owner_action && !actor.direct())
+            {
+                return Err(ActionHostError::NotPermitted);
+            }
+            self.framework_policy(
+                (&current_workspace, &actor, now),
+                (service.app_id(), &fresh),
+                checked.confirmation.as_ref(),
+                witnessed,
+                true,
+            )?;
+            Ok(actor)
+        })?;
         let started = service.start(&crate::services::WorkspaceGovernanceRequest {
             local_device: caller.device_public_key().is_none()
                 && caller.shortcut().is_none()
                 && caller.acting_for_person().is_none()
                 && request.on_behalf_of.is_none(),
             execution_lease: caller.execution_lease(),
-            room: &authority.0.room.to_string(),
-            actor: authority.1,
+            room: &room,
+            actor: &actor,
             resource: &request.target.address.resource,
             action: &request.target.address.action,
             argument,
@@ -310,11 +517,19 @@ impl CapnpBrokerState {
             Ok(started) => {
                 let state = Arc::clone(self);
                 started.then(move |outcome| {
+                    let uncertain = outcome.is_none();
                     let result = outcome.unwrap_or_else(|| Err(Box::new(ActionFailure {
                         code: "host_step_stopped".into(), message: "the host step stopped without an answer".into(),
                         details: None, retryable: false,
                     })));
-                    if let Err(error) = state.finish_framework_action(admitted, result) {
+                    let completed = if uncertain {
+                        let update = InvocationUpdate::Failed { invocation: admitted.invocation,
+                            error: *result.expect_err("missing service answer") };
+                        state.complete_uncertain_host_action(&admitted, update).map(|()| admitted.id)
+                    } else {
+                        state.finish_framework_action(admitted, result)
+                    };
+                    if let Err(error) = completed {
                         tracing::warn!(%error, "workspace service completion could not be retained");
                     }
                 });
@@ -332,6 +547,27 @@ impl CapnpBrokerState {
             }
         }
         Ok(id)
+    }
+
+    fn framework_effect_ready<T>(
+        &self,
+        admitted: &AdmittedHostAction,
+        check: impl FnOnce() -> Result<T, ActionHostError>,
+    ) -> Result<T, ActionHostError> {
+        check().inspect_err(|error| {
+            let update = InvocationUpdate::Failed {
+                invocation: admitted.invocation,
+                error: ActionFailure {
+                    code: "host_action_refused".into(),
+                    message: error.to_string(),
+                    details: None,
+                    retryable: false,
+                },
+            };
+            if let Err(error) = self.complete_host_action(admitted, update) {
+                tracing::warn!(%error, "host action refusal could not be retained");
+            }
+        })
     }
 
     fn finish_framework_action(

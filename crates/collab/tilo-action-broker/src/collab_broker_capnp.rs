@@ -1937,6 +1937,10 @@ pub(crate) struct VerifiedActionCaller {
     /// The agent this person's own device handed the session to, kept
     /// across every re-verification of the person's admission.
     delegated: Option<String>,
+    /// A keyless native projection verified against protected seat custody.
+    /// Only `certified_native_action_host` sets this; signed/network evidence
+    /// alone never establishes physical intent.
+    native_projection_verified: bool,
 }
 
 impl VerifiedActionCaller {
@@ -1945,6 +1949,7 @@ impl VerifiedActionCaller {
     /// its agents.
     fn delegated_to(mut self, agent: &str) -> Self {
         self.delegated = Some(agent.to_owned());
+        self.native_projection_verified = false;
         self.admitted = self.admitted.delegated_to(self.delegated.as_deref());
         self
     }
@@ -2284,6 +2289,7 @@ impl CapnpBrokerState {
         Ok(VerifiedActionCaller {
             room: room.into(),
             presentation: presentation.into(),
+            native_projection_verified: false,
             network: None,
             policy_time: self.registered_policy_time()?,
             admitted,
