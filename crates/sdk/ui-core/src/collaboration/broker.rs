@@ -2735,11 +2735,8 @@ type HostAsyncStream = Pin<Box<dyn HostAsyncIo>>;
 
 /// The descriptor lane of a host session's collaboration stream, when it
 /// has one: what the app hands the broker (Files' selected objects) rides
-/// that stream as SCM_RIGHTS ([`runtime_portal::descriptor_lane`]).
-#[cfg(unix)]
-type HostDescriptorLane = Option<runtime_portal::descriptor_lane::DescriptorSender>;
-#[cfg(not(unix))]
-type HostDescriptorLane = Option<std::convert::Infallible>;
+/// that stream as SCM_RIGHTS ([`runtime_portal::descriptor_lane_stream`]).
+type HostDescriptorLane = runtime_portal::DescriptorLane;
 
 type HostSessionFuture = std::pin::Pin<
     Box<
@@ -2789,27 +2786,24 @@ impl HostSessionConnector {
     /// [`Self::new`] for a collaboration stream that is a local socket: its
     /// writes also carry the descriptors the app hands the broker, as the
     /// launcher's inherited service connection does, so an in-process app
-    /// can hand Files' selected objects over exactly as a launched one.
-    #[cfg(unix)]
-    pub fn with_descriptor_lane<F, Fut, I>(connect: F) -> Self
+    /// can hand Files' selected objects over exactly as a launched one. A
+    /// host whose streams carry no descriptors gives an empty lane.
+    pub fn with_descriptor_lane<F, Fut, C, I>(connect: F) -> Self
     where
         F: FnOnce(RouteSpec) -> Fut + Send + 'static,
-        Fut: std::future::Future<
-                Output = Result<(tokio::net::UnixStream, I), runtime_portal::NotAvailable>,
-            > + 'static,
+        Fut: std::future::Future<Output = Result<(C, I), runtime_portal::NotAvailable>> + 'static,
+        C: runtime_portal::DescriptorStreamSource + 'static,
         I: AsyncRead + AsyncWrite + 'static,
     {
-        use runtime_portal::descriptor_lane::{DescriptorSender, DescriptorStream};
         Self {
             connect: Box::new(move |route| {
                 Box::pin(async move {
                     let (collaboration, identity) = connect(route).await?;
-                    let lane = DescriptorSender::new();
+                    let (collaboration, lane) = collaboration.with_descriptor_lane();
                     Ok((
-                        Box::pin(DescriptorStream::sending(collaboration, lane.clone()))
-                            as HostAsyncStream,
+                        Box::pin(collaboration) as HostAsyncStream,
                         Box::pin(identity) as HostAsyncStream,
-                        Some(lane),
+                        lane,
                     ))
                 })
             }),
@@ -4134,14 +4128,8 @@ fn run_shovel(
                                         );
                                         let raw: runtime_collab::CollabServiceClient =
                                             rpc.bootstrap();
-                                        let client = runtime_collab::CollabClient::from_raw(raw);
-                                        #[cfg(unix)]
-                                        let client = match lane {
-                                            Some(lane) => client.with_descriptors(lane),
-                                            None => client,
-                                        };
-                                        #[cfg(not(unix))]
-                                        let _ = lane;
+                                        let client = runtime_collab::CollabClient::from_raw(raw)
+                                            .with_optional_descriptors(lane);
                                         Ok((client, identity))
                                     }
                                     Err(error) => Err(error),

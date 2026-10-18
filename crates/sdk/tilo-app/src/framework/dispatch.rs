@@ -175,7 +175,7 @@ pub(crate) struct DispatchCore {
     /// test's detached dispatcher, which may do what writing allows.
     permissions: Rc<RefCell<Option<LivePermissions>>>,
     permission_states: PermissionStates,
-    refused: LocalState<Option<Refused>>,
+    pub(crate) refused: LocalState<Option<Refused>>,
     /// The last submission of this view the door applied.
     landed: LocalState<Option<Landed>>,
     /// What the effects that queued submissions here wait on: how many are
@@ -638,12 +638,6 @@ impl DispatchCore {
     /// Who edits through this dispatcher; `None` in a view of a past version.
     pub(crate) fn me(&self) -> Option<&str> {
         self.me.as_deref()
-    }
-
-    /// The last action refused here ([`Dispatcher::refused`]).
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn last_refused(&self) -> Option<Refused> {
-        self.refused.get()
     }
 
     pub(crate) fn note_landed(&self, action: &str, output: &tilo_actions::ActionOutput) {

@@ -1666,58 +1666,62 @@ impl AppHandler {
         // first frame's sync, layout and draw run here meanwhile instead of
         // after the wait.
         #[cfg(any(windows, target_os = "linux"))]
-        if let Some(preparation) = self
-            .app
-            .startup_renderer
-            .take_if(|preparation| preparation.made_early_window())
         {
-            let worker_window = window.clone();
-            self.render = Some(crate::render_thread::spawn_render_thread_deferred(
-                move || {
-                    let startup = tilo_startup_metrics::span("native-render-prepare-wait", || {
-                        preparation.wait()
-                    });
-                    match startup {
-                        Ok(Ok(startup)) => prepare_window_render(
-                            &worker_window,
+            if let Some(preparation) = self
+                .app
+                .startup_renderer
+                .take_if(|preparation| preparation.made_early_window())
+            {
+                let worker_window = window.clone();
+                self.render = Some(crate::render_thread::spawn_render_thread_deferred(
+                    move || {
+                        let startup =
+                            tilo_startup_metrics::span("native-render-prepare-wait", || {
+                                preparation.wait()
+                            });
+                        match startup {
+                            Ok(Ok(startup)) => prepare_window_render(
+                                &worker_window,
+                                false,
+                                Some(startup.prepared),
+                                startup.surface,
+                            ),
+                            Ok(Err(error)) => {
+                                tracing::warn!(%error, "renderer preparation failed; selecting device for the actual surface");
+                                prepare_window_render(&worker_window, false, None, None)
+                            }
+                            Err(error) => {
+                                tracing::warn!(%error, "renderer preparation disconnected; selecting device for the actual surface");
+                                prepare_window_render(&worker_window, false, None, None)
+                            }
+                        }
+                    },
+                    render_ready_wake(window.id(), self.a11y_proxy.clone()),
+                    Some(window.clone()),
+                )?);
+                return Ok(());
+            }
+            if let Some(preparation) = self.app.startup_renderer.take() {
+                // How long the first redraw still waits on the preparation.
+                match tilo_startup_metrics::span("native-render-prepare-wait", || {
+                    preparation.wait()
+                }) {
+                    Ok(Ok(startup)) => {
+                        self.render = Some(create_window_render_prepared(
+                            window,
                             false,
                             Some(startup.prepared),
                             startup.surface,
-                        ),
-                        Ok(Err(error)) => {
-                            tracing::warn!(%error, "renderer preparation failed; selecting device for the actual surface");
-                            prepare_window_render(&worker_window, false, None, None)
-                        }
-                        Err(error) => {
-                            tracing::warn!(%error, "renderer preparation disconnected; selecting device for the actual surface");
-                            prepare_window_render(&worker_window, false, None, None)
-                        }
+                            self.a11y_proxy.clone(),
+                        )?);
+                        return Ok(());
                     }
-                },
-                render_ready_wake(window.id(), self.a11y_proxy.clone()),
-                Some(window.clone()),
-            )?);
-            return Ok(());
-        }
-        #[cfg(any(windows, target_os = "linux"))]
-        if let Some(preparation) = self.app.startup_renderer.take() {
-            // How long the first redraw still waits on the preparation.
-            match tilo_startup_metrics::span("native-render-prepare-wait", || preparation.wait()) {
-                Ok(Ok(startup)) => {
-                    self.render = Some(create_window_render_prepared(
-                        window,
-                        false,
-                        Some(startup.prepared),
-                        startup.surface,
-                        self.a11y_proxy.clone(),
-                    )?);
-                    return Ok(());
-                }
-                Ok(Err(error)) => {
-                    tracing::warn!(%error, "renderer preparation failed; selecting device for the actual surface")
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "renderer preparation disconnected; selecting device for the actual surface")
+                    Ok(Err(error)) => {
+                        tracing::warn!(%error, "renderer preparation failed; selecting device for the actual surface")
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "renderer preparation disconnected; selecting device for the actual surface")
+                    }
                 }
             }
         }
