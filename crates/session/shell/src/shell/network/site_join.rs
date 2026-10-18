@@ -17,6 +17,9 @@ pub struct SiteRoom {
     /// link named.
     pub site: Option<String>,
     pub community: bool,
+    /// Joined from a directory of public workspaces: its door takes
+    /// reports.
+    pub public: bool,
 }
 
 /// Where joining a site's workspace stands once it was asked for.
@@ -41,7 +44,7 @@ pub(crate) enum SiteJoin {
 
 impl ShellNetwork {
     /// The person this computer acts as, and the name they give a room.
-    fn site_person(&self) -> Result<([u8; 32], String), SiteError> {
+    pub(super) fn site_person(&self) -> Result<([u8; 32], String), SiteError> {
         let identity = self
             .host_identity
             .as_ref()
@@ -84,7 +87,7 @@ impl ShellNetwork {
 
     /// Join the workspace a site's entry named; its enrollment installs in
     /// the `background`, else by its caller.
-    fn join_site_workspace(
+    pub(super) fn join_site_workspace(
         &self,
         site: &SiteWorkspace,
         background: bool,
@@ -220,6 +223,10 @@ impl ShellNetwork {
                     community: site
                         .as_deref()
                         .is_some_and(|site| self.hosted_sites.is_community(site)),
+                    public: site
+                        .as_deref()
+                        .and_then(|site| url::Url::parse(site).ok())
+                        .is_some_and(|site| site.path().contains("/directory/")),
                     site: site
                         .and_then(|site| url::Url::parse(&site).ok())
                         .and_then(|site| site.host_str().map(str::to_owned)),

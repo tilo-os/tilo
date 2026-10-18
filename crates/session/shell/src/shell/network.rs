@@ -6,6 +6,7 @@
 mod boot_join;
 mod community;
 pub(crate) use community::configured_site as configured_community_site;
+pub use directory::{DirectoryListing, Publication};
 pub use site_join::SiteRoom;
 #[cfg(test)]
 mod display_input_tests;
@@ -50,6 +51,9 @@ mod community_tests;
 #[cfg(test)]
 mod device_approval_tests;
 pub(crate) mod device_approvals;
+pub(crate) mod directory;
+#[cfg(test)]
+mod directory_tests;
 pub(crate) mod join_field;
 #[cfg(test)]
 mod node_member_tests;

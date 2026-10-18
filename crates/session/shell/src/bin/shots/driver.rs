@@ -3638,5 +3638,6 @@ fn lounge_site(room: shell::shell::state::RoomId) -> shell::shell::network::Site
         room,
         site: Some("tilo.coffee".into()),
         community: true,
+        public: false,
     }
 }

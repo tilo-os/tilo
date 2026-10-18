@@ -13,7 +13,6 @@ use ui::time::{Duration, Instant, SystemTime};
 use tilo_relay_protocol::config::CheckpointPrefixRecovery;
 use tilo_relay_protocol::{DeviceRole, RelayConfig, ReplicationIntent};
 use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected, LiveRow};
-use ui::tilo_actions::remote::community::CommunityStatus;
 use ui::tilo_resource::{self, Effect};
 use ui::widget::{Button, Dropdown, Text, TextInput, Toggle, Widget};
 
@@ -400,12 +399,6 @@ pub enum DeviceMeshEffect {
         #[param("The home server's node id")]
         device: String,
     },
-    /// Join the site's community workspace again after leaving it.
-    #[effect(job, label = "Join community workspace")]
-    JoinCommunity,
-    /// Leave the site's community workspace; it is not joined again unasked.
-    #[effect(job, destructive, label = "Leave community workspace")]
-    LeaveCommunity,
 }
 
 const DEVICE_ROLES: [&str; 3] = [ROLE_PERSONAL, ROLE_ACTIVE, ROLE_SERVER];
@@ -438,15 +431,6 @@ pub(crate) fn answer(
     if let DeviceMeshEffect::RevokeDevice { device, reason } = &effect {
         let device = model.revocable(device)?;
         model.start_revoke(&device, reason, Some(cx.reply()));
-        return Ok(Effected::Pending);
-    }
-    // Joining and leaving run on the host; joining can take seconds.
-    if matches!(
-        effect,
-        DeviceMeshEffect::JoinCommunity | DeviceMeshEffect::LeaveCommunity
-    ) {
-        let join = effect == DeviceMeshEffect::JoinCommunity;
-        model.start_community_change(join, Some(cx.reply()))?;
         return Ok(Effected::Pending);
     }
     model.apply(&effect).map(|()| Effected::done())
@@ -508,13 +492,11 @@ impl DeviceMeshArea {
             });
             let mut model = DeviceMeshModel::from_read(self.cx.clone(), read);
             model.remote = self.remote.clone();
-            // The fleet and the community workspace are the host's: it
-            // answers both; a capture shows its stand-ins.
+            // The fleet is the host's: it answers; a capture shows its
+            // stand-ins.
             if self.cx.reaches_devices() {
                 model.refresh_personal_devices();
-                model.refresh_community();
             } else if let Some(scene) = self.cx.scene() {
-                model.community.clone_from(&scene.community);
                 match crate::device_fleet::views(scene.fleet_devices.clone()) {
                     Ok(devices) => model.personal_devices = devices,
                     Err(error) => model.personal_device_error = Some(error),
@@ -642,17 +624,6 @@ pub struct DeviceMeshModel {
     /// The revocation the host signs: its invocation, the device's name and
     /// the caller waiting for it.
     revoke_call: Option<RevokeCall>,
-    /// Where the person stands with the site's community workspace, as the
-    /// host last answered; `None` until it did.
-    community: Option<CommunityStatus>,
-    /// Why the community workspace could not be read, joined or left: the
-    /// message's key and the host's reason.
-    community_error: Option<(&'static str, String)>,
-    /// The host's answer to the community status, while it is asked.
-    community_call: Option<ui::LocalState<ui::InvocationCall>>,
-    /// The join or leave the host runs: its invocation, which it is and the
-    /// caller waiting for it.
-    community_change: Option<CommunityChange>,
     next_peer_health: usize,
     apply_child: Option<bounded_command::AsyncCommand>,
     apply_queued: bool,
@@ -682,13 +653,6 @@ pub struct DeviceMeshModel {
 struct RevokeCall {
     call: ui::LocalState<ui::InvocationCall>,
     label: String,
-    reply: Option<EffectReply>,
-}
-
-/// Joining or leaving the community workspace, while the host runs it.
-struct CommunityChange {
-    call: ui::LocalState<ui::InvocationCall>,
-    join: bool,
     reply: Option<EffectReply>,
 }
 
@@ -1122,10 +1086,6 @@ impl DeviceMeshModel {
             management_call: None,
             devices_call: None,
             revoke_call: None,
-            community: None,
-            community_error: None,
-            community_call: None,
-            community_change: None,
             next_peer_health: 0,
             apply_child: None,
             apply_queued: false,
@@ -1255,14 +1215,6 @@ impl DeviceMeshModel {
                 self.start_home_peer_removal(&peer);
                 false
             }
-            DeviceMeshEffect::JoinCommunity => {
-                self.start_community_change(true, None)?;
-                false
-            }
-            DeviceMeshEffect::LeaveCommunity => {
-                self.start_community_change(false, None)?;
-                false
-            }
         };
         if configured {
             self.persist();
@@ -1309,65 +1261,12 @@ impl DeviceMeshModel {
         }
     }
 
-    /// Ask the host again where the person stands with the community
-    /// workspace.
-    fn refresh_community(&mut self) {
-        if self.community_call.is_none() {
-            self.community_call = Some(crate::community::status(&self.remote));
-        }
-    }
-
-    /// Ask the host to join the community workspace again (`join`) or to
-    /// leave it; the answer, and `reply`'s, arrive in
-    /// [`Self::poll_host_calls`].
-    fn start_community_change(
-        &mut self,
-        join: bool,
-        reply: Option<EffectReply>,
-    ) -> Result<(), String> {
-        let joined = match &self.community {
-            Some(CommunityStatus {
-                site: Some(_),
-                joined,
-                ..
-            }) => *joined,
-            _ => return Err("this computer has no community workspace".into()),
-        };
-        if join == joined {
-            return Err(if join {
-                "this computer is already in the community workspace".into()
-            } else {
-                "this computer is not in the community workspace".into()
-            });
-        }
-        if let Some(previous) = self.community_change.take()
-            && let Some(reply) = previous.reply
-        {
-            reply.finish(Err("another community change replaced it".into()));
-        }
-        self.community_change = Some(CommunityChange {
-            call: if join {
-                crate::community::join(&self.remote)
-            } else {
-                crate::community::leave(&self.remote)
-            },
-            join,
-            reply,
-        });
-        self.community_error = None;
-        self.changed = true;
-        Ok(())
-    }
-
-    /// Take in what the host answered to the device list, a revocation, a
-    /// home-server removal and the community status, join or leave, once
-    /// each settled.
+    /// Take in what the host answered to the device list, a revocation and
+    /// a home-server removal, once each settled.
     fn poll_host_calls(&mut self) {
         if self.devices_call.is_some()
             || self.revoke_call.is_some()
             || self.management_call.is_some()
-            || self.community_call.is_some()
-            || self.community_change.is_some()
         {
             self.remote.poll();
         }
@@ -1409,50 +1308,6 @@ impl DeviceMeshModel {
             && let Some((_, device)) = self.management_call.take()
         {
             self.take_management_answer(device, answer.map(|output| output.value));
-        }
-        if let Some(answer) = self
-            .community_call
-            .as_ref()
-            .and_then(crate::device_fleet::settled)
-        {
-            self.community_call = None;
-            match answer.and_then(|output| crate::community::parse(output.value)) {
-                Ok(status) => {
-                    self.community = Some(status);
-                    self.community_error = None;
-                }
-                Err(error) => self.community_error = Some(("mesh-community-err", error)),
-            }
-            self.changed = true;
-        }
-        if let Some(answer) = self
-            .community_change
-            .as_ref()
-            .and_then(|change| crate::device_fleet::settled(&change.call))
-            && let Some(CommunityChange { join, reply, .. }) = self.community_change.take()
-        {
-            // Both answer where the person stands now; the status is read
-            // again all the same, so a joining that settles later shows.
-            match &answer {
-                Ok(output) => {
-                    if let Ok(status) = crate::community::parse(output.value.clone()) {
-                        self.community = Some(status);
-                    }
-                }
-                Err(error) => {
-                    let key = if join {
-                        "mesh-community-join-err"
-                    } else {
-                        "mesh-community-leave-err"
-                    };
-                    self.community_error = Some((key, error.clone()));
-                }
-            }
-            if let Some(reply) = reply {
-                reply.finish(answer);
-            }
-            self.refresh_community();
-            self.changed = true;
         }
     }
 
@@ -1564,49 +1419,6 @@ impl DeviceMeshModel {
         self.roaming_provenance_status = status;
         self.roaming_provenance_stamp = stamp;
         self.changed = true;
-    }
-
-    /// The site's community workspace: where the person stands and the
-    /// button that joins it again or leaves it; nothing when this computer
-    /// has no community workspace.
-    fn community_section(&self) -> Option<SettingsSection> {
-        let status = self.community.as_ref()?;
-        let site = crate::community::site_name(status.site.as_deref()?);
-        let changing = self.community_change.as_ref().map(|change| change.join);
-        let state = t(match changing {
-            Some(false) => "mesh-community-leaving",
-            None if status.joined => "mesh-community-in",
-            None if status.left => "mesh-community-left",
-            // Joining when asked, or joining on its own until it settles.
-            Some(true) | None => "mesh-community-joining",
-        });
-        let detail = t_args(
-            "mesh-community-detail",
-            &[("site", site.into()), ("state", state.into())],
-        );
-        let button = if status.joined {
-            self.cx.bind_invocation(
-                Button::new("device_mesh.community_leave", &t("mesh-community-leave"))
-                    .role(ui::widget::ButtonRole::Destructive)
-                    .with_enabled(changing.is_none()),
-                DeviceMeshEffect::LeaveCommunity,
-            )
-        } else {
-            self.cx.bind_invocation(
-                Button::new("device_mesh.community_join", &t("mesh-community-join"))
-                    .with_enabled(changing.is_none()),
-                DeviceMeshEffect::JoinCommunity,
-            )
-        };
-        let mut community_rows = vec![setting_row_described(
-            &t("mesh-community-workspace"),
-            &detail,
-            Box::new(button),
-        )];
-        if let Some((key, error)) = &self.community_error {
-            community_rows.push(note(&t_args(key, &[("error", error.as_str().into())])));
-        }
-        Some(card(&t("mesh-community-title"), rows(community_rows)))
     }
 
     fn apply_role_change(&mut self, role: DeviceRole) -> bool {
@@ -2045,7 +1857,6 @@ impl DeviceMeshModel {
             card(&availability_title, rows(availability_rows)),
             card(&synced_title, workspace_rows),
         ];
-        sections.extend(self.community_section());
         sections.push(card_with_action(&home_nas, approve, rows(home_server_rows)));
         for peer in &self.home_peers {
             let device = &peer.device_node_id;
@@ -3235,23 +3046,9 @@ mod tests {
                 ui::tilo_actions::remote::ActionHostError,
             >,
         > {
-            use ui::tilo_actions::remote::{community, device_pairing, identity_admin};
+            use ui::tilo_actions::remote::{device_pairing, identity_admin};
             let invocation = request.invocation;
-            let value = if request.target.provider == community::PROVIDER {
-                // In the workspace unless the last change asked was a leave.
-                let last_change = self
-                    .asked()
-                    .into_iter()
-                    .rev()
-                    .map(|asked| asked.target.address.action)
-                    .find(|step| step == community::JOIN || step == community::LEAVE);
-                let step = request.target.address.action.as_str();
-                let left = match step {
-                    community::STATUS => last_change.as_deref() == Some(community::LEAVE),
-                    _ => step == community::LEAVE,
-                };
-                serde_json::json!({"site": "https://tilo.coffee/", "joined": !left, "left": left})
-            } else if request.target.provider == identity_admin::PROVIDER {
+            let value = if request.target.provider == identity_admin::PROVIDER {
                 match request.target.address.action.as_str() {
                     identity_admin::DEVICES => serde_json::json!([
                         {
@@ -3377,84 +3174,29 @@ mod tests {
         );
     }
 
-    /// The community workspace is the host's: the pane reads where the
-    /// person stands, leaves with their confirmation and joins again, and
-    /// reads the status again after each.
+    /// Joining a public workspace (the community's among them) is the
+    /// workspace overview's and the directory's now: Devices & sync shows
+    /// no community switch and never asks the host about it. The host keeps
+    /// whoever was in the community workspace in it.
     #[test]
-    fn community_workspace_is_joined_and_left_on_the_host() {
-        use ui::tilo_actions::remote::{Confirmation, InvokeArgument, community};
+    fn devices_and_sync_has_no_community_switch_any_more() {
         let dir = tempfile::tempdir().unwrap();
         let mut pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
-        assert!(
-            pane.apply(&DeviceMeshEffect::LeaveCommunity).is_err(),
-            "nothing is left before the host said there is a community workspace"
-        );
         let host = Arc::new(PairingHost::default());
         pane.remote = ui::RemoteActions::with_host(
             host.clone(),
             ui::tilo_actions::remote::Caller::local_person("owner"),
         );
-
-        pane.refresh_community();
+        pane.refresh_personal_devices();
         pane.poll_background_tasks();
-        let joined = CommunityStatus {
-            site: Some("https://tilo.coffee/".into()),
-            joined: true,
-            left: false,
-        };
-        assert_eq!(pane.community.as_ref(), Some(&joined));
+        pane.poll_background_tasks();
         assert!(
-            pane.apply(&DeviceMeshEffect::JoinCommunity).is_err(),
-            "a computer in the workspace does not join it twice"
-        );
-
-        pane.apply(&DeviceMeshEffect::LeaveCommunity).unwrap();
-        assert!(pane.community_change.is_some());
-        pane.poll_background_tasks();
-        pane.poll_background_tasks();
-        assert_eq!(
-            pane.community
-                .as_ref()
-                .map(|status| (status.joined, status.left)),
-            Some((false, true))
-        );
-        assert!(pane.community_error.is_none());
-
-        pane.apply(&DeviceMeshEffect::JoinCommunity).unwrap();
-        pane.poll_background_tasks();
-        pane.poll_background_tasks();
-        assert_eq!(pane.community.as_ref(), Some(&joined));
-
-        let asked: Vec<_> = host
-            .asked()
-            .into_iter()
-            .filter(|request| request.target.provider == community::PROVIDER)
-            .collect();
-        assert_eq!(
-            asked
+            host.asked()
                 .iter()
-                .map(|request| request.target.address.action.as_str())
-                .collect::<Vec<_>>(),
-            [
-                community::STATUS,
-                community::LEAVE,
-                community::STATUS,
-                community::JOIN,
-                community::STATUS,
-            ],
-            "the status is read again after each change"
+                .all(|request| request.target.provider
+                    != ui::tilo_actions::remote::community::PROVIDER),
+            "the pane asks the host nothing about the community workspace"
         );
-        assert_eq!(asked[1].confirmation, Some(Confirmation::Confirmed));
-        assert_eq!(
-            asked[1].argument,
-            InvokeArgument::Json(
-                serde_json::json!({"confirm": true})
-                    .as_object()
-                    .unwrap()
-                    .clone()
-            )
-        );
-        assert_eq!(asked[3].argument, InvokeArgument::None);
     }
 
     /// Removing a home server signs its revocation with the root key, so

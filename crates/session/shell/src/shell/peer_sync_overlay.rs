@@ -59,6 +59,28 @@ pub enum PeerSyncRequest {
     CancelInvitation([u8; 32]),
     /// Mint an invitation on the terms an `invitation.issue` action stated.
     IssueInvitation(InvitationTerms),
+    /// The public workspaces the sites this computer knows list, and those
+    /// of the site the person typed, when they typed one.
+    Directory {
+        site: Option<String>,
+    },
+    /// Join a public workspace the directory listed, with the role its
+    /// owner set.
+    JoinListed(Box<crate::shell::network::DirectoryListing>),
+    /// Report a public workspace this computer joined from a directory to
+    /// the people who run it.
+    ReportWorkspace {
+        room: crate::shell::state::RoomId,
+        reason: String,
+    },
+    /// Whether the workspace in `room` is public, and with what.
+    Publication(crate::shell::state::RoomId),
+    /// Make the workspace in `room` public with `listing`, or private again
+    /// with `None`.
+    Publish {
+        room: crate::shell::state::RoomId,
+        listing: Option<tilo_relay_protocol::directory::Listing>,
+    },
 }
 
 /// What an `invitation.issue` action asks to be minted for the active
@@ -167,6 +189,16 @@ pub enum PeerSyncResponse {
     },
     /// The new devices asking to be the person.
     DevicesAsking(Vec<DeviceAskingSummary>),
+    /// The public workspaces, in the order the directory sheet shows them.
+    Directory(Vec<crate::shell::network::DirectoryListing>),
+    /// A public workspace was joined: its room, and the workspace slot it
+    /// fills on this desktop when one was made for it.
+    JoinedWorkspace {
+        room: crate::shell::state::RoomId,
+        workspace: Option<crate::shell::state::WorkspaceId>,
+    },
+    /// Whether a workspace is public, and with what.
+    Publication(crate::shell::network::Publication),
 }
 
 /// A new device asking to be the person, as the approval card shows it.
@@ -439,6 +471,18 @@ impl PeerSyncOverlay {
         self.state.status = Some(t("peer-sync-paste-token"));
     }
 
+    /// Open the join field holding `text`, a link or a code the person
+    /// typed elsewhere (the directory's search); empty, as
+    /// [`Self::prompt_connect`].
+    pub fn prompt_connect_with(&mut self, text: &str) {
+        self.prompt_connect();
+        let text: String = text.split_whitespace().collect();
+        if !text.is_empty() {
+            self.state.connect_input = Some(text);
+            self.state.status = None;
+        }
+    }
+
     /// Say the card's `request` is being carried out: minting, redeeming,
     /// resending or cancelling waits on the network off the frame loop, and
     /// [`Self::finish_typed_request`] replaces this once it is back.
@@ -510,7 +554,12 @@ impl PeerSyncOverlay {
                 | PeerSyncRequest::LeaveSite(_)
                 | PeerSyncRequest::InviteDevice
                 | PeerSyncRequest::DevicesAsking
-                | PeerSyncRequest::AnswerDevice { .. },
+                | PeerSyncRequest::AnswerDevice { .. }
+                | PeerSyncRequest::Directory { .. }
+                | PeerSyncRequest::JoinListed(_)
+                | PeerSyncRequest::ReportWorkspace { .. }
+                | PeerSyncRequest::Publication(_)
+                | PeerSyncRequest::Publish { .. },
                 _,
             ) => {}
 

@@ -1398,7 +1398,13 @@ search-action-room-activity-open-subtitle = History of this workspace: changes, 
 search-action-peer-invite = Invite a collaborator…
 search-action-peer-invite-subtitle = Review an invite before creating it
 search-action-peer-connect = Join a workspace…
-search-action-peer-connect-subtitle = A site like tilo.coffee, a workspace link or an invitation
+search-action-peer-connect-subtitle = Public workspaces, a site like tilo.coffee, a link or an invitation
+search-action-workspace-publish = Make this workspace public…
+search-action-workspace-publish-subtitle = List it in its host's directory with a description and the role people who join get
+search-action-workspace-unpublish = Make this workspace private
+search-action-workspace-unpublish-subtitle = Take it out of the directory; its members stay
+search-action-workspace-report = Report this workspace…
+search-action-workspace-report-subtitle = Tell the people who run this public workspace what is wrong
 search-action-pair-device = Pair a new device
 search-action-pair-device-subtitle = Make your phone, a browser or another computer one of your devices
 search-action-tab-new-terminal-here = New terminal tab here
@@ -2913,7 +2919,10 @@ search-kw-presence-status-set = status, away, busy, availability
 search-kw-presence-status-sharing-set = status privacy, share status, hide status
 search-kw-room-activity-open = activity, history, what changed, changes, timeline, catch up, log, recent
 search-kw-peer-invite = invite, share, add person, collaborate, join link, send invite
-search-kw-peer-connect = join, join workspace, accept invite, connect, enter code
+search-kw-peer-connect = join, join workspace, accept invite, connect, enter code, public workspaces, browse workspaces, discover, directory, community
+search-kw-workspace-publish = public, publish, list, directory, default role, discoverable, open to everyone
+search-kw-workspace-unpublish = private, unpublish, unlist, hide from directory
+search-kw-workspace-report = report, abuse, spam, flag
 search-kw-peer-invite-named = invite by name, invite
 search-kw-agent-invite = ai, assistant, claude, agent, bot, helper
 search-kw-tab-new-terminal-here = terminal, shell, console, command line, new tab
@@ -3017,6 +3026,9 @@ drives-failed-title = { $drive } couldn't be opened
 
 # The top bar's workspace menu and profile card
 workspace-menu-settings = Workspace settings…
+workspace-menu-join = Join a workspace…
+workspace-menu-report = Report workspace…
+workspace-menu-leave = Leave workspace
 profile-action-identities = Your identities
 profile-action-backup = Back up your identity…
 profile-action-pair-device = Pair a device…
@@ -3026,6 +3038,7 @@ strip-switcher-workspaces = Workspaces
 strip-switcher-unnamed = Strip { $number }
 strip-switcher-new-strip = New strip
 strip-switcher-new-workspace = New workspace
+strip-switcher-join-workspace = Join a workspace…
 strip-switcher-rename = Rename strip
 strip-switcher-name-placeholder = Strip name
 strip-switcher-refused = Couldn't change the strip
@@ -3080,3 +3093,37 @@ desk-monitor-memory = Memory
 desk-monitor-temperature = Temperature
 desk-monitor-cpu-short = CPU
 desk-monitor-memory-short = RAM
+
+
+## "Join a workspace…": the directory of public workspaces.
+directory-title = Join a workspace
+directory-search = Search public workspaces, or paste a link or code
+directory-link-or-code = Join with a link or code
+directory-close = Close
+directory-loading = Looking for public workspaces…
+directory-empty = No public workspaces here yet. Type a site like tilo.coffee and press Enter to see its workspaces.
+directory-no-match = Nothing matches “{ $query }”. Press Enter to look it up as a site.
+directory-failed = The directory could not be read: { $error }
+directory-join-failed = Couldn't join { $name }: { $error }
+directory-join = Join
+directory-open = Open
+directory-joining = Joining…
+directory-join-named = Join { $name }
+directory-open-named = Open { $name }
+directory-community = { $name } · { $host }'s own
+directory-here-now = { $count } here now
+directory-active-today = Active today
+directory-active-week = Active this week
+directory-quiet = Quiet lately
+directory-members = { $count ->
+    [one] 1 member
+   *[other] { $count } members
+}
+directory-joins-as = You join as { $role }
+directory-role-viewer = a viewer
+directory-role-commenter = a commenter
+directory-role-editor = an editor
+directory-role-moderator = a moderator
+directory-reported = Workspace reported
+directory-reported-body = The people who run it have been told.
+directory-report-failed = The report didn't go through

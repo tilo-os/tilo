@@ -296,7 +296,7 @@ impl ShellNetwork {
 
     /// Invoke `action` of `target`'s governance with `arguments`, as this
     /// device, and answer what it produced.
-    fn govern(
+    pub(super) fn govern(
         &self,
         target: &HeldRoom,
         action: &str,

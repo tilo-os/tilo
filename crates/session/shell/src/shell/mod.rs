@@ -58,6 +58,7 @@ pub(crate) mod device_pairing;
 pub mod device_unlock;
 pub mod device_unlock_runtime;
 pub mod device_wake;
+pub mod directory_sheet;
 #[cfg(test)]
 #[cfg(target_os = "linux")]
 pub(crate) mod disk_sync_guard;

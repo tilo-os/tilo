@@ -1384,7 +1384,13 @@ search-action-room-activity-open-subtitle = Verlauf dieses Arbeitsbereichs: Änd
 search-action-peer-invite = Mitwirkende einladen …
 search-action-peer-invite-subtitle = Eine Einladung prüfen, bevor sie erstellt wird
 search-action-peer-connect = Einem Arbeitsbereich beitreten…
-search-action-peer-connect-subtitle = Eine Website wie tilo.coffee, ein Arbeitsbereichslink oder eine Einladung
+search-action-peer-connect-subtitle = Öffentliche Arbeitsbereiche, eine Website wie tilo.coffee, ein Link oder eine Einladung
+search-action-workspace-publish = Diesen Arbeitsbereich öffentlich machen…
+search-action-workspace-publish-subtitle = Im Verzeichnis seines Hosts aufführen, mit Beschreibung und der Rolle, die Beitretende bekommen
+search-action-workspace-unpublish = Diesen Arbeitsbereich privat machen
+search-action-workspace-unpublish-subtitle = Aus dem Verzeichnis nehmen; die Mitglieder bleiben
+search-action-workspace-report = Diesen Arbeitsbereich melden…
+search-action-workspace-report-subtitle = Den Betreibenden dieses öffentlichen Arbeitsbereichs sagen, was nicht stimmt
 search-action-pair-device = Neues Gerät koppeln
 search-action-pair-device-subtitle = Dein Telefon, einen Browser oder einen anderen Computer zu einem deiner Geräte machen
 search-action-tab-new-terminal-here = Neuer Terminal-Tab hier
@@ -2872,7 +2878,10 @@ search-kw-presence-status-set = status, abwesend, beschäftigt, verfügbar
 search-kw-presence-status-sharing-set = status teilen, status privatsphäre, status verbergen
 search-kw-room-activity-open = aktivität, verlauf, änderungen, zeitleiste, nachholen, chronik, protokoll
 search-kw-peer-invite = einladen, teilen, person hinzufügen, zusammenarbeiten, einladungslink
-search-kw-peer-connect = beitreten, einladung annehmen, verbinden, code eingeben
+search-kw-peer-connect = beitreten, einladung annehmen, verbinden, code eingeben, öffentliche arbeitsbereiche, durchsuchen, entdecken, verzeichnis, community
+search-kw-workspace-publish = öffentlich, veröffentlichen, verzeichnis, standardrolle, auffindbar
+search-kw-workspace-unpublish = privat, nicht mehr öffentlich, aus verzeichnis nehmen
+search-kw-workspace-report = melden, missbrauch, spam
 search-kw-peer-invite-named = einladen, namentlich einladen
 search-kw-agent-invite = ki, assistent, agent, helfer
 search-kw-tab-new-terminal-here = konsole, kommandozeile, neuer tab, shell
@@ -2976,6 +2985,9 @@ drives-failed-title = { $drive } konnte nicht geöffnet werden
 
 # Arbeitsbereichsmenü und Profilkarte der oberen Leiste
 workspace-menu-settings = Einstellungen des Arbeitsbereichs…
+workspace-menu-join = Einem Arbeitsbereich beitreten…
+workspace-menu-report = Arbeitsbereich melden…
+workspace-menu-leave = Arbeitsbereich verlassen
 profile-action-identities = Deine Identitäten
 profile-action-backup = Identität sichern…
 profile-action-pair-device = Gerät koppeln…
@@ -2985,6 +2997,7 @@ strip-switcher-workspaces = Arbeitsbereiche
 strip-switcher-unnamed = Leiste { $number }
 strip-switcher-new-strip = Neue Leiste
 strip-switcher-new-workspace = Neuer Arbeitsbereich
+strip-switcher-join-workspace = Einem Arbeitsbereich beitreten…
 strip-switcher-rename = Leiste umbenennen
 strip-switcher-name-placeholder = Name der Leiste
 strip-switcher-refused = Die Leiste konnte nicht geändert werden
@@ -3039,3 +3052,37 @@ desk-monitor-memory = Arbeitsspeicher
 desk-monitor-temperature = Temperatur
 desk-monitor-cpu-short = CPU
 desk-monitor-memory-short = RAM
+
+
+## „Einem Arbeitsbereich beitreten…“: das Verzeichnis öffentlicher Arbeitsbereiche.
+directory-title = Einem Arbeitsbereich beitreten
+directory-search = Öffentliche Arbeitsbereiche suchen oder Link oder Code einfügen
+directory-link-or-code = Mit Link oder Code beitreten
+directory-close = Schließen
+directory-loading = Öffentliche Arbeitsbereiche werden gesucht…
+directory-empty = Hier gibt es noch keine öffentlichen Arbeitsbereiche. Gib eine Website wie tilo.coffee ein und drücke die Eingabetaste, um ihre Arbeitsbereiche zu sehen.
+directory-no-match = Nichts passt zu „{ $query }“. Drücke die Eingabetaste, um es als Website nachzuschlagen.
+directory-failed = Das Verzeichnis konnte nicht gelesen werden: { $error }
+directory-join-failed = { $name } konnte nicht beigetreten werden: { $error }
+directory-join = Beitreten
+directory-open = Öffnen
+directory-joining = Wird beigetreten…
+directory-join-named = { $name } beitreten
+directory-open-named = { $name } öffnen
+directory-community = { $name } · der eigene von { $host }
+directory-here-now = { $count } gerade hier
+directory-active-today = Heute aktiv
+directory-active-week = Diese Woche aktiv
+directory-quiet = Zuletzt ruhig
+directory-members = { $count ->
+    [one] 1 Mitglied
+   *[other] { $count } Mitglieder
+}
+directory-joins-as = Du trittst als { $role } bei
+directory-role-viewer = Betrachter
+directory-role-commenter = Kommentierende
+directory-role-editor = Bearbeitende
+directory-role-moderator = Moderierende
+directory-reported = Arbeitsbereich gemeldet
+directory-reported-body = Die Betreibenden wurden benachrichtigt.
+directory-report-failed = Die Meldung ist nicht angekommen

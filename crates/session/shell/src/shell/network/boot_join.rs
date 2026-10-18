@@ -146,7 +146,10 @@ impl ShellNetwork {
                 }
                 PeerSyncResponse::PendingInvitations(_)
                 | PeerSyncResponse::PairingInvite { .. }
-                | PeerSyncResponse::DevicesAsking(_) => {
+                | PeerSyncResponse::DevicesAsking(_)
+                | PeerSyncResponse::Directory(_)
+                | PeerSyncResponse::JoinedWorkspace { .. }
+                | PeerSyncResponse::Publication(_) => {
                     return Err("unexpected enrollment response".into());
                 }
             }
