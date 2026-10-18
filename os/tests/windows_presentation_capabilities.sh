@@ -23,7 +23,13 @@ lacks() { grep -Fq -- "$2" "$1" && fail "$3" || ok "$3"; }
 for package in freerdp xorg-x11-server-Xwayland virt-viewer; do
     has "$CONTAINERFILE" "    $package " "image snapshot includes $package"
 done
-has "$CONTAINERFILE" 'COPY --from=xwayland-satellite-builder /out/usr/bin/xwayland-satellite /usr/bin/xwayland-satellite' 'image includes the patched xwayland-satellite'
+# The side build reaches the image through image-tool-stages, which gathers the side builds.
+if grep -Fq 'COPY --from=xwayland-satellite-builder /out/ /xwayland-satellite/' "$CONTAINERFILE" \
+   && grep -Fq 'COPY --from=image-tool-stages /xwayland-satellite/usr/bin/xwayland-satellite /usr/bin/xwayland-satellite' "$CONTAINERFILE"; then
+    ok 'image includes the patched xwayland-satellite'
+else
+    fail 'image includes the patched xwayland-satellite'
+fi
 has "$CONTAINERFILE" 'COPY --from=virtio-win-media /out/virtio-win.iso /tree/usr/share/virtio-win/virtio-win.iso' 'Windows compatibility sysext contains authenticated virtio-win media'
 
 has "$REMOTE_APP" '/app:program:||{}' 'RemoteApp uses the required alias marker'

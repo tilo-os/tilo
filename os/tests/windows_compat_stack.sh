@@ -45,7 +45,9 @@ for package in qemu-kvm-core qemu-ui-spice-core qemu-char-spice qemu-audio-spice
     || bad "$package is absent from the Windows compatibility package transaction"
 done
 
-grep -Fq 'COPY --from=xwayland-satellite-builder /out/usr/bin/xwayland-satellite /usr/bin/xwayland-satellite' "$CF" \
+# The side build reaches the image through image-tool-stages, which gathers the side builds.
+grep -Fq 'COPY --from=xwayland-satellite-builder /out/ /xwayland-satellite/' "$CF" \
+  && grep -Fq 'COPY --from=image-tool-stages /xwayland-satellite/usr/bin/xwayland-satellite /usr/bin/xwayland-satellite' "$CF" \
   && ok 'the patched xwayland-satellite is part of the immutable image' \
   || bad 'the image does not ship the patched xwayland-satellite'
 
