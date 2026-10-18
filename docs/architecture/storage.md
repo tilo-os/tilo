@@ -1043,8 +1043,8 @@ rule, and two physical backings:
   also takes. Changesets are stored with their envelopes, so peers relay
   them. A new file is published with its content as its first version, so
   no empty intermediate version exists at all.
-- Envelopes stay individually signed: a peer that answers no changesets is
-  pulled stream by stream through `Pull`.
+- Envelopes stay individually signed; a pull answers stream by stream
+  where no changeset holds them.
 - Measured end to end with the sync benchmark (two release daemons,
   loop-mounted Btrfs stores, loopback, load 2–8): 100 × 4 KiB files 4.0 s
   → 0.79 s (of which 0.5 s is the epoch's quiescence), 1000 files
@@ -1144,7 +1144,7 @@ One engine moves record operations, file content, CRDT segments and packages.
 **What the transfer engine implements** (`crates/system/fs/src/sync/session.rs`,
 `hydration/batch.rs`, `blob_access.rs`, `record_reconcile.rs`):
 
-- `tilo-fs-session/2`: one connection per peer, authenticated once, a
+- `tilo-fs-session/3`: one connection per peer, authenticated once, a
   QUIC stream per request, every request authorised against the live
   policy and certification. It carries the namespace (Automerge sync
   between writers; changes since the reader's heads for read-only peers),
