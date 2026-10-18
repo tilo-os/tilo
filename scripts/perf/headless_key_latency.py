@@ -334,7 +334,8 @@ def table(results: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """The command line, shared with the tests that drive `measure` directly."""
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--shell-bin", default=str(REPO / "target/release/shell"))
@@ -371,7 +372,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--startup-timeout", type=float, default=120.0)
     parser.add_argument("--compare", nargs="+", type=Path, metavar="RESULT.json",
                         help="print a table of earlier results and exit")
-    args = parser.parse_args(argv)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
     if args.compare:
         print(table([json.loads(p.read_text()) for p in args.compare]))
         return 0
