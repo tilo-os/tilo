@@ -93,6 +93,10 @@ class PreCommitMergeContentTests(unittest.TestCase):
                 shutil.copy2(ROOT / name, path)
             else:
                 path.write_text("# Unrelated domain policy fixture.\n", encoding="utf-8")
+        # The Rust lexer the changed-line allow check imports.
+        lexer = self.root / "tools/policy/rust_source.py"
+        lexer.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / "tools/policy/rust_source.py", lexer)
         path = self.root / "scripts/check-workspace-complete.sh"
         path.parent.mkdir(parents=True)
         path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
