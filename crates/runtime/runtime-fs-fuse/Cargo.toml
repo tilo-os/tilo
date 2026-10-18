@@ -1,0 +1,36 @@
+[package]
+name = "runtime-fs-fuse"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "FUSE presentation of the workspace filesystem's directory and selected-file capabilities, for the fixed native projection worker."
+
+# What runtime-fs's `selected-fuse` feature used to add to it: the FUSE
+# filesystems a projection worker serves over an already admitted channel.
+# They are an OS-side presentation, not app runtime: with them inside
+# runtime-fs, which the shared runtime carries, every app process mapped
+# `fuser`. Imager's projection worker links this crate (from
+# libtilo_fuse_engine.so in the release, crates/runtime/engines/fuse).
+
+[lib]
+name = "runtime_fs_fuse"
+path = "src/lib.rs"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+runtime-fs = { path = "../runtime-fs" }
+fs-protocol = { path = "../../system/fs-protocol" }
+tilo-files = { path = "../../platform/tilo-files" }
+fuser.workspace = true
+libc.workspace = true
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+tempfile.workspace = true
+uuid.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
+
+[dependencies]
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

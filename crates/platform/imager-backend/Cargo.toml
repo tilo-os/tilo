@@ -84,7 +84,9 @@ runtime-bundle = { path = "../../packaging/runtime-bundle" }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 package-store = { path = "../../packaging/package-store" }
 tilo-secrets.workspace = true
-runtime-fs = { path = "../../runtime/runtime-fs", features = ["selected-fuse"] }
+runtime-fs = { path = "../../runtime/runtime-fs" }
+# The FUSE presentation the target projection worker serves.
+runtime-fs-fuse = { path = "../../runtime/runtime-fs-fuse" }
 fuser.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
 

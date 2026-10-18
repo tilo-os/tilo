@@ -311,6 +311,7 @@ members = [
     # Engines a few apps load, shipped beside it in the runtime bundle.
     "crates/runtime/engines/accounts",
     "crates/runtime/engines/contact-directory",
+    "crates/runtime/engines/fuse",
     "crates/runtime/engines/paint",
     "crates/runtime/engines/pdf",
     "crates/runtime/engines/spotify",
@@ -318,6 +319,7 @@ members = [
     "crates/runtime/engines/typst",
     "crates/runtime/engines/youtube",
     "crates/runtime/runtime-fs",
+    "crates/runtime/runtime-fs-fuse",
     "crates/runtime/runtime-identity",
     "crates/runtime/runtime-portal",
     "crates/runtime/os-search",

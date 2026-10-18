@@ -2,9 +2,9 @@
 //! Mounting, source authority and lifecycle remain in the canonical launcher.
 use launcher::owned_service::{AdmittedTargetFuse, TargetProjectionMode};
 use runtime_fs::{
-    directory_connection::DirectoryConnection, directory_fuse::DirectoryFilesystem,
-    selected_client::SelectedFileConnection, selected_fuse::SelectedFilesystem,
+    directory_connection::DirectoryConnection, selected_client::SelectedFileConnection,
 };
+use runtime_fs_fuse::{directory_fuse::DirectoryFilesystem, selected_fuse::SelectedFilesystem};
 use std::{
     io,
     os::{
@@ -100,7 +100,7 @@ pub(super) fn run() -> io::Result<()> {
 fn serve(
     filesystem: impl fuser::Filesystem + 'static,
     admitted: AdmittedTargetFuse,
-    invalidations: Option<runtime_fs::directory_fuse::InvalidationControl>,
+    invalidations: Option<runtime_fs_fuse::directory_fuse::InvalidationControl>,
 ) -> io::Result<()> {
     let (fuse, ready) = admitted.into_parts();
     let mut config = fuser::Config::default();

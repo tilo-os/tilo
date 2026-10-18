@@ -1,12 +1,12 @@
 //! The selected-file adapter over the existing `WorkspaceFs` protocol.
 //! It creates no mount and grants no filesystem authority. A canonical signed
 //! worker supplies its already admitted channel and target presentation facts.
-use crate::selected_client::SelectedFileConnection;
 use fuser::{
     Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo, InitFlags,
     KernelConfig, LockOwner, OpenFlags, ReplyAttr, ReplyData, ReplyDirectory, ReplyEmpty,
     ReplyEntry, ReplyOpen, ReplyWrite, Request, WriteFlags,
 };
+use runtime_fs::selected_client::SelectedFileConnection;
 use std::{
     ffi::{OsStr, OsString},
     io,
@@ -124,8 +124,8 @@ impl Filesystem for SelectedFilesystem {
             return;
         }
         let mode = match flags.0 & (libc::O_ACCMODE | libc::O_TRUNC | libc::O_APPEND) {
-            libc::O_RDONLY => crate::OpenMode::Read,
-            value if value == (libc::O_WRONLY | libc::O_TRUNC) => crate::OpenMode::Write,
+            libc::O_RDONLY => runtime_fs::OpenMode::Read,
+            value if value == (libc::O_WRONLY | libc::O_TRUNC) => runtime_fs::OpenMode::Write,
             _ => {
                 reply.error(errno(libc::EOPNOTSUPP));
                 return;

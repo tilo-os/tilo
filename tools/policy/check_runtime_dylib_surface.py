@@ -119,6 +119,9 @@ ENGINES = {
     "hayro-interpret": "the in-process PDF rasteriser, in libtilo_pdf_engine.so",
     "hayro-jpeg2000": "the PDF rasteriser's JPEG 2000 decoder, in libtilo_pdf_engine.so",
     "pdfium-render": "the pdfium helper's bindings, in libtilo_pdf_engine.so",
+    "tilo-fuse-engine": "the FUSE presentation's engine library (libtilo_fuse_engine.so)",
+    "runtime-fs-fuse": "the workspace filesystem's FUSE presentation, which Imager's projection "
+                       "worker loads from libtilo_fuse_engine.so",
 }
 
 # C-library crates (a `-sys` name or Cargo's `links` key) the runtime may
