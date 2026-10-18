@@ -84,6 +84,14 @@ fn read_notebook(doc: &AutoCommit) -> Result<crate::Notebook, String> {
 /// Document heads, pending operations, selected page and tag filter.
 type CanonicalProjectionKey = (Vec<ChangeHash>, usize, Option<PageId>, Option<TagId>);
 
+/// The editing rows of the note menu over a selection, in order.
+const EDIT_MENU_KEYS: [&str; 4] = [
+    "notes-menu-cut",
+    "notes-menu-copy",
+    "notes-menu-paste",
+    "notes-menu-select-all",
+];
+
 /// A deleted note's "Undo" toast and the notebook state it acts on.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 enum DeleteUndo {
@@ -227,7 +235,7 @@ fn read_image_asset(source: &std::path::Path) -> Result<Vec<u8>, String> {
     const MAX_IMAGE_BYTES: u64 = crate::notebook::MAX_ASSET_BYTES as u64;
     let bytes = crate::files::read_bounded(source, MAX_IMAGE_BYTES)
         .map_err(|error| error.to_string())?
-        .ok_or("Image is larger than 1 MiB")?;
+        .ok_or_else(|| ui::i18n!("notes-image-too-big"))?;
     check_image(&bytes)?;
     Ok(bytes)
 }
@@ -255,7 +263,7 @@ fn line_after_new_picture(
 /// must still work.
 fn fit_image_asset(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
     const MAX: usize = crate::notebook::MAX_ASSET_BYTES;
-    crate::notebook::image_mime(&bytes).ok_or("Use a PNG, JPEG, or WebP image")?;
+    crate::notebook::image_mime(&bytes).ok_or_else(|| ui::i18n!("notes-image-kind"))?;
     if bytes.len() <= MAX {
         return Ok(bytes);
     }
@@ -290,17 +298,17 @@ fn fit_image_asset(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
             image::imageops::FilterType::Triangle,
         );
     }
-    Err("Image is too large to keep in a note".into())
+    Err(ui::i18n!("notes-image-unfit"))
 }
 
 /// Whether `bytes` are an image a notebook keeps: a PNG, JPEG or WebP of at
 /// most 1 MiB.
 pub(crate) fn check_image(bytes: &[u8]) -> Result<(), String> {
     if bytes.len() > crate::notebook::MAX_ASSET_BYTES {
-        return Err("Image is larger than 1 MiB".into());
+        return Err(ui::i18n!("notes-image-too-big"));
     }
     if crate::notebook::image_mime(bytes).is_none() {
-        return Err("Choose a PNG, JPEG, or WebP image".into());
+        return Err(ui::i18n!("notes-image-kind"));
     }
     Ok(())
 }
@@ -1109,7 +1117,7 @@ impl NotesApp {
                     .flat_map(|blocks| blocks.iter())
                     .map(|block| block.text.clone())
                     .find(|text| !text.trim().is_empty())
-                    .unwrap_or_else(|| "Empty note".to_string());
+                    .unwrap_or_else(|| ui::i18n!("notes-empty-excerpt"));
                 let mut excerpt = raw.chars().take(EXCERPT_LIMIT).collect::<String>();
                 if raw.chars().nth(EXCERPT_LIMIT).is_some() {
                     excerpt.push('…');
@@ -1163,7 +1171,10 @@ impl NotesApp {
                     self.self_dirty = true;
                 }
                 Err(error) => self.transfer_toasts.push(
-                    format!("Image paste failed: {error}"),
+                    ui::i18n::I18nManager::format(
+                        "notes-image-paste-failed",
+                        &[("error", ui::i18n::ArgValue::from(error))],
+                    ),
                     ui::widget::toast::ToastKind::Error,
                 ),
             }
@@ -1185,7 +1196,10 @@ impl NotesApp {
             Err(error) => {
                 tracing::warn!(%error, "notes: image not inserted");
                 self.transfer_toasts.push(
-                    format!("Image import failed: {error}"),
+                    ui::i18n::I18nManager::format(
+                        "notes-image-import-failed",
+                        &[("error", ui::i18n::ArgValue::from(error))],
+                    ),
                     ui::widget::toast::ToastKind::Error,
                 );
             }
@@ -1305,18 +1319,21 @@ impl NotesApp {
         }
         let bytes = crate::files::read_bounded(path, ui::clipboard::MAX_PASTED_IMAGE_BYTES as u64)
             .map_err(|error| error.to_string())
-            .and_then(|bytes| bytes.ok_or_else(|| "Image is too large".to_owned()));
+            .and_then(|bytes| bytes.ok_or_else(|| ui::i18n!("notes-image-too-big")));
         match bytes {
             Ok(bytes) => {
                 let alt = path
                     .file_stem()
                     .and_then(|stem| stem.to_str())
-                    .unwrap_or("Image")
+                    .map_or_else(|| ui::i18n!("notes-image-default-alt"), str::to_owned)
                     .replace([']', '[', '(', ')'], " ");
                 self.insert_image_bytes(&mut ctx.edits(), alt.trim(), bytes);
             }
             Err(error) => self.transfer_toasts.push(
-                format!("Image import failed: {error}"),
+                ui::i18n::I18nManager::format(
+                    "notes-image-import-failed",
+                    &[("error", ui::i18n::ArgValue::from(error))],
+                ),
                 ui::widget::toast::ToastKind::Error,
             ),
         }
@@ -1554,7 +1571,7 @@ impl NotesApp {
                 .restore_expanded_pages(&ancestors, &self.workspace);
             self.navigate_to(page);
         }
-        if matches!(scenario, Some("image" | "image_edit")) {
+        if matches!(scenario, Some("image" | "image_edit" | "image_sized")) {
             self.load_images_for_capture();
         }
         match scenario {
@@ -2688,7 +2705,7 @@ impl Widget for NotesApp {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if self.link_copy.failed() {
             self.transfer_toasts.push(
-                "Could not copy the link: the clipboard is unavailable",
+                ui::i18n!("notes-copy-link-failed"),
                 ui::widget::toast::ToastKind::Error,
             );
         }
@@ -3099,7 +3116,7 @@ impl Widget for NotesApp {
         Some(
             AccessNode::new(Role::Group)
                 .with_name("Notes")
-                .with_description("Workspace notes and note editor")
+                .with_description(ui::i18n!("notes-window-description"))
                 .with_children(children),
         )
     }
@@ -3574,8 +3591,8 @@ impl NotesApp {
                 .map(|block| block.text().to_owned())
         });
         if self.note_menu_editor {
-            for label in ["Cut", "Copy", "Paste", "Select all"] {
-                self.note_menu.push(MenuItem::selection(label));
+            for key in EDIT_MENU_KEYS {
+                self.note_menu.push(MenuItem::selection(ui::i18n!(key)));
             }
             self.note_menu.push(MenuItem::separator());
             if self.note_menu_table.is_some() {

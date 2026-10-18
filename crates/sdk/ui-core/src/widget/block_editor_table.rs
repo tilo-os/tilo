@@ -712,7 +712,7 @@ impl Table {
         let label_transform = transform * Affine::translate((c.x - 20.0, c.y - 9.0));
         text_renderer.draw_text(
             scene,
-            "Add cell",
+            &crate::i18n!("block-table-add-cell"),
             14.0,
             theme.text_primary,
             label_transform,

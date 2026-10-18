@@ -51,6 +51,8 @@ pub const SCENARIOS: &[&str] = &[
     "table_large_scrolled",
     "table_cell_edit",
     "image",
+    "image_sized",
+    "long_list",
     "image_edit",
     "status",
     "save_retrying",
@@ -250,6 +252,36 @@ fn launch_body(scenario: Option<&str>) -> String {
             }
             source
         }
+        Some("image_sized") => format!(
+            "# Images stay part of the note\n\nA picture keeps the width it was sized to.\n\n![Settings external accounts|360](asset:{})\n",
+            blake3::hash(IMAGE).to_hex()
+        ),
+        Some("long_list") => {
+            let mut body = String::from("## Moving checklist\n\n");
+            for (index, step) in [
+                "Book the van",
+                "Order boxes",
+                "Pack the books",
+                "Forward the mail",
+                "Cancel the internet",
+                "Defrost the freezer",
+                "Photograph the meters",
+                "Clean the oven",
+                "Return the keys",
+                "Update the address",
+                "Unpack the kitchen",
+                "Invite the neighbours",
+            ]
+            .iter()
+            .enumerate()
+            {
+                let _ = writeln!(body, "{}. {step}", index + 1);
+                if index == 2 {
+                    body.push_str("   The heavy ones go in the small boxes.\n");
+                }
+            }
+            body
+        }
         Some("image" | "image_edit") => format!(
             "# Images stay part of the note\n\nWorkspace images load asynchronously without blocking typing or escaping the collaboration sandbox.\n\n![Settings external accounts](asset:{})\n",
             blake3::hash(IMAGE).to_hex()
@@ -319,7 +351,7 @@ pub fn actions(scenario: Option<&str>) -> Vec<Action> {
         let blocks = MainPanel::seed_blocks(body, |title| titles.get(title).copied());
         out.push(actions::write_body_action(id, &blocks));
     }
-    if matches!(scenario, Some("image" | "image_edit")) {
+    if matches!(scenario, Some("image" | "image_edit" | "image_sized")) {
         // The image itself: the body already names it by its digest.
         out.push(actions::keep_image_action(IMAGE.to_vec()));
     }
@@ -465,8 +497,10 @@ pub fn input(scenario: Option<&str>, driver: &mut FrameHarness) -> Result<(), St
                 "- Gather ideas",
                 "Write a first draft",
                 "",
+                "",
                 "1. Review the draft",
                 "Share with the team",
+                "",
                 "",
                 "- [ ] Follow up tomorrow",
             ]
@@ -516,7 +550,7 @@ pub fn input(scenario: Option<&str>, driver: &mut FrameHarness) -> Result<(), St
             driver.key("End");
             driver.type_text(" Chen");
         }
-        Some("image" | "image_edit") => {
+        Some("image" | "image_edit" | "image_sized") => {
             let deadline = ui::time::now() + std::time::Duration::from_secs(2);
             let target = loop {
                 driver.relayout();

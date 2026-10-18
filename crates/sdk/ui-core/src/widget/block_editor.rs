@@ -497,6 +497,17 @@ pub struct TransclusionPreview {
     pub excerpt: String,
 }
 
+/// A picture being sized by dragging its handle: which block, where the
+/// drag began and the width then, and the width it has reached, in logical
+/// pixels at 1× text.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ImageResize {
+    index: usize,
+    start_x: f64,
+    start_width: f64,
+    width: u32,
+}
+
 struct ImageAttachment {
     source: String,
     editing: bool,
@@ -762,6 +773,8 @@ pub struct BlockEditor {
     /// Retain decoded dimensions even if the bounded image cache evicts pixels.
     /// Layout must not alternate between a placeholder and the actual aspect ratio.
     image_dimensions: HashMap<String, (u32, u32)>,
+    /// A picture being sized by its handle.
+    image_resize: Option<ImageResize>,
     image_attachments: HashMap<String, ImageAttachment>,
     /// Height of the host's visible document area, which bounds an image
     /// preview (see [`Self::set_viewport_height`]).
@@ -952,6 +965,7 @@ impl BlockEditor {
             image_preview_rects: Vec::new(),
             image_store: None,
             image_dimensions: HashMap::new(),
+            image_resize: None,
             viewport_height: None,
             image_attachments: HashMap::new(),
             formula_chrome: Vec::new(),
@@ -3456,7 +3470,9 @@ impl BlockEditor {
             && let Some((index, byte)) = self.slash_anchor_caret
             && let Some(line) = self.blocks.get(index).map(|block| &block.line)
         {
-            let caret = line.caret_rect(theme, byte);
+            let caret = line
+                .caret_rect(theme, byte)
+                .inflate(0.0, f64::from(theme.tokens.spacing.s1) / 2.0);
             self.slash_menu
                 .set_caret(caret, self.popover_bounds.or(self.overlay_viewport));
         }
@@ -3464,7 +3480,9 @@ impl BlockEditor {
             && let Some((index, byte)) = self.link_anchor_caret
             && let Some(line) = self.blocks.get(index).map(|block| &block.line)
         {
-            let caret = line.caret_rect(theme, byte);
+            let caret = line
+                .caret_rect(theme, byte)
+                .inflate(0.0, f64::from(theme.tokens.spacing.s1) / 2.0);
             self.link_popover
                 .set_caret(caret, self.popover_bounds.or(self.overlay_viewport));
         }
@@ -3672,12 +3690,12 @@ impl BlockEditor {
                         .with_value(source)
                         .with_children(vec![
                             AccessNode::new(Role::ToggleButton)
-                                .with_name("Source editor")
+                                .with_name(crate::i18n!("block-a11y-formula-source"))
                                 .with_state(AccessState::new().checked(
                                     chrome.descriptor.mode == crate::math::FormulaMode::Source,
                                 )),
                             AccessNode::new(Role::ToggleButton)
-                                .with_name("Visual editor")
+                                .with_name(crate::i18n!("block-a11y-formula-visual"))
                                 .with_state(AccessState::new().checked(
                                     chrome.descriptor.mode == crate::math::FormulaMode::Visual,
                                 )),
@@ -3697,8 +3715,8 @@ impl BlockEditor {
                     Some(
                         AccessNode::new(Role::Button)
                             .with_name(language.map_or_else(
-                                || "Copy code".to_string(),
-                                |lang| format!("Copy {lang} code"),
+                                || crate::i18n!("block-editor-copy-code-hint"),
+                                |lang| crate::i18n!("block-a11y-copy-lang", "lang" => lang.to_string()),
                             ))
                             .with_action_target(self.code_copy_run_target(*start, *end)?)
                             .with_bounds(*bounds)
@@ -3976,7 +3994,7 @@ impl BlockEditor {
         } = *inputs;
         let mut block_children = vec![
             AccessNode::new(Role::Button)
-                .with_name("Move block up")
+                .with_name(crate::i18n!("block-a11y-move-up"))
                 .with_action_target(Self::block_move_target(&block.id, "up"))
                 .with_bounds(bounds)
                 .with_state(
@@ -3985,7 +4003,7 @@ impl BlockEditor {
                         .disabled(up_disabled),
                 ),
             AccessNode::new(Role::Button)
-                .with_name("Move block down")
+                .with_name(crate::i18n!("block-a11y-move-down"))
                 .with_action_target(Self::block_move_target(&block.id, "down"))
                 .with_bounds(bounds)
                 .with_state(
@@ -4034,8 +4052,8 @@ impl BlockEditor {
                 .map_or(line, |(rect, _)| rect);
             block_children.push(
                 AccessNode::new(Role::Button)
-                    .with_name(format!("Open embedded note: {name}"))
-                    .with_description("Live preview of a linked note")
+                    .with_name(crate::i18n!("block-a11y-open-embed", "title" => name.to_string()))
+                    .with_description(crate::i18n!("block-a11y-embed-description"))
                     .with_action_target(transclusion_action_target(target))
                     .with_bounds(card_bounds)
                     .with_state(AccessState::new().focusable(true)),
@@ -4096,12 +4114,15 @@ impl BlockEditor {
                             }
                             AccessNode::new(Role::Cell)
                                 .with_name(if row_index == 0 {
-                                    format!("Column {}", column_index.saturating_add(1))
+                                    crate::i18n!(
+                                        "block-a11y-table-column",
+                                        "column" => column_index.saturating_add(1)
+                                    )
                                 } else {
-                                    format!(
-                                        "Cell {}, {}",
-                                        row_index,
-                                        column_index.saturating_add(1)
+                                    crate::i18n!(
+                                        "block-a11y-table-cell",
+                                        "row" => row_index,
+                                        "column" => column_index.saturating_add(1)
                                     )
                                 })
                                 .with_description(decode_table_cell(
@@ -4113,16 +4134,16 @@ impl BlockEditor {
                         .collect();
                     AccessNode::new(Role::Row)
                         .with_name(if row_index == 0 {
-                            "Header row".to_string()
+                            crate::i18n!("block-a11y-table-header-row")
                         } else {
-                            format!("Row {row_index}")
+                            crate::i18n!("block-a11y-table-row", "row" => row_index)
                         })
                         .with_children(cells)
                 })
                 .collect();
             block_children.push(
                 AccessNode::new(Role::Table)
-                    .with_name("Markdown table")
+                    .with_name(crate::i18n!("block-a11y-table"))
                     .with_value(block.text())
                     .with_bounds(table_bounds)
                     .with_children(rows),
@@ -4168,18 +4189,23 @@ impl BlockEditor {
                 .unwrap_or(line);
             block_children.push(
                 AccessNode::new(Role::Image)
-                    .with_name(if alt.is_empty() { "Image" } else { alt })
+                    .with_name(if alt.is_empty() {
+                        crate::i18n!("block-image-untitled")
+                    } else {
+                        alt.to_owned()
+                    })
                     .with_description(destination)
                     .with_bounds(bounds),
             );
         }
         for span in block.line.marks() {
             let (name, target) = match &span.mark {
-                Mark::Link(id) if !id.is_nil() => {
-                    ("Open linked note".to_string(), page_link_action_target(*id))
-                }
+                Mark::Link(id) if !id.is_nil() => (
+                    crate::i18n!("block-a11y-open-link"),
+                    page_link_action_target(*id),
+                ),
                 Mark::ExternalLink(url) => (
-                    "Open external link".to_string(),
+                    crate::i18n!("block-a11y-open-external"),
                     external_link_action_target(url),
                 ),
                 _ => continue,
@@ -4198,9 +4224,10 @@ impl BlockEditor {
         }
         let level = usize::from(indent).saturating_add(1);
         let group = AccessNode::new(Role::Group)
-            .with_name(format!(
-                "{} block {position}",
-                accessible_block_name(&block.kind, Some(ordinal))
+            .with_name(crate::i18n!(
+                "block-a11y-block",
+                "kind" => accessible_block_name(&block.kind, Some(ordinal)),
+                "position" => position
             ))
             .with_semantic_key(format!("notes.block:{}", block.id))
             .with_state(AccessState::new().selected(selected))
@@ -4212,7 +4239,7 @@ impl BlockEditor {
         // Also in words, which every screen reader reads: the platform
         // bridge does not carry a group's level.
         if level > 1 {
-            group.with_description(format!("Level {level}"))
+            group.with_description(crate::i18n!("block-a11y-level", "level" => level))
         } else {
             group
         }
@@ -4682,6 +4709,160 @@ impl BlockEditor {
         self.structure_dirty = true;
     }
 
+    /// A picture's sizing handle: a pill on the picture, ringed so it reads
+    /// on light and dark pictures alike.
+    fn draw_image_resize_handle(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        handle: Rect,
+    ) {
+        let pill = vello::kurbo::RoundedRect::from_rect(handle, handle.width() / 2.0);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &pill,
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(self.text_scale),
+            transform,
+            theme.tokens.colors.text_dim,
+            None,
+            &pill,
+        );
+    }
+
+    /// The painted picture of block `index`: its preview, narrowed to the
+    /// picture's aspect.
+    fn image_plate(&self, index: usize) -> Option<Rect> {
+        let preview = (*self.image_preview_rects.get(index)?)?;
+        let block = self.blocks.get(index)?;
+        let image = self.image_attachments.get(&block.id)?;
+        let (_, destination) = standalone_markdown_image(&image.source)?;
+        Some(
+            self.image_dimensions
+                .get(destination)
+                .map_or(preview, |dimensions| {
+                    fitted_image_rect(preview, *dimensions)
+                }),
+        )
+    }
+
+    /// The handle on a picture's trailing edge that sizes it, shown while
+    /// the picture is pointed at or focused and its source is not open.
+    fn image_resize_handle(&self, index: usize) -> Option<Rect> {
+        let block = self.blocks.get(index)?;
+        let image = self.image_attachments.get(&block.id)?;
+        if image.editing {
+            return None;
+        }
+        let plate = self.image_plate(index)?;
+        let shown = self
+            .image_resize
+            .is_some_and(|resize| resize.index == index)
+            || plate.contains(self.last_mouse_pos)
+            || (self.is_focused && self.focused == Some(index));
+        if !shown || plate.width() < 64.0 * self.text_scale {
+            return None;
+        }
+        let half_width = 3.0 * self.text_scale;
+        let half_height = (16.0 * self.text_scale).min(plate.height() / 4.0);
+        let x = plate.x1 - 10.0 * self.text_scale;
+        let y = plate.center().y;
+        Some(Rect::new(
+            x - half_width,
+            y - half_height,
+            x + half_width,
+            y + half_height,
+        ))
+    }
+
+    /// Size pictures with their handles: a press on one starts, the pointer
+    /// moving resizes the picture live, and the release writes the width
+    /// into the block (`![alt|480](…)`), one undo step.
+    fn handle_image_resize(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
+        use winit::event::{ElementState, MouseButton};
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                let Some(resize) = self.image_resize.as_mut() else {
+                    return false;
+                };
+                let point = ctx.logical(position);
+                let scale = self.text_scale.max(0.01);
+                let column = self
+                    .image_preview_rects
+                    .get(resize.index)
+                    .and_then(|rect| *rect)
+                    .map_or(f64::INFINITY, |rect| rect.width() / scale);
+                let width = (resize.start_width + (point.x - resize.start_x) / scale)
+                    .clamp(f64::from(*IMAGE_WIDTH_RANGE.start()), column.max(48.0));
+                let width = crate::num::u32_of_i64(crate::num::i64_of_f64(width.round()));
+                if width != resize.width {
+                    resize.width = width;
+                    self.structure_dirty = true;
+                    self.dirty = true;
+                }
+                self.last_mouse_pos = point;
+                *ctx.handled = true;
+                true
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let Some(index) = (0..self.blocks.len()).find(|&index| {
+                    self.image_resize_handle(index).is_some_and(|handle| {
+                        handle.inflate(4.0, 4.0).contains(self.last_mouse_pos)
+                    })
+                }) else {
+                    return false;
+                };
+                let Some(plate) = self.image_plate(index) else {
+                    return false;
+                };
+                let start_width = plate.width() / self.text_scale.max(0.01);
+                self.image_resize = Some(ImageResize {
+                    index,
+                    start_x: self.last_mouse_pos.x,
+                    start_width,
+                    width: crate::num::u32_of_i64(crate::num::i64_of_f64(start_width.round())),
+                });
+                *ctx.handled = true;
+                self.dirty = true;
+                true
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let Some(resize) = self.image_resize.take() else {
+                    return false;
+                };
+                if let Some(block) = self.blocks.get_mut(resize.index)
+                    && let Some(sized) = with_markdown_image_width(block.text(), resize.width)
+                    && sized != block.text()
+                {
+                    block.line.set_text(&sized);
+                    if let Some(image) = self.image_attachments.get_mut(&block.id) {
+                        image.source.clone_from(&sized);
+                    }
+                    self.edit_pending = true;
+                    self.commit_pending = true;
+                }
+                self.structure_dirty = true;
+                self.dirty = true;
+                *ctx.handled = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn set_image_source_mode(&mut self, id: &str, editing: bool) -> bool {
         let Some(image) = self.image_attachments.get_mut(id) else {
             return false;
@@ -4706,6 +4887,9 @@ impl BlockEditor {
         use winit::event::{ElementState, MouseButton};
         if *ctx.handled {
             return false;
+        }
+        if self.handle_image_resize(event, ctx) {
+            return true;
         }
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_mouse_pos = ctx.logical(position);
@@ -4920,9 +5104,7 @@ impl BlockEditor {
     fn document_access_node(&self) -> crate::a11y::AccessNode {
         use crate::a11y::{AccessNode, AccessState, Role};
         AccessNode::new(Role::Document)
-            .with_description(
-                "Drag a block's six-dot handle to reorder it. Alt+Up and Alt+Down move the focused block. Tab nests it under the block above and Shift+Tab moves it back out; press Escape, then Tab, to leave the editor.",
-            )
+            .with_description(crate::i18n!("block-a11y-document"))
             .with_state(
                 AccessState::new()
                     .focusable(self.is_focusable())
@@ -6263,7 +6445,19 @@ pub(super) fn measure_table_preview_height(
     markdown_table_layout(source, width, renderer, theme).height() as f32
 }
 
+/// A block that is only a Markdown picture: its description and where its
+/// bytes are. A width the person sized it to (`![alt|480](…)`, as Obsidian
+/// writes it) is not part of the description; [`markdown_image_parts`]
+/// reads it.
 fn standalone_markdown_image(source: &str) -> Option<(&str, &str)> {
+    let (alt, destination, _) = markdown_image_parts(source)?;
+    Some((alt, destination))
+}
+
+/// The narrowest and widest a person can size a picture to.
+const IMAGE_WIDTH_RANGE: std::ops::RangeInclusive<u32> = 48..=4096;
+
+fn markdown_image_parts(source: &str) -> Option<(&str, &str, Option<u32>)> {
     let source = source.trim();
     let body = source.strip_prefix("![")?;
     let (alt, destination) = body.split_once("](")?;
@@ -6271,7 +6465,21 @@ fn standalone_markdown_image(source: &str) -> Option<(&str, &str)> {
     if destination.is_empty() || destination.contains(['\n', '\r']) {
         return None;
     }
-    Some((alt.trim(), destination))
+    let (alt, width) = match alt.rsplit_once('|') {
+        Some((text, width)) => match width.trim().parse::<u32>() {
+            Ok(width) if IMAGE_WIDTH_RANGE.contains(&width) => (text, Some(width)),
+            _ => (alt, None),
+        },
+        None => (alt, None),
+    };
+    Some((alt.trim(), destination, width))
+}
+
+/// `source` with its picture sized to `width` logical pixels.
+fn with_markdown_image_width(source: &str, width: u32) -> Option<String> {
+    let (alt, destination, _) = markdown_image_parts(source)?;
+    let width = width.clamp(*IMAGE_WIDTH_RANGE.start(), *IMAGE_WIDTH_RANGE.end());
+    Some(format!("![{alt}|{width}]({destination})"))
 }
 
 fn formula_run_end(blocks: &[Block], start: usize) -> usize {
@@ -6387,7 +6595,7 @@ fn draw_formula_preview(
     if source.trim().is_empty() {
         text_renderer.draw_text(
             scene,
-            "Type a formula above to preview it",
+            &crate::i18n!("block-formula-empty"),
             12.0,
             theme.tokens.colors.text_dim,
             transform.pre_translate((rect.x0 + 8.0, rect.y0 + 8.0).into()),
@@ -6423,7 +6631,8 @@ fn draw_formula_preview(
         theme.tokens.colors.text_primary,
     );
     if let Some(diagnostic) = parsed.diagnostics.first() {
-        let mut message = format!("Preview: {}", diagnostic.message);
+        let mut message =
+            crate::i18n!("block-formula-diagnostic", "message" => diagnostic.message.clone());
         if message.chars().count() > 90 {
             let mut truncated: String = message.chars().take(89).collect();
             truncated.push('…');
@@ -6473,12 +6682,12 @@ fn draw_formula_chrome(
     for (rect, label, selected) in [
         (
             chrome.source_button,
-            "Source",
+            crate::i18n!("block-formula-source"),
             chrome.descriptor.mode == crate::math::FormulaMode::Source,
         ),
         (
             chrome.visual_button,
-            "Visual",
+            crate::i18n!("block-formula-visual"),
             chrome.descriptor.mode == crate::math::FormulaMode::Visual,
         ),
     ] {
@@ -6494,7 +6703,7 @@ fn draw_formula_chrome(
         }
         text_renderer.draw_text(
             scene,
-            label,
+            &label,
             11.0,
             if selected {
                 colors.text_primary
@@ -6803,19 +7012,19 @@ fn kind_to_str(kind: &BlockKind) -> String {
     }
 }
 
-fn accessible_kind_name(kind: &BlockKind) -> &'static str {
-    match kind {
-        BlockKind::Paragraph => "Paragraph",
-        BlockKind::Quote => "Quote",
-        BlockKind::Heading(_) => "Heading",
-        BlockKind::Bullet { .. } => "Bullet",
-        BlockKind::Numbered { .. } => "Numbered item",
-        BlockKind::Checklist { .. } => "Checklist item",
-        BlockKind::CodeBlock { .. } => "Code block",
-        BlockKind::Table { .. } => "Table",
-        BlockKind::Divider => "Divider",
-        BlockKind::Callout(_) => "Callout",
-    }
+fn accessible_kind_name(kind: &BlockKind) -> String {
+    crate::i18n!(match kind {
+        BlockKind::Paragraph => "block-kind-paragraph",
+        BlockKind::Quote => "block-kind-quote",
+        BlockKind::Heading(_) => "block-kind-heading",
+        BlockKind::Bullet { .. } => "block-kind-bullet",
+        BlockKind::Numbered { .. } => "block-kind-numbered",
+        BlockKind::Checklist { .. } => "block-kind-checklist",
+        BlockKind::CodeBlock { .. } => "block-kind-code",
+        BlockKind::Table { .. } => "block-kind-table",
+        BlockKind::Divider => "block-kind-divider",
+        BlockKind::Callout(_) => "block-kind-callout",
+    })
 }
 
 /// What a block is called to a screen reader: its kind, a numbered item
@@ -6828,8 +7037,10 @@ fn accessible_block_name(kind: &BlockKind, ordinal: Option<u32>) -> String {
             accessible_kind_name(kind),
             list_marker::ordinal_label(ordinal.unwrap_or(1), *indent)
         ),
-        BlockKind::Callout(callout) => format!("{} callout", callout.label()),
-        _ => accessible_kind_name(kind).to_string(),
+        BlockKind::Callout(callout) => {
+            crate::i18n!("block-kind-named-callout", "name" => callout.label())
+        }
+        _ => accessible_kind_name(kind),
     }
 }
 
@@ -7868,12 +8079,14 @@ fn draw_markdown_table(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
 /// most, aspect kept: a large picture never fills the editor.
 pub const IMAGE_VIEWPORT_FRACTION: f64 = 0.6;
 
-/// The largest rect of the picture's aspect inside `rect`, centred.
+/// The largest rect of the picture's aspect inside `rect`, on its leading
+/// edge where the text starts, centred top to bottom.
 fn fitted_image_rect(rect: Rect, (width, height): (u32, u32)) -> Rect {
     let ratio =
         (rect.width() / f64::from(width).max(1.0)).min(rect.height() / f64::from(height).max(1.0));
     let size = (f64::from(width) * ratio, f64::from(height) * ratio);
-    Rect::from_center_size(rect.center(), size)
+    let centred = Rect::from_center_size(rect.center(), size);
+    Rect::new(rect.x0, centred.y0, rect.x0 + size.0, centred.y1)
 }
 
 fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
@@ -8214,8 +8427,11 @@ fn draw_transclusion_card(
         &card,
     );
     let (title, excerpt) = preview.map_or(
-        ("Unavailable note", "The referenced note was removed."),
-        |p| (p.title.as_str(), p.excerpt.as_str()),
+        (
+            crate::i18n!("block-embed-missing-title"),
+            crate::i18n!("block-embed-missing"),
+        ),
+        |p| (p.title.clone(), p.excerpt.clone()),
     );
     // An embedded note is an object you open: a note glyph and its title on
     // the first line with a trailing chevron (the whole card opens it), its
@@ -8254,7 +8470,7 @@ fn draw_transclusion_card(
     );
     let title_x = icon_rect.x1 + gap;
     let title_w = (chevron_x - gap - title_x).max(1.0);
-    let title = text_renderer.elide_to_width_style(title, title_w as f32, &title_style);
+    let title = text_renderer.elide_to_width_style(&title, title_w as f32, &title_style);
     text_renderer.draw_style(
         scene,
         &title,
@@ -8264,7 +8480,7 @@ fn draw_transclusion_card(
         &title_style,
     );
     let excerpt_w = (rect.x1 - pad - title_x).max(1.0);
-    let excerpt = text_renderer.elide_to_width_style(excerpt, excerpt_w as f32, &excerpt_style);
+    let excerpt = text_renderer.elide_to_width_style(&excerpt, excerpt_w as f32, &excerpt_style);
     text_renderer.draw_style(
         scene,
         &excerpt,
@@ -8583,10 +8799,17 @@ impl BlockEditor {
         let code_headers: Vec<f64> = (0..self.blocks.len())
             .map(|index| code_header_height(&self.blocks, index, self.text_scale))
             .collect();
+        // A list's items and the indented lines continuing them.
         let is_list_item: Vec<bool> = self
             .blocks
             .iter()
-            .map(|block| block.kind.supports_indent())
+            .scan(false, |in_list, block| {
+                *in_list = block.kind.supports_indent()
+                    || (*in_list
+                        && matches!(block.kind, BlockKind::Paragraph)
+                        && block.indent() > 0);
+                Some(*in_list)
+            })
             .collect();
         self.stack_boxes.clear();
         let embeds: Vec<bool> = self
@@ -8602,14 +8825,19 @@ impl BlockEditor {
                 (height * IMAGE_VIEWPORT_FRACTION).round(),
             ))
         });
+        let marker_room = list_marker::marker_room(&self.blocks);
         for (i, b) in self.blocks.iter_mut().enumerate() {
             let image = self.image_attachments.get(&b.id);
             let image_preview = image
-                .and_then(|image| standalone_markdown_image(&image.source))
-                .map(|(_, source)| self.image_dimensions.get(source).copied());
+                .and_then(|image| markdown_image_parts(&image.source))
+                .map(|(_, source, width)| (self.image_dimensions.get(source).copied(), width));
             b.line.set_image_preview(match image_preview {
-                Some(dimensions) => super::rich_text_line::ImagePreview::Present {
+                Some((dimensions, width)) => super::rich_text_line::ImagePreview::Present {
                     dimensions,
+                    width: self
+                        .image_resize
+                        .filter(|resize| resize.index == i)
+                        .map_or(width, |resize| Some(resize.width)),
                     editing: image.is_some_and(|image| image.editing),
                     max_height: max_image_height,
                 },
@@ -8625,7 +8853,8 @@ impl BlockEditor {
             )]
             b.line.set_layout_inset(
                 (prefix_gutter_for(&b.kind) * self.text_scale) as f32
-                    + LIST_INDENT_STEP_PX * f32::from(b.indent()) * theme.text_scale,
+                    + LIST_INDENT_STEP_PX * f32::from(b.indent()) * theme.text_scale
+                    + marker_room.get(i).copied().unwrap_or(0.0) * theme.text_scale,
             );
             b.line.set_wrap(
                 (self.wrap_lines
@@ -9185,11 +9414,27 @@ impl Widget for BlockEditor {
                     original.x1,
                     source_bottom,
                 ));
-                let width = if image.editing { 88.0 } else { 112.0 } * self.text_scale;
+                let width = if image.editing { 88.0 } else { 136.0 } * self.text_scale;
+                // On the picture's own top trailing corner, wherever its
+                // sized width leaves that.
+                let preview = self
+                    .image_preview_rects
+                    .get(index)
+                    .and_then(|rect| *rect)
+                    .unwrap_or(original);
+                let right = if image.editing {
+                    original.x1
+                } else {
+                    standalone_markdown_image(&image.source)
+                        .and_then(|(_, destination)| self.image_dimensions.get(destination))
+                        .map_or(preview.x1, |dimensions| {
+                            fitted_image_rect(preview, *dimensions).x1
+                        })
+                };
                 image.button_mut().apply_layout_external(Rect::new(
-                    (original.x1 - width - 8.0 * self.text_scale).max(original.x0),
+                    (right - width - 8.0 * self.text_scale).max(original.x0),
                     source_bottom + 8.0 * self.text_scale,
-                    original.x1 - 8.0 * self.text_scale,
+                    right - 8.0 * self.text_scale,
                     source_bottom + 40.0 * self.text_scale,
                 ));
                 continue;
@@ -9945,11 +10190,12 @@ impl Widget for BlockEditor {
                 ctx.theme.tokens.colors.text_dim,
                 1.5 * self.text_scale,
             );
+            let code_label = crate::i18n!("block-kind-code-short");
             let language = match self.blocks.get(*start).map(|block| &block.kind) {
                 Some(BlockKind::CodeBlock { lang: Some(lang) }) if !lang.is_empty() => {
                     lang.as_str()
                 }
-                _ => "Code",
+                _ => code_label.as_str(),
             };
             // The language label starts where the code does.
             let left = line.x0 + inset;
@@ -10011,6 +10257,9 @@ impl Widget for BlockEditor {
                         .button_mut()
                         .draw(scene, transform, text_renderer, theme, presence);
                 }
+            }
+            if let Some(handle) = self.image_resize_handle(index) {
+                self.draw_image_resize_handle(scene, transform, theme, handle);
             }
         }
         // The opaque drag preview can cover its destination. Keep the drop
@@ -10186,6 +10435,14 @@ impl Widget for BlockEditor {
             if let Some(cursor) = self.find_field.cursor_shape(point) {
                 return Some(cursor);
             }
+        }
+        if self.image_resize.is_some()
+            || (0..self.blocks.len()).any(|index| {
+                self.image_resize_handle(index)
+                    .is_some_and(|handle| handle.inflate(4.0, 4.0).contains(point))
+            })
+        {
+            return Some(winit::window::CursorIcon::EwResize);
         }
         if self.checkbox_hit_test(point).is_some() {
             return Some(winit::window::CursorIcon::Pointer);
@@ -13001,7 +13258,38 @@ impl BlockEditor {
             return false;
         }
         if matches!(block.kind, BlockKind::Paragraph) && block.indent() > 0 {
+            // An empty line continuing a list item: a second Enter leaves
+            // the list altogether.
+            if self.continues_list_item(idx) {
+                if let Some(block) = self.blocks.get_mut(idx) {
+                    block.set_indent(0);
+                }
+                self.restack();
+                self.slash_structure_changed();
+                return true;
+            }
             return self.try_indent(idx, -1);
+        }
+        // An empty list item under another item becomes an unmarked line of
+        // the item above it: a paragraph inside a list item, its numbering
+        // carrying on after it. A second Enter leaves the list.
+        if block.kind.supports_indent()
+            && matches!(
+                block.kind,
+                BlockKind::Bullet { .. } | BlockKind::Numbered { .. } | BlockKind::Checklist { .. }
+            )
+            && block.indent() < MAX_LIST_INDENT
+            && self.follows_list_item_at(idx, block.indent())
+        {
+            let depth = block.indent().saturating_add(1);
+            let converted = self.try_convert_to(idx, BlockKind::Paragraph);
+            if let Some(block) = self.blocks.get_mut(idx) {
+                block.set_indent(depth);
+            }
+            self.restack();
+            self.slash_structure_changed();
+            let _ = converted;
+            return true;
         }
         let next = match &block.kind {
             BlockKind::Bullet { indent } if *indent > 0 => BlockKind::Bullet {
@@ -13022,6 +13310,41 @@ impl BlockEditor {
             _ => return false,
         };
         self.try_convert_to(idx, next)
+    }
+
+    /// Whether the block before `idx` belongs to a list item at `depth`: the
+    /// item itself, a deeper item under it, or a line continuing one.
+    fn follows_list_item_at(&self, idx: usize, depth: u8) -> bool {
+        let Some(previous) = idx.checked_sub(1).and_then(|i| self.blocks.get(i)) else {
+            return false;
+        };
+        let is_item = matches!(
+            previous.kind,
+            BlockKind::Bullet { .. } | BlockKind::Numbered { .. } | BlockKind::Checklist { .. }
+        );
+        (is_item && previous.indent() >= depth)
+            || (matches!(previous.kind, BlockKind::Paragraph) && previous.indent() > depth)
+    }
+
+    /// Whether the indented paragraph at `idx` is a line continuing a list
+    /// item: the nearest block above it at a shallower depth is an item.
+    fn continues_list_item(&self, idx: usize) -> bool {
+        let Some(depth) = self.blocks.get(idx).map(Block::indent) else {
+            return false;
+        };
+        self.blocks
+            .iter()
+            .take(idx)
+            .rev()
+            .find(|block| block.indent() < depth)
+            .is_some_and(|block| {
+                matches!(
+                    block.kind,
+                    BlockKind::Bullet { .. }
+                        | BlockKind::Numbered { .. }
+                        | BlockKind::Checklist { .. }
+                )
+            })
     }
 }
 

@@ -114,8 +114,8 @@ pub(crate) fn note_context_menu() -> ContextMenu {
 /// The menu on empty sidebar space: a new top-level note, or an import.
 fn empty_area_items() -> Vec<MenuItem> {
     vec![
-        MenuItem::icon_action(Icon::FilePlus, "New note", || {}),
-        MenuItem::icon_action(Icon::CloudDownload, "Import Markdown", || {}),
+        MenuItem::icon_action(Icon::FilePlus, ui::i18n!("notes-empty-action"), || {}),
+        MenuItem::icon_action(Icon::CloudDownload, ui::i18n!("notes-import-title"), || {}),
     ]
 }
 

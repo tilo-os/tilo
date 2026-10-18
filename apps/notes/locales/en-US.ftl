@@ -117,3 +117,67 @@ notes-help-code-select = Select code
 notes-help-shortcuts = Keyboard shortcuts
 notes-help-close = Close
 notes-help-soft-break = New line in the same item
+
+## Window copy
+notes-image-too-big = Image is larger than 1 MiB
+notes-image-kind = Choose a PNG, JPEG or WebP image
+notes-image-unfit = Image is too large to keep in a note
+notes-empty-excerpt = Empty note
+notes-image-paste-failed = Image not pasted: { $error }
+notes-image-import-failed = Image not added: { $error }
+notes-image-default-alt = Image
+notes-copy-link-failed = Link not copied: the clipboard isn't available
+notes-window-description = Notes and the open note
+notes-menu-cut = Cut
+notes-menu-copy = Copy
+notes-menu-paste = Paste
+notes-menu-select-all = Select all
+notes-imported-untitled = Imported note
+notes-no-previous = No earlier note
+notes-no-next = No later note
+notes-link-copied = Copied link to { $title }
+notes-link-unsafe = This link can't be opened safely
+notes-link-open-failed = The link didn't open
+notes-import-title = Import Markdown
+notes-import-accept = Import
+notes-markdown-files = Markdown
+notes-import-not-utf8 = The file isn't UTF-8 text
+notes-imported = Imported { $title }
+notes-import-failed = Not imported: { $error }
+notes-export-title = Export Markdown
+notes-export-accept = Export
+notes-insert-image-title = Insert image
+notes-insert-image-accept = Insert
+notes-image-files = Images
+notes-image-inserted = Image added
+notes-empty-title = Start your first note
+notes-empty-action = New note
+notes-a11y-page-title = Page title
+notes-a11y-note-title = Note title
+notes-a11y-first-note = Creates the first note in this workspace
+notes-a11y-header = Note header
+notes-a11y-header-description = Note title and scroll position
+notes-a11y-tag = Tag: { $tag }
+notes-a11y-backlink = Linked from { $title }
+notes-search-notes = Notes
+notes-search-blocks = Note blocks
+notes-import-too-big = The Markdown is larger than 1 MiB
+notes-import-too-many-blocks = The Markdown has more than 10,000 blocks
+notes-status-saved = Saved
+notes-status-saving = Saving…
+notes-status-failed = Save failed
+notes-status-not-saved = Not saved
+notes-status-failed-because = Save failed: { $reason }. Copy this note somewhere safe, then reopen Notes
+notes-status-failed-detail = Save failed. Copy this note somewhere safe, then reopen Notes
+notes-status-no-storage = Not saved: this note has no storage on this device. Copy it somewhere safe, then reopen Notes
+notes-status-note-count = { $notes ->
+    [one] 1 note
+   *[other] { $notes } notes
+}
+notes-status-counts = { $notes ->
+    [one] 1 note
+   *[other] { $notes } notes
+}, { $words ->
+    [one] 1 word
+   *[other] { $words } words
+}

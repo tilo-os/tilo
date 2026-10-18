@@ -12,9 +12,16 @@ use ui::tilo_resource::SearchEntry;
 use crate::notebook::{Notebook, Page, page_of};
 
 /// The result group notes are listed under.
-pub const NOTE_KIND: &str = "Notes";
+#[must_use]
+pub fn note_kind() -> String {
+    ui::i18n!("notes-search-notes")
+}
+
 /// The result group blocks are listed under.
-pub const BLOCK_KIND: &str = "Note blocks";
+#[must_use]
+pub fn block_kind() -> String {
+    ui::i18n!("notes-search-blocks")
+}
 
 /// The longest block label a hit shows; the whole block is still searched.
 const BLOCK_LABEL_CHARS: usize = 72;
@@ -42,7 +49,7 @@ pub fn entries(notebook: &Notebook) -> Vec<SearchEntry> {
         entries.push(
             SearchEntry::new(title, "")
                 .anchored(anchor.clone())
-                .grouped(NOTE_KIND)
+                .grouped(note_kind())
                 .with_icon("file-text"),
         );
         for block in page.blocks() {
@@ -62,7 +69,7 @@ pub fn entries(notebook: &Notebook) -> Vec<SearchEntry> {
             entries.push(
                 SearchEntry::new(label, block.text.clone())
                     .anchored(anchor.clone())
-                    .grouped(BLOCK_KIND)
+                    .grouped(block_kind())
                     .subtitled(title)
                     .with_icon("list"),
             );
@@ -122,7 +129,7 @@ mod tests {
                 hits.iter().map(|r| &r.title).collect::<Vec<_>>()
             );
             assert!(
-                hits.iter().all(|r| r.kind == NOTE_KIND),
+                hits.iter().all(|r| r.kind == note_kind()),
                 "all hits are listed under Notes"
             );
         }
@@ -161,7 +168,7 @@ mod tests {
             let hit = search(&notebook)
                 .search("budget")
                 .into_iter()
-                .find(|hit| hit.kind == BLOCK_KIND)
+                .find(|hit| hit.kind == block_kind())
                 .expect("block hit");
             assert_eq!(hit.subtitle.as_deref(), Some("Meeting notes"));
             assert_eq!(hit.action_id, crate::actions::page_resource_id(pages[1]));
@@ -177,7 +184,7 @@ mod tests {
             let hit = search(&notebook)
                 .search("release team")
                 .into_iter()
-                .find(|hit| hit.kind == BLOCK_KIND)
+                .find(|hit| hit.kind == block_kind())
                 .expect("a match late in a long block is found");
             assert!(hit.title.ends_with('…'));
             assert!(hit.title.chars().count() <= BLOCK_LABEL_CHARS);

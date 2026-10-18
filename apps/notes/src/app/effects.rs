@@ -35,11 +35,8 @@ impl NotesApp {
             NotesEffect::ImportMarkdownFile => Ok(Self::choose_markdown(cx)),
             NotesEffect::ImportMarkdownContent { title, body } => {
                 let title = title.trim();
-                let title = if title.is_empty() {
-                    "Imported note"
-                } else {
-                    title
-                };
+                let fallback = ui::i18n!("notes-imported-untitled");
+                let title = if title.is_empty() { &fallback } else { title };
                 let body = crate::markdown::strip_matching_title_heading(&body, title);
                 let page = self.import_note(title, &body, cx)?;
                 Ok(Effected::value(serde_json::json!({
@@ -80,14 +77,14 @@ impl NotesApp {
             statuses.push(EffectStatus::unavailable(
                 NotesEffect::BACK,
                 "notes.no_previous_note",
-                "There is no previous note",
+                ui::i18n!("notes-no-previous"),
             ));
         }
         if !self.route_history.can_go_forward() {
             statuses.push(EffectStatus::unavailable(
                 NotesEffect::FORWARD,
                 "notes.no_next_note",
-                "There is no next note",
+                ui::i18n!("notes-no-next"),
             ));
         }
         statuses
@@ -218,7 +215,10 @@ impl NotesApp {
             return Err("the clipboard is unavailable".into());
         }
         self.transfer_toasts.push(
-            format!("Copied link to {label}"),
+            ui::i18n::I18nManager::format(
+                "notes-link-copied",
+                &[("title", ui::i18n::ArgValue::from(label.to_string()))],
+            ),
             ui::widget::toast::ToastKind::Success,
         );
         Ok(())
@@ -226,15 +226,17 @@ impl NotesApp {
 
     fn open_link(url: String, cx: &mut Cx) -> EffectAnswer {
         if !crate::markdown::safe_external_url(&url) {
-            return Err("This link is not safe to open".into());
+            return Err(ui::i18n!("notes-link-unsafe"));
         }
         Ok(cx.thread(
             move |_| ui::widget::try_open_external_url(&url).map_err(|error| error.to_string()),
             |app: &mut Self, opened, _| {
                 if let Err(error) = &opened {
                     tracing::warn!(%error, "notes: the link did not open");
-                    app.transfer_toasts
-                        .push("Could not open link", ui::widget::toast::ToastKind::Error);
+                    app.transfer_toasts.push(
+                        ui::i18n!("notes-link-open-failed"),
+                        ui::widget::toast::ToastKind::Error,
+                    );
                 }
                 opened.map(|()| Effected::done())
             },
@@ -242,21 +244,23 @@ impl NotesApp {
     }
 
     fn choose_markdown(cx: &mut Cx) -> Effected {
-        let request = PickRequest::open("Import Markdown", "Import")
-            .filter(FileFilter::new("Markdown").glob("*.md"))
-            .thread_name("notes-import-markdown");
+        let request = PickRequest::open(
+            &ui::i18n!("notes-import-title"),
+            &ui::i18n!("notes-import-accept"),
+        )
+        .filter(FileFilter::new(&ui::i18n!("notes-markdown-files")).glob("*.md"))
+        .thread_name("notes-import-markdown");
         cx.choose_file(request, |app: &mut Self, chosen, cx| {
             let Some(file) = chosen else {
                 return Ok(Effected::done());
             };
-            let markdown = String::from_utf8(file.bytes)
-                .map_err(|_| "The Markdown file is not UTF-8".to_string());
+            let markdown =
+                String::from_utf8(file.bytes).map_err(|_| ui::i18n!("notes-import-not-utf8"));
             let title = std::path::Path::new(&file.name)
                 .file_stem()
                 .and_then(|stem| stem.to_str())
                 .filter(|title| !title.trim().is_empty())
-                .unwrap_or("Imported note")
-                .to_owned();
+                .map_or_else(|| ui::i18n!("notes-imported-untitled"), str::to_owned);
             match markdown {
                 Ok(markdown) => app
                     .import_note(&title, &markdown, cx)
@@ -287,7 +291,10 @@ impl NotesApp {
         );
         self.open_when_present(page);
         self.transfer_toasts.push(
-            format!("Imported {title}"),
+            ui::i18n::I18nManager::format(
+                "notes-imported",
+                &[("title", ui::i18n::ArgValue::from(title.to_string()))],
+            ),
             ui::widget::toast::ToastKind::Success,
         );
         Ok(page)
@@ -295,7 +302,10 @@ impl NotesApp {
 
     fn import_failed(&mut self, error: &str) {
         self.transfer_toasts.push(
-            format!("Import failed: {error}"),
+            ui::i18n::I18nManager::format(
+                "notes-import-failed",
+                &[("error", ui::i18n::ArgValue::from(error.to_string()))],
+            ),
             ui::widget::toast::ToastKind::Error,
         );
     }
@@ -313,9 +323,13 @@ impl NotesApp {
             .map(|assets| assets.clone())
             .unwrap_or_default();
         let portable = super::inline_images(&markdown, &assets);
-        let request = PickRequest::save("Export Markdown", "Export", &export_name(title))
-            .filter(FileFilter::new("Markdown").glob("*.md"))
-            .thread_name("notes-export-markdown");
+        let request = PickRequest::save(
+            &ui::i18n!("notes-export-title"),
+            &ui::i18n!("notes-export-accept"),
+            &export_name(title),
+        )
+        .filter(FileFilter::new(&ui::i18n!("notes-markdown-files")).glob("*.md"))
+        .thread_name("notes-export-markdown");
         Ok(
             cx.save_file(request, portable.into_bytes(), |_: &mut Self, _, _| {
                 Ok(Effected::done())
@@ -324,15 +338,18 @@ impl NotesApp {
     }
 
     fn choose_image(page: PageId, cx: &mut Cx) -> Effected {
-        let request = PickRequest::open("Insert image", "Insert")
-            .filter(
-                FileFilter::new("Images")
-                    .glob("*.png")
-                    .glob("*.jpg")
-                    .glob("*.jpeg")
-                    .glob("*.webp"),
-            )
-            .thread_name("notes-insert-image");
+        let request = PickRequest::open(
+            &ui::i18n!("notes-insert-image-title"),
+            &ui::i18n!("notes-insert-image-accept"),
+        )
+        .filter(
+            FileFilter::new(&ui::i18n!("notes-image-files"))
+                .glob("*.png")
+                .glob("*.jpg")
+                .glob("*.jpeg")
+                .glob("*.webp"),
+        )
+        .thread_name("notes-insert-image");
         cx.choose_file(request, move |app: &mut Self, chosen, cx| {
             let Some(file) = chosen else {
                 return Ok(Effected::done());
@@ -347,13 +364,15 @@ impl NotesApp {
             let alt = std::path::Path::new(&file.name)
                 .file_stem()
                 .and_then(|stem| stem.to_str())
-                .unwrap_or("Image")
+                .map_or_else(|| ui::i18n!("notes-image-default-alt"), str::to_owned)
                 .replace([']', '[', '(', ')'], " ");
             cx.submit(app.image_insertion(page, alt.trim(), file.bytes));
             app.bound_page = None;
             app.self_dirty = true;
-            app.transfer_toasts
-                .push("Image inserted", ui::widget::toast::ToastKind::Success);
+            app.transfer_toasts.push(
+                ui::i18n!("notes-image-inserted"),
+                ui::widget::toast::ToastKind::Success,
+            );
             Ok(Effected::done())
         })
     }

@@ -63,11 +63,26 @@ use crate::model::PageId;
 use crate::note_header::NoteHeader;
 use crate::num;
 
-fn empty_content() -> EmptyStateContent<'static> {
-    EmptyStateContent {
-        icon: Some(Icon::FileText),
-        action_label: Some("New note"),
-        ..EmptyStateContent::new("Start your first note")
+/// The empty notebook's title and its one action, in this locale.
+struct EmptyLabels {
+    title: String,
+    action: String,
+}
+
+impl EmptyLabels {
+    fn new() -> Self {
+        Self {
+            title: ui::i18n!("notes-empty-title"),
+            action: ui::i18n!("notes-empty-action"),
+        }
+    }
+
+    fn content(&self) -> EmptyStateContent<'_> {
+        EmptyStateContent {
+            icon: Some(Icon::FileText),
+            action_label: Some(&self.action),
+            ..EmptyStateContent::new(&self.title)
+        }
     }
 }
 
@@ -338,6 +353,8 @@ impl ScrollCopy {
 )]
 pub struct MainPanel {
     header: crate::note_header::NoteHeader,
+    /// The empty notebook's copy, looked up once.
+    empty_labels: EmptyLabels,
     pending_backlink_open: Option<PageId>,
     header_node: Option<NodeId>,
     metadata_height: f64,
@@ -479,13 +496,14 @@ impl MainPanel {
                 .with_text_role(TextRole::LargeTitle)
                 .with_placeholder(ui::i18n!("notes-title-placeholder"))
                 .with_id("note_title")
-                .with_accessible_name("Page title"),
+                .with_accessible_name(ui::i18n!("notes-a11y-page-title")),
             title_rect: Rect::ZERO,
             last_pointer: Point::ZERO,
             pending_rename: None,
             naming_new: false,
             pending_tag_open: None,
             header: NoteHeader::default(),
+            empty_labels: EmptyLabels::new(),
             header_node: None,
             metadata_height: 0.0,
             tag_layout_dirty: false,
@@ -1646,9 +1664,14 @@ impl Widget for MainPanel {
         // Input can arrive before the first paint, including after a resize.
         self.empty_action_rect = if self.page_id.is_none() {
             ui::text_render::with_layout_renderer(self.layout_theme.text_scale, |text| {
-                EmptyState::layout(text, &self.layout_theme, self.rect, &empty_content())
-                    .action
-                    .unwrap_or(Rect::ZERO)
+                EmptyState::layout(
+                    text,
+                    &self.layout_theme,
+                    self.rect,
+                    &self.empty_labels.content(),
+                )
+                .action
+                .unwrap_or(Rect::ZERO)
             })
         } else {
             Rect::ZERO
@@ -1984,7 +2007,7 @@ impl Widget for MainPanel {
             EmptyState::paint(
                 &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 self.rect,
-                &empty_content(),
+                &self.empty_labels.content(),
                 self.last_pointer,
             );
             if self.empty_action_focused && self.empty_action_rect.width() > 0.0 {
@@ -2243,8 +2266,8 @@ impl Widget for MainPanel {
         use ui::a11y::{AccessNode, AccessState, Role};
         if self.page_id.is_none() {
             let button = AccessNode::new(Role::Button)
-                .with_name("New note")
-                .with_description("Create the first note in this workspace")
+                .with_name(ui::i18n!("notes-empty-action"))
+                .with_description(ui::i18n!("notes-a11y-first-note"))
                 .with_action_target("notes.first_note")
                 .with_state(
                     AccessState::new()
@@ -2261,7 +2284,7 @@ impl Widget for MainPanel {
         }
         let mut children = vec![
             AccessNode::new(Role::TextInput)
-                .with_name("Note title")
+                .with_name(ui::i18n!("notes-a11y-note-title"))
                 .with_value(self.title_label.current_text())
                 .with_action_target("notes.page-title")
                 .with_bounds(self.title_rect)
@@ -2291,8 +2314,8 @@ impl Widget for MainPanel {
         }
         Some(
             AccessNode::new(Role::Group)
-                .with_name("Note header")
-                .with_description("Note title, scroll position")
+                .with_name(ui::i18n!("notes-a11y-header"))
+                .with_description(ui::i18n!("notes-a11y-header-description"))
                 .with_children(children),
         )
     }

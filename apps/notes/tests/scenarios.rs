@@ -293,6 +293,14 @@ fn reached(
                 && node.state.expanded == Some(true)
                 && !node.state.hidden
         }),
+        Some("mention") => {
+            matches!(blocks, [block] if block.text() == "Ask @")
+                && observed(driver, |node| {
+                    node.role == ui::a11y::Role::List
+                        && node.name.as_deref() == Some("People to mention")
+                        && !node.children.is_empty()
+                })
+        }
         Some("slash_query") => {
             matches!(blocks, [block] if block.text() == "Groceries for Monday /c")
                 && observed(driver, |node| {
@@ -369,6 +377,24 @@ fn reached(
                 .text()
                 .starts_with("![Settings external accounts](asset:")
         }),
+        Some("image_sized") => blocks.iter().any(|block| {
+            block.text().contains("|360](asset:")
+        }) && observed(driver, |node| {
+            node.role == ui::a11y::Role::Image
+                && node.name.as_deref() == Some("Settings external accounts")
+        }),
+        Some("long_list") => {
+            let numbered = blocks
+                .iter()
+                .filter(|block| matches!(block.kind, BlockKind::Numbered { indent: 0 }))
+                .count();
+            numbered == 12
+                && blocks.iter().any(|block| {
+                    matches!(block.kind, BlockKind::Paragraph)
+                        && block.indent() == 1
+                        && block.text() == "The heavy ones go in the small boxes."
+                })
+        }
         Some("image") => blocks.iter().any(|block| {
             block
                 .text()
