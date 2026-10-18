@@ -286,9 +286,10 @@ impl AddressSuggestions {
                     hovered: self.hovered == Some(idx),
                     ..Interaction::default()
                 });
-            let visits = visit_label(entry.visits);
+            // How often a page was opened ranks it; it is not shown, as
+            // no browser's address list does.
             let face = match entry.kind {
-                RowKind::History => face.secondary(&entry.detail).meta(&visits),
+                RowKind::History => face.secondary(&entry.detail),
                 RowKind::Go => face.secondary("Open this address"),
                 RowKind::Search => face.secondary("Search the web"),
                 RowKind::Suggestion => face,
@@ -304,14 +305,6 @@ fn kind_icon(kind: RowKind) -> ui::icons::Icon {
         RowKind::Go => Icon::ArrowRight,
         RowKind::Search | RowKind::Suggestion => Icon::Search,
         RowKind::History => Icon::History,
-    }
-}
-
-fn visit_label(visits: u32) -> String {
-    if visits > 1 {
-        format!("{visits} visits")
-    } else {
-        String::new()
     }
 }
 
@@ -530,7 +523,6 @@ mod tests {
             title: title.to_string(),
             detail: url.to_string(),
             url: url.to_string(),
-            visits: 1,
         }
     }
 

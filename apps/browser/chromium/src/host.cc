@@ -1198,6 +1198,24 @@ void AddFeature(CefRefPtr<CefCommandLine> command_line,const char* name,const st
   if((","+value+",").find(","+feature+",")!=std::string::npos) return;
   command_line->AppendSwitchWithValue(name,value.empty()?feature:value+","+feature);
 }
+// Privacy defaults nobody should have to find a setting for, as Safari and
+// Firefox ship them: a site embedded in another (an ad, a tracker's frame or
+// pixel) gets no cookies or storage of its own there, and WebRTC tells a page
+// only the public address the network already sees, never the device's
+// local ones. Both are profile preferences, so a private window's context
+// gets them too.
+void ApplyPrivacyDefaults(CefRefPtr<CefRequestContext> context) {
+  auto set=[&context](const char* name,CefRefPtr<CefValue> value) {
+    CefString error;
+    if(!context->SetPreference(name,value,error))
+      std::cerr<<"Could not set the privacy default "<<name<<": "<<error.ToString()<<"\n";
+  };
+  // content_settings::CookieControlsMode::kBlockThirdParty.
+  auto cookies=CefValue::Create();cookies->SetInt(1);
+  set("profile.cookie_controls_mode",cookies);
+  auto webrtc=CefValue::Create();webrtc->SetString("default_public_interface_only");
+  set("webrtc.ip_handling_policy",webrtc);
+}
 class App final : public CefApp,public CefBrowserProcessHandler {
  public:
   CefRefPtr<CefBrowserProcessHandler> GetBrowserProcessHandler() override { return this; }
@@ -1246,6 +1264,7 @@ class App final : public CefApp,public CefBrowserProcessHandler {
     } else {
       shared_context=CefRequestContext::CreateContext(CefRequestContext::GetGlobalContext(),request_filter);
     }
+    ApplyPrivacyDefaults(shared_context);
     downloads=new tilo::Downloads(
       downloads_directory,
       [](const std::string& name,CefRefPtr<CefDictionaryValue> fields){::Event(name,fields);},
@@ -1366,9 +1385,10 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     if(!type("request_id",VTYPE_INT) || d->GetInt("request_id")<=0 || !type("action",VTYPE_STRING))return false;
     const auto action=d->GetString("action").ToString();
     if(action!="outline" && action!="click" && action!="fill" && action!="select" && action!="press" && action!="submit" &&
-       action!="changes" && action!="at" && action!="settle" && action!="console" && action!="network")return false;
+       action!="changes" && action!="at" && action!="settle" && action!="console" && action!="network" && action!="reader")return false;
     const bool elementless=action=="outline" || action=="press" || action=="changes" || action=="at" || action=="settle" ||
-      action=="console" || action=="network";
+      action=="console" || action=="network" || action=="reader";
+    if((action=="reader")!=d->HasKey("enabled") || (d->HasKey("enabled") && !type("enabled",VTYPE_BOOL)))return false;
     if(d->HasKey("element") ? !type("element",VTYPE_STRING) || d->GetString("element").empty() || d->GetString("element").length()>64
                             : !elementless)return false;
     for(const char* flag:{"cross_origin","secret"})if(d->HasKey(flag) && !type(flag,VTYPE_BOOL))return false;

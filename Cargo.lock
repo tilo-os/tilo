@@ -1417,6 +1417,7 @@ dependencies = [
  "blake3",
  "bounded-zip",
  "browser-continuity",
+ "chrono",
  "fnv",
  "hex",
  "host-info",
