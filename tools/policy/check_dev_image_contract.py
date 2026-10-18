@@ -20,9 +20,10 @@ toolchain, and it is unsealed. Two ways that could leak into production:
      localhost/tilo;
    * production container policy must reject registry.tilo.so/tilo/tilo-vm, so a
      production machine never switches to a dev image.
-2. A production Containerfile builds or installs a dev-only piece: a dev-only
-   component of os/components.toml (its layer, bins, packages or paths), a dev
-   feature, or a dev-image source file.
+2. A production Containerfile, or the production compile of os/image/compile.sh
+   (all of it but its `--dev` branch), builds or installs a dev-only piece: a
+   dev-only component of os/components.toml (its layer, bins, packages or
+   paths), a dev feature, or a dev-image source file.
 
 Every finding names file:line, why it matters, and the fix.
 """
@@ -319,19 +320,37 @@ def dev_only_needles(repo: Path) -> list[tuple[re.Pattern[str], str]]:
     return list(needles.values())
 
 
+# What compiles the production image's binaries, outside its image build. Its `--dev`
+# branch, which ends at the script's first top-level `fi`, compiles the dev components
+# for os/Containerfile.dev; the rest is the production compile.
+COMPILE_SCRIPT = "os/image/compile.sh"
+
+
+def production_sources(repo: Path) -> list[tuple[Path, list[tuple[int, str]]]]:
+    """Each production build file with its lines (number, text) that build the production image."""
+    sources = [(path, list(enumerate(path.read_text(encoding="utf-8").splitlines(), 1)))
+               for path in production_containerfiles(repo)]
+    script = repo / COMPILE_SCRIPT
+    if script.is_file():
+        lines = list(enumerate(script.read_text(encoding="utf-8").splitlines(), 1))
+        end = next((i for i, (_, text) in enumerate(lines) if text == "fi"), -1)
+        sources.append((script, lines[end + 1:]))
+    return sources
+
+
 def check_production_containerfiles(repo: Path) -> list[Finding]:
     findings: list[Finding] = []
     needles = dev_only_needles(repo)
-    for path in production_containerfiles(repo):
+    for path, lines in production_sources(repo):
         shown = rel(repo, path)
-        for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        for number, raw in lines:
             if raw.lstrip().startswith("#"):
                 continue
             for pattern, label in needles:
                 if pattern.search(raw):
                     findings.append(Finding(
                         f"{shown}:{number}", f"production image build references {label}", WHY_LEAK,
-                        "remove it from this production Containerfile; dev-only pieces are built and "
+                        "remove it from this production build; dev-only pieces are built and "
                         f"installed by {DEV_CONTAINERFILE} alone (install-components.py --dev)."))
     return findings
 

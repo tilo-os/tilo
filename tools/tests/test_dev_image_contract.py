@@ -29,7 +29,7 @@ class DevImageContractTests(unittest.TestCase):
         for name in ("os/Containerfile", "os/Containerfile.dev", "os/dev/resolve-rpm-snapshot.sh", "os/components.toml",
                      "os/scripts/install-components.py", "os/etc/containers/policy.json",
                      "os/scripts/builder-packages.py", "os/scripts/builder-packages.txt",
-                     "os/dev/derive-rpm-package-set.py"):
+                     "os/dev/derive-rpm-package-set.py", "os/image/compile.sh"):
             (root / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(REPO / name, root / name)
         (root / ".forgejo/workflows").mkdir(parents=True)
@@ -135,11 +135,12 @@ class DevImageContractTests(unittest.TestCase):
             self.assertIn("fix: remove it", errors[0])
         with self.subTest(phase='production build of a dev only bin fails'):
             root = self.fixture()
-            self.edit(root / "os/Containerfile", "--bin tilo-projector ", "--bin tilo-projector --bin tilo-vmd ")
+            self.edit(root / "os/image/compile.sh", "--bin tilo-projector ", "--bin tilo-projector --bin tilo-vmd ")
+            self.assertIn("os/image/compile.sh:", "\n".join(self.findings(root)))
             self.assertIn("bin 'tilo-vmd'", "\n".join(self.findings(root)))
         with self.subTest(phase='production dev feature fails'):
             root = self.fixture()
-            self.edit(root / "os/Containerfile", "--bin tilo-projector ",
+            self.edit(root / "os/image/compile.sh", "--bin tilo-projector ",
                       "--bin tilo-projector --features dev-overrides ")
             self.assertIn("dev feature 'dev-overrides'", "\n".join(self.findings(root)))
         with self.subTest(phase='production policy must reject dev repository'):
