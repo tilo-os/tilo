@@ -230,7 +230,7 @@ impl CapnpBrokerState {
         Ok((workspace, original.unwrap_or(actor), now))
     }
 
-    fn framework_policy(
+    pub(super) fn framework_policy(
         &self,
         authority: (&Workspace, &BrokerActor, u64),
         action: (&str, &ActionDescriptor),
@@ -599,7 +599,7 @@ impl CapnpBrokerState {
         Ok(id)
     }
 
-    fn framework_effect_ready<T>(
+    pub(super) fn framework_effect_ready<T>(
         &self,
         admitted: &AdmittedHostAction,
         check: impl FnOnce() -> Result<T, ActionHostError>,
