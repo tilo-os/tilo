@@ -189,7 +189,7 @@ fn dictionary_suggestions(language: &str, word: &str, max: usize) -> Vec<String>
 /// apostrophe ([`contraction`]) are safe-listed, while the generic path accepts
 /// only an adjacent transposition matching the dictionary's first candidate.
 pub fn probable_correction(language: &str, word: &str) -> Option<String> {
-    if let Some(candidate) = pronoun_correction(language, word) {
+    if let Some(candidate) = sure_correction(language, word) {
         return Some(candidate);
     }
     if word.chars().count() < 3 {
@@ -259,20 +259,31 @@ pub fn probable_correction(language: &str, word: &str) -> Option<String> {
     (loading::dictionaries()?.correction)(language, word, &lower)
 }
 
-/// The English pronoun typed in lowercase: "i" is "I", "im" is "I'm". Sure
-/// enough to correct even though word lists hold "i" (they are lowercase
-/// throughout), and too short for [`probable_correction`]'s length floor,
-/// which keeps its generic path calm.
+/// A correction sure enough to apply although the word list holds the
+/// typed word: the English pronoun in lowercase ("i" is "I", "im" is "I'm")
+/// and "cant" / "wont", which people type for "can't" / "won't" far more
+/// often than they mean the rare nouns (as phone keyboards assume). Word
+/// lists are lowercase and hold "i", "cant" and "wont", and "i" / "im" are
+/// too short for [`probable_correction`]'s length floor. Backspace right
+/// after a correction takes it back.
 #[must_use]
-pub fn pronoun_correction(language: &str, word: &str) -> Option<String> {
+pub fn sure_correction(language: &str, word: &str) -> Option<String> {
     if !is_english(language) {
         return None;
     }
-    match word {
-        "i" => Some("I".to_owned()),
-        "im" | "Im" => contraction("im").map(str::to_owned),
-        _ => None,
-    }
+    let candidate = match word {
+        "i" => "I",
+        "im" | "Im" => "I'm",
+        _ => match word.to_lowercase().as_str() {
+            "cant" => "can't",
+            "wont" => "won't",
+            _ => return None,
+        },
+    };
+    Some(match word {
+        "i" | "im" | "Im" => candidate.to_owned(),
+        _ => match_word_case(word, candidate),
+    })
 }
 
 /// [`probable_correction`] past the curated list: an adjacent
@@ -898,8 +909,8 @@ mod tests {
                 ("i", Some("I")),
                 ("I", None),
                 ("IM", None),
-                ("cant", None),
-                ("wont", None),
+                ("cant", Some("can't")),
+                ("Wont", Some("Won't")),
             ] {
                 assert_eq!(
                     probable_correction("en_US", typed).as_deref(),
