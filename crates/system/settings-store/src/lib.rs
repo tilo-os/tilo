@@ -100,6 +100,7 @@ pub mod display_scale;
 pub mod display_tools;
 pub mod display_tuning;
 pub mod hardware;
+pub mod index;
 mod key;
 pub mod keyboard_shortcuts;
 pub mod keyboard_sources;
@@ -107,6 +108,7 @@ pub mod keyboard_sources;
 pub mod live;
 pub mod magnifier;
 pub mod notification_policy;
+pub mod paste_shortcut;
 pub mod person_displays;
 pub mod personal_dictionary;
 pub mod power;
@@ -1044,6 +1046,23 @@ mod parent_durability_tests {
         ProvisionCheckpoint, with_provision_failure, with_provision_observer,
     };
     use tilo_files::native::atomic::{DirectoryState, directory_state};
+
+    #[test]
+    fn existing_copy_parent_is_not_reprovisioned_before_locking() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("settings.json");
+        let visits = Rc::new(RefCell::new(Vec::new()));
+        let observed = visits.clone();
+        let guard = with_provision_observer(
+            move |event| observed.borrow_mut().push(event.path.clone()),
+            || session::lock_copy(&path),
+        )
+        .unwrap();
+        assert!(visits.borrow().is_empty());
+        assert!(session::lock_path(&path).is_file());
+        assert!(!path.exists(), "locking must not publish settings");
+        drop(guard);
+    }
 
     #[test]
     fn public_update_preserves_file_publication_phase_and_visible_format() {

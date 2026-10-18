@@ -1,6 +1,6 @@
 use tilo_ui::widget::{
-    AppKind, TabDescriptor, TileContent, WIDTH_MAX_PERMILLE, WindowGroup, WindowWidth,
-    max_group_px, min_group_px,
+    AppKind, TabDescriptor, TileContent, WIDTH_MAX_PERMILLE, WindowEdge, WindowGroup,
+    WindowWidth, max_group_px, min_group_px,
 };
 
 /// Display widths this suite pins the width model against. The bug being
@@ -106,11 +106,6 @@ fn width_tiers_are_ordered_shares_of_every_display() {
 }
 
 #[test]
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "pixel widths are bounded by the test's display sizes (at most 3840px), well \
-within f32's exact-integer range"
-)]
 fn manual_resizes_track_the_pointer_and_round_trip_as_shares() {
     // Case `a_manual_resize_round_trips_across_displays_as_a_share`.
     // A manual resize is recorded as the fraction it landed on, so replaying
@@ -121,9 +116,9 @@ fn manual_resizes_track_the_pointer_and_round_trip_as_shares() {
         let mut g = group(WindowWidth::Normal, 1600.0);
         let start = g.resolved_width_px();
         assert_eq!(start, 1067.0, "Normal on a 1600 px strip");
-        g.begin_resize(start as f32);
-        g.update_resize(1200.0);
-        g.end_resize();
+        g.begin_edge_drag(WindowEdge::Trailing);
+        g.set_live_width(1200.0);
+        let _ = g.end_edge_drag(true);
 
         let stored = g.width();
         assert_eq!(
@@ -154,31 +149,22 @@ fn manual_resizes_track_the_pointer_and_round_trip_as_shares() {
     {
         assert_eq!(min_group_px(3840.0), 160.0);
         assert_eq!(min_group_px(1200.0), 160.0);
-        // A drag far past the floor pins there rather than collapsing.
+        // A width far below the floor resolves to it rather than collapsing.
         let mut g = group(WindowWidth::Normal, 1600.0);
-        g.begin_resize(g.resolved_width_px() as f32);
-        g.update_resize(-50_000.0);
+        g.set_width(WindowWidth::from_px(1.0, 1600.0));
         assert_eq!(g.resolved_width_px(), min_group_px(1600.0));
+        assert_eq!(g.width_limits().min, min_group_px(1600.0));
     }
 
     // Case `window_group_drag_right_edge_resizes`.
-    // The right-edge drag still tracks the pointer 1:1 in pixels — the
-    // fraction is a storage representation, not a snapping grid.
+    // An edge drag tracks the pointer 1:1 in pixels — the fraction is a
+    // storage representation, not a snapping grid.
     {
         let mut g = group(WindowWidth::Normal, 1200.0);
         assert_eq!(g.resolved_width_px(), 800.0);
-        g.begin_resize(800.0);
-        g.update_resize(950.0);
-        g.end_resize();
+        g.begin_edge_drag(WindowEdge::Trailing);
+        g.set_live_width(950.0);
+        let _ = g.end_edge_drag(true);
         assert_eq!(g.resolved_width_px(), 950.0);
-
-        g.begin_resize(950.0);
-        g.update_resize(-500.0);
-        g.end_resize();
-        assert_eq!(
-            g.resolved_width_px(),
-            min_group_px(1200.0),
-            "a drag past the floor pins at the display's minimum",
-        );
     }
 }

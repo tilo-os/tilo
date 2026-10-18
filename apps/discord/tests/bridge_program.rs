@@ -33,6 +33,7 @@ use ui::tilo_actions::remote::CatalogueRow;
 
 const CHAT_APP: &str = "so.tilo.chat";
 const CHAT_KIND: &str = "chat.workspace";
+const MESSAGES_KIND: &str = "chat.messages";
 const PASSES: usize = 6;
 
 fn input(name: &str) -> Binding {
@@ -96,6 +97,19 @@ fn chat(id: &str, action: &str, args: &[(&str, Binding)], shown: bool) -> Step {
     )
 }
 
+/// A Chat verb on the chat's messages, which the chat keeps in a chain of
+/// parts beside its record and publishes as one resource, naming its
+/// message by id.
+fn message(id: &str, action: &str, args: &[(&str, Binding)], shown: bool) -> Step {
+    invoke(
+        id,
+        ActionKey::new(CHAT_APP, MESSAGES_KIND, action),
+        Selector::FirstOfKind(MESSAGES_KIND.into()),
+        args,
+        shown.then(|| item("appearance")),
+    )
+}
+
 /// The id of the item step `step` created, as text.
 fn created(step: &str) -> Binding {
     Binding::Template(format!("{{{{step.{step}}}}}"))
@@ -147,7 +161,7 @@ fn mirrored_post(step: &str, extra: &[(&str, Binding)]) -> Vec<Step> {
         args.insert("persona".into(), item("persona"));
         args.insert("root".into(), item("parent"));
     }
-    vec![chat(&posted, "post", &args, true), mapped]
+    vec![message(&posted, "post", &args, true), mapped]
 }
 
 #[allow(
@@ -335,7 +349,7 @@ fn pass() -> Vec<Step> {
         }),
         each(
             "chat_edits",
-            vec![chat(
+            vec![message(
                 "edit-message",
                 "edit-message",
                 &[("message", item("message")), ("text", item("text"))],
@@ -345,7 +359,7 @@ fn pass() -> Vec<Step> {
         each(
             "chat_deletes",
             vec![
-                chat(
+                message(
                     "delete-message",
                     "delete-message",
                     &[("message", item("message"))],
@@ -361,7 +375,7 @@ fn pass() -> Vec<Step> {
         each(
             "chat_removes",
             vec![
-                chat(
+                message(
                     "remove-message",
                     "remove-message",
                     &[("message", item("message"))],
@@ -376,7 +390,7 @@ fn pass() -> Vec<Step> {
         ),
         each(
             "chat_reacts",
-            vec![chat(
+            vec![message(
                 "chat-react",
                 "react",
                 &[("message", item("message")), ("emoji", item("emoji"))],
@@ -385,7 +399,7 @@ fn pass() -> Vec<Step> {
         ),
         each(
             "chat_unreacts",
-            vec![chat(
+            vec![message(
                 "chat-unreact",
                 "unreact",
                 &[("message", item("message")), ("emoji", item("emoji"))],
@@ -409,6 +423,8 @@ fn pass() -> Vec<Step> {
                     ("discord_user", item("discord_user")),
                     ("person", item("person")),
                     ("code_sha256", item("code_sha256")),
+                    ("user_name", item("user_name")),
+                    ("display_name", item("display_name")),
                 ],
             )],
         ),
@@ -418,6 +434,18 @@ fn pass() -> Vec<Step> {
                 "unlink",
                 "unlink",
                 &[("discord_user", item("discord_user"))],
+            )],
+        ),
+        each(
+            "renames",
+            vec![guild(
+                "rename-link",
+                "rename-link",
+                &[
+                    ("discord_user", item("discord_user")),
+                    ("user_name", item("user_name")),
+                    ("display_name", item("display_name")),
+                ],
             )],
         ),
         each("import_categories", {
@@ -493,9 +521,16 @@ fn pass() -> Vec<Step> {
 fn triggers() -> Vec<TriggerSpec> {
     let mut triggers = vec![
         // Every Chat change by anyone but the bridge itself, which the
-        // dispatcher never fires on its own output.
+        // dispatcher never fires on its own output: to the chat record
+        // (channels, people) and to its messages.
         TriggerSpec::RecordChanged {
             kind: CHAT_KIND.into(),
+            actions: Vec::new(),
+            fields: Vec::new(),
+            by: ActorFilter::Anyone,
+        },
+        TriggerSpec::RecordChanged {
+            kind: MESSAGES_KIND.into(),
             actions: Vec::new(),
             fields: Vec::new(),
             by: ActorFilter::Anyone,
@@ -629,7 +664,6 @@ fn file() -> std::path::PathBuf {
 }
 
 #[test]
-#[ignore = "needs the bridge program to name the chat's messages where they are kept, in its parts"]
 fn the_bridge_program_checks_against_chat_and_discord_and_is_current() {
     let catalog = catalog();
     let mut shortcut = program();

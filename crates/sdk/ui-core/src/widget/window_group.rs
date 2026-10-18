@@ -1,5 +1,4 @@
 use crate::animation::Spring;
-use crate::color_compat::ColorCompat;
 use crate::icons;
 use crate::num::f32_of_f64;
 use crate::presence::PresenceCtx;
@@ -8,6 +7,7 @@ use crate::theme::Theme;
 use crate::time::{Duration, Instant};
 use crate::tokens::SpringPresets;
 use crate::widget::TaffyTreeExt;
+use crate::widget::edge_resize::{WidthLimits, WindowEdge};
 use crate::widget::tabs::CLOSE_FADE_MS;
 use crate::widget::{AppModel, ModelPath};
 use crate::widget::{
@@ -19,12 +19,23 @@ use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::Key;
 
 use crate::tokens::TextRole;
 /// Immutable presentation inspection in root logical coordinates.
 /// Reading this does not lay out, paint, reveal controls or drain input edges.
+/// An edge drag a [`WindowGroup`]'s row is carrying out on it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct GroupEdgeDrag {
+    /// The edge that follows the pointer; the other one holds still.
+    moving: WindowEdge,
+    /// The width before the drag, which a cancel goes back to.
+    before: WindowWidth,
+    /// The width this frame, in whole logical pixels.
+    live_px: f64,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WindowGroupBounds {
     pub group: Rect,
@@ -167,7 +178,8 @@ impl WindowGroup {
         }
     }
 
-    #[cfg(test)]
+    /// Where the group draws this frame: its layout rect, or the spring's
+    /// while it moves there.
     pub(crate) fn drawn_rect(&self) -> Rect {
         self.rect_spring
             .as_ref()
@@ -211,18 +223,14 @@ pub struct WindowGroup {
     /// `build_layout`; seeded to [`DEFAULT_STRIP_USABLE_PX`].
     strip_usable_px: f64,
     rect: Rect,
-    /// `(press-time cursor x, press-time resolved width in px)`.
-    resize_origin: Option<(f32, f64, WindowWidth)>,
-    pub hover_resize: bool,
-    /// Whether the edge being hovered or dragged is the leading (left) one.
-    /// Dragging it away from the window widens it, so the pointer delta is
-    /// subtracted from the width instead of added.
-    resize_leading: bool,
-    /// The group starts its lane: no seam handle sits at its left edge, so
-    /// the group answers to presses there itself.
-    leads_lane: bool,
-    /// The pointer entered or left the resize band since the last frame,
-    /// which shows or hides the grip.
+    /// An edge drag the parent row is carrying out on this window
+    /// ([`super::edge_resize`]).
+    edge_drag: Option<GroupEdgeDrag>,
+    /// The edge of this window a press would resize, shown before anything
+    /// is pressed. The parent row decides it ([`super::edge_resize::seam_owner`]).
+    edge_highlight: Option<WindowEdge>,
+    /// The edge highlight changed since the last frame, which shows, moves
+    /// or hides the grip.
     grip_dirty: bool,
     pub maximized: bool,
     pub search_active: bool,
@@ -258,6 +266,10 @@ pub struct WindowGroup {
     /// bar shown over a window under an auto-hiding top bar): the window's
     /// bar stands below it.
     top_overlay_inset: f64,
+    /// Nothing of the desktop's stands beside a maximized window on its
+    /// display (the top bar is not docked above it): maximized, it fills the
+    /// display and draws edge to edge ([`Widget::set_full_bleed`]).
+    fills_display: bool,
     last_cursor: Point,
     spawned_at: Option<Instant>,
     /// Drawn rect in flight between the tiled slot and the work area.
@@ -291,7 +303,7 @@ pub struct WindowGroup {
     built_active: Option<u64>,
     pending_maximize_change: Option<bool>,
     /// Per-mille, not px — a peer's output may be a different size.
-    pending_width_change: Option<u16>,
+    pending_width_change: Option<u32>,
     pending_search_open: Option<u64>,
     pending_new_tab: Option<u64>,
     pending_tab_reorder: Option<(usize, usize)>,
@@ -474,10 +486,8 @@ impl WindowGroup {
             rect: Rect::ZERO,
             external_navigation: false,
             fullscreen_presentation: false,
-            resize_origin: None,
-            hover_resize: false,
-            resize_leading: false,
-            leads_lane: false,
+            edge_drag: None,
+            edge_highlight: None,
             grip_dirty: false,
             maximized: false,
             search_active: false,
@@ -497,6 +507,7 @@ impl WindowGroup {
             bar_slot: None,
             chrome_fade: Duration::ZERO,
             top_overlay_inset: 0.0,
+            fills_display: false,
             last_cursor: Point::ZERO,
             spawned_at: None,
             rect_spring: None,
@@ -610,6 +621,9 @@ impl WindowGroup {
     /// Width the strip must reserve this frame — the spring value while
     /// a transition is in flight, otherwise the persisted fraction.
     pub fn layout_width_px(&self) -> f64 {
+        if let Some(drag) = self.edge_drag {
+            return drag.live_px;
+        }
         if let Some(spring) = &self.width_spring {
             return f64::from(spring.value()).max(0.0);
         }
@@ -881,6 +895,12 @@ impl WindowGroup {
     /// desktop's top bar while it shows over a window that reaches under an
     /// auto-hiding top bar — so the window's bar stands below it instead of
     /// under it. Zero while the desktop's bar stands above the window.
+    /// Whether a maximized window here fills its display: nothing of the
+    /// desktop's (a docked top bar) stands beside it.
+    pub fn set_fills_display(&mut self, fills: bool) {
+        self.fills_display = fills;
+    }
+
     pub fn set_top_overlay_inset(&mut self, inset: f64) {
         let inset = inset.max(0.0);
         if (self.top_overlay_inset - inset).abs() > f64::EPSILON {
@@ -895,7 +915,7 @@ impl WindowGroup {
 
     /// Test and shot fixture: as if the person had reached for the bar
     /// (`true`) or left it (`false`).
-    #[cfg(any(test, debug_assertions))]
+    #[cfg(any(test, debug_assertions, feature = "test-support"))]
     pub fn set_maximized_chrome_shown_for_tests(&mut self, shown: bool) {
         self.top_edge.force_shown(shown);
         self.top_edge_changed();
@@ -1013,50 +1033,136 @@ impl WindowGroup {
         self.width.resolve(self.strip_usable_px)
     }
 
-    /// Mark whether this group starts its lane (the row sets it each layout).
-    pub fn set_leads_lane(&mut self, leads: bool) {
-        self.leads_lane = leads;
-    }
-
-    pub fn begin_resize(&mut self, pointer_x: f32) {
-        let visible_width = if self.rect.width() > 1.0 {
-            self.rect.width()
-        } else {
-            self.layout_width_px()
-        };
-        let width = self.width;
-        self.set_width_px(visible_width);
-        self.resize_origin = Some((pointer_x, visible_width, width));
-    }
-    pub fn update_resize(&mut self, pointer_x: f32) {
-        if let Some((origin_x, origin_w, _)) = self.resize_origin {
-            let mut delta = f64::from(pointer_x - origin_x);
-            if self.resize_leading {
-                delta = -delta;
-            }
-            let usable = self.strip_usable_px;
-            let clamped = (origin_w + delta).clamp(min_group_px(usable), max_group_px(usable));
-            self.set_width_px(clamped);
-        }
-    }
-    pub fn end_resize(&mut self) {
-        self.resize_origin = None;
-        self.resize_leading = false;
-        self.pending_width_change = Some(self.width.permille());
-    }
-
-    /// An interrupted edge drag is a preview, not a committed view change.
-    fn cancel_resize(&mut self) {
-        if let Some((_, _, width)) = self.resize_origin.take() {
-            self.set_width(width);
-            self.hover_resize = false;
+    /// Show (or, with `None`, hide) the grip on the edge of this window a
+    /// press would resize. Set by the parent row from
+    /// [`super::edge_resize::seam_owner`]; the window itself never decides.
+    pub fn set_edge_highlight(&mut self, edge: Option<WindowEdge>) {
+        if self.edge_highlight != edge {
+            self.edge_highlight = edge;
             self.grip_dirty = true;
         }
     }
 
-    /// Does NOT touch `resize_origin` — the inter-group handle owns its
-    /// own drag state; follow up with [`Self::stamp_pending_width_change`]
-    /// on release.
+    /// The edge whose grip shows: the one being dragged, else the one a
+    /// press would resize.
+    pub fn edge_highlight(&self) -> Option<WindowEdge> {
+        self.edge_drag
+            .map(|drag| drag.moving)
+            .or(self.edge_highlight)
+    }
+
+    /// The widths this window may be resized to: the strictest minimum and
+    /// maximum any of its tabs' apps states ([`AppWidget::min_window_width`]),
+    /// never below the strip's floor. Every tab shares the window's width, so
+    /// a background tab's minimum binds as much as the shown one's.
+    pub fn width_limits(&self) -> WidthLimits {
+        let usable = self.strip_usable_px;
+        let apps = || {
+            self.hosts
+                .iter()
+                .filter_map(|(_, host)| match host.content() {
+                    TileContent::App(app) => Some(app),
+                    _ => None,
+                })
+        };
+        let min = apps()
+            .filter_map(|app| app.min_window_width())
+            .fold(min_group_px(usable), f64::max);
+        let max = apps()
+            .filter_map(|app| app.max_window_width())
+            .fold(max_group_px(usable), f64::min)
+            .max(min);
+        WidthLimits { min, max }
+    }
+
+    /// Start an edge drag on this window that moves its `moving` edge; the
+    /// other edge holds still on screen. The width is then set live, in
+    /// whole pixels, by [`Self::set_live_width`] until
+    /// [`Self::end_edge_drag`]. Apps learn which edge holds, so a client
+    /// that has not caught up with a new size yet is drawn against it.
+    pub fn begin_edge_drag(&mut self, moving: WindowEdge) {
+        let live_px = if self.rect.width() > 1.0 {
+            self.rect.width()
+        } else {
+            self.layout_width_px()
+        }
+        .round();
+        self.width_spring = None;
+        self.last_width_step = None;
+        self.edge_drag = Some(GroupEdgeDrag {
+            moving,
+            before: self.width,
+            live_px,
+        });
+        self.edge_highlight = None;
+        self.grip_dirty = true;
+        self.style_dirty = true;
+        self.set_live_resize_anchor(Some(moving.opposite()));
+    }
+
+    /// The width an edge drag puts this window at, this frame: whole
+    /// pixels, as a client's geometry is, and exactly where the pointer is
+    /// rather than on the stored fraction's grid.
+    pub fn set_live_width(&mut self, px: f64) {
+        let Some(drag) = self.edge_drag.as_mut() else {
+            return;
+        };
+        let px = px.round();
+        if (drag.live_px - px).abs() > f64::EPSILON {
+            drag.live_px = px;
+            self.style_dirty = true;
+        }
+    }
+
+    /// The width this window had when its edge drag began.
+    pub fn edge_drag_origin_px(&self) -> Option<f64> {
+        self.edge_drag.map(|drag| drag.live_px)
+    }
+
+    /// End an edge drag. Committed, the width is stored as the share of the
+    /// strip it landed on and handed to the shell to persist; cancelled (an
+    /// Escape, focus loss), the window goes back to the width it had. Returns
+    /// the change in laid-out width the commit itself makes: the stored share
+    /// resolves to whole pixels on its own grid, so the row can keep the
+    /// fixed edge exactly where it was.
+    pub fn end_edge_drag(&mut self, commit: bool) -> f64 {
+        let Some(drag) = self.edge_drag.take() else {
+            return 0.0;
+        };
+        if commit {
+            self.width = WindowWidth::from_px(drag.live_px, self.strip_usable_px);
+            self.pending_width_change = Some(self.width.permille());
+        } else {
+            self.width = drag.before;
+        }
+        self.style_dirty = true;
+        self.grip_dirty = true;
+        self.release_live_resize_anchor();
+        self.resolved_width_px() - drag.live_px
+    }
+
+    /// Tell every tab's app which edge of the window holds still during a
+    /// live resize ([`AppWidget::set_live_resize_anchor`]).
+    fn set_live_resize_anchor(&mut self, fixed: Option<WindowEdge>) {
+        for (_, host) in &mut self.hosts {
+            if let TileContent::App(app) = host.content_mut() {
+                app.set_live_resize_anchor(fixed);
+            }
+        }
+    }
+
+    /// The drag is over: an app may stop drawing against the fixed edge once
+    /// its content has caught up with the window's size.
+    fn release_live_resize_anchor(&mut self) {
+        for (_, host) in &mut self.hosts {
+            if let TileContent::App(app) = host.content_mut() {
+                app.release_live_resize_anchor();
+            }
+        }
+    }
+
+    /// A committed width: springs from where the window is drawn. Edge
+    /// drags set widths live instead ([`Self::begin_edge_drag`]).
     pub fn set_width(&mut self, w: WindowWidth) {
         let visual = self.layout_width_px();
         let before = self.width;
@@ -1085,22 +1191,6 @@ impl WindowGroup {
         }
     }
 
-    /// Converts to a fraction immediately so nothing downstream ever
-    /// stores pixels. Live handle drags call this so the seam stays
-    /// welded to the pointer; a committed resize goes through
-    /// [`Self::set_width`] and springs.
-    pub fn set_width_px(&mut self, px: f64) {
-        let next = WindowWidth::from_px(px, self.strip_usable_px);
-        let animated = self.width_spring.take().is_some();
-        self.last_width_step = None;
-        if next == self.width {
-            self.style_dirty |= animated;
-            return;
-        }
-        self.width = next;
-        self.style_dirty = true;
-    }
-
     /// Pin the slot at its persisted width. Used after [`Self::set_width`]
     /// when the dest strip still fits the viewport, so in-flight values
     /// cannot invent overflow.
@@ -1121,7 +1211,7 @@ impl WindowGroup {
     pub fn has_pending_width_change(&self) -> bool {
         self.pending_width_change.is_some()
     }
-    pub fn take_pending_width_change(&mut self) -> Option<u16> {
+    pub fn take_pending_width_change(&mut self) -> Option<u32> {
         self.pending_width_change.take()
     }
 
@@ -1445,10 +1535,8 @@ impl WindowGroup {
             rect: Rect::ZERO,
             external_navigation: false,
             fullscreen_presentation: false,
-            resize_origin: None,
-            hover_resize: false,
-            resize_leading: false,
-            leads_lane: false,
+            edge_drag: None,
+            edge_highlight: None,
             grip_dirty: false,
             maximized: false,
             search_active: false,
@@ -1468,6 +1556,7 @@ impl WindowGroup {
             bar_slot: None,
             chrome_fade: Duration::ZERO,
             top_overlay_inset: 0.0,
+            fills_display: false,
             last_cursor: Point::ZERO,
             spawned_at: None,
             rect_spring: None,
@@ -1549,27 +1638,24 @@ impl WindowGroup {
         self.resize_grab_rects().iter().any(|rect| rect.contains(p))
     }
 
-    /// The group's own pointer chrome (edge grips, maximized controls), ahead
-    /// of its tab bar and tile. The row offers every group this before any
-    /// group's tile sees the event: a tile that swallows pointer events (one
-    /// still loading, or whose record is gone) must not hide a neighbour's
-    /// edge grip, because the grips sit on the windows' edges.
+    /// The group's own pointer chrome (maximized controls, pin shortcut),
+    /// ahead of its tab bar and tile. The row offers every group this before
+    /// any group's tile sees the event: a tile that swallows pointer events
+    /// (one still loading, or whose record is gone) must not leave another
+    /// group's chrome stale.
     pub fn handle_edge_input(
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
     ) -> bool {
-        let handle_rect = Rect::new(
-            self.rect.x1 - RESIZE_HANDLE_PX,
-            self.rect.y0,
-            self.rect.x1,
-            self.rect.y1,
-        );
-        self.handle_direct_input(event, scale_factor, modifiers, handle_rect)
+        self.handle_direct_input(event, scale_factor, modifiers)
     }
 
-    /// Both edge zones, leading first. Empty while maximized or fullscreen.
+    /// Both edge zones, leading first: where a press resizes a window rather
+    /// than reaching its app. Which window it resizes is the row's to say
+    /// ([`super::edge_resize::seam_owner`]). Empty while maximized or
+    /// fullscreen.
     pub fn resize_grab_rects(&self) -> Vec<Rect> {
         [self.leading_resize_grab_rect(), self.resize_grab_rect()]
             .into_iter()
@@ -1578,8 +1664,7 @@ impl WindowGroup {
     }
 
     /// Leading-edge zone, the mirror of [`Self::resize_grab_rect`]: the same
-    /// width, inside the window. Between two groups the seam handle covers
-    /// it; at the start of a lane the group itself answers.
+    /// width, inside the window.
     pub fn leading_resize_grab_rect(&self) -> Option<Rect> {
         (!self.maximized && !self.fullscreen_presentation).then(|| {
             Rect::new(
@@ -1783,9 +1868,9 @@ impl WindowGroup {
         self.bar.drag_in_flight()
     }
 
-    /// Whether this group's own edge is being dragged to resize it.
+    /// Whether one of this group's edges is being dragged to resize it.
     pub fn edge_resize_in_flight(&self) -> bool {
-        self.resize_origin.is_some()
+        self.edge_drag.is_some()
     }
 
     /// A no-op while the bar has its own `pending_drag` in flight, so the
@@ -2012,82 +2097,26 @@ impl WindowGroup {
         }
     }
 
-    /// The event kinds a group's own resize handle, maximized-chrome
-    /// close/restore chips, and pin shortcut own outright — decided before
-    /// the tab bar or active tile ever see the event. Returns whether the
-    /// event was fully consumed (the caller should mark `handled` and stop
-    /// dispatching further).
+    /// The event kinds a group's maximized-chrome close/restore chips and
+    /// pin shortcut own outright — decided before the tab bar or active tile
+    /// ever see the event. Returns whether the event was fully consumed (the
+    /// caller should mark `handled` and stop dispatching further). Edge
+    /// resizing is not here: the parent row owns it, because which window an
+    /// edge belongs to depends on its neighbour ([`super::edge_resize`]).
     fn handle_direct_input(
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
         m: winit::event::Modifiers,
-        handle_rect: Rect,
     ) -> bool {
         match event {
-            WindowEvent::Focused(false) if self.resize_origin.is_some() => {
-                self.cancel_resize();
-                // Focus loss must still reach the tab and application so
-                // their own pending input is cancelled too.
-                false
-            }
-            WindowEvent::KeyboardInput { event, .. }
-                if self.resize_origin.is_some()
-                    && event.state == ElementState::Pressed
-                    && event.logical_key == Key::Named(winit::keyboard::NamedKey::Escape) =>
-            {
-                self.cancel_resize();
-                true
-            }
             WindowEvent::CursorMoved { position, .. } => {
                 let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_cursor = pt;
-                // A maximized or fullscreen group owns the output; its former
-                // tiled-width grip must neither paint nor remain an active
-                // resize target.
-                let owns_output = self.maximized || self.fullscreen_presentation;
-                let on_trailing = !owns_output && handle_rect.contains(pt);
-                let on_leading = !owns_output
-                    && self.leads_lane
-                    && self
-                        .leading_resize_grab_rect()
-                        .is_some_and(|r| r.contains(pt));
-                let hover = on_trailing || on_leading;
-                if self.resize_origin.is_none() {
-                    self.resize_leading = on_leading && !on_trailing;
-                }
-                self.grip_dirty |= hover != self.hover_resize;
-                self.hover_resize = hover;
                 self.restore_hover = self.maximized && self.restore_rect.contains(pt);
                 self.fullscreen_hover = self.maximized && self.fullscreen_rect.contains(pt);
                 self.close_hover = self.maximized && self.close_rect.contains(pt);
-                if self.resize_origin.is_some() {
-                    self.update_resize(f32_of_f64(pt.x));
-                    return true;
-                }
                 false
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } if !self.maximized
-                && self.hover_resize
-                && (self.external_navigation || !self.new_tab_hit(self.last_cursor)) =>
-            {
-                // Anchor on the actual press point, not the group's right
-                // edge — the hit zone is `RESIZE_HANDLE_PX` wide, so the
-                // edge would jump the window on grab.
-                self.begin_resize(f32_of_f64(self.last_cursor.x));
-                true
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } if self.resize_origin.is_some() => {
-                self.end_resize();
-                true
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -2411,21 +2440,19 @@ impl WindowGroup {
         }
     }
 
-    /// The two-bar resize grip on the group's trailing edge, shown while
-    /// the pointer is in its band or a resize is under way. The hit zone
-    /// (`RESIZE_HANDLE_PX = 6`) is wider than the painted grip so the
-    /// cursor catches it early.
+    /// The two-bar resize grip on the edge of this window a press would
+    /// resize, or is resizing ([`Self::edge_highlight`]): it marks which
+    /// window will change before anything is pressed. Nothing at rest.
     #[allow(
         clippy::similar_names,
         reason = "cx/cy is the standard center-x/center-y coordinate naming convention; \
                   distinguishing them further would reduce clarity"
     )]
     fn draw_resize_grip(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
-        let grip_col = if self.hover_resize || self.resize_origin.is_some() {
-            theme.tokens.colors.border_focus
-        } else {
-            theme.tokens.colors.text_dim.with_alpha_factor(0.55)
+        let Some(edge) = self.edge_highlight() else {
+            return;
         };
+        let grip_col = theme.tokens.colors.border_focus;
         let total_h = self.rect.height();
         let grip_h = (total_h * GRIP_HEIGHT_SHARE).clamp(
             f64::from(theme.tokens.spacing.s6),
@@ -2435,10 +2462,9 @@ impl WindowGroup {
         // `RESIZE_HANDLE_PX` band exactly: centred on the band's own centre,
         // one on either side of it, so the painted grip and the pointer
         // zone are the same thing.
-        let grip_cx = if self.resize_leading {
-            self.rect.x0 + RESIZE_HANDLE_PX / 2.0
-        } else {
-            self.rect.x1 - RESIZE_HANDLE_PX / 2.0
+        let grip_cx = match edge {
+            WindowEdge::Leading => self.rect.x0 + RESIZE_HANDLE_PX / 2.0,
+            WindowEdge::Trailing => self.rect.x1 - RESIZE_HANDLE_PX / 2.0,
         };
         let grip_cy = self.rect.center().y;
         let bar = |dx: f64| {
@@ -3417,6 +3443,9 @@ impl Widget for WindowGroup {
                 h.set_opening_name(name);
             }
             h.set_focused(focused);
+            // A maximized window filling its display draws edge to edge;
+            // under a docked bar, or mid-fade, it is still a card.
+            h.set_full_bleed(self.maximized && self.fills_display && !spawn_active);
             let source_is_lifted = dragged_tab == Some(active_id);
             if source_is_lifted {
                 scene.push_layer(
@@ -3441,10 +3470,7 @@ impl Widget for WindowGroup {
         // the window's own trailing edge, over its content, where it reads
         // as that app's scrollbar (and stays put when the app's panels go).
         // The east-west cursor already marks the band before it shows.
-        if !self.maximized
-            && !self.fullscreen_presentation
-            && (self.hover_resize || self.resize_origin.is_some())
-        {
+        if !self.maximized && !self.fullscreen_presentation {
             self.draw_resize_grip(scene, transform, theme);
         }
 
@@ -3531,7 +3557,7 @@ impl Widget for WindowGroup {
     /// Mirrors the inter-group [`crate::widget::ResizeHandle`] so both
     /// affordances give the same feedback.
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        if self.resize_origin.is_some() || self.resize_grab_hit(point) {
+        if self.edge_drag.is_some() || self.resize_grab_hit(point) {
             Some(winit::window::CursorIcon::EwResize)
         } else {
             None
@@ -3539,7 +3565,7 @@ impl Widget for WindowGroup {
     }
     fn wants_pointer_capture(&self) -> bool {
         self.maximized_controls.wants_pointer_capture()
-            || self.resize_origin.is_some()
+            || self.edge_drag.is_some()
             || self
                 .active_host()
                 .is_some_and(super::Widget::wants_pointer_capture)
@@ -3768,6 +3794,7 @@ impl crate::collaboration::participants::CollaborationTopology for WindowGroup {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use winit::event::MouseButton;
     use crate::testing::Dispatch;
     use crate::widget::{AppKind, TabDescriptor, TileContent};
 
@@ -3930,7 +3957,7 @@ mod tests {
         clippy::cast_sign_loss,
         reason = "sample points are small positive pixel coordinates"
     )]
-    fn the_resize_grip_shows_only_under_the_pointer_or_while_resizing() {
+    fn the_resize_grip_shows_only_on_the_edge_that_will_change() {
         use crate::offscreen::OffscreenRenderer;
         use taffy::prelude::TaffyMaxContent;
         let theme = Theme::dark();
@@ -3980,16 +4007,28 @@ mod tests {
             "an idle group paints a grip over its window's edge"
         );
 
-        group.hover_resize = true;
+        group.set_edge_highlight(Some(WindowEdge::Trailing));
         let hovered = render(&mut group);
         assert_ne!(
             at(&hovered, x, y),
             at(&idle, x, y),
-            "the grip shows under the pointer"
+            "the grip shows on the edge a press would resize"
+        );
+        group.set_edge_highlight(Some(WindowEdge::Leading));
+        let leading = render(&mut group);
+        assert_eq!(
+            at(&leading, x, y),
+            at(&idle, x, y),
+            "and only on that edge"
+        );
+        assert_ne!(
+            at(&leading, rect.x0 + RESIZE_HANDLE_PX / 2.0 + 2.0, y),
+            at(&idle, rect.x0 + RESIZE_HANDLE_PX / 2.0 + 2.0, y),
+            "the leading edge's grip shows when that edge is the one"
         );
 
-        group.hover_resize = false;
-        group.begin_resize(f32_of_f64(rect.x1));
+        group.set_edge_highlight(None);
+        group.begin_edge_drag(WindowEdge::Trailing);
         let dragging = render(&mut group);
         assert_ne!(
             at(&dragging, x, y),
@@ -5054,7 +5093,11 @@ mod tests {
             self.mouse(ElementState::Pressed);
             assert!(self.row.wants_pointer_capture());
             self.move_pointer(100.0);
-            assert_ne!(self.row.groups[0].width(), WindowWidth::Normal);
+            assert_ne!(
+                self.row.groups[0].layout_width_px(),
+                self.row.groups[0].resolved_width_px(),
+                "the drag sets the width live"
+            );
             assert!(self.row.groups[0].take_pending_width_change().is_none());
         }
 
@@ -5064,6 +5107,11 @@ mod tests {
                 "interruption must release capture"
             );
             assert_eq!(self.row.groups[0].width(), WindowWidth::Normal);
+            assert_eq!(
+                self.row.groups[0].layout_width_px(),
+                self.row.groups[0].resolved_width_px(),
+                "and the window is back at its width"
+            );
             self.move_pointer(250.0);
             self.mouse(ElementState::Released);
             assert_eq!(self.row.groups[0].width(), WindowWidth::Normal);
@@ -5103,144 +5151,87 @@ mod tests {
     }
 
     #[test]
-    fn resize_gesture_anchors_on_press_changes_width_and_drains_once() {
-        // Case `resize_drag_changes_laid_out_width`.
+    fn an_edge_drag_sets_the_width_live_and_commits_it_once() {
+        use std::collections::HashMap;
+        use taffy::Style;
+        use taffy::prelude::TaffyMaxContent;
+
+        // (Re)build the taffy tree from the group's current state and run a
+        // full layout pass, returning the group's laid-out width.
+        fn layout_width(g: &mut WindowGroup, theme: &Theme) -> f64 {
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let node = g.build_layout(&mut taffy, theme, &mut node_map);
+            let root = taffy.parent_node(Style::default(), &[node]);
+            taffy
+                .compute_layout(root, taffy::Size::MAX_CONTENT)
+                .unwrap();
+            g.apply_layout(&taffy, node, Point::ZERO);
+            g.get_rect().width()
+        }
+
+        // Case `the_live_width_is_laid_out_in_whole_pixels_off_the_share_grid`.
         {
-            use std::collections::HashMap;
-            use taffy::Style;
-            use taffy::prelude::TaffyMaxContent;
-
-            // Helper: (re)build the taffy tree from the group's current state and
-            // run a full layout pass, returning the group's laid-out width.
-            fn layout_width(g: &mut WindowGroup, theme: &Theme) -> f64 {
-                let mut taffy = TaffyTree::<()>::new();
-                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-                let node = g.build_layout(&mut taffy, theme, &mut node_map);
-                let root = taffy.parent_node(Style::default(), &[node]);
-                taffy
-                    .compute_layout(root, taffy::Size::MAX_CONTENT)
-                    .unwrap();
-                g.apply_layout(&taffy, node, Point::ZERO);
-                g.get_rect().width()
-            }
-
             let theme = Theme::dark();
             let mut g = make_group();
-
-            // 1200 px strip: tiers land on whole hundreds (Narrow 400 /
-            // Normal 800 / Wide 1200).
-            g.set_strip_usable_px(1200.0);
+            // 2400 px strip: one per-mille is 2.4 px, so a share alone could
+            // not put the edge where the pointer is.
+            g.set_strip_usable_px(2400.0);
             let _ = g.take_structure_dirty();
-
-            let before = layout_width(&mut g, &theme);
+            assert_eq!(layout_width(&mut g, &theme), 1601.0);
+            g.begin_edge_drag(WindowEdge::Trailing);
+            assert!(g.edge_resize_in_flight());
+            assert_eq!(g.edge_drag_origin_px(), Some(1601.0));
+            assert_eq!(g.edge_highlight(), Some(WindowEdge::Trailing));
+            g.set_live_width(1700.4);
+            assert!(g.take_structure_dirty(), "a live width relays the window out");
+            assert_eq!(layout_width(&mut g, &theme), 1700.0, "whole pixels");
             assert_eq!(
-                before, 800.0,
-                "make_group() starts at WindowWidth::Normal — two thirds of a \
-             1200 px strip",
+                g.take_pending_width_change(),
+                None,
+                "mid-drag nothing is handed to the shell to persist",
             );
-
-            // Drag the right-edge handle +200 px.
-            g.begin_resize(800.0);
-            g.update_resize(1000.0);
-            assert_eq!(
-                g.resolved_width_px(),
-                1000.0,
-                "drag updates the width field",
-            );
+            let settle = g.end_edge_drag(true);
             assert_eq!(
                 g.width(),
-                WindowWidth::Fraction(833),
-                "the drag is stored as the fraction it landed on (1000/1200), \
-             not as a pixel count",
+                WindowWidth::Fraction(708),
+                "the drag is stored as the share it landed on (1700/2400)",
             );
-
-            assert!(
-                g.take_structure_dirty(),
-                "a width change must report structure-dirty so the taffy node's \
-             baked length is rebuilt",
-            );
-
-            let after = layout_width(&mut g, &theme);
+            assert_eq!(g.take_pending_width_change(), Some(708));
+            assert_eq!(g.take_pending_width_change(), None, "drained once");
             assert_eq!(
-                after, 1000.0,
-                "after the rebuild the group must actually be laid out 200 px wider",
+                settle,
+                g.resolved_width_px() - 1700.0,
+                "the commit reports what the share's own grid moves the width by",
             );
+            assert!(!g.edge_resize_in_flight());
+            assert_eq!(g.edge_highlight(), None);
         }
 
-        // Case `resize_grab_anchors_on_press_position_not_group_edge`.
-        // Drives the real event path (`CursorMoved` → `Pressed` → `CursorMoved`)
-        // since calling `begin_resize` directly would hide the bug, which is
-        // in its caller.
+        // Case `a_cancelled_drag_puts_the_width_back`.
         {
-            use std::collections::HashMap;
-            use taffy::Style;
-            use taffy::prelude::TaffyMaxContent;
-            use winit::event::{ElementState, MouseButton};
-
-            let theme = Theme::dark();
             let mut g = make_group();
-            let mut taffy = TaffyTree::<()>::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let node = g.build_layout(&mut taffy, &theme, &mut node_map);
-            // Definite-size root: `percent(1.0)` height resolves to 0 against
-            // an indefinite parent, which would leave the resize handle's
-            // rect empty and unhittable.
-            let root = taffy.parent_node(
-                Style {
-                    size: Size {
-                        width: Dimension::length(1600.0),
-                        height: Dimension::length(900.0),
-                    },
-                    ..Default::default()
-                },
-                &[node],
-            );
-            taffy
-                .compute_layout(root, taffy::Size::MAX_CONTENT)
-                .unwrap();
-            g.apply_layout(&taffy, node, Point::ZERO);
-
-            let rect = g.get_rect();
-            assert!(
-                rect.height() > 0.0,
-                "group must have a real height to hit-test"
-            );
-            let right_edge = rect.x1;
-            let press_y = rect.center().y;
-            let start_w = g.resolved_width_px();
-            // Press 3 px inside the handle zone (still a valid grab) rather than
-            // exactly on the edge.
-            let press_x = right_edge - 3.0;
-
-            let move_to = |x: f64| WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(x, press_y),
-            };
-            let press = WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            };
-
-            dispatch_at(&mut g, &taffy, node, &move_to(press_x));
-            dispatch_at(&mut g, &taffy, node, &press);
-            // Drag exactly +100 px from the press position.
-            dispatch_at(&mut g, &taffy, node, &move_to(press_x + 100.0));
-
-            assert_eq!(
-                g.resolved_width_px(),
-                start_w + 100.0,
-                "a 100 px drag from the press point must widen the group by exactly \
-             100 px (no jump from anchoring on the group edge)",
-            );
+            g.set_strip_usable_px(1200.0);
+            g.begin_edge_drag(WindowEdge::Leading);
+            g.set_live_width(300.0);
+            assert_eq!(g.layout_width_px(), 300.0);
+            let _ = g.end_edge_drag(false);
+            assert_eq!(g.width(), WindowWidth::Normal);
+            assert_eq!(g.layout_width_px(), 800.0);
+            assert_eq!(g.take_pending_width_change(), None);
         }
 
-        // Case `cursor_shape_is_ew_resize_over_right_edge_band`.
+        // Case `width_limits_are_the_floor_without_an_app_minimum`.
         {
-            use std::collections::HashMap;
-            use taffy::Style;
-            use taffy::prelude::TaffyMaxContent;
+            let mut g = make_group();
+            g.set_strip_usable_px(1200.0);
+            let limits = g.width_limits();
+            assert_eq!(limits.min, min_group_px(1200.0));
+            assert_eq!(limits.max, max_group_px(1200.0));
+        }
 
+        // Case `cursor_shape_is_ew_resize_over_either_edge_band`.
+        {
             let theme = Theme::dark();
             let mut g = make_group();
             let mut taffy = TaffyTree::<()>::new();
@@ -5260,115 +5251,38 @@ mod tests {
                 .compute_layout(root, taffy::Size::MAX_CONTENT)
                 .unwrap();
             g.apply_layout(&taffy, node, Point::ZERO);
-
             let rect = g.get_rect();
-            assert!(
-                rect.height() > 0.0,
-                "group must have a real height to hit-test"
-            );
             let cy = rect.center().y;
-
-            // 3 px inside the right edge → inside the RESIZE_HANDLE_PX band.
-            assert_eq!(
-                Widget::cursor_shape(&g, Point::new(rect.x1 - 3.0, cy)),
-                Some(winit::window::CursorIcon::EwResize),
-                "pointer in the right-edge resize band requests an east-west resize cursor",
-            );
-            // Well inside the group, away from the edge → no cursor claim.
+            for x in [rect.x1 - 3.0, rect.x0 + 3.0] {
+                assert_eq!(
+                    Widget::cursor_shape(&g, Point::new(x, cy)),
+                    Some(winit::window::CursorIcon::EwResize),
+                    "an edge band requests an east-west resize cursor (x = {x})",
+                );
+            }
             assert_eq!(
                 Widget::cursor_shape(&g, Point::new(rect.center().x, cy)),
                 None,
                 "pointer over the group body (not the edge band) defers",
             );
-
-            // In-flight resize drag holds the cursor even off the band —
-            // pointer capture keeps the gesture alive.
-            g.begin_resize(f32_of_f64(rect.x1));
+            // An in-flight drag holds the cursor even off the band.
+            g.begin_edge_drag(WindowEdge::Trailing);
             assert_eq!(
                 Widget::cursor_shape(&g, Point::new(rect.center().x, cy)),
                 Some(winit::window::CursorIcon::EwResize),
-                "an in-flight resize drag holds the east-west cursor across the group",
             );
         }
 
-        // Case `take_pending_width_change_drains_after_resize_gesture`.
+        // Case `the_share_persists_across_displays`.
         {
-            let mut g = make_group();
-            // 1200 px strip: `Normal` (two thirds) resolves to 800.
-            g.set_strip_usable_px(1200.0);
-            assert_eq!(g.resolved_width_px(), 800.0);
-            assert_eq!(
-                g.take_pending_width_change(),
-                None,
-                "no pending width change before any drag",
-            );
-
-            // Press at the right edge (pointer x = 800 = current right edge).
-            g.begin_resize(800.0);
-            // Drag +200 px — inside the strip's bounds, so the new width is 1000.
-            g.update_resize(1000.0);
-            assert_eq!(
-                g.resolved_width_px(),
-                1000.0,
-                "drag updates width in-memory"
-            );
-            // Mid-drag must not publish a pending change — only end_resize does,
-            // so the shell harvests once per gesture, not once per pixel.
-            assert_eq!(
-                g.take_pending_width_change(),
-                None,
-                "mid-drag must not publish a pending change",
-            );
-
-            g.end_resize();
-            assert_eq!(
-                g.take_pending_width_change(),
-                Some(833),
-                "first poll after release reports the new width as a fraction of \
-             the strip (1000/1200), so persisting it is display-independent",
-            );
-            assert_eq!(
-                g.take_pending_width_change(),
-                None,
-                "take-pattern: drained on first poll, second poll is None",
-            );
-
-            // Clamping: a drag past the strip's right edge pins at the full
-            // usable width, not at some fixed pixel ceiling.
-            g.begin_resize(1000.0);
-            g.update_resize(50_000.0);
-            assert_eq!(
-                g.resolved_width_px(),
-                max_group_px(1200.0),
-                "drag past the strip's edge clamps to the strip's usable width",
-            );
-            g.end_resize();
-            assert_eq!(g.take_pending_width_change(), Some(WIDTH_MAX_PERMILLE));
-
-            // Clamping the other way: the floor is a fraction of the strip too,
-            // backstopped by the absolute minimum.
-            g.begin_resize(0.0);
-            g.update_resize(-50_000.0);
-            assert_eq!(
-                g.resolved_width_px(),
-                min_group_px(1200.0),
-                "drag past the strip's minimum clamps to the lower bound",
-            );
-
-            // Same stored width, wider display: the *fraction* persists, so a
-            // wider strip gets the same share, not the same pixel count.
             let mut wide = make_group();
             wide.set_strip_usable_px(3840.0);
-            assert_eq!(
-                wide.width(),
-                g_normal_width(),
-                "fixture precondition: both groups start on the same tier",
-            );
+            assert_eq!(wide.width(), g_normal_width());
             assert_eq!(
                 wide.resolved_width_px(),
                 2561.0,
-                "667/1000 of a 3840 px strip — the same share the 1200 px strip \
-             gave at 800 px, to the 1 px that per-mille quantisation costs \
+                "667/1000 of a 3840 px strip — the same share a 1200 px strip \
+             gives at 800 px, to the 1 px that per-mille quantisation costs \
              at this size",
             );
         }

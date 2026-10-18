@@ -207,6 +207,23 @@ fn logout_contract() -> tilo_actions::ActionContract {
     }
 }
 
+/// What a tier earns for a session row. Lock, restart and shut down end
+/// what the person is doing, so they come up only for their name, or for a
+/// word they are known by typed from its start: never because a keyword is
+/// misspelt into something else, or holds the query in the middle.
+fn session_ranks(tier: ui::search::MatchTier, weight: FieldWeight) -> Option<i32> {
+    use ui::search::MatchTier;
+    if weight == FieldWeight::KEYWORD
+        && matches!(
+            tier,
+            MatchTier::Typo | MatchTier::WordPrefix | MatchTier::Word | MatchTier::Contains
+        )
+    {
+        return None;
+    }
+    tier.rank_in(weight)
+}
+
 pub struct SessionActionsProvider {
     policy: SessionActionPolicy,
     /// The rows' searchable text, indexed while it stays the same.
@@ -236,7 +253,7 @@ impl SessionActionsProvider {
     pub fn new(policy: SessionActionPolicy) -> Self {
         Self {
             policy,
-            ranker: ui::search::ListIndex::default(),
+            ranker: ui::search::ListIndex::default().with_ranks(session_ranks),
             built: RefCell::default(),
         }
     }
@@ -306,6 +323,18 @@ impl SessionActionsProvider {
 }
 
 impl SearchProvider for SessionActionsProvider {
+    fn row_icon(&self, result: &SearchResult) -> Option<ui::icons::Icon> {
+        use ui::icons::Icon;
+        Some(match result.id.as_str() {
+            "lock" => Icon::Lock,
+            "switch-user" => Icon::Users,
+            "suspend" => Icon::Moon,
+            "restart" => Icon::RotateCcw,
+            "shut-down" => Icon::Power,
+            LOGOUT_ID => Icon::ArrowLeft,
+            _ => return None,
+        })
+    }
     fn id(&self) -> &str {
         PROVIDER_ID
     }
@@ -320,6 +349,13 @@ impl SearchProvider for SessionActionsProvider {
 
     fn resource_kinds(&self) -> &[ResourceKind] {
         &[ResourceKind::Action]
+    }
+
+    fn match_reason(&self, result: &SearchResult, needle: &str) -> Option<String> {
+        let built = self.built.borrow();
+        let built = built.as_ref()?;
+        let at = built.rows.iter().position(|row| row.id == result.id)?;
+        crate::shell::search::match_reason_in(needle, result, built.fields.get(at)?)
     }
 
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
@@ -364,7 +400,7 @@ impl SessionActionsProvider {
             id: id.into(),
             title: t(title_key),
             subtitle: Some(t(detail_key)),
-            badge: Some(t("search-badge-session")),
+            badge: None,
             score: 0,
             params: confirmation_params(&contract),
             contract: Some(contract),
@@ -391,7 +427,7 @@ impl SessionActionsProvider {
             id: LOGOUT_ID.into(),
             title: t("search-session-logout"),
             subtitle: Some(t("search-session-logout-detail")),
-            badge: Some(t("search-badge-session")),
+            badge: None,
             score: 0,
             params: confirmation_params(&contract),
             contract: Some(contract),
@@ -403,6 +439,71 @@ impl SessionActionsProvider {
             on_invoke: None,
             on_begin_invoke: None,
         }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn retirement_admin(chrome: &crate::shell::chrome_state::ChromeState) -> bool {
+    if chrome.session_locked() {
+        return false;
+    }
+    let Ok(store) = crate::shell::identity_provisioning::DiskIdentityStore::from_env() else {
+        return false;
+    };
+    store.path().parent().is_some_and(|path| {
+        crate::compositor::admin_control::authentication_session_decision(path).is_ok()
+    })
+}
+#[cfg(target_os = "linux")]
+fn retirement_result() -> SearchResult {
+    SearchResult {
+        shortcut: None,
+        kind: ResourceKind::Action,
+        operation_kind: tilo_actions::OperationKind::View,
+        provider_id: PROVIDER_ID.into(),
+        id: "retained-retirement".into(),
+        title: t("session-retained-retirement"),
+        subtitle: Some(t("session-retained-retirement-detail")),
+        badge: None,
+        score: 0,
+        params: Vec::new(),
+        contract: Some(tilo_actions::ActionContract {
+            kind: tilo_actions::ActionKind::Read,
+            result: tilo_actions::ResultSpec::Json {
+                schema: serde_json::json!({
+                    "type":"object", "additionalProperties":false,
+                    "required":["schema","entries"],
+                    "properties":{
+                        "schema":{"type":"integer","const":1},
+                        "entries":{"type":"array","maxItems":32,"items":{"type":"object"}}
+                    }
+                }),
+            },
+            ..tilo_actions::ActionContract::default()
+        }),
+        on_open: Rc::new(|_, _, _, _| Ok(())),
+        on_invoke: Some(Rc::new(|_, _, chrome, _| {
+            if !retirement_admin(&chrome.borrow()) {
+                return Err(crate::shell::search::action_api::ActionError::Explained(t(
+                    "portal-auth-local-admin-required",
+                )));
+            }
+            let value =
+                crate::shell::launcher::retained_home::retirement::snapshot().map_err(|error| {
+                    crate::shell::search::action_api::ActionError::Refused(error.to_string())
+                })?;
+            Ok(crate::shell::search::ActionReceipt {
+                broker_invocation_id: None,
+                update: tilo_actions::InvocationUpdate::Succeeded {
+                    invocation: tilo_actions::InvocationId::new(),
+                    output: tilo_actions::ActionOutput {
+                        value: Some(value),
+                        resources: Vec::new(),
+                    },
+                },
+            })
+        })),
+        on_begin_invoke: None,
     }
 }
 
@@ -731,70 +832,5 @@ mod tests {
             assert!(policy.admit(os_actions::SessionAction::SwitchUser).is_ok());
             assert!(policy.admit(os_actions::SessionAction::Suspend).is_ok());
         }
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn retirement_admin(chrome: &crate::shell::chrome_state::ChromeState) -> bool {
-    if chrome.session_locked() {
-        return false;
-    }
-    let Ok(store) = crate::shell::identity_provisioning::DiskIdentityStore::from_env() else {
-        return false;
-    };
-    store.path().parent().is_some_and(|path| {
-        crate::compositor::admin_control::authentication_session_decision(path).is_ok()
-    })
-}
-#[cfg(target_os = "linux")]
-fn retirement_result() -> SearchResult {
-    SearchResult {
-        shortcut: None,
-        kind: ResourceKind::Action,
-        operation_kind: tilo_actions::OperationKind::View,
-        provider_id: PROVIDER_ID.into(),
-        id: "retained-retirement".into(),
-        title: t("session-retained-retirement"),
-        subtitle: Some(t("session-retained-retirement-detail")),
-        badge: None,
-        score: 0,
-        params: Vec::new(),
-        contract: Some(tilo_actions::ActionContract {
-            kind: tilo_actions::ActionKind::Read,
-            result: tilo_actions::ResultSpec::Json {
-                schema: serde_json::json!({
-                    "type":"object", "additionalProperties":false,
-                    "required":["schema","entries"],
-                    "properties":{
-                        "schema":{"type":"integer","const":1},
-                        "entries":{"type":"array","maxItems":32,"items":{"type":"object"}}
-                    }
-                }),
-            },
-            ..tilo_actions::ActionContract::default()
-        }),
-        on_open: Rc::new(|_, _, _, _| Ok(())),
-        on_invoke: Some(Rc::new(|_, _, chrome, _| {
-            if !retirement_admin(&chrome.borrow()) {
-                return Err(crate::shell::search::action_api::ActionError::Explained(t(
-                    "portal-auth-local-admin-required",
-                )));
-            }
-            let value =
-                crate::shell::launcher::retained_home::retirement::snapshot().map_err(|error| {
-                    crate::shell::search::action_api::ActionError::Refused(error.to_string())
-                })?;
-            Ok(crate::shell::search::ActionReceipt {
-                broker_invocation_id: None,
-                update: tilo_actions::InvocationUpdate::Succeeded {
-                    invocation: tilo_actions::InvocationId::new(),
-                    output: tilo_actions::ActionOutput {
-                        value: Some(value),
-                        resources: Vec::new(),
-                    },
-                },
-            })
-        })),
-        on_begin_invoke: None,
     }
 }

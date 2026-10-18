@@ -300,9 +300,7 @@ fn scenario(desktop: &Desktop) {
             || client.count("EVENT:KEY PRESS") >= wanted,
         );
     }
-    // ... and the in-process apps take theirs, wherever they are laid out: the
-    // screen's left edge is the workspace wheel, and a click there opens the
-    // overview.
+    // ... and the in-process apps take theirs, wherever they are laid out.
     let apps: Vec<[f64; 4]> = desktop
         .targets()
         .into_iter()

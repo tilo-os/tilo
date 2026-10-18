@@ -69,6 +69,7 @@ pub mod resource;
 pub mod row;
 pub mod scenarios;
 pub use os_actions::codec_pack;
+mod community;
 mod continuity;
 mod device_fleet;
 pub(crate) mod device_read;
@@ -101,6 +102,8 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
 
 #[cfg(test)]
 mod cpu_profile;
+#[cfg(test)]
+mod reveal_tests;
 #[cfg(test)]
 mod scroll_tests;
 #[cfg(test)]

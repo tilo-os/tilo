@@ -870,7 +870,6 @@ impl PhotosApp {
         if sidebar.width() <= 0.0 {
             return;
         }
-        self.chrome.drawer.draw_scrim(scene, transform, theme);
         let local = self.chrome.drawer.paint_panel(scene, transform, theme);
         let body = Rect::new(
             sidebar.x0,
@@ -943,7 +942,6 @@ impl PhotosApp {
         if panel.width() <= 0.0 || !self.chrome.inspector.is_open() {
             return None;
         }
-        self.chrome.inspector.draw_scrim(scene, transform, theme);
         let local = self.chrome.inspector.paint_panel(scene, transform, theme);
         let hh = header_height(&local);
         let inset = f64::from(local.tokens.spacing.rhythm.section);

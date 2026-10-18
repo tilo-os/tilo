@@ -8,16 +8,17 @@
 
 use std::rc::Rc;
 
+use tilo_actions::ParamType;
 use tilo_desktop::search::{
-    WINDOWS_PROVIDER_ID, WindowAction, WindowRow, WindowRowKind, window_rows, window_rows_revision,
-    windows_provider_name,
+    DESTINATION_PARAM, WINDOWS_PROVIDER_ID, WindowAction, WindowRow, WindowRowKind,
+    window_row_app_id, window_row_tile, window_rows, window_rows_revision, windows_provider_name,
 };
 use ui::search::{FieldWeight, ListIndex};
 
 use crate::shell::chrome_state::Chrome;
-use crate::shell::search::action_api::{ActionArgs, ActionError};
+use crate::shell::search::action_api::{ActionArgs, ActionError, ActionParam};
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
-use crate::shell::state::{GroupId, StripId, TabId, WorkspaceId};
+use crate::shell::state::{GroupId, StripId, TabId, TileContent, WorkspaceId};
 
 fn close_contract() -> tilo_actions::ActionContract {
     tilo_actions::ActionContract {
@@ -153,13 +154,46 @@ fn contract(action: WindowAction) -> tilo_actions::ActionContract {
     match action {
         WindowAction::FocusTab { .. } => tilo_actions::ActionContract::view(),
         WindowAction::CloseGroup { .. } | WindowAction::CloseTab { .. } => close_contract(),
-        WindowAction::MoveTab { .. } | WindowAction::CopyTab { .. } => move_contract(),
+        WindowAction::MoveTab { .. }
+        | WindowAction::CopyTab { .. }
+        | WindowAction::MoveTabTo { .. }
+        | WindowAction::CopyTabTo { .. } => move_contract(),
     }
 }
 
-fn invoke(chrome: &Chrome, action: WindowAction) -> Result<(), ActionError> {
+/// The workspace a chosen move or copy names, by its name as the row's
+/// choices list it, or by its id.
+fn destination(chrome: &Chrome, args: &ActionArgs) -> Result<WorkspaceId, ActionError> {
+    let named = args
+        .text(DESTINATION_PARAM)
+        .ok_or_else(|| ActionError::Refused("Choose a workspace to move to".into()))?;
+    let state = chrome.borrow();
+    let tree = state.tree();
+    let active = tree.desktop.active;
+    let found = tree
+        .desktop
+        .workspaces
+        .iter()
+        .filter(|workspace| workspace.id != active)
+        .find(|workspace| workspace.name == named || workspace.id.raw().to_string() == named)
+        .map(|workspace| workspace.id);
+    drop(tree);
+    drop(state);
+    found
+        .ok_or_else(|| ActionError::Refused(format!("There is no other workspace named “{named}”")))
+}
+
+fn invoke(chrome: &Chrome, action: WindowAction, args: &ActionArgs) -> Result<(), ActionError> {
     use crate::shell::window_transfer::TransferMode;
     match action {
+        WindowAction::MoveTabTo { group, tab } => {
+            let workspace = destination(chrome, args)?;
+            transfer_tab(chrome, group, tab, workspace, TransferMode::Move)
+        }
+        WindowAction::CopyTabTo { group, tab } => {
+            let workspace = destination(chrome, args)?;
+            transfer_tab(chrome, group, tab, workspace, TransferMode::Copy)
+        }
         WindowAction::FocusTab {
             workspace,
             strip,
@@ -181,8 +215,52 @@ fn invoke(chrome: &Chrome, action: WindowAction) -> Result<(), ActionError> {
     }
 }
 
-fn result(row: WindowRow, score: i32) -> SearchResult {
+/// The app a window belongs to, by name, when its title is something else
+/// (a document, a page): what a person searching for the app types.
+fn app_name(tree: &crate::shell::state::DesktopTree, row: &WindowRow) -> Option<String> {
+    let app_id = window_row_app_id(tree, &row.id)?;
+    let name =
+        crate::shell::launcher::display_name_for_app_id_without_waiting(&app_id).or_else(|| {
+            match window_row_tile(tree, &row.id)? {
+                TileContent::AppPlaceholder { kind, .. } | TileContent::Stub { kind, .. } => {
+                    Some(kind.as_str().to_owned())
+                }
+                _ => None,
+            }
+        })?;
+    (!name.trim().is_empty()).then_some(name)
+}
+
+/// A window row's second line: the app, when the title names a document
+/// rather than the app, and where it is when that tells it apart.
+fn window_subtitle(row: &WindowRow, app: Option<&str>) -> Option<String> {
+    let app = app.filter(|app| !row.title.eq_ignore_ascii_case(app));
+    match (app, row.subtitle.as_deref()) {
+        (Some(app), Some(place)) if matches!(row.action, WindowAction::FocusTab { .. }) => {
+            Some(format!("{app} · {place}"))
+        }
+        (Some(app), None) if matches!(row.action, WindowAction::FocusTab { .. }) => {
+            Some(app.to_owned())
+        }
+        (_, place) => place.map(str::to_owned),
+    }
+}
+
+fn result(row: WindowRow, app: Option<&str>, score: i32) -> SearchResult {
     let action = row.action;
+    let subtitle = window_subtitle(&row, app);
+    let params = if row.destinations.is_empty() {
+        Vec::new()
+    } else {
+        vec![
+            ActionParam::required_owned(
+                DESTINATION_PARAM,
+                ParamType::Text,
+                "The workspace the tab goes to",
+            )
+            .with_choices(row.destinations.clone()),
+        ]
+    };
     SearchResult {
         shortcut: None,
         kind: match row.kind {
@@ -194,18 +272,20 @@ fn result(row: WindowRow, score: i32) -> SearchResult {
             WindowAction::CloseGroup { .. }
             | WindowAction::CloseTab { .. }
             | WindowAction::MoveTab { .. }
-            | WindowAction::CopyTab { .. } => tilo_actions::OperationKind::Effect,
+            | WindowAction::CopyTab { .. }
+            | WindowAction::MoveTabTo { .. }
+            | WindowAction::CopyTabTo { .. } => tilo_actions::OperationKind::Effect,
         },
         provider_id: WINDOWS_PROVIDER_ID.into(),
         id: row.id,
         title: row.title,
-        subtitle: Some(row.subtitle),
-        badge: Some(row.badge),
+        subtitle,
+        badge: None,
         score,
-        params: Vec::new(),
+        params,
         contract: Some(contract(action)),
-        on_open: Rc::new(move |_doc, _root, chrome: &Chrome, _args: &ActionArgs| {
-            invoke(chrome, action)
+        on_open: Rc::new(move |_doc, _root, chrome: &Chrome, args: &ActionArgs| {
+            invoke(chrome, action, args)
         }),
         on_invoke: None,
         on_begin_invoke: None,
@@ -250,20 +330,54 @@ impl SearchProvider for DesktopWindowsProvider {
 
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
         let tree = ctx.chrome.tree();
-        let rows = window_rows(&tree.desktop, ctx.needle);
+        let mut rows = window_rows(&tree.desktop, ctx.needle);
+        if ctx.needle.trim().is_empty() {
+            // Windows to go back to come in the order Alt+Tab walks them:
+            // the one left last first. The rest keep their place after.
+            let recency = |row: &WindowRow| match row.action {
+                WindowAction::FocusTab { tab, .. } => Some(
+                    ctx.chrome
+                        .search_context
+                        .recent_windows
+                        .iter()
+                        .position(|recent| *recent == tab)
+                        .unwrap_or(usize::MAX),
+                ),
+                _ => None,
+            };
+            rows.sort_by_key(|row| recency(row).map_or((1, 0), |at| (0, at)));
+        }
+        let apps: Vec<Option<String>> = rows
+            .iter()
+            .map(|row| app_name(&tree.desktop, row))
+            .collect();
         drop(tree);
         // An exact address is how an agent or a pasted id selects one row;
         // it resolves outright instead of being ranked against names.
         let exact = ctx.needle.trim();
-        if let Some(row) = rows.iter().find(|row| row.id == exact) {
-            return vec![result(row.clone(), self.max_score())];
+        if let Some(at) = rows.iter().position(|row| row.id == exact) {
+            let app = apps.get(at).cloned().flatten();
+            return rows
+                .into_iter()
+                .nth(at)
+                .map(|row| result(row, app.as_deref(), self.max_score()))
+                .into_iter()
+                .collect();
         }
+        // A window answers to its title and, as a name, to its app's: a
+        // Files window showing "Downloads" is what "files" is looking for.
         let names: Vec<Vec<(String, FieldWeight)>> = rows
             .iter()
-            .map(|row| {
+            .zip(&apps)
+            .map(|(row, app)| {
                 row.names
                     .iter()
                     .map(|name| (name.clone(), FieldWeight::TITLE))
+                    .chain(
+                        app.iter()
+                            .filter(|_| matches!(row.action, WindowAction::FocusTab { .. }))
+                            .map(|app| (app.clone(), FieldWeight::TITLE)),
+                    )
                     .chain(
                         row.hint
                             .iter()
@@ -272,7 +386,11 @@ impl SearchProvider for DesktopWindowsProvider {
                     .collect()
             })
             .collect();
-        let rows = rows.into_iter().map(|row| result(row, 0)).collect();
+        let rows = rows
+            .into_iter()
+            .zip(apps)
+            .map(|(row, app)| result(row, app.as_deref(), 0))
+            .collect();
         crate::shell::search::rank_rows(&self.ranker, ctx.needle, rows, &names)
     }
 
@@ -282,11 +400,12 @@ impl SearchProvider for DesktopWindowsProvider {
     /// `group.close` for the focused window `unknown_action` (A07).
     fn resolve(&self, id: &str, ctx: SearchContext<'_>) -> Option<SearchResult> {
         let tree = ctx.chrome.tree();
-        let rows = window_rows(&tree.desktop, id);
+        let row = window_rows(&tree.desktop, id)
+            .into_iter()
+            .find(|row| row.id == id)?;
+        let app = app_name(&tree.desktop, &row);
         drop(tree);
-        rows.into_iter()
-            .find(|row| row.id == id)
-            .map(|row| result(row, self.max_score()))
+        Some(result(row, app.as_deref(), self.max_score()))
     }
 
     fn search_revision(&self, ctx: &SearchContext<'_>) -> String {
@@ -515,8 +634,9 @@ mod tests {
         assert_eq!(go.title, "Profilfehler aufgetreten");
         assert_eq!(go.operation_kind, tilo_actions::OperationKind::View);
         assert_eq!(
-            go.subtitle.as_deref(),
-            Some("Open in this workspace · 2 tabs")
+            go.subtitle, None,
+            "one strip and an app with no other name: nothing to tell apart, \
+             and never the group's tab count"
         );
 
         // A window is found by its app when its title names the document.
@@ -595,6 +715,76 @@ mod tests {
                 "{id} missing from {ids:?}"
             );
         }
+    }
+
+    #[test]
+    fn move_offers_one_row_per_verb_on_the_focused_tab_that_asks_where() {
+        let (chrome, mut doc) = fixture();
+        let mut targets = Vec::new();
+        {
+            let state = chrome.borrow();
+            let mut tree = state.tree_mut();
+            for name in ["Elsewhere", "Design", "Research"] {
+                let id = crate::shell::state::WorkspaceId::new();
+                let mut other = crate::shell::state::Workspace::new(id, name);
+                other.strips.push(crate::shell::state::Strip::new(
+                    crate::shell::state::StripId::new(),
+                    "Main",
+                ));
+                tree.desktop.workspaces.push(other);
+                targets.push(id);
+            }
+            let strip = tree.desktop.workspaces[0].strips[0].id;
+            tree.desktop.set_active_group(strip, 200);
+            tree.seed_doc_from_cache();
+        }
+        let rows = palette(&chrome, &doc, "move");
+        let ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["tab.move:200:3"],
+            "not every tab times every workspace"
+        );
+        assert_eq!(
+            palette(&chrome, &doc, "copy")
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            ["tab.copy:200:3"]
+        );
+        let mv = &rows[0];
+        assert_eq!(
+            mv.title,
+            "Move “Profilfehler aufgetreten” to another workspace"
+        );
+        assert_eq!(mv.params.len(), 1);
+        assert_eq!(
+            mv.params[0]
+                .choices
+                .iter()
+                .map(AsRef::as_ref)
+                .collect::<Vec<&str>>(),
+            ["Elsewhere", "Design", "Research"]
+        );
+        // Each destination's own address still resolves for an agent.
+        let exact = tilo_desktop::search::tab_move_id(100, 1, targets[1]);
+        assert_eq!(
+            palette(&chrome, &doc, &exact)
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            [exact.as_str()]
+        );
+        // Without a destination the move refuses and nothing moves.
+        assert!(
+            (mv.on_open)(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &ROOT,
+                &chrome,
+                &ActionArgs::none(),
+            )
+            .is_err()
+        );
     }
 
     #[test]

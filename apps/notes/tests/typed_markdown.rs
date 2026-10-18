@@ -117,7 +117,7 @@ fn contractions_typed_on_a_keyboard_get_their_apostrophe() {
     let app = app.reopen().unwrap();
     assert_eq!(
         app.read_document(|doc| read::page_blocks(doc, page))[0].text,
-        "it doesn't work, cant stop"
+        "it doesn't work, can't stop"
     );
 
     let (mut app, page) = with_note("Revert", "");

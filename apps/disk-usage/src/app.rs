@@ -297,10 +297,13 @@ impl DiskUsageApp {
         let content = {
             let can = Rc::clone(&can_go_back);
             let inbox = Rc::clone(&inbox);
-            NavShell::new().with_id("disk-usage.shell").on_back(
-                move || can.get(),
-                move || inbox.borrow_mut().push(Request::Back),
-            )
+            NavShell::new()
+                .content_kind(ui::widget::ContentKind::List)
+                .with_id("disk-usage.shell")
+                .on_back(
+                    move || can.get(),
+                    move || inbox.borrow_mut().push(Request::Back),
+                )
         };
         let mut app = Self {
             view: View::Home,

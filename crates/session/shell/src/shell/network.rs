@@ -4,6 +4,9 @@
 //! Started by default in normal sessions; recovery sessions may disable it.
 
 mod boot_join;
+mod community;
+pub(crate) use community::configured_site as configured_community_site;
+pub use site_join::SiteRoom;
 #[cfg(test)]
 mod display_input_tests;
 #[cfg(test)]
@@ -11,6 +14,7 @@ mod display_observation_refresh_tests;
 mod display_observations;
 mod governor_actions;
 mod home_peer_reader;
+mod hosted_sites;
 mod hosted_topology;
 #[cfg(test)]
 mod idle_quiet_tests;
@@ -42,6 +46,12 @@ pub use record_content::InboundRecordContent;
 #[cfg(test)]
 mod agent_question_tests;
 #[cfg(test)]
+mod community_tests;
+#[cfg(test)]
+mod device_approval_tests;
+pub(crate) mod device_approvals;
+pub(crate) mod join_field;
+#[cfg(test)]
 mod node_member_tests;
 mod relay_rooms;
 mod room_gate;
@@ -49,6 +59,9 @@ mod room_gate;
 mod room_gate_tests;
 #[cfg(test)]
 mod same_person_room_tests;
+mod site_join;
+#[cfg(test)]
+mod site_join_tests;
 
 use std::collections::VecDeque;
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
@@ -1383,6 +1396,10 @@ pub struct ShellNetwork {
     peer_sync_worker: peer_sync_worker::State,
     hosted_topology: hosted_topology::State,
     relay_rooms: relay_rooms::State,
+    /// The rooms held through a site, reached over their host's HTTPS routes.
+    hosted_sites: hosted_sites::State,
+    /// Pairing links this computer made, and the new devices asking.
+    device_approvals: device_approvals::State,
     record_content: record_content::State,
     /// Send commands into the actor (e.g. publish a `NeighbourMsg`).
     pub cmd_tx: mpsc::Sender<NetCmd>,
@@ -2124,6 +2141,8 @@ impl ShellNetwork {
             peer_sync_worker: peer_sync_worker::State::default(),
             hosted_topology: hosted_topology::State::default(),
             relay_rooms: relay_rooms::State::default(),
+            hosted_sites: hosted_sites::State::open(state_dir),
+            device_approvals: device_approvals::State::default(),
             record_content: record_content::State::default(),
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_documents: Arc::new(Mutex::new(Vec::new())),
@@ -8341,6 +8360,8 @@ pub(crate) fn shell_network_for_test(
         peer_sync_worker: peer_sync_worker::State::default(),
         hosted_topology: hosted_topology::State::default(),
         relay_rooms: relay_rooms::State::default(),
+        hosted_sites: hosted_sites::State::default(),
+        device_approvals: device_approvals::State::default(),
         record_content: record_content::State::default(),
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_documents: Arc::new(Mutex::new(Vec::new())),

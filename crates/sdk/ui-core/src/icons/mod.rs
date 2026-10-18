@@ -137,6 +137,7 @@ icons! {
     ArrowUpDown => "arrow-up-down",
     // --- Extended core set ---
     Bell => "bell",
+    BellOff => "bell-off",
     Play => "play",
     Pause => "pause",
     Refresh => "refresh",
@@ -336,6 +337,7 @@ icons! {
     AlignVerticalDistributeCenter => "align-vertical-distribute-center",
     AlignCenterHorizontal => "align-center-horizontal",
     AlignStartHorizontal => "align-start-horizontal",
+    Command => "command",
 }
 
 impl Icon {
@@ -786,6 +788,12 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
                 "M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326",
             ),
         ],
+        Icon::BellOff => vec![
+            path_from_d("M10.268 21a2 2 0 0 0 3.464 0"),
+            path_from_d("M17 17H4a1 1 0 0 1-.74-1.673C4.59 13.956 6 12.499 6 8a6 6 0 0 1 .258-1.742"),
+            line_path(2.0, 2.0, 22.0, 22.0),
+            path_from_d("M8.668 3.01A6 6 0 0 1 18 8c0 2.687.77 4.653 1.707 6.05"),
+        ],
         Icon::Play => vec![path_from_d(
             "M6 3a1 1 0 0 1 1.514-.857l13 7a1 1 0 0 1 0 1.714l-13 7A1 1 0 0 1 6 21z",
         )],
@@ -1115,6 +1123,9 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             line_path(19.0, 8.0, 19.0, 14.0),
             line_path(22.0, 11.0, 16.0, 11.0),
         ],
+        Icon::Command => vec![path_from_d(
+            "M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3",
+        )],
         Icon::Hash => vec![
             line_path(4.0, 9.0, 20.0, 9.0),
             line_path(4.0, 15.0, 20.0, 15.0),
@@ -2180,6 +2191,11 @@ mod tests {
         {
             assert_eq!(icon_subpaths(Icon::Star).len(), 1, "star = 1 outline");
             assert_eq!(icon_subpaths(Icon::Bell).len(), 2, "bell = dome + clapper");
+            assert_eq!(
+                icon_subpaths(Icon::BellOff).len(),
+                4,
+                "bell-off = clapper + two dome halves + slash"
+            );
             assert_eq!(icon_subpaths(Icon::Play).len(), 1, "play = 1 triangle path");
             assert_eq!(icon_subpaths(Icon::Pause).len(), 2, "pause = 2 bars");
             assert_eq!(icon_subpaths(Icon::Check).len(), 1, "check = 1 tick");

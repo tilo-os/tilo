@@ -42,7 +42,7 @@ use crate::support::wayland;
 
 /// Each window's share of the strip: three overflow the 1280 px display, so
 /// there is always something off screen to pan to.
-const WIDTH_PERMILLE: u16 = 600;
+const WIDTH_PERMILLE: u32 = 600;
 
 /// The largest buffer an app commits; the shared pool holds one of these.
 const MAX_BUFFER: i32 = 256;

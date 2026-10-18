@@ -41,6 +41,9 @@ mod governed_agent;
 #[cfg(test)]
 #[path = "room_actions/governed_sealed.rs"]
 mod governed_sealed;
+#[cfg(test)]
+#[path = "room_actions/member_own.rs"]
+mod member_own;
 #[path = "room_actions/resource_support.rs"]
 mod resource_support;
 #[cfg(test)]
@@ -83,7 +86,6 @@ use support::{Device, ROOM, enrol, ready, start_peer, workspace};
 const SHEETS: &str = "so.tilo.sheets";
 const SLIDES: &str = "so.tilo.slides";
 
-#[ignore = "needs agents' replicas to carry the chat's message parts"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_existing_native_chat_reference_discovers_local_views_over_the_governed_https_host() {
     use tilo_actions::remote::ViewResourceQuery;
@@ -139,47 +141,56 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
             channel.workspace == workspace && channel.kind == chat::model::ChannelKind::Text
         })
         .unwrap();
-    let message = chat::demo::Room::of(doc.clone())
-        .say("ada", &channel.id, "Hello é, shared natively")
-        .unwrap();
     source
         .apply(&collab_types::DocumentMutation::Snapshot(doc.save()))
         .unwrap();
-    let id = chat::projection::item_id("messages", &message);
-    let reference = serde_json::json!({"id": id, "kind": "chat.workspace.messages", "label": "Native selection",
+    // Messages are kept in the parts of the chat's messages, posted through
+    // the chain the chat publishes beside its record.
+    let message = resource_support::on_messages(
+        &mut source,
+        "post",
+        &serde_json::json!({"channel": channel.id, "text": "Hello é, shared natively"}),
+    );
+    let (id, kind) = resource_support::published_message(&source, &message);
+    assert_eq!(
+        kind, "chat.messages.messages",
+        "an item of the part keeping it"
+    );
+    let reference = serde_json::json!({"id": id, "kind": kind, "label": "Native selection",
         "span": {"start": 6, "end": 7, "unit": "Chars"}});
-    source
-        .invoke(
-            &ActionAddress::new(
-                chat::projection::item_id("channels", &channel.id),
-                "share-resource",
-            ),
-            &serde_json::json!({"reference": reference, "text": "Discuss this resource"})
-                .as_object()
-                .unwrap()
-                .clone(),
-            false,
-        )
-        .unwrap();
+    let shared = resource_support::on_messages(
+        &mut source,
+        "share-resource",
+        &serde_json::json!({"channel": channel.id, "reference": reference, "text": "Discuss this resource"}),
+    );
+    let part = chat::parts::part(0);
     let shared = source
-        .read(|doc| {
-            chat::projection::read(doc)
-                .message_rows(&chat::messages::Messages::default(), &channel.id)
-        })
+        .read_record(&part, chat::messages::read_part)
         .unwrap()
-        .into_iter()
-        .find(|message| message.text == "Discuss this resource")
+        .messages
+        .iter()
+        .find(|(message, _)| message.as_str() == shared)
+        .map(|(_, message)| message.clone())
         .unwrap();
-    assert_eq!(serde_json::to_value(shared.reference).unwrap(), reference);
-    let route = DocumentRoute {
+    assert_eq!(
+        serde_json::to_value(&shared.reference.0).unwrap(),
+        reference
+    );
+    let record = DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: room.room.clone(),
-        record: source.record().into(),
+        record: source.wire_record().into(),
     };
     browser
         .peer
-        .publish(route.clone(), &source.take_mutation().unwrap())
+        .publish(record, &source.take_mutation().unwrap())
         .unwrap();
+    // The message's own record is the part, published on its own route.
+    let route = resource_support::part_route(&room.room, &part);
+    for (changed, mutation) in source.take_record_mutations() {
+        assert_eq!(changed, part);
+        browser.peer.publish(route.clone(), &mutation).unwrap();
+    }
     let provider = record_provider(&route);
     let policy = ui::permissions::PermissionContext::member_of(
         &room.room,
@@ -187,13 +198,13 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
         ui::permissions::Role::Owner,
     );
     let source_views = source
-        .read(|doc| {
+        .read_record(&part, |doc| {
             common::catalogue().resource_views(
                 "so.tilo.chat",
                 doc,
                 &ViewResourceQuery {
                     id: id.clone(),
-                    kind: "chat.workspace.messages".into(),
+                    kind: kind.clone(),
                 },
                 &policy,
             )
@@ -207,7 +218,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
         provider: Some(provider.clone()),
         view_resource: Some(ViewResourceQuery {
             id: id.clone(),
-            kind: "chat.workspace.messages".into(),
+            kind: kind.clone(),
         }),
         max_results: 256,
         ..CatalogueQuery::default()
@@ -228,7 +239,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     };
     assert!(page.rows.iter().all(|row| {
         row.resource.id == id
-            && row.resource.kind == "chat.workspace.messages"
+            && row.resource.kind == kind
             && row
                 .action
                 .as_ref()
@@ -244,8 +255,11 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     assert_eq!(locator.provider, provider);
     for wanted in [
         ViewResourceQuery {
-            id: chat::projection::item_id("messages", "missing"),
-            kind: "chat.workspace.messages".into(),
+            id: ui::tilo_resource::items::item_resource_id::<chat::parts::ChatPart>(
+                "messages",
+                &ui::tilo_resource::Id::from_raw("missing"),
+            ),
+            kind: kind.clone(),
         },
         ViewResourceQuery {
             id: id.clone(),
@@ -292,16 +306,18 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
         })
         .await
         .unwrap();
+    // An ordinary listing runs the part's verbs (published by the chain,
+    // routed to the part they change) and the record's, never its views.
     assert!(
         ordinary
             .rows
             .iter()
             .filter_map(|row| row.action.as_ref())
-            .all(|action| action.kind == tilo_actions::OperationKind::Document)
+            .all(|action| action.kind != tilo_actions::OperationKind::View)
     );
     // The production catalogue worker must discard already-read metadata when
     // the authority changes before delivery, even though the source was valid.
-    let bytes = source.read(|doc| doc.clone().save()).unwrap();
+    let bytes = source.read_record(&part, |doc| doc.clone().save()).unwrap();
     let caller = tilo_actions::remote::Caller::authenticated(
         browser_device.cert.user_public_key,
         browser_device.cert.device_public_key,
@@ -510,6 +526,7 @@ async fn start_browser(
             public_origin: None,
             live_origin: None,
             limits: tilo_relay::web::WebLimits::default(),
+            country: None,
         })
         .await
         .unwrap();

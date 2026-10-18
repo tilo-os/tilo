@@ -2667,11 +2667,19 @@ fn build_launch_command_for(
         document,
         uri,
     } = *extras;
-    let application_creation = original_application_creation(app);
+    // One read of the package store per launch: the evidence and the surface
+    // both need the installed copy, and reading the registry is most of
+    // what preparing a launch costs.
+    let installed = installed_copy(app);
+    let application_creation = installed
+        .as_ref()
+        .and_then(|installed| original_application_creation(app, installed));
     if application_creation.is_none() {
         note_missing_creation_evidence(app);
     }
-    register_signed_surface(app);
+    if let Some(installed) = &installed {
+        register_signed_surface(app, installed);
+    }
     let mut args = vec![
         "run".to_string(),
         "--manifest".to_string(),
@@ -2764,19 +2772,19 @@ fn build_launch_command_for(
 /// records of the person's it declares there are kept in their room as a
 /// built-in app's are. A package whose surface no longer matches its
 /// signature declares none.
-fn register_signed_surface(app: &InstalledApp) {
-    let Some(installed) = package_store::find_installed(&app.package_id)
-        .ok()
-        .flatten()
-    else {
-        return;
-    };
-    if installed.manifest_path != app.manifest_path || installed.payload_root != app.payload_root {
-        return;
-    }
-    if let Some(surface) = package_store::integrity::signed_surface(&installed) {
+fn register_signed_surface(app: &InstalledApp, installed: &package_store::InstalledPackage) {
+    if let Some(surface) = package_store::integrity::signed_surface(installed) {
         tilo_action_broker::register_package_surface(&app.package_id, &surface);
     }
+}
+
+/// The package store's installed copy of `app`, when it is exactly the copy
+/// being launched (the same manifest and payload). A launch of anything
+/// else carries no evidence and declares no surface.
+fn installed_copy(app: &InstalledApp) -> Option<package_store::InstalledPackage> {
+    let installed = package_store::find_installed(&app.package_id).ok()??;
+    (installed.manifest_path == app.manifest_path && installed.payload_root == app.payload_root)
+        .then_some(installed)
 }
 
 /// What [`original_application_creation`] verified, by the exact inputs it
@@ -2798,11 +2806,8 @@ const CREATION_EVIDENCE_MAX: usize = 256;
 /// exact bytes are launched from this installation.
 fn original_application_creation(
     app: &InstalledApp,
+    installed: &package_store::InstalledPackage,
 ) -> Option<tilo_action_broker::services::ApplicationCreationEvidence> {
-    let installed = package_store::find_installed(&app.package_id).ok()??;
-    if installed.manifest_path != app.manifest_path || installed.payload_root != app.payload_root {
-        return None;
-    }
     let manifest = std::fs::read(&app.manifest_path).ok()?;
     let key = (
         app.package_id.clone(),
@@ -2812,7 +2817,7 @@ fn original_application_creation(
         *blake3::hash(&manifest).as_bytes(),
     );
     cached_creation_evidence(key, || {
-        verify_original_application_creation(app, &installed, &manifest)
+        verify_original_application_creation(app, installed, &manifest)
     })
 }
 

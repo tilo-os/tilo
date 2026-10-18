@@ -1140,14 +1140,10 @@ impl Core {
             return;
         }
         let path = Library::paths().articles.item(id).tags;
+        // The article shows its tags; storing them says nothing.
         for edit in path.edits(&before, &after) {
             self.perform(doc, edit);
         }
-        self.set_toast(if tags.is_empty() {
-            "Tags removed".to_string()
-        } else {
-            format!("Saved {}", plural(tags.len(), "tag", "tags"))
-        });
     }
 
     pub(crate) fn rename_feed(
@@ -1679,6 +1675,7 @@ impl FeedsApp {
             requests: &requests,
         };
         let shell = NavShell::new()
+            .content_kind(ui::widget::ContentKind::Reading)
             .with_id("feeds.shell")
             .sidebar(Box::new(SidebarNav::new(&core, &requests)))
             .overview(Box::new(ListPane::new(&core)))

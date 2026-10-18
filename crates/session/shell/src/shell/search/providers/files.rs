@@ -63,8 +63,10 @@ const SKIP_DIRS: &[&str] = &[
 const MAX_DEPTH: usize = 8;
 const MAX_ENTRIES: usize = 50_000;
 const MAX_RESULTS: usize = 40;
-/// Folders a person actually writes into. Watched recursively after the
-/// first walk so a new file is searchable without waiting for `rescan`.
+/// Folders a person actually writes into, by their usual names, where the
+/// XDG user-dirs configuration names none ([`user_folders`]). Walked first
+/// and watched recursively after the first walk so a new file is searchable
+/// without waiting for `rescan`.
 const WATCH_TREES: &[&str] = &[
     "Documents",
     "Dokumente",
@@ -556,6 +558,7 @@ impl FilesProvider {
         ctx: &SearchContext<'_>,
         cursor: Option<&SearchCursor>,
         budget: SearchBudget,
+        modified: &mut BTreeMap<String, SystemTime>,
     ) -> SearchPage {
         if ctx.needle.trim().is_empty() || budget.max_results == 0 || budget.max_work == 0 {
             return SearchPage::exhausted("empty", Vec::new());
@@ -589,7 +592,11 @@ impl FilesProvider {
             |hit| {
                 let entry = index.entry(hit.key)?;
                 let wanted = if entry.is_dir { want_folder } else { want_file };
-                wanted.then(|| make_result(entry, hit.score, None))
+                let row = wanted.then(|| make_result(entry, hit.score, None))?;
+                if let Some(at) = entry.facts.modified {
+                    modified.insert(row.id.clone(), at);
+                }
+                Some(row)
             },
         )
     }
@@ -661,7 +668,8 @@ impl SearchProvider for FilesProvider {
         // Name lookup owns all continuation pages.  The content index
         // returns a bounded top-K; append it only to the first page so
         // scrolling never repeats content rows.
-        let mut page = self.page_name_hits(&ctx, cursor, budget);
+        let mut modified = BTreeMap::new();
+        let mut page = self.page_name_hits(&ctx, cursor, budget, &mut modified);
         if cursor.is_some() || page.stale_cursor || !ctx.wanted.contains(&ResourceKind::File) {
             return page;
         }
@@ -679,9 +687,12 @@ impl SearchProvider for FilesProvider {
                 page.results.push(row);
             }
         }
+        // Equally good names: the one changed last first, so today's
+        // screenshot leads yesterday's.
         page.results.sort_by(|a, b| {
             b.score
                 .cmp(&a.score)
+                .then_with(|| modified.get(&b.id).cmp(&modified.get(&a.id)))
                 .then_with(|| path_depth(&a.id).cmp(&path_depth(&b.id)))
                 .then_with(|| a.id.cmp(&b.id))
         });
@@ -733,6 +744,36 @@ impl FilesProvider {
     }
 }
 
+/// A file row's second line: the folder it is in, and how long ago it last
+/// changed ("Documents · yesterday"). The name is the title already; saying
+/// it again in a path only pushes the part that tells two files apart off
+/// the row.
+fn location_line(entry: &NameEntry) -> String {
+    let folder = entry
+        .display
+        .rsplit_once('/')
+        .map_or("", |(parent, _)| parent);
+    let folder = match folder.strip_prefix("~/") {
+        Some(inside) => inside.to_owned(),
+        None if folder == "~" || folder.is_empty() => crate::shell::i18n::t("search-files-home"),
+        None => folder.to_owned(),
+    };
+    let age = entry.facts.modified.map(|modified| {
+        let secs = SystemTime::now()
+            .duration_since(modified)
+            .unwrap_or_default()
+            .as_secs();
+        ui::format::relative(i64::try_from(secs).unwrap_or(i64::MAX))
+    });
+    match age {
+        Some(age) => crate::shell::i18n::t_args(
+            "search-files-location",
+            &[("folder", folder.into()), ("age", age.into())],
+        ),
+        None => folder,
+    }
+}
+
 fn make_result(entry: &NameEntry, score: i32, subtitle: Option<String>) -> SearchResult {
     let kind = if entry.is_dir {
         ResourceKind::Folder
@@ -746,7 +787,7 @@ fn make_result(entry: &NameEntry, score: i32, subtitle: Option<String>) -> Searc
         "files",
         entry.path.display().to_string(),
         file_title(&entry.path),
-        subtitle.or_else(|| Some(entry.display.clone())),
+        subtitle.or_else(|| Some(location_line(entry))),
         score,
         move |chrome: &Chrome| open_search_hit(&path, is_dir, chrome),
     )
@@ -894,7 +935,7 @@ fn is_generated_leaf(leaf_lower: &str) -> bool {
 
 /// Everything a path's score depends on besides the needle, computed by the
 /// walker so a keystroke never `stat`s a file.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub(crate) struct NameFacts {
     /// The `~/…` display path, lowercased. Path-level tiers match here.
     lower: String,
@@ -905,7 +946,24 @@ pub(crate) struct NameFacts {
     /// Provenance + depth deductions, summed once since both depend only on the path.
     penalty: i32,
     recency: i32,
+    /// When the file last changed, for the row's second line and to order
+    /// equally good names newest first. Not part of the record's identity:
+    /// a file being written republishes nothing until its recency band
+    /// moves, so the age a row shows can lag by less than that band.
+    modified: Option<SystemTime>,
 }
+
+impl PartialEq for NameFacts {
+    fn eq(&self, other: &Self) -> bool {
+        self.lower == other.lower
+            && self.leaf == other.leaf
+            && self.stem_len == other.stem_len
+            && self.penalty == other.penalty
+            && self.recency == other.recency
+    }
+}
+
+impl Eq for NameFacts {}
 
 impl NameFacts {
     pub(crate) fn new(display: &str, modified: Option<SystemTime>) -> Self {
@@ -919,6 +977,7 @@ impl NameFacts {
             stem_len: u16::try_from(stem_len).unwrap_or(u16::MAX),
             penalty,
             recency: recency_score(modified),
+            modified,
             lower,
         }
     }
@@ -1034,9 +1093,10 @@ fn path_depth(display_lower: &str) -> usize {
     display_lower.bytes().filter(|b| *b == b'/').count()
 }
 
-/// Open a palette hit via [`crate::shell::doc_open`] when an installed app
-/// claims the type; unclaimed types and directories fall back to
-/// `xdg-open`, and a claimed type with no editor is reported, not silent.
+/// Open a palette hit via [`crate::shell::doc_open`] when an app claims the
+/// type. A folder opens in Files, placed like any launch from search, and a
+/// file nothing claims is shown in its folder there; a claimed type with no
+/// editor is reported, not silent.
 ///
 /// A failure is both shown to the person and returned, so an action caller
 /// that cannot see the notification is told the file did not open; success
@@ -1047,11 +1107,8 @@ fn open_search_hit(
     chrome: &Chrome,
 ) -> Result<serde_json::Value, ActionError> {
     use crate::shell::doc_open::{self, DocumentTarget};
-    let handed_off =
-        || serde_json::json!({ "opened": "handed-off", "path": path, "with": "xdg-open" });
     if is_dir {
-        spawn_open(path, is_dir);
-        return Ok(handed_off());
+        return open_folder_in_files(path, path, chrome);
     }
     match doc_open::resolve(path) {
         DocumentTarget::App { .. } | DocumentTarget::HostApp { .. } => {
@@ -1070,26 +1127,41 @@ fn open_search_hit(
             Err(ActionError::Refused(message))
         }
         DocumentTarget::Unclaimed | DocumentTarget::Directory => {
-            spawn_open(path, is_dir);
-            Ok(handed_off())
+            let folder = path.parent().unwrap_or(path);
+            open_folder_in_files(folder, path, chrome)
         }
     }
+}
+
+/// Show `folder` in a Files tab where search places what it opens, with the
+/// same workspace file grant a dropped folder gets. `chosen` is what the
+/// person picked, for the answer and the failure report.
+fn open_folder_in_files(
+    folder: &Path,
+    chosen: &Path,
+    chrome: &Chrome,
+) -> Result<serde_json::Value, ActionError> {
+    let tab = {
+        let mut state = chrome.borrow_mut();
+        let placement = crate::shell::window_actions::search_placement(&state);
+        state.handle_file_drop_at_placement(folder, placement)
+    };
+    let Some(tab) = tab else {
+        let message = crate::shell::i18n::t("search-files-folder-failed");
+        notify_open_failure(chosen, &message, chrome);
+        return Err(ActionError::Explained(message));
+    };
+    Ok(serde_json::json!({
+        "opened": "files",
+        "path": chosen,
+        "folder": folder,
+        "tab": tab,
+    }))
 }
 
 /// Report a failed palette open; shared with every other open surface.
 fn notify_open_failure(path: &Path, detail: &str, chrome: &Chrome) {
     crate::shell::doc_open::report_open_failure(chrome, path, detail, Some("Files"));
-}
-
-/// Best-effort `xdg-open`, fire-and-forget so a slow child never blocks the palette.
-fn spawn_open(path: &Path, _is_dir: bool) {
-    let path = path.to_owned();
-    thread::Builder::new()
-        .name("tilo-search-open".into())
-        .spawn(move || {
-            let _ = std::process::Command::new("xdg-open").arg(path).spawn();
-        })
-        .ok();
 }
 
 /// Arm inotify on `home` and the well-known user folders, then fold
@@ -1122,11 +1194,8 @@ fn start_name_watch(
 
 fn arm_name_watches(watcher: &mut RecommendedWatcher, home: &Path) {
     let _ = watcher.watch(home, RecursiveMode::NonRecursive);
-    for name in WATCH_TREES {
-        let dir = home.join(name);
-        if dir.is_dir() {
-            let _ = watcher.watch(&dir, RecursiveMode::Recursive);
-        }
+    for dir in user_folders(home) {
+        let _ = watcher.watch(&dir, RecursiveMode::Recursive);
     }
 }
 
@@ -1305,12 +1374,71 @@ fn walk_home(home: &Path, index: &RwLock<NameIndex>) {
     drop(previous);
 }
 
+/// The folders a person keeps their files in, below `home`: the ones the
+/// XDG user-dirs configuration names (Documents, Downloads, Pictures… in the
+/// person's language), and the conventional names where none is configured.
+fn user_folders(home: &Path) -> Vec<PathBuf> {
+    use tilo_paths::UserDir;
+    let mut folders: Vec<PathBuf> = Vec::new();
+    let configured = [
+        UserDir::Desktop,
+        UserDir::Documents,
+        UserDir::Download,
+        UserDir::Music,
+        UserDir::Pictures,
+        UserDir::Videos,
+        UserDir::Templates,
+        UserDir::PublicShare,
+    ]
+    .into_iter()
+    .filter_map(|dir| dir.resolve_for_home(home));
+    let conventional = WATCH_TREES.iter().map(|name| home.join(name));
+    for folder in configured.chain(conventional) {
+        if folder != home
+            && folder.starts_with(home)
+            && folder.is_dir()
+            && !folders.contains(&folder)
+        {
+            folders.push(folder);
+        }
+    }
+    folders
+}
+
+/// Whether `dir` is a version-controlled working tree: source code, which a
+/// person finds in their editor, not by name from the launcher. The folder
+/// is listed; what is in it is not.
+fn is_source_tree(dir: &Path) -> bool {
+    [".git", ".hg", ".svn", ".jj"]
+        .iter()
+        .any(|marker| dir.join(marker).exists())
+}
+
 /// [`walk_home`]'s walk, with the budget as a parameter so a test can
 /// exercise the exhaustion behaviour on a tree it can afford to build.
+///
+/// The user folders are walked first, so the budget goes to the files a
+/// person keeps; the rest of the home follows, breadth first, without
+/// descending into source trees ([`is_source_tree`]).
 fn walk_breadth_first(home: &Path, budget: usize) -> Vec<NameEntry> {
     let mut entries: Vec<NameEntry> = Vec::new();
     let mut frontier: std::collections::VecDeque<(PathBuf, usize)> =
         std::collections::VecDeque::new();
+    let folders = user_folders(home);
+    for folder in &folders {
+        let display = display_path(home, folder);
+        let modified = folder.metadata().ok().and_then(|m| m.modified().ok());
+        entries.push(NameEntry {
+            facts: NameFacts::new(&display, modified),
+            path: folder.clone(),
+            display,
+            is_dir: true,
+        });
+        let depth = folder
+            .strip_prefix(home)
+            .map_or(1, |rel| rel.components().count());
+        frontier.push_back((folder.clone(), depth));
+    }
     frontier.push_back((home.to_owned(), 0));
 
     'walk: while let Some((dir, depth)) = frontier.pop_front() {
@@ -1328,9 +1456,13 @@ fn walk_breadth_first(home: &Path, budget: usize) -> Vec<NameEntry> {
             // `file_type` is free on Linux (from readdir's `d_type`);
             // `metadata` is the one stat, taken here off the UI thread.
             let is_dir = child.file_type().is_ok_and(|t| t.is_dir());
+            // A user folder was walked (and listed) first.
+            if folders.contains(&path) {
+                continue;
+            }
             let modified = child.metadata().ok().and_then(|m| m.modified().ok());
             let next_depth = depth.saturating_add(1);
-            if is_dir && next_depth < MAX_DEPTH {
+            if is_dir && next_depth < MAX_DEPTH && !is_source_tree(&path) {
                 frontier.push_back((path.clone(), next_depth));
             }
             let display = display_path(home, &path);
@@ -1895,6 +2027,7 @@ mod tests {
                     &ctx_for(needle, &wanted, &st, &doc),
                     None,
                     SearchBudget::PALETTE,
+                    &mut BTreeMap::new(),
                 )
                 .results
                 .iter()
@@ -2283,7 +2416,7 @@ mod tests {
         // Phase `letters_and_digits_are_separate_words`.
         {
             let whole = score_of("2026", "~/a/report2026final.md").unwrap();
-            let inside = score_of("026", "~/a/report2026final.md").unwrap();
+            let inside = score_of("eport", "~/a/report2026final.md").unwrap();
             assert!(whole > inside, "{whole} / {inside}");
         }
 
@@ -2291,8 +2424,16 @@ mod tests {
         {
             assert!(score_of("noets", "~/a/notes").is_some());
             assert!(
-                score_of("todp", "~/a/todo.md").is_none(),
-                "short words need no typo match"
+                score_of("tdo", "~/a/todo.md").is_none(),
+                "words under four letters take no typo"
+            );
+            assert!(
+                score_of("todp", "~/a/todo.md").is_some(),
+                "four letters take one"
+            );
+            assert!(
+                score_of("026", "~/a/report2026final.md").is_none(),
+                "three characters never match inside a word"
             );
             assert!(score_of("xz", "~/a/notes").is_none());
         }
@@ -2337,6 +2478,42 @@ mod tests {
                 RECENCY_MAX,
                 "a today mtime carried in the index must contribute the full \
                  recency band"
+            );
+        }
+    }
+
+    #[test]
+    fn user_folders_come_first_and_source_trees_stay_folders() {
+        {
+            let home = tempfile::tempdir().expect("tempdir");
+            let root = home.path();
+            std::fs::create_dir_all(root.join("Documents/reports")).unwrap();
+            std::fs::write(root.join("Documents/reports/q3.pdf"), b"x").unwrap();
+            std::fs::write(root.join("notes.md"), b"x").unwrap();
+            std::fs::create_dir_all(root.join("src/tilo/.git")).unwrap();
+            std::fs::create_dir_all(root.join("src/tilo/crates")).unwrap();
+            std::fs::write(root.join("src/tilo/crates/lib.rs"), b"x").unwrap();
+            std::fs::create_dir_all(root.join("Projects/plan")).unwrap();
+            std::fs::write(root.join("Projects/plan/plan.odt"), b"x").unwrap();
+            let entries = walk_breadth_first(root, 1_000);
+            let shown: Vec<&str> = entries.iter().map(|e| e.display.as_str()).collect();
+            assert_eq!(shown.first().copied(), Some("~/Documents"), "{shown:?}");
+            for found in [
+                "~/Documents/reports/q3.pdf",
+                "~/notes.md",
+                "~/src/tilo",
+                "~/Projects/plan/plan.odt",
+            ] {
+                assert!(shown.contains(&found), "{found} missing: {shown:?}");
+            }
+            assert!(
+                !shown.contains(&"~/src/tilo/crates/lib.rs"),
+                "a source tree is a folder, not a thousand file names: {shown:?}"
+            );
+            assert_eq!(
+                shown.iter().filter(|e| **e == "~/Documents").count(),
+                1,
+                "a user folder is listed once"
             );
         }
     }
@@ -2739,6 +2916,7 @@ mod tests {
                         max_bytes: 64 * 1024,
                         max_work: SearchBudget::PALETTE.max_work,
                     },
+                    &mut BTreeMap::new(),
                 )
                 .results
                 .iter()

@@ -165,6 +165,19 @@ fn serve_locally(
             "this host does not serve apps",
         ));
     }
+    // An action the host runs for a member (a comment, linking their own
+    // account) changes a record as theirs: it spends their change budget,
+    // as a change they send does.
+    if matches!(
+        request.message,
+        tilo_actions::remote::RemoteActionMessage::Invoke(_)
+    ) && super::over_change_limit(peer, session).is_some()
+    {
+        return Err((
+            UnavailableReason::Backpressure,
+            tilo_relay_protocol::refusal::TOO_MANY_CHANGES,
+        ));
+    }
     let Some(reply) = plane.serve_certified(workspace_id, &caller, &peer.cert, request.message)
     else {
         return Ok(None);

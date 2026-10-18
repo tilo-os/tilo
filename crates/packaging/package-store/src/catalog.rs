@@ -263,10 +263,17 @@ pub fn runs_over_image(user: &InstalledPackage, image: &InstalledPackage) -> boo
             != std::cmp::Ordering::Less
 }
 
-fn is_within(root: &Path, path: &Path) -> bool {
-    match (std::fs::canonicalize(root), std::fs::canonicalize(path)) {
-        (Ok(root), Ok(path)) => path.starts_with(root),
-        _ => false,
+/// Whether an existing `path` resolves into one of `roots` (already
+/// canonical). A path that does not exist names no tree, so it is not an
+/// escape; one that exists but cannot be resolved is.
+///
+/// The roots are resolved once per registry read, not once per row: every
+/// launch reads the registry, and resolving both store roots again for each
+/// of the image's packages was most of that read.
+fn escapes(roots: &[Option<PathBuf>], path: &Path) -> bool {
+    match std::fs::canonicalize(path) {
+        Ok(path) => !roots.iter().flatten().any(|root| path.starts_with(root)),
+        Err(_) => path.exists(),
     }
 }
 
@@ -289,15 +296,16 @@ fn relocate_system_row(system: &SystemStore, row: &mut InstalledPackage) {
 fn system_packages(system: &SystemStore) -> Result<Vec<InstalledPackage>, CatalogError> {
     let rows = Registry::load(&system.data_dir.join(layout::REGISTRY_FILE))?.into_entries();
     let mut out = Vec::with_capacity(rows.len());
+    let roots = [
+        std::fs::canonicalize(&system.data_dir).ok(),
+        std::fs::canonicalize(&system.payload_dir).ok(),
+    ];
     for mut row in rows {
         relocate_system_row(system, &mut row);
         // The system registry ships inside the image; a row that names a
         // tree elsewhere is a broken or tampered image, not a package.
         for path in [&row.payload_root, &row.manifest_path] {
-            if path.exists()
-                && !is_within(&system.data_dir, path)
-                && !is_within(&system.payload_dir, path)
-            {
+            if escapes(&roots, path) {
                 return Err(CatalogError::Escapes {
                     id: row.id.clone(),
                     root: system.data_dir.clone(),
@@ -488,6 +496,31 @@ mod tests {
                 Err(CatalogError::Escapes { .. })
             ));
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_system_row_resolving_outside_through_a_link_is_refused() {
+        // Named inside the store, but a link there resolves elsewhere:
+        // where a path leads is what counts, not how it is spelled.
+        let system = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let link = system.path().join("pkgs");
+        std::os::unix::fs::symlink(outside.path(), &link).unwrap();
+        std::fs::write(
+            system.path().join("registry.toml"),
+            format!(
+                "[[entry]]\nid = 'so.tilo.x'\npayload_root = {:?}\nmanifest_path = {:?}\n",
+                link.display().to_string(),
+                link.join("absent.toml").display().to_string()
+            ),
+        )
+        .unwrap();
+        let user = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            catalog(system.path(), user.path()).list(),
+            Err(CatalogError::Escapes { .. })
+        ));
     }
 
     #[test]

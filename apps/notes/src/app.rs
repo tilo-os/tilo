@@ -84,6 +84,26 @@ fn read_notebook(doc: &AutoCommit) -> Result<crate::Notebook, String> {
 /// Document heads, pending operations, selected page and tag filter.
 type CanonicalProjectionKey = (Vec<ChangeHash>, usize, Option<PageId>, Option<TagId>);
 
+/// The editing rows of the note menu over a selection, in order.
+const EDIT_MENU_KEYS: [&str; 4] = [
+    "notes-menu-cut",
+    "notes-menu-copy",
+    "notes-menu-paste",
+    "notes-menu-select-all",
+];
+
+/// A deleted note's "Undo" toast and the notebook state it acts on.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+enum DeleteUndo {
+    /// No toast offers to undo a deletion.
+    #[default]
+    None,
+    /// Offered; the next sync records the state it acts on.
+    Offered,
+    /// Offered over this state (committed heads, pending operations).
+    Seen((Vec<ChangeHash>, usize)),
+}
+
 fn standalone_image_parts(line: &str) -> Option<(&str, &str, &str)> {
     let trimmed = line.trim();
     let body = trimmed.strip_prefix("![")?;
@@ -215,7 +235,7 @@ fn read_image_asset(source: &std::path::Path) -> Result<Vec<u8>, String> {
     const MAX_IMAGE_BYTES: u64 = crate::notebook::MAX_ASSET_BYTES as u64;
     let bytes = crate::files::read_bounded(source, MAX_IMAGE_BYTES)
         .map_err(|error| error.to_string())?
-        .ok_or("Image is larger than 1 MiB")?;
+        .ok_or_else(|| ui::i18n!("notes-image-too-big"))?;
     check_image(&bytes)?;
     Ok(bytes)
 }
@@ -243,7 +263,7 @@ fn line_after_new_picture(
 /// must still work.
 fn fit_image_asset(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
     const MAX: usize = crate::notebook::MAX_ASSET_BYTES;
-    crate::notebook::image_mime(&bytes).ok_or("Use a PNG, JPEG, or WebP image")?;
+    crate::notebook::image_mime(&bytes).ok_or_else(|| ui::i18n!("notes-image-kind"))?;
     if bytes.len() <= MAX {
         return Ok(bytes);
     }
@@ -278,17 +298,17 @@ fn fit_image_asset(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
             image::imageops::FilterType::Triangle,
         );
     }
-    Err("Image is too large to keep in a note".into())
+    Err(ui::i18n!("notes-image-unfit"))
 }
 
 /// Whether `bytes` are an image a notebook keeps: a PNG, JPEG or WebP of at
 /// most 1 MiB.
 pub(crate) fn check_image(bytes: &[u8]) -> Result<(), String> {
     if bytes.len() > crate::notebook::MAX_ASSET_BYTES {
-        return Err("Image is larger than 1 MiB".into());
+        return Err(ui::i18n!("notes-image-too-big"));
     }
     if crate::notebook::image_mime(bytes).is_none() {
-        return Err("Choose a PNG, JPEG, or WebP image".into());
+        return Err(ui::i18n!("notes-image-kind"));
     }
     Ok(())
 }
@@ -309,9 +329,9 @@ pub struct NotesApp {
     /// The note's save + page/word status, surfaced on the save status
     /// surface (see `save_status`) instead of a permanent strip.
     status: StatusModel,
-    /// The framework's save status surface: a save that takes noticeable
-    /// time says "Saving…" and then "Saved" in the note's header row; one
-    /// that gives up says "Not saved" with "Try again" there; a failed save
+    /// The framework's save status surface: autosave says nothing; a save
+    /// that stalls says "Couldn't save yet. Retrying…" in the note's header
+    /// row, and "Saved" once it lands; one that gives up says "Not saved" with "Try again" there; a failed save
     /// is an error toast with "Try again", and the save that ends it a
     /// one-time "Saved".
     save_surface: ui::SaveStatusSurface,
@@ -322,6 +342,12 @@ pub struct NotesApp {
     transfer_toasts: ui::widget::toast::ToastStack,
     /// The last copied link, whose outcome can arrive after its toast.
     pub(crate) link_copy: ui::CopyWatch,
+    /// A deleted note's "Undo" toast is up: the notebook's state it acts
+    /// on, once a sync has seen it. Any later change takes the toast down,
+    /// so Undo never undoes something else.
+    delete_undo: DeleteUndo,
+    /// "Undo" was chosen on a toast; the host performs it as Ctrl+Z.
+    undo_requested: bool,
     /// Shot-only override for the real save progress/failure presentation.
     /// Notes opens its workspace synchronously, so this does not alter live
     /// loading behavior or introduce a second production state source.
@@ -668,6 +694,7 @@ impl NotesApp {
         // Maximized, the header lives in the window's bar: the note has the
         // whole window until the person reaches for the top edge.
         NavShell::new()
+            .content_kind(ui::widget::ContentKind::Document)
             .with_id("notes-shell")
             .with_header_in_window_bar()
             .sidebar(Box::new(columns.sidebar.slot()))
@@ -697,6 +724,8 @@ impl NotesApp {
             save_retry: false,
             transfer_toasts: ui::widget::toast::ToastStack::new().with_max(3),
             link_copy: ui::CopyWatch::default(),
+            delete_undo: DeleteUndo::None,
+            undo_requested: false,
             shots_save_status: None,
             shortcuts: ShortcutsOverlay::new(),
             rect: Rect::ZERO,
@@ -813,7 +842,7 @@ impl NotesApp {
             word_count,
         });
         // A failure stays on the surface until the note saves or it is
-        // dismissed; "Saving…" and "Saved" pass. The state and counts stay
+        // dismissed; autosave itself shows nothing. The state and counts stay
         // in the accessibility status.
         let now = ui::time::now();
         self.save_surface.set(self.save_state(), now);
@@ -1089,7 +1118,7 @@ impl NotesApp {
                     .flat_map(|blocks| blocks.iter())
                     .map(|block| block.text.clone())
                     .find(|text| !text.trim().is_empty())
-                    .unwrap_or_else(|| "Empty note".to_string());
+                    .unwrap_or_else(|| ui::i18n!("notes-empty-excerpt"));
                 let mut excerpt = raw.chars().take(EXCERPT_LIMIT).collect::<String>();
                 if raw.chars().nth(EXCERPT_LIMIT).is_some() {
                     excerpt.push('…');
@@ -1143,7 +1172,10 @@ impl NotesApp {
                     self.self_dirty = true;
                 }
                 Err(error) => self.transfer_toasts.push(
-                    format!("Image paste failed: {error}"),
+                    ui::i18n::I18nManager::format(
+                        "notes-image-paste-failed",
+                        &[("error", ui::i18n::ArgValue::from(error))],
+                    ),
                     ui::widget::toast::ToastKind::Error,
                 ),
             }
@@ -1165,10 +1197,112 @@ impl NotesApp {
             Err(error) => {
                 tracing::warn!(%error, "notes: image not inserted");
                 self.transfer_toasts.push(
-                    format!("Image import failed: {error}"),
+                    ui::i18n::I18nManager::format(
+                        "notes-image-import-failed",
+                        &[("error", ui::i18n::ArgValue::from(error))],
+                    ),
                     ui::widget::toast::ToastKind::Error,
                 );
             }
+        }
+    }
+
+    /// Carry out a slash command the editor hands over: a picture chosen
+    /// for the open note, or a note made inside it. A sub-note made from a
+    /// block with text takes the text as its title and the block becomes a
+    /// link to it, the writing staying where it is; one made from an empty
+    /// line opens with its title ready to type, the line linking to it
+    /// (links follow a rename).
+    fn drain_slash_request(&mut self, edits: &mut ui::widget::Edits<'_>) {
+        let Some(request) = self.main.take_slash_request() else {
+            return;
+        };
+        let Some(page) = self.main.page_id() else {
+            return;
+        };
+        match request.command {
+            ui::widget::SlashHostCommand::Image => {
+                self.request(&NotesEffect::InsertImage { page });
+            }
+            ui::widget::SlashHostCommand::Page => {
+                let title = request.text.trim();
+                let named = !title.is_empty();
+                let title = if named {
+                    title
+                } else {
+                    crate::notebook::UNTITLED
+                };
+                let id = PageId::new_v4();
+                if let Err(error) =
+                    self.dispatch(edits, &actions::create_page_action(id, Some(page), title))
+                {
+                    tracing::warn!(%error, "notes: sub-note not created");
+                    return;
+                }
+                self.main.editor_mut().link_block_to_page(
+                    &request.block,
+                    &PageEntry {
+                        id,
+                        title: title.to_owned(),
+                    },
+                );
+                self.self_dirty = true;
+                if !named {
+                    // As Ctrl+N does: the new note, its title taking the
+                    // keyboard. Opened once the link is in the note.
+                    self.pending_events.push(OutEvent::Select(id));
+                    self.naming_page = Some(id);
+                }
+            }
+        }
+    }
+
+    /// What a deleted note's toast says: its title, and how many notes
+    /// inside it went with it.
+    fn deletion_notice(&self, page: PageId) -> String {
+        let pages = self.workspace.pages();
+        let mut inside = 0usize;
+        let mut frontier = vec![page];
+        while let Some(parent) = frontier.pop() {
+            for child in pages.iter().filter(|meta| meta.parent == Some(parent)) {
+                inside = inside.saturating_add(1);
+                frontier.push(child.id);
+            }
+        }
+        let title = self
+            .workspace
+            .get(page)
+            .map(|meta| meta.title.clone())
+            .unwrap_or_default();
+        ui::i18n::I18nManager::format(
+            "notes-deleted",
+            &[
+                ("title", ui::i18n::ArgValue::from(title)),
+                ("inside", ui::i18n::ArgValue::from(inside)),
+            ],
+        )
+    }
+
+    /// Follow the deleted note's "Undo" toast: choosing it undoes the
+    /// deletion as Ctrl+Z does; any other change to the notebook first
+    /// takes the toast down.
+    fn follow_delete_undo(&mut self, key: (Vec<ChangeHash>, usize)) {
+        match &self.delete_undo {
+            DeleteUndo::Offered => self.delete_undo = DeleteUndo::Seen(key),
+            DeleteUndo::Seen(seen) if *seen != key => {
+                self.transfer_toasts.dismiss_actionable();
+                self.delete_undo = DeleteUndo::None;
+            }
+            _ => {}
+        }
+    }
+
+    fn take_toast_undo(&mut self) {
+        if self.transfer_toasts.take_activated().is_some()
+            && std::mem::take(&mut self.delete_undo) != DeleteUndo::None
+        {
+            self.undo_requested = true;
+            self.self_dirty = true;
         }
     }
 
@@ -1186,18 +1320,21 @@ impl NotesApp {
         }
         let bytes = crate::files::read_bounded(path, ui::clipboard::MAX_PASTED_IMAGE_BYTES as u64)
             .map_err(|error| error.to_string())
-            .and_then(|bytes| bytes.ok_or_else(|| "Image is too large".to_owned()));
+            .and_then(|bytes| bytes.ok_or_else(|| ui::i18n!("notes-image-too-big")));
         match bytes {
             Ok(bytes) => {
                 let alt = path
                     .file_stem()
                     .and_then(|stem| stem.to_str())
-                    .unwrap_or("Image")
+                    .map_or_else(|| ui::i18n!("notes-image-default-alt"), str::to_owned)
                     .replace([']', '[', '(', ')'], " ");
                 self.insert_image_bytes(&mut ctx.edits(), alt.trim(), bytes);
             }
             Err(error) => self.transfer_toasts.push(
-                format!("Image import failed: {error}"),
+                ui::i18n::I18nManager::format(
+                    "notes-image-import-failed",
+                    &[("error", ui::i18n::ArgValue::from(error))],
+                ),
                 ui::widget::toast::ToastKind::Error,
             ),
         }
@@ -1435,15 +1572,12 @@ impl NotesApp {
                 .restore_expanded_pages(&ancestors, &self.workspace);
             self.navigate_to(page);
         }
-        if matches!(scenario, Some("image" | "image_edit")) {
+        if matches!(scenario, Some("image" | "image_edit" | "image_sized")) {
             self.load_images_for_capture();
         }
         match scenario {
             Some("status") => {
-                self.set_save_status_for_shots(SaveStatus::Saved, ui::SAVE_NOTICEABLE);
-            }
-            Some("saving") => {
-                self.set_save_status_for_shots(SaveStatus::Saving, ui::SAVE_NOTICEABLE);
+                self.set_save_status_for_shots(SaveStatus::Saved, ui::SAVE_STALL);
             }
             Some("save_retrying") => {
                 self.set_save_status_for_shots(SaveStatus::Saving, ui::SAVE_STALL);
@@ -1452,7 +1586,7 @@ impl NotesApp {
                 self.set_save_status_for_shots(SaveStatus::Saving, ui::SAVE_GIVE_UP);
             }
             Some("save_error") => {
-                self.set_save_status_for_shots(SaveStatus::Failed, ui::SAVE_NOTICEABLE);
+                self.set_save_status_for_shots(SaveStatus::Failed, ui::time::Duration::ZERO);
             }
             Some("import_success") => self.transfer_toasts.push(
                 "Imported Project brief",
@@ -1744,7 +1878,17 @@ impl NotesApp {
                 if gone(self, id) {
                     return Err("page no longer exists".into());
                 }
+                let notice = self.deletion_notice(id);
                 self.dispatch(edits, &actions::delete_page_action(id))?;
+                // A note goes with everything inside it, so the deletion
+                // says so and can be taken back at once.
+                self.transfer_toasts.dismiss_actionable();
+                self.transfer_toasts.push_with_action(
+                    notice,
+                    ui::widget::toast::ToastKind::Info,
+                    ui::i18n!("notes-undo"),
+                );
+                self.delete_undo = DeleteUndo::Offered;
             }
             OutEvent::Reparent {
                 id,
@@ -2494,11 +2638,19 @@ impl NotesApp {
     }
 }
 
+/// A toast's "Undo" goes through the host's undo, the same as Ctrl+Z.
+impl ui::undo::UndoControl for NotesApp {
+    fn take_undo_request(&mut self) -> Option<ui::UndoRequest> {
+        std::mem::take(&mut self.undo_requested).then_some(ui::UndoRequest::Undo)
+    }
+}
+
 impl Widget for NotesApp {
     ui::provides!(
         dyn ui::resources::PublishesResources,
         dyn ui::presence::capability::PublishesPresence,
-        dyn ui::application_view::ApplicationViewState
+        dyn ui::application_view::ApplicationViewState,
+        dyn ui::undo::UndoControl
     );
 
     fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
@@ -2520,6 +2672,7 @@ impl Widget for NotesApp {
         }
         self.drain_sidebar_events(edits);
         self.drain_pasted_images(edits);
+        self.drain_slash_request(edits);
         self.drain_empty_note_request(edits);
         self.main.settle(edits, path);
     }
@@ -2553,7 +2706,7 @@ impl Widget for NotesApp {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if self.link_copy.failed() {
             self.transfer_toasts.push(
-                "Could not copy the link: the clipboard is unavailable",
+                ui::i18n!("notes-copy-link-failed"),
                 ui::widget::toast::ToastKind::Error,
             );
         }
@@ -2602,6 +2755,7 @@ impl Widget for NotesApp {
         // re-listed every page and tag on each pointer move.
         let heads = state.base_heads();
         let pending = state.pending_ops();
+        self.follow_delete_undo((heads.clone(), pending));
         let key = (
             heads,
             pending,
@@ -2876,7 +3030,7 @@ impl Widget for NotesApp {
         if self.handle_find_shortcut(event, *ctx.modifiers, ctx.focus_target, ctx.handled) {
             return;
         }
-        if self.handle_new_child_shortcut(event, ctx) {
+        if self.handle_new_note_shortcut(event, ctx) {
             return;
         }
         if self.handle_route_history_shortcut(event, *ctx.modifiers, ctx.handled) {
@@ -2886,6 +3040,7 @@ impl Widget for NotesApp {
             return;
         }
         self.transfer_toasts.handle_event(event, ctx);
+        self.take_toast_undo();
         if *ctx.handled {
             return;
         }
@@ -2962,7 +3117,7 @@ impl Widget for NotesApp {
         Some(
             AccessNode::new(Role::Group)
                 .with_name("Notes")
-                .with_description("Workspace notes and note editor")
+                .with_description(ui::i18n!("notes-window-description"))
                 .with_children(children),
         )
     }
@@ -3137,21 +3292,15 @@ impl NotesApp {
         true
     }
 
-    /// `?` opens the shortcuts overlay — but ONLY when a note isn't being
-    /// typed into. A notes app is a text editor; if `?` were a global
-    /// shortcut the character could never be typed into a note. So it's
-    /// gated on the editor NOT holding focus. When the editor is focused the
-    /// key falls through to the block editor and types a literal `?`; when
-    /// the page tree / nothing is focused, `?` opens help. This is the
-    /// standard "help key only outside inputs" behaviour.
+    /// Ctrl+/ (or F1) opens the shortcuts overlay, wherever focus is. A bare
+    /// `?` belongs to whatever text field holds the keyboard: the note body,
+    /// its title and a sidebar rename all type it, so a printable key can
+    /// never be the help chord.
     fn handle_help_key(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
-        if self.main.editor().is_focused() {
-            return false;
-        }
         let WindowEvent::KeyboardInput {
             event:
                 KeyEvent {
-                    logical_key: Key::Character(c),
+                    logical_key,
                     state: ElementState::Pressed,
                     ..
                 },
@@ -3160,7 +3309,14 @@ impl NotesApp {
         else {
             return false;
         };
-        if c.as_str() != "?" {
+        let mods = ctx.modifiers.state();
+        let command = mods.control_key() || mods.super_key();
+        let asked = match logical_key {
+            Key::Named(NamedKey::F1) => !command && !mods.alt_key(),
+            Key::Character(c) => command && !mods.alt_key() && c.as_str() == "/",
+            _ => false,
+        };
+        if !asked {
             return false;
         }
         // The sheet takes the pointer and the keyboard from the page tree
@@ -3213,14 +3369,14 @@ impl NotesApp {
         true
     }
 
-    /// Cmd-N / Ctrl-N creates a child of the selected page. Handled at the
-    /// app level — not just in the sidebar — so it works no matter which
-    /// pane holds focus. The editor takes focus on load, so a
-    /// sidebar-only handler (gated on the tree being focused) would
-    /// silently no-op, making the welcome copy "Cmd-N adds a page under
-    /// the selection" a lie. `N` is modifier-qualified, so it never
-    /// conflicts with typing into a note.
-    fn handle_new_child_shortcut(
+    /// Ctrl+N makes a new top-level note, the same as the header's new-note
+    /// button; Ctrl+Shift+N makes one inside the selected note. Taking the
+    /// selection as the parent for the plain chord nested every quick note
+    /// one level deeper than the last, since the new note becomes the
+    /// selection. Handled at the app level, not just in the sidebar, so it
+    /// works whichever pane holds focus. `N` is modifier-qualified, so it
+    /// never conflicts with typing into a note.
+    fn handle_new_note_shortcut(
         &mut self,
         event: &WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
@@ -3241,7 +3397,11 @@ impl NotesApp {
         if !(mods.control_key() || mods.super_key()) || c.to_lowercase().as_str() != "n" {
             return false;
         }
-        let parent = self.workspace.selected();
+        let parent = if mods.shift_key() {
+            self.workspace.selected()
+        } else {
+            None
+        };
         // The new note opens with its title taking the keyboard: Ctrl+N,
         // the name, Enter, the note.
         self.name_next_created = true;
@@ -3432,8 +3592,8 @@ impl NotesApp {
                 .map(|block| block.text().to_owned())
         });
         if self.note_menu_editor {
-            for label in ["Cut", "Copy", "Paste", "Select all"] {
-                self.note_menu.push(MenuItem::selection(label));
+            for key in EDIT_MENU_KEYS {
+                self.note_menu.push(MenuItem::selection(ui::i18n!(key)));
             }
             self.note_menu.push(MenuItem::separator());
             if self.note_menu_table.is_some() {
@@ -3754,7 +3914,7 @@ mod tests {
             "Imported Project brief",
             ui::widget::toast::ToastKind::Success,
         );
-        let lifetime = app.transfer_toasts.iter().next().unwrap().ttl_remaining;
+        let lifetime = app.transfer_toasts.iter().next().unwrap().ttl_remaining();
         app.draw(
             &mut Scene::new(),
             Affine::IDENTITY,
@@ -3763,7 +3923,7 @@ mod tests {
             &PresenceCtx::default(),
         );
         assert_eq!(
-            app.transfer_toasts.iter().next().unwrap().ttl_remaining,
+            app.transfer_toasts.iter().next().unwrap().ttl_remaining(),
             lifetime,
             "the real Notes draw must preserve a capture's transient notification"
         );
@@ -4329,7 +4489,7 @@ mod tests {
         {
             let (mut app, state, _tmp, _) = app_seeded_into_doc();
             app.theme.reduce_motion = false;
-            app.set_save_status_for_shots(SaveStatus::Saved, ui::SAVE_NOTICEABLE);
+            app.set_save_status_for_shots(SaveStatus::Saved, ui::SAVE_STALL);
             assert!(app.needs_animation_frame(), "normal fade requests frames");
 
             app.theme.reduce_motion = true;
@@ -4367,7 +4527,7 @@ mod tests {
             .checked_sub(ui::time::Duration::from_secs(3))
             .expect("the test clock can age the transient chip");
         let began = landed
-            .checked_sub(ui::SAVE_NOTICEABLE)
+            .checked_sub(ui::SAVE_STALL)
             .expect("the test clock can age the save");
         app.save_surface = ui::SaveStatusSurface::new();
         app.save_surface.set(ui::SaveState::Saving, began);

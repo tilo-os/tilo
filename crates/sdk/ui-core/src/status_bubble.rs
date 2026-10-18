@@ -336,13 +336,11 @@ pub enum SaveAction {
     Dismiss,
 }
 
-/// How long a save may take before the surface says "Saving…". A save
-/// that lands sooner passes without a word: under a second the person is
-/// still with what they were doing and has no reason to wonder, so neither
-/// "Saving…" nor "Saved" would tell them anything.
-pub const SAVE_NOTICEABLE: Duration = Duration::from_secs(1);
-/// How long "Saving…" may wait for the store to confirm before the surface
+/// How long a save may wait for the store to confirm before the surface
 /// says so in plain words and asks the host to submit the changes again.
+/// Until then it says nothing: a document whose every change is a CRDT
+/// operation saves continuously, and a save that is merely slow is a
+/// performance bug to fix where it happens, never news for the person.
 pub const SAVE_STALL: Duration = Duration::from_secs(10);
 /// How long a save may stay unconfirmed before the surface stops waiting
 /// and asks the person to try again: the first submission's
@@ -360,8 +358,6 @@ enum Stage {
     /// Not long enough to mention.
     #[default]
     Quiet,
-    /// Past [`SAVE_NOTICEABLE`]: "Saving…".
-    Saving,
     /// Past [`SAVE_STALL`]: "Couldn't save yet. Retrying…".
     Retrying,
     /// Past [`SAVE_GIVE_UP`]: "Not saved" with "Try again".
@@ -381,13 +377,13 @@ pub struct SaveNotice {
 
 /// A document's save status, on the framework's status surfaces (HIG §7c).
 ///
-/// A save that lands within [`SAVE_NOTICEABLE`] says nothing: a document
-/// that is saving as it should needs no status. One that takes longer says
-/// "Saving…" in the transient [`StatusBubble`] for as long as it waits,
-/// then "Saved" for [`ACKNOWLEDGEMENT_HOLD`], the time a passing
-/// acknowledgement holds. Unconfirmed after [`SAVE_STALL`], the bubble says
+/// A save that lands within [`SAVE_STALL`] says nothing, however long it
+/// took: a document that autosaves needs no "Saving…" and no "Saved".
+/// Unconfirmed after [`SAVE_STALL`], the transient [`StatusBubble`] says
 /// "Couldn't save yet. Retrying…" and the surface asks for one more
-/// submission ([`Self::take_retry`]); after [`SAVE_GIVE_UP`] it says "Not
+/// submission ([`Self::take_retry`]), and the save that then lands says
+/// "Saved" for [`ACKNOWLEDGEMENT_HOLD`], the time a passing acknowledgement
+/// holds; after [`SAVE_GIVE_UP`] it says "Not
 /// saved" with a "Try again" button, in place, because the person is
 /// looking at the document. If nobody paints it then (the document is out
 /// of sight), the surface asks the host to raise a notification
@@ -400,7 +396,10 @@ pub struct SaveNotice {
 /// "Saved" once, however quickly it landed. The state itself stays
 /// readable through [`Self::state`] for an app's accessibility status and
 /// automation. An app reports the state and routes clicks; it never pins a
-/// bubble open or paints its own save pill.
+/// bubble open or paints its own save pill. A framework window gets one from
+/// its root, fed and routed with no app code (tilo-app's `framework::Saves`);
+/// only a view that places the status itself, in its header row, holds its
+/// own.
 ///
 /// Given the document's header row ([`SaveStatusSurface::set_header_slot`]),
 /// the save's progress is quiet text there, beside the title, covering none
@@ -506,7 +505,7 @@ impl SaveStatusSurface {
         self.retry_rect = Rect::ZERO;
         let recovered = self.recovering && state == SaveState::Saved;
         self.recovered = recovered;
-        // A retry passes through "Saving…" before it lands.
+        // A retry passes through the saving state before it lands.
         self.recovering = match state {
             SaveState::Failed(_) => true,
             SaveState::Saving => self.recovering,
@@ -529,7 +528,6 @@ impl SaveStatusSurface {
     /// that waits, or "Saved".
     fn bubble_label(&self) -> String {
         match (&self.state, self.stage) {
-            (Some(SaveState::Saving), Stage::Saving) => crate::i18n!("save-status-saving"),
             (Some(SaveState::Saving), Stage::Retrying) => crate::i18n!("save-status-stalled"),
             (Some(SaveState::Saving), Stage::NotSaved) => crate::i18n!("save-status-not-saved"),
             (Some(SaveState::Saved), _) => crate::i18n!("save-status-saved"),
@@ -544,9 +542,8 @@ impl SaveStatusSurface {
         self.state.as_ref()
     }
 
-    /// Move an unconfirmed save along at `now`: "Saving…" once it is
-    /// noticeable, "Retrying…" (asking for a submission) past
-    /// [`SAVE_STALL`], "Not saved" past [`SAVE_GIVE_UP`]. [`Self::paint`]
+    /// Move an unconfirmed save along at `now`: "Retrying…" (asking for a
+    /// submission) past [`SAVE_STALL`], "Not saved" past [`SAVE_GIVE_UP`]. [`Self::paint`]
     /// calls this; a host calls it where it needs the surface current
     /// without painting. Returns whether what is shown changed.
     pub fn advance(&mut self, now: Instant) -> bool {
@@ -559,15 +556,13 @@ impl SaveStatusSurface {
             Stage::NotSaved
         } else if waited >= SAVE_STALL {
             Stage::Retrying
-        } else if waited >= SAVE_NOTICEABLE {
-            Stage::Saving
         } else {
             Stage::Quiet
         };
         if stage <= self.stage {
             return false;
         }
-        if self.stage < Stage::Retrying && stage >= Stage::Retrying {
+        if self.stage < Stage::Retrying {
             self.retry = true;
         }
         if stage == Stage::NotSaved {
@@ -797,8 +792,7 @@ impl SaveStatusSurface {
         let since = self.saving_since;
         let stage = match self.stage {
             _ if self.state != Some(SaveState::Saving) => None,
-            Stage::Quiet => since.and_then(|t| t.checked_add(SAVE_NOTICEABLE)),
-            Stage::Saving => since.and_then(|t| t.checked_add(SAVE_STALL)),
+            Stage::Quiet => since.and_then(|t| t.checked_add(SAVE_STALL)),
             Stage::Retrying => since.and_then(|t| t.checked_add(SAVE_GIVE_UP)),
             Stage::NotSaved => self
                 .unseen_since
@@ -1293,11 +1287,11 @@ mod tests {
 
     use crate::widget::acknowledgement::ACKNOWLEDGEMENT_HOLD;
 
-    /// A surface whose save has waited long enough to be noticed at `t0`.
+    /// A surface whose save stalled at `t0`, so its landing is news.
     fn noticed_save(t0: Instant) -> SaveStatusSurface {
         let mut surface = SaveStatusSurface::new();
         surface.set(SaveState::Saving, t0);
-        surface.advance(t0 + SAVE_NOTICEABLE);
+        surface.advance(t0 + SAVE_STALL);
         surface
     }
 
@@ -1308,7 +1302,7 @@ mod tests {
         let mut tr = TextRenderer::new();
         let area = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let t0 = Instant::now();
-        let now = t0 + SAVE_NOTICEABLE;
+        let now = t0 + SAVE_STALL;
         let mut surface = noticed_save(t0);
         surface.set(SaveState::Saved, now);
         let deadline = surface.next_wake_deadline().expect("saved must expire");
@@ -1347,33 +1341,32 @@ mod tests {
         );
     }
 
-    /// A save that lands before anyone could wonder says nothing; one that
-    /// took noticeable time says "Saving…" while it waits and "Saved" for
-    /// an acknowledgement's hold, then goes.
+    /// A save that lands before it stalls says nothing, however slow it
+    /// was: no "Saving…" while it waits, no "Saved" when it lands. Only the
+    /// landing of a save that stalled is confirmed, for an
+    /// acknowledgement's hold.
     #[test]
-    fn saved_shows_briefly_and_only_after_a_save_that_took_noticeable_time() {
+    fn autosave_is_silent_until_a_save_stalls() {
         crate::i18n::I18nManager::init("en-US");
         let t0 = Instant::now();
         let mut surface = SaveStatusSurface::new();
         surface.set(SaveState::Saving, t0);
         assert!(!surface.is_visible(t0), "a save just begun says nothing");
-        assert_eq!(surface.next_wake_deadline(), Some(t0 + SAVE_NOTICEABLE));
-        let quick = t0 + Duration::from_millis(80);
-        surface.advance(quick);
-        surface.set(SaveState::Saved, quick);
-        assert!(!surface.is_visible(quick), "a quick save is not confirmed");
-        assert_eq!(surface.next_wake_deadline(), None, "and wakes nobody");
+        assert_eq!(surface.next_wake_deadline(), Some(t0 + SAVE_STALL));
+        let slow = t0 + SAVE_STALL - Duration::from_millis(1);
+        assert!(!surface.advance(slow), "a slow save is not news");
+        assert!(!surface.is_visible(slow));
+        assert_eq!(surface.bubble_text(), "");
+        surface.set(SaveState::Saved, slow);
+        assert!(!surface.is_visible(slow), "nor is its landing");
+        assert_eq!(surface.next_wake_deadline(), None, "and it wakes nobody");
 
-        let t1 = quick + Duration::from_secs(5);
+        let t1 = slow + Duration::from_secs(5);
         surface.set(SaveState::Saving, t1);
-        let noticed = t1 + SAVE_NOTICEABLE;
-        assert!(surface.advance(noticed));
-        assert_eq!(surface.bubble_text(), "Saving…");
-        assert!(
-            surface.is_visible(noticed + Duration::from_secs(5)),
-            "\"Saving…\" stays while the save waits"
-        );
-        let landed = noticed + Duration::from_secs(5);
+        let stalled = t1 + SAVE_STALL;
+        assert!(surface.advance(stalled));
+        assert_eq!(surface.bubble_text(), "Couldn't save yet. Retrying…");
+        let landed = stalled + Duration::from_secs(2);
         surface.set(SaveState::Saved, landed);
         assert_eq!(surface.bubble_text(), "Saved");
         assert!(surface.is_visible(landed));
@@ -1399,7 +1392,7 @@ mod tests {
         let mut surface = SaveStatusSurface::new();
         surface.set(SaveState::Idle, t0);
         let mut scene = Scene::new();
-        for later in [Duration::ZERO, SAVE_NOTICEABLE, SAVE_GIVE_UP * 2] {
+        for later in [Duration::ZERO, SAVE_STALL, SAVE_GIVE_UP * 2] {
             assert!(
                 surface
                     .paint(
@@ -1418,7 +1411,7 @@ mod tests {
         assert!(surface.accessibility("save").is_none());
     }
 
-    /// Saving and saved are transient bubble text; a failure is an error
+    /// A stalled save's landing is transient bubble text; a failure is an error
     /// card with "Try again" that stays until the save succeeds or it is
     /// dismissed, painted in danger and never as the bubble.
     #[test]
@@ -1428,7 +1421,7 @@ mod tests {
         let mut tr = TextRenderer::new();
         let area = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let t0 = Instant::now();
-        let now = t0 + SAVE_NOTICEABLE;
+        let now = t0 + SAVE_STALL;
         let mut surface = noticed_save(t0);
         assert!(surface.set(SaveState::Saved, now));
         assert!(surface.failure().is_none() && surface.is_visible(now));
@@ -1467,11 +1460,11 @@ mod tests {
         assert_eq!(surface.click(dismiss.center()), Some(SaveAction::Dismiss));
         assert!(surface.failure().is_none(), "dismissed");
         surface.set(SaveState::Saving, much_later);
-        assert!(surface.advance(much_later + SAVE_NOTICEABLE));
-        assert!(surface.is_visible(much_later + SAVE_NOTICEABLE));
+        assert!(surface.advance(much_later + SAVE_STALL));
+        assert!(surface.is_visible(much_later + SAVE_STALL));
     }
 
-    /// On a fake clock: "Saving…", then at ten seconds "Couldn't save yet.
+    /// On a fake clock: quiet, then at ten seconds "Couldn't save yet.
     /// Retrying…" with one more submission, then "Not saved" with "Try
     /// again" in the bubble itself while the document is in view, and no
     /// notification.
@@ -1489,8 +1482,10 @@ mod tests {
         let mut surface = SaveStatusSurface::new();
         surface.set(SaveState::Saving, t0);
         assert!(paint(&mut surface, t0).is_none(), "quiet at first");
-        paint(&mut surface, t0 + SAVE_NOTICEABLE).expect("then \"Saving…\"");
-        assert_eq!(surface.bubble_text(), "Saving…");
+        assert!(
+            paint(&mut surface, t0 + Duration::from_secs(5)).is_none(),
+            "and while it waits"
+        );
         assert_eq!(
             surface.next_wake_deadline(),
             Some(t0 + SAVE_STALL),
@@ -1550,8 +1545,8 @@ mod tests {
         assert!(!surface.gave_up(), "trying again waits afresh");
         let again = given_up + Duration::from_secs(1);
         assert!(paint(&mut surface, again).is_none(), "quietly at first");
-        assert!(surface.advance(again + SAVE_NOTICEABLE));
-        assert_eq!(surface.bubble_text(), "Saving…");
+        assert!(surface.advance(again + SAVE_STALL));
+        assert_eq!(surface.bubble_text(), "Couldn't save yet. Retrying…");
 
         assert!(surface.set(SaveState::Saved, again + SAVE_STALL));
         assert_eq!(surface.bubble_text(), "Saved");
@@ -1580,14 +1575,13 @@ mod tests {
         let mut at = |surface: &mut SaveStatusSurface, now| {
             surface.paint(&mut scene, Affine::IDENTITY, &mut tr, &theme, area, now)
         };
-        let saving = at(&mut surface, t0 + SAVE_NOTICEABLE).expect("Saving… shows");
-        assert!(slot.contains(saving.origin()) && saving.x1 <= slot.x1);
+        let retrying = at(&mut surface, t0 + SAVE_STALL).expect("Retrying… shows");
+        assert!(slot.contains(retrying.origin()) && retrying.x1 <= slot.x1);
         assert!(
-            (saving.x1 - slot.x1).abs() < 0.5,
+            (retrying.x1 - slot.x1).abs() < 0.5,
             "against the trailing end"
         );
-        let retrying = at(&mut surface, t0 + SAVE_STALL).expect("Retrying… shows");
-        assert!(retrying.y1 <= slot.y1 && retrying.x1 <= slot.x1);
+        assert!(retrying.y1 <= slot.y1);
         let not_saved = at(&mut surface, t0 + SAVE_GIVE_UP).expect("Not saved shows");
         assert!(surface.gave_up());
         assert!(not_saved.y0 >= slot.y0 && not_saved.y1 <= slot.y1);
@@ -1658,8 +1652,8 @@ mod tests {
     }
 
     /// The save that ends a failure is news once, however quickly it
-    /// landed: the retry's "Saving…" shows nothing until it is noticeable,
-    /// the "Saved" after it a transient bubble, and the next quick save is
+    /// landed: the retry shows nothing while it waits, the "Saved" after it
+    /// a transient bubble, and the next quick save is
     /// quiet again.
     #[test]
     fn recovering_from_a_failure_says_saved_once() {

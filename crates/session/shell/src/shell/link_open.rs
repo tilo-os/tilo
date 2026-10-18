@@ -5,9 +5,12 @@
 //! [`LinkOpener`] first. A link in Tilo's grammar
 //! (`docs/architecture/web-routing.md`) that names one of this person's
 //! workspaces opens there, through the same launcher the `open` action uses,
-//! instead of loading the web page in a browser. Anything else, including a
-//! link to a room this person is not in, goes to the browser unchanged, where
-//! the page's own admission applies.
+//! instead of loading the web page in a browser. A web link to a workspace
+//! this person is not in yet is joined first, as them ([`LinkJoin`]: a
+//! site's door admits them, or the link's invitation does), and then opens
+//! the same way. Whether a web address is such a link is read from the link
+//! itself: a route in the grammar under the address's own entry, wherever it
+//! is served. Anything else goes to the browser unchanged.
 //!
 //! A link that names a resource, a span of its text or a view then shows
 //! exactly that: see [`reveal`].
@@ -74,6 +77,31 @@ pub trait LinkWorkspaces: Send + Sync {
     fn open(&self, open: &LinkOpen) -> Option<Result<tilo_desktop_model::RoomId, String>>;
 }
 
+/// Joins the workspace a web link names, for a person not in it yet.
+pub trait LinkJoin: Send + Sync {
+    /// Join the workspace `url` names off the calling thread and hand its
+    /// room to `then` once this computer holds it. `false` when nothing can
+    /// join here (the session's network is not running yet).
+    fn join(
+        &self,
+        url: &str,
+        then: Box<dyn FnOnce(Result<tilo_desktop_model::RoomId, String>) + Send>,
+    ) -> bool;
+}
+
+/// A [`LinkJoin`] that joins nothing.
+struct NoJoin;
+
+impl LinkJoin for NoJoin {
+    fn join(
+        &self,
+        _url: &str,
+        _then: Box<dyn FnOnce(Result<tilo_desktop_model::RoomId, String>) + Send>,
+    ) -> bool {
+        false
+    }
+}
+
 /// Runs a reveal off the calling thread.
 type Spawn = fn(Box<dyn FnOnce() + Send>);
 
@@ -92,6 +120,7 @@ pub struct LinkOpener {
     workspaces: Arc<dyn LinkWorkspaces>,
     door: Arc<dyn LinkDoor>,
     browser: Arc<dyn UriOpener>,
+    joiner: Arc<dyn LinkJoin>,
     spawn: Spawn,
     /// How long a just-launched app has to publish what the link names.
     timeout: std::time::Duration,
@@ -111,15 +140,75 @@ impl LinkOpener {
             workspaces,
             door,
             browser,
+            joiner: Arc::new(NoJoin),
             spawn: spawn_reveal,
             timeout: PUBLISH_TIMEOUT,
         }
+    }
+
+    /// Join through `joiner` the workspaces web links name that this person
+    /// is not in yet, rather than open them in the browser.
+    #[must_use]
+    pub fn joining(mut self, joiner: Arc<dyn LinkJoin>) -> Self {
+        self.joiner = joiner;
+        self
     }
 
     /// Show the linked resource once `room` has the app in front. `open` runs
     /// on the shell's thread and a just-launched app takes seconds to
     /// publish, so the wait happens elsewhere and its outcome is logged.
     fn reveal_after_open(&self, link: &Link, room: tilo_desktop_model::RoomId, public: &str) {
+        reveal_in(
+            Arc::clone(&self.door),
+            self.spawn,
+            self.timeout,
+            link,
+            room,
+            public,
+        );
+    }
+
+    /// Join the workspace web link `link` (at `uri`) names, then open it as
+    /// one of this person's own. `false` when nothing joins here.
+    fn join_then_open(&self, uri: &str, link: &Link, public: &str) -> bool {
+        let workspaces = Arc::clone(&self.workspaces);
+        let door = Arc::clone(&self.door);
+        let (spawn, timeout) = (self.spawn, self.timeout);
+        let link = link.clone();
+        let public = public.to_owned();
+        self.joiner.join(
+            uri,
+            Box::new(move |joined| {
+                let opened = joined.and_then(|room| {
+                    workspaces
+                        .open(&LinkOpen::of(&link))
+                        .unwrap_or_else(|| Err("the joined workspace is not here".into()))
+                        .map(|opened| (room, opened))
+                });
+                match opened {
+                    Ok((_, room)) => {
+                        tracing::info!(link = %public, "joined a workspace and opened its link");
+                        reveal_in(door, spawn, timeout, &link, room, &public);
+                    }
+                    Err(error) => {
+                        tracing::warn!(link = %public, %error, "could not join the workspace a link names");
+                    }
+                }
+            }),
+        )
+    }
+}
+
+/// [`LinkOpener::reveal_after_open`] with the opener's parts.
+fn reveal_in(
+    door: Arc<dyn LinkDoor>,
+    spawn: Spawn,
+    timeout: std::time::Duration,
+    link: &Link,
+    room: tilo_desktop_model::RoomId,
+    public: &str,
+) {
+    {
         let (Some(app), Some(resource)) = (&link.target.app, &link.target.resource) else {
             return;
         };
@@ -130,10 +219,8 @@ impl LinkOpener {
             resource: resource.clone(),
             view: link.target.view.clone(),
         };
-        let door = Arc::clone(&self.door);
         let public = public.to_owned();
-        let timeout = self.timeout;
-        (self.spawn)(Box::new(move || {
+        spawn(Box::new(move || {
             match reveal(door.as_ref(), &wanted, timeout) {
                 Ok(()) => tracing::info!(link = %public, "showed a linked resource"),
                 Err(error) => {
@@ -142,7 +229,9 @@ impl LinkOpener {
             }
         }));
     }
+}
 
+impl LinkOpener {
     /// The entries this device knows without asking anyone.
     pub fn known_entries() -> WebEntries {
         WebEntries::new(WebEntry::new(TILO_ENTRY).into_iter().collect())
@@ -159,8 +248,10 @@ impl LinkOpener {
                 }
             };
         }
-        self.entries.find(uri)?;
-        Link::parse(uri, &self.entries).ok()
+        if self.entries.find(uri).is_some() {
+            return Link::parse(uri, &self.entries).ok();
+        }
+        own_entry_link(uri)
     }
 }
 
@@ -195,11 +286,41 @@ impl UriOpener for LinkOpener {
                 self.browser.open(&web)
             }
             None => {
+                // A pairing link makes the device that opens it someone's:
+                // that is the browser's to do, never this computer's.
+                if matches!(link.target.scope, Scope::Room { .. })
+                    && link.secrets.pair.is_none()
+                    && self.join_then_open(uri, &link, &public)
+                {
+                    tracing::info!(link = %public, "not a member of this room yet; joining it");
+                    return Ok(());
+                }
                 tracing::info!(link = %public, "not a member of this room; opening it on the web");
                 self.browser.open(uri)
             }
         }
     }
+}
+
+/// `uri` as a link in Tilo's grammar under its own entry (everything before
+/// its route): a web address whose fragment is a workspace route, wherever
+/// it is served.
+fn own_entry_link(uri: &str) -> Option<Link> {
+    if !(uri.starts_with("https://") || uri.starts_with("http://")) {
+        return None;
+    }
+    let (before, route) = uri.split_once('#')?;
+    if !route.starts_with('/') {
+        return None;
+    }
+    let before = before.split_once('?').map_or(before, |(before, _)| before);
+    let entry = before.strip_suffix("app/").unwrap_or(before);
+    if !entry.ends_with('/') {
+        return None;
+    }
+    let entries = WebEntries::new(vec![WebEntry::new(entry).ok()?]);
+    let link = Link::parse(uri, &entries).ok()?;
+    matches!(link.target.scope, Scope::Room { .. }).then_some(link)
 }
 
 /// [`LinkWorkspaces`] over the session's workspace tree, launching through
@@ -271,18 +392,55 @@ impl LinkDoor for SessionDoor {
     }
 }
 
+/// The session's network, once it runs: it joins the workspaces links name.
+static SESSION_NETWORK: RwLock<Option<std::sync::Weak<crate::shell::network::ShellNetwork>>> =
+    RwLock::new(None);
+
+/// Let links join workspaces through `network`, the session's network.
+pub fn attach_network(network: &Arc<crate::shell::network::ShellNetwork>) {
+    *SESSION_NETWORK.write_recover() = Some(Arc::downgrade(network));
+}
+
+/// [`LinkJoin`] over the session's network.
+pub struct SessionJoin;
+
+impl LinkJoin for SessionJoin {
+    fn join(
+        &self,
+        url: &str,
+        then: Box<dyn FnOnce(Result<tilo_desktop_model::RoomId, String>) + Send>,
+    ) -> bool {
+        let Some(network) = SESSION_NETWORK
+            .read_recover()
+            .clone()
+            .and_then(|network| network.upgrade())
+        else {
+            return false;
+        };
+        let url = url.to_owned();
+        std::thread::Builder::new()
+            .name("tilo-link-join".into())
+            .spawn(move || then(network.join_link(&url)))
+            .is_ok()
+    }
+}
+
 /// The opener the shell's in-process widgets get: `browser` for everything,
-/// with Tilo links to the session's workspaces opened in place.
+/// with Tilo links to the session's workspaces opened in place, and web
+/// links to a workspace the person is not in yet joined first.
 pub fn session_opener(
     tree: WorkspaceTreeHandle,
     browser: Arc<dyn UriOpener>,
 ) -> Arc<dyn UriOpener> {
-    Arc::new(LinkOpener::new(
-        LinkOpener::known_entries(),
-        Arc::new(SessionWorkspaces(tree)),
-        Arc::new(SessionDoor),
-        browser,
-    ))
+    Arc::new(
+        LinkOpener::new(
+            LinkOpener::known_entries(),
+            Arc::new(SessionWorkspaces(tree)),
+            Arc::new(SessionDoor),
+            browser,
+        )
+        .joining(Arc::new(SessionJoin)),
+    )
 }
 
 #[cfg(test)]
@@ -617,6 +775,50 @@ mod tests {
                 "https://tilo.so/#/@quinten.tilo.cloud/w/{STRANGER}/so.tilo.chat?invite=AAECAwQF"
             )]
         );
+    }
+
+    /// Joins as asked, recording each link.
+    #[derive(Default)]
+    struct Joins {
+        asked: Mutex<Vec<String>>,
+    }
+
+    impl LinkJoin for Joins {
+        fn join(
+            &self,
+            url: &str,
+            then: Box<dyn FnOnce(Result<tilo_desktop_model::RoomId, String>) + Send>,
+        ) -> bool {
+            self.asked.lock().unwrap().push(url.to_owned());
+            then(Ok(tilo_desktop_model::RoomId::parse(STRANGER).unwrap()));
+            true
+        }
+    }
+
+    #[test]
+    fn a_web_link_to_a_room_the_person_is_not_in_is_joined_rather_than_browsed() {
+        let (opener, _, browser) = opener();
+        let joins = Arc::new(Joins::default());
+        let opener = opener.joining(joins.clone());
+        let link = format!("https://tilo.coffee/#/@eu1.tilo.coffee/w/{STRANGER}/so.tilo.chat");
+        opener.open(&link).unwrap();
+        assert_eq!(*joins.asked.lock().unwrap(), [link]);
+        assert!(browser.opened_uris().is_empty());
+    }
+
+    #[test]
+    fn a_link_served_by_any_site_to_a_members_room_opens_in_place() {
+        let (opener, rooms, browser) = opener();
+        let joins = Arc::new(Joins::default());
+        let opener = opener.joining(joins.clone());
+        opener
+            .open(&format!(
+                "https://tilo.coffee/app/#/@eu1.tilo.coffee/w/{ROOM}/so.tilo.chat"
+            ))
+            .unwrap();
+        assert_eq!(rooms.opened.lock().unwrap().len(), 1);
+        assert!(joins.asked.lock().unwrap().is_empty());
+        assert!(browser.opened_uris().is_empty());
     }
 
     #[test]

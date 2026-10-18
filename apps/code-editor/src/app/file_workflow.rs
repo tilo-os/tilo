@@ -30,14 +30,11 @@ impl CodeApp {
 
         match disk::save(&path, &text, expected.as_ref()) {
             Ok(stamp) => {
-                let name = self
-                    .session
-                    .buffer_of(node)
-                    .map_or_else(String::new, |b| b.name.clone());
+                // The tab's unsaved mark clears; saving where the file
+                // lives says nothing more.
                 if let Some(buf) = self.session.buffer_of_mut(node) {
                     buf.mark_saved(text, Some(stamp));
                 }
-                self.note(format!("Saved {name}"), false);
                 self.refresh_header();
                 // Tell the language server the file is on disk now; rustc-based
                 // diagnostics only refresh on save.
@@ -97,13 +94,7 @@ impl CodeApp {
                 written += 1;
             }
         }
-        if self.conflict.is_none() {
-            match written {
-                0 => self.note("Nothing to save", false),
-                1 => self.note("Saved 1 file", false),
-                n => self.note(format!("Saved {n} files"), false),
-            }
-        }
+        // The tabs' unsaved marks clear; saving says nothing more.
         written
     }
 
@@ -299,7 +290,6 @@ impl CodeApp {
                         self.bound_node = None;
                         self.reset_language_server();
                         self.refresh_header();
-                        self.note(format!("Saved {name}"), false);
                         Ok(())
                     }
                     Err(error) => {

@@ -17,9 +17,9 @@ SOURCES = {
     "nofollow::tests": "crates/platform/imager-backend/src/nofollow.rs",
     "account_transfer::windows_source::tests": "crates/platform/imager-backend/src/account_transfer/windows_source.rs",
     "windows_inventory::tests": "crates/platform/imager-backend/src/windows_inventory/tests.rs",
-    "profile::windows_tests": "apps/imager/src/profile.rs",
-    "model::tests": "apps/imager/src/model.rs",
-    "model::prepared_setup_binding_tests": "apps/imager/src/model.rs",
+    "profile::windows_tests": "crates/platform/imager-backend/src/profile.rs",
+    "imager_model::tests": "crates/platform/imager-backend/src/imager_model.rs",
+    "imager_model::prepared_setup_binding_tests": "crates/platform/imager-backend/src/imager_model.rs",
 }
 
 

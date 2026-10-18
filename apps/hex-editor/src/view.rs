@@ -15,7 +15,7 @@
 //!     the content when there is room, a floating drawer when there is not,
 //!     holding the endianness strip and a property list of interpretations
 //!   * status    — the persistent status bar (cursor offset, selection,
-//!     edited bytes, size); "Saved" and failures are transient notices
+//!     edited bytes, size); "Opened" and failures are transient notices
 //!   * go to     — a popover with one field, anchored at the status bar
 //!
 //! The bytes are the [`HexEditor`] resource's: the view shows the state it
@@ -206,7 +206,7 @@ pub struct HexView {
     /// as a toast until it expires.
     problem: Option<(String, String, Instant)>,
 
-    /// "Saved" and "Opened": a change worth noticing once, floating at the
+    /// "Opened": a change worth noticing once, floating at the
     /// content's bottom-trailing corner and fading by itself.
     status_bubble: ui::StatusBubble,
     /// The canvas is keyboard-focusable even though it is custom drawn.
@@ -368,7 +368,7 @@ impl HexView {
         }
     }
 
-    /// A change worth noticing once ("Saved", "Opened"): the bubble.
+    /// A change worth noticing once ("Opened"): the bubble.
     fn notice(&mut self, message: &str) {
         let now = ui::time::now();
         self.status_bubble.show(message, now);
@@ -424,12 +424,10 @@ impl HexView {
     fn write_to(&mut self, path: &std::path::Path) -> Result<(), String> {
         match crate::file::write(path, self.model.bytes()) {
             Ok(()) => {
+                // The changed-byte marks clear; saving where the file lives
+                // says nothing more.
                 self.saved_now();
                 self.path = Some(path.to_path_buf());
-                self.notice(&format!(
-                    "Saved {}",
-                    format_bytes(u64::try_from(self.model.len()).unwrap_or(u64::MAX))
-                ));
                 Ok(())
             }
             Err(e) => {
@@ -509,7 +507,6 @@ impl HexView {
             FileIo::SaveContents(rx) => match rx.try_recv() {
                 Ok(SaveOutcome::Saved) => {
                     self.saved_now();
-                    self.notice("Saved");
                     Some(Ok(()))
                 }
                 Ok(SaveOutcome::Cancelled) => Some(Err(CANCELLED.into())),
@@ -1447,11 +1444,6 @@ impl HexView {
                 self.model.move_to(0x10, false);
                 self.model.move_to(0x13, true);
             }
-            Some("saved") => {
-                let size = format_bytes(u64::try_from(self.model.len()).unwrap_or(u64::MAX));
-                self.notice(&format!("Saved {size}"));
-                self.status_bubble.set_hover(true, ui::time::now());
-            }
             Some("error") => self.problem("Couldn't save the file", "Permission denied"),
             Some("narrow-inspector") => self.reveal_inspector = true,
             _ => {}
@@ -1880,7 +1872,6 @@ mod tests {
             (Some("find"), true, false),
             (Some("goto"), false, true),
             (Some("edited"), false, false),
-            (Some("saved"), false, false),
             (Some("error"), false, false),
             (Some("narrow-inspector"), false, false),
             (Some("empty"), false, false),

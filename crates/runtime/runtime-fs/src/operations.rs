@@ -3229,7 +3229,8 @@ pub(super) mod tests {
     }
     #[test]
     fn captured_restore_does_not_read_unreadable_bytes_or_replace_destination() {
-        use std::os::unix::fs::PermissionsExt;
+        use std::io::Read;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
         let f = Fixture::new();
         f.bind_removal();
         fs::write(f.source("victim"), b"original unreadable").unwrap();
@@ -3287,8 +3288,6 @@ pub(super) mod tests {
         assert!(f.store.recoveries().unwrap()[0].acknowledged);
         // The verifier retains its own read descriptor before chmod; the job
         // never receives it and cannot reopen the mode-000 restored leaf.
-        use std::io::Read;
-        use std::os::unix::fs::MetadataExt;
         assert_eq!(
             fs::metadata(f.source("victim")).unwrap().ino(),
             original.metadata().unwrap().ino()
@@ -4033,7 +4032,7 @@ pub(super) mod tests {
                     value.len(),
                 )
             };
-            assert_eq!(length, expected.len() as libc::ssize_t);
+            assert_eq!(length, libc::ssize_t::try_from(expected.len()).unwrap());
             assert_eq!(&value[..expected.len()], expected);
         }
     }
@@ -4582,6 +4581,7 @@ pub(super) mod tests {
 
     #[test]
     fn replacing_save_preserves_unreadable_victim_without_read_grant() {
+        use std::io::Read;
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
         let f = Fixture::with_rights(
             rights()
@@ -4625,7 +4625,6 @@ pub(super) mod tests {
         assert_eq!(published.permissions().mode() & 0o777, 0);
         // Verifier-only read descriptors predate chmod and are never admitted
         // to the session, whose namespace-only job has no Read grant.
-        use std::io::Read;
         let mut bytes = Vec::new();
         saved.read_to_end(&mut bytes).unwrap();
         assert_eq!(bytes, b"new");

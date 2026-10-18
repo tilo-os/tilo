@@ -160,6 +160,122 @@ fn focus_change_transfers_a_held_key_then_releases_it_once_at_the_new_focus() {
 }
 
 #[test]
+fn app_tab_chords_reach_a_foreign_client_and_their_super_spelling_never_does() {
+    let mut h = Harness::new();
+    let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+    let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1);
+    let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9);
+    let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
+    let qh = h.queue.handle();
+    let surface = compositor.create_surface(&qh, ());
+    let xdg = wm.get_xdg_surface(&surface, &qh, ());
+    let toplevel = xdg.get_toplevel(&qh, ());
+    toplevel.set_app_id("org.example.TabbedBrowser".into());
+    h.pump();
+    let foreign_surface_id = foreign_id(&h.state, "org.example.TabbedBrowser");
+    h.state.set_client_keyboard_focus(Some(foreign_surface_id));
+    h.pump();
+    h.client.keyboard.clear();
+
+    let mut frame = shell::compositor::frame::FrameBuilder::new((1600, 900));
+    frame
+        .host_mut()
+        .set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
+        .expect("valid default shortcut configuration");
+    let active_tab = |frame: &shell::compositor::frame::FrameBuilder| {
+        frame.chrome().tree().desktop.workspaces[0].strips[0].window_groups[0].active_tab
+    };
+    let before_tab = active_tab(&frame);
+
+    // A browser, editor or terminal switches and reopens its own tabs with
+    // these: every press and release reaches it, and the desktop does not
+    // also act on them.
+    let ctrl = Modifiers::from(ModifiersState::CONTROL);
+    let ctrl_shift = Modifiers::from(ModifiersState::CONTROL | ModifiersState::SHIFT);
+    for (key, modifiers) in [
+        (Key::Named(NamedKey::Tab), ctrl),
+        (Key::Named(NamedKey::Tab), ctrl_shift),
+        (Key::Character("T".into()), ctrl_shift),
+    ] {
+        for pressed in [true, false] {
+            assert!(
+                shell::compositor::client_input::route_input(
+                    &mut h.state,
+                    &mut frame,
+                    &captured_key_event(key.clone(), pressed),
+                    &modifiers,
+                ),
+                "{key:?} under {modifiers:?} belongs to the focused app"
+            );
+        }
+    }
+    h.pump();
+    let balanced = |key| {
+        [
+            KeyboardWire::Key { key, pressed: true },
+            KeyboardWire::Key {
+                key,
+                pressed: false,
+            },
+        ]
+    };
+    assert_eq!(
+        h.client.keyboard,
+        [balanced(15), balanced(15), balanced(20)]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>(),
+        "Ctrl+Tab, Ctrl+Shift+Tab and Ctrl+Shift+T reach the client"
+    );
+    assert_eq!(
+        active_tab(&frame),
+        before_tab,
+        "the desktop left them alone"
+    );
+    h.client.keyboard.clear();
+
+    // Super on top is the desktop's next tab whatever the app is.
+    let super_ctrl = Modifiers::from(ModifiersState::SUPER | ModifiersState::CONTROL);
+    let tab_press = captured_key_event(Key::Named(NamedKey::Tab), true);
+    let tab_release = captured_key_event(Key::Named(NamedKey::Tab), false);
+    assert!(
+        !shell::compositor::client_input::route_input(
+            &mut h.state,
+            &mut frame,
+            &tab_press,
+            &super_ctrl,
+        ),
+        "Super+Ctrl+Tab is claimed before the focused client"
+    );
+    let mut doc = automerge::AutoCommit::new();
+    let mut focus = None;
+    assert!(frame.dispatch_event(
+        &tab_press,
+        &super_ctrl,
+        &mut ui::widget::Edits::lend(&mut doc),
+        &automerge::ROOT,
+        &mut focus,
+    ));
+    assert!(!shell::compositor::client_input::route_input(
+        &mut h.state,
+        &mut frame,
+        &tab_release,
+        &super_ctrl,
+    ));
+    h.pump();
+    assert!(
+        h.client.keyboard.is_empty(),
+        "the client sees nothing of Super+Ctrl+Tab: {:?}",
+        h.client.keyboard
+    );
+    assert_ne!(
+        active_tab(&frame),
+        before_tab,
+        "Super+Ctrl+Tab shows the next tab of the focused group"
+    );
+}
+
+#[test]
 #[allow(
     clippy::too_many_lines,
     reason = "the wire-level ownership scenario keeps both client input and compositor assertions in one transcript"
@@ -211,9 +327,9 @@ fn compositor_shortcuts_and_lock_capture_own_the_keyboard_before_clients() {
         let custom_press = captured_key_event(Key::Character("j".into()), true);
         let custom_release = captured_key_event(Key::Character("j".into()), false);
 
-        // Ctrl+Tab was Next Tab before the rebind.  The static compositor
-        // firewall must not keep claiming that old default after the effective
-        // table assigns Next Tab to Ctrl+J.
+        // Ctrl+Tab is the focused app's own chord.  The static compositor
+        // firewall must not claim it, whatever the effective table assigns
+        // Next Tab to.
         assert!(shell::compositor::client_input::route_input(
             &mut h.state,
             &mut frame,
@@ -259,7 +375,7 @@ fn compositor_shortcuts_and_lock_capture_own_the_keyboard_before_clients() {
                     pressed: false
                 },
             ],
-            "the previous Ctrl+Tab default must be a balanced client chord after rebinding"
+            "Ctrl+Tab must be a balanced client chord"
         );
         h.client.keyboard.clear();
 
@@ -534,7 +650,7 @@ fn granted_global_shortcut_fires_over_a_focused_client_and_deactivates_on_releas
     service.attach_event_bridge(events.clone());
     assert!(
         service.is_reserved("CTRL+SHIFT+KEYT"),
-        "reopen belongs to the shell"
+        "reopen is every app's tab chord, never grantable"
     );
     assert!(
         !service.is_reserved("CTRL+SHIFT+KEYM"),

@@ -340,6 +340,7 @@ fn answer(
             let (reply, chosen) = tokio::sync::oneshot::channel();
             context.pickers.spawn(FilePickerRequest {
                 caller: caller.clone(),
+                parent_window: None,
                 title,
                 save: mode == PickMode::Save,
                 directory: matches!(mode, PickMode::Directory | PickMode::WritableDirectory),

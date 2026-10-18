@@ -393,7 +393,7 @@ fn narrow_keyboard_map_stays_prominent_and_live_readable() {
         Some(ui::widget::find_test_id(widget, id)?.get_rect())
     }
     let config = crate::prefs::test_env::ScratchConfig::new();
-    let mut h = hosted(&config, 600.0, 1800.0);
+    let mut h = hosted(&config, 440.0, 1800.0);
     crate::panes::mouse_keyboard::show_live_map(h.input());
     select(&mut h, Category::Keyboard);
     let map = find_rect(&*h, "input.keyboard_map").unwrap();

@@ -166,6 +166,62 @@ pub fn anchor_for_app(
         .map(|(anchor, _)| anchor)
 }
 
+/// Whether the tab a request from `app_id` (launched as record `instance`)
+/// answers to is the focused tab. A tab chord the app left unhandled is a
+/// keypress in the focused window; by the time it arrives focus may have
+/// moved on, and stepping through some other group's tabs would then be a
+/// surprise.
+pub fn is_focused_app_tab(tree: &WorkspaceTree, app_id: &str, instance: Option<u64>) -> bool {
+    anchor_for_app(tree, app_id, instance)
+        .is_some_and(|anchor| focused_tab(tree) == Some(anchor.tab))
+}
+
+/// The window a dialog `app_id` asks for in `workspace` belongs to: the
+/// window the app named (`named`, the surface its `parent_window` handle
+/// was exported for), else the focused tab when it shows the app, else the
+/// app's tab in front of its window group, else any tab of the app there.
+/// Only that app's own tabs are candidates, so a request can never hang a
+/// dialog on another app, whatever window it names.
+pub fn asking_tab(
+    tree: &WorkspaceTree,
+    workspace: crate::shell::state::WorkspaceId,
+    app_id: &str,
+    named: Option<u64>,
+) -> Option<TabId> {
+    let shows_app = |tile: &TileContent| {
+        tile_app_id(tile).is_some_and(|tile_app| launcher::app_id_matches_package(tile_app, app_id))
+    };
+    let space = tree
+        .desktop
+        .workspaces
+        .iter()
+        .find(|candidate| candidate.id == workspace)?;
+    let focused = focused_tab(tree).filter(|_| tree.desktop.active == workspace);
+    let mut fallback = None;
+    let mut in_front = None;
+    for group in space.strips.iter().flat_map(|strip| &strip.window_groups) {
+        for tab in group.tabs.iter().filter(|tab| shows_app(&tab.tile)) {
+            if let (TileContent::Foreign { surface_id, .. }, Some(named)) = (&tab.tile, named)
+                && *surface_id == named
+            {
+                return Some(tab.id);
+            }
+        }
+    }
+    for group in space.strips.iter().flat_map(|strip| &strip.window_groups) {
+        for tab in group.tabs.iter().filter(|tab| shows_app(&tab.tile)) {
+            if Some(tab.id) == focused {
+                return Some(tab.id);
+            }
+            if group.active_tab == tab.id {
+                in_front = in_front.or(Some(tab.id));
+            }
+            fallback = fallback.or(Some(tab.id));
+        }
+    }
+    in_front.or(fallback)
+}
+
 /// Where the new instance's window lands: right after `anchor`, in front
 /// unless `background`; without an anchor, wherever a launch lands.
 pub fn placement_after(st: &ChromeState, anchor: Option<TabAnchor>, background: bool) -> Placement {
@@ -228,13 +284,41 @@ pub fn open_beside(
     }
     .ok_or(AppTabError::NoWorkspace)?;
     let placement = placement_after(st, anchor, background);
-    // Before the launch: the window may map before this function returns.
-    launcher::set_pending_placement(&app.package_id, placement);
-    launcher::queue_launch_target_in_workspace(app.clone(), &workspace, target.map(str::to_owned))
-        .map_err(|error| {
-            launcher::clear_pending_placement(&app.package_id);
-            AppTabError::Refused(error.user_message())
-        })
+    hold_and_launch(st, &app.package_id, &app.display_name, placement, || {
+        launcher::queue_launch_target_in_workspace(
+            app.clone(),
+            &workspace,
+            target.map(str::to_owned),
+        )
+    })
+    .map(drop)
+}
+
+/// The new tab is there from this frame, like a browser's: the opening card
+/// holds its place at `placement` and the app's window binds into it when it
+/// maps. Held before `queue` starts the launch, since the window may map
+/// before this returns. A launch refused before any process leaves no card.
+fn hold_and_launch(
+    st: &ChromeState,
+    package_id: &str,
+    display_name: &str,
+    placement: Placement,
+    queue: impl FnOnce() -> Result<(), launcher::LaunchError>,
+) -> Result<TabId, AppTabError> {
+    let held = crate::shell::tab_binding::hold_place_for_launch(
+        &mut st.tree_mut(),
+        package_id,
+        display_name,
+        placement,
+    );
+    match queue() {
+        Ok(()) => Ok(held),
+        Err(error) => {
+            launcher::clear_pending_placement(package_id);
+            crate::shell::tab_binding::remove_tab(&mut st.tree_mut(), held);
+            Err(AppTabError::Refused(error.user_message()))
+        }
+    }
 }
 
 /// The next window `package_id` maps lands as a tab right after `anchor`:
@@ -481,7 +565,9 @@ mod tests {
             );
         }
 
-        // Phase `an_app_hosted_in_the_shell_answers_the_same_chords`.
+        // Phase `an_app_hosted_in_the_shell_answers_the_same_chords`: the
+        // Ctrl tab chords reach the app first and step, close or reopen only
+        // because it left them unhandled.
         {
             use winit::event::Modifiers;
             use winit::keyboard::{Key, ModifiersState};
@@ -504,17 +590,39 @@ mod tests {
             let mut chord = |frame: &mut crate::shell::test_support::PopulatedShellFixture,
                              key: &str,
                              modifiers: ModifiersState| {
+                let key = if key == "Tab" {
+                    Key::Named(winit::keyboard::NamedKey::Tab)
+                } else {
+                    Key::Character(key.into())
+                };
                 frame.dispatch_event(
-                    &ui::synthetic_input::key_input(
-                        &Key::Character(key.into()),
-                        winit::event::ElementState::Pressed,
-                    ),
+                    &ui::synthetic_input::key_input(&key, winit::event::ElementState::Pressed),
                     &Modifiers::from(modifiers),
                     &mut ui::widget::Edits::lend(&mut document),
                     &automerge::ROOT,
                     &mut focus,
                 )
             };
+            let active = |frame: &crate::shell::test_support::PopulatedShellFixture| {
+                crate::shell::window_actions::active_tab_id(&frame.chrome()).unwrap()
+            };
+            let start = active(&frame);
+            assert!(
+                chord(&mut frame, "Tab", ModifiersState::CONTROL),
+                "Ctrl+Tab"
+            );
+            let stepped = active(&frame);
+            assert_ne!(stepped, start, "Ctrl+Tab the app left shows the next tab");
+            assert!(before.contains(&stepped), "within the same group");
+            assert!(
+                chord(
+                    &mut frame,
+                    "Tab",
+                    ModifiersState::CONTROL | ModifiersState::SHIFT
+                ),
+                "Ctrl+Shift+Tab"
+            );
+            assert_eq!(active(&frame), start, "and Ctrl+Shift+Tab goes back");
             assert!(chord(&mut frame, "w", ModifiersState::CONTROL), "Ctrl+W");
             let closed = group_tabs(&frame.chrome().tree(), group).0;
             assert_eq!(
@@ -544,6 +652,61 @@ mod tests {
                 group_of(&frame).1,
                 after,
                 "a plain t is typing, not a tab chord"
+            );
+            drop(frame);
+        }
+
+        // Phase `a_new_instance_has_its_tab_from_the_request`.
+        {
+            const APP: &str = "so.tilo.app-tabs-instant";
+            let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
+            let st = chrome.borrow_mut();
+            let fixture = group_with_page(&mut st.tree_mut(), APP, 46);
+            let anchor = anchor_for_app(&st.tree(), APP, Some(46));
+            let placement = placement_after(&st, anchor, false);
+            let mut seen_at_launch = None;
+            let held = hold_and_launch(&st, APP, "Instant", placement, || {
+                // The launch starts with the tab already in place.
+                seen_at_launch = Some(group_tabs(&st.tree(), fixture.group));
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(
+                seen_at_launch,
+                Some((vec![fixture.page, held, fixture.other], held)),
+                "the opening card sits right after its opener, in front, before any process"
+            );
+            // The card was laid out: the window that takes its place is
+            // configured to its size at once, not after the next layout.
+            crate::shell::foreign::store()
+                .note_opening_tab(held, vello::kurbo::Rect::new(10.0, 20.0, 650.0, 500.0));
+            let opened = crate::shell::tab_binding::adopt_toplevel(
+                &mut st.tree_mut(),
+                9_146,
+                Some(APP.into()),
+            );
+            assert_eq!(opened, held, "the window takes the card's place");
+            assert_eq!(
+                crate::shell::foreign::store().take_pending_configure(9_146),
+                Some((640, 480)),
+                "configured to the card's size in the dispatch that adopted it"
+            );
+            assert_eq!(
+                group_tabs(&st.tree(), fixture.group).0,
+                vec![fixture.page, held, fixture.other]
+            );
+
+            // A launch refused before any process leaves no card behind.
+            let placement = placement_after(&st, anchor, false);
+            let refused = hold_and_launch(&st, APP, "Instant", placement, || {
+                Err(launcher::LaunchError::NotInstalled {
+                    package_id: APP.into(),
+                })
+            });
+            assert!(matches!(refused, Err(AppTabError::Refused(_))));
+            assert_eq!(
+                group_tabs(&st.tree(), fixture.group).0,
+                vec![fixture.page, held, fixture.other]
             );
         }
 

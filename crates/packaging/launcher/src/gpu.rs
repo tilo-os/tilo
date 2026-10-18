@@ -84,6 +84,15 @@ pub const VK_DRIVER_FILES_ENV: &str = "VK_DRIVER_FILES";
 /// an older loader honours the same choice.
 pub const VK_ICD_FILENAMES_ENV: &str = "VK_ICD_FILENAMES";
 
+/// Turns off Mesa's implicit device-selection layer
+/// (`VK_LAYER_MESA_device_select`). It exists to pick one GPU among several
+/// and reorders the physical devices for that, connecting to the display
+/// server and enumerating every device on each `vkCreateInstance`. With the
+/// driver pinned to the one ICD that drives the session's render node there
+/// is exactly one device to pick, so the layer only costs time: ~4 ms of
+/// adapter and device creation per app start on the Snapdragon X here.
+pub const NO_DEVICE_SELECT_ENV: &str = "NODEVICE_SELECT";
+
 /// Directories the EGL vendor JSONs are installed in, most-specific
 /// first. `/etc` overrides `/usr` by GLVND's own convention.
 #[cfg(target_os = "linux")]
@@ -168,6 +177,7 @@ impl GpuSelection {
         if let Some(p) = &self.vulkan_icd_json {
             out.push((VK_DRIVER_FILES_ENV, p.display().to_string()));
             out.push((VK_ICD_FILENAMES_ENV, p.display().to_string()));
+            out.push((NO_DEVICE_SELECT_ENV, "1".to_owned()));
         }
         out
     }
@@ -552,6 +562,7 @@ impl SoftwarePin {
         let vulkan = self.vulkan_icd_json.display().to_string();
         out.push((VK_DRIVER_FILES_ENV, vulkan.clone()));
         out.push((VK_ICD_FILENAMES_ENV, vulkan));
+        out.push((NO_DEVICE_SELECT_ENV, "1".to_owned()));
         out
     }
 
@@ -1016,6 +1027,35 @@ mod tests {
     }
 
     #[test]
+    fn a_pinned_vulkan_driver_turns_off_device_selection_and_an_unpinned_one_does_not() {
+        let pinned = GpuSelection {
+            node: PathBuf::from("/dev/dri/renderD128"),
+            driver: None,
+            egl_vendor_json: None,
+            vulkan_icd_json: Some(PathBuf::from("/usr/share/vulkan/icd.d/x.json")),
+            vulkan_device: None,
+            pipeline_seed: None,
+            notes: Vec::new(),
+        };
+        assert!(
+            pinned
+                .env()
+                .contains(&(NO_DEVICE_SELECT_ENV, "1".to_owned()))
+        );
+        let unpinned = GpuSelection {
+            vulkan_icd_json: None,
+            ..pinned
+        };
+        assert!(
+            !unpinned
+                .env()
+                .iter()
+                .any(|(key, _)| *key == NO_DEVICE_SELECT_ENV),
+            "without a pinned driver the layer still picks among the devices"
+        );
+    }
+
+    #[test]
     fn a_gpu_less_machine_is_pinned_to_lavapipe_and_launches_inherit_only_that() {
         let tmp = tempfile::tempdir().unwrap();
         let search = fixture(
@@ -1035,6 +1075,10 @@ mod tests {
         );
         let lavapipe = pin.vulkan_icd_json.display().to_string();
         assert!(pin.env().contains(&(VK_DRIVER_FILES_ENV, lavapipe.clone())));
+        assert!(
+            pin.env().contains(&(NO_DEVICE_SELECT_ENV, "1".to_owned())),
+            "one pinned driver leaves the device-select layer nothing to choose"
+        );
         assert!(pin.env().contains(&(VK_ICD_FILENAMES_ENV, lavapipe)));
         assert_eq!(pin.manifest_files().len(), 2);
 

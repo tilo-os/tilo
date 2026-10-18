@@ -193,6 +193,7 @@ fn bind_into_tab(tree: &mut WorkspaceTree, target: TabId, app_id: &str, surface_
                     app_id: app_id.to_string(),
                     surface_id,
                 };
+                crate::shell::foreign::store().bind_opening_tab(target, surface_id);
                 // Front the tab, but move focus no further: stealing the strip because somebody else opened something is exactly what the room model rules out.
                 group.activate_tab(target);
                 let _ = strip_id;
@@ -1150,8 +1151,9 @@ pub fn remove_tab(tree: &mut WorkspaceTree, tab_id: TabId) -> bool {
     remove_tab_choosing(tree, tab_id, false)
 }
 
-/// [`remove_tab`] for a window the person closed: the group returns to the tab that was in front before it.
-fn close_tab_back_to_previous(tree: &mut WorkspaceTree, tab_id: TabId) -> bool {
+/// [`remove_tab`] for a window the person closed: the group returns to the tab that was in front
+/// before it, and the strip to the window that was focused before it.
+pub(crate) fn close_tab_back_to_previous(tree: &mut WorkspaceTree, tab_id: TabId) -> bool {
     remove_tab_choosing(tree, tab_id, true)
 }
 
@@ -1199,14 +1201,17 @@ fn remove_tab_choosing(tree: &mut WorkspaceTree, tab_id: TabId, back_to_previous
         .and_then(|group| group.tabs.get(tab_idx))
         .is_some_and(|tab| {
             matches!(&tab.tile, TileContent::Foreign { .. }) || tab.tile.is_device_local()
-        });
+        })
+        || !tree.doc_holds_tab(strip_id, group_id, tab_id, remove_group);
     // Delete from the CRDT before touching the cache. Besides making the
     // ordering explicit, this guarantees that a revision/peer merge between
     // the two representations cannot treat the stale document entry as an
-    // insertion and resurrect it. A newly adopted `Foreign` surface, and
-    // the device-local workspace-activity window, may never have entered
-    // the replicated document; absence there is therefore already the
-    // desired durable state, not a failed close.
+    // insertion and resurrect it. A newly adopted `Foreign` surface, the
+    // device-local workspace-activity window, and a tab placed since the
+    // document last took the cache (an opening card whose launch was
+    // refused in the same frame) may never have entered the replicated
+    // document; absence there is therefore already the desired durable
+    // state, not a failed close.
     if !tree.doc_remove_tab(strip_id, group_id, tab_id, remove_group) && !cache_only {
         return false;
     }
@@ -1220,6 +1225,7 @@ fn remove_tab_choosing(tree: &mut WorkspaceTree, tab_id: TabId, back_to_previous
         return false;
     };
     tree.local_app_records.remove(&tab_id);
+    crate::shell::foreign::store().forget_opening_tab(tab_id);
     if let Some(room) = tree.continuation_owned_tabs.remove(&tab_id) {
         tree.continuation_closed_tabs.insert(tab_id, room);
     }

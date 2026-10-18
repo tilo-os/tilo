@@ -38,6 +38,7 @@ fn slug(button: Button) -> String {
         Button::CancelPending(id) => format!("cancel-pending/{}", hex::encode(id)),
         Button::PasteIdentity => "paste-identity".into(),
         Button::CopyIdentity => "copy-identity".into(),
+        Button::CopyPairLink => "copy-pair-link".into(),
     }
 }
 

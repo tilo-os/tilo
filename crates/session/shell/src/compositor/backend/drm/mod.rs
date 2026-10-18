@@ -1736,6 +1736,11 @@ fn apply_scanout_command(
                 entry.set_hdr_request(request.clone());
             }
         }
+        ScanoutCommand::SetSoftwareDim { output, light } => {
+            for entry in scanouts.iter_mut().filter(|entry| entry.id == output) {
+                entry.set_software_dim(light);
+            }
+        }
         ScanoutCommand::SetOutputPower { output, on } => {
             // While the session is blanked every panel is already off; the
             // wake restores this one only if it is still wanted.
@@ -2575,6 +2580,17 @@ fn present_direct(
         entry.direct_calibration = calibration;
         bridge.invalidate_output_view(view);
     }
+    // Dimming in the final pass changes every pixel the same way: a new
+    // level renders in full. Dimming in the CRTC's LUT needs no new frame.
+    // Field by field: `targets` holds the direct targets borrowed.
+    let dim = crate::shell::software_dim::final_pass_dim(
+        entry.software_dim,
+        entry.scanout.software_dim_in_crtc(),
+    );
+    if entry.direct_dim != dim.map(f32::to_bits) {
+        entry.direct_dim = dim.map(f32::to_bits);
+        bridge.invalidate_output_view(view);
+    }
     // A client buffer on the CRTC means the targets' pixels are not what is shown.
     let shown = targets.presented() && !targets.shows_client();
     if keeps_shown_image(bridge, view, frame, shown, sharing) {
@@ -2623,6 +2639,7 @@ fn present_direct(
             sdr_white_nits,
             hdr_layers: frame.hdr_layers,
             color_lut: entry.color_lut.as_ref(),
+            dim,
             layers: frame.layers,
         },
     );
@@ -2755,6 +2772,7 @@ fn present_client(
         enabled: client_scanout::client_scanout_enabled(),
         upright: view.orientation == settings_store::hardware::OutputTransform::Normal,
         uncalibrated: entry.color_lut.is_none(),
+        undimmed_by_compositor: entry.final_pass_dim().is_none(),
         covers_output: candidate.covers(entry.position, view.size),
         client_buffer: dmabuf.is_some(),
         opaque,
@@ -2855,6 +2873,7 @@ fn refresh_client_offer(
                 enabled: client_scanout::client_scanout_enabled(),
                 upright: view.orientation == settings_store::hardware::OutputTransform::Normal,
                 uncalibrated: entry.color_lut.is_none(),
+                undimmed_by_compositor: entry.final_pass_dim().is_none(),
                 covers_output: true,
                 client_buffer: true,
                 opaque: true,
@@ -3515,10 +3534,19 @@ fn paint_one_scanout(
     let sy = usize::try_from(py.max(0)).unwrap_or(0);
     let hdr = e.scanout.format().is_hdr();
     // An ICC profile describes the panel's SDR response; while the output
-    // runs in HDR the PQ encode replaces it.
-    let copied = e.color_transform.is_some() && !hdr;
+    // runs in HDR the PQ encode replaces it. Software dimming the CRTC
+    // cannot carry is done on this copy too, before the profile.
+    let dim = e.final_pass_dim().filter(|_| !hdr);
+    if e.cpu_dim
+        .as_ref()
+        .map(crate::shell::software_dim::CpuDim::light)
+        != dim
+    {
+        e.cpu_dim = dim.map(crate::shell::software_dim::CpuDim::new);
+    }
+    let copied = (e.color_transform.is_some() || dim.is_some()) && !hdr;
     let (source, source_w, source_h, source_x, source_y): (&[u8], usize, usize, usize, usize) =
-        if let Some(transform) = e.color_transform.as_ref().filter(|_| !hdr) {
+        if copied {
             copy_rgba_subrect(
                 SubrectSource {
                     src_rgba: rgba,
@@ -3531,7 +3559,12 @@ fn paint_one_scanout(
                 logical_size.1 as usize,
                 &mut e.color_buffer,
             );
-            transform.apply(&mut e.color_buffer);
+            if let Some(cpu_dim) = e.cpu_dim.as_ref() {
+                cpu_dim.apply(&mut e.color_buffer, logical_size.0 as usize);
+            }
+            if let Some(transform) = e.color_transform.as_ref() {
+                transform.apply(&mut e.color_buffer);
+            }
             (
                 &e.color_buffer,
                 logical_size.0 as usize,
@@ -3903,6 +3936,14 @@ impl Backend for DrmBackend {
 
     fn set_fullscreen_output(&mut self, output: Option<OutputId>) {
         self.inner.set_fullscreen_output(output);
+    }
+
+    fn software_dim_supported(&self) -> bool {
+        true
+    }
+
+    fn set_software_dim(&mut self, dims: &[(String, f32)]) {
+        self.inner.set_software_dim(dims);
     }
 
     fn adaptive_sync_active(&self) -> bool {
@@ -4749,6 +4790,7 @@ mod lone_output_tests {
                     sdr_white_nits: crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS,
                     hdr_layers: &[],
                     color_lut: None,
+                    dim: None,
                     layers: None,
                 },
             )

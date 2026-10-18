@@ -56,6 +56,9 @@ pub enum Wait {
 }
 
 pub struct OpeningCard {
+    /// The tab holding the place, whose window is configured to the card's
+    /// size the moment it appears (`ForeignFrameStore::bind_opening_tab`).
+    tab: Option<crate::shell::state::TabId>,
     title: String,
     wait: Wait,
     since: Instant,
@@ -76,6 +79,7 @@ pub struct OpeningCard {
 impl OpeningCard {
     pub fn new(title: &str, wait: Wait) -> Self {
         Self {
+            tab: None,
             title: title.to_owned(),
             wait,
             since: ui::time::now(),
@@ -87,6 +91,14 @@ impl OpeningCard {
             crossfade: Duration::ZERO,
             drawn_indicator: (0.0, 0.0),
         }
+    }
+
+    /// The card of `tab`, publishing where it is laid out for the window
+    /// that will take its place.
+    #[must_use]
+    pub fn for_tab(mut self, tab: Option<crate::shell::state::TabId>) -> Self {
+        self.tab = tab;
+        self
     }
 
     /// The line under the indicator right now, and what stands in the
@@ -198,7 +210,16 @@ impl Widget for OpeningCard {
         )
     }
 
-    ui::rect_geometry!();
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: vello::kurbo::Point) {
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
+        if let Some(tab) = self.tab {
+            crate::shell::foreign::store().note_opening_tab(tab, self.rect);
+        }
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 
     fn draw(
         &mut self,

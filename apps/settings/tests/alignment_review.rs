@@ -362,9 +362,9 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
             );
         }
 
-        // A window wide enough for the chooser and a label: still one screen
-        // (below the docking breakpoint), but every row sits inline.
-        let medium = (700.0, 820.0);
+        // A page wide enough for the chooser and a label (beside the docked
+        // category list): every row sits inline.
+        let medium = (900.0, 820.0);
         let app = config
             .app()
             .with_category(Category::RegionFormats)

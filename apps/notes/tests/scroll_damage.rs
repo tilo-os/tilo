@@ -277,10 +277,13 @@ fn write_a_rich_note(app: &mut App, host: &mut Host, sections: usize) {
             commit(app, &format!("Item {item} of section {section}"));
             press(app, host, NamedKey::Enter);
         }
-        // An empty bullet ends the list.
+        // Enter on the empty bullet continues the item above; a second
+        // Enter ends the list.
+        press(app, host, NamedKey::Enter);
         press(app, host, NamedKey::Enter);
         commit(app, "[ ] ");
         commit(app, &format!("Something to finish in section {section}"));
+        press(app, host, NamedKey::Enter);
         press(app, host, NamedKey::Enter);
         press(app, host, NamedKey::Enter);
         commit(app, "```");

@@ -202,3 +202,134 @@ fn read_marks_are_positions_in_the_chain() {
     .unwrap();
     assert_eq!(room.read().read_mark("c_general", crate::model::ME), end);
 }
+
+/// Two devices in one fresh room, each with a store of its own and a chain
+/// held in it: the poster's, and a guest's whose window was open before
+/// anyone posted.
+struct TwoDevices {
+    room: String,
+    poster: Chain<ChatPart>,
+    guest: Chain<ChatPart>,
+    guest_store: ui::record::RecordStore,
+    guest_backend: Rc<durable_store::MemoryStore>,
+    /// The record the guest's window shows beside the chain.
+    shown: ui::record::RecordId,
+}
+
+impl TwoDevices {
+    fn new() -> Self {
+        let room = uuid::Uuid::new_v4().to_string();
+        let chat = Rc::new(crate::demo::demo(crate::model::ME));
+        let device = |backend: &Rc<durable_store::MemoryStore>| {
+            ui::record::RecordOwners::with_store(
+                Rc::clone(backend) as Rc<dyn durable_store::DurableStore>
+            )
+            .open("so.tilo.chat", &room)
+            .unwrap()
+        };
+        let base = || {
+            let chat = Rc::clone(&chat);
+            move || Rc::clone(&chat)
+        };
+        let poster = Chain::detached_in(
+            device(&Rc::new(durable_store::MemoryStore::new())),
+            "so.tilo.chat",
+            crate::model::ME,
+            base(),
+        )
+        .unwrap();
+        let guest_backend = Rc::new(durable_store::MemoryStore::new());
+        let guest_store = device(&guest_backend);
+        let guest =
+            Chain::detached_in(guest_store.clone(), "so.tilo.chat", "u_aria", base()).unwrap();
+        assert_eq!(guest.head(), None, "a fresh room has no part yet");
+        let shown = ui::record::RecordCheckout::new(
+            ui::record::RecordId::derived("shown", &ui::record::RecordId::room_default()),
+            ui::record::RecordKind::new("test.shown"),
+        );
+        guest_store
+            .reserve_record(&shown)
+            .unwrap()
+            .initialize(|_| Ok(()))
+            .unwrap();
+        Self {
+            room,
+            poster,
+            guest,
+            guest_store,
+            guest_backend,
+            shown: shown.id,
+        }
+    }
+
+    /// The guest window's sync: it reads the record it shows, which holds
+    /// the store meanwhile, and the chain's revision.
+    fn guest_syncs(&self) -> u64 {
+        self.guest_store
+            .read(&self.shown, |_| self.guest.revision())
+            .unwrap()
+    }
+
+    /// The poster's first post, its part kept in the guest's store as the
+    /// room's replication keeps a record no window there has open.
+    fn first_post_reaches_the_guest(&self) {
+        use durable_store::DurableStore as _;
+        self.poster
+            .invoke(&crate::demo::post("c_general", "the first post", None))
+            .unwrap();
+        self.guest_backend
+            .write(
+                &durable_store::StorageKey::record(
+                    "so.tilo.chat",
+                    &self.room,
+                    crate::parts::part(0).storage_key(),
+                ),
+                durable_store::WriteOp::Replace(self.poster.part_bytes(0).unwrap()),
+                None,
+            )
+            .unwrap();
+    }
+
+    /// What the guest's window shows of `#general`.
+    fn guest_reads(&self) -> Vec<String> {
+        crate::demo::demo(crate::model::ME)
+            .message_rows(&Messages::new(self.guest.parts()), "c_general")
+            .into_iter()
+            .map(|row| row.text)
+            .collect()
+    }
+}
+
+/// The first post of a room starts part 0 on the poster's device. It reaches
+/// a guest whose window already holds the chain by being kept in the
+/// guest's store. The guest's window opens it as its head at its next look:
+/// not in a sync, which reads the store (opening a part takes its writer),
+/// but in the settle after it, so the sync of the frame that follows shows
+/// the post.
+#[test]
+fn the_first_post_reaches_a_window_open_before_it() {
+    let devices = TwoDevices::new();
+    let seen = devices.guest.revision();
+    devices.first_post_reaches_the_guest();
+    let later = ui::time::now() + std::time::Duration::from_secs(2);
+    ui::time::testing::with_monotonic_time(later, || {
+        assert_eq!(devices.guest_syncs(), seen, "a sync opens nothing");
+        assert_ne!(devices.guest.revision(), seen, "the settle opens the part");
+        assert_eq!(devices.guest.head(), Some(0));
+        assert_eq!(devices.guest_reads().last().unwrap(), "the first post");
+    });
+}
+
+/// A store told that a record arrived ([`ui::record::RecordStore::note_kept`],
+/// as the browser's room replication tells it) has the window look at its
+/// next settle, not a moment later.
+#[test]
+fn a_store_told_of_a_kept_part_has_the_window_look_at_once() {
+    let devices = TwoDevices::new();
+    let seen = devices.guest_syncs();
+    devices.first_post_reaches_the_guest();
+    devices.guest_store.note_kept();
+    assert_eq!(devices.guest_syncs(), seen, "a sync opens nothing");
+    assert_ne!(devices.guest.revision(), seen, "the settle opens the part");
+    assert_eq!(devices.guest_reads().last().unwrap(), "the first post");
+}

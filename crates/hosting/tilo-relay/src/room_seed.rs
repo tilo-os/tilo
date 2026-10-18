@@ -354,7 +354,6 @@ mod tests {
         assert_eq!(channel_names(&doc), channels);
         let ids: Vec<&str> = chat.channels.iter().map(|(id, _)| id.as_str()).collect();
         assert_eq!(ids, ["c_general", "c_help", "c_show_and_tell"]);
-        assert!(chat::projection::draft(&doc, "c_general").is_none());
     }
 
     #[test]
@@ -410,6 +409,54 @@ mod tests {
             ("Town Plaza", "TP")
         );
         assert_eq!(channel_names(&doc), ["general", "show-and-tell"]);
+    }
+
+    /// A bridged server adopts the starting channels: `#general` is joined
+    /// with the server's and may sit in the server's category, beside the
+    /// channels the server brought. A later start leaves all of that be.
+    #[test]
+    fn settling_again_after_a_server_is_adopted_neither_doubles_nor_moves_back() {
+        use tilo_resource::Id;
+        let mut doc = prepared_chat();
+        let channels = names(&["general"]);
+        settle_chat(&mut doc, ROOM, "Plaza", &channels).unwrap();
+        let current = chat::Chat::read(&doc).unwrap();
+        let mut adopted = current.clone();
+        let workspace = Id::from_raw(ROOM);
+        adopted.categories.push(
+            Id::from_raw("k_chat"),
+            chat::record::Category {
+                workspace: workspace.clone(),
+                name: "chat".into(),
+            },
+        );
+        adopted
+            .channels
+            .get_mut(&Id::from_raw("c_general"))
+            .unwrap()
+            .category = Some(Id::from_raw("k_chat"));
+        adopted.channels.push(
+            Id::from_raw("c_goal"),
+            chat::record::Channel {
+                workspace,
+                name: "goal".into(),
+                ..chat::record::Channel::default()
+            },
+        );
+        for edit in tilo_resource::Path::<chat::Chat, chat::Chat>::root().edits(&current, &adopted)
+        {
+            edit.apply_local(&mut doc).unwrap();
+        }
+        settle_chat(&mut doc, ROOM, "Plaza", &channels).unwrap();
+        let chat = chat::Chat::read(&doc).unwrap();
+        assert_eq!(channel_names(&doc), ["general", "goal"]);
+        assert_eq!(
+            chat.channels
+                .get(&Id::from_raw("c_general"))
+                .unwrap()
+                .category,
+            Some(Id::from_raw("k_chat"))
+        );
     }
 
     #[test]

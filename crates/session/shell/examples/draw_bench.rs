@@ -7,8 +7,8 @@
 //! No GPU is involved (the scene is composed but never rendered to a
 //! texture), so the numbers reflect *only* the widget tree's
 //! `draw` cost. With the per-widget scene caches landed in this
-//! worktree (`DesktopBackdrop`, `BrowserStub`, `TopBarChrome`,
-//! `SidebarWheelDisc`), the second-and-later frames are expected to
+//! worktree (`DesktopBackdrop`, `BrowserStub`, `TopBarChrome`),
+//! the second-and-later frames are expected to
 //! be substantially cheaper than the first because the caches hit on
 //! every shape that hasn't changed.
 //!

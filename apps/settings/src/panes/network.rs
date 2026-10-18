@@ -426,19 +426,15 @@ fn load_profile_settings(
         .collect()
 }
 
-/// Nerd Font (Material Design Icons) Wi-Fi signal-strength glyph for a 0..=4
-/// bar level. These are the same MDI `wifi-strength-*` family the sidebar's
-/// Network icon draws, so they render as real signal arcs. Unicode
-/// block-element bars (`▁▂▄▆█`) have no glyph in the shipped fonts and fall
-/// back to a `.notdef` tofu box — do not substitute those here.
-fn wifi_signal_glyph(signal: u8) -> &'static str {
-    match signal {
-        0 => "\u{f092b}", // wifi-strength-outline (no bars)
-        1 => "\u{f091f}", // wifi-strength-1
-        2 => "\u{f0922}", // wifi-strength-2
-        3 => "\u{f0925}", // wifi-strength-3
-        _ => "\u{f0928}", // wifi-strength-4 (full)
-    }
+/// How strong a 0..=4 bar signal is, in words.
+fn wifi_signal_words(signal: u8) -> String {
+    t(match signal {
+        0 => "net-signal-unknown",
+        1 => "net-signal-weak",
+        2 => "net-signal-fair",
+        3 => "net-signal-good",
+        _ => "net-signal-strong",
+    })
 }
 
 /// A configured VPN / `WireGuard` connection and whether it is currently up.
@@ -2404,14 +2400,12 @@ impl NetworkModel {
             None => value_row(&connectivity, &connectivity_shown(self.connectivity)),
         };
         let portal = self.connectivity == ConnectivityState::Portal;
-        let mut content = vec![
-            connectivity_row,
-            note(&t(if portal {
-                "net-portal-caption"
-            } else {
-                "net-connectivity-caption"
-            })),
-        ];
+        // A sign-in page in the way is worth a line; plain connectivity
+        // speaks for itself.
+        let mut content = vec![connectivity_row];
+        if portal {
+            content.push(note(&t("net-portal-caption")));
+        }
         if portal {
             content.push(self.button_row(
                 "settings.network.captive-portal",
@@ -2472,7 +2466,6 @@ impl NetworkModel {
                     NetworkEffect::RefreshNetworks,
                 ))),
         )));
-        wifi_rows.push(note(&t("net-wifi-caption")));
 
         card_with_action(&t("net-wifi"), wifi_toggle, rows(wifi_rows))
     }
@@ -3046,37 +3039,50 @@ impl NetworkModel {
         card(&t("net-enterprise"), rows(content))
     }
 
-    /// One scanned-network row: signal + lock glyph + SSID on the left, a
-    /// Connect / Connected / Cancel button on the right.
+    /// One scanned-network row: the network's name, under it whether it
+    /// is secured and how strong it is, and on the trailing edge Connect or
+    /// Cancel, or a quiet mark for the one in use.
     fn network_row(&self, net: &WifiNetworkInfo) -> Item {
-        let signal_glyph = wifi_signal_glyph(net.signal);
-        // A closed padlock for secure networks, its open-padlock pair for open
-        // ones — both from the MDI `lock` family the shipped fonts carry, so the
-        // security state reads at a glance without a stray unrelated glyph.
-        let lock_glyph = if net.secure { "\u{f033e}" } else { "\u{f033f}" };
-        let label = format!("{signal_glyph}  {lock_glyph}  {ssid}", ssid = net.ssid);
-        let cta_id = format!("settings.network.connect.{}", net.ssid);
-        let cta: El = if net.connected {
-            Box::new(Button::new(&cta_id, &t("net-connected")))
-        } else if self.expanded.as_deref() == Some(net.ssid.as_str()) {
-            Box::new(self.button(
-                &cta_id,
-                &t("net-cancel"),
-                NetworkEffect::CancelConnect {
-                    ssid: net.ssid.clone(),
-                },
-            ))
+        let security = t(if net.secure {
+            "net-security-secured"
         } else {
-            Box::new(self.button(
-                &cta_id,
-                &t("net-connect"),
-                NetworkEffect::ConnectNetwork {
-                    ssid: net.ssid.clone(),
-                    password: None,
-                },
-            ))
+            "net-security-open"
+        });
+        let detail = format!("{security}, {}", wifi_signal_words(net.signal));
+        let cta_id = format!("settings.network.connect.{}", net.ssid);
+        let (marks, actions): (Vec<El>, Vec<Button>) = if net.connected {
+            (
+                vec![crate::widgets::semantic_status_pill(
+                    &t("net-connected"),
+                    crate::widgets::StatusTone::Success,
+                )],
+                Vec::new(),
+            )
+        } else if self.expanded.as_deref() == Some(net.ssid.as_str()) {
+            (
+                Vec::new(),
+                vec![self.button(
+                    &cta_id,
+                    &t("net-cancel"),
+                    NetworkEffect::CancelConnect {
+                        ssid: net.ssid.clone(),
+                    },
+                )],
+            )
+        } else {
+            (
+                Vec::new(),
+                vec![self.button(
+                    &cta_id,
+                    &t("net-connect"),
+                    NetworkEffect::ConnectNetwork {
+                        ssid: net.ssid.clone(),
+                        password: None,
+                    },
+                )],
+            )
         };
-        setting_row(&label, cta)
+        crate::widgets::item_row(&net.ssid, marks, &[detail], actions)
     }
 
     /// The password prompt beneath a secure network: a masked,

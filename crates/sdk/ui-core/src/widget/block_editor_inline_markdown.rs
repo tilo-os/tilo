@@ -447,12 +447,12 @@ mod tests {
         assert_eq!(shown(&editor), ("a **b*".to_owned(), vec![]));
 
         // Once anything else is typed, Backspace deletes as usual.
-        let (mut editor, mut doc) = typed_into(Block::paragraph(""), "*i*");
+        let (mut editor, mut doc) = typed_into(Block::paragraph(""), "*e*");
         type_more(&mut editor, &mut doc, "x");
         press(&mut editor, &mut doc, Key::Named(NamedKey::Backspace));
         assert_eq!(
             shown(&editor),
-            ("i".to_owned(), vec![MarkSpan::new(0..1, Mark::Italic)])
+            ("e".to_owned(), vec![MarkSpan::new(0..1, Mark::Italic)])
         );
     }
 
@@ -462,7 +462,7 @@ mod tests {
         assert_eq!(shown(&editor).0, "it doesn't work");
 
         let (editor, _) = typed_into(Block::paragraph(""), "I cant ");
-        assert_eq!(shown(&editor).0, "I cant ", "a word of its own stays");
+        assert_eq!(shown(&editor).0, "I can't ", "as a phone keyboard does");
 
         let (editor, _) = typed_into(Block::code_block(None, ""), "it doesnt work");
         assert_eq!(

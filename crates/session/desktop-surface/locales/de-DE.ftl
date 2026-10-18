@@ -1,7 +1,6 @@
 # Obere Leiste
 continuity-dismiss = Ausblenden
 topbar-workspace-fallback = Arbeitsbereich
-topbar-calendar-none = Kein Kalender verbunden
 topbar-sharing-agent-controls = Agent steuert: { $name }
 topbar-sharing-agent-viewing = Agent sieht zu: { $name }
 topbar-sharing-person-controls = Steuert: { $name }
@@ -29,10 +28,17 @@ topbar-watching-description = { $count } { $count ->
        *[other] Personen schauen
     } zu, ohne teilzunehmen
 topbar-tilo-menu = Tilo-Menü
-topbar-show-clock = Uhr anzeigen
-topbar-show-system-monitor = Systemmonitor anzeigen
-topbar-show-calendar = Kalender anzeigen
 topbar-open-quick-settings = Schnelleinstellungen öffnen
+topbar-bell = { $unread ->
+    [0] Mitteilungen
+    [one] Mitteilungen, 1 ungelesen
+   *[other] Mitteilungen, { $unread } ungelesen
+}
+topbar-bell-silenced = { $unread ->
+    [0] Mitteilungen stummgeschaltet
+    [one] Mitteilungen stummgeschaltet, 1 ungelesen
+   *[other] Mitteilungen stummgeschaltet, { $unread } ungelesen
+}
 topbar-show-collaborators = Mitwirkende anzeigen
 topbar-viewer-can-control = kann { $targets } steuern
 topbar-viewer-view-only = sieht nur { $targets }
@@ -44,22 +50,6 @@ topbar-viewer-entry = { $name } ({ $kind ->
 topbar-collaborators-visible = Bildschirm sichtbar für { $viewers }. Mitwirkende anzeigen
 topbar-capture-privacy = Datenschutzeinstellungen für aktive Aufnahme
 topbar-control = Steuerelement der oberen Leiste
-topbar-editor-control = Bearbeitungselement der oberen Leiste
-topbar-editor-remove-clock = Uhr aus der oberen Leiste entfernen
-topbar-editor-remove-system-monitor = Systemmonitor aus der oberen Leiste entfernen
-topbar-editor-remove-calendar = Kalender aus der oberen Leiste entfernen
-topbar-editor-add-clock = Uhr zur oberen Leiste hinzufügen
-topbar-editor-add-system-monitor = Systemmonitor zur oberen Leiste hinzufügen
-topbar-editor-add-calendar = Kalender zur oberen Leiste hinzufügen
-topbar-editor-title = Obere Leiste bearbeiten
-topbar-editor-hint = Zum Anordnen ziehen · „Entfernen“ klicken
-topbar-widget-clock = Uhr
-topbar-widget-system-monitor = Systemmonitor
-topbar-widget-calendar = Kalender
-topbar-editor-remove = Entfernen
-topbar-editor-add-clock-chip = + Uhr
-topbar-editor-add-monitor-chip = + Monitor
-topbar-editor-add-calendar-chip = + Kalender
 topbar-invite = Einladen
 topbar-activity-unread = { $headline }  ·  { $count } neu
 topbar-clock-resume = Fortsetzen
@@ -86,6 +76,8 @@ topbar-strip-go = Zu { $name } wechseln, { $count ->
     [one] eine Person dort
    *[other] { $count } Personen dort
 }
+topbar-strip-name = Leisten zeigen, gerade { $strip }
+topbar-strip-add = Leiste hinzufügen
 topbar-strips-more-label = +{ $count }
 topbar-strips-more = { $count ->
     [one] Eine weitere Leiste
@@ -105,6 +97,10 @@ profile-name-placeholder = Dein Name
 profile-name-hint = So sehen dich alle hier
 profile-section-identity = Deine Identität
 profile-section-devices = Geräte
+profile-section-linked = Verknüpfte Konten
+profile-link = { $service }-Konto verknüpfen
+profile-unlink = Trennen
+profile-copy = Kopieren
 
 # Arbeitsbereichsaktivität
 a11y-shell-workspace-activity = Aktivität im Arbeitsbereich
@@ -528,11 +524,11 @@ desktop-view-replay-activity = Arbeitsbereich-Aktivität wiedergeben
 
 ## Desktop window search
 search-provider-desktop-windows = Fenster auf dem Desktop
-search-badge-tab = Tab
-search-badge-window-group = Fenstergruppe
 search-window-move-tab = Tab „{ $tab }“ in den Arbeitsbereich „{ $workspace }“ verschieben
 search-window-move-tab-detail = Aus dem Arbeitsbereich „{ $workspace }“
 search-window-copy-tab = Tab „{ $tab }“ in den Arbeitsbereich „{ $workspace }“ kopieren
+search-window-move-tab-to = „{ $tab }“ in einen anderen Arbeitsbereich verschieben
+search-window-copy-tab-to = „{ $tab }“ in einen anderen Arbeitsbereich kopieren
 search-window-group-untitled = Unbenanntes Fenster
 search-window-close-group = Fenstergruppe „{ $group }“ schließen
 search-window-close-group-detail = Arbeitsbereich „{ $workspace }“ · Leiste „{ $strip }“ · { $count ->
@@ -541,12 +537,7 @@ search-window-close-group-detail = Arbeitsbereich „{ $workspace }“ · Leiste
 }
 search-window-close-tab = Tab „{ $tab }“ schließen
 search-window-close-tab-detail = Arbeitsbereich „{ $workspace }“ · Leiste „{ $strip }“
-search-window-focus-place = Geöffnet in diesem Arbeitsbereich
-search-window-focus-place-strip = Geöffnet in der Leiste „{ $strip }“
-search-window-focus-detail-shared = { $place } · { $count ->
-    [one] 1 Tab
-   *[other] { $count } Tabs
-}
+search-window-focus-place-strip = Leiste „{ $strip }“
 # Wörter, die nach Schließen- bzw. Verschieben/Kopieren-Zeilen fragen;
 # Englisch bleibt als Rückfall erhalten. Leerzeichengetrennt, klein.
 search-window-verb-close = schließen beenden close quit
@@ -600,7 +591,7 @@ notification-lock-count = { $count ->
     [one] 1 Benachrichtigung
    *[other] { $count } Benachrichtigungen
 }
-notification-dnd-held = { $status } · { $count } zurückgehalten
+notification-more = { $count } weitere
 notification-stack-a11y = Benachrichtigungen
 notification-group-system = System
 notification-center-undo = Rückgängig
@@ -1036,11 +1027,6 @@ window-switcher-app-description = Fenster dieser App in diesem Arbeitsbereich, z
 window-switcher-untitled = Unbenanntes Fenster
 window-switcher-caption-paged = { $position } von { $count }
 
-# Workspace wheel
-a11y-shell-wheel = Arbeitsbereichsrad
-a11y-shell-wheel-switch = Zu { $workspace } wechseln
-a11y-shell-wheel-add = Arbeitsbereich hinzufügen
-
 # Workspace overview
 overview-empty-window = Leeres Fenster
 overview-untitled = Ohne Titel
@@ -1124,8 +1110,7 @@ activity-task-direction-close = Zurück zur Aufgabe
 activity-task-direction-label = Anweisungen für den Agenten
 activity-task-direction-placeholder = Beschreibe, was der Agent ändern soll
 activity-task-direction-observation = Sag dem Agenten, was er anders machen soll. Er folgt deinen Anweisungen ab seinem nächsten Schritt, und alle in diesem Arbeitsbereich können sie sehen.
-activity-task-review-saving = Wird gespeichert…
-activity-task-review-saved = Gespeichert. Warte auf die Antwort des Agenten.
+activity-task-review-waiting = Warte auf die Antwort des Agenten.
 activity-task-review-refused = Nicht gespeichert. Dein Entwurf bleibt erhalten. { $detail }
 
 activity-confirm-waiting = Wartet auf deine Bestätigung

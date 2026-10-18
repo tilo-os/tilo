@@ -230,36 +230,17 @@ pub struct FrameLayers {
     /// window group, so a presenter rasterises only where a group's drawing
     /// changed. `None` for a strip drawn without well-nested parts.
     pub strip_parts: Vec<Option<ui::scene_parts::SectionParts>>,
-    /// The docked wheel, drawn on its own above the strips.
-    pub wheel: Option<WheelSprite>,
     /// Everything above: notices over the desktop, the top bar, quick
     /// settings and every overlay above them.
     pub chrome: Scene,
 }
 
-/// The docked wheel as a layer of its own size, above the strips. It rides
-/// the top strip, over the strips below it: drawn apart, a pan moves it
-/// without drawing it or the strips under it again.
-#[derive(Clone)]
-pub struct WheelSprite {
-    /// The wheel with the top-left corner of everything it paints at the
-    /// origin, in scene pixels.
-    pub scene: Scene,
-    pub width: u32,
-    pub height: u32,
-    /// Where that corner is on screen this frame, in scene pixels: off
-    /// screen to the left once the strip it rides has panned it away.
-    pub x: i32,
-    pub y: i32,
-}
-
-/// The strips and the docked wheel the host drew apart for a frame drawn as
-/// layers, in scene pixels ([`FrameBuilder::panned_pieces`]).
+/// The strips the host drew apart for a frame drawn as layers, in scene
+/// pixels ([`FrameBuilder::panned_pieces`]).
 struct PannedPieces {
     strips: Vec<Scene>,
     /// Each strip's damage parts, in the same order.
     parts: Vec<Option<ui::scene_parts::SectionParts>>,
-    wheel: Option<WheelSprite>,
 }
 
 /// Widest workspace layer, in scene pixels. Past this the strips keep their
@@ -410,7 +391,6 @@ impl FramePaint {
                     workspace,
                     strips,
                     strip_parts: _,
-                    wheel,
                     chrome,
                 },
         }) = cache
@@ -419,9 +399,6 @@ impl FramePaint {
             pins.add_scene(workspace);
             for strip in strips {
                 pins.add_scene(strip);
-            }
-            if let Some(wheel) = wheel {
-                pins.add_scene(&wheel.scene);
             }
             pins.add_scene(chrome);
         }
@@ -1546,10 +1523,13 @@ impl FrameBuilder {
         })
     }
 
-    /// Match `ui::App` for an app hosted in this process: Ctrl+T, Ctrl+W and
-    /// Ctrl+Shift+T that the app left unhandled are the desktop's tab chords —
-    /// another instance beside it, close its tab, reopen the last closed one.
-    /// Never while chrome (a palette, a menu, a dialog) holds the keyboard.
+    /// Match `ui::App` for an app hosted in this process: Ctrl+T, Ctrl+W,
+    /// Ctrl+Shift+T, Ctrl+Tab and Ctrl+Shift+Tab that the app left unhandled
+    /// are the desktop's tab chords — another instance beside it, close its
+    /// tab, reopen the last closed one, the next or previous tab of the
+    /// group. Never while chrome (a palette, a menu, a dialog) holds the
+    /// keyboard. Stepping through tabs and reopening one need no hosted app:
+    /// any tile the shell draws itself leaves those chords to the desktop.
     fn apply_hosted_tab_chord(&mut self, event: &WindowEvent, modifiers: Modifiers) -> bool {
         use crate::shell::state::TileContent;
         use ui::shell_tabs::TabRequest;
@@ -1570,6 +1550,21 @@ impl FrameBuilder {
         };
         if self.host.modal_capture().is_some() {
             return false;
+        }
+        match request {
+            TabRequest::CycleTab { forward } => {
+                let _ = self.host.cycle_focused_tab(if forward { 1 } else { -1 });
+                return true;
+            }
+            TabRequest::ReopenClosed => {
+                self.with_chrome(|st| {
+                    st.reopen_closed_tab();
+                });
+                return true;
+            }
+            TabRequest::OpenBeside { .. }
+            | TabRequest::CloseThis
+            | TabRequest::PlaceNextWindowBeside { .. } => {}
         }
         let hosted = {
             let chrome = self.chrome();
@@ -1600,10 +1595,9 @@ impl FrameBuilder {
                     tracing::debug!(?error, "hosted tab not closed");
                 }
             }
-            TabRequest::ReopenClosed => {
-                st.reopen_closed_tab();
-            }
-            TabRequest::PlaceNextWindowBeside { .. } => {}
+            TabRequest::ReopenClosed
+            | TabRequest::CycleTab { .. }
+            | TabRequest::PlaceNextWindowBeside { .. } => {}
         });
         true
     }
@@ -2575,13 +2569,7 @@ impl FrameBuilder {
             .as_ref()
             .filter(|_| unbake)
             .and_then(|plan| Self::panned_pieces(plan, panned))
-            .filter(|pieces| {
-                pieces.strips.iter().all(separable_layer)
-                    && pieces
-                        .wheel
-                        .as_ref()
-                        .is_none_or(|wheel| separable_layer(&wheel.scene))
-            });
+            .filter(|pieces| pieces.strips.iter().all(separable_layer));
         if unbake
             && (!backdrop_surfaces.is_empty()
                 || !hdr_layers.is_empty()
@@ -2704,7 +2692,6 @@ impl FrameBuilder {
                     },
                     strips: pieces.strips,
                     strip_parts: pieces.parts,
-                    wheel: pieces.wheel,
                     chrome: self.to_scene(chrome),
                 },
             }
@@ -2731,8 +2718,12 @@ impl FrameBuilder {
                 separable.then_some(cache),
             )
         } else {
-            let (scene, scanout) =
-                self.screen_space_scene(&sections, fullscreen_on_top, global_filter);
+            let (scene, scanout) = self.screen_space_scene(
+                &sections,
+                fullscreen_on_top,
+                &foreign_images,
+                global_filter,
+            );
             (scene, scanout, None)
         };
         phases.mark("compose");
@@ -2971,6 +2962,7 @@ impl FrameBuilder {
         &self,
         sections: &crate::shell::overlay_host::ShellSceneSections,
         fullscreen_on_top: Option<crate::shell::scanout_candidate::DrawnOnTop>,
+        foreign_images: &[super::foreign_damage::DrawnImage],
         global_filter: bool,
     ) -> (
         Scene,
@@ -2988,9 +2980,41 @@ impl FrameBuilder {
         scene.append(&sections.above_quick_settings, None);
         // A popup, the on-screen keyboard or anything else drawn above the
         // fullscreen client in its section leaves it not on top.
-        let fullscreen_on_top =
-            fullscreen_on_top.filter(|drawn| drawn.still_last_in(&sections.above_quick_settings));
+        let fullscreen_on_top = fullscreen_on_top
+            .filter(|drawn| drawn.still_last_in(&sections.above_quick_settings))
+            .and_then(|drawn| {
+                let (surface, _) = self.fullscreen_overlay.as_ref()?;
+                Some((*surface, drawn))
+            });
+        // Otherwise a client frame drawn last of all (a maximized window's,
+        // drawn edge to edge) is on top of everything on its display.
         let draws_below_filters = scene.encoding().draw_tags.len();
+        let client_on_top = fullscreen_on_top.or_else(|| {
+            let drawn = crate::shell::scanout_candidate::DrawnOnTop::last_in(
+                &scene,
+                draws_below_filters.checked_sub(1)?,
+            );
+            if drawn.is_none() {
+                // Why the display composites rather than scans a client out:
+                // what each section drew, backdrop first.
+                tracing::trace!(
+                    target: "tilo::scanout",
+                    draws = ?[
+                        &sections.backdrop,
+                        &sections.workspace,
+                        &sections.workspace_overlays,
+                        &sections.topbar,
+                        &sections.quick_settings,
+                        &sections.above_quick_settings,
+                    ]
+                    .map(|section| section.encoding().draw_tags.len()),
+                    "no client frame is the last thing drawn"
+                );
+            }
+            let drawn = drawn?;
+            let surface = super::foreign_damage::surface_of(foreign_images, drawn.image())?;
+            Some((surface, drawn))
+        });
         if self.watch_configured_theme && self.night_light {
             let (w, h) = self.viewport;
             let bounds = Rect::new(0.0, 0.0, w, h);
@@ -3015,10 +3039,11 @@ impl FrameBuilder {
         }
         // Night light, a colour filter and the magnifier change every pixel
         // of the output; the magnifier does it without drawing anything more.
-        let fullscreen_on_top = fullscreen_on_top
+        let client_on_top = client_on_top
             .filter(|_| !global_filter && scene.encoding().draw_tags.len() == draws_below_filters);
         let scene = self.to_scene(scene);
-        let scanout = fullscreen_on_top.and_then(|drawn| self.scanout_candidate(drawn, &scene));
+        let scanout = client_on_top
+            .and_then(|(surface, drawn)| self.scanout_candidate(surface, drawn, &scene));
         (scene, scanout)
     }
 
@@ -3029,6 +3054,7 @@ impl FrameBuilder {
     /// not overlap, or another display's copy could be drawn over it.
     fn scanout_candidate(
         &self,
+        surface: super::foreign::SurfaceId,
         drawn: crate::shell::scanout_candidate::DrawnOnTop,
         scene: &Scene,
     ) -> Option<crate::shell::scanout_candidate::ScanoutCandidate> {
@@ -3046,8 +3072,17 @@ impl FrameBuilder {
             }
             _ => drawn,
         };
-        let (surface, _) = self.fullscreen_overlay.as_ref()?;
-        crate::shell::scanout_candidate::ScanoutCandidate::new(*surface, placed, scene)
+        let bounds = placed.bounds();
+        let candidate =
+            crate::shell::scanout_candidate::ScanoutCandidate::new(surface, placed, scene);
+        tracing::trace!(
+            target: "tilo::scanout",
+            surface,
+            ?bounds,
+            pixel_exact = candidate.is_some(),
+            "a client frame is on top of everything drawn"
+        );
+        candidate
     }
 
     /// A floating surface shows a blur of what is below it, which can change
@@ -3255,10 +3290,8 @@ impl FrameBuilder {
     /// a layout pixel at 100 %, half of one at 200 %, two thirds at 150 %,
     /// four fifths at 125 %. A pan then moves the strip by whole device
     /// pixels, which a copy reproduces exactly, and as finely as the panel
-    /// can show. What rides the strip moves with it by exactly the pan (the
-    /// docked wheel replays its cached drawing under the exact change of its
-    /// place), so the panned strips are what the desktop drawn without layers
-    /// shows, and nothing twitches when a pan ends. Layout and input see the
+    /// can show. What rides the strip moves with it by exactly the pan, so
+    /// the panned strips are what the desktop drawn without layers shows, and nothing twitches when a pan ends. Layout and input see the
     /// same drawn pan, so what is under the pointer is what is drawn there.
     /// A CPU presenter keeps whole layout pixels.
     fn align_strip_pans(&mut self) {
@@ -3429,10 +3462,10 @@ impl FrameBuilder {
         Some(plan)
     }
 
-    /// The strips and the docked wheel the host drew apart for `plan`, in
-    /// scene pixels; `None` when they do not match it, or a strip's floating
-    /// surfaces drew (on screen they are drawn above the wheel): the frame
-    /// is then drawn in screen space.
+    /// The strips the host drew apart for `plan`, in scene pixels; `None`
+    /// when they do not match it, or a strip's floating surfaces drew (on
+    /// screen they are drawn above every strip): the frame is then drawn in
+    /// screen space.
     fn panned_pieces(
         plan: &StripPlan,
         panned: crate::shell::overlay_host::PannedSections,
@@ -3440,7 +3473,6 @@ impl FrameBuilder {
         let crate::shell::overlay_host::PannedSections {
             strips,
             strip_parts,
-            wheel,
             floating_drawn,
         } = panned;
         if floating_drawn
@@ -3458,49 +3490,7 @@ impl FrameBuilder {
             .zip(strip_parts)
             .map(|((_, scene), parts)| magnified_with_parts(scene, parts, plan.to_scene))
             .unzip();
-        let wheel = match wheel {
-            Some(wheel) => Some(Self::wheel_sprite(plan, &wheel)?),
-            None => None,
-        };
-        Some(PannedPieces {
-            strips,
-            parts,
-            wheel,
-        })
-    }
-
-    /// The docked wheel as a sprite: everything it paints, rounded out to
-    /// whole scene pixels, placed where the pan of the strip it rides shows
-    /// it.
-    fn wheel_sprite(
-        plan: &StripPlan,
-        wheel: &crate::shell::overlay_host::PannedWheel,
-    ) -> Option<WheelSprite> {
-        let scroll_x = match wheel.rides {
-            Some(strip) => {
-                let index = plan.ids.iter().position(|id| *id == strip)?;
-                plan.strips.get(index)?.scroll_x
-            }
-            None => 0,
-        };
-        let bounds = plan.to_scene.transform_rect_bbox(wheel.bounds);
-        let (x0, y0) = (bounds.x0.floor(), bounds.y0.floor());
-        let (x1, y1) = (bounds.x1.ceil(), bounds.y1.ceil());
-        let mut scene = Scene::new();
-        scene.append(
-            &wheel.scene,
-            Some(
-                plan.to_scene
-                    .then_translate(vello::kurbo::Vec2::new(-x0, -y0)),
-            ),
-        );
-        Some(WheelSprite {
-            scene,
-            width: scene_px(x1 - x0).max(1),
-            height: scene_px(y1 - y0).max(1),
-            x: scene_i32(x0 - f64::from(scroll_x))?,
-            y: scene_i32(y0)?,
-        })
+        Some(PannedPieces { strips, parts })
     }
 
     #[cfg(test)]
@@ -5599,8 +5589,8 @@ impl FrameBuilder {
         // Match `ui::App`: unmodified Tab advances the global DFS focus order
         // only when the focused widget did not claim it. A terminal and a
         // multiline editor legitimately consume Tab as input; intercepting it
-        // before dispatch made completion/indentation impossible. Ctrl+Tab and
-        // other modified chords remain shell shortcuts.
+        // before dispatch made completion/indentation impossible. Ctrl+Tab is
+        // the desktop's tab chord above, also only when nothing claimed it.
         if !handled
             && let WindowEvent::KeyboardInput { event, .. } = event
             && event.state == winit::event::ElementState::Pressed
@@ -6734,13 +6724,16 @@ mod tests {
             // Rebuild through the actual viewport path while search owns focus.
             frame.set_viewport(viewport);
             frame.relayout();
-            assert!(frame.dispatch_event(
-                &key_press(Key::Named(NamedKey::Escape)),
-                &Modifiers::default(),
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &mut focus
-            ));
+            // The first Escape clears what was typed; the second closes.
+            for _ in 0..2 {
+                assert!(frame.dispatch_event(
+                    &key_press(Key::Named(NamedKey::Escape)),
+                    &Modifiers::default(),
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &automerge::ROOT,
+                    &mut focus
+                ));
+            }
             assert!(!frame.host.palette_visible());
             let _ = frame.paint_settled();
             frame.reconcile_native_focus(&mut focus);
@@ -7211,6 +7204,95 @@ mod tests {
         store.forget(POPUP);
     }
 
+    /// Not only the fullscreen overlay: any client frame drawn last of all,
+    /// unclipped, is on top of everything on its display (a maximized
+    /// window drawn edge to edge is one; a surface floating over the whole
+    /// desktop is the simplest). The frame names that client's surface, and
+    /// the proof goes as soon as anything is drawn above it.
+    #[test]
+    fn a_client_frame_drawn_last_of_all_is_a_scanout_candidate() {
+        const SURFACE: u64 = 9_900_708;
+        const POPUP: u64 = 9_900_709;
+        const SIZE: (u32, u32) = (1600, 900);
+        let _env_lock = tilo_test_env::lock();
+        let store = crate::shell::foreign::store();
+        let pixels = [10, 20, 30, 255].repeat(SIZE.0.saturating_mul(SIZE.1) as usize);
+        store.publish_rgba(SURFACE, &pixels, SIZE.0, SIZE.1);
+        store.publish_rgba(POPUP, &[0, 0, 0, 255], 1, 1);
+        let output = Rect::new(0.0, 0.0, f64::from(SIZE.0), f64::from(SIZE.1));
+        let mut fb = FrameBuilder::new(SIZE);
+        fb.set_floating_surfaces_with_input(&[(SURFACE, "org.alacritty".to_owned(), output, None)]);
+        let frame = fb.paint_with_damage();
+        let candidate = frame
+            .scanout_candidate()
+            .expect("the client frame drawn last of all is a candidate");
+        assert_eq!(candidate.surface, SURFACE);
+        assert!(candidate.covers((0, 0), SIZE));
+
+        fb.set_transient_surfaces(&[(POPUP, Rect::new(10.0, 10.0, 40.0, 40.0))]);
+        assert!(fb.paint_with_damage().scanout.is_none(), "a popup above it");
+        fb.set_transient_surfaces(&[]);
+        fb.set_floating_surfaces_with_input(&[]);
+        store.forget(SURFACE);
+        store.forget(POPUP);
+    }
+
+    /// A maximized window hides the top bar on the display it fills, as
+    /// the person's "hide the top bar" setting does everywhere, so the
+    /// window is all app until the bar is reached for; restored, the bar
+    /// docks again.
+    #[test]
+    fn a_maximized_window_hides_the_top_bar_on_its_display() {
+        use crate::shell::state::{
+            AppKind, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+            WorkspaceId, WorkspaceTree,
+        };
+        use tilo_desktop::chrome::TopBarPresence;
+        let tree = |maximized: bool| {
+            let ws_id = WorkspaceId(81);
+            let strip = StripId(82);
+            let mut ws = Workspace::new(ws_id, "Typing");
+            ws.strips = vec![Strip {
+                id: strip,
+                name: "Main".into(),
+                window_groups: vec![WindowGroup {
+                    id: 83,
+                    tabs: vec![Tab {
+                        id: 84,
+                        title: "Notes".into(),
+                        tile: TileContent::Stub {
+                            kind: AppKind::Other("Notes".into()),
+                            label: "Notes".into(),
+                        },
+                    }],
+                    active_tab: 84,
+                    width: WindowWidth::Fraction(667),
+                    maximized,
+                    focus_history: Vec::new(),
+                }],
+            }];
+            let mut tree = WorkspaceTree::default();
+            tree.desktop.workspaces = vec![ws];
+            tree.desktop.active = ws_id;
+            tree.desktop.active_strip.insert(ws_id, strip);
+            tree
+        };
+        let presence = |maximized: bool| {
+            let mut fb = FrameBuilder::with_tree(tree(maximized), (1600, 900));
+            fb.relayout();
+            let _ = fb.paint();
+            fb.relayout();
+            let _ = fb.paint();
+            fb.chrome().top_bar_presence()
+        };
+        assert_eq!(presence(false), TopBarPresence::Docked);
+        assert_eq!(
+            presence(true),
+            TopBarPresence::Hidden,
+            "the maximized window fills the display the bar stands on"
+        );
+    }
+
     /// A window that was a tile before it went fullscreen keeps drawing over
     /// the whole output: the tile's last configure must not leave it a
     /// centred, tile-sized box floating above the desktop.
@@ -7234,7 +7316,7 @@ mod tests {
         let frame = fb.paint_with_damage();
         let candidate = frame
             .scanout_candidate()
-            .expect("alone on top: no bar, wheel or strip chrome over it");
+            .expect("alone on top: no bar or strip chrome over it");
         assert_eq!(candidate.origin, (0, 0));
         assert!(candidate.covers((0, 0), SIZE), "it fills the output");
         assert_eq!(
@@ -7439,56 +7521,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn super_s_moves_the_wheel_disc_to_the_pointer() {
-        let mut fb = FrameBuilder::new((1600, 900));
-        let _ = fb.paint_settled();
-        let before = *fb
-            .widget_registry()
-            .get("wheel_disc")
-            .expect("the docked wheel is addressable");
-        let at = Point::new(1180.0, 450.0);
-        fb.host_mut().note_pointer(at);
-        let chord = Modifiers::from(ModifiersState::SUPER);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mut focus = None;
-        assert!(
-            fb.dispatch_event(
-                &key_press(Key::Character("s".into())),
-                &chord,
-                &mut ui::widget::Edits::lend(&mut doc),
-                &root,
-                &mut focus
-            ),
-            "Super+S is handled by the shell"
-        );
-        let summoned = fb
-            .chrome()
-            .wheel_summon()
-            .expect("Super+S writes chrome.wheel_summon");
-        assert!(
-            (summoned.x - at.x).abs() < 1.0 && (summoned.y - at.y).abs() < 1.0,
-            "summon follows the pointer, got {summoned:?}"
-        );
-        let _ = fb.paint_settled();
-        let after = *fb
-            .widget_registry()
-            .get("wheel_disc")
-            .expect("the summoned wheel stays addressable");
-        assert!(
-            (after.x1 - at.x).abs() < 2.0,
-            "the rim's right edge sits on the pointer so a shot at that point sees the wheel; \
-             got x1={} for pointer x={}",
-            after.x1,
-            at.x
-        );
-        assert!(
-            (after.x0 - before.x0).abs() > 50.0,
-            "the disc actually moved: docked {before:?} summoned {after:?}"
-        );
-    }
-
     fn focused_name(fb: &FrameBuilder, focus: Option<NodeId>) -> Option<String> {
         let ptr = fb.node_map.get(&focus?)?;
         unsafe { (**ptr).accessibility()?.name }
@@ -7516,7 +7548,7 @@ mod tests {
             WindowWidth, Workspace, WorkspaceId, WorkspaceTree,
         };
         const GROUPS: usize = 5;
-        const GROUP_WIDTH_PERMILLE: u16 = 515;
+        const GROUP_WIDTH_PERMILLE: u32 = 515;
         let ws_id = WorkspaceId::new();
         let strip_id = StripId::new();
         let groups: Vec<GroupId> = (0..GROUPS)
@@ -7863,7 +7895,7 @@ mod tests {
 
     /// On a desktop spread across two displays a fullscreen covers its own
     /// display only. The other display keeps its windows where they were
-    /// and its own chrome: the wheel and the full top bar on the primary,
+    /// and its own chrome: the full top bar on the primary,
     /// the compact bar on the second.
     #[test]
     fn a_fullscreen_covers_its_own_display_and_leaves_the_other_alone() {
@@ -7928,11 +7960,6 @@ mod tests {
                 "{label}: the other strip steps aside on the fullscreen's display"
             );
             let registry = fb.widget_registry();
-            assert_eq!(
-                rect_named(&registry, "SidebarWheelDisc").width() > 1.0,
-                !on_primary,
-                "{label}: the wheel steps aside only for a fullscreen on the primary"
-            );
             assert_eq!(
                 rect_named(&registry, "TopBarChrome").height() > 10.0,
                 !on_primary,
@@ -9576,43 +9603,32 @@ mod tests {
             );
         }
 
-        /// Expand keeps the top bar but tucks the workspace switcher disc
-        /// away instead of drawing it over the window's left edge.
-        fn an_expanded_window_tucks_the_wheel_and_keeps_the_top_bar() {
+        /// Expand keeps the top bar.
+        fn an_expanded_window_keeps_the_top_bar() {
             let mut tree = crate::shell::state::WorkspaceTree::bootstrap_demo();
             let first = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
             first.maximized = true;
             let group = first.id;
             let mut fb = FrameBuilder::with_tree(tree, (1600, 900));
             let _ = fb.paint_settled();
-            let before = fb.widget_registry();
-            assert!(
-                rect_named(&before, "SidebarWheelDisc").width() > 1.0,
-                "the disc is there while nothing is expanded"
-            );
             fb.with_chrome(|chrome| chrome.set_maximized_group(Some(group)));
             let _ = fb.paint_settled();
-            let during = fb.widget_registry();
             assert!(
-                rect_named(&during, "SidebarWheelDisc").width() <= 0.5,
-                "the disc is tucked while a window is expanded"
-            );
-            assert!(
-                rect_named(&during, "TopBarChrome").height() > 10.0,
+                rect_named(&fb.widget_registry(), "TopBarChrome").height() > 10.0,
                 "Expand keeps the top bar"
             );
             fb.with_chrome(|chrome| chrome.set_maximized_group(None));
             let _ = fb.paint_settled();
             assert!(
-                rect_named(&fb.widget_registry(), "SidebarWheelDisc").width() > 1.0,
-                "restoring brings the disc back"
+                rect_named(&fb.widget_registry(), "TopBarChrome").height() > 10.0,
+                "restoring keeps the top bar"
             );
         }
 
-        /// Super+F on a Tilo window covers the wheel. Hosted apps are xdg
-        /// clients; chrome fullscreen still wins so W07 sees
-        /// `fullscreen_group`. Maximize stays beside the wheel.
-        fn super_f_on_a_tilo_group_covers_the_wheel() {
+        /// Super+F on a Tilo window covers the whole output. Hosted apps
+        /// are xdg clients; chrome fullscreen still wins so W07 sees
+        /// `fullscreen_group`.
+        fn super_f_on_a_tilo_group_covers_the_output() {
             let mut fb = FrameBuilder::new((1600, 900));
             let _ = fb.paint_settled();
             assert!(fb.host_mut().toggle_focused_group_fullscreen());
@@ -9629,17 +9645,13 @@ mod tests {
             let row = rect_named(&during, "GroupRow");
             assert!(
                 row.width() >= fb.viewport().0 - 1.0,
-                "Super+F must cover the wheel; row width {} vs output {}",
+                "Super+F must cover the output; row width {} vs output {}",
                 row.width(),
                 fb.viewport().0,
             );
             assert!(
                 rect_named(&during, "TopBarChrome").height() <= 0.5,
                 "Super+F hides the top bar"
-            );
-            assert!(
-                rect_named(&during, "SidebarWheelDisc").width() <= 0.5,
-                "the workspace switcher does not show in fullscreen"
             );
             assert!(fb.host_mut().toggle_focused_group_fullscreen());
             let _ = fb.paint_settled();
@@ -9715,8 +9727,8 @@ mod tests {
         restored_native_tab_gets_a_configure_rect_before_its_first_buffer();
         set_fullscreen_promotes_group_and_restores_on_exit();
         set_fullscreen_with_unknown_group_does_not_blank_shell();
-        super_f_on_a_tilo_group_covers_the_wheel();
-        an_expanded_window_tucks_the_wheel_and_keeps_the_top_bar();
+        super_f_on_a_tilo_group_covers_the_output();
+        an_expanded_window_keeps_the_top_bar();
         super_f_foreign_window_covers_its_output_in_a_partitioned_desktop();
     }
 
@@ -10361,23 +10373,6 @@ fn without_contained_regions(regions: &[FineDamageRect]) -> Vec<FineDamageRect> 
         })
         .map(|(_, region)| *region)
         .collect()
-}
-
-/// A whole scene coordinate, possibly negative (off screen to the left or
-/// above), rounded to the nearest pixel; `None` when not finite.
-fn scene_i32(value: f64) -> Option<i32> {
-    if !value.is_finite() {
-        return None;
-    }
-    let value = value
-        .round()
-        .clamp(f64::from(i32::MIN), f64::from(i32::MAX));
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "the value is rounded, finite and clamped to i32"
-    )]
-    let whole = value as i32;
-    Some(whole)
 }
 
 /// `scene`, drawn in logical coordinates, magnified by `to_scene` into

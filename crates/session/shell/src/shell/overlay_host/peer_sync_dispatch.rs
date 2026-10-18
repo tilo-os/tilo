@@ -25,11 +25,16 @@ pub type PeerSyncJob = Box<dyn FnOnce() + Send>;
 /// Runs a job off the frame loop, handing it back when it cannot.
 pub type PeerSyncRunner = std::rc::Rc<dyn Fn(PeerSyncJob) -> Result<(), PeerSyncJob>>;
 
+/// The rooms this computer holds as a site's workspace, which the person
+/// can leave.
+pub type SiteRooms = Arc<dyn Fn() -> Vec<crate::shell::network::SiteRoom> + Send + Sync>;
+
 /// A network that carries requests out on a worker, never on the loop.
 #[derive(Clone)]
 pub struct PeerSyncWorker {
     pub call: PeerSyncCall,
     pub run: PeerSyncRunner,
+    pub site_rooms: SiteRooms,
 }
 
 impl PeerSyncWorker {
@@ -39,9 +44,11 @@ impl PeerSyncWorker {
     pub fn for_network(network: &Arc<crate::shell::network::ShellNetwork>) -> Self {
         let carrier = Arc::clone(network);
         let runner = Arc::clone(network);
+        let sites = Arc::clone(network);
         Self {
             call: Arc::new(move |workspace, request| carrier.peer_sync_request(workspace, request)),
             run: std::rc::Rc::new(move |job| runner.run_off_loop(job)),
+            site_rooms: Arc::new(move || sites.site_room_labels()),
         }
     }
 }
@@ -59,6 +66,9 @@ pub(super) enum FollowUp {
         request: PeerSyncRequest,
         request_id: Option<u64>,
     },
+    /// Pairing a new device: its link, the devices asking and the answers,
+    /// which the sheet and the approval notifications show.
+    Pairing { request: PeerSyncRequest },
     /// Nothing comes back that anyone reads.
     Ignore,
 }
@@ -130,14 +140,22 @@ impl PeerSyncDispatch {
         self.inline = None;
     }
 
+    /// The rooms held as a site's workspace; none without a network.
+    pub(super) fn site_rooms(&self) -> Vec<crate::shell::network::SiteRoom> {
+        self.worker
+            .as_ref()
+            .map(|worker| (worker.site_rooms)())
+            .unwrap_or_default()
+    }
+
     /// Whether a request like `request` is still being carried out: the
     /// card does not send a second one meanwhile.
     pub(super) fn in_flight(&self, request: &PeerSyncRequest) -> bool {
         let kind = std::mem::discriminant(request);
         self.in_flight.values().any(|follow| match follow {
-            FollowUp::Card { request, .. } | FollowUp::Action { request, .. } => {
-                std::mem::discriminant(request) == kind
-            }
+            FollowUp::Card { request, .. }
+            | FollowUp::Action { request, .. }
+            | FollowUp::Pairing { request } => std::mem::discriminant(request) == kind,
             FollowUp::Ignore => false,
         })
     }

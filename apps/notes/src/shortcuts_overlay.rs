@@ -1,6 +1,6 @@
 //! Keyboard-shortcut help: a [`ModalDialog`] over a reference of every Notes
-//! shortcut, grouped by what they do. `?` opens it; Escape, the close control
-//! or a scrim click dismisses it.
+//! shortcut, grouped by what they do. Ctrl+/ (or F1) opens it; Escape, the
+//! close control or a scrim click dismisses it.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -14,83 +14,83 @@ use ui::widget::{
     Column, Element, ModalDialog, Property, PropertyColumn, PropertyList, Section, SectionHeader,
 };
 
-/// One group of shortcuts. The label titles the group; the rows list each
-/// shortcut.
+/// One group of shortcuts: a Fluent key for its title, and a Fluent key and
+/// the keys for each row.
 struct Group {
     label: &'static str,
     rows: &'static [(&'static str, &'static str)],
 }
 
-/// Canonical list of every shortcut surfaced in the help overlay. The
-/// `?` shortcut deliberately includes itself so a user who's just
-/// opened the overlay can find their way back out.
+/// Every Notes shortcut, in the order a person meets the tasks: real key
+/// chords only, each listed once. Keys are spelled by [`spell`].
 const GROUPS: &[Group] = &[
     Group {
-        label: "Navigation",
+        label: "notes-help-group-notes",
         rows: &[
-            ("Jump to note", "{cmd:K}"),
-            ("Back / forward note", "Alt-← / Alt-→"),
-            ("Move selection up / down", "↑ / ↓"),
-            ("Collapse / expand note", "← / →"),
-            ("Open shortcuts overlay", "?"),
-            ("Close overlay / popover", "Esc"),
+            ("notes-help-new-note", "{cmd:N}"),
+            ("notes-help-new-sub-note", "{cmd+shift:N}"),
+            ("notes-help-jump", "{cmd:K}"),
+            ("notes-help-back-forward", "{alt:Left} / {alt:Right}"),
+            ("notes-help-rename", "{F2}"),
+            ("notes-help-note-actions", "{shift:F10}"),
+            ("notes-help-note-move", "{alt:Up} / {alt:Down}"),
+            ("notes-help-note-indent", "{Tab} / {shift:Tab}"),
+            ("notes-help-delete", "{Delete}"),
         ],
     },
     Group {
-        label: "Editing",
+        label: "notes-help-group-writing",
         rows: &[
-            ("Find in note", "{cmd:F}"),
-            ("New paragraph", "Enter"),
-            ("notes-help-outline-indent", "Tab / Shift-Tab"),
+            ("notes-help-find", "{cmd:F}"),
+            ("notes-help-soft-break", "{shift:Enter}"),
+            ("notes-help-block-menu", "/"),
+            ("notes-help-link", "[["),
+            ("notes-help-embed", "![["),
+            ("notes-help-outline-indent", "{Tab} / {shift:Tab}"),
             ("notes-help-block-indent", "{cmd:]} / {cmd:[}"),
+            ("notes-help-block-move", "{alt:Up} / {alt:Down}"),
             ("notes-help-block-duplicate", "{cmd:D}"),
-            ("notes-help-editor-leave", "Esc, Tab"),
-            ("notes-help-block-backspace", "Backspace"),
-            ("Open block menu", "/"),
-            ("Link another note", "[["),
-            ("Toggle checklist item", "click"),
-            ("notes-help-block-move", "Alt-↑ / Alt-↓"),
+            ("notes-help-editor-leave", "{Esc}, {Tab}"),
+        ],
+    },
+    Group {
+        label: "notes-help-group-formatting",
+        rows: &[
+            ("notes-help-bold", "{cmd:B}"),
+            ("notes-help-italic", "{cmd:I}"),
+            ("notes-help-inline-code", "{cmd:E}"),
+            ("notes-help-headings", "# / ## / ###"),
+            ("notes-help-bullet", "- "),
+            ("notes-help-numbered", "1. "),
+            ("notes-help-checklist", "[ ] "),
+            ("notes-help-quote", "> "),
+            ("notes-help-code", "```"),
+        ],
+    },
+    Group {
+        label: "notes-help-group-code",
+        rows: &[
             ("notes-help-code-exit", "{cmd:Enter}"),
             ("notes-help-code-before", "{cmd+shift:Enter}"),
+            ("notes-help-code-blank", "{shift:Enter}"),
+            ("notes-help-code-indent", "{Tab} / {shift:Tab}"),
             ("notes-help-code-copy", "{cmd+shift:C}"),
-            ("notes-help-code-indent", "Tab / Shift-Tab"),
-            ("notes-help-code-blank", "Shift-Enter"),
             ("notes-help-code-select", "{cmd:A}"),
         ],
     },
     Group {
-        label: "Formatting",
+        label: "notes-help-group-help",
         rows: &[
-            ("Bold", "**text** or {cmd:B}"),
-            ("Italic", "*text* or {cmd:I}"),
-            ("Inline code", "`text` or {cmd:E}"),
-            ("Heading 1 / 2 / 3", "# / ## / ###"),
-            ("Quote", "> "),
-            ("notes-help-code", "```python ↵"),
-            ("notes-help-bullet", "- Space"),
-            ("notes-help-numbered", "1. Space"),
-            ("notes-help-checklist", "[ ] Space"),
-        ],
-    },
-    Group {
-        label: "Notes",
-        rows: &[
-            ("New note", "+ button"),
-            ("New child of selected", "{cmd:N}"),
-            ("Indent / outdent note", "Tab / Shift-Tab"),
-            ("Reorder note up / down", "Alt-↑ / Alt-↓"),
-            ("Rename note", "double-click / F2"),
-            ("Note actions", "Menu / Shift-F10"),
-            ("Link a note", "[[Note]]"),
-            ("Embed a note", "![[Note]]"),
-            ("Delete note", "Delete"),
+            ("notes-help-shortcuts", "{cmd:/}"),
+            ("notes-help-close", "{Esc}"),
         ],
     },
 ];
 
 /// A row's keys as this platform spells them. `{cmd:K}` is the command key
-/// with K (Ctrl+K, or the Command key on a Mac) and `{cmd+shift:Enter}` adds
-/// Shift; everything else is shown as written.
+/// with K (Ctrl+K, or the Command key on a Mac), `{cmd+shift:Enter}` adds
+/// Shift, `{alt:Up}` is Alt with Up and `{F2}` is a key on its own, each in
+/// the active keyboard's legends; everything else is shown as written.
 fn spell(template: &str) -> String {
     let conventions = ui::PlatformConventions::default();
     let mut out = String::new();
@@ -102,10 +102,17 @@ fn spell(template: &str) -> String {
             rest = after;
             break;
         };
-        let (modifiers, key) = spec.split_once(':').unwrap_or(("cmd", spec));
-        let mut shortcut = ui::Shortcut::command(key);
+        let (modifiers, key) = spec.split_once(':').unwrap_or(("", spec));
+        let mut shortcut = if modifiers.contains("cmd") {
+            ui::Shortcut::command(key)
+        } else {
+            ui::Shortcut::key(key)
+        };
         if modifiers.contains("shift") {
             shortcut = shortcut.shift();
+        }
+        if modifiers.contains("alt") {
+            shortcut = shortcut.alt();
         }
         out.push_str(&shortcut.label(conventions));
         rest = tail;
@@ -127,7 +134,7 @@ fn group(group: &Group, keys: &PropertyColumn) -> Element {
         .collect();
     Box::new(
         Section::new(vec![Box::new(PropertyList::new(rows).shared_column(keys))])
-            .with_header(SectionHeader::group(group.label)),
+            .with_header(SectionHeader::group(ui::i18n!(group.label))),
     )
 }
 
@@ -142,7 +149,7 @@ fn sheet_body() -> Element {
     Box::new(column)
 }
 
-/// The shortcuts sheet, closed until `?` opens it.
+/// The shortcuts sheet, closed until Ctrl+/ opens it.
 pub struct ShortcutsOverlay {
     dialog: ModalDialog<Column>,
     dismissed: Rc<Cell<bool>>,
@@ -162,7 +169,7 @@ impl ShortcutsOverlay {
     fn dialog(dismissed: &Rc<Cell<bool>>) -> ModalDialog<Column> {
         let dismissed = Rc::clone(dismissed);
         ModalDialog::new(
-            "Keyboard shortcuts",
+            ui::i18n!("notes-help-title"),
             Column::new()
                 .with_intrinsic_height()
                 .with_no_padding()
@@ -249,12 +256,22 @@ mod tests {
             )
         );
         assert!(spell("{cmd+shift:C}").contains('C'));
-        assert_eq!(spell("Alt-Up"), "Alt-Up");
+        assert_eq!(
+            spell("{alt:Up}"),
+            ui::Shortcut::key("Up")
+                .alt()
+                .label(ui::PlatformConventions::default())
+        );
+        assert_eq!(spell("{F2}"), "F2");
         assert_eq!(spell("[["), "[[");
         for entry in GROUPS {
             for (_, keys) in entry.rows {
                 let spelled = spell(keys);
-                assert!(!spelled.contains("{cmd"), "unspelled keys: {spelled}");
+                assert!(!spelled.contains('{'), "unspelled keys: {spelled}");
+                assert!(
+                    !spelled.contains(['←', '→', '↑', '↓', '↵']),
+                    "keys are named, never drawn with arrows: {spelled}"
+                );
                 assert!(
                     !spelled.contains("Cmd-") && !spelled.contains("Ctrl-"),
                     "a platform's keys are never both listed: {spelled}"

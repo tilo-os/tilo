@@ -59,8 +59,8 @@ fn texts_by(messages: &chat::messages::Messages, author: &str) -> Vec<String> {
 }
 
 /// The room's chat after Mallory flooded `#general` and Ada reported her,
-/// and the parts of its messages.
-fn flooded_room() -> (Replica, chat::demo::Room) {
+/// her posts in the parts of its messages the page holds beside it.
+fn flooded_room() -> Replica {
     let catalogue = AppCatalogue::native();
     let mut page = Replica::open(
         &catalogue,
@@ -88,13 +88,36 @@ fn flooded_room() -> (Replica, chat::demo::Room) {
         .find(|channel| channel.kind == chat::model::ChannelKind::Text)
         .expect("the chat has a text channel")
         .id;
-    let mut room = chat::demo::Room::of(doc);
-    room.say(ADA, &general, "hello everyone").unwrap();
+    page.apply(&DocumentMutation::Snapshot(doc.save())).unwrap();
+    // Each posts through the chain of the chat's messages, as from their
+    // own page.
+    let mut say = |author: &str, text: &str| -> String {
+        let before = message_ids(&page);
+        let post = serde_json::json!({ "channel": general, "text": text });
+        page.invoke_with(
+            Some(tilo_actions::ActionInvoker::actor(author)),
+            None,
+            &tilo_actions::door::ActionAddress::new(
+                ui::record::chain_resource_id(&chat::parts::chain()),
+                "post",
+            ),
+            post.as_object().unwrap(),
+            false,
+        )
+        .unwrap();
+        message_ids(&page)
+            .into_iter()
+            .find(|id| !before.contains(id))
+            .unwrap()
+    };
+    say(ADA, "hello everyone");
     let mut spam = String::new();
     for _ in 0..3 {
-        spam = room.say(MALLORY, &general, "cheap links here").unwrap();
+        spam = say(MALLORY, "cheap links here");
     }
-    room.apply_as(
+    let mut doc: AutoCommit = page.read(Clone::clone).unwrap();
+    chat::demo::apply_as(
+        &mut doc,
         ADA,
         chat::Chat::REPORT_MESSAGE.with(chat::record::chat::ReportMessage {
             message: spam,
@@ -103,13 +126,39 @@ fn flooded_room() -> (Replica, chat::demo::Room) {
         }),
     )
     .unwrap();
-    page.apply(&DocumentMutation::Snapshot(room.chat.save()))
-        .unwrap();
-    (page, room)
+    page.apply(&DocumentMutation::Snapshot(doc.save())).unwrap();
+    // What the page did is the room's now.
+    let _ = page.take_mutation();
+    let _ = page.take_record_mutations();
+    page
 }
 
-/// The moderation bot's replica of `page`'s record: the room owner's
-/// installation, granted reading and undoable changes in the room.
+/// The ids of the messages `replica` holds beside its chat record.
+fn message_ids(replica: &Replica) -> Vec<String> {
+    messages(replica)
+        .iter()
+        .map(|(id, _)| id.to_string())
+        .collect()
+}
+
+/// The messages `replica` holds in the parts beside its chat record.
+fn messages(replica: &Replica) -> chat::messages::Messages {
+    chat::messages::Messages::new(
+        replica
+            .records_beside()
+            .into_iter()
+            .filter_map(|record| {
+                let index = chat::parts::part_index(&record)?;
+                let part = replica.read_record(&record, chat::messages::read_part)?;
+                Some((index, std::rc::Rc::new(part)))
+            })
+            .collect(),
+    )
+}
+
+/// The moderation bot's replica of `page`'s record and the parts beside
+/// it: the room owner's installation, granted reading and undoable changes
+/// in the room.
 fn bot_replica(page: &Replica) -> Replica {
     let bot = Subject::bot(BOT);
     let grant = Grant::new(
@@ -122,7 +171,7 @@ fn bot_replica(page: &Replica) -> Replica {
     );
     let standing =
         Standing::person(RoomPolicy::new(ROOM, OWNER), OWNER).bounded_by(bot, vec![grant]);
-    Replica::open(
+    let mut bot = Replica::open(
         &AppCatalogue::native(),
         page.app_id(),
         ROOM,
@@ -137,14 +186,19 @@ fn bot_replica(page: &Replica) -> Replica {
             changes: vec![page.read(|doc| doc.clone().save()).unwrap()],
         },
     )
-    .unwrap()
+    .unwrap();
+    for record in page.records_beside() {
+        let saved = page.read_record(&record, |doc| doc.clone().save()).unwrap();
+        bot.apply_record(&record, &DocumentMutation::Snapshot(saved))
+            .unwrap();
+    }
+    bot
 }
 
 #[test]
-#[ignore = "needs the room's moderation agent to read and take back posts in the chat's message parts"]
 fn a_report_restricts_through_the_room_and_undoes_the_flood_as_the_bot() {
-    let (mut page, room) = flooded_room();
-    assert_eq!(texts_by(&room.messages(), MALLORY).len(), 3);
+    let mut page = flooded_room();
+    assert_eq!(texts_by(&messages(&page), MALLORY).len(), 3);
     let mut bot = bot_replica(&page);
     let mut policy = RoomPolicy::new(ROOM, OWNER);
     for (person, role) in [(ADA, Role::Editor), (MALLORY, Role::Editor)] {
@@ -185,11 +239,14 @@ fn a_report_restricts_through_the_room_and_undoes_the_flood_as_the_bot() {
 
     // What the bot did reaches the room like anyone's change.
     page.apply(&bot.take_mutation().unwrap()).unwrap();
+    for (record, mutation) in bot.take_record_mutations() {
+        page.apply_record(&record, &mutation).unwrap();
+    }
     assert!(
-        texts_by(&room.messages(), MALLORY).is_empty(),
+        texts_by(&messages(&page), MALLORY).is_empty(),
         "the flood is taken back"
     );
-    assert_eq!(texts_by(&room.messages(), ADA), ["hello everyone"]);
+    assert_eq!(texts_by(&messages(&page), ADA), ["hello everyone"]);
     let state = chat_state(&page);
     let decision = state.moderation.decisions.iter().next().unwrap();
     assert_eq!(decision.person, MALLORY);

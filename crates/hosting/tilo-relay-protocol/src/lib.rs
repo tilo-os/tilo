@@ -55,6 +55,7 @@ pub mod metrics;
 pub mod placement;
 pub mod policy;
 pub mod process_lease;
+pub mod proxies;
 pub mod public_avatars;
 pub mod refusal;
 pub mod retention;

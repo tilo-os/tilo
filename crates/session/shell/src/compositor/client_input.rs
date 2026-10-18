@@ -1819,7 +1819,7 @@ fn route_mouse_wheel(
                     sync_keyboard_focus(state, fb);
                 }
             } else {
-                // Positive detents rotate DOWN the workspace wheel; `switch_workspace` stops at the wheel's end.
+                // Positive detents step DOWN the workspace list; `switch_workspace` stops at the last workspace.
                 let dir = steps.signum();
                 fb.with_chrome(|chrome| {
                     for _ in 0..steps.unsigned_abs().min(4) {
@@ -1886,7 +1886,7 @@ pub fn deliver_held_key_release(state: &mut State, event: &WindowEvent) -> bool 
 /// sync), forwarded to the focused client only when the shell doesn't own the chord and a client actually holds keyboard focus.
 fn route_keyboard_input(
     state: &mut State,
-    fb: &FrameBuilder,
+    fb: &mut FrameBuilder,
     captured: bool,
     event: &WindowEvent,
     modifiers: Modifiers,
@@ -1902,9 +1902,10 @@ fn route_keyboard_input(
     // can absorb edge-triggered actions (close/open/toggle) without running
     // them again.
     if key.repeat {
-        let overlay_open = fb.host().palette_visible() || fb.host().wheel_summoned();
+        let overlay_open = fb.host().palette_visible() || fb.host().strip_switcher_takes_keys();
         let configured_shortcut = fb.host().owns_configured_chord(&key.logical_key, modifiers);
         let shell_owns = captured
+            || fb.host().banner_owns_key(&key.logical_key)
             || fb.host().dictation_owns_key(&key.logical_key)
             || (!shortcuts_inhibited(state)
                 && (configured_shortcut || is_shell_chord(event, &modifiers, overlay_open)))
@@ -1924,8 +1925,8 @@ fn route_keyboard_input(
         // The client already has this release (`deliver_held_key_release`).
         return true;
     }
-    // Anything the shell has up that Escape would dismiss — the summoned workspace wheel counts, since Escape must reach the shell, not a focused client.
-    let overlay_open = fb.host().palette_visible() || fb.host().wheel_summoned();
+    // Anything the shell has up that Escape would dismiss — the open strip switcher counts, since its keys (Escape, arrows, Enter) must reach the shell, not a focused client.
+    let overlay_open = fb.host().palette_visible() || fb.host().strip_switcher_takes_keys();
     // Static safety chords and user-edited shortcuts share the same
     // client-first boundary. Without the host-side check, a valid binding
     // such as Alt+G is shown and saved by Settings but disappears whenever a
@@ -1945,8 +1946,23 @@ fn route_keyboard_input(
     } else {
         state.global_shortcuts.release(&key.physical_key)
     };
-    let shell_owns =
-        captured || shell_chord || granted || fb.host().dictation_owns_key(&key.logical_key);
+    // Keyboard focus moved into a banner (the Notifications chord) takes
+    // only the keys a banner acts on; any other key goes to the window as
+    // usual and takes focus back with it.
+    let banner_owns = fb.host().banner_owns_key(&key.logical_key);
+    if pressed
+        && !banner_owns
+        && !shell_chord
+        && !is_modifier_key(&key.logical_key)
+        && fb.host().banner_has_keyboard()
+    {
+        fb.host_mut().release_banner_keyboard();
+    }
+    let shell_owns = captured
+        || shell_chord
+        || granted
+        || banner_owns
+        || fb.host().dictation_owns_key(&key.logical_key);
     let forward = track_forwarded_key(
         &mut state.client_input.forwarded_keys,
         code,

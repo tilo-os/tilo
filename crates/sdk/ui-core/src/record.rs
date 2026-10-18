@@ -1302,6 +1302,9 @@ pub struct RecordSet {
     /// calls this when done, and the caller is told
     /// [`RecordOpenError::Opening`] meanwhile.
     storage_wake: Option<durable_store::ReadyWake>,
+    /// How many times a record arrived in the backend without being
+    /// opened here ([`RecordStore::note_kept`]).
+    kept: std::cell::Cell<u64>,
     // Drop after the writers and reservations above. Temporary profiles must
     // outlive asynchronous flushes and recovery handles, not just their host.
     _profile_lifetime: Option<std::rc::Rc<dyn std::any::Any>>,
@@ -1369,6 +1372,7 @@ impl RecordSet {
             next_reservation: 0,
             native_initial: crate::collaboration::native_initial::capture_bridge(),
             storage_wake: None,
+            kept: std::cell::Cell::new(0),
             _profile_lifetime: None,
         }
     }
@@ -1396,6 +1400,7 @@ impl RecordSet {
             next_reservation: 0,
             native_initial: None,
             storage_wake: None,
+            kept: std::cell::Cell::new(0),
             _profile_lifetime: None,
         }
     }
@@ -2426,6 +2431,7 @@ impl RecordOwners {
                 .then(crate::collaboration::native_initial::capture_bridge)
                 .flatten(),
             storage_wake: None,
+            kept: std::cell::Cell::new(0),
             _profile_lifetime: self.profile_lifetime.clone(),
         });
         if let Some(cache) = &self.portable {
@@ -2708,6 +2714,20 @@ impl RecordAdmission {
     }
 }
 
+/// The address the chain `chain` (whose parts are [`RecordId::part`]) is
+/// published under, as one resource beside its app's own.
+#[must_use]
+pub fn chain_resource_id(chain: &RecordId) -> String {
+    format!("chain:{}", chain.as_str())
+}
+
+/// The chain a resource published under `id` is ([`chain_resource_id`]),
+/// or `None` when `id` names no chain.
+#[must_use]
+pub fn chain_of_resource_id(id: &str) -> Option<RecordId> {
+    RecordId::parse(id.strip_prefix("chain:")?)
+}
+
 /// The actor [`genesis`] makes record `id` of `workspace` under.
 fn genesis_actor_of(id: &RecordId, kind: &RecordKind, workspace: &str) -> automerge::ActorId {
     use sha2::Digest as _;
@@ -2924,19 +2944,19 @@ impl RecordReservation {
 
 /// A record lent to an action frame ([`RecordStore::with_action_state`]),
 /// returned to its set when the frame ends, however it ends.
-struct Lent<'a> {
+struct RecordLoan<'a> {
     store: &'a RecordStore,
     id: &'a RecordId,
-    lent: Option<(
+    parts: Option<(
         AutoCommit,
         crate::state::UndoLog,
         crate::bound_dispatch::RecordActionState,
     )>,
 }
 
-impl Drop for Lent<'_> {
+impl Drop for RecordLoan<'_> {
     fn drop(&mut self) {
-        let Some((doc, history, action_state)) = self.lent.take() else {
+        let Some((doc, history, action_state)) = self.parts.take() else {
             return;
         };
         let Ok(mut set) = self.store.0.try_borrow_mut() else {
@@ -3155,6 +3175,43 @@ impl RecordStore {
             }));
         }
         held.into_iter().collect()
+    }
+
+    /// Tell the store that a record it does not have open was just kept in
+    /// its backend by someone else (a room's replication, delivering a part
+    /// another device started): what follows the records it keeps
+    /// ([`Self::held_parts`]) looks again at once instead of at its next
+    /// round. Callable while a frame reads the store.
+    pub fn note_kept(&self) {
+        if let Ok(set) = self.0.try_borrow() {
+            set.kept.set(set.kept.get().wrapping_add(1));
+        }
+    }
+
+    /// Moves whenever [`Self::note_kept`] is called.
+    #[must_use]
+    pub fn kept_revision(&self) -> u64 {
+        self.0.try_borrow().map_or(0, |set| set.kept.get())
+    }
+
+    /// The numbers of the parts of the chain `base` open in this store and
+    /// ready to read, in order: what this process opened, or merged in from
+    /// a peer. Reads no index, so it is cheap enough for every frame.
+    #[must_use]
+    pub fn open_parts(&self, base: &RecordId) -> Vec<u64> {
+        let Ok(set) = self.0.try_borrow() else {
+            return Vec::new();
+        };
+        let mut open: Vec<u64> = set
+            .open
+            .iter()
+            .filter(|(_, parked)| parked.doc.is_some())
+            .filter_map(|(id, _)| id.chain_part())
+            .filter(|(chain, _)| chain == base)
+            .map(|(_, index)| index)
+            .collect();
+        open.sort_unstable();
+        open
     }
 
     /// Every [window default record](RecordId::window_default) of `kind`
@@ -3755,13 +3812,13 @@ impl RecordStore {
                 std::mem::take(&mut parked.action_state),
             );
             set.lent.insert(id.clone());
-            Lent {
+            RecordLoan {
                 store: self,
                 id,
-                lent: Some(lent),
+                parts: Some(lent),
             }
         };
-        let (doc, history, state) = loan.lent.as_mut().ok_or(RecordOpenError::MissingRecord)?;
+        let (doc, history, state) = loan.parts.as_mut().ok_or(RecordOpenError::MissingRecord)?;
         Ok(crate::invocation_scope::with_record_loan(
             self,
             id,
@@ -4330,6 +4387,40 @@ mod tests {
         );
         one.merge(&mut two).unwrap();
         assert_eq!(one.get_changes(&[]).len(), 1, "they converge on one record");
+    }
+
+    /// A part another device started reaches this one while its window
+    /// already holds the chain: kept in the store, it is a held part, and
+    /// it opens.
+    #[test]
+    fn a_part_stored_after_the_window_opened_is_held_and_opens() {
+        let room = uuid::Uuid::new_v4().to_string();
+        let chain = RecordId::derived("messages", &RecordId::room_default());
+        let part = RecordCheckout::new(chain.part(0), RecordKind::new("test.chain-part"));
+        let key = StorageKey::record("so.tilo.test-chain", &room, chain.part(0).storage_key());
+
+        let mut starter = RecordOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
+        let started = starter.open("so.tilo.test-chain", &room).unwrap();
+        started
+            .reserve_record(&part)
+            .unwrap()
+            .initialize(|doc| {
+                doc.put(automerge::ROOT, "messages", 1)
+                    .map(drop)
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        let bytes = started.read(&part.id, |doc| doc.clone().save()).unwrap();
+
+        let backend = Rc::new(durable_store::MemoryStore::new());
+        let mut owners = RecordOwners::with_store(Rc::clone(&backend) as Rc<dyn DurableStore>);
+        let store = owners.open("so.tilo.test-chain", &room).unwrap();
+        assert!(store.held_parts(&chain).is_empty());
+        backend
+            .write(&key, durable_store::WriteOp::Replace(bytes), None)
+            .unwrap();
+        assert_eq!(store.held_parts(&chain), vec![0]);
+        store.try_open_record(&part).unwrap();
     }
 
     /// Writer records stamped before the kind rename reopen as rich text

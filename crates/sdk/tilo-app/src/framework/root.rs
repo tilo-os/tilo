@@ -19,8 +19,8 @@ use ui_core::permissions::{LivePermissions, PermissionScope};
 use ui_core::presence::{PresenceCtx, PresenceKey};
 use ui_core::record::RecordSaveStatus;
 use ui_core::search::{
-    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchCursor, SearchPage,
-    SearchProvider, SearchQuery, SearchResult,
+    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, PagePoll, PendingToken,
+    SearchCursor, SearchPage, SearchProvider, SearchQuery, SearchResult,
 };
 use ui_core::text_render::TextRenderer;
 use ui_core::vello::Scene;
@@ -62,6 +62,9 @@ pub(crate) struct ResourceRoot {
     _alive: Rc<()>,
     dispatch: DispatchCore,
     saved: LocalState<RecordSaveStatus>,
+    /// The window's save status over the view: the record's durability and
+    /// the app's own saves, silent unless a save stalls or fails.
+    save: super::saves::SaveIndicator,
     /// The participant's permissions, re-checked every sync so a role change
     /// while the app runs takes effect at once. `None` for a read-only view
     /// of a past version.
@@ -84,7 +87,7 @@ pub(crate) struct ResourceRoot {
     /// published resource. Document specs are dropped.
     presentation: Vec<tilo_actions::ActionSpec>,
     /// The resource's and its surfaces' search entries, indexed.
-    search: std::cell::RefCell<SearchCache>,
+    search: Rc<std::cell::RefCell<SearchCache>>,
     /// The document-owned tree at one live and translation revision, shared
     /// with the last one wherever the change left it as it was. Surface
     /// bindings, local rows and effect availability are decorated afresh
@@ -414,6 +417,7 @@ impl ResourceRoot {
                 alive,
                 dispatch,
                 saved: env.saved,
+                saves: env.saves,
                 stages,
                 feeds,
                 run: env.run,
@@ -436,6 +440,7 @@ impl ResourceRoot {
             alive,
             dispatch,
             saved,
+            saves,
             stages,
             feeds,
             run,
@@ -454,6 +459,7 @@ impl ResourceRoot {
             _alive: alive,
             dispatch,
             saved,
+            save: super::saves::SaveIndicator::new(saves),
             permissions: None,
             write: None,
             stages,
@@ -464,7 +470,7 @@ impl ResourceRoot {
             unreadable: None,
             swapped: false,
             presentation: Vec::new(),
-            search: std::cell::RefCell::default(),
+            search: Rc::default(),
             publication_tree: std::cell::RefCell::new(None),
             item_children: std::cell::RefCell::new(None),
             published_children: std::cell::RefCell::new(None),
@@ -983,6 +989,7 @@ impl ResourceRoot {
     }
 
     /// The last action refused here, by the door or by the room.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn refused(&self) -> Option<super::dispatch::Refused> {
         self.dispatch.last_refused()
     }
@@ -1033,6 +1040,7 @@ struct Parts {
     alive: Rc<()>,
     dispatch: DispatchCore,
     saved: LocalState<RecordSaveStatus>,
+    saves: super::saves::Saves,
     stages: Stages,
     feeds: super::history::HistoryFeeds,
     run: Run,
@@ -1254,6 +1262,14 @@ struct SearchCache {
     /// The newest state nothing is built of yet, and its generation: built
     /// when the next search asks once no build is in flight.
     wanted: Option<(SearchState, u64)>,
+    /// Entries a showing search waits on, and their state and generation:
+    /// indexed once the build in flight lands.
+    queued: Option<(SearchState, u64, Vec<SearchEntry>)>,
+    /// A search is showing that waits on its surfaces' answers.
+    watching: bool,
+    /// The generation that holds the surfaces' answers to the latest query:
+    /// the waiting search shows what an index this new or newer finds.
+    answered: Option<u64>,
     next_generation: u64,
     /// How many indexes of entries have been started.
     #[cfg(test)]
@@ -1267,8 +1283,18 @@ impl SearchCache {
         generation
     }
 
-    /// Answer from an index that finished building since last asked.
+    /// Answer from an index that finished building since last asked, and
+    /// start the one a waiting search wants once nothing is in flight.
     fn receive(&mut self) {
+        self.land();
+        if self.building.is_none()
+            && let Some((state, generation, entries)) = self.queued.take()
+        {
+            self.build(state, generation, entries);
+        }
+    }
+
+    fn land(&mut self) {
         let Some(building) = self.building.take() else {
             return;
         };
@@ -1307,6 +1333,55 @@ impl SearchCache {
         let generation = self.reserve_generation();
         self.wanted = Some((state, generation));
         generation
+    }
+
+    /// Index `entries`, of `state`: in this frame when they are few, else
+    /// away from the UI thread. The index search answers from now.
+    fn build(
+        &mut self,
+        state: SearchState,
+        generation: u64,
+        entries: Vec<SearchEntry>,
+    ) -> Arc<IndexedEntries> {
+        #[cfg(test)]
+        {
+            self.builds = self.builds.saturating_add(1);
+        }
+        if entries.len() >= OFF_THREAD_ENTRIES || entries.iter().any(|entry| entry.body.is_some()) {
+            let (send, arriving) = std::sync::mpsc::channel();
+            let building = entries.clone();
+            let spawned = ui_core::background::Background::current().spawn(
+                "resource-search-index",
+                move || {
+                    let _ = send.send(IndexedEntries::built(building, generation));
+                },
+            );
+            if spawned.is_ok() {
+                self.building = Some(BuildingIndex {
+                    of: state,
+                    generation,
+                    arriving,
+                });
+                return self.answering();
+            }
+        }
+        let indexed = Arc::new(IndexedEntries::built(entries, generation));
+        self.answering = Some(AnsweringIndex {
+            of: Some(state),
+            indexed: Arc::clone(&indexed),
+        });
+        indexed
+    }
+
+    /// The index holding the surfaces' answers to the waiting search, once
+    /// it is in.
+    fn answer(&mut self) -> Option<Arc<IndexedEntries>> {
+        self.receive();
+        let wanted = self.answered?;
+        self.answering
+            .as_ref()
+            .filter(|answering| answering.of.is_some() && answering.indexed.generation >= wanted)
+            .map(|answering| Arc::clone(&answering.indexed))
     }
 
     /// The index search answers from now: the empty one until a first
@@ -1432,6 +1507,18 @@ pub(crate) struct ResourceSearch {
     indexed: Arc<IndexedEntries>,
     scopes: Vec<ScopeDecl>,
     queries: Vec<super::surface::SearchQueries>,
+    /// Where a search that waits on the surfaces' answers finds them: none
+    /// for a fixed set of entries.
+    live: Option<LiveSearch>,
+}
+
+/// The resource's index as it moves on, for a search that waits on its
+/// surfaces' answers.
+struct LiveSearch {
+    cache: Rc<std::cell::RefCell<SearchCache>>,
+    /// The index holding the answers, once they are in: later pages
+    /// continue in it.
+    answered: std::cell::RefCell<Option<Arc<IndexedEntries>>>,
 }
 
 /// `result` read as the entry's row: its subtitle, its icon and its shape.
@@ -1502,7 +1589,34 @@ impl ResourceSearch {
             indexed,
             scopes: Vec::new(),
             queries: Vec::new(),
+            live: None,
         }
+    }
+
+    /// A token for the answers still coming from the surfaces, if any are:
+    /// the search showing keeps asking for them.
+    fn waiting(&self) -> Option<PendingToken> {
+        let live = self.live.as_ref()?;
+        if !self
+            .queries
+            .iter()
+            .any(super::surface::SearchQueries::answering)
+        {
+            return None;
+        }
+        let mut cache = live.cache.borrow_mut();
+        cache.watching = true;
+        cache.answered = None;
+        Some(PendingToken::new(self.indexed.generation))
+    }
+
+    /// The index this search answers from: the surfaces' answers once they
+    /// are in.
+    fn indexed(&self) -> Arc<IndexedEntries> {
+        self.live
+            .as_ref()
+            .and_then(|live| live.answered.borrow().clone())
+            .unwrap_or_else(|| Arc::clone(&self.indexed))
     }
 }
 
@@ -1527,11 +1641,11 @@ impl SearchProvider for ResourceSearch {
     }
 
     fn action_directory_generation(&self) -> Option<u64> {
-        Some(self.indexed.generation)
+        Some(self.indexed().generation)
     }
 
     fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
-        cursor.opaque_parts().0 == self.indexed.generation
+        cursor.opaque_parts().0 == self.indexed().generation
     }
 
     // Every entry stays findable however many there are: a page continues
@@ -1546,6 +1660,7 @@ impl SearchProvider for ResourceSearch {
         for queries in &self.queries {
             queries.submit(query);
         }
+        let pending = self.waiting();
         let limit = work_budget
             .min(DEFAULT_SEARCH_CANDIDATE_LIMIT)
             .min(result_limit.min(DEFAULT_SEARCH_RESULT_LIMIT));
@@ -1554,10 +1669,11 @@ impl SearchProvider for ResourceSearch {
             ui_core::search::normalize_search_text(query.text()),
             query.filters()
         );
+        let indexed = self.indexed();
         let offset = cursor
             .map(SearchCursor::opaque_parts)
             .filter(|(generation, at_query, at_scope, _)| {
-                *generation == self.indexed.generation
+                *generation == indexed.generation
                     && *at_query == folded
                     && *at_scope == query.scope()
             })
@@ -1568,13 +1684,13 @@ impl SearchProvider for ResourceSearch {
                 results: Vec::new(),
                 next: None,
                 inspected: 0,
-                pending: None,
+                pending,
             };
         }
         let (results, more, inspected) = self.results(query, Page { offset, limit });
         let next = more.then(|| {
             SearchCursor::opaque(
-                self.indexed.generation,
+                indexed.generation,
                 folded,
                 query.scope().map(str::to_owned),
                 u64::try_from(offset.saturating_add(inspected)).ok(),
@@ -1584,12 +1700,46 @@ impl SearchProvider for ResourceSearch {
             results,
             next,
             inspected,
-            pending: None,
+            pending,
         }
     }
 
+    // What the surfaces answer later (a server's results) reaches the
+    // search showing them once all of them have answered: the latest query
+    // asked again of the index holding the answers.
+    fn poll_page(&self, token: &PendingToken) -> PagePoll {
+        let Some(live) = &self.live else {
+            return PagePoll::Ready(SearchPage::empty());
+        };
+        if self
+            .queries
+            .iter()
+            .any(super::surface::SearchQueries::answering)
+        {
+            return PagePoll::Pending;
+        }
+        let Some(answer) = live.cache.borrow_mut().answer() else {
+            return PagePoll::Pending;
+        };
+        let _ = token;
+        *live.answered.borrow_mut() = Some(answer);
+        let Some(query) = self
+            .queries
+            .iter()
+            .find_map(super::surface::SearchQueries::last)
+        else {
+            return PagePoll::Ready(SearchPage::empty());
+        };
+        PagePoll::Ready(self.search_page(
+            &query,
+            None,
+            DEFAULT_SEARCH_CANDIDATE_LIMIT,
+            DEFAULT_SEARCH_RESULT_LIMIT,
+        ))
+    }
+
     fn facets(&self) -> Vec<ui_core::search::Facet> {
-        self.indexed.facets.clone()
+        self.indexed().facets.clone()
     }
 
     fn search_scopes(&self) -> Vec<ScopeDecl> {
@@ -1600,13 +1750,14 @@ impl SearchProvider for ResourceSearch {
 impl ResourceSearch {
     /// One page of hits for `query`, and whether more follow it.
     fn results(&self, query: &SearchQuery, page: Page) -> (Vec<SearchResult>, bool, usize) {
-        let found = self.indexed.index.search(query.text(), page);
+        let indexed = self.indexed();
+        let found = indexed.index.search(query.text(), page);
         let inspected = found.hits.len();
         let results = found
             .hits
             .into_iter()
             .filter_map(|hit| {
-                let parent = self.indexed.entries.get(usize::try_from(hit.key).ok()?)?;
+                let parent = indexed.entries.get(usize::try_from(hit.key).ok()?)?;
                 // A match in a located segment of a body is that location's
                 // hit, listed with its entry unless it names its own group.
                 let located = hit.segment.and_then(|segment| {
@@ -1724,6 +1875,7 @@ impl RootModel for ResourceRoot {
             let _profile = tilo_resource::profiling::Phase::start("framework.content_sync");
             self.content.sync(state, path);
         }
+        self.follow_search();
         // What the view's sync changed (a surface's bound edits, its
         // availability) reaches the bindings; the document-owned head is
         // rebuilt only when the sync moved the state.
@@ -1734,6 +1886,7 @@ impl RootModel for ResourceRoot {
     fn settle(&mut self, edits: &mut ui_core::widget::Edits<'_>, path: &ui_core::automerge::ObjId) {
         self.typed.apply_settlements(edits);
         self.content.settle(edits, path);
+        self.storage.settle();
     }
 
     fn draw(
@@ -1746,10 +1899,23 @@ impl RootModel for ResourceRoot {
     ) {
         self.paint_ground(scene, transform, theme, presence);
         self.content.draw(scene, transform, text, theme, presence);
+        let area = self.content.get_rect();
+        self.save
+            .paint(scene, transform, text, theme, area, ui_core::time::now());
     }
 
     fn needs_redraw(&self) -> bool {
-        self.native_presentation.needs_redraw() || self.content.needs_redraw()
+        self.native_presentation.needs_redraw()
+            || self.content.needs_redraw()
+            || self.save.needs_redraw(ui_core::time::now())
+    }
+
+    fn save_indicator(&self) -> &super::saves::SaveIndicator {
+        &self.save
+    }
+
+    fn save_indicator_mut(&mut self) -> &mut super::saves::SaveIndicator {
+        &mut self.save
     }
 
     // A screenshot harness reaches the root to stage a scenario's view state
@@ -1881,38 +2047,7 @@ impl RootModel for ResourceRoot {
                 ),
             ));
         }
-        if let Some(request) = op.unscoped()
-            && request.type_id == super::history::VIEW_TYPE
-        {
-            let output = super::history::answer(doc, request.payload)?;
-            return Ok(Some(
-                ui_core::host_operation::ResourceOperationStart::Completed(output),
-            ));
-        }
-        if let Some(request) = op.unscoped()
-            && request.type_id == super::record::RECORD_ACTION_TYPE
-        {
-            let output = self
-                .storage
-                .record_action(self.dispatch.me(), request.payload)?;
-            return Ok(Some(
-                ui_core::host_operation::ResourceOperationStart::Completed(output),
-            ));
-        }
-        if let Some(request) = op.unscoped()
-            && request.type_id == super::chain::CHAIN_ACTION_TYPE
-        {
-            let output = self
-                .storage
-                .chain_action(self.dispatch.me(), request.payload)?;
-            return Ok(Some(
-                ui_core::host_operation::ResourceOperationStart::Completed(output),
-            ));
-        }
-        if let Some(request) = op.unscoped()
-            && request.type_id == super::person::HISTORY_TYPE
-        {
-            let output = self.storage.person_history(request.payload)?;
+        if let Some(output) = self.start_record_operation(op, doc)? {
             return Ok(Some(
                 ui_core::host_operation::ResourceOperationStart::Completed(output),
             ));
@@ -1928,34 +2063,38 @@ impl RootModel for ResourceRoot {
         if let Some(started) = self.view_mut().start_operation(op, doc, path)? {
             return Ok(Some(started));
         }
-        // View openers from the resource/presentation catalogue and from its
-        // nested resources (e.g. a rich-text body's `tilo.rich-text.view`
-        // editor/compact) are already mounted; accept them so agents and
-        // Ctrl+K can switch without a missing-handler fault.
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
-        if request.kind != tilo_actions::OperationKind::View {
-            return Ok(None);
-        }
-        let known = (self.resource.local_operations)()
-            .into_iter()
-            .chain(self.presentation.iter().cloned())
-            .any(|spec| spec.operation_type.as_deref() == Some(request.type_id))
-            || self.nested_views().contains(request.type_id);
-        if known {
-            Ok(Some(
-                ui_core::host_operation::ResourceOperationStart::Completed(
-                    tilo_actions::ActionOutput::default(),
-                ),
-            ))
-        } else {
-            Ok(None)
-        }
+        Ok(self.start_catalogue_view(op))
     }
 }
 
 impl ResourceRoot {
+    /// The record-level requests every framework app answers the same way:
+    /// its history at a version, an operation on one of its records or its
+    /// chain of parts, and the person's own record history.
+    fn start_record_operation(
+        &self,
+        op: &ui_core::host_operation::ResourceOperation<'_>,
+        doc: &ui_core::widget::Edits<'_>,
+    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
+        };
+        let output = if request.type_id == super::history::VIEW_TYPE {
+            super::history::answer(doc, request.payload)?
+        } else if request.type_id == super::record::RECORD_ACTION_TYPE {
+            self.storage
+                .record_action(self.dispatch.me(), request.payload)?
+        } else if request.type_id == super::chain::CHAIN_ACTION_TYPE {
+            self.storage
+                .chain_action(self.dispatch.me(), request.payload)?
+        } else if request.type_id == super::person::HISTORY_TYPE {
+            self.storage.person_history(request.payload)?
+        } else {
+            return Ok(None);
+        };
+        Ok(Some(output))
+    }
+
     /// What the resource's search entries are of now, and the surfaces'
     /// query sinks. What the surfaces show (a page's text, live rows)
     /// changes on its own, beside the resource's revision.
@@ -1994,40 +2133,75 @@ impl ResourceRoot {
         let Some((state, generation)) = cache.wanted.take() else {
             return cache.answering();
         };
-        #[cfg(test)]
-        {
-            cache.builds = cache.builds.saturating_add(1);
-        }
+        let entries = self.entries_of(&state);
+        cache.build(state, generation, entries)
+    }
+
+    /// Everything search finds in `state`: the resource's entries and what
+    /// its surfaces show.
+    fn entries_of(&self, state: &SearchState) -> Vec<SearchEntry> {
         let mut entries = self.typed.search(&*self.typed.state());
         entries.extend(state.shown.iter().cloned());
-        if entries.len() >= OFF_THREAD_ENTRIES || entries.iter().any(|entry| entry.body.is_some()) {
-            let (send, arriving) = std::sync::mpsc::channel();
-            let building = entries.clone();
-            let spawned = ui_core::background::Background::current().spawn(
-                "resource-search-index",
-                move || {
-                    let _ = send.send(IndexedEntries::built(building, generation));
-                },
-            );
-            if spawned.is_ok() {
-                cache.building = Some(BuildingIndex {
-                    of: state,
-                    generation,
-                    arriving,
-                });
-                return cache.answering();
-            }
+        entries
+    }
+
+    /// A search that waits on its surfaces' answers (a server still
+    /// looking) gets an index of what they show once every one of them has
+    /// answered the latest query.
+    fn follow_search(&self) {
+        if !self.search.borrow().watching {
+            return;
         }
-        let indexed = Arc::new(IndexedEntries::built(entries, generation));
-        cache.answering = Some(AnsweringIndex {
-            of: Some(state),
-            indexed: Arc::clone(&indexed),
-        });
-        indexed
+        let mut answering = false;
+        self.surfaces(&mut |surface| answering |= surface.search_queries().answering());
+        if answering {
+            return;
+        }
+        let (state, _) = self.search_state();
+        let mut cache = self.search.borrow_mut();
+        cache.watching = false;
+        let generation = cache.generation_for(state);
+        cache.answered = Some(generation);
+        if cache.building.is_some() {
+            // Indexed once the build in flight lands.
+            if let Some((state, wanted)) = cache.wanted.take() {
+                let entries = self.entries_of(&state);
+                cache.queued = Some((state, wanted, entries));
+            }
+            return;
+        }
+        if let Some((state, wanted)) = cache.wanted.take() {
+            let entries = self.entries_of(&state);
+            cache.build(state, wanted, entries);
+        }
     }
 }
 
 impl ResourceRoot {
+    fn start_catalogue_view(
+        &self,
+        op: &ui_core::host_operation::ResourceOperation<'_>,
+    ) -> Option<ui_core::host_operation::ResourceOperationStart> {
+        // View openers from the resource/presentation catalogue and from its
+        // nested resources (e.g. a rich-text body's `tilo.rich-text.view`
+        // editor/compact) are already mounted; accept them so agents and
+        // Ctrl+K can switch without a missing-handler fault.
+        let request = op.unscoped()?;
+        if request.kind != tilo_actions::OperationKind::View {
+            return None;
+        }
+        let known = (self.resource.local_operations)()
+            .into_iter()
+            .chain(self.presentation.iter().cloned())
+            .any(|spec| spec.operation_type.as_deref() == Some(request.type_id))
+            || self.nested_views().contains(request.type_id);
+        known.then(|| {
+            ui_core::host_operation::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )
+        })
+    }
+
     /// Start minting a link to one of the resources this root publishes.
     fn start_share(
         &mut self,
@@ -2098,6 +2272,10 @@ impl RootSearch for ResourceRoot {
         let mut source = ResourceSearch::new(self.resource.label, indexed);
         source.scopes = self.typed.search_scopes(&*self.typed.state());
         source.queries = queries;
+        source.live = Some(LiveSearch {
+            cache: Rc::clone(&self.search),
+            answered: std::cell::RefCell::new(None),
+        });
         vec![Box::new(source)]
     }
 
@@ -2520,10 +2698,12 @@ impl RootApp for ResourceRoot {
                 .into_iter()
                 .fold(own, |retry, child| take(child, resource) || retry)
         }
-        take(self.content.as_mut(), self.resource.id)
+        let asked = self.save.take_record_retry();
+        take(self.content.as_mut(), self.resource.id) || asked
     }
 
     fn record_save_status(&mut self, status: RecordSaveStatus) {
+        self.save.record(&status, ui_core::time::now());
         self.saved.set(status);
     }
 
@@ -2721,6 +2901,97 @@ mod search_tests {
             QUERIES.with_borrow(Vec::len),
             1,
             "a settled query is not repeated"
+        );
+    }
+
+    thread_local! {
+        static LOOKING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static FOUND: RefCell<Vec<SearchEntry>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// A surface that asks a server what the search asks, which answers later.
+    struct ServerSurface(ui_core::widget::Text);
+
+    impl ui_core::widget::Decorator for ServerSurface {
+        type Inner = ui_core::widget::Text;
+        fn inner(&self) -> &Self::Inner {
+            &self.0
+        }
+        fn inner_mut(&mut self) -> &mut Self::Inner {
+            &mut self.0
+        }
+    }
+
+    impl crate::framework::ResourceSurface<Mailbox> for ServerSurface {
+        fn present(&mut self, _: &Rc<Mailbox>) {}
+        fn search_query(&mut self, _: &SearchQuery) {
+            LOOKING.with(|looking| looking.set(true));
+        }
+        fn search_pending(&self) -> bool {
+            LOOKING.with(std::cell::Cell::get)
+        }
+        fn search_entries(&self) -> Vec<SearchEntry> {
+            FOUND.with_borrow(Clone::clone)
+        }
+    }
+
+    struct ServerApp;
+    impl ResourceApp for ServerApp {
+        type Resource = Mailbox;
+        const ID: &'static str = "so.tilo.test-server-search";
+        const TITLE: &'static str = "Server";
+        fn view(cx: &mut ViewCx<Mailbox>) -> Element {
+            cx.surface(ServerSurface(ui_core::widget::Text::new("Results")))
+        }
+    }
+
+    #[test]
+    fn a_showing_search_waits_for_what_a_server_finds_and_shows_it() {
+        LOOKING.with(|looking| looking.set(false));
+        FOUND.with_borrow_mut(Vec::clear);
+        let mut app = TestApp::<ServerApp>::new().unwrap();
+        let query = SearchQuery::new("archive");
+        let (search, first) = app
+            .harness()
+            .with_widget_mut(|root: &mut ResourceRoot| {
+                let mut providers = RootSearch::search_providers(root);
+                let search = providers.remove(0);
+                let first = search.search_page(&query, None, 10, 10);
+                (search, first)
+            })
+            .unwrap();
+        assert!(first.results.is_empty(), "nothing held matches yet");
+        let token = first.pending.expect("the surface has yet to answer");
+        assert!(
+            matches!(search.poll_page(&token), PagePoll::Pending),
+            "not yet asked"
+        );
+        app.settle();
+        assert!(LOOKING.with(std::cell::Cell::get), "the server was asked");
+        assert!(
+            matches!(search.poll_page(&token), PagePoll::Pending),
+            "the server is still looking"
+        );
+
+        FOUND.with_borrow_mut(|found| {
+            found.push(SearchEntry::new("From the archive", "an old letter").anchored("msg:9"));
+        });
+        LOOKING.with(|looking| looking.set(false));
+        app.settle();
+        let PagePoll::Ready(answered) = search.poll_page(&token) else {
+            panic!("the server answered");
+        };
+        assert!(answered.pending.is_none(), "nothing more is coming");
+        let titles: Vec<_> = answered
+            .results
+            .iter()
+            .map(|hit| hit.title.as_str())
+            .collect();
+        assert_eq!(titles, ["From the archive"], "what it found shows");
+        assert_eq!(
+            search.search_page(&query, None, 10, 10).results.len(),
+            1,
+            "and stays found for the same search"
         );
     }
 
@@ -3126,6 +3397,7 @@ mod tests {
             )),
             scopes: Vec::new(),
             queries: Vec::new(),
+            live: None,
         };
         let groceries = search.search("groceries");
         assert_eq!(groceries.len(), 1);
@@ -3155,6 +3427,7 @@ mod tests {
             )),
             scopes: Vec::new(),
             queries: Vec::new(),
+            live: None,
         };
         let hits = search.search("sunset");
         let marker = hits

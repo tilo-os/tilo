@@ -116,9 +116,7 @@ def main():
                 preserved = visit(first['room'], 1)
                 if not args.expect_incompatibility:
                     preserved = visit(first['room'], 2)
-                    wheel = next(t for t in journey.request('list_targets')['targets'] if t['name'] == 'wheel_disc')
-                    x, y, _, h = wheel['rect']
-                    require_ok(journey.request('click_at', x=x + 24, y=y + h - 34))
+                    journey.invoke('actions', 'workspace.create')
                     second = wait_for(lambda: journey.workspace() if journey.workspace()['id'] != first['id'] else None,
                         'new isolated workspace')
                     visit(second['room'], 1)

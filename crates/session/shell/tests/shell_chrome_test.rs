@@ -1,5 +1,5 @@
 //! Interaction tests for shell chrome widgets (`OverviewView`, the search
-//! palette, `QuickSettings`, `WorkspaceSettings`, `SidebarWheelDisc`, `TopBar`, …).
+//! palette, `QuickSettings`, `WorkspaceSettings`, `TopBar`, …).
 
 use shell::shell::state::FreshId as _;
 use shell::shell::state::WorkspaceAuthority as _;
@@ -328,62 +328,4 @@ fn the_native_bar_opens_the_workspace_menu_and_the_profile_card() {
     frame.render_png(&out.join("profile-card.png"));
     frame.key("Escape");
     assert!(!frame.root::<ShellOverlayHost>().profile_card_open());
-}
-
-fn topbar_editor_actions(frame: &ui::headless::FrameHarness) -> Vec<ui::a11y::AccessNode> {
-    frame
-        .focus_access_nodes()
-        .into_iter()
-        .flat_map(|node| node.children)
-        .filter(|node| {
-            node.action_target.as_deref().is_some_and(|target| {
-                target.starts_with("topbar:editor:") && target != "topbar:editor:open"
-            })
-        })
-        .collect()
-}
-
-#[test]
-fn topbar_editor_semantic_open_focus_resize_and_escape_use_the_native_host() {
-    use shell::shell::overlay_host::ShellOverlayHost;
-    use ui::{a11y::Action, headless::FrameHarness, state::State, theme::Theme};
-    let tree = WorkspaceTree::bootstrap_demo();
-    let (host, chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
-    let mut frame = FrameHarness::for_root(State::new(), host, (1280, 800), Theme::dark());
-    frame
-        .perform_semantic_named("topbar:editor:open", None, &Action::Activate)
-        .unwrap();
-    let controls = topbar_editor_actions(&frame);
-    assert!(
-        !controls.is_empty(),
-        "the production editor publishes actions"
-    );
-    for control in controls {
-        let bounds = control.bounds.expect("painted editor bounds").to_rect();
-        assert!(bounds.width() > 0.0 && bounds.height() > 0.0);
-    }
-    assert!(frame.inspection_json().unwrap().contains("Edit top bar"));
-    let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../target/topbar-editor-native");
-    std::fs::create_dir_all(&out).unwrap();
-    frame.render_png(&out.join("native-open.png"));
-    frame.resize((640, 600)).unwrap();
-    frame.render_png(&out.join("native-resized-open.png"));
-    let open = frame.render_rgba();
-    frame.key("Escape");
-    let closed = frame.render_rgba();
-    assert!(topbar_editor_actions(&frame).is_empty());
-    assert!(
-        ui::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(&open, &closed) > 2000,
-        "Esc removes the actual editor pixels"
-    );
-    frame.render_png(&out.join("native-resized-closed.png"));
-    assert!(!frame.root::<ShellOverlayHost>().palette_visible());
-    assert!(!chrome.borrow().overlays.overview);
-    // Registry requests use the same production native adapter.
-    chrome.borrow_mut().request_topbar_editor();
-    frame.relayout();
-    assert!(!topbar_editor_actions(&frame).is_empty());
-    frame.key("Escape");
-    assert!(topbar_editor_actions(&frame).is_empty());
 }

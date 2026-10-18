@@ -151,7 +151,6 @@ impl PlayerApp {
         if sheet.width() <= 0.0 || (!self.library_visible && self.drawer.reveal() <= 0.0) {
             return;
         }
-        self.drawer.draw_scrim(scene, transform, theme);
         let panel_theme = self.drawer.paint_panel(scene, transform, theme);
         let theme = &panel_theme;
         let spacing = &theme.tokens.spacing;

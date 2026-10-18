@@ -23,7 +23,7 @@ thin = ["dep:runtime-dylib"]
 tilo-browser-sessions = { path = "../../crates/platform/tilo-browser-sessions" }
 browser-continuity = { workspace = true, features = ["native"] }
 fnv.workspace = true
-zeroize.workspace = true
+chrono.workspace = true
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
 # ui — UI toolkit. The browser is chrome around the toolkit's WebView
 # widget: the engine lives behind `ui::webview::WebViewEngine`, and the

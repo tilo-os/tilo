@@ -1828,12 +1828,32 @@ fn secret_input_masks_rendering_and_accessibility_but_keeps_the_value() {
         let mut input = TextInput::local()
             .with_external_buffer(Arc::clone(&buffer))
             .with_secret(true);
+        input.rect = Rect::new(0.0, 0.0, 200.0, 40.0);
         input.text = "correct horse battery staple".into();
         input.dirty = true;
         let document = AutoCommit::new();
         input.sync(&document, &automerge::ROOT);
 
         assert_eq!(&*buffer.lock().unwrap(), "correct horse battery staple");
+        assert!(
+            input.layout_needs_measure(),
+            "publication must not consume layout invalidation"
+        );
+        buffer.lock().unwrap().clear();
+        input.sync(&document, &automerge::ROOT);
+        assert!(
+            buffer.lock().unwrap().is_empty(),
+            "an acknowledged secret must not be republished"
+        );
+        input.core.set_caret(input.text.len());
+        input.insert_at_cursor("new draft");
+        input.sync(&document, &automerge::ROOT);
+        assert_eq!(
+            &*buffer.lock().unwrap(),
+            input.value(),
+            "subsequent edits still publish"
+        );
+        assert!(buffer.lock().unwrap().ends_with("new draft"));
         assert!(document.keys(&automerge::ROOT).next().is_none());
     }
 
@@ -5124,4 +5144,49 @@ fn an_open_text_menu_owns_the_keyboard() {
     assert!(dispatch(&mut ti, &named(NamedKey::Escape)));
     assert!(!ti.context_menu.is_open());
     assert_eq!(ti.selection_range(), Some((0, 5)));
+}
+
+#[test]
+fn a_lowercase_pronoun_is_corrected_at_the_next_word_boundary() {
+    for (typed, corrected) in [("so i", "so I "), ("im", "I'm ")] {
+        let mut ti = suggesting_field(typed);
+        let start = crate::time::now();
+        ti.refresh_suggestion_at(start);
+        ti.refresh_suggestion_at(start + SUGGESTION_SETTLE);
+        let preview = ti
+            .autocorrection_preview
+            .clone()
+            .expect("the pronoun is corrected although word lists hold \"i\"");
+        assert!(preview.automatic, "{typed}: a sure correction");
+        ti.insert_word_boundary(" ");
+        assert_eq!(ti.value(), corrected);
+    }
+}
+
+/// "cant" and "wont" become "can't" and "won't" at the next space, as a
+/// phone keyboard does; Backspace right after takes the correction back,
+/// and the word taken back stays as typed when the space comes again.
+#[test]
+fn cant_and_wont_are_corrected_and_backspace_takes_a_correction_back_for_good() {
+    for (typed, corrected) in [("I cant", "I can't "), ("it wont", "it won't ")] {
+        let mut ti = TextInput::local()
+            .with_spellcheck(true)
+            .with_autocorrect(true)
+            .with_spell_language("en_US")
+            .with_initial_value(typed);
+        ti.core.set_caret(ti.text.len());
+        ti.insert_word_boundary(" ");
+        assert_eq!(ti.value(), corrected);
+
+        let mut handled = false;
+        ti.handle_backspace_key(false, &mut handled);
+        assert!(handled);
+        assert_eq!(ti.value(), typed, "Backspace restores the word as typed");
+        ti.insert_word_boundary(" ");
+        assert_eq!(
+            ti.value(),
+            format!("{typed} "),
+            "a correction taken back is not made again"
+        );
+    }
 }

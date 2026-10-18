@@ -956,6 +956,9 @@ pub(crate) struct SampleAccounts(pub(crate) crate::AccountStore);
 /// so the sample calendar, today's highlight and the now line never move.
 pub(crate) struct ShotNow(pub(crate) chrono::NaiveDateTime);
 
+/// The zone every capture is viewed from.
+pub(crate) const SHOT_ZONE: &str = "Europe/Berlin";
+
 /// The day and time every capture is taken at: a Tuesday morning.
 pub(crate) fn shot_now() -> chrono::NaiveDateTime {
     chrono::NaiveDate::from_ymd_opt(2026, 6, 30)
@@ -1206,6 +1209,9 @@ impl ResourceSurface<Calendar, CalendarEffect> for CalendarApp {
             accounts,
             cx.fixture::<SampleAccounts>().is_some(),
         );
+        if cx.mode().is_live() {
+            self.notify_with(ui::host::current().notifications, cx.waker());
+        }
         if cx.mode().is_live()
             && let Some(accounts) = cx.shared_person::<accounts::person::PersonAccounts>()
         {

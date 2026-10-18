@@ -256,7 +256,9 @@ close-retry = Erneut versuchen
 close-keep-editing = Weiter bearbeiten
 close-broker-disconnected = Die Verbindung zum Speicherdienst wurde getrennt. Das Dokument ist weiterhin geöffnet.
 
-notes-image-edit = Bild bearbeiten
+block-image-untitled = Bild
+block-image-missing = Noch nicht auf diesem Gerät
+notes-image-edit = Beschreibung bearbeiten
 notes-image-done = Fertig
 notes-image-source = Bildbeschreibung und Ziel
 table-edit-source = Quelltext
@@ -264,7 +266,7 @@ table-edit-visual = Tabelle
 table-add-row = Zeile hinzufügen
 table-add-column = Spalte hinzufügen
 
-block-editor-drag-hint = Klicken für Blocktyp · Ziehen zum Verschieben · Alt+↑/↓
+block-editor-empty = Etwas schreiben…
 block-editor-find-placeholder = In Notiz suchen
 block-editor-find-no-results = Keine Ergebnisse
 block-editor-find-previous = Vorheriger Treffer
@@ -273,10 +275,7 @@ block-editor-find-close = Suche schließen
 block-editor-change-type = Blocktyp ändern
 block-editor-copy-code-hint = Code kopieren
 
-block-editor-code-exit-hint = Ctrl+Enter: Code verlassen
-block-editor-code-exit-compact = Ctrl+Enter ↵
 block-editor-code-copied = Kopiert
-block-editor-code-keyboard-hint = Ctrl+Enter: darunter schreiben · Ctrl+Shift+Enter: darüber schreiben · Tab / Shift+Tab: einrücken / ausrücken · Ctrl+Shift+C: Code kopieren
 widget-breadcrumb = Pfad
 
 widget-filepicker-cancel = Abbrechen
@@ -421,18 +420,9 @@ history-action-invalid = Diese Verlaufsanfrage ist ungültig.
 palette-name = Befehlspalette
 palette-results = Ergebnisse
 palette-placeholder = Suchen…
-palette-hint-navigate = Navigieren
-palette-hint-select = Auswählen
-palette-hint-open = Öffnen
-palette-hint-run = Ausführen
-palette-hint-close = Schließen
-palette-result-count = { $count ->
-    [one] 1 Ergebnis
-   *[other] { $count } Ergebnisse
-}
 palette-empty = Nichts anzuzeigen
 palette-no-results = Keine Ergebnisse für „{ $query }“
-palette-no-results-hint = Weniger Wörter versuchen oder den Bereich erweitern
+palette-no-results-hint = Schreibweise prüfen oder ein anderes Wort versuchen
 palette-searching = Suche läuft…
 
 # Kalender-Abschnitte in der Arbeitsbereich-Aktivität.
@@ -442,7 +432,6 @@ day-tomorrow = Morgen
 history-day-this-week = Diese Woche
 history-day-earlier = Früher
 
-save-status-saving = Wird gespeichert…
 save-status-stalled = Noch nicht gespeichert. Neuer Versuch…
 save-status-not-saved = Nicht gespeichert
 save-status-not-saved-detail = Deine Änderungen sind noch da.
@@ -469,6 +458,11 @@ find-bar-replace = Ersetzen
 find-bar-replace-all = Alle ersetzen
 find-bar-position = { $current } von { $total }
 find-bar-no-matches = Keine Treffer
+widget-mention-agent = Agent
+widget-mention-shortcut = Kurzbefehl
+widget-mention-app = App
+widget-mention-bot = Bot
+widget-mention-list = Personen zum Erwähnen
 widget-block-duplicate = Block mit Unterelementen duplizieren
 
 widget-block-duplicate-selection = Ausgewählte oder fokussierte Blöcke duplizieren
@@ -487,6 +481,28 @@ block-callout-tip = Tipp
 block-callout-important = Wichtig
 block-callout-warning = Warnung
 block-callout-caution = Vorsicht
+
+slash-menu-name = Blocktypen
+slash-menu-filter = Blöcke filtern…
+slash-paragraph = Absatz
+slash-heading-1 = Überschrift 1
+slash-heading-2 = Überschrift 2
+slash-heading-3 = Überschrift 3
+slash-bullet = Aufzählung
+slash-numbered = Nummerierte Liste
+slash-checklist = Checkliste
+slash-page = Unternotiz
+slash-link-page = Notiz verlinken
+slash-image = Bild
+slash-quote = Zitat
+slash-code = Codeblock
+slash-table = Tabelle
+slash-tex = TeX-Formel
+slash-typst = Typst-Formel
+slash-divider = Trennlinie
+link-popover-name = Notizen verlinken
+link-popover-filter = Notiz finden…
+filter-menu-no-matches = Keine Treffer
 
 widget-sidebar-resize = Breite der Seitenleiste ändern
 widget-inspector-resize = Breite des Inspektors ändern
@@ -557,3 +573,41 @@ widget-screenshot-copied = Kopiert
 widget-screenshot-send-workspace = In den Dateien dieses Arbeitsbereichs speichern
 widget-screenshot-send-no-device = Kein anderes Gerät ist online
 widget-screenshot-send-device = An { $device } senden
+
+## Block editor
+block-a11y-formula-source = Quelltext-Editor
+block-a11y-formula-visual = Visueller Editor
+block-a11y-copy-lang = { $lang }-Code kopieren
+block-a11y-move-up = Block nach oben
+block-a11y-move-down = Block nach unten
+block-a11y-open-embed = Eingebettete Notiz { $title } öffnen
+block-a11y-embed-description = Live-Vorschau einer verlinkten Notiz
+block-a11y-table-column = Spalte { $column }
+block-a11y-table-cell = Zelle { $row }, { $column }
+block-a11y-table-header-row = Kopfzeile
+block-a11y-table-row = Zeile { $row }
+block-a11y-table = Tabelle
+block-a11y-open-link = Verlinkte Notiz öffnen
+block-a11y-open-external = Weblink öffnen
+block-a11y-block = { $kind }-Block { $position }
+block-a11y-level = Ebene { $level }
+block-a11y-document = Ziehe den Griff eines Blocks, um ihn zu verschieben. Alt+Pfeil hoch und Alt+Pfeil runter verschieben den fokussierten Block. Tab rückt ihn unter den Block darüber ein, Umschalt+Tab wieder aus; Escape, dann Tab, verlässt den Editor.
+block-formula-empty = Gib oben eine Formel ein, um sie zu sehen
+block-formula-diagnostic = Vorschau: { $message }
+block-formula-source = Quelltext
+block-formula-visual = Visuell
+block-kind-paragraph = Absatz
+block-kind-quote = Zitat
+block-kind-heading = Überschrift
+block-kind-bullet = Aufzählungspunkt
+block-kind-numbered = Nummerierter Eintrag
+block-kind-checklist = Checklisten-Eintrag
+block-kind-code = Codeblock
+block-kind-table = Tabelle
+block-kind-divider = Trennlinie
+block-kind-callout = Hinweisbox
+block-kind-named-callout = Hinweisbox { $name }
+block-embed-missing-title = Notiz nicht gefunden
+block-embed-missing = Die verlinkte Notiz wurde gelöscht.
+block-kind-code-short = Code
+block-table-add-cell = Zelle hinzufügen

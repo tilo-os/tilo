@@ -104,24 +104,24 @@ class TestAssets(unittest.TestCase):
     def test_all_six_real_cases_remain_pinned(self):
         rows = assets.manifest(ROOT / "crates/sdk/ui-core/tests/fixtures/typography/artifacts.json")
         self.assertEqual(len(rows), 6)
-        self.assertEqual(sum(row["bytes"] for row in rows), 3718171)
+        self.assertEqual(sum(row["bytes"] for row in rows), 3718990)
         self.assertEqual({row["file"] for row in rows}, {
             f"{theme}-display-{display}-text-{text}.png"
             for theme in ("dark", "light")
             for display, text in (("1", "1"), ("1_25", "1"), ("1_5", "1_25"))})
 
-    def test_shell_decision_states_and_wheel_remain_pinned(self):
+    def test_shell_decision_states_remain_pinned(self):
         rows = assets.manifest(ROOT / "crates/session/shell/tests/snapshots/artifacts.json")
-        self.assertEqual(len(rows), 3)
-        self.assertEqual(sum(row["bytes"] for row in rows), 71060)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(sum(row["bytes"] for row in rows), 45740)
         self.assertEqual({row["file"] for row in rows}, {
             "e2e-tab-drag-reorder-settled.png",
-            "e2e-maximized-tile-controls.png", "three-spokes.png"})
+            "e2e-maximized-tile-controls.png"})
 
     def test_reader_linux_and_windows_baselines_remain_pinned(self):
         rows = assets.manifest(ROOT / "apps/ebook/tests/fixtures/typography/artifacts.json")
         self.assertEqual(len(rows), 4)
-        self.assertEqual(sum(row["bytes"] for row in rows), 801087)
+        self.assertEqual(sum(row["bytes"] for row in rows), 801102)
         self.assertEqual({row["file"] for row in rows}, {
             "serif-reader.png", "serif-reader-windows.png",
             "math-reader.png", "math-reader-windows.png"})

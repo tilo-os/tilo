@@ -26,7 +26,7 @@ target/chromium/Browser Engine.app/Contents/MacOS/tilo-chromium-host
 
 Linux produces `target/chromium/tilo-chromium-host` and adjacent CEF resources;
 run the browser against it with `TILO_CHROMIUM_HOST` set to that path. On Tilo
-OS the engine is the signed runtime bundle `tilo-runtime/2026.10.10-chromium`
+OS the engine is the signed runtime bundle `tilo-runtime/2026.10.17-chromium`
 (`ui::webview::chromium::runtime`): the image build runs
 `build-host.py --sdk-archive … --runtime …` and signs the resulting tree, the
 browser's manifest lists it under `optional-runtimes`, and the launcher mounts
@@ -74,6 +74,15 @@ CEF's native focused-frame Undo/Redo, without JavaScript or simulated keys. The
 retained WebView offers this through the system `LocalUndo` capability, so the
 same Edit operation services keyboard, menu and automation requests. Command
 queue admission is not a claim that a history entry existed or completed.
+
+Each tab's `ready` / `tab_ready` event also advertises `document_size: true`.
+Only then may a tab receive `document_size` with exactly `op`, `tab` and a
+boolean `enabled`. While enabled, the host reads the page's layout metrics over
+DevTools after each paint (one read in flight, one more after it when painted
+meanwhile) and sends a `document_size` event with `width`, `height` (the
+content size in CSS pixels, never less than the view) and `scroll_y` whenever
+any changes. The page can neither observe nor answer it. An embedder sizing the
+view to its content (Mail's reader) enables it; it is off by default.
 
 Resource navigation uses `scoped_navigation` with a strictly increasing positive
 signed-32-bit `request_id`, a `command` (`navigate`, `back`, `forward`, `reload`,

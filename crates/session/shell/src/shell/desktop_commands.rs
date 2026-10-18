@@ -26,7 +26,7 @@ impl DesktopCommandSink for ShellCommands<'_> {
     }
 
     fn apply_local(&mut self, intent: LocalViewIntent) {
-        // The user-maximize slot is what suppresses the top bar and wheel;
+        // The user-maximize slot is what suppresses the top bar;
         // it is cleared only by the group that holds it.
         if let LocalViewIntent::Maximized { group, maximized } = intent {
             if maximized {

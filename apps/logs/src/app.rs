@@ -192,6 +192,7 @@ impl LogsApp {
     pub fn with_entries(entries: Vec<LogEntry>, allow_live: bool) -> Self {
         let shared: Shared = Rc::new(RefCell::new(Bridge::default()));
         let shell = NavShell::new()
+            .content_kind(ui::widget::ContentKind::List)
             .with_id("logs.shell")
             .content(Box::new(JournalPane::new(Rc::clone(&shared))))
             .with_filter(

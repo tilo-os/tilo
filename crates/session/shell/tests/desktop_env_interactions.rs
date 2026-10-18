@@ -116,8 +116,8 @@ struct Layout {
     input_scale: f64,
 }
 
-/// Usable strip width at the fixture's viewport (window minus the
-/// wheel-disc slot + gutter). Group widths are fractions of this, so a
+/// Usable strip width at the fixture's viewport (window minus the 32 px
+/// leading and trailing edge gutters). Group widths are fractions of this, so a
 /// pixel expectation only means anything alongside it; read off the live
 /// row so the test can't drift from what the shell reserves.
 fn usable_strip_px(host: &mut ShellOverlayHost, strip_id: StripId) -> f64 {
@@ -486,12 +486,12 @@ fn resize_handles_persist_clamped_redistributed_group_widths() {
         );
     }
 
-    // Phase `resize_handle_drag_clamps_at_max_width_without_squeezing_neighbour`.
-    // A normal drag far past the resized group's maximum clamps that group
-    // without changing its neighbour, and the clamped width persists.
+    // Phase `a_drag_far_past_the_display_has_no_ceiling`.
+    // A normal drag hundreds of displays wide widens the resized group that
+    // far, without changing its neighbour, and the width persists: there is
+    // no widest window anyone can feel.
     {
         let (mut tree, strip_id, ids) = single_strip_tree(&[100, 200]);
-        // Start both at Narrow so the resized group has visible room to grow.
         for g in &mut tree.desktop.workspaces[0].strips[0].window_groups {
             g.width = WindowWidth::Narrow;
         }
@@ -500,18 +500,15 @@ fn resize_handles_persist_clamped_redistributed_group_widths() {
 
         let usable = usable_strip_px(&mut host, strip_id);
         let start = WindowWidth::Narrow.resolve(usable);
-        let max = ui::widget::max_group_px(usable);
         let handle_rect = host
             .group_row_mut_for_tests(strip_id)
             .expect("strip GroupRow")
             .handle_at(0)
-            .expect("one inter-group resize handle for a 2-group strip")
+            .expect("one seam for a 2-group strip")
             .get_rect();
         let cx = f64::midpoint(handle_rect.x0, handle_rect.x1);
         let cy = f64::midpoint(handle_rect.y0, handle_rect.y1);
 
-        // Far past the resized group's maximum: it clamps there while the right
-        // neighbour keeps its own width in the unbounded strip.
         cursor(&mut host, &layout, Point::new(cx, cy));
         press(&mut host, &layout);
         cursor(&mut host, &layout, Point::new(cx + 200_000.0, cy));
@@ -529,15 +526,10 @@ fn resize_handles_persist_clamped_redistributed_group_widths() {
             start,
             "ordinary resizing must not squeeze the right neighbour",
         );
-        assert_approx_eq!(
+        assert!(
+            (left.width.resolve(usable) - (start + 200_000.0)).abs() <= 1.0,
+            "the window follows the drag all the way: {} for {start} + 200000",
             left.width.resolve(usable),
-            max,
-            "the growing group clamps at the display-relative maximum",
-        );
-        assert_approx_eq!(
-            left.width.resolve(usable) + right.width.resolve(usable),
-            max + start,
-            "the infinite strip grows only to the resized group's clamp",
         );
     }
 
@@ -1024,9 +1016,9 @@ fn drops_and_the_tab_search_chip_open_the_right_app() {
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
 fn expand_restore_and_workspace_switch_change_what_is_rendered() {
-    // Phase `expand_maximizes_into_the_work_area_and_tucks_the_wheel_away`.
+    // Phase `expand_maximizes_into_the_work_area`.
     // Clicking a tab's Expand chip maximizes it inside the desktop work area:
-    // the top bar stays, and the workspace wheel is tucked away.
+    // the top bar stays, and the group spans the full width.
     {
         let (tree, strip_id, _ids) = single_strip_tree(&[100, 200]);
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
@@ -1065,14 +1057,6 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
         );
 
         let layout2 = lay_out_host(&mut host);
-        let sidebar = host
-            .sidebar_rect_for_tests()
-            .expect("the desktop has a wheel");
-        assert!(
-            sidebar.area() == 0.0,
-            "the radial workspace switcher is tucked away while a window is expanded; \
-             got {sidebar:?}",
-        );
         let topbar_height = laid_out_topbar_height(chrome.clone());
         assert_approx_eq!(
             topbar_height,
@@ -1093,7 +1077,7 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
         assert_approx_eq!(
             maximized.x0,
             0.0,
-            "an expanded group owns the left edge: no gutter is left where the wheel was"
+            "an expanded group owns the left edge: no leading edge gutter is left"
         );
         assert_approx_eq!(
             maximized.x1,
@@ -1176,10 +1160,9 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
         assert!(!host.group_at_for_tests(strip_id, 0).unwrap().maximized);
     }
 
-    // Phase `the_workspace_switcher_is_tucked_while_expanded_and_returns_on_restore`.
-    // An expanded group tucks the sidebar away; restoring it lays the sidebar
-    // out again on the first frame, rather than leaving its taffy node at
-    // `display:none`.
+    // Phase `the_leading_gutter_is_dropped_while_expanded_and_returns_on_restore`.
+    // An expanded group owns the left edge; restoring it lays the group out
+    // behind the leading edge gutter again on the first frame.
     {
         let (tree, strip_id, _ids) = single_strip_tree(&[100]);
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
@@ -1198,9 +1181,13 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
         host.tick_pending_maximize_harvest_for_tests();
         let maximized_layout = lay_out_host(&mut host);
         assert!(chrome.borrow().is_fullscreen());
-        assert!(
-            host.sidebar_rect_for_tests().unwrap().area() == 0.0,
-            "the switcher is tucked away while the group is expanded",
+        assert_approx_eq!(
+            host.group_at_for_tests(strip_id, 0)
+                .expect("maximized group")
+                .get_rect()
+                .x0,
+            0.0,
+            "an expanded group reaches the left edge",
         );
 
         // Queue the same one-shot toggle the Restore button publishes, then
@@ -1217,13 +1204,17 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
 
         assert!(!chrome.borrow().is_fullscreen());
         let _restored_layout = lay_out_host(&mut host);
+        let restored = host
+            .group_at_for_tests(strip_id, 0)
+            .expect("restored group")
+            .get_rect();
         assert!(
-            host.sidebar_rect_for_tests().unwrap().area() > 0.0,
-            "the radial workspace switcher must return on the first restored layout",
+            restored.x0 > 0.0,
+            "the leading edge gutter must return on the first restored layout; got {restored:?}",
         );
     }
 
-    // Phase `a_client_fullscreen_covers_the_wheel_and_the_whole_output`.
+    // Phase `a_client_fullscreen_covers_the_whole_output`.
     // Full screen, unlike maximize, hides every piece of chrome.
     {
         let (tree, strip_id, ids) = single_strip_tree(&[100, 200]);
@@ -1231,11 +1222,6 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
         let _ = lay_out_host(&mut host);
         chrome.borrow_mut().set_fullscreen_group(Some(ids[0]));
         let _ = lay_out_host(&mut host);
-        assert_approx_eq!(
-            host.sidebar_rect_for_tests().unwrap().area(),
-            0.0,
-            "a fullscreen client covers the wheel",
-        );
         let group = host
             .group_at_for_tests(strip_id, 0)
             .expect("fullscreen group")
@@ -1349,10 +1335,12 @@ fn focus_scrolls_groups_into_view_but_the_wheel_does_not_pan() {
     // view — `adopt_toplevel` creates and focuses a group before it has a
     // rect.
     {
-        // One full-width group fills the strip, so a second starts past the
-        // right edge — the geometry a newly launched app lands in.
+        // One group as wide as the strip's usable width fills it, so a second
+        // starts past the right edge — the geometry a newly launched app
+        // lands in. (`Wide` is half of it; it filled the strip only while a
+        // workspace wheel took a quarter of the display beside it.)
         let (mut tree, strip_id, _ids) = single_strip_tree(&[100]);
-        tree.desktop.workspaces[0].strips[0].window_groups[0].width = WindowWidth::Wide;
+        tree.desktop.workspaces[0].strips[0].window_groups[0].width = WindowWidth::Fraction(2000);
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
         let layout = lay_out_host(&mut host);
         let _ = &layout;
@@ -1791,41 +1779,77 @@ fn pointer_focus_keeps_native_card_in_place_but_keyboard_focus_reveals_it() {
 // 4. Drag-file-to-open
 
 // ---------------------------------------------------------------------------
-// Resizing from every window edge, first and last included
+// Resizing from every window edge, first and last included. The model is one
+// rule, `ui::widget::edge_resize`: every window owns both its edges, the seam
+// between two is split down the middle except that the focused window owns
+// all of it, a plain drag changes only the grabbed window (its opposite edge
+// holding still), and Shift+drag is zero-sum between the two at the seam.
 // ---------------------------------------------------------------------------
 
-/// Three narrow groups: all fit on screen, none is special.
-fn narrow_strip() -> (WorkspaceTree, StripId, Vec<GroupId>) {
+/// Three narrow groups, all on screen, the `focused`-th the one in use.
+fn narrow_strip(focused: usize) -> (WorkspaceTree, StripId, Vec<GroupId>) {
     let (mut tree, strip_id, ids) = single_strip_tree(&[100, 200, 300]);
     for g in &mut tree.desktop.workspaces[0].strips[0].window_groups {
         g.width = WindowWidth::Narrow;
     }
+    tree.desktop.active_group.insert(strip_id, ids[focused]);
     (tree, strip_id, ids)
 }
 
-fn on_screen_widths(host: &mut ShellOverlayHost, strip_id: StripId) -> Vec<f64> {
-    (0..3)
-        .map(|i| {
-            host.group_at_for_tests(strip_id, i)
-                .unwrap()
-                .get_rect()
-                .width()
-        })
-        .collect()
+fn on_screen_rects(host: &mut ShellOverlayHost, strip_id: StripId) -> Vec<vello::kurbo::Rect> {
+    (0..3).map(|i| group_rect(host, strip_id, i)).collect()
 }
 
-/// Press at `from`, drag `dx` along the real input path, release, and
-/// return the on-screen widths after the frame loop's next layout.
+fn widths_of(rects: &[vello::kurbo::Rect]) -> Vec<f64> {
+    rects.iter().map(|r| r.width()).collect()
+}
+
+/// What one drag did: the windows before it, while the pointer was still
+/// down at its end (after the frame loop's layout), and after the release.
+struct EdgeDragOutcome {
+    before: Vec<vello::kurbo::Rect>,
+    held: Vec<vello::kurbo::Rect>,
+    after: Vec<f64>,
+    /// The persisted widths, in pixels, before and after.
+    stored_before: Vec<f64>,
+    stored_after: Vec<f64>,
+}
+
+/// Press at `from` with window `focused` in use, drag `dx` along the real
+/// input path, release, and report what moved.
 fn drag_from(
+    focused: usize,
     from: impl Fn(&mut ShellOverlayHost, StripId) -> Point,
     dx: f64,
     shift: bool,
-) -> (Vec<f64>, Vec<f64>) {
+) -> EdgeDragOutcome {
     use winit::keyboard::ModifiersState;
-    let (tree, strip_id, _ids) = narrow_strip();
-    let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    let (tree, strip_id, ids) = narrow_strip(focused);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let layout = lay_out_host(&mut host);
-    let before = on_screen_widths(&mut host, strip_id);
+    assert!(
+        host.group_at_for_tests(strip_id, focused)
+            .unwrap()
+            .focused(),
+        "precondition: window {focused} is the one in use"
+    );
+    let usable = usable_strip_px(&mut host, strip_id);
+    let stored = |chrome: &shell::shell::chrome_state::Chrome| -> Vec<f64> {
+        let st = chrome.borrow();
+        let groups = &st.tree().desktop.workspaces[0].strips[0].window_groups;
+        ids.iter()
+            .map(|id| {
+                groups
+                    .iter()
+                    .find(|g| g.id == *id)
+                    .unwrap()
+                    .width
+                    .resolve(usable)
+            })
+            .collect()
+    };
+    let stored_before = stored(&chrome);
+    let before = on_screen_rects(&mut host, strip_id);
     let at = from(&mut host, strip_id);
     let mods = if shift {
         Modifiers::from(ModifiersState::SHIFT)
@@ -1835,10 +1859,19 @@ fn drag_from(
     cursor(&mut host, &layout, at);
     press_with_modifiers(&mut host, &layout, mods);
     cursor(&mut host, &layout, Point::new(at.x + dx, at.y));
+    let layout = lay_out_host(&mut host);
+    let held = on_screen_rects(&mut host, strip_id);
     release(&mut host, &layout);
     let _ = lay_out_host(&mut host);
-    let after = on_screen_widths(&mut host, strip_id);
-    (before, after)
+    let after = widths_of(&on_screen_rects(&mut host, strip_id));
+    host.tick_pending_width_harvest_for_tests();
+    EdgeDragOutcome {
+        before,
+        held,
+        after,
+        stored_before,
+        stored_after: stored(&chrome),
+    }
 }
 
 fn group_rect(host: &mut ShellOverlayHost, strip_id: StripId, i: usize) -> vello::kurbo::Rect {
@@ -1857,20 +1890,129 @@ fn assert_widths(before: &[f64], after: &[f64], delta: [f64; 3], what: &str) {
     }
 }
 
+/// Every window's width changed by `delta` on screen and in the persisted
+/// tree, and nothing else.
+fn assert_resized(outcome: &EdgeDragOutcome, delta: [f64; 3], what: &str) {
+    let before = widths_of(&outcome.before);
+    assert_widths(&before, &widths_of(&outcome.held), delta, what);
+    assert_widths(&before, &outcome.after, delta, what);
+    assert_widths(&outcome.stored_before, &outcome.stored_after, delta, what);
+}
+
+fn grip(
+    group: usize,
+    edge: ui::widget::WindowEdge,
+) -> impl Fn(&mut ShellOverlayHost, StripId) -> Point {
+    move |h, s| {
+        let r = group_rect(h, s, group);
+        match edge {
+            ui::widget::WindowEdge::Leading => Point::new(r.x0 + 2.0, r.center().y),
+            ui::widget::WindowEdge::Trailing => Point::new(r.x1 - 2.0, r.center().y),
+        }
+    }
+}
+
+const LEADING: ui::widget::WindowEdge = ui::widget::WindowEdge::Leading;
+const TRAILING: ui::widget::WindowEdge = ui::widget::WindowEdge::Trailing;
+
+// USER REQUIREMENT (2026-10-18): "if i increase the width of the thing i
+// currently have open, it just pushes the apps next to it further away, it
+// does not need to resize them. i can resize as i want, it doesnt change the
+// actual size of any other app."
+#[test]
+fn the_focused_windows_left_edge_is_the_seam_and_resizes_only_that_window() {
+    // Files (the middle window, in use) grabbed on its left edge where it
+    // meets the terminal before it, even on the terminal's side of the seam,
+    // and dragged left: Files grows to the left, the terminal slides left at
+    // its own width, and Files' right edge holds still.
+    for from in [grip(0, TRAILING), grip(1, LEADING)] {
+        let outcome = drag_from(1, from, -40.0, false);
+        assert_resized(&outcome, [0.0, 40.0, 0.0], "Files' left edge, dragged left");
+        let (before, held) = (&outcome.before, &outcome.held);
+        assert!(
+            (held[1].x1 - before[1].x1).abs() <= 1.0,
+            "Files' right edge holds still: {before:?} -> {held:?}"
+        );
+        assert!(
+            (held[0].x1 - (before[0].x1 - 40.0)).abs() <= 1.0,
+            "the terminal is pushed left: {before:?} -> {held:?}"
+        );
+        assert!(
+            (held[2].x0 - before[2].x0).abs() <= 1.0,
+            "the window after Files does not move"
+        );
+    }
+}
+
+// USER REQUIREMENT (2026-10-18): "if i increase the width of the thing i
+// currently have open, it just pushes the apps next to it further away, it
+// does not need to resize them. i can resize as i want, it doesnt change the
+// actual size of any other app."
+#[test]
+fn middle_window_edges_resize_only_it_and_zero_sum_with_shift() {
+    // The middle window is the one in use, so both its seams are its edges.
+    let o = drag_from(1, grip(1, LEADING), 40.0, false);
+    assert_resized(&o, [0.0, -40.0, 0.0], "middle window left edge");
+    let o = drag_from(1, grip(1, LEADING), 40.0, true);
+    assert_resized(&o, [40.0, -40.0, 0.0], "middle window left edge, shift");
+    let o = drag_from(1, grip(1, TRAILING), 40.0, false);
+    assert_resized(&o, [0.0, 40.0, 0.0], "middle window right edge");
+    assert!(
+        (o.held[1].x0 - o.before[1].x0).abs() <= 1.0,
+        "its left edge holds still"
+    );
+    let o = drag_from(1, grip(1, TRAILING), 40.0, true);
+    assert_resized(&o, [0.0, 40.0, -40.0], "middle window right edge, shift");
+}
+
+// USER REQUIREMENT (2026-10-18): the window in use wins the seam; elsewhere
+// "i can resize as i want, it doesnt change the actual size of any other app."
+#[test]
+fn focus_wins_the_seam_and_an_unfocused_seam_is_split_down_the_middle() {
+    // The first window in use owns its whole seam with the second, so the
+    // second window's half of it still resizes the first.
+    let o = drag_from(0, grip(1, LEADING), 40.0, false);
+    assert_resized(&o, [40.0, 0.0, 0.0], "focused first window's seam");
+    // The seam between the second and third, neither in use: each half is
+    // its own window's edge.
+    let o = drag_from(0, grip(1, TRAILING), 30.0, false);
+    assert_resized(&o, [0.0, 30.0, 0.0], "unfocused seam, left half");
+    let o = drag_from(0, grip(2, LEADING), -30.0, false);
+    assert_resized(&o, [0.0, 0.0, 30.0], "unfocused seam, right half");
+}
+
+#[test]
+fn hovering_a_seam_shows_the_edge_of_the_window_that_will_change() {
+    let (tree, strip_id, _ids) = narrow_strip(1);
+    let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    let layout = lay_out_host(&mut host);
+    let at = grip(0, TRAILING)(&mut host, strip_id);
+    cursor(&mut host, &layout, at);
+    let highlight = |host: &mut ShellOverlayHost, i| {
+        host.group_at_for_tests(strip_id, i)
+            .unwrap()
+            .edge_highlight()
+    };
+    assert_eq!(
+        highlight(&mut host, 1),
+        Some(LEADING),
+        "the focused window's edge lights, though the pointer is on the other side"
+    );
+    assert_eq!(highlight(&mut host, 0), None, "the terminal's does not");
+    assert_eq!(highlight(&mut host, 2), None);
+    let mid = group_rect(&mut host, strip_id, 1).center();
+    cursor(&mut host, &layout, mid);
+    assert!((0..3).all(|i| highlight(&mut host, i).is_none()));
+}
+
 #[test]
 fn first_window_right_edge_resizes_and_pushes_neighbours() {
     // Inside the painted grip, 2 px from the edge.
-    let (b, a) = drag_from(
-        |h, s| {
-            let r = group_rect(h, s, 0);
-            Point::new(r.x1 - 2.0, r.center().y)
-        },
-        40.0,
-        false,
-    );
-    assert_widths(&b, &a, [40.0, 0.0, 0.0], "first window, right grip");
+    let o = drag_from(0, grip(0, TRAILING), 40.0, false);
+    assert_resized(&o, [40.0, 0.0, 0.0], "first window, right grip");
     // On the seam between the first and second window.
-    let (b, a) = drag_from(
+    let o = drag_from(
+        0,
         |h, s| {
             let r = group_rect(h, s, 0);
             Point::new(r.x1 + 4.0, r.center().y)
@@ -1878,68 +2020,33 @@ fn first_window_right_edge_resizes_and_pushes_neighbours() {
         40.0,
         false,
     );
-    assert_widths(&b, &a, [40.0, 0.0, 0.0], "first window, seam");
+    assert_resized(&o, [40.0, 0.0, 0.0], "first window, seam");
 }
 
 #[test]
 fn last_window_right_edge_resizes() {
     // The last window ends 16 px short of the output edge, and the pointer
     // cannot leave the output, so the drag stays within it.
-    let (b, a) = drag_from(
-        |h, s| {
-            let r = group_rect(h, s, 2);
-            Point::new(r.x1 - 2.0, r.center().y)
-        },
-        12.0,
-        false,
-    );
-    assert_widths(&b, &a, [0.0, 0.0, 12.0], "last window, right grip");
+    let o = drag_from(2, grip(2, TRAILING), 12.0, false);
+    assert_resized(&o, [0.0, 0.0, 12.0], "last window, right grip");
 }
 
 #[test]
 fn first_window_left_edge_can_be_grabbed_and_resizes_it() {
     // Dragging the left edge towards the window's centre narrows it, away
-    // from the centre widens it. Neighbours keep their widths.
-    let grab = |h: &mut ShellOverlayHost, s: StripId| {
-        let r = group_rect(h, s, 0);
-        Point::new(r.x0 + 2.0, r.center().y)
-    };
-    let (b, a) = drag_from(grab, 40.0, false);
-    assert_widths(&b, &a, [-40.0, 0.0, 0.0], "first window, left edge inward");
-    let (b, a) = drag_from(grab, -40.0, false);
-    assert_widths(&b, &a, [40.0, 0.0, 0.0], "first window, left edge outward");
-}
-
-#[test]
-fn middle_window_edges_resize_plain_and_zero_sum_with_shift() {
-    // The seam's right half is the middle window's left edge; the seam is
-    // the first window's trailing edge, so the first window follows it.
-    let left_edge = |h: &mut ShellOverlayHost, s: StripId| {
-        let r = group_rect(h, s, 1);
-        Point::new(r.x0 + 2.0, r.center().y)
-    };
-    let (b, a) = drag_from(left_edge, 40.0, false);
-    assert_widths(&b, &a, [40.0, 0.0, 0.0], "middle window left edge");
-    let (b, a) = drag_from(left_edge, 40.0, true);
-    assert_widths(&b, &a, [40.0, -40.0, 0.0], "middle window left edge, shift");
-    let right_edge = |h: &mut ShellOverlayHost, s: StripId| {
-        let r = group_rect(h, s, 1);
-        Point::new(r.x1 - 2.0, r.center().y)
-    };
-    let (b, a) = drag_from(right_edge, 40.0, false);
-    assert_widths(&b, &a, [0.0, 40.0, 0.0], "middle window right edge");
-    let (b, a) = drag_from(right_edge, 40.0, true);
-    assert_widths(
-        &b,
-        &a,
-        [0.0, 40.0, -40.0],
-        "middle window right edge, shift",
-    );
+    // from the centre widens it, and its right edge holds still. Neighbours
+    // keep their widths.
+    let o = drag_from(0, grip(0, LEADING), 40.0, false);
+    assert_resized(&o, [-40.0, 0.0, 0.0], "first window, left edge inward");
+    assert!((o.held[0].x1 - o.before[0].x1).abs() <= 1.0);
+    let o = drag_from(0, grip(0, LEADING), -40.0, false);
+    assert_resized(&o, [40.0, 0.0, 0.0], "first window, left edge outward");
+    assert!((o.held[0].x1 - o.before[0].x1).abs() <= 1.0);
 }
 
 #[test]
 fn every_window_edge_has_the_same_grab_zone() {
-    let (tree, strip_id, _ids) = narrow_strip();
+    let (tree, strip_id, _ids) = narrow_strip(0);
     let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let _layout = lay_out_host(&mut host);
     let zone = ui::widget::RESIZE_HANDLE_PX;

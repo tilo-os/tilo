@@ -1070,9 +1070,10 @@ fn first_note_empty_state_and_help_shortcut_respect_focus() {
         assert!(handled, "the editor should consume the typed `?`");
     }
 
-    eprintln!("phase question_mark_opens_help_when_no_note_is_focused");
+    eprintln!("phase question_mark_types_into_the_sidebar_rename_field_and_ctrl_slash_opens_help");
     {
-        // With the tree (not the editor) focused, `?` is the help shortcut.
+        // A bare `?` is text wherever a field holds the keyboard; help is a
+        // chord, Ctrl+/, and it works with the note focused.
         let mut app = starter();
         app.harness().relayout_at((1200, 800)).unwrap();
 
@@ -1080,16 +1081,34 @@ fn first_note_empty_state_and_help_shortcut_respect_focus() {
         n(&mut app).blur_editor_for_test();
         let no_mods = Modifiers::default();
         dispatch(&mut app, no_mods, &char_key("?"));
+        assert!(
+            !n(&mut app).shortcuts_visible_for_test(),
+            "`?` is never the help key"
+        );
 
+        let ctrl = Modifiers::from(ModifiersState::CONTROL);
+        assert!(dispatch(&mut app, ctrl, &char_key("/")));
         assert!(
             n(&mut app).shortcuts_visible_for_test(),
-            "`?` must open the shortcuts overlay when no note is focused"
+            "Ctrl+/ opens the shortcuts overlay"
         );
         assert_eq!(
             n(&mut app).editor_text_for_test(),
             before,
             "opening help must not mutate the note body"
         );
+        dispatch(&mut app, no_mods, &named_key(NamedKey::Escape));
+
+        let mut app = starter();
+        app.harness().relayout_at((1200, 800)).unwrap();
+        assert!(n(&mut app).main_panel_mut().editor_mut().is_focused());
+        let before = n(&mut app).editor_text_for_test();
+        assert!(dispatch(&mut app, ctrl, &char_key("/")));
+        assert!(
+            n(&mut app).shortcuts_visible_for_test(),
+            "Ctrl+/ opens help while a note is being typed into"
+        );
+        assert_eq!(n(&mut app).editor_text_for_test(), before);
     }
 
     eprintln!("phase open_help_overlay_blocks_the_editor");
@@ -1122,11 +1141,11 @@ fn first_note_empty_state_and_help_shortcut_respect_focus() {
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn page_tree_keyboard_and_pointer_commands_are_gated_on_tree_focus() {
-    eprintln!("phase cmd_n_creates_child_even_while_editor_is_focused");
+    eprintln!("phase ctrl_n_creates_a_top_level_note_even_while_editor_is_focused");
     {
-        // The core reachability bug: Cmd-N used to no-op unless the sidebar
-        // was focused, but the editor holds focus on load. Handled at the
-        // app level it must work regardless.
+        // Handled at the app level, Ctrl+N works whichever pane holds focus.
+        // It makes a top-level note: taking the selection as the parent
+        // nested every quick note one level under the last.
         let mut app = starter();
         let root = n(&mut app).workspace_pages_for_test()[0].id;
         app.harness().relayout_at((1200, 800)).unwrap();
@@ -1134,18 +1153,38 @@ fn page_tree_keyboard_and_pointer_commands_are_gated_on_tree_focus() {
         assert_eq!(n(&mut app).selected_for_test(), Some(root));
 
         let ctrl = Modifiers::from(ModifiersState::CONTROL);
-        let handled = dispatch(&mut app, ctrl, &char_key("n"));
-
-        assert!(handled, "Cmd-N must be consumed at the app level");
+        assert!(
+            dispatch(&mut app, ctrl, &char_key("n")),
+            "Ctrl+N must be consumed at the app level"
+        );
+        let first = n(&mut app).selected_for_test().expect("new note selected");
+        dispatch(&mut app, Modifiers::default(), &named_key(NamedKey::Escape));
+        assert!(dispatch(&mut app, ctrl, &char_key("n")));
+        let second = n(&mut app).selected_for_test().expect("new note selected");
         let pages = n(&mut app).workspace_pages_for_test();
-        assert_eq!(pages.len(), 2, "Cmd-N must add exactly one page");
-        let new_id = n(&mut app).selected_for_test().expect("new child selected");
-        assert_ne!(new_id, root);
-        let new_meta = pages.iter().find(|p| p.id == new_id).unwrap();
+        assert_eq!(pages.len(), 3, "each Ctrl+N adds exactly one note");
+        for id in [first, second] {
+            assert_ne!(id, root);
+            let meta = pages.iter().find(|p| p.id == id).unwrap();
+            assert_eq!(meta.parent, None, "Ctrl+N makes a top-level note");
+        }
+    }
+
+    eprintln!("phase ctrl_shift_n_creates_a_note_inside_the_selected_one");
+    {
+        let mut app = starter();
+        let root = n(&mut app).workspace_pages_for_test()[0].id;
+        app.harness().relayout_at((1200, 800)).unwrap();
+        let ctrl_shift = Modifiers::from(ModifiersState::CONTROL | ModifiersState::SHIFT);
+        assert!(dispatch(&mut app, ctrl_shift, &char_key("N")));
+        let pages = n(&mut app).workspace_pages_for_test();
+        assert_eq!(pages.len(), 2);
+        let new_id = n(&mut app).selected_for_test().expect("new note selected");
+        let meta = pages.iter().find(|p| p.id == new_id).unwrap();
         assert_eq!(
-            new_meta.parent,
+            meta.parent,
             Some(root),
-            "Cmd-N must create a CHILD of the selected page"
+            "Ctrl+Shift+N nests under the selection"
         );
     }
 

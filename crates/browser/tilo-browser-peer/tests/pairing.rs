@@ -32,9 +32,10 @@ use sha2::{Digest as _, Sha256};
 use tilo_browser_peer::invite::{ask_to_join_pre_admitted, guest_certificate};
 use tilo_browser_peer::{
     CertifyError, Host, HttpClient, LinkError, MemoryPeerStore, PeerHandle, PeerStore as _,
-    answer_pairing, carrier, certify, pending_pairings,
+    answer_pairing, certify, pending_pairings,
 };
 use tilo_relay::rooms::PreAdmitRequest;
+use tilo_relay_client::https as carrier;
 use tilo_relay_protocol::certify::{
     ApproverDecision, ApproverReply, ApproverRequest, CertifyReply, MemberApproval,
     PendingCertification,
@@ -72,7 +73,7 @@ fn ask_to_pair(host: &Host, person: [u8; 32], label: &str) -> Asking {
         let key = key.clone();
         let label = label.to_owned();
         async move {
-            certify(&host, person, &label, &key, |code| {
+            certify(&host, person, &label, [0; 16], &key, |code| {
                 let _ = shown.send(code.to_owned());
             })
             .await
@@ -332,6 +333,7 @@ fn short_request(person: [u8; 32], device: &SigningKey, wait_ns: u64) -> Certifi
         device_label: "Phone".into(),
         requested: DeviceCapabilities::member(),
         nonce: rand::random(),
+        invite: [0; 16],
         issued_at_ns: now,
         expires_at_ns: now.checked_add(wait_ns).unwrap(),
         signature: [0; 64],

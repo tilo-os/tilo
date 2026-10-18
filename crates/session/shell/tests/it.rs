@@ -209,6 +209,8 @@ mod reopen_closed_tab;
 mod runtime_daemon_process;
 #[path = "sandbox_check.rs"]
 mod sandbox_check;
+#[path = "saved_layout_keymap.rs"]
+mod saved_layout_keymap;
 #[path = "scale_precedes_configure.rs"]
 mod scale_precedes_configure;
 #[path = "server_side_decorations.rs"]
@@ -225,8 +227,6 @@ mod shell_narration;
 mod shell_state_test;
 #[path = "shm_readback.rs"]
 mod shm_readback;
-#[path = "sidebar_wheel_disc_snapshot.rs"]
-mod sidebar_wheel_disc_snapshot;
 #[path = "speaker_calibration_fabric.rs"]
 mod speaker_calibration_fabric;
 #[path = "speaker_clock_policy.rs"]
@@ -255,6 +255,8 @@ mod two_netns_share;
 mod wayland_test;
 #[path = "wheel_scroll_wire.rs"]
 mod wheel_scroll_wire;
+#[path = "window_handles_protocol.rs"]
+mod window_handles_protocol;
 #[path = "window_previews.rs"]
 mod window_previews;
 #[path = "window_switcher.rs"]

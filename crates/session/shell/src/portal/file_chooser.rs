@@ -78,7 +78,8 @@ impl FileChooserBackend {
                 .await
                 .or_fail()?;
             let caller = auth.caller;
-            let opts = decode_open_options(caller.clone(), title, &options);
+            let opts =
+                decode_open_options(caller.clone(), title, &options).parent_window(&parent_window);
             let mode = if writable_directory_requested(&options) {
                 if lockdown::current_policy().disable_save_to_disk {
                     return Err(Ended::Cancelled);
@@ -116,6 +117,7 @@ impl FileChooserBackend {
             }
             let caller = auth.caller;
             let opts = FilePickerOptions::new(caller.clone(), title, /*save=*/ true)
+                .parent_window(&parent_window)
                 .accept_label(opt_string(&options, "accept_label"))
                 .current_name(opt_string(&options, "current_name"))
                 .filters(filters_from_options(&options));
@@ -148,6 +150,7 @@ impl FileChooserBackend {
             }
             let caller = auth.caller;
             let opts = FilePickerOptions::new(caller.clone(), title, /*save=*/ true)
+                .parent_window(&parent_window)
                 .accept_label(opt_string(&options, "accept_label"))
                 .filters(filters_from_options(&options));
             pick_and_grant(&self.ctx.file_picker, opts, FsMode::ReadWrite).await

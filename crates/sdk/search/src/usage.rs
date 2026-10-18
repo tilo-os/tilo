@@ -68,6 +68,34 @@ impl Frecency {
         boost.clamp(0, max)
     }
 
+    /// `0.0..=1.0`: how strongly `id` is preferred, at full resolution: the
+    /// share of [`Self::boost`]'s scale before it is rounded to steps.
+    #[must_use]
+    pub fn share(&self, id: &str, now: u64) -> f32 {
+        let Some(entry) = self.entries.get(id) else {
+            return 0.0;
+        };
+        let full = (1.0 + FULL_BOOST_USES).ln();
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a share in 0..=1 needs no more than f32"
+        )]
+        let share = (weight(*entry, now) / full).clamp(0.0, 1.0) as f32;
+        share
+    }
+
+    /// The ids chosen most recently, newest first, at most `limit` of them.
+    #[must_use]
+    pub fn most_recent(&self, limit: usize) -> Vec<&str> {
+        let mut entries: Vec<(&str, u64)> = self
+            .entries
+            .iter()
+            .map(|(id, entry)| (id.as_str(), entry.last))
+            .collect();
+        entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+        entries.into_iter().take(limit).map(|(id, _)| id).collect()
+    }
+
     /// One `id`, count and last-used line per entry.
     #[must_use]
     pub fn serialize(&self) -> String {
@@ -149,6 +177,21 @@ mod tests {
         let mut text = usage.serialize();
         text.push_str("broken line\n\tx\ty\n");
         assert_eq!(Frecency::parse(&text), usage);
+    }
+
+    #[test]
+    fn shares_grow_with_use_and_recents_come_newest_first() {
+        let mut usage = Frecency::default();
+        usage.record("a", 10);
+        usage.record("b", 30);
+        for _ in 0..6 {
+            usage.record("c", 20);
+        }
+        assert!(usage.share("c", 40) > usage.share("a", 40));
+        assert!(usage.share("a", 40) > 0.0 && usage.share("c", 40) <= 1.0);
+        assert!(usage.share("never", 40).abs() < f32::EPSILON);
+        assert_eq!(usage.most_recent(2), ["b", "c"]);
+        assert_eq!(usage.most_recent(9), ["b", "c", "a"]);
     }
 
     #[test]

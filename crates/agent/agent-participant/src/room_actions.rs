@@ -28,8 +28,10 @@
 //!
 //! Document invocations serve the host user's own devices. Anyone else the
 //! room admits may only comment through them (actions on a `comments`
-//! field), run under their own current standing so the action's door
-//! decides: a commenter cannot publish document changes directly. Exact local
+//! field) and run the actions an app offers every member for themselves
+//! ([`tilo_actions::MEMBER_OWN_TAG`], linking their own account elsewhere),
+//! under their own current standing so the action's door decides: a
+//! commenter cannot publish document changes directly. Exact local
 //! View discovery also serves currently certified room readers, through the
 //! host's canonical Read policy; that grants no document invocation authority.
 //! Agents use their own mounts.
@@ -579,7 +581,27 @@ struct Mounted {
     app: ConfinedReplica,
     /// Digests of the bodies already merged into it.
     seen: HashSet<[u8; 32]>,
+    /// The records held beside it (the parts of a chain its app keeps), by
+    /// route, with the digests of their bodies already merged.
+    parts: HashMap<DocumentRoute, HashSet<[u8; 32]>>,
     used: u64,
+}
+
+/// Whether the wire record `record` is a part of a chain an app keeps
+/// beside its own record ([`ui::record::RecordId::part`]): held with that
+/// record, never on its own.
+fn is_part(record: &str) -> bool {
+    ui::record::RecordId::parse(record).is_some_and(|id| id.chain_part().is_some())
+}
+
+/// A record's whole document, from its changes in order.
+fn whole(changes: &[Change]) -> Result<Vec<u8>, String> {
+    let mut doc = automerge::AutoCommit::new();
+    for (_, bytes) in changes {
+        tilo_automerge::ApplyIncoming::load_incoming(&mut doc, bytes)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(doc.save())
 }
 
 /// One change of a record: a digest naming it, and its bytes.
@@ -632,8 +654,11 @@ fn sealed_for(
     needs: Needs<'_>,
     gave_up: &GaveUp,
 ) -> Vec<DocumentRoute> {
+    // A part of a chain is held beside a record of its app that keeps it:
+    // reading or acting on it needs that record open too.
     let named = |route: &DocumentRoute, app_id: &str, record: &str| {
-        route.app_id == app_id && route.record == record
+        route.app_id == app_id
+            && (route.record == record || (is_part(record) && !is_part(&route.record)))
     };
     routes
         .iter()
@@ -929,12 +954,51 @@ struct Worker {
     participant: String,
     rooms: HashMap<u64, Room>,
     mounted: BTreeMap<DocumentRoute, Mounted>,
+    /// The route of the mounted record each part is held beside.
+    beside: HashMap<DocumentRoute, DocumentRoute>,
     clock: u64,
 }
 
 /// What a held record publishes that its door runs now.
 fn live_actions(app: &ConfinedReplica) -> Vec<tilo_actions::ActionDescriptor> {
     app.survey()
+}
+
+/// The outcome of an action whose change could not be committed.
+fn commit_failed(message: String, retryable: bool) -> Outcome {
+    Outcome::Failed(ActionFailure {
+        code: "commit_failed".into(),
+        message,
+        details: None,
+        retryable,
+    })
+}
+
+/// Everything `app` changed since the last take, each with its route: the
+/// held record's own (`None`: the holder's route) first, then each record
+/// held beside it on the route of the same app and room its id names.
+fn take_all(
+    app: &ConfinedReplica,
+    holder: &DocumentRoute,
+) -> Result<Vec<(Option<DocumentRoute>, DocumentMutation)>, crate::apps::AppError> {
+    let mut taken: Vec<(Option<DocumentRoute>, DocumentMutation)> = app
+        .take_mutation()?
+        .into_iter()
+        .map(|mutation| (None, mutation))
+        .collect();
+    taken.extend(
+        app.take_record_mutations()?
+            .into_iter()
+            .map(|(record, mutation)| {
+                let route = DocumentRoute {
+                    app_id: holder.app_id.clone(),
+                    cluster_id: holder.cluster_id.clone(),
+                    record: record.as_str().to_owned(),
+                };
+                (Some(route), mutation)
+            }),
+    );
+    Ok(taken)
 }
 
 impl Worker {
@@ -946,6 +1010,7 @@ impl Worker {
             shared,
             rooms: HashMap::new(),
             mounted: BTreeMap::new(),
+            beside: HashMap::new(),
             clock: 0,
         }
     }
@@ -1040,24 +1105,120 @@ impl Worker {
         state.revision = room.log.len();
         state.on_desktop.clone_from(room.desktop.tabs());
         for (route, mounted) in &mut self.mounted {
-            let Some(changes) = state.records.get(route) else {
-                continue;
-            };
-            for (digest, bytes) in changes {
-                if mounted.seen.insert(*digest)
-                    && let Err(error) = mounted
-                        .app
-                        .apply(&DocumentMutation::Incremental(bytes.clone()))
-                {
-                    tracing::warn!(%error, "room actions: a change did not merge");
+            if let Some(changes) = state.records.get(route) {
+                for (digest, bytes) in changes {
+                    if mounted.seen.insert(*digest)
+                        && let Err(error) = mounted
+                            .app
+                            .apply(&DocumentMutation::Incremental(bytes.clone()))
+                    {
+                        tracing::warn!(%error, "room actions: a change did not merge");
+                    }
+                }
+            }
+            for (part, seen) in &mut mounted.parts {
+                let (Some(changes), Ok(record)) =
+                    (state.records.get(part), reads::record_id(&part.record))
+                else {
+                    continue;
+                };
+                for (digest, bytes) in changes {
+                    if seen.insert(*digest)
+                        && let Err(error) = mounted
+                            .app
+                            .apply_record(&record, &DocumentMutation::Incremental(bytes.clone()))
+                    {
+                        tracing::warn!(%error, "room actions: a change to a part did not merge");
+                    }
                 }
             }
         }
         Ok(state)
     }
 
-    /// The record at `route`, mounted from what the room retains.
+    /// The record at `route`, mounted from what the room retains: a part of
+    /// a chain held beside its app's own record, in that record's mount.
     fn mount(&mut self, route: &DocumentRoute, state: &RoomState) -> Result<&mut Mounted, String> {
+        let holder = if is_part(&route.record) {
+            self.mount_part(route, state)?
+        } else {
+            self.mount_own(route, state)?;
+            route.clone()
+        };
+        self.mounted
+            .get_mut(&holder)
+            .ok_or_else(|| "the record did not mount".to_string())
+    }
+
+    /// The route of the mounted record `route`'s record is held in: its own,
+    /// or for a part, the record it is held beside.
+    fn holder_of(&self, route: &DocumentRoute) -> DocumentRoute {
+        self.beside.get(route).unwrap_or(route).clone()
+    }
+
+    /// Mount the part at `route` beside the record of its app that keeps it,
+    /// mounting that record first. The holder's route.
+    fn mount_part(
+        &mut self,
+        route: &DocumentRoute,
+        state: &RoomState,
+    ) -> Result<DocumentRoute, String> {
+        if let Some(holder) = self.beside.get(route).cloned()
+            && self.mounted.contains_key(&holder)
+        {
+            self.mount_own(&holder, state)?;
+            return Ok(holder);
+        }
+        let changes = state
+            .records
+            .get(route)
+            .ok_or_else(|| format!("the room has no record {}", route.record))?;
+        let record = reads::record_id(&route.record)?;
+        let bytes = whole(changes)?;
+        let holders: Vec<DocumentRoute> = state
+            .records
+            .keys()
+            .filter(|held| {
+                held.app_id == route.app_id
+                    && held.cluster_id == route.cluster_id
+                    && !is_part(&held.record)
+            })
+            .cloned()
+            .collect();
+        let mut refusals = Vec::new();
+        for holder in holders {
+            if let Err(error) = self.mount_own(&holder, state) {
+                refusals.push(error);
+                continue;
+            }
+            let Some(mounted) = self.mounted.get_mut(&holder) else {
+                continue;
+            };
+            match mounted
+                .app
+                .apply_record(&record, &DocumentMutation::Snapshot(bytes.clone()))
+            {
+                Ok(()) => {
+                    mounted.parts.insert(
+                        route.clone(),
+                        changes.iter().map(|(digest, _)| *digest).collect(),
+                    );
+                    self.beside.insert(route.clone(), holder.clone());
+                    return Ok(holder);
+                }
+                Err(error) => refusals.push(error.to_string()),
+            }
+        }
+        Err(format!(
+            "no record of {} keeps {} beside it: {}",
+            route.app_id,
+            route.record,
+            refusals.join("; ")
+        ))
+    }
+
+    /// The record at `route` itself, mounted from what the room retains.
+    fn mount_own(&mut self, route: &DocumentRoute, state: &RoomState) -> Result<(), String> {
         self.clock = self.clock.wrapping_add(1);
         let clock = self.clock;
         if !self.mounted.contains_key(route) {
@@ -1075,6 +1236,7 @@ impl Worker {
                     break;
                 };
                 self.mounted.remove(&oldest);
+                self.beside.retain(|_, holder| *holder != oldest);
             }
             let app = ConfinedReplica::open(
                 &self.catalogue,
@@ -1093,6 +1255,7 @@ impl Worker {
                 Mounted {
                     app,
                     seen: changes.iter().map(|(digest, _)| *digest).collect(),
+                    parts: HashMap::new(),
                     used: clock,
                 },
             );
@@ -1102,7 +1265,7 @@ impl Worker {
             .get_mut(route)
             .ok_or_else(|| "the record did not mount".to_string())?;
         mounted.used = clock;
-        Ok(mounted)
+        Ok(())
     }
 
     /// Records of the room an app of the catalogue opens: those on the
@@ -1453,6 +1616,19 @@ impl Worker {
         let route = record_of(&target.provider, &room)
             .filter(|route| self.catalogue.get(&route.app_id).is_some())
             .ok_or(Outcome::Rejected(ActionHostError::UnknownAction))?;
+        // An empty resource names the record's own: a caller that knows the
+        // app but not its code (the desktop asking a connector) names its
+        // actions so.
+        let mut target = target.clone();
+        if target.address.resource.is_empty()
+            && let Some(definition) = self.catalogue.get(&route.app_id)
+        {
+            definition
+                .record_kind
+                .as_str()
+                .clone_into(&mut target.address.resource);
+        }
+        let target = &target;
         let arguments = invoke_arguments(&request.argument);
         let mounted = self
             .mount(&route, &state)
@@ -1487,26 +1663,31 @@ impl Worker {
             .app
             .invoke_appearing(&target.address, &arguments, confirmed, appearance.as_ref())
             .map_err(|error| door_outcome(&error))?;
-        let mutation = mounted.app.take_mutation().map_err(|error| {
-            Outcome::Failed(ActionFailure {
-                code: "commit_failed".into(),
-                message: error.to_string(),
-                details: None,
-                retryable: false,
-            })
-        })?;
-        if let Some(mutation) = mutation {
-            self.commit(workspace_id, &route, &mutation)
-                .map_err(|reason| {
-                    Outcome::Failed(ActionFailure {
-                        code: "commit_failed".into(),
-                        message: reason,
-                        details: None,
-                        retryable: true,
-                    })
-                })?;
-        }
+        let taken = take_all(&mounted.app, &route)
+            .map_err(|error| commit_failed(error.to_string(), false))?;
+        self.commit_taken(workspace_id, &route, taken)
+            .map_err(|reason| commit_failed(reason, true))?;
         Ok(output)
+    }
+
+    /// Commit what the owner's action changed, each record on its own
+    /// route: a part it started is held beside the record it acted on.
+    /// The error is why a commit failed.
+    fn commit_taken(
+        &mut self,
+        workspace_id: u64,
+        route: &DocumentRoute,
+        taken: Vec<(Option<DocumentRoute>, DocumentMutation)>,
+    ) -> Result<(), String> {
+        let holder = self.holder_of(route);
+        for (changed, mutation) in taken {
+            let changed = changed.unwrap_or_else(|| holder.clone());
+            if changed != holder {
+                self.beside.insert(changed.clone(), holder.clone());
+            }
+            self.commit(workspace_id, &changed, &mutation)?;
+        }
+        Ok(())
     }
 
     /// Whether `caller` is the host's own person, whom the service acts for.
@@ -1514,9 +1695,13 @@ impl Worker {
         matches!(caller.principal(), CallerPrincipal::Person(person) if *person == self.participant)
     }
 
-    /// A comment `caller` makes on `route` through the host: run in a worker
-    /// of its own as `caller`, with the standing the room's policy gives them
-    /// now, so the action's door decides what they may write. The host then
+    /// A comment `caller` makes on `route` through the host, or an action of
+    /// the record any member may ask for themselves
+    /// ([`tilo_actions::MEMBER_OWN_TAG`]: linking their own account
+    /// elsewhere): run in a worker of its own as `caller`, with the standing
+    /// the room's policy gives them now, so the action's door and its own
+    /// checks decide what they may do. Its answer goes to `caller` alone, in
+    /// the receipt. The host then
     /// publishes the change like its own, keeps its held copy current and
     /// answers only once the change is saved: the caller cannot retry it
     /// themselves.
@@ -1538,7 +1723,11 @@ impl Worker {
         let refused = || Outcome::Rejected(ActionHostError::UnknownAction);
         let comment = contract.kind == ui::permissions::policy::ActionKind::Undoable
             && contract.field.as_deref() == Some(ui::permissions::policy::roles::COMMENTS_FIELD);
-        if !comment {
+        let own = contract
+            .tags
+            .iter()
+            .any(|tag| tag == tilo_actions::MEMBER_OWN_TAG);
+        if !comment && !own {
             return Err(refused());
         }
         let CallerPrincipal::Person(person) = caller.principal() else {
@@ -1553,13 +1742,16 @@ impl Worker {
             })
             .filter(|policy| policy.room == route.cluster_id && policy.standing.person == *person)
             .ok_or_else(refused)?;
-        let changes = state.records.get(route).ok_or_else(refused)?;
         let unavailable =
             |reason: String| Outcome::Rejected(ActionHostError::Unavailable { reason });
+        // A part is held beside the record of its app that keeps it, as the
+        // host's own mount holds it.
+        let holder = self.holder_of(route);
+        let held = state.records.get(&holder).ok_or_else(refused)?;
         let replica = ConfinedReplica::open(
             &self.catalogue,
-            &route.app_id,
-            &route.cluster_id,
+            &holder.app_id,
+            &holder.cluster_id,
             person,
             &crate::ReplicaActor::Member {
                 standing: policy.standing,
@@ -1567,15 +1759,24 @@ impl Worker {
                 unix_time: policy.unix_time,
             },
             Seed::Existing {
-                record: reads::record_id(&route.record).map_err(unavailable)?,
-                changes: changes.iter().map(|(_, bytes)| bytes.clone()).collect(),
+                record: reads::record_id(&holder.record).map_err(unavailable)?,
+                changes: held.iter().map(|(_, bytes)| bytes.clone()).collect(),
             },
         )
         .map_err(|error| unavailable(error.to_string()))?;
+        if holder != *route {
+            let part = state.records.get(route).ok_or_else(refused)?;
+            replica
+                .apply_record(
+                    &reads::record_id(&route.record).map_err(unavailable)?,
+                    &DocumentMutation::Snapshot(whole(part).map_err(unavailable)?),
+                )
+                .map_err(|error| unavailable(error.to_string()))?;
+        }
         let output = replica
             .invoke(address, arguments, confirmed)
             .map_err(|error| door_outcome(&error))?;
-        let mutation = replica.take_mutation().map_err(|error| {
+        let taken = take_all(&replica, &holder).map_err(|error| {
             Outcome::Failed(ActionFailure {
                 code: "commit_failed".into(),
                 message: error.to_string(),
@@ -1583,13 +1784,21 @@ impl Worker {
                 retryable: false,
             })
         })?;
-        if let Some(mutation) = mutation {
-            if let Some(mounted) = self.mounted.get(route)
-                && let Err(error) = mounted.app.apply(&mutation)
-            {
-                tracing::warn!(%error, "room actions: a member's change did not merge here");
+        for (changed, mutation) in taken {
+            let changed = changed.unwrap_or_else(|| holder.clone());
+            if let Some(mounted) = self.mounted.get(&holder) {
+                let merged = if changed == holder {
+                    mounted.app.apply(&mutation)
+                } else {
+                    reads::record_id(&changed.record)
+                        .map_err(crate::apps::AppError::Merge)
+                        .and_then(|record| mounted.app.apply_record(&record, &mutation))
+                };
+                if let Err(error) = merged {
+                    tracing::warn!(%error, "room actions: a member's change did not merge here");
+                }
             }
-            self.commit_durably(workspace_id, route, &mutation)
+            self.commit_durably(workspace_id, &changed, &mutation)
                 .map_err(|reason| {
                     Outcome::Failed(ActionFailure {
                         code: "commit_failed".into(),
@@ -1752,6 +1961,14 @@ impl Worker {
         room.log.push((route.clone(), (digest, bytes)));
         if let Some(mounted) = self.mounted.get_mut(route) {
             mounted.seen.insert(digest);
+        } else if let Some(holder) = self.beside.get(route)
+            && let Some(mounted) = self.mounted.get_mut(holder)
+        {
+            mounted
+                .parts
+                .entry(route.clone())
+                .or_default()
+                .insert(digest);
         }
         Ok(())
     }

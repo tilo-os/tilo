@@ -182,7 +182,7 @@ impl SearchProvider for NowPlayingProvider {
                     id: action_id,
                     title,
                     subtitle: Some(player.headline().to_string()),
-                    badge: Some(t("search-badge-media")),
+                    badge: None,
                     score,
                     params: if verb == Verb::Seek {
                         vec![ActionParam::required(

@@ -976,19 +976,7 @@ pub(crate) fn lock_path(path: &Path) -> PathBuf {
 
 /// Lock the settings file at `path`, creating its directory if needed.
 pub(crate) fn lock_copy(path: &Path) -> std::io::Result<tilo_files::Lock> {
-    #[cfg(unix)]
-    {
-        use tilo_files::native::atomic::{Privacy, ProvisionError, provision_directory};
-        let parent = path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
-        // The lock backend otherwise creates missing parents without durability
-        // barriers, hiding those creations from the subsequent atomic write.
-        if !parent.is_dir() {
-            provision_directory(parent, Privacy::Inherit).map_err(ProvisionError::into_io_error)?;
-        }
-    }
+    tilo_files::native::lock::prepare_parent(path)?;
     let (dir, name) = tilo_files::file_at(&lock_path(path)).map_err(std::io::Error::other)?;
     tilo_files::blocking::lock(&dir, &name, tilo_files::LockMode::Exclusive)
         .map_err(std::io::Error::other)

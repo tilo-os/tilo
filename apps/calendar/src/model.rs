@@ -1175,6 +1175,31 @@ fn seed_demo_events_early(
 fn seed_demo_events_later(today: NaiveDate, pid_work: Id, pid_personal: Id) -> Vec<Event> {
     let d = |delta: i64| today + Duration::days(delta);
     vec![
+        // Overlaps the quarterly planning: the two share the column.
+        Event {
+            id: Uuid::new_v4(),
+            title: "Interview: Lena".into(),
+            start: seed_demo_at(d(2), 11, 0),
+            end: seed_demo_at(d(2), 12, 0),
+            location: "Room 4".into(),
+            color: Palette::Amber,
+            timezone: "Europe/Berlin".into(),
+            project: Some(pid_work),
+            ..Event::default()
+        },
+        // Authored in New York: a morning there, an afternoon in Berlin.
+        Event {
+            id: Uuid::new_v4(),
+            title: "Call with the New York team".into(),
+            start: seed_demo_at(d(1), 9, 0),
+            end: seed_demo_at(d(1), 9, 45),
+            location: "Meet".into(),
+            color: Palette::Blue,
+            timezone: "America/New_York".into(),
+            reminder_min: Some(10),
+            project: Some(pid_work),
+            ..Event::default()
+        },
         Event {
             id: Uuid::new_v4(),
             title: "Dentist".into(),

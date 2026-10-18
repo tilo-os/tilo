@@ -63,3 +63,39 @@ browser-service-forget-retry-failed = Account deletion could not be completed. S
 browser-engine-repair-message = The built-in web component is missing. Review its repair in Store; nothing downloads without your consent.
 browser-engine-repair-action = Review repair
 browser-engine-reopen = Close Browser and open it again.
+
+## Toolbar
+browser-back = Back; hold or right-click for history
+browser-back-tooltip = Back (Alt+Left); hold or right-click for history
+browser-forward = Forward; hold or right-click for history
+browser-forward-tooltip = Forward (Alt+Right); hold or right-click for history
+browser-stop = Stop loading
+browser-reload = Reload
+browser-reload-tooltip = Reload (Ctrl+R)
+browser-address = Address and search
+browser-address-placeholder = Search or enter address
+browser-page-bookmarked = Page bookmarked
+browser-bookmark-page = Bookmark this page
+browser-library-open = Open browser library
+browser-library-close = Close browser library
+browser-more-commands = More commands
+browser-private = Private
+browser-private-window = Private window
+browser-private-tooltip = Browsing data is removed when this window closes. Files you download remain.
+
+## The More menu
+browser-menu-site-information = Site information
+browser-menu-library = History, bookmarks and downloads
+browser-menu-picture-in-picture = Picture in Picture
+browser-menu-reader-view = Reader view
+browser-menu-pause-history = Pause history
+browser-menu-find = Find in page
+browser-menu-developer-tools = Developer tools
+browser-menu-zoom-in = Zoom in
+browser-menu-zoom-out = Zoom out
+browser-menu-actual-size = Actual size
+browser-menu-actual-size-zoomed = Actual size ({ $percent }%)
+browser-menu-ads-and-trackers = Ads and trackers
+browser-menu-new-private-window = New private window
+browser-menu-settings = Settings
+browser-menu-close-settings = Close settings

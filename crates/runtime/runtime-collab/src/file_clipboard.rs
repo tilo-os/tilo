@@ -1,8 +1,17 @@
 //! The local host's Files clipboard. Offers are opaque, never path lists.
 use serde::{Deserialize, Serialize};
 
+/// The most descriptors one command hands over (each item of a plain
+/// [`Command::Capture`] travels as its own descriptor).
 pub const MAX_ENTRIES: usize = 256;
 pub const MAX_WIRE_BYTES: usize = 128 * 1024;
+/// The most entries one [`Command::CaptureNamed`] names. It bounds one
+/// message, which [`MAX_WIRE_BYTES`] bounds anyway; a selection of any size
+/// is captured in as many commands as it needs, one folder descriptor each,
+/// and published as one offer.
+pub const MAX_NAMED_PER_COMMAND: usize = 8192;
+/// The longest leaf name a [`Command::CaptureNamed`] carries (`NAME_MAX`).
+pub const MAX_NAME_BYTES: usize = 255;
 
 /// A precondition from the actual retained object shown by this window.
 /// This is not an identity claim or a grant: the host compares it with both
@@ -36,6 +45,39 @@ impl SelectedDescriptor {
     }
 }
 
+/// One leaf name in a folder: not empty, no `/` or NUL, not `.` or `..`.
+fn valid_name(name: &[u8]) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_NAME_BYTES
+        && !name.contains(&b'/')
+        && !name.contains(&0)
+        && name != b"."
+        && name != b".."
+}
+
+/// An entry of a shown folder, by its leaf name and the object the window
+/// showed under it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NamedEntry {
+    pub name: Vec<u8>,
+    pub expected: ObjectIdentity,
+}
+
+/// What a paste does with an item whose name the destination already has.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Conflict {
+    /// Ask first: when names clash, the paste does not start and answers
+    /// [`Reply::Conflicts`] so the window can ask the person.
+    Ask,
+    /// Give the pasted item a free name ("report 2.pdf").
+    #[default]
+    KeepBoth,
+    /// Leave the existing item and don't paste this one.
+    Skip,
+    /// Move the existing item to Trash, then paste.
+    Replace,
+}
+
 fn valid_id(value: &str) -> bool {
     crate::valid_uuid(value) && value != "00000000-0000-0000-0000-000000000000"
 }
@@ -51,6 +93,14 @@ pub enum Command {
         sources: Vec<SelectedDescriptor>,
         destination: Option<SelectedDescriptor>,
     },
+    /// Capture the entries of the shown folder `folder` as one ticket. One
+    /// descriptor travels however many entries there are; each entry names
+    /// the object the window showed, and the host pins it by that identity,
+    /// not by a descriptor.
+    CaptureNamed {
+        folder: SelectedDescriptor,
+        entries: Vec<NamedEntry>,
+    },
     Release {
         tickets: Vec<String>,
     },
@@ -62,6 +112,10 @@ pub enum Command {
         offer: String,
         destination: String,
         operation: String,
+        /// What to do about names the destination already has. An older
+        /// window that names none keeps both, as before.
+        #[serde(default)]
+        conflict: Conflict,
     },
     RestoreTrash {
         source: SelectedDescriptor,
@@ -90,6 +144,7 @@ impl Command {
                 destination,
             } => (sources.as_slice(), destination.as_ref()),
             Self::RestoreTrash { source, .. } => (<&[SelectedDescriptor]>::default(), Some(source)),
+            Self::CaptureNamed { folder, .. } => (<&[SelectedDescriptor]>::default(), Some(folder)),
             _ => (<&[SelectedDescriptor]>::default(), None),
         };
         sources.iter().chain(single)
@@ -104,6 +159,9 @@ impl Command {
             } => (sources.as_mut_slice(), destination.as_mut()),
             Self::RestoreTrash { source, .. } => {
                 (<&mut [SelectedDescriptor]>::default(), Some(source))
+            }
+            Self::CaptureNamed { folder, .. } => {
+                (<&mut [SelectedDescriptor]>::default(), Some(folder))
             }
             _ => (<&mut [SelectedDescriptor]>::default(), None),
         };
@@ -122,6 +180,12 @@ impl Command {
                     && sources.iter().all(SelectedDescriptor::valid)
                     && destination.as_ref().is_none_or(SelectedDescriptor::valid)
             }
+            Self::CaptureNamed { folder, entries } => {
+                folder.valid()
+                    && !entries.is_empty()
+                    && entries.len() <= MAX_NAMED_PER_COMMAND
+                    && entries.iter().all(|entry| valid_name(&entry.name))
+            }
             Self::Release { tickets } => {
                 !tickets.is_empty()
                     && tickets.len() <= MAX_ENTRIES + 1
@@ -136,6 +200,7 @@ impl Command {
                 offer,
                 destination,
                 operation,
+                ..
             } => valid_id(offer) && valid_id(destination) && valid_id(operation),
             Self::RestoreTrash { source, operation } => source.valid() && valid_id(operation),
             Self::Recover { operation }
@@ -159,6 +224,18 @@ pub enum Reply {
     Captured {
         sources: Vec<String>,
         destination: Option<String>,
+    },
+    /// The entries of a [`Command::CaptureNamed`], held as one ticket.
+    CapturedNamed {
+        ticket: String,
+        count: usize,
+    },
+    /// The paste asked first ([`Conflict::Ask`]) and the destination already
+    /// has `count` of the names, the first of them in `names`. Nothing was
+    /// pasted; paste again with the person's choice.
+    Conflicts {
+        names: Vec<String>,
+        count: usize,
     },
     Released,
     Recovered {
@@ -266,11 +343,70 @@ mod tests {
                 offer: id.into(),
                 destination: "/workspace/folder".into(),
                 operation: id.into(),
+                conflict: Conflict::KeepBoth,
             }
             .valid()
         );
         assert!(
             serde_json::from_str::<Command>(r#"{"Publish":{"paths":[[47]],"cut":false}}"#).is_err()
         );
+    }
+
+    #[test]
+    fn named_capture_carries_one_descriptor_and_old_pastes_keep_both() {
+        let selected = || SelectedDescriptor {
+            path: b"/workspace/folder".to_vec(),
+            descriptor: 3,
+            expected: ObjectIdentity {
+                device: 1,
+                inode: 2,
+            },
+        };
+        let id = "39949036-9d70-4796-9a8d-388648dc95f6";
+        let named = |names: Vec<Vec<u8>>| Command::CaptureNamed {
+            folder: selected(),
+            entries: names
+                .into_iter()
+                .map(|name| NamedEntry {
+                    name,
+                    expected: ObjectIdentity {
+                        device: 1,
+                        inode: 3,
+                    },
+                })
+                .collect(),
+        };
+        assert!(
+            named(vec![b"a.txt".to_vec(); MAX_NAMED_PER_COMMAND]).valid(),
+            "past 256 entries"
+        );
+        assert!(!named(vec![b"a.txt".to_vec(); MAX_NAMED_PER_COMMAND + 1]).valid());
+        for bad in [
+            vec![],
+            b".".to_vec(),
+            b"..".to_vec(),
+            b"a/b".to_vec(),
+            vec![b'a', 0],
+        ] {
+            assert!(!named(vec![bad]).valid());
+        }
+        assert!(!named(vec![]).valid());
+        assert_eq!(
+            named(vec![b"a".to_vec()]).selected().count(),
+            1,
+            "one descriptor"
+        );
+        // A window that names no policy keeps both, as before.
+        let old: Command = serde_json::from_str(&format!(
+            r#"{{"Paste":{{"offer":"{id}","destination":"{id}","operation":"{id}"}}}}"#
+        ))
+        .unwrap();
+        assert!(matches!(
+            old,
+            Command::Paste {
+                conflict: Conflict::KeepBoth,
+                ..
+            }
+        ));
     }
 }

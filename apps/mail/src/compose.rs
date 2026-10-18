@@ -54,7 +54,7 @@ use ui::widget::marks::Mark;
 use ui::widget::toolbar::Orientation;
 use ui::widget::{
     BlockContent, BlockEditor, BlockKind, Button, ButtonFace, ButtonRole, ChipFace, ChipLead,
-    ControlSize, SegmentedFace, TextInput, TextInputKind, ToggleGroup, Toolbar,
+    ControlSize, TextInput, TextInputKind, Toolbar,
 };
 
 use crate::actions::DraftBodySeed;
@@ -133,15 +133,20 @@ enum Format {
     Numbered,
     Quote,
     Link,
+    /// Write without formatting: the message goes as plain text.
+    PlainText,
 }
 
 impl Format {
-    /// The toolbar's groups: inline marks, headings, blocks, the link.
-    const GROUPS: [&'static [Format]; 4] = [
+    /// The toolbar's groups: inline marks, headings, blocks, the link, and
+    /// last, the switch to plain text, the first to give way to the More
+    /// menu.
+    const GROUPS: [&'static [Format]; 5] = [
         &[Format::Bold, Format::Italic, Format::Underline],
         &[Format::Heading1, Format::Heading2],
         &[Format::Bullet, Format::Numbered, Format::Quote],
         &[Format::Link],
+        &[Format::PlainText],
     ];
 
     fn label(self) -> &'static str {
@@ -155,6 +160,7 @@ impl Format {
             Self::Numbered => "Numbered list",
             Self::Quote => "Quote",
             Self::Link => "Link",
+            Self::PlainText => "Plain text",
         }
     }
 
@@ -169,7 +175,13 @@ impl Format {
             Self::Numbered => Icon::ListOrdered,
             Self::Quote => Icon::Quote,
             Self::Link => Icon::Link,
+            Self::PlainText => Icon::Type,
         }
+    }
+
+    /// Whether the command formats text, which plain text has none of.
+    fn formats(self) -> bool {
+        self != Self::PlainText
     }
 
     /// Whether the command is a toggle (everything but inserting a link).
@@ -200,6 +212,9 @@ impl FormatBar {
                 } else {
                     bar.push_icon(format.icon(), format.label(), on_click)
                 };
+                if !format.formats() {
+                    bar = bar.with_priority(-1);
+                }
             }
         }
         Self { bar, chosen }
@@ -228,8 +243,9 @@ impl FormatBar {
             .map(|(_, bounds)| *bounds)
     }
 
-    /// Show which commands are on, from the editor.
-    fn set_active(&mut self, active: impl Fn(Format) -> bool) {
+    /// Show which commands are on, from the editor; in plain text only the
+    /// switch back is offered.
+    fn set_active(&mut self, active: impl Fn(Format) -> bool, plain: bool) {
         let mut index = 0;
         for (group_index, group) in Format::GROUPS.iter().enumerate() {
             if group_index > 0 {
@@ -239,6 +255,7 @@ impl FormatBar {
                 if format.toggles() {
                     self.bar.set_active(index, active(format));
                 }
+                self.bar.set_enabled(index, !plain || !format.formats());
                 index += 1;
             }
         }
@@ -263,7 +280,6 @@ struct ComposeMetrics {
     /// An icon-only button's side.
     icon_button: f64,
     cc_bcc_w: f64,
-    format_w: f64,
     send_w: f64,
     discard_w: f64,
     prompt_add_w: f64,
@@ -275,8 +291,9 @@ struct ComposeMetrics {
     default_h: f64,
 }
 
-/// The format switch's segments.
-const FORMAT_LABELS: [&str; 2] = ["Rich text", "Plain text"];
+/// How long typing in the recipients or subject rests before what was typed
+/// is kept in the draft.
+const HEADERS_KEPT_AFTER: std::time::Duration = std::time::Duration::from_millis(800);
 
 /// The title of a window writing a fresh message.
 const NEW_MESSAGE: &str = "New message";
@@ -313,12 +330,6 @@ impl ComposeMetrics {
             control_h,
             icon_button: f64::from(metrics.min_pointer_target),
             cc_bcc_w: button(tr, "mail-compose-cc-bcc", ControlSize::Regular),
-            format_w: SegmentedFace::intrinsic_width(
-                &FORMAT_LABELS,
-                ControlSize::Regular,
-                tr,
-                theme,
-            ),
             send_w: button(tr, "mail-compose-send", ControlSize::Regular),
             discard_w: button(tr, "mail-compose-discard", ControlSize::Regular),
             prompt_add_w: button(tr, "mail-compose-prompt-add", ControlSize::Small),
@@ -382,7 +393,7 @@ pub enum DockState {
 }
 
 /// Which compose control currently has keyboard focus.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Field {
     None,
     To,
@@ -402,7 +413,6 @@ pub enum ComposeHit {
     Attach,
     ToggleCcBcc,
     Close,
-    FormatToggle,
     FieldTo,
     FieldCc,
     FieldBcc,
@@ -475,6 +485,10 @@ pub struct ComposeWindow {
     pub open: bool,
     /// The message this one answers, so the reply names it on the wire.
     replying_to: Option<crate::model::MessageId>,
+    /// The address of the account the message goes from, when it is not
+    /// the open one: a reply goes from the account the answered mail came
+    /// to.
+    sending_from: Option<String>,
     /// Whether the person typed, attached or formatted anything since the
     /// window opened: closing such a message keeps it as a draft.
     touched: bool,
@@ -483,6 +497,9 @@ pub struct ComposeWindow {
     book: Option<crate::address_book::AddressBook>,
     /// The completions offered under the recipient field being typed in.
     completions: ui::widget::SuggestionList,
+    /// When the recipients or the subject were last typed in, until they
+    /// are kept in the draft.
+    headers_edited: Option<ui::time::Instant>,
     dock: DockState,
     /// Window rect in screen coordinates. The source of truth for placement;
     /// movable + resizable mutate it directly.
@@ -559,9 +576,11 @@ impl ComposeWindow {
         Self {
             open: false,
             replying_to: None,
+            sending_from: None,
             touched: false,
             book: None,
             completions: ui::widget::SuggestionList::new(),
+            headers_edited: None,
             dock: DockState::Pane,
             pane: None,
             has_keys: false,
@@ -740,6 +759,13 @@ impl ComposeWindow {
         let commands = self.format_bar.command_bounds();
         let mut controls = Vec::new();
         for (hit, name, target, checked) in self.accessibility_control_specs() {
+            // Plain text has no formatting to offer; only the switch back.
+            if hit == ComposeHit::Toolbar
+                && target != "format"
+                && self.format == ComposeFormat::Text
+            {
+                continue;
+            }
             let command = (hit == ComposeHit::Toolbar)
                 .then(|| FormatBar::command_at(&commands, name))
                 .flatten();
@@ -783,10 +809,10 @@ impl ComposeWindow {
                 Some(self.show_cc_bcc),
             ),
             (
-                ComposeHit::FormatToggle,
-                "Rich text",
+                ComposeHit::Toolbar,
+                "Plain text",
                 "format",
-                Some(self.format == ComposeFormat::Html),
+                Some(self.format == ComposeFormat::Text),
             ),
             (
                 ComposeHit::Toolbar,
@@ -938,6 +964,7 @@ impl ComposeWindow {
     pub fn open_blank(&mut self) {
         self.open = true;
         self.has_keys = true;
+        self.sending_from = None;
         self.book = None;
         self.completions.clear();
         self.replying_to = None;
@@ -1012,6 +1039,30 @@ impl ComposeWindow {
         self.set_focus(Field::Body);
     }
 
+    /// When the recipients and subject typed last are due to be kept in the
+    /// draft: a moment after the typing stops, so a word is one change.
+    pub(crate) fn headers_due_at(&self) -> Option<ui::time::Instant> {
+        self.headers_edited
+            .filter(|_| self.open)
+            .map(|edited| edited + HEADERS_KEPT_AFTER)
+    }
+
+    /// The recipients and subject as typed, once they are due to be kept
+    /// (`to`, `cc`, `bcc`, `subject`).
+    pub(crate) fn take_due_headers(&mut self) -> Option<[String; 4]> {
+        let due = self.headers_due_at()?;
+        if ui::time::now() < due {
+            return None;
+        }
+        self.headers_edited = None;
+        Some([
+            self.to.value().to_owned(),
+            self.cc.value().to_owned(),
+            self.bcc.value().to_owned(),
+            self.subject.value().to_owned(),
+        ])
+    }
+
     /// Whether the composer waits for the person's correspondents.
     pub(crate) fn wants_address_book(&self) -> bool {
         self.open && self.book.is_none()
@@ -1081,6 +1132,7 @@ impl ComposeWindow {
             let completed = crate::address_book::complete_with(field.value(), &chosen);
             field.set_text(&completed);
         }
+        self.headers_edited = Some(ui::time::now());
         self.completions.clear();
         self.dirty = true;
     }
@@ -1117,6 +1169,16 @@ impl ComposeWindow {
         }
         self.dirty = true;
         true
+    }
+
+    /// Send from the account at `address`.
+    pub fn send_from(&mut self, address: String) {
+        self.sending_from = Some(address);
+    }
+
+    /// The address of the account the message goes from, when chosen.
+    pub fn sending_from(&self) -> Option<&str> {
+        self.sending_from.as_deref()
     }
 
     /// The message this one answers.
@@ -1162,6 +1224,7 @@ impl ComposeWindow {
 
     pub fn close(&mut self) {
         self.open = false;
+        self.headers_edited = None;
         self.set_focus(Field::None);
         self.dirty = true;
     }
@@ -1613,14 +1676,10 @@ impl ComposeWindow {
         let rx = r.x1 - m.pad;
         let mut y = self.layout_header_hits(r, lx, rx);
 
-        // The formatting toolbar (rich text) and the format switch at the
-        // end of the same row.
-        let format = Rect::new(rx - m.format_w, y, rx, y + m.control_h);
-        self.hits.push((format, ComposeHit::FormatToggle));
-        if matches!(self.format, ComposeFormat::Html) {
-            let toolbar = Rect::new(lx, y, (format.x0 - m.gap).max(lx), y + m.control_h);
-            self.hits.push((toolbar, ComposeHit::Toolbar));
-        }
+        // The formatting toolbar, its last command the switch to plain
+        // text (in plain text, the switch back).
+        let toolbar = Rect::new(lx, y, rx, y + m.control_h);
+        self.hits.push((toolbar, ComposeHit::Toolbar));
         y += m.control_h + m.gap;
 
         // Below the body, bottom-up: the footer buttons, then (when shown)
@@ -1754,10 +1813,8 @@ impl ComposeWindow {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                if matches!(self.format, ComposeFormat::Html) {
-                    // The toolbar tracks the pointer for its hover.
-                    self.route_toolbar(event, ctx);
-                }
+                // The toolbar tracks the pointer for its hover.
+                self.route_toolbar(event, ctx);
                 self.handle_cursor_moved(*position, event, ctx)
             }
             WindowEvent::MouseInput {
@@ -1847,6 +1904,10 @@ impl ComposeWindow {
             self.close();
             return (true, ComposeAction::Close);
         }
+        // Ctrl+Enter sends, from any field.
+        if Self::is_send_press(event, ctx.modifiers) {
+            return (true, ComposeAction::Send);
+        }
         // Body editor.
         if matches!(self.focus, Field::Body) {
             self.handle_body_key(event, ctx);
@@ -1901,6 +1962,23 @@ impl ComposeWindow {
         (true, ComposeAction::None)
     }
 
+    /// Ctrl+Enter (Cmd+Enter on a Mac keyboard): send the message.
+    fn is_send_press(event: &WindowEvent, modifiers: winit::event::Modifiers) -> bool {
+        let state = modifiers.state();
+        (state.control_key() || state.super_key())
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput {
+                    event: winit::event::KeyEvent {
+                        logical_key: winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                    ..
+                }
+            )
+    }
+
     fn is_escape_press(event: &WindowEvent) -> bool {
         matches!(
             event,
@@ -1936,6 +2014,7 @@ impl ComposeWindow {
     /// Part of [`Self::handle_keyboard_input`].
     fn handle_header_key(&mut self, event: &WindowEvent, ctx: &mut ComposeEventContext<'_>) {
         self.touched = true;
+        self.headers_edited = Some(ui::time::now());
         let mut h = false;
         let mut ft: Option<taffy::NodeId> = None;
         if let Some(inp) = self.focused_input() {
@@ -1975,7 +2054,6 @@ impl ComposeWindow {
                 self.relayout_regions();
             }
             ComposeHit::Attach => return ComposeAction::RequestAttachment,
-            ComposeHit::FormatToggle => self.toggle_format(),
             ComposeHit::FieldTo
             | ComposeHit::FieldCc
             | ComposeHit::FieldBcc
@@ -2040,9 +2118,6 @@ impl ComposeWindow {
     /// Whether the formatting toolbar owns `event`: its overflow menu is
     /// open, it is mid-press, or the pointer is over it.
     fn toolbar_takes(&self, event: &WindowEvent, scale_factor: f64) -> bool {
-        if !matches!(self.format, ComposeFormat::Html) {
-            return false;
-        }
         let bar = &self.format_bar.bar;
         if bar.is_overflow_open() || ui::Widget::wants_pointer_capture(bar) {
             return !matches!(event, WindowEvent::CursorMoved { .. }) || bar.is_overflow_open();
@@ -2087,6 +2162,7 @@ impl ComposeWindow {
             Format::Numbered => self.toggle_kind(BlockKind::Numbered { indent: 0 }),
             Format::Quote => self.toggle_kind(BlockKind::Quote),
             Format::Link => self.open_prompt(PromptKind::Link),
+            Format::PlainText => self.toggle_format(),
         }
     }
 
@@ -2251,13 +2327,7 @@ impl ComposeWindow {
         if self.in_pane() {
             // The message column's own ground: the page where the open
             // message is read.
-            scene.fill(
-                Fill::NonZero,
-                t,
-                theme.tokens.colors.surfaces.content,
-                None,
-                &self.rect,
-            );
+            ui::surface::region(scene, t, self.rect, ui::surface::Region::Content, theme);
         } else if self.is_full_window_page() {
             ui::floating_surface::paint_material(
                 scene,
@@ -2297,9 +2367,7 @@ impl ComposeWindow {
             self.draw_button(scene, t, tr, &panel, button);
         }
         // The toolbar's overflow menu floats over everything else.
-        if matches!(self.format, ComposeFormat::Html) {
-            ui::Widget::draw_overlay(&mut self.format_bar.bar, scene, t, tr, &panel, presence);
-        }
+        ui::Widget::draw_overlay(&mut self.format_bar.bar, scene, t, tr, &panel, presence);
     }
 
     /// What the composer is painted on: the message column's ground, or
@@ -2413,22 +2481,25 @@ impl ComposeWindow {
                     .hovered(rect.contains(self.last_mouse)),
             );
         }
-        if matches!(self.format, ComposeFormat::Html)
-            && let Some(rect) = self.hit_rect(ComposeHit::Toolbar)
-        {
+        if let Some(rect) = self.hit_rect(ComposeHit::Toolbar) {
+            let plain = self.format == ComposeFormat::Text;
             let marks = self.editor.editor().active_marks();
             let block = self.focused_kind();
-            self.format_bar.set_active(|format| match format {
-                Format::Bold => marks.contains(&Mark::Bold),
-                Format::Italic => marks.contains(&Mark::Italic),
-                Format::Underline => marks.contains(&Mark::Underline),
-                Format::Heading1 => matches!(block, BlockKind::Heading(1)),
-                Format::Heading2 => matches!(block, BlockKind::Heading(2)),
-                Format::Bullet => matches!(block, BlockKind::Bullet { .. }),
-                Format::Numbered => matches!(block, BlockKind::Numbered { .. }),
-                Format::Quote => matches!(block, BlockKind::Quote),
-                Format::Link => false,
-            });
+            self.format_bar.set_active(
+                |format| match format {
+                    Format::Bold => marks.contains(&Mark::Bold),
+                    Format::Italic => marks.contains(&Mark::Italic),
+                    Format::Underline => marks.contains(&Mark::Underline),
+                    Format::Heading1 => matches!(block, BlockKind::Heading(1)),
+                    Format::Heading2 => matches!(block, BlockKind::Heading(2)),
+                    Format::Bullet => matches!(block, BlockKind::Bullet { .. }),
+                    Format::Numbered => matches!(block, BlockKind::Numbered { .. }),
+                    Format::Quote => matches!(block, BlockKind::Quote),
+                    Format::Link => false,
+                    Format::PlainText => plain,
+                },
+                plain,
+            );
             self.format_bar.bar.lay_out_in(rect, tr, theme);
             ui::Widget::draw(
                 &mut self.format_bar.bar,
@@ -2437,19 +2508,6 @@ impl ComposeWindow {
                 tr,
                 theme,
                 &PresenceCtx::default(),
-            );
-        }
-        if let Some(rect) = self.hit_rect(ComposeHit::FormatToggle) {
-            let segments =
-                SegmentedFace::partition(rect, &FORMAT_LABELS, ControlSize::Regular, tr, theme);
-            let selected = usize::from(self.format == ComposeFormat::Text);
-            let hovered = segments.iter().position(|r| r.contains(self.last_mouse));
-            ToggleGroup::paint(
-                scene,
-                t,
-                tr,
-                theme,
-                &SegmentedFace::new(&segments, &FORMAT_LABELS, selected).hovered(hovered),
             );
         }
     }
@@ -2819,6 +2877,44 @@ mod tests {
                 w.to_draft(&mut ui::widget::Edits::lend(&mut doc)).body,
                 "Hi\ntwo",
                 "Enter split the body across two lines"
+            );
+        }
+    }
+
+    /// Ctrl+Enter sends from the body and from a header field alike; Enter
+    /// alone stays a new line.
+    #[test]
+    fn ctrl_enter_sends_from_any_field() {
+        let mut w = win();
+        let mut doc = crate::resource::TestMail::doc();
+        let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
+        let node = taffy::NodeId::new(0);
+        let ctrl = winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+        let plain = winit::event::Modifiers::default();
+        let enter = key(Key::Named(NamedKey::Enter), None);
+        for field in [Field::Body, Field::Subject] {
+            w.set_focus(field);
+            let mut press = |modifiers| {
+                w.handle_event(
+                    &enter,
+                    &mut ComposeEventContext {
+                        scale_factor: 1.0,
+                        modifiers,
+                        state: ui::widget::Edits::lend(&mut doc),
+                        path: &automerge::ROOT,
+                        node_id: node,
+                        taffy: &taffy,
+                    },
+                )
+                .1
+            };
+            assert!(
+                matches!(press(ctrl), ComposeAction::Send),
+                "{field:?}: Ctrl+Enter sends"
+            );
+            assert!(
+                !matches!(press(plain), ComposeAction::Send),
+                "{field:?}: Enter alone does not"
             );
         }
     }

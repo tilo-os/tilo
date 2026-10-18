@@ -496,7 +496,7 @@ impl CalcScreen {
         self.draw_keys(scene, t, tr, theme);
     }
 
-    /// The history panel, over the keypad: the scrim of a floating drawer,
+    /// The history panel, over the keypad:
     /// the panel, its rows and its show/hide button.
     pub fn draw_panel(
         &mut self,
@@ -506,7 +506,6 @@ impl CalcScreen {
         theme: &Theme,
         model: &CalcModel,
     ) {
-        self.panel.paint_scrim(scene, t, theme);
         if self.panel.column() == Rect::ZERO {
             self.panel
                 .paint_toggle(scene, t, tr, theme, self.hover.toggle);

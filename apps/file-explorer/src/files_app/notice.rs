@@ -24,6 +24,8 @@ pub(crate) enum NoticeAction {
     Undo,
     /// Choose another app to open `path` with.
     OpenWith(PathBuf),
+    /// Stop the copy or move under way.
+    CancelTransfer,
 }
 
 impl NoticeAction {
@@ -31,6 +33,7 @@ impl NoticeAction {
         match self {
             Self::Undo => crate::i18n::t("files-notice-undo"),
             Self::OpenWith(_) => crate::i18n::t("files-notice-open-with"),
+            Self::CancelTransfer => crate::i18n::t("files-notice-cancel"),
         }
     }
 }
@@ -92,6 +95,29 @@ impl Notice {
         self.hit = ToastCardHit::default();
     }
 
+    /// Show how far a copy or move is: the same card updated in place, up
+    /// until the transfer ends.
+    pub(crate) fn show_progress(&mut self, title: String, body: String) {
+        if let Some(shown) = &mut self.shown
+            && shown.action == Some(NoticeAction::CancelTransfer)
+        {
+            shown.title = title;
+            shown.body = body;
+            return;
+        }
+        self.show(
+            title,
+            body,
+            ToastKind::Info,
+            Some(NoticeAction::CancelTransfer),
+        );
+    }
+
+    /// Whether the card is a transfer's progress.
+    pub(crate) fn shows_progress(&self) -> bool {
+        self.action() == Some(&NoticeAction::CancelTransfer)
+    }
+
     pub(crate) fn dismiss(&mut self) -> bool {
         self.hovered = None;
         self.pressed = None;
@@ -126,7 +152,8 @@ impl Notice {
     /// Take the notice down once its lifetime is over; whether it did.
     pub(crate) fn expire(&mut self, now: Instant) -> bool {
         let over = self.shown.as_ref().is_some_and(|shown| {
-            self.hovered.is_none()
+            shown.action != Some(NoticeAction::CancelTransfer)
+                && self.hovered.is_none()
                 && !ui::time::wall_frozen()
                 && now.saturating_duration_since(shown.since) > LIFETIME
         });
@@ -135,7 +162,7 @@ impl Notice {
 
     /// When the notice expires, for the widget's wake deadline.
     pub(crate) fn deadline(&self) -> Option<Instant> {
-        if ui::time::wall_frozen() || self.hovered.is_some() {
+        if ui::time::wall_frozen() || self.hovered.is_some() || self.shows_progress() {
             return None;
         }
         self.shown.as_ref().map(|shown| shown.since + LIFETIME)

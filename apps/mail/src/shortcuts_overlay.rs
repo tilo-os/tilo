@@ -24,6 +24,7 @@ const ROWS: &[(&str, &[&str])] = &[
     ("Reply", &["R"]),
     ("Reply all", &["A"]),
     ("Forward", &["F"]),
+    ("Send the message being written", &["Ctrl", "Enter"]),
     ("Star", &["S"]),
     ("Archive", &["E"]),
     ("Mark read", &["Shift", "I"]),

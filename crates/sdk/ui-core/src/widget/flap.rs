@@ -140,6 +140,17 @@ impl FlapState {
         self.clock = None;
     }
 
+    /// Start the reveal over from closed, so an open flap that just came
+    /// into a layout (a sidebar that docks as the window widens) slides in
+    /// rather than appearing. A closed flap stays as it is.
+    pub(crate) fn slide_in(&mut self, layout: SplitLayout) {
+        if !self.is_open(layout) {
+            return;
+        }
+        self.progress = 0.0;
+        self.clock = Some(crate::time::now());
+    }
+
     /// Advance toward the target to `now` (the frame's time), taking
     /// `duration` for a whole open or close. The step is the time since the
     /// last frame of this slide, or since it was asked for — never the idle

@@ -1001,7 +1001,7 @@ fn overlay_accessibility_paths_follow_painted_geometry_and_coexistence_order() {
                 .children
                 .first()
                 .and_then(|node| node.name.as_deref()),
-            Some("Session")
+            Some(crate::shell::i18n::t("power-menu-title").as_str())
         );
         assert_eq!(
             h.host.synthetic_accessibility_rect(&[0, 0]),
@@ -1155,69 +1155,7 @@ fn build_harness_with_host(
     clippy::too_many_lines,
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
-fn super_chords_open_their_surfaces_once_and_escape_dismisses_the_wheel_first() {
-    /// Super+S calls the wheel to wherever the pointer is, so the
-    /// workspace list is reachable from the right-hand end of a strip
-    /// without scrolling all the way back to its left edge.
-    fn super_s_summons_the_wheel_to_the_pointer_and_toggles_back() {
-        let mut h = build_harness();
-        let sup = Modifiers::from(ModifiersState::SUPER);
-        assert!(
-            h.chrome.borrow().wheel_summon().is_none(),
-            "the wheel starts docked"
-        );
-
-        let at = Point::new(1240.0, 610.0);
-        pump(&mut h, &cursor_moved_at(at), sup);
-        assert!(
-            pump(&mut h, &key_press(Key::Character("s".into())), sup),
-            "Super+S is handled by the shell"
-        );
-        assert_eq!(
-            h.chrome.borrow().wheel_summon(),
-            Some(at),
-            "the wheel is summoned to the pointer, not to a fixed spot"
-        );
-        assert!(
-            h.host.wheel_summoned(),
-            "the client-input filter has to see the summon so Escape reaches the shell"
-        );
-
-        // Pressing it again puts the wheel back.
-        assert!(pump(&mut h, &key_press(Key::Character("s".into())), sup));
-        assert!(
-            h.chrome.borrow().wheel_summon().is_none(),
-            "Super+S toggles the summon off"
-        );
-    }
-
-    /// Super+S with no pointer still summons: a headless or first-frame
-    /// session has no `last_cursor`, and treating that as "nowhere" made
-    /// the chord a no-op the VM check could not distinguish from a miss.
-    fn super_s_without_a_pointer_summons_to_the_display_centre() {
-        let mut h = build_harness();
-        let sup = Modifiers::from(ModifiersState::SUPER);
-        assert!(
-            h.host.pointer_position().is_none(),
-            "the fixture has not seen a cursor"
-        );
-        assert!(
-            pump(&mut h, &key_press(Key::Character("s".into())), sup),
-            "Super+S is handled without a pointer"
-        );
-        let at = h
-            .chrome
-            .borrow()
-            .wheel_summon()
-            .expect("Super+S summons even before a cursor has moved");
-        let centre = h.host.rect.center();
-        assert!(
-            (at.x - centre.x).abs() < 1.0 && (at.y - centre.y).abs() < 1.0,
-            "no-pointer summon lands at the display centre, got {at:?} expected {centre:?}"
-        );
-        assert!(h.host.wheel_summoned());
-    }
-
+fn super_chords_open_their_surfaces_once() {
     fn super_p_opens_the_display_sheet_and_escape_closes_it() {
         let mut h = build_harness();
         let sup = Modifiers::from(ModifiersState::SUPER);
@@ -1376,37 +1314,6 @@ fn super_chords_open_their_surfaces_once_and_escape_dismisses_the_wheel_first() 
         );
     }
 
-    /// Escape dismisses a summoned wheel, and takes priority over the
-    /// rest of the dismissal ladder because it is the most transient
-    /// thing the shell puts up.
-    fn escape_dismisses_a_summoned_wheel_before_anything_else() {
-        let mut h = build_harness();
-        let sup = Modifiers::from(ModifiersState::SUPER);
-        let none = Modifiers::default();
-
-        pump(&mut h, &cursor_moved_at(Point::new(900.0, 400.0)), sup);
-        pump(&mut h, &key_press(Key::Character("s".into())), sup);
-        // Raise an overview too, so the test proves ordering rather
-        // than just "escape closes the only thing open".
-        {
-            let mut st = h.chrome.borrow_mut();
-            st.overlays.overview = true;
-            st.bump();
-        }
-
-        assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Escape)), none));
-        assert!(
-            h.chrome.borrow().wheel_summon().is_none(),
-            "Escape sends the wheel back to its dock"
-        );
-        assert!(
-            h.chrome.borrow().overlays.overview,
-            "and stops there — the overview behind it is untouched"
-        );
-    }
-
-    super_s_summons_the_wheel_to_the_pointer_and_toggles_back();
-    super_s_without_a_pointer_summons_to_the_display_centre();
     super_p_opens_the_display_sheet_and_escape_closes_it();
     super_l_requests_the_compositor_lock_once();
     typed_session_actions_run_through_the_power_flyouts_executor();
@@ -1414,7 +1321,6 @@ fn super_chords_open_their_surfaces_once_and_escape_dismisses_the_wheel_first() 
     super_shift_h_opens_the_full_history_explorer_directly();
     super_shift_r_opens_recording_setup_then_saves_an_armed_replay();
     super_shift_p_opens_pip_directly_without_toggling_projection();
-    escape_dismisses_a_summoned_wheel_before_anything_else();
 }
 
 #[test]
@@ -1536,7 +1442,6 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
         h.host.shortcut_guide_focus = Some(ShortcutGuideFocus::Done);
         {
             let mut state = h.chrome.borrow_mut();
-            state.set_wheel_summon(Some(Point::new(600.0, 400.0)));
             state.overlays.shortcut_help = true;
             state.overlays.overview = true;
             state.overlays.quick_settings = true;
@@ -1560,7 +1465,6 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
         assert!(!h.host.palette_visible);
         assert!(h.host.shortcut_guide_focus.is_none());
         let state = h.chrome.borrow();
-        assert!(state.wheel_summon().is_none());
         assert!(!state.overlays.shortcut_help);
         assert!(!state.overlays.overview);
         assert!(!state.overlays.quick_settings);
@@ -1697,6 +1601,7 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
         let (reply, _parked) = tokio::sync::oneshot::channel();
         pickers.spawn(crate::portal::FilePickerRequest {
             caller: crate::portal::PortalCaller::new(workspace, "org.tilo.audit"),
+            parent_window: None,
             title: "Save document".to_string(),
             save: true,
             directory: false,
@@ -1939,6 +1844,7 @@ fn a_save_over_an_existing_file_asks_and_its_semantic_replace_answers() {
     let (reply, mut received) = tokio::sync::oneshot::channel();
     pickers.spawn(crate::portal::FilePickerRequest {
         caller: crate::portal::PortalCaller::new(workspace, "so.tilo.canvas"),
+        parent_window: None,
         title: "Export a picture".to_string(),
         save: true,
         directory: false,
@@ -2388,7 +2294,7 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
             )
         });
         assert_eq!(hit.id, "so.tilo.zzyzx");
-        assert_eq!(hit.title, "Open Zzyzx");
+        assert_eq!(hit.title, "Zzyzx");
 
         env.remove("TILO_APPS_DATA_DIR");
         crate::shell::launcher::invalidate_app_cache();
@@ -4226,4 +4132,157 @@ fn onboarding_semantic_create_finishes_only_after_the_normal_minter_returns() {
     );
     assert!(h.host.onboarding.as_ref().unwrap().flow().is_done());
     assert!(ticket().unwrap().is_some());
+}
+
+/// The strip switcher end to end through the host: Super+S opens it for the
+/// keyboard, its rows create and rename strips through the model's own
+/// commands, switch strips, add a workspace and go back to another, and
+/// Escape closes it.
+#[test]
+fn the_strip_switcher_names_strips_and_switches_strips_and_workspaces() {
+    use super::strip_switcher::Row;
+    let mut h = build_harness();
+    let doc = AutoCommit::new();
+    let sup = Modifiers::from(ModifiersState::SUPER);
+    let none = Modifiers::default();
+    let press = |h: &mut Harness, key: Key| pump(h, &key_press(key), none);
+    let type_text = |h: &mut Harness, text: &str| {
+        for c in text.chars() {
+            pump(h, &key_press(Key::Character(c.to_string().into())), none);
+        }
+    };
+    let strips = |h: &Harness| -> Vec<String> {
+        h.chrome
+            .borrow()
+            .tree()
+            .desktop
+            .active_workspace()
+            .map(|w| w.strips.iter().map(|s| s.name.clone()).collect())
+            .unwrap_or_default()
+    };
+    let focused = |h: &Harness| h.chrome.borrow().strip_focus().1;
+    h.host.update(&doc, &automerge::ROOT);
+    assert_eq!(strips(&h), ["Main"]);
+
+    // Super+S, then the pointer on "New strip".
+    assert!(pump(&mut h, &key_press(Key::Character("s".into())), sup));
+    assert!(h.chrome.borrow().strip_switcher_open(), "Super+S opens it");
+    assert!(h.host.strip_switcher_takes_keys());
+    let new_strip = h
+        .host
+        .strip_switcher_for_tests()
+        .layout()
+        .row_rect(Row::NewStrip)
+        .expect("a New strip row");
+    pump(&mut h, &cursor_moved_at(new_strip.center()), none);
+    assert!(pump(&mut h, &ui::synthetic_input::mouse_press(), none));
+    pump(&mut h, &ui::synthetic_input::mouse_release(), none);
+    type_text(&mut h, "Games");
+    press(&mut h, Key::Named(NamedKey::Enter));
+    assert_eq!(strips(&h), ["Main", "Games"], "a named strip at the end");
+    assert_eq!(focused(&h), 1, "and it has focus");
+
+    // F2 on the focused strip renames it; typing replaces the old name.
+    pump(&mut h, &key_press(Key::Character("s".into())), sup);
+    h.host.update(&doc, &automerge::ROOT);
+    press(&mut h, Key::Named(NamedKey::ArrowUp));
+    press(&mut h, Key::Named(NamedKey::F2));
+    type_text(&mut h, "Studio");
+    press(&mut h, Key::Named(NamedKey::Enter));
+    assert_eq!(strips(&h), ["Studio", "Games"], "strip 1 renamed");
+    assert!(
+        !h.chrome.borrow().strip_switcher_open(),
+        "a keyboard choice closes it"
+    );
+
+    // Arrows and Enter switch strips: up from Games to Studio.
+    pump(&mut h, &key_press(Key::Character("s".into())), sup);
+    press(&mut h, Key::Named(NamedKey::ArrowUp));
+    press(&mut h, Key::Named(NamedKey::Enter));
+    assert_eq!(focused(&h), 0);
+    assert!(!h.chrome.borrow().strip_switcher_open());
+
+    // The last row adds a workspace and shows it; the first workspace row
+    // goes back.
+    let first = h.chrome.borrow().tree().desktop.active;
+    let before = h.chrome.borrow().tree().desktop.workspaces.len();
+    pump(&mut h, &key_press(Key::Character("s".into())), sup);
+    press(&mut h, Key::Named(NamedKey::End));
+    press(&mut h, Key::Named(NamedKey::Enter));
+    let workspaces = h.chrome.borrow().tree().desktop.workspaces.len();
+    assert_eq!(workspaces, before + 1, "one workspace more");
+    assert_ne!(h.chrome.borrow().tree().desktop.active, first);
+    h.host.update(&doc, &automerge::ROOT);
+    pump(&mut h, &key_press(Key::Character("s".into())), sup);
+    h.host.update(&doc, &automerge::ROOT);
+    let row = h
+        .host
+        .strip_switcher_for_tests()
+        .layout()
+        .row_rect(Row::Workspace(
+            h.chrome
+                .borrow()
+                .tree()
+                .desktop
+                .workspaces
+                .iter()
+                .position(|w| w.id == first)
+                .expect("the first workspace is listed"),
+        ))
+        .expect("the first workspace's row");
+    pump(&mut h, &cursor_moved_at(row.center()), none);
+    pump(&mut h, &ui::synthetic_input::mouse_press(), none);
+    pump(&mut h, &ui::synthetic_input::mouse_release(), none);
+    assert_eq!(h.chrome.borrow().tree().desktop.active, first);
+
+    // Escape closes it.
+    if !h.chrome.borrow().strip_switcher_open() {
+        pump(&mut h, &key_press(Key::Character("s".into())), sup);
+    }
+    press(&mut h, Key::Named(NamedKey::Escape));
+    assert!(!h.chrome.borrow().strip_switcher_open());
+    assert!(!h.host.strip_switcher_takes_keys());
+}
+
+/// A pointer that slows to a stop on the strip ribbon opens the strip
+/// switcher's card; one that only sweeps past the edge does not.
+#[test]
+fn the_strip_switcher_opens_when_the_pointer_comes_to_rest_on_the_ribbon() {
+    let mut h = build_harness();
+    let doc = AutoCommit::new();
+    let none = Modifiers::default();
+    h.host.update(&doc, &automerge::ROOT);
+    let zone = h.host.strip_switcher_zone();
+    assert!(
+        zone.area() > 0.0,
+        "the ribbon offers the switcher: {zone:?}"
+    );
+    let y = zone.center().y;
+    let x1 = zone.x1 - 2.0;
+    for x in [
+        x1 - 400.0,
+        x1 - 250.0,
+        x1 - 120.0,
+        x1 - 50.0,
+        x1 - 18.0,
+        x1 - 6.0,
+        x1 - 2.0,
+        x1,
+    ] {
+        pump(&mut h, &cursor_moved_at(Point::new(x, y)), none);
+        std::thread::sleep(std::time::Duration::from_millis(12));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(80));
+    h.host.update(&doc, &automerge::ROOT);
+    assert!(
+        h.chrome.borrow().strip_switcher_open(),
+        "resting on the ribbon opens the card"
+    );
+    // Leaving it closes it.
+    pump(
+        &mut h,
+        &cursor_moved_at(Point::new(zone.x0 - 600.0, y)),
+        none,
+    );
+    assert!(!h.chrome.borrow().strip_switcher_open());
 }

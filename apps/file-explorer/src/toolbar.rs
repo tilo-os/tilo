@@ -82,6 +82,8 @@ struct Context {
 #[derive(Default)]
 struct Published {
     up: Cell<Option<Rect>>,
+    /// The path bar's segments and the folders they lead to, as painted.
+    crumbs: RefCell<Vec<(Rect, std::path::PathBuf)>>,
     view_menu: Cell<Option<Rect>>,
     sort_menu: Cell<Option<Rect>>,
     area: Cell<Rect>,
@@ -177,6 +179,17 @@ impl ToolbarHandle {
 
     /// The Up nav button's on-screen rect, so a drag can be dropped on it to
     /// move the carried items into the parent directory.
+    /// The path bar segment at `point` and the folder it leads to.
+    pub fn crumb_at(&self, point: vello::kurbo::Point) -> Option<(std::path::PathBuf, Rect)> {
+        self.0
+            .published
+            .crumbs
+            .borrow()
+            .iter()
+            .find(|(rect, _)| rect.contains(point))
+            .map(|(rect, path)| (path.clone(), *rect))
+    }
+
     pub fn up_button_rect(&self) -> Option<Rect> {
         self.0.published.up.get()
     }
@@ -503,6 +516,11 @@ impl Widget for FileToolbar {
             c.draw(scene, transform, tr, theme, presence);
         }
         self.path_bar.draw(scene, transform, tr, theme, presence);
+        self.controls
+            .shared
+            .published
+            .crumbs
+            .replace(self.path_bar.crumb_targets());
     }
 
     fn draw_overlay(

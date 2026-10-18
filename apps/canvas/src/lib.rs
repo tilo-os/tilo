@@ -123,6 +123,7 @@ impl ResourceApp for App {
         });
         let window = Box::new(
             NavShell::new()
+                .content_kind(ui::widget::ContentKind::Document)
                 .with_id("canvas-shell")
                 .with_inspector_state(&inspector_open)
                 .content(work)

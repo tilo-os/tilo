@@ -92,6 +92,10 @@ struct Desk {
 
 impl Desk {
     fn new(fixture: &str) -> Self {
+        Self::laid_out(fixture, tree())
+    }
+
+    fn laid_out(fixture: &str, tree: WorkspaceTree) -> Self {
         let mut outputs = output_fixture(fixture).expect("fixture");
         for (output, (connector, make, model, serial)) in outputs.iter_mut().zip([PANEL, MONITOR]) {
             output.identity = OutputIdentity {
@@ -102,7 +106,7 @@ impl Desk {
                 physical_mm: (0, 0),
             };
         }
-        let mut fb = FrameBuilder::with_tree(tree(), combined_geometry(&outputs));
+        let mut fb = FrameBuilder::with_tree(tree, combined_geometry(&outputs));
         fb.set_output_geometry(output_geometry(&outputs));
         let mut desk = Self { fb, outputs };
         desk.settle();
@@ -188,6 +192,10 @@ fn the_fixture_puts_the_desktop_centre_on_no_panel_row() {
 }
 
 /// Volume and brightness keys: the readout comes up on the display in use.
+// USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
+// brightness etc. should in general be raised on the correct (?) screen(s)…
+// in consistent positions… also how to handle brightness controls on
+// multiple screens"
 #[test]
 fn hardware_key_readouts_open_on_the_focused_display() {
     let mut desk = Desk::new("laptop-beside-1080p");
@@ -206,6 +214,10 @@ fn hardware_key_readouts_open_on_the_focused_display() {
 
 /// Flyouts and panels: the power menu, Quick Settings, the window switcher
 /// and the tab menu.
+// USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
+// brightness etc. should in general be raised on the correct (?) screen(s)…
+// in consistent positions… also how to handle brightness controls on
+// multiple screens"
 #[test]
 fn menus_and_panels_open_on_the_focused_display() {
     let mut desk = Desk::new("laptop-beside-1080p");
@@ -246,6 +258,10 @@ fn menus_and_panels_open_on_the_focused_display() {
 }
 
 /// Search, the workspace sheet and the strip indicators.
+// USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
+// brightness etc. should in general be raised on the correct (?) screen(s)…
+// in consistent positions… also how to handle brightness controls on
+// multiple screens"
 #[test]
 fn search_and_sheets_open_on_the_focused_display() {
     let mut desk = Desk::new("laptop-beside-1080p");
@@ -269,25 +285,162 @@ fn search_and_sheets_open_on_the_focused_display() {
     });
 }
 
-/// A file chooser an app asks for opens over the display in use, centred
-/// there rather than on the seam.
-#[test]
-fn the_file_chooser_opens_on_the_focused_display() {
+/// The app with a window on each display, for the chooser cases.
+const AUDIT: &str = "org.tilo.audit";
+
+/// [`tree`], with both windows the audit app's.
+fn app_tree() -> WorkspaceTree {
+    let mut tree = tree();
+    for group in &mut tree.desktop.workspaces[0].strips[0].window_groups {
+        let surface_id = tab_of(group.id);
+        group.tabs[0].tile = TileContent::Foreign {
+            app_id: AUDIT.into(),
+            surface_id,
+        };
+    }
+    tree
+}
+
+/// A file chooser `AUDIT` asks for, scoped to `folder`.
+fn ask(
+    pickers: &crate::portal::FilePickerQueue,
+    folder: &std::path::Path,
+    current_name: Option<&str>,
+) -> tokio::sync::oneshot::Receiver<Option<Vec<std::path::PathBuf>>> {
     use crate::portal::FilePickerSpawner as _;
+    let (reply, answer) = tokio::sync::oneshot::channel();
+    pickers.spawn(crate::portal::FilePickerRequest {
+        caller: crate::portal::PortalCaller::new(WorkspaceId(7), AUDIT),
+        parent_window: Some("wayland:audit".into()),
+        title: "Open a document".to_string(),
+        save: current_name.is_some(),
+        directory: false,
+        writable_directory: false,
+        multiple: false,
+        accept_label: None,
+        current_name: current_name.map(str::to_string),
+        filters: Vec::new(),
+        scope: Some(crate::portal::PickerScope {
+            initial_dir: folder.to_path_buf(),
+            roots: vec![folder.to_path_buf()],
+            home: None,
+        }),
+        reply,
+    });
+    answer
+}
+
+impl Desk {
+    fn with_queue(tree: WorkspaceTree) -> (Self, crate::portal::FilePickerQueue) {
+        let mut desk = Self::laid_out("laptop-beside-1080p", tree);
+        let pickers = crate::portal::FilePickerQueue::new();
+        desk.fb.host_mut().set_portal_queues(
+            crate::portal::PromptQueueHandle::new(crate::portal::PromptResolver::AutoAllow),
+            pickers.clone(),
+        );
+        (desk, pickers)
+    }
+
+    fn sheet(&self) -> Rect {
+        ui::widget::Widget::get_rect(self.fb.host().file_picker().expect("the chooser is up"))
+    }
+
+    fn click(&mut self, at: Point) {
+        self.dispatch(&ui::synthetic_input::cursor_moved(at.x, at.y));
+        self.dispatch(&ui::synthetic_input::mouse_press());
+        self.dispatch(&ui::synthetic_input::mouse_release());
+        self.settle();
+    }
+
+    fn type_text(&mut self, text: &str) {
+        for ch in text.chars() {
+            let key = winit::keyboard::Key::Character(ch.to_string().into());
+            for pressed in [true, false] {
+                self.dispatch(&crate::shell::test_control::keyboard_input_event(
+                    &key, pressed,
+                ));
+            }
+        }
+        self.settle();
+    }
+}
+
+/// A file chooser is a sheet on the window that asked, on whichever
+/// display that window is: hung from the top of the window's app area,
+/// centred on it, and wholly on that display.
+#[test]
+fn the_file_chooser_is_a_sheet_on_the_window_that_asked() {
+    use crate::shell::file_picker_overlay::PickerPlace;
 
     let folder = tempfile::tempdir().expect("tempdir");
-    let mut desk = Desk::new("laptop-beside-1080p");
-    let pickers = crate::portal::FilePickerQueue::new();
-    desk.fb.host_mut().set_portal_queues(
-        crate::portal::PromptQueueHandle::new(crate::portal::PromptResolver::AutoAllow),
-        pickers.clone(),
-    );
+    let (mut desk, pickers) = Desk::with_queue(app_tree());
     let mut parked = Vec::new();
     desk.on_each_display(|desk, display, name| {
-        let (reply, answer) = tokio::sync::oneshot::channel();
-        parked.push(answer);
+        parked.push(ask(&pickers, folder.path(), None));
+        assert!(desk.fb.host_mut().pump_file_picker());
+        desk.settle();
+        let PickerPlace::Window {
+            window,
+            content,
+            focused,
+            ..
+        } = desk.fb.host().file_picker_place()
+        else {
+            panic!("the chooser on {name} is a sheet on the window that asked");
+        };
+        assert!(focused, "the asking window is the one in use");
+        assert!(
+            display.contains(content.center()),
+            "the sheet is on {name}'s window"
+        );
+        let sheet = desk.sheet();
+        assert_on(display, sheet, "the file chooser", name);
+        assert!(
+            (sheet.center().x - content.center().x).abs() < 1.0,
+            "the sheet {sheet:?} centres on its window {content:?} on {name}"
+        );
+        assert!(
+            (sheet.y0 - content.y0).abs() < 1.0 && window.contains(sheet.origin()),
+            "the sheet {sheet:?} hangs from the top of its window {content:?} on {name}"
+        );
+        desk.fb
+            .host_mut()
+            .file_picker_mut()
+            .expect("the chooser is up")
+            .click_cancel();
+        let _ = desk.fb.host_mut().pump_file_picker();
+        desk.settle();
+        assert!(desk.fb.host().file_picker().is_none(), "cancel closes it");
+    });
+    assert_eq!(parked.len(), 3, "each request kept its reply open while up");
+}
+
+/// With two windows of one app, the sheet goes on the window the request
+/// names by its exported handle, not on the one in use; a handle the app
+/// did not export for one of its own windows names nothing.
+#[test]
+fn the_file_chooser_sheet_goes_on_the_window_its_handle_names() {
+    use crate::portal::FilePickerSpawner as _;
+    use crate::shell::file_picker_overlay::PickerPlace;
+
+    let folder = tempfile::tempdir().expect("tempdir");
+    let (mut desk, pickers) = Desk::with_queue(app_tree());
+    let _ = desk
+        .fb
+        .host_mut()
+        .focus_window_on_strip(STRIP, ON_MONITOR, tab_of(ON_MONITOR));
+    desk.settle();
+    let panel_window = crate::compositor::window_handles::export_for_tests(tab_of(ON_PANEL));
+    let elsewhere = crate::compositor::window_handles::export_for_tests(0xdead_0000_0001);
+    for (parent_window, display, what) in [
+        (format!("wayland:{panel_window}"), 0, "the named window"),
+        (format!("wayland:{elsewhere}"), 1, "the window in use"),
+        ("x11:4a0000c".to_string(), 1, "the window in use"),
+    ] {
+        let (reply, _answer) = tokio::sync::oneshot::channel();
         pickers.spawn(crate::portal::FilePickerRequest {
-            caller: crate::portal::PortalCaller::new(WorkspaceId(7), "org.tilo.audit"),
+            caller: crate::portal::PortalCaller::new(WorkspaceId(7), AUDIT),
+            parent_window: Some(parent_window.clone()),
             title: "Open a document".to_string(),
             save: false,
             directory: false,
@@ -305,12 +458,12 @@ fn the_file_chooser_opens_on_the_focused_display() {
         });
         assert!(desk.fb.host_mut().pump_file_picker());
         desk.settle();
-        let picker =
-            ui::widget::Widget::get_rect(desk.fb.host().file_picker().expect("the chooser is up"));
-        assert_on(display, picker, "the file chooser", name);
+        let PickerPlace::Window { content, .. } = desk.fb.host().file_picker_place() else {
+            panic!("{parent_window} asks with a window");
+        };
         assert!(
-            (picker.center().x - display.center().x).abs() < 1.0,
-            "the chooser {picker:?} centres on {name}"
+            desk.display(display).contains(content.center()),
+            "{parent_window}: the sheet is on {what}"
         );
         desk.fb
             .host_mut()
@@ -319,9 +472,94 @@ fn the_file_chooser_opens_on_the_focused_display() {
             .click_cancel();
         let _ = desk.fb.host_mut().pump_file_picker();
         desk.settle();
-        assert!(desk.fb.host().file_picker().is_none(), "cancel closes it");
+    }
+    crate::compositor::window_handles::forget(tab_of(ON_PANEL));
+    crate::compositor::window_handles::forget(0xdead_0000_0001);
+}
+
+/// The sheet closes only its own window to input: the other window takes
+/// a click and the keys that follow, the sheet's name field stays as it
+/// was, and a click back on the waiting window gives the sheet the keys.
+/// Closing the asking window answers the request as cancelled.
+#[test]
+fn the_file_chooser_sheet_blocks_only_its_own_window() {
+    use crate::shell::file_picker_overlay::PickerPlace;
+
+    let folder = tempfile::tempdir().expect("tempdir");
+    let (mut desk, pickers) = Desk::with_queue(app_tree());
+    let _ = desk
+        .fb
+        .host_mut()
+        .focus_window_on_strip(STRIP, ON_MONITOR, tab_of(ON_MONITOR));
+    desk.settle();
+    let mut answer = ask(&pickers, folder.path(), Some("draft"));
+    assert!(desk.fb.host_mut().pump_file_picker());
+    desk.settle();
+    let filename = |desk: &Desk| {
+        desk.fb
+            .host()
+            .file_picker()
+            .map(|picker| picker.filename().to_string())
+    };
+    desk.type_text("a");
+    assert_eq!(
+        filename(&desk).as_deref(),
+        Some("a"),
+        "the sheet on the focused window takes the keys"
+    );
+
+    let other = desk.display(0).center();
+    desk.click(other);
+    assert_eq!(
+        desk.focused_display(),
+        Some(desk.outputs[0].id.0),
+        "the click reached the other window"
+    );
+    assert!(matches!(
+        desk.fb.host().file_picker_place(),
+        PickerPlace::Window { focused: false, .. }
+    ));
+    desk.type_text("b");
+    assert_eq!(
+        filename(&desk).as_deref(),
+        Some("a"),
+        "keys for the other window never reach the sheet"
+    );
+
+    let PickerPlace::Window { window, .. } = desk.fb.host().file_picker_place() else {
+        panic!("the sheet stays on its window");
+    };
+    let sheet = desk.sheet();
+    let beside_the_sheet = Point::new(window.center().x, f64::midpoint(sheet.y1, window.y1));
+    assert!(
+        window.contains(beside_the_sheet) && !sheet.contains(beside_the_sheet),
+        "the waiting window shows below its sheet"
+    );
+    desk.click(beside_the_sheet);
+    assert!(matches!(
+        desk.fb.host().file_picker_place(),
+        PickerPlace::Window { focused: true, .. }
+    ));
+    desk.type_text("c");
+    assert_eq!(
+        filename(&desk).as_deref(),
+        Some("ac"),
+        "a click on the waiting window gives its sheet the keys again"
+    );
+
+    desk.fb.with_chrome(|chrome| {
+        let mut tree = chrome.tree_mut();
+        tree.desktop.workspaces[0].strips[0]
+            .window_groups
+            .retain(|group| group.id != ON_MONITOR);
     });
-    assert_eq!(parked.len(), 3, "each request kept its reply open while up");
+    desk.fb.host_mut().pump_file_picker();
+    assert!(desk.fb.host().file_picker().is_none());
+    assert_eq!(
+        answer.try_recv().ok(),
+        Some(None),
+        "closing the asking window cancels its chooser"
+    );
 }
 
 /// A finger put down on the other display makes it the display in use, as
@@ -381,4 +619,312 @@ fn the_on_screen_keyboard_docks_on_its_fields_display() {
     }
     desk.fb.set_osk_surface(None, None, None, false);
     crate::shell::foreign::store().forget(SURFACE);
+}
+
+/// A permission prompt opens across the top of the window of the app that
+/// asks, on that window's display, not across the top of the other one.
+#[test]
+fn a_permission_prompt_opens_over_the_window_that_asks() {
+    let mut desk = Desk::new("laptop-beside-1080p");
+    desk.fb.with_chrome(|chrome| {
+        let mut tree = chrome.tree_mut();
+        let group = tree.desktop.workspaces[0].strips[0]
+            .window_groups
+            .iter_mut()
+            .find(|g| g.id == ON_MONITOR)
+            .expect("the monitor's window");
+        group.tabs[0].tile = TileContent::LocalApp {
+            app_id: "org.tilo.audit".into(),
+            label: "Audit".into(),
+            note: String::new(),
+        };
+    });
+    // The person works on the panel; the monitor's app asks.
+    let _ = desk
+        .fb
+        .host_mut()
+        .focus_window_on_strip(STRIP, ON_PANEL, tab_of(ON_PANEL));
+    desk.settle();
+    let (reply, _answer) = tokio::sync::oneshot::channel();
+    desk.fb.with_chrome(|chrome| {
+        chrome
+            .pending_grants
+            .push_back(crate::shell::chrome_state::PendingPrompt::with_reply(
+                "org.tilo.audit".into(),
+                crate::shell::state::Capability::HostShell {
+                    scope: crate::shell::state::GRANT_ALWAYS,
+                },
+                reply,
+            ));
+    });
+    desk.fb.host_mut().pump_permission_prompt();
+    desk.settle();
+    let prompt = desk
+        .fb
+        .host()
+        .trusted_frame_targets(&ui::theme::Theme::dark())
+        .into_iter()
+        .find(|(name, _)| *name == crate::shell::trusted_ui::PERMISSION_PROMPT_TARGET)
+        .map(|(_, band)| band)
+        .expect("the prompt is up");
+    let window = desk
+        .fb
+        .host_mut()
+        .group_at_for_tests(STRIP, 1)
+        .map(|group| ui::widget::Widget::get_rect(&*group))
+        .expect("the asking window is laid out");
+    assert_on(
+        desk.display(1),
+        prompt,
+        "the permission prompt",
+        "the monitor",
+    );
+    assert!(
+        prompt.y0 >= window.y0 - 8.0 && prompt.y0 < window.y0 + 120.0,
+        "the prompt {prompt:?} sits at the top of the asking window {window:?}"
+    );
+}
+
+impl Desk {
+    /// Work on the window on display `index`, with one frame painted.
+    fn work_on(&mut self, index: usize) {
+        let group = if index == 0 { ON_PANEL } else { ON_MONITOR };
+        let _ = self
+            .fb
+            .host_mut()
+            .focus_window_on_strip(STRIP, group, tab_of(group));
+        self.fb.relayout();
+        let _ = self.fb.paint();
+        assert_eq!(
+            self.focused_display(),
+            Some(self.outputs[index].id.0),
+            "working on display {index}"
+        );
+    }
+
+    fn paint_once(&mut self) {
+        self.fb.relayout();
+        let _ = self.fb.paint();
+    }
+}
+
+// USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
+// brightness etc. should in general be raised on the correct (?) screen(s)…
+// in consistent positions… also how to handle brightness controls on
+// multiple screens" — a feedback pill
+// never jumps displays while it is up: it fades where it is, and the next
+// press shows it on the display the person moved to.
+#[test]
+fn a_readout_never_jumps_displays_while_it_is_up() {
+    use crate::shell::osd::Osd;
+    let mut desk = Desk::new("laptop-beside-1080p");
+    let (panel, monitor) = (desk.display(0), desk.display(1));
+    desk.work_on(0);
+    desk.fb
+        .with_chrome(|chrome| chrome.show_osd(Osd::volume(0.4, false)));
+    desk.paint_once();
+    let pill = desk.fb.host().osd_rect().expect("the readout is painted");
+    assert_on(panel, pill, "the volume readout", "the panel");
+
+    desk.work_on(1);
+    let pill = desk.fb.host().osd_rect().expect("the readout is still up");
+    assert_on(panel, pill, "the readout raised on the panel", "the panel");
+
+    desk.fb
+        .with_chrome(|chrome| chrome.show_osd(Osd::volume(0.45, false)));
+    desk.paint_once();
+    let pill = desk.fb.host().osd_rect().expect("the readout is painted");
+    assert_on(monitor, pill, "the next press's readout", "the monitor");
+}
+
+/// What the brightness keys record: which display was set to what.
+#[derive(Default)]
+struct BrightnessRecorder {
+    calls: std::cell::RefCell<Vec<String>>,
+}
+
+impl crate::shell::quick_settings::actions::QsActions for BrightnessRecorder {
+    fn set_brightness(&self, pct: f32) -> Result<(), String> {
+        self.calls.borrow_mut().push(format!("brightness={pct:.0}"));
+        Ok(())
+    }
+    fn set_display_brightness(&self, connector: &str, pct: f32) -> Result<(), String> {
+        self.calls
+            .borrow_mut()
+            .push(format!("{connector}={pct:.0}"));
+        Ok(())
+    }
+    fn set_volume(&self, _: f32) -> Result<(), String> {
+        Ok(())
+    }
+    fn set_wifi(&self, _: bool) -> Result<(), String> {
+        Ok(())
+    }
+    fn set_bluetooth(&self, _: bool) -> Result<(), String> {
+        Ok(())
+    }
+    fn connect_wifi(&self, _: &str, _: Option<&str>) -> Result<(), String> {
+        Ok(())
+    }
+    fn set_power_profile(&self, _: os_actions::PowerProfile) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+fn dimmable() -> Vec<crate::shell::chrome_state::DisplayBrightness> {
+    vec![
+        crate::shell::chrome_state::DisplayBrightness {
+            connector: PANEL.0.into(),
+            name: "Built-in display".into(),
+            level: 0.5,
+        },
+        crate::shell::chrome_state::DisplayBrightness {
+            connector: MONITOR.0.into(),
+            name: "Test Monitor".into(),
+            level: 0.3,
+        },
+    ]
+}
+
+// USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
+// brightness etc. should in general be raised on the correct (?) screen(s)…
+// in consistent positions… also how to handle brightness controls on
+// multiple screens" — the brightness keys adjust the display the person
+// works on, not the one under the pointer, and the readout there names it.
+#[test]
+fn brightness_keys_adjust_the_focused_display() {
+    use crate::shell::media_keys::{BrightnessKeys, Context, DispatcherAudio, MediaKey, Response};
+    let mut desk = Desk::new("laptop-beside-1080p");
+    let displays = dimmable();
+    for (index, connector, expected) in [(1, MONITOR.0, "DP-1=40"), (0, PANEL.0, "eDP-1=60")] {
+        desk.work_on(index);
+        let focused = desk.fb.host().focused_connector();
+        assert_eq!(
+            focused.as_deref(),
+            Some(connector),
+            "display {index} is in use"
+        );
+        let rec = BrightnessRecorder::default();
+        let (transport_osd, _mailbox) = crate::session_runtime::mailbox(std::sync::Arc::new(|| {}));
+        let response = crate::shell::media_keys::apply(
+            MediaKey::BrightnessUp,
+            &Context {
+                actions: &rec,
+                audio: &DispatcherAudio(&rec),
+                status: None,
+                transport_osd: &transport_osd,
+                airplane_mode: false,
+                brightness: BrightnessKeys {
+                    displays: &displays,
+                    focused: focused.as_deref(),
+                    all: false,
+                },
+            },
+        );
+        assert_eq!(*rec.calls.borrow(), [expected]);
+        let Some(Response::Osd(osd)) = response else {
+            panic!("a readout, not {response:?}");
+        };
+        let name = &displays
+            .iter()
+            .find(|d| d.connector == connector)
+            .expect("dimmable")
+            .name;
+        assert!(
+            osd.caption().ends_with(name.as_str()),
+            "with two dimmable displays the readout names {name}: {}",
+            osd.caption()
+        );
+        desk.fb.with_chrome(|chrome| chrome.show_osd(osd));
+        desk.paint_once();
+        let pill = desk.fb.host().osd_rect().expect("the readout is painted");
+        assert_on(
+            desk.display(index),
+            pill,
+            "the brightness readout",
+            "the display in use",
+        );
+    }
+}
+
+// USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
+// brightness etc. should in general be raised on the correct (?) screen(s)…
+// in consistent positions… also how to handle brightness controls on
+// multiple screens" — Quick Settings shows one slider per dimmable display,
+// the display in use first.
+#[test]
+fn quick_settings_lists_the_focused_display_first() {
+    use crate::shell::quick_settings::refresh::FieldReading;
+    let mut desk = Desk::new("laptop-beside-1080p");
+    for (index, first) in [(1, MONITOR.0), (0, PANEL.0)] {
+        desk.work_on(index);
+        let chrome = desk.fb.chrome_handle();
+        {
+            let mut st = chrome.borrow_mut();
+            desk.fb
+                .host()
+                .apply_qs_field_reading(&mut st, FieldReading::Brightness(None, dimmable()));
+            let order: Vec<&str> = st
+                .quick_settings
+                .displays
+                .iter()
+                .map(|display| display.connector.as_str())
+                .collect();
+            assert_eq!(
+                order.first().copied(),
+                Some(first),
+                "display {index} first: {order:?}"
+            );
+            assert_eq!(order.len(), 2, "one slider per dimmable display");
+        }
+    }
+}
+
+// USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
+// brightness etc. should in general be raised on the correct (?) screen(s)…
+// in consistent positions… also how to handle brightness controls on
+// multiple screens" — the state of the whole machine is on every display:
+// a critical banner repeats on the display not in use, and a ringing call
+// keeps its card on the display in use and edges the other.
+#[test]
+fn machine_wide_banners_show_on_every_display_and_a_call_edges_the_others() {
+    use tilo_desktop::notifications::{Addressed, Notification};
+    let mut desk = Desk::new("laptop-beside-1080p");
+    let (panel, monitor) = (desk.display(0), desk.display(1));
+    desk.work_on(0);
+    desk.fb.with_chrome(|chrome| {
+        chrome.push_notification_full(Notification::new("Build finished", "main is green"));
+    });
+    desk.paint_once();
+    assert!(
+        desk.fb.host().machine_banner_rects().is_empty(),
+        "an ordinary banner stays on the display in use"
+    );
+    desk.fb.with_chrome(|chrome| {
+        chrome.push_notification_full(
+            Notification::new("Battery critical", "Plug in now").machine_wide(),
+        );
+    });
+    desk.paint_once();
+    let banners = desk.fb.host().machine_banner_rects().to_vec();
+    assert_eq!(banners.len(), 1, "repeated once, on the other display");
+    assert_on(monitor, banners[0], "the critical banner", "the monitor");
+    assert!(desk.fb.host().call_edge_rects().is_empty(), "no call rings");
+
+    desk.fb.with_chrome(|chrome| {
+        chrome.push_notification_full(
+            Notification::new("Jonas is calling", "")
+                .with_from("Jonas", "jonas")
+                .with_addressed(Addressed::IncomingCall),
+        );
+    });
+    desk.work_on(1);
+    assert_eq!(
+        desk.fb.host().call_edge_rects(),
+        [panel],
+        "the display not in use gets the quiet edge"
+    );
+    let banners = desk.fb.host().machine_banner_rects().to_vec();
+    assert_eq!(banners.len(), 1);
+    assert_on(panel, banners[0], "the critical banner", "the panel");
 }

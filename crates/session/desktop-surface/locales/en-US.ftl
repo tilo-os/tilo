@@ -1,7 +1,6 @@
 # Top bar
 continuity-dismiss = Dismiss
 topbar-workspace-fallback = Workspace
-topbar-calendar-none = No calendar connected
 topbar-sharing-agent-controls = Agent in control: { $name }
 topbar-sharing-agent-viewing = Agent watching: { $name }
 topbar-sharing-person-controls = In control: { $name }
@@ -17,10 +16,17 @@ topbar-watching-description = { $count } { $count ->
        *[other] people
     } watching without joining
 topbar-tilo-menu = Tilo menu
-topbar-show-clock = Show clock
-topbar-show-system-monitor = Show system monitor
-topbar-show-calendar = Show calendar
 topbar-open-quick-settings = Open quick settings
+topbar-bell = { $unread ->
+    [0] Notifications
+    [one] Notifications, 1 unread
+   *[other] Notifications, { $unread } unread
+}
+topbar-bell-silenced = { $unread ->
+    [0] Notifications silenced
+    [one] Notifications silenced, 1 unread
+   *[other] Notifications silenced, { $unread } unread
+}
 topbar-show-collaborators = Show collaborators
 topbar-viewer-can-control = can control { $targets }
 topbar-viewer-view-only = view only { $targets }
@@ -32,22 +38,6 @@ topbar-viewer-entry = { $name } ({ $kind ->
 topbar-collaborators-visible = Screen visible to { $viewers }. Show collaborators
 topbar-capture-privacy = Privacy settings for active capture
 topbar-control = Top bar control
-topbar-editor-control = Top bar editor control
-topbar-editor-remove-clock = Remove clock from top bar
-topbar-editor-remove-system-monitor = Remove system monitor from top bar
-topbar-editor-remove-calendar = Remove calendar from top bar
-topbar-editor-add-clock = Add clock to top bar
-topbar-editor-add-system-monitor = Add system monitor to top bar
-topbar-editor-add-calendar = Add calendar to top bar
-topbar-editor-title = Edit top bar
-topbar-editor-hint = Drag to reorder · click Remove
-topbar-widget-clock = Clock
-topbar-widget-system-monitor = System monitor
-topbar-widget-calendar = Calendar
-topbar-editor-remove = Remove
-topbar-editor-add-clock-chip = + Clock
-topbar-editor-add-monitor-chip = + Monitor
-topbar-editor-add-calendar-chip = + Calendar
 topbar-invite = Invite
 topbar-activity-unread = { $headline }  ·  { $count } new
 topbar-clock-resume = Resume
@@ -74,6 +64,8 @@ topbar-strip-go = Go to { $name }, { $count ->
     [one] one person there
    *[other] { $count } people there
 }
+topbar-strip-name = Show strips, now on { $strip }
+topbar-strip-add = Add a strip
 topbar-strips-more-label = +{ $count }
 topbar-strips-more = { $count ->
     [one] One more strip
@@ -93,6 +85,10 @@ profile-name-placeholder = Your name
 profile-name-hint = How everyone here sees you
 profile-section-identity = Your identity
 profile-section-devices = Devices
+profile-section-linked = Linked accounts
+profile-link = Link { $service } account
+profile-unlink = Unlink
+profile-copy = Copy
 
 # Workspace activity
 a11y-shell-workspace-activity = Workspace activity
@@ -507,11 +503,11 @@ desktop-view-replay-activity = Replay workspace activity
 
 ## Desktop window search
 search-provider-desktop-windows = Desktop windows
-search-badge-tab = Tab
-search-badge-window-group = Window group
 search-window-move-tab = Move tab “{ $tab }” to workspace “{ $workspace }”
 search-window-move-tab-detail = From workspace “{ $workspace }”
 search-window-copy-tab = Copy tab “{ $tab }” to workspace “{ $workspace }”
+search-window-move-tab-to = Move “{ $tab }” to another workspace
+search-window-copy-tab-to = Copy “{ $tab }” to another workspace
 search-window-group-untitled = Untitled window
 search-window-close-group = Close window group “{ $group }”
 search-window-close-group-detail = Workspace “{ $workspace }” · strip “{ $strip }” · { $count ->
@@ -520,12 +516,7 @@ search-window-close-group-detail = Workspace “{ $workspace }” · strip “{ 
 }
 search-window-close-tab = Close tab “{ $tab }”
 search-window-close-tab-detail = Workspace “{ $workspace }” · strip “{ $strip }”
-search-window-focus-place = Open in this workspace
-search-window-focus-place-strip = Open in strip “{ $strip }”
-search-window-focus-detail-shared = { $place } · { $count ->
-    [one] 1 tab
-   *[other] { $count } tabs
-}
+search-window-focus-place-strip = Strip “{ $strip }”
 # Words that ask for a window's close or move/copy rows; a search for a
 # window by name only offers going to it. Space-separated, lowercase.
 search-window-verb-close = close quit
@@ -579,7 +570,7 @@ notification-lock-count = { $count ->
     [one] 1 notification
    *[other] { $count } notifications
 }
-notification-dnd-held = { $status } · { $count } held
+notification-more = { $count } more
 notification-stack-a11y = Notifications
 notification-group-system = System
 notification-center-undo = Undo
@@ -1012,11 +1003,6 @@ window-switcher-app-description = This app's windows in this workspace, most rec
 window-switcher-untitled = Untitled window
 window-switcher-caption-paged = { $position } of { $count }
 
-# Workspace wheel
-a11y-shell-wheel = Workspace wheel
-a11y-shell-wheel-switch = Switch to { $workspace }
-a11y-shell-wheel-add = Add a workspace
-
 # Workspace overview
 overview-empty-window = Empty window
 overview-untitled = Untitled
@@ -1099,8 +1085,7 @@ activity-task-direction-close = Back to task
 activity-task-direction-label = Instructions for the agent
 activity-task-direction-placeholder = Describe the change you want the agent to make
 activity-task-direction-observation = Tell the agent what to do differently. It follows your instructions from its next step, and everyone in this workspace can see them.
-activity-task-review-saving = Saving…
-activity-task-review-saved = Saved. Waiting for the agent's response.
+activity-task-review-waiting = Waiting for the agent's response.
 activity-task-review-refused = Couldn't save. Your draft is kept. { $detail }
 
 activity-confirm-waiting = Waiting for your confirmation

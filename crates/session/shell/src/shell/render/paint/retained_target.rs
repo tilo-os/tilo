@@ -650,22 +650,6 @@ impl RetainedGpuTarget {
             shown.record(layer, cache);
             pixels = pixels.saturating_add(whole);
         }
-        match (work.wheel, cache.layers.wheel.as_ref()) {
-            (Some(area), Some(wheel)) => {
-                if !keep_going() {
-                    return Ok(pixels);
-                }
-                shown.forget(Layer::Wheel);
-                if let Some(layers) = self.strip_layers.as_mut() {
-                    layers.size_wheel(&self.device, (wheel.width, wheel.height));
-                }
-                self.render_layer(Layer::Wheel, &wheel.scene, None, Color::TRANSPARENT, policy)?;
-                shown.record(Layer::Wheel, cache);
-                pixels = pixels.saturating_add(area);
-            }
-            // The wheel's texture holds what it shows, or no wheel shows.
-            _ => shown.record(Layer::Wheel, cache),
-        }
         if work.workspace == WorkspaceWork::Unchanged || !keep_going() {
             return Ok(pixels);
         }
@@ -970,12 +954,6 @@ impl RetainedGpuTarget {
                 policy,
             )?;
         }
-        if let (Some(_), Some(wheel)) = (work.wheel, cache.layers.wheel.as_ref()) {
-            if let Some(layers) = self.strip_layers.as_mut() {
-                layers.size_wheel(&self.device, (wheel.width, wheel.height));
-            }
-            self.render_layer(Layer::Wheel, &wheel.scene, None, transparent, policy)?;
-        }
         let panned = || {
             let mut scene = Scene::new();
             strip_layers::append_panned(&mut scene, &cache.layers, &cache.strips);
@@ -1023,7 +1001,6 @@ impl RetainedGpuTarget {
                     encoder: &mut encoder,
                     output: &self.view,
                 },
-                cache.layers.wheel.as_ref(),
                 rect,
             );
         }
@@ -1061,8 +1038,7 @@ impl RetainedGpuTarget {
         rendered.map(|_| ())
     }
 
-    /// Exchange the target's texture with `layer`'s, size included: the
-    /// wheel's texture is the wheel's size, not the output's.
+    /// Exchange the target's texture with `layer`'s, size included.
     fn swap_layer(&mut self, layer: strip_layers::Layer) {
         if let Some(layers) = self.strip_layers.as_mut() {
             let slot = layers.texture_mut(layer);

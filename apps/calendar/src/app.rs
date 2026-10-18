@@ -68,7 +68,7 @@ use crate::sidebar::{Mode as SidebarMode, Sidebar};
 use crate::tasks::{TasksAction, TasksSource, TasksView};
 use crate::timeline_interaction::{
     TIMELINE_SNAP_MIN, TimelineEffect, TimelineInteraction, TimelineRenderEvent,
-    TimelineRenderModel, TimelineSpan,
+    TimelineRenderModel, TimelineSpan, lanes as timeline_lanes,
 };
 #[cfg(test)]
 use crate::timeline_viewport::TIMELINE_MIN_HOUR_H;
@@ -76,6 +76,7 @@ use crate::topbar::{Action as TopbarAction, Topbar};
 
 mod editor;
 mod month_view;
+mod repeat_scope;
 mod sidebar_view;
 mod status;
 
@@ -91,6 +92,14 @@ const NOTES_PLACEHOLDER: &str = "Add notes";
 /// a friendly headline + hint instead of a blank grid.
 const EMPTY_ONBOARDING_TITLE: &str = "No events yet";
 const EMPTY_ONBOARDING_HINT: &str = "Select New event to add your first one.";
+
+/// The zone tests view the calendar from.
+#[cfg(test)]
+pub(crate) const TEST_ZONE: &str = "Europe/Berlin";
+
+/// The most all-day events a week or day stacks above its hours; the last
+/// row counts the rest.
+const MAX_ALL_DAY_ROWS: usize = 3;
 
 /// The hour a working day starts at: the week and day views open on it.
 const WORKING_DAY_START: u8 = 7;
@@ -214,6 +223,15 @@ type NotesEditor = RichTextSurface<RichTextField>;
 
 type SyncWorkerResult = (caldav::SyncResult, SyncOutcome);
 
+/// What the scheduled reminders follow: the document, the hidden calendars
+/// and the hour (the horizon moves on with it).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RemindersBasis {
+    heads: (Vec<ChangeHash>, usize),
+    hidden: Vec<String>,
+    hour: i64,
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent, unrelated flag (demo mode, sidebar state, sync status, form scratch state); grouping them into enums would not express any real invariant between them and would touch every read/write site across this file"
@@ -223,6 +241,8 @@ pub struct CalendarApp {
     today: NaiveDate,
     /// The moment shown as now, when a capture pins it; else the clock's.
     pinned_now: Option<chrono::NaiveDateTime>,
+    /// The zone the views are drawn in and new events are authored in.
+    viewer: crate::shown::Viewer,
     anchor: NaiveDate,
     view: View,
     /// `None` shows every visible collection; a stable local/remote calendar
@@ -280,6 +300,11 @@ pub struct CalendarApp {
     notes_content_h: f64,
     /// The sidebar's overflow menu (export, import).
     sidebar_menu: Popover,
+    /// "Only this event / All future events", asked after a drag on an
+    /// occurrence of a repeating event.
+    repeat_scope_menu: Popover,
+    /// The drag that question is about, until it is answered or dismissed.
+    pending_repeat: Option<repeat_scope::PendingRepeatChange>,
     /// Opens the platform search from the header's search button.
     search_opener: ui::search::SearchOpener,
     /// The month navigator at the bottom of the sidebar.
@@ -376,6 +401,13 @@ pub struct CalendarApp {
     /// What a search hit or an agent's `open` asked to show, shown on the
     /// next sync.
     opens: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+    /// Where reminders are scheduled, in a live window.
+    notifier: Option<std::sync::Arc<dyn ui::notify::Notifier>>,
+    /// What clicked reminders asked to open, taken on the next sync.
+    activations: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    /// What the reminders were last reconciled from, and what was scheduled:
+    /// they are worked out again only when it changes.
+    reminders: Option<(RemindersBasis, Vec<crate::reminders::Reminder>)>,
 
     /// Where the calendar's edits go: the framework's dispatcher, attached
     /// before the first frame.
@@ -437,6 +469,11 @@ impl CalendarApp {
             today,
             anchor: today,
             pinned_now: None,
+            // Tests read the calendar from one zone, whatever the machine's.
+            #[cfg(not(test))]
+            viewer: crate::shown::Viewer::device(),
+            #[cfg(test)]
+            viewer: crate::shown::Viewer::named(TEST_ZONE),
             view: View::Month,
             calendar_filter: None,
             list_sel: None,
@@ -473,6 +510,10 @@ impl CalendarApp {
             sidebar_menu: Popover::new()
                 .with_items(["Export calendar", "Import calendar"])
                 .with_label("Calendar file"),
+            repeat_scope_menu: Popover::new()
+                .with_items(repeat_scope::choices())
+                .with_label(repeat_scope::label()),
+            pending_repeat: None,
             mini_month: DatePicker::new(today)
                 .with_today(today)
                 .navigator()
@@ -512,6 +553,9 @@ impl CalendarApp {
             sync_requested: false,
             sync_reply: None,
             opens: std::rc::Rc::default(),
+            notifier: None,
+            activations: std::sync::Arc::default(),
+            reminders: None,
             dispatcher: None,
             #[cfg(test)]
             last_dispatched: std::cell::RefCell::default(),
@@ -532,6 +576,7 @@ impl CalendarApp {
     pub(crate) fn pin_now(&mut self, now: chrono::NaiveDateTime) {
         let today = now.date();
         self.pinned_now = Some(now);
+        self.viewer = crate::shown::Viewer::named(crate::resource::SHOT_ZONE);
         self.today = today;
         self.anchor = today;
         self.event_popovers = EventPopovers::new(today);
@@ -1309,8 +1354,9 @@ impl CalendarApp {
         dispatcher.submit_now(doc, invoke)
     }
 
-    /// Submit the field edits that make `before` the event `after`, one by
-    /// one.
+    /// Submit the field edits that make `before` the event `after` as one
+    /// change: one undo step, checked as a whole, so a start and an end that
+    /// move together never pass through an event that ends before it starts.
     fn submit_event_change(
         &self,
         doc: &mut ui::widget::Edits<'_>,
@@ -1318,11 +1364,24 @@ impl CalendarApp {
         after: &Event,
     ) -> bool {
         let edits = Calendar::paths().events.upsert(Some(before), after);
-        let changed = !edits.is_empty();
-        for edit in edits {
-            self.submit(doc, edit);
+        match edits.len() {
+            0 => false,
+            1 => {
+                for edit in edits {
+                    self.submit(doc, edit);
+                }
+                true
+            }
+            _ => {
+                self.submit(
+                    doc,
+                    ui::tilo_resource::Invoke::group(
+                        edits.into_iter().map(ui::tilo_resource::Invoke::from),
+                    ),
+                );
+                true
+            }
         }
-        changed
     }
 
     /// The last invocation an on-screen affordance submitted, for the tests
@@ -1574,11 +1633,19 @@ impl CalendarApp {
             end: start + Duration::hours(1),
             color: self.model.next_event_order_color(),
             reminder_min: Some(10),
+            timezone: self.authoring_zone(),
             // Filed on the local (on-device) calendar by default; the form's
             // calendar selector can retarget it to a configured account.
             ..Event::default()
         };
         self.spawn_event(ev, doc);
+    }
+
+    /// The zone a new event is authored in: the viewer's, so it keeps its
+    /// instant wherever it is synced and read; floating only when the system
+    /// names no zone.
+    pub(crate) fn authoring_zone(&self) -> String {
+        self.viewer.zone_name().unwrap_or("floating").to_owned()
     }
 
     /// Insert a freshly-authored event into the model + CRDT (through the action
@@ -1651,39 +1718,40 @@ impl CalendarApp {
             end,
             color: self.model.next_event_order_color(),
             reminder_min: Some(10),
+            timezone: self.authoring_zone(),
             ..Event::default()
         };
         self.spawn_event(ev, doc);
         self.dirty = true;
     }
 
-    /// Reschedule an existing event to a new day + start time, preserving its
-    /// duration — the timeline drag-to-move commit. Routed through the action
-    /// model so it replays byte-identically on peers.
+    /// Reschedule an occurrence to a new day and start on the viewer's clock,
+    /// keeping its length: the timeline's drag-to-move. A one-off event moves;
+    /// of a repeating one only the occurrence dragged moves, the person's
+    /// "Only this event" answer (`repeat_scope`).
     fn move_event(
         &mut self,
         id: Id,
-        day: NaiveDate,
-        start_min: i64,
-        _dur_min: i64,
+        original: NaiveDate,
+        (day, start_min): (NaiveDate, i64),
         doc: &mut ui::widget::Edits<'_>,
     ) {
         let Some(before) = self.model.event(id).filter(|e| !e.all_day).cloned() else {
             return;
         };
-        let mut after = before.clone();
-        after.start = day.and_time(min_to_time(start_min));
-        let duration = before.elapsed_duration();
-        after.end = after.start + duration;
-        after.end_later_fold = false;
-        if let Some((instant, _)) = crate::timezone::wall_to_utc(&after.timezone, after.start)
-            && let Ok(zone) = after.timezone.parse::<chrono_tz::Tz>()
-            && let Some(end) = instant.checked_add_signed(duration)
-        {
-            after.end = end.with_timezone(&zone).naive_local();
-            after.end_later_fold = crate::timezone::endpoint_utc(&after.timezone, after.end, false)
-                .is_some_and(|earlier| earlier != end);
+        let start = self
+            .viewer
+            .to_zone(day.and_time(min_to_time(start_min)), &before.timezone);
+        if before.recurrence != crate::model::Recurrence::None {
+            self.move_occurrence(&before, original, start, doc);
+            return;
         }
+        let mut after = before.clone();
+        after.start = start;
+        let duration = before.elapsed_duration();
+        let (end, later_fold) = Self::end_after(&after.timezone, start, duration);
+        after.end = end;
+        after.end_later_fold = later_fold;
         if after == before {
             return;
         }
@@ -1696,7 +1764,7 @@ impl CalendarApp {
             doc,
             Calendar::RESCHEDULE.with((crate::model::key(id), after.start, bridge_end)),
         ) {
-            self.status = Some(format!("Could not reschedule event: {error}"));
+            self.status = Some(format!("Couldn’t move the event: {error}"));
             return;
         }
         let fields = Calendar::paths().events.item(&crate::model::key(id));
@@ -1709,8 +1777,103 @@ impl CalendarApp {
         if let Some(event) = self.model.event_mut(id) {
             *event = after;
         }
-        self.status = Some("Event rescheduled".into());
         self.dirty = true;
+    }
+
+    /// Give an occurrence a new end, `end` on the viewer's clock: the
+    /// timeline's drag on a block's bottom edge. A repeating event changes
+    /// only the occurrence dragged ("Only this event", `repeat_scope`).
+    fn resize_event(
+        &mut self,
+        id: Id,
+        original: NaiveDate,
+        end: NaiveDateTime,
+        doc: &mut ui::widget::Edits<'_>,
+    ) {
+        let Some(before) = self.model.event(id).filter(|e| !e.all_day).cloned() else {
+            return;
+        };
+        let wall_end = self.viewer.to_zone(end, &before.timezone);
+        let later_fold = self.viewer.instant(end).is_some_and(|instant| {
+            crate::timezone::endpoint_utc(&before.timezone, wall_end, false)
+                .is_some_and(|earlier| earlier != instant)
+        });
+        let mut after = before.clone();
+        if before.recurrence == crate::model::Recurrence::None {
+            after.end = wall_end;
+            after.end_later_fold = later_fold;
+        } else {
+            let (start, _) = crate::shown::wall_interval(&before, original);
+            let mut edit = after
+                .occurrence_overrides
+                .take(&crate::model::OccurrenceOverride::key_of(original))
+                .unwrap_or_else(|| crate::model::OccurrenceOverride {
+                    original_date: original,
+                    original_time: Some(before.start.time()),
+                    ..crate::model::OccurrenceOverride::default()
+                });
+            edit.start = Some(start);
+            edit.end = Some(wall_end);
+            edit.end_later_fold = later_fold;
+            after.occurrence_overrides.push(edit);
+            after.occurrence_overrides.settle();
+        }
+        if self.submit_event_change(doc, &before, &after) {
+            if let Some(event) = self.model.event_mut(id) {
+                *event = after;
+            }
+            self.dirty = true;
+        }
+    }
+
+    /// The wall end `duration` after `start` in `zone`, and whether it is
+    /// the later reading of a repeated hour.
+    fn end_after(zone: &str, start: NaiveDateTime, duration: Duration) -> (NaiveDateTime, bool) {
+        if let Some((instant, _)) = crate::timezone::wall_to_utc(zone, start)
+            && let Ok(tz) = zone.parse::<chrono_tz::Tz>()
+            && let Some(end) = instant.checked_add_signed(duration)
+        {
+            let wall = end.with_timezone(&tz).naive_local();
+            let later = crate::timezone::endpoint_utc(zone, wall, false)
+                .is_some_and(|earlier| earlier != end);
+            return (wall, later);
+        }
+        (start + duration, false)
+    }
+
+    /// Move one occurrence of a repeating event to `start` (the event's own
+    /// clock), as an override of that date.
+    fn move_occurrence(
+        &mut self,
+        before: &Event,
+        original: NaiveDate,
+        start: NaiveDateTime,
+        doc: &mut ui::widget::Edits<'_>,
+    ) {
+        let (old_start, old_end) = crate::shown::wall_interval(before, original);
+        let duration = crate::shown::instants(before, original)
+            .map_or(old_end - old_start, |(from, to)| to - from);
+        let (end, later_fold) = Self::end_after(&before.timezone, start, duration);
+        let mut after = before.clone();
+        let mut edit = after
+            .occurrence_overrides
+            .take(&crate::model::OccurrenceOverride::key_of(original))
+            .unwrap_or_else(|| crate::model::OccurrenceOverride {
+                original_date: original,
+                original_time: Some(before.start.time()),
+                ..crate::model::OccurrenceOverride::default()
+            });
+        edit.start = Some(start);
+        edit.end = Some(end);
+        edit.end_later_fold = later_fold;
+        after.occurrence_overrides.push(edit);
+        after.occurrence_overrides.settle();
+        if self.submit_event_change(doc, before, &after) {
+            if let Some(event) = self.model.event_mut(before.id) {
+                *event = after;
+            }
+            self.dirty = true;
+        }
     }
 
     // --- week/day timeline + agenda: scroll & drag input -----------------
@@ -1765,10 +1928,30 @@ impl CalendarApp {
             } => self.create_event_in_range(day, start_min, end_min, doc),
             TimelineEffect::Move {
                 id,
+                original,
                 day,
                 start_min,
-                dur_min,
-            } => self.move_event(id, day, start_min, dur_min, doc),
+                ..
+            } => self.change_occurrence(
+                id,
+                original,
+                repeat_scope::DragChange::Move { day, start_min },
+                doc,
+            ),
+            TimelineEffect::Resize {
+                id,
+                original,
+                day,
+                end_min,
+                ..
+            } => self.change_occurrence(
+                id,
+                original,
+                repeat_scope::DragChange::Resize {
+                    end: day.and_time(min_to_time(end_min)),
+                },
+                doc,
+            ),
             TimelineEffect::Select(id) => self.apply_action(Action::OpenEvent(id), doc),
             TimelineEffect::OpenDay(day) => self.apply_action(Action::OpenDay(day), doc),
         }
@@ -2025,12 +2208,15 @@ impl CalendarApp {
         if person.accounts.is_empty() {
             return;
         }
-        let Ok(credentials) = accounts::AccountCredentials::open() else {
-            tracing::error!("calendar account credentials could not be opened");
-            *seen = None;
-            return;
-        };
-        let adopted = AccountStore::from_store(&person.store(), &credentials);
+        // The accounts show whether or not this device's credential store
+        // opens: without it their servers refuse the sign-in, and the sync
+        // says so, instead of the calendars vanishing.
+        let credentials = accounts::AccountCredentials::open()
+            .inspect_err(|error| {
+                tracing::error!(%error, "calendar account credentials could not be opened");
+            })
+            .ok();
+        let adopted = AccountStore::from_shared(&person.store(), credentials.as_ref());
         if adopted != self.configured {
             self.configured = adopted;
             self.show_accounts();
@@ -2507,6 +2693,7 @@ impl CalendarApp {
                         anchor: self.anchor,
                         hidden_calendars: &hidden,
                         calendar_filter: self.calendar_filter.as_deref(),
+                        viewer: self.viewer,
                     },
                     &theme,
                 );
@@ -2549,7 +2736,15 @@ impl CalendarApp {
         } else {
             working
         };
-        self.timeline.layout(area, focus_hour, days.len());
+        let allday_rows = self
+            .visible_by_day(&days)
+            .iter()
+            .map(|shown| shown.iter().filter(|it| it.event.all_day).count())
+            .max()
+            .unwrap_or(0)
+            .min(MAX_ALL_DAY_ROWS);
+        self.timeline
+            .layout(area, focus_hour, days.len(), allday_rows);
     }
 
     /// Names of locally-known events that overlap the edited event's first
@@ -2611,65 +2806,17 @@ impl CalendarApp {
     }
 
     /// Bounds one materialized occurrence in the editor's wall-time domain.
-    /// Overrides already moved by CalDAV/ICS are respected; a base recurring
-    /// event keeps its duration while moving to the requested occurrence date.
     fn event_interval(event: &Event, occurrence_date: NaiveDate) -> (NaiveDateTime, NaiveDateTime) {
-        if event.all_day {
-            let start = occurrence_date.and_time(NaiveTime::MIN);
-            return (start, start + Duration::days(event.all_day_span_days()));
-        }
-        let override_for_date = event.occurrence_overrides.iter().find(|override_| {
-            override_.original_date == occurrence_date
-                || override_
-                    .start
-                    .is_some_and(|start| start.date() == occurrence_date)
-        });
-        let start = override_for_date
-            .and_then(|override_| override_.start)
-            .unwrap_or_else(|| occurrence_date.and_time(event.start.time()));
-        let end = override_for_date
-            .and_then(|override_| override_.end)
-            .unwrap_or_else(|| event.occurrence_end(start));
-        (start, end)
+        crate::shown::wall_interval(event, occurrence_date)
     }
 
-    /// Resolve the same occurrence used by painting, retaining the authored
-    /// wall endpoints separately. Floating and date-only ranges have no instant.
+    /// The instants of the same occurrence. Floating and date-only ranges
+    /// have none.
     fn resolved_event_interval(
         event: &Event,
         date: NaiveDate,
     ) -> Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)> {
-        if event.all_day {
-            return None;
-        }
-        let (start, end) = Self::event_interval(event, date);
-        let (start, _) = crate::timezone::wall_to_utc(&event.timezone, start)?;
-        let override_ = event.occurrence_overrides.iter().find(|edit| {
-            edit.original_date == date || edit.start.is_some_and(|start| start.date() == date)
-        });
-        let end = if let Some(edit) = override_.filter(|edit| edit.end.is_some()) {
-            crate::timezone::endpoint_utc(&event.timezone, end, edit.end_later_fold)?
-        } else if event.end_later_fold {
-            start.checked_add_signed(event.elapsed_duration())?
-        } else {
-            crate::timezone::endpoint_utc(&event.timezone, end, false)?
-        };
-        Some((start, end))
-    }
-
-    /// A repeated wall hour has no second grid slot. Project elapsed minutes
-    /// forward for geometry, but keep the authored endpoint for the time label.
-    fn timeline_interval(event: &Event, date: NaiveDate) -> (i64, i64, i64) {
-        let (start, end) = Self::event_interval(event, date);
-        let duration = Self::resolved_event_interval(event, date)
-            .map_or(end - start, |(start, end)| end - start);
-        let start_min = i64::from(start.hour()) * 60 + i64::from(start.minute());
-        let clock_end_min = i64::from(end.hour()) * 60 + i64::from(end.minute());
-        (
-            start_min,
-            start_min + duration.num_minutes().max(TIMELINE_SNAP_MIN),
-            clock_end_min,
-        )
+        crate::shown::instants(event, date)
     }
 
     /// Complete schedule-conflict statement for assistive technology. The
@@ -3240,15 +3387,40 @@ impl CalendarApp {
         })
     }
 
-    /// Events occurring on `date`, minus any whose source calendar is hidden.
-    /// This is the single filter every view draws through, so unchecking a
-    /// calendar hides its already-synced events immediately.
-    fn visible_events_on(&self, date: NaiveDate) -> Vec<&Event> {
+    /// The occurrences shown from `from` to `to` (dates on the viewer's
+    /// clock), minus those of hidden calendars: all-day ones first, then by
+    /// start. This is the one filter every view draws through, so unchecking
+    /// a calendar hides its synced events at once.
+    pub(crate) fn visible_between(
+        &self,
+        from: NaiveDate,
+        to: NaiveDate,
+    ) -> Vec<crate::shown::Shown<'_>> {
         let hidden = self.hidden_calendar_ids();
-        self.model
-            .events_on(date)
-            .into_iter()
+        let mut shown: Vec<_> = self
+            .model
+            .events
+            .iter()
             .filter(|event| self.event_in_selected_calendar(event) && event.visible_under(&hidden))
+            .flat_map(|event| crate::shown::occurrences(event, from, to, &self.viewer))
+            .collect();
+        shown.sort_by(|a, b| {
+            b.event
+                .all_day
+                .cmp(&a.event.all_day)
+                .then(a.start.cmp(&b.start))
+        });
+        shown
+    }
+
+    /// What each of `days` shows, in their order.
+    pub(crate) fn visible_by_day(&self, days: &[NaiveDate]) -> Vec<Vec<crate::shown::Shown<'_>>> {
+        let (Some(&from), Some(&to)) = (days.iter().min(), days.iter().max()) else {
+            return Vec::new();
+        };
+        let shown = self.visible_between(from, to);
+        days.iter()
+            .map(|day| shown.iter().filter(|it| it.on(*day)).copied().collect())
             .collect()
     }
 
@@ -3274,21 +3446,37 @@ impl CalendarApp {
     /// event visibility policy; the controller owns block hit-testing.
     fn timeline_spans(&self, days: &[NaiveDate]) -> Vec<TimelineSpan> {
         let mut spans = Vec::new();
-        for day in days {
-            for event in self.visible_events_on(*day) {
-                if event.all_day {
-                    continue;
-                }
-                let (start_min, end_min, _) = Self::timeline_interval(event, *day);
+        for (day, shown) in days.iter().zip(self.visible_by_day(days)) {
+            let timed: Vec<_> = shown.iter().filter(|it| !it.event.all_day).collect();
+            let minutes: Vec<_> = timed
+                .iter()
+                .map(|it| Self::block_minutes(it, *day))
+                .collect();
+            for ((it, (start_min, end_min)), lane) in
+                timed.iter().zip(&minutes).zip(timeline_lanes(&minutes))
+            {
                 spans.push(TimelineSpan {
-                    id: event.id,
+                    id: it.event.id,
+                    original: it.original,
                     day: *day,
-                    start_min,
-                    end_min,
+                    start_min: *start_min,
+                    end_min: *end_min,
+                    lane,
                 });
             }
         }
         spans
+    }
+
+    /// The minutes of `day` an occurrence's block covers: at least the
+    /// shortest block.
+    fn block_minutes(shown: &crate::shown::Shown<'_>, day: NaiveDate) -> (i64, i64) {
+        let (start_min, end_min) = shown.minutes_on(day);
+        let start_min = start_min.min(24 * 60 - TIMELINE_SNAP_MIN);
+        (
+            start_min,
+            end_min.max(start_min + TIMELINE_SNAP_MIN).min(24 * 60),
+        )
     }
 
     /// Presentation-ready timeline snapshot. Calendar policy decides which
@@ -3296,19 +3484,40 @@ impl CalendarApp {
     /// component owns all geometry and painting from here on.
     fn timeline_render_events<'a>(&'a self, days: &[NaiveDate]) -> Vec<TimelineRenderEvent<'a>> {
         let mut events = Vec::new();
-        for day in days {
-            for event in self.visible_events_on(*day) {
-                let (start_min, end_min, clock_end_min) = Self::timeline_interval(event, *day);
+        for (day, shown) in days.iter().zip(self.visible_by_day(days)) {
+            let minutes: Vec<_> = shown
+                .iter()
+                .map(|it| Self::block_minutes(it, *day))
+                .collect();
+            let timed: Vec<_> = shown
+                .iter()
+                .zip(&minutes)
+                .filter(|(it, _)| !it.event.all_day)
+                .map(|(_, minutes)| *minutes)
+                .collect();
+            let mut lanes = timeline_lanes(&timed).into_iter();
+            for (it, (start_min, end_min)) in shown.iter().zip(minutes) {
+                let lane = if it.event.all_day {
+                    crate::timeline_interaction::Lane::default()
+                } else {
+                    lanes.next().unwrap_or_default()
+                };
+                let clock_end_min = if it.end.date() == *day {
+                    i64::from(it.end.hour()) * 60 + i64::from(it.end.minute())
+                } else {
+                    24 * 60
+                };
                 events.push(TimelineRenderEvent {
-                    id: event.id,
+                    id: it.event.id,
                     day: *day,
-                    title: event.display_title(),
+                    title: it.event.display_title(),
                     clock_end_min,
-                    location: &event.location,
-                    color: event.color,
+                    location: &it.event.location,
+                    color: it.event.color,
                     start_min,
                     end_min,
-                    all_day: event.all_day,
+                    all_day: it.event.all_day,
+                    lane,
                 });
             }
         }
@@ -3458,7 +3667,10 @@ impl CalendarApp {
         // Global letter/arrow shortcuts fire only when NOT typing into a
         // text field or the notes editor.
         if !field_focused && !notes_focused {
-            return self.handle_keyboard_shortcut(logical_key, state, handled);
+            let state_mods = modifiers.state();
+            let plain =
+                !state_mods.control_key() && !state_mods.alt_key() && !state_mods.super_key();
+            return self.handle_keyboard_shortcut(logical_key, plain, state, handled);
         }
         false
     }
@@ -3567,15 +3779,23 @@ impl CalendarApp {
     }
 
     /// Global letter/arrow shortcuts, fired only when not typing into a text
-    /// field or the notes editor. Split out of `handle_keyboard` to keep
-    /// that under the line cap.
+    /// field or the notes editor, and letters only without Ctrl, Alt or
+    /// Super (`plain`), which belong to the window and the system. Split out
+    /// of `handle_keyboard` to keep that under the line cap.
+    ///
+    /// No single letter opens a file dialog: export and import are in the
+    /// sidebar's menu and the command palette, where a stray key in the week
+    /// view cannot reach them.
     fn handle_keyboard_shortcut(
         &mut self,
         logical_key: &Key,
+        plain: bool,
         state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) -> bool {
-        if let Key::Character(ch) = logical_key {
+        if let Key::Character(ch) = logical_key
+            && plain
+        {
             let key = ch.to_lowercase();
             let act = match key.as_str() {
                 "m" => Some(Action::View(View::Month)),
@@ -3585,8 +3805,6 @@ impl CalendarApp {
                 "t" => Some(Action::Today),
                 "n" if self.view == View::Tasks => Some(Action::NewTask),
                 "n" => Some(Action::NewEvent),
-                "e" => Some(Action::Export),
-                "i" => Some(Action::Import),
                 "[" => Some(Action::Prev),
                 "]" => Some(Action::Next),
                 _ => None,
@@ -3632,6 +3850,9 @@ impl CalendarApp {
             return false;
         };
         let p = self.last_mouse;
+        // Only the visible part of the sheet's scrolled body holds its
+        // fields: a field scrolled under the footer is not where Done is.
+        let form_active = form_active && self.modal.as_ref().is_some_and(|m| m.body.contains(p));
         // A click inside a form text field focuses it and lands the caret.
         if form_active && self.form.title.contains(p) {
             self.location_input.set_focus(false);
@@ -3795,7 +4016,15 @@ impl Widget for CalendarApp {
             self.revalidate_selection();
             self.model_heads.clone_from(&heads);
         }
-        let opens = std::mem::take(&mut *self.opens.borrow_mut());
+        self.roll_today();
+        let mut opens = std::mem::take(&mut *self.opens.borrow_mut());
+        opens.extend(std::mem::take(
+            &mut *self
+                .activations
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        ));
+        self.schedule_reminders();
         for item in opens {
             if let Err(error) = self.open_item(&item) {
                 tracing::debug!(%error, "calendar: an item to open is gone");
@@ -3970,7 +4199,9 @@ impl Widget for CalendarApp {
                             .filter_map(|(rect, effect)| match effect {
                                 TimelineEffect::Select(id) => Some((rect, Action::OpenEvent(id))),
                                 TimelineEffect::OpenDay(day) => Some((rect, Action::OpenDay(day))),
-                                TimelineEffect::Create { .. } | TimelineEffect::Move { .. } => None,
+                                TimelineEffect::Create { .. }
+                                | TimelineEffect::Move { .. }
+                                | TimelineEffect::Resize { .. } => None,
                             }),
                     );
                 }
@@ -3986,6 +4217,7 @@ impl Widget for CalendarApp {
                                     anchor: self.anchor,
                                     hidden_calendars: &hidden,
                                     calendar_filter: self.calendar_filter.as_deref(),
+                                    viewer: self.viewer,
                                 },
                                 self.today,
                                 self.last_mouse,
@@ -4032,6 +4264,17 @@ impl Widget for CalendarApp {
                 presence,
             );
         }
+        if self.repeat_scope_menu.is_open() {
+            self.repeat_scope_menu.set_viewport(self.rect);
+            Widget::draw_overlay(
+                &mut self.repeat_scope_menu,
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            );
+        }
         self.draw_status(scene, transform, text_renderer, theme);
     }
 
@@ -4050,6 +4293,12 @@ impl Widget for CalendarApp {
             && self.handle_segmented_touch(touch, ctx.scale_factor, &mut ctx.state)
         {
             *ctx.handled = true;
+            return;
+        }
+
+        // The question a drag on a repeating event asks owns input while it
+        // is open.
+        if self.handle_repeat_scope_event(event, ctx) {
             return;
         }
 
@@ -4167,6 +4416,19 @@ impl Widget for CalendarApp {
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
+    }
+
+    /// The vertical resize shape over an event's bottom edge in the week
+    /// and day views, where a drag changes its end.
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        if !matches!(self.view, View::Week | View::Day) || !self.calendar_content_interactive() {
+            return None;
+        }
+        let days = self.timeline_days();
+        let spans = self.timeline_spans(&days);
+        self.timeline
+            .resize_grip_at(self.view_rect(), &days, &spans, point)
+            .then_some(winit::window::CursorIcon::NsResize)
     }
 
     fn claims_raw_touch(&self, point: Point) -> bool {
@@ -4298,6 +4560,23 @@ impl Widget for CalendarApp {
             self.built_notes_w = notes_w;
         }
         self.notes_editor.take_structure_dirty() || width_changed
+    }
+
+    /// Wake for the next minute while the now line is on screen, else for
+    /// the next hour: today rolls over, and the reminders' horizon moves on.
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        if self.pinned_now.is_some() {
+            return None;
+        }
+        let now = self.now();
+        let now_line = matches!(self.view, View::Week | View::Day)
+            && self.timeline_days().contains(&self.today);
+        let seconds = if now_line {
+            60 - u64::from(now.second())
+        } else {
+            3600 - u64::from(now.minute()) * 60 - u64::from(now.second())
+        };
+        ui::time::now().checked_add(std::time::Duration::from_secs(seconds.max(1)))
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -4465,6 +4744,89 @@ impl CalendarApp {
         }
         self.dirty = true;
         Ok(())
+    }
+
+    /// Schedule reminders as system notifications from a live window, and
+    /// open the event of a reminder the person clicks.
+    pub(crate) fn notify_with(
+        &mut self,
+        notifier: std::sync::Arc<dyn ui::notify::Notifier>,
+        waker: ui::WakeHandle,
+    ) {
+        self.notifier = Some(notifier);
+        let activations = std::sync::Arc::clone(&self.activations);
+        ui::notify::set_activation_handler(crate::reminders::SCHEME, move |uri| {
+            if let Some(item) = uri
+                .strip_prefix(crate::reminders::SCHEME)
+                .and_then(|rest| rest.strip_prefix(":open/"))
+            {
+                activations
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(item.to_owned());
+                waker.wake();
+            }
+        });
+    }
+
+    /// Reconcile the scheduled reminders with what is due, when what they
+    /// follow moved.
+    fn schedule_reminders(&mut self) {
+        let Some(notifier) = self.notifier.clone() else {
+            return;
+        };
+        let now = chrono::DateTime::<chrono::Utc>::from(ui::time::to_std(ui::time::wall()));
+        let hidden_ids = self.hidden_calendar_ids();
+        let mut hidden: Vec<String> = hidden_ids.iter().cloned().collect();
+        hidden.sort_unstable();
+        let basis = RemindersBasis {
+            heads: self.model_heads.clone(),
+            hidden,
+            hour: now.timestamp() / 3600,
+        };
+        if self
+            .reminders
+            .as_ref()
+            .is_some_and(|(seen, _)| *seen == basis)
+        {
+            return;
+        }
+        let due = crate::reminders::due(&self.model, self.viewer, now, &hidden_ids);
+        if self
+            .reminders
+            .as_ref()
+            .is_some_and(|(_, scheduled)| *scheduled == due)
+        {
+            self.reminders = Some((basis, due));
+            return;
+        }
+        match crate::reminders::reconcile(&*notifier, &due) {
+            Ok(()) => self.reminders = Some((basis, due)),
+            // Tried again when the hour or the calendar moves on.
+            Err(error) => {
+                tracing::debug!(%error, "calendar: reminders were not scheduled");
+                self.reminders = Some((basis, Vec::new()));
+            }
+        }
+    }
+
+    /// Move today on at midnight in a window left open: the highlight, the
+    /// now line and the anchor when it was on today.
+    fn roll_today(&mut self) {
+        if self.pinned_now.is_some() {
+            return;
+        }
+        let today = ui::clock::today();
+        if today == self.today {
+            return;
+        }
+        if self.anchor == self.today {
+            self.anchor = today;
+        }
+        self.today = today;
+        self.mini_month.set_today(today);
+        self.task_due_picker.set_today(today);
+        self.dirty = true;
     }
 
     /// Show every calendar again, after one calendar's events were shown.

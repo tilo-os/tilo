@@ -15,9 +15,11 @@
 //! means "another instance", never a tab inside this window.
 //!
 //! The keyboard is the same everywhere: Ctrl+T, Ctrl+W and Ctrl+Shift+T
-//! (Cmd on macOS) reach these requests when the focused widget leaves the
-//! chord unhandled, so every app gets the desktop's tab chords without
-//! implementing them.
+//! (Cmd on macOS), Ctrl+Tab and Ctrl+Shift+Tab reach these requests when the
+//! focused widget leaves the chord unhandled, so every app gets the desktop's
+//! tab chords without implementing them, and an app (or a widget in it) that
+//! does use one of those chords keeps it. The desktop's Super chords for the
+//! same moves never reach an app at all.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -38,10 +40,39 @@ pub enum TabRequest {
     CloseThis,
     /// Reopen the most recently closed tab of this workspace.
     ReopenClosed,
+    /// Show the next (`forward`) or previous tab of the window group this
+    /// app's tab is in.
+    CycleTab { forward: bool },
     /// The next window this app maps is another tab right after this one.
     /// For a window the app starts itself (a process it spawned), where the
     /// shell launches nothing.
     PlaceNextWindowBeside { background: bool },
+}
+
+impl TabRequest {
+    /// The `shell-ui` message that carries this request for the app the
+    /// shell launched as record `instance`.
+    #[must_use]
+    pub fn message(
+        self,
+        instance: Option<u64>,
+    ) -> crate::floating_surface::FloatingSurfaceClientMessage {
+        use crate::floating_surface::FloatingSurfaceClientMessage as Message;
+        match self {
+            Self::OpenBeside { target, background } => Message::OpenTabBeside {
+                target,
+                background,
+                instance,
+            },
+            Self::CloseThis => Message::CloseTab { instance },
+            Self::ReopenClosed => Message::ReopenClosedTab,
+            Self::CycleTab { forward } => Message::CycleTab { forward, instance },
+            Self::PlaceNextWindowBeside { background } => Message::PlaceNextWindowBeside {
+                background,
+                instance,
+            },
+        }
+    }
 }
 
 /// Upper bound on undelivered requests. A held key repeating faster than
@@ -100,7 +131,8 @@ pub fn launch_instance() -> Option<u64> {
 
 /// The desktop tab chord a key press names, if any: Ctrl+T opens a new tab
 /// of this app, Ctrl+Shift+T reopens the last closed tab, Ctrl+W closes this
-/// tab. `command` is the platform's command modifier (Ctrl, or Cmd on
+/// tab, Ctrl+Tab and Ctrl+Shift+Tab show the next and previous tab of the
+/// group. `command` is the platform's command modifier (Ctrl, or Cmd on
 /// macOS); Alt and Super chords are never these.
 #[must_use]
 pub fn chord_request(
@@ -109,12 +141,16 @@ pub fn chord_request(
     shift: bool,
     other_modifiers: bool,
 ) -> Option<TabRequest> {
-    let winit::keyboard::Key::Character(text) = key else {
-        return None;
-    };
     if !command || other_modifiers {
         return None;
     }
+    let text = match key {
+        winit::keyboard::Key::Character(text) => text,
+        winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab) => {
+            return Some(TabRequest::CycleTab { forward: !shift });
+        }
+        _ => return None,
+    };
     if text.eq_ignore_ascii_case("t") {
         Some(if shift {
             TabRequest::ReopenClosed
@@ -171,10 +207,21 @@ mod tests {
             None,
             "Alt/Super chords"
         );
+        let tab = Key::Named(NamedKey::Tab);
         assert_eq!(
-            chord_request(&Key::Named(NamedKey::Tab), true, false, false),
+            chord_request(&tab, true, false, false),
+            Some(TabRequest::CycleTab { forward: true }),
+            "Ctrl+Tab the app left alone shows the next tab"
+        );
+        assert_eq!(
+            chord_request(&tab, true, true, false),
+            Some(TabRequest::CycleTab { forward: false })
+        );
+        assert_eq!(chord_request(&tab, false, false, false), None, "plain Tab");
+        assert_eq!(
+            chord_request(&tab, true, false, true),
             None,
-            "Ctrl+Tab is the shell's own binding"
+            "Super+Ctrl+Tab is the desktop's own, never the app's"
         );
     }
 

@@ -25,12 +25,76 @@ use ui::tokens::colors::SMALL_TEXT_MIN_CONTRAST;
 
 pub(super) const TIMELINE_SNAP_MIN: i64 = 15;
 
+/// Where an event's block sits across its day's column: overlapping events
+/// share the column side by side, each in its own lane.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct Lane {
+    pub index: usize,
+    pub of: usize,
+}
+
+/// The lanes of a day's timed events, `[start, end)` minutes each, in the
+/// same order. Events that overlap, directly or through others, form a
+/// cluster that splits the column evenly; each takes the leftmost lane free
+/// when it starts.
+pub(super) fn lanes(intervals: &[(i64, i64)]) -> Vec<Lane> {
+    let mut order: Vec<(usize, i64, i64)> = intervals
+        .iter()
+        .enumerate()
+        .map(|(i, &(start, end))| (i, start, end.max(start + 1)))
+        .collect();
+    order.sort_by_key(|&(_, start, end)| (start, -end));
+    let mut placed: Vec<(usize, Lane)> = Vec::with_capacity(order.len());
+    let mut lane_ends: Vec<i64> = Vec::new();
+    let mut cluster_start = 0;
+    let mut cluster_end = i64::MIN;
+    let close = |placed: &mut [(usize, Lane)], from: usize, of: usize| {
+        for (_, lane) in placed.iter_mut().skip(from) {
+            lane.of = of.max(1);
+        }
+    };
+    for (i, start, end) in order {
+        if start >= cluster_end && placed.len() > cluster_start {
+            close(&mut placed, cluster_start, lane_ends.len());
+            cluster_start = placed.len();
+            lane_ends.clear();
+        }
+        let index = if let Some((free, slot)) = lane_ends
+            .iter_mut()
+            .enumerate()
+            .find(|(_, lane_end)| **lane_end <= start)
+        {
+            *slot = end;
+            free
+        } else {
+            lane_ends.push(end);
+            lane_ends.len() - 1
+        };
+        cluster_end = if placed.len() == cluster_start {
+            end
+        } else {
+            cluster_end.max(end)
+        };
+        placed.push((i, Lane { index, of: 1 }));
+    }
+    close(&mut placed, cluster_start, lane_ends.len());
+    placed.sort_by_key(|&(i, _)| i);
+    placed.into_iter().map(|(_, lane)| lane).collect()
+}
+
+/// How far up from a block's bottom edge a press resizes it instead of
+/// moving it, in logical pixels.
+const RESIZE_GRIP: f64 = 6.0;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct TimelineSpan {
     pub id: Id,
+    /// The occurrence's date in its series.
+    pub original: NaiveDate,
     pub day: NaiveDate,
     pub start_min: i64,
     pub end_min: i64,
+    pub lane: Lane,
 }
 
 pub(super) struct TimelineRenderEvent<'a> {
@@ -44,6 +108,7 @@ pub(super) struct TimelineRenderEvent<'a> {
     /// Authored wall endpoint, unlike the elapsed-time geometry endpoint.
     pub clock_end_min: i64,
     pub all_day: bool,
+    pub lane: Lane,
 }
 
 /// Compact, presentation-ready snapshot supplied by `CalendarApp`. Filtering
@@ -68,9 +133,18 @@ pub(super) enum TimelineEffect {
     },
     Move {
         id: Id,
+        original: NaiveDate,
         day: NaiveDate,
         start_min: i64,
         dur_min: i64,
+    },
+    /// A new end for the occurrence, on the day it starts.
+    Resize {
+        id: Id,
+        original: NaiveDate,
+        day: NaiveDate,
+        start_min: i64,
+        end_min: i64,
     },
     Select(Id),
     OpenDay(NaiveDate),
@@ -107,10 +181,17 @@ enum TimelineDrag {
     },
     Move {
         id: Id,
+        original: NaiveDate,
         origin: Point,
         current: Point,
         grab_off_min: i64,
         dur_min: i64,
+        active: bool,
+    },
+    Resize {
+        span: TimelineSpan,
+        origin: Point,
+        current: Point,
         active: bool,
     },
 }
@@ -118,25 +199,35 @@ enum TimelineDrag {
 impl TimelineDrag {
     fn is_active(self) -> bool {
         match self {
-            Self::Create { active, .. } | Self::Move { active, .. } => active,
+            Self::Create { active, .. }
+            | Self::Move { active, .. }
+            | Self::Resize { active, .. } => active,
         }
     }
 
     fn origin(self) -> Point {
         match self {
-            Self::Create { origin, .. } | Self::Move { origin, .. } => origin,
+            Self::Create { origin, .. }
+            | Self::Move { origin, .. }
+            | Self::Resize { origin, .. } => origin,
         }
     }
 
     fn set_current(&mut self, point: Point) {
         match self {
-            Self::Create { current, .. } | Self::Move { current, .. } => *current = point,
+            Self::Create { current, .. }
+            | Self::Move { current, .. }
+            | Self::Resize { current, .. } => *current = point,
         }
     }
 
     fn set_active(&mut self) {
         match self {
-            Self::Create { active, .. } | Self::Move { active, .. } => *active = true,
+            Self::Create { active, .. }
+            | Self::Move { active, .. }
+            | Self::Resize { active, .. } => {
+                *active = true;
+            }
         }
     }
 }
@@ -244,9 +335,19 @@ impl TimelineInteraction {
     ) -> bool {
         let geom = self.geometry(area);
         if let Some(span) = self.event_at(area, days, spans, point) {
+            if self.on_resize_grip(area, days.len(), span, point) {
+                self.drag = Some(TimelineDrag::Resize {
+                    span,
+                    origin: point,
+                    current: point,
+                    active: false,
+                });
+                return true;
+            }
             let press_min = self.minute_at(geom, point.y);
             self.drag = Some(TimelineDrag::Move {
                 id: span.id,
+                original: span.original,
                 origin: point,
                 current: point,
                 grab_off_min: (press_min - span.start_min).clamp(0, span.end_min - span.start_min),
@@ -295,11 +396,49 @@ impl TimelineInteraction {
         let col = TimelineViewport::column_at(area, days.len(), geom, point.x);
         let day = *days.get(col)?;
         spans.iter().rev().copied().find(|span| {
-            span.day == day
-                && self
-                    .block_rect(area, days.len(), geom, col, span.start_min, span.end_min)
-                    .contains(point)
+            span.day == day && self.span_rect(area, days.len(), col, span).contains(point)
         })
+    }
+
+    /// A span's block in column `col`, in its lane.
+    fn span_rect(&self, area: Rect, days_len: usize, col: usize, span: &TimelineSpan) -> Rect {
+        let geom = self.geometry(area);
+        let block = self.block_rect(area, days_len, geom, col, span.start_min, span.end_min);
+        in_lane(block, span.lane)
+    }
+
+    /// Whether `point` is on the bottom edge of `span`'s block, where a
+    /// press resizes it. A block too short to hold both a grip and a body
+    /// only moves.
+    fn on_resize_grip(
+        &self,
+        area: Rect,
+        days_len: usize,
+        span: TimelineSpan,
+        point: Point,
+    ) -> bool {
+        let geom = self.geometry(area);
+        let col = TimelineViewport::column_at(area, days_len, geom, point.x);
+        let block = self.span_rect(area, days_len, col, &span);
+        block.height() >= 3.0 * RESIZE_GRIP
+            && point.y >= block.y1 - RESIZE_GRIP
+            && point.y <= block.y1
+    }
+
+    /// Whether `point` is on an event's resize grip: the pointer shows the
+    /// vertical resize shape there.
+    pub fn resize_grip_at(
+        &self,
+        area: Rect,
+        days: &[NaiveDate],
+        spans: &[TimelineSpan],
+        point: Point,
+    ) -> bool {
+        if let Some(TimelineDrag::Resize { .. }) = self.drag {
+            return true;
+        }
+        self.event_at(area, days, spans, point)
+            .is_some_and(|span| self.on_resize_grip(area, days.len(), span, point))
     }
 
     fn effect_for_drag(
@@ -330,6 +469,7 @@ impl TimelineInteraction {
             }
             TimelineDrag::Move {
                 id,
+                original,
                 current,
                 grab_off_min,
                 dur_min,
@@ -341,9 +481,21 @@ impl TimelineInteraction {
                     snap_minute(cursor_min - grab_off_min).clamp(0, (24 * 60 - dur_min).max(0));
                 Some(TimelineEffect::Move {
                     id,
+                    original,
                     day: *days.get(col)?,
                     start_min,
                     dur_min,
+                })
+            }
+            TimelineDrag::Resize { span, current, .. } => {
+                let end_min = snap_minute(self.minute_at(geom, current.y))
+                    .clamp(span.start_min + TIMELINE_SNAP_MIN, 24 * 60);
+                Some(TimelineEffect::Resize {
+                    id: span.id,
+                    original: span.original,
+                    day: span.day,
+                    start_min: span.start_min,
+                    end_min,
                 })
             }
         }
@@ -375,11 +527,16 @@ impl TimelineInteraction {
         self.effect_for_drag(area, days, drag)
     }
 
+    /// The event a drag is moving or resizing, whose block the ghost
+    /// stands in for.
     fn moving_id(&self) -> Option<Id> {
         match self.drag {
             Some(TimelineDrag::Move {
                 id, active: true, ..
             }) => Some(id),
+            Some(TimelineDrag::Resize {
+                span, active: true, ..
+            }) => Some(span.id),
             _ => None,
         }
     }
@@ -490,18 +647,46 @@ impl TimelineInteraction {
             }
             hits.push((header, TimelineEffect::OpenDay(*day)));
 
-            let strip = Rect::new(
-                x0 + geom.block_inset,
-                area.y0 + geom.head_h + s1,
-                x0 + col_w - geom.block_inset,
-                area.y0 + geom.head_h + geom.allday_h - s1,
-            );
-            if let Some(event) = model
+            let all_day: Vec<_> = model
                 .events
                 .iter()
-                .find(|event| event.day == *day && event.all_day)
-            {
-                Self::draw_all_day_chip(ctx, ty, strip, event, geom.density);
+                .filter(|event| event.day == *day && event.all_day)
+                .collect();
+            let rows = geom.allday_rows;
+            let chip_h = if rows <= 1 {
+                geom.allday_h - 2.0 * s1
+            } else {
+                line_height(ctx, &ty.strip)
+            };
+            for (row, event) in all_day.iter().enumerate().take(rows) {
+                let top = area.y0 + geom.head_h + s1 + row as f64 * (chip_h + s1);
+                let strip = Rect::new(
+                    x0 + geom.block_inset,
+                    top,
+                    x0 + col_w - geom.block_inset,
+                    top + chip_h,
+                );
+                // The last row counts what does not fit.
+                if row + 1 == rows && all_day.len() > rows {
+                    let more = format!("+{} more", all_day.len() - row);
+                    text_in_band(
+                        ctx,
+                        &more,
+                        &ty.strip,
+                        colors.text_dim,
+                        strip.x0 + s1 + s1 / 2.0,
+                        strip,
+                        strip.width() - 3.0 * s1,
+                    );
+                    hits.push((strip, TimelineEffect::OpenDay(*day)));
+                    break;
+                }
+                let density = if rows <= 1 {
+                    geom.density
+                } else {
+                    ui::widget::TimelineDensity::Regular
+                };
+                Self::draw_all_day_chip(ctx, ty, strip, event, density);
                 hits.push((strip, TimelineEffect::Select(event.id)));
             }
         }
@@ -642,13 +827,16 @@ impl TimelineInteraction {
                 .iter()
                 .filter(|event| event.day == *day && !event.all_day && Some(event.id) != moving_id)
             {
-                let block = self.block_rect(
-                    area,
-                    model.days.len(),
-                    geom,
-                    index,
-                    event.start_min,
-                    event.end_min,
+                let block = in_lane(
+                    self.block_rect(
+                        area,
+                        model.days.len(),
+                        geom,
+                        index,
+                        event.start_min,
+                        event.end_min,
+                    ),
+                    event.lane,
                 );
                 let color = event.color.color(theme);
                 // The block is a wash of the calendar colour over the grid,
@@ -679,9 +867,12 @@ impl TimelineInteraction {
                 // in the grid already tells the time.
                 let title_h = line_height(ctx, &ty.title);
                 let subtitle_h = line_height(ctx, &ty.subtitle);
-                let room = block.height() - 2.0 * s1;
+                // A block that began above the scrolled-to hours keeps its
+                // title at the top of what shows of it.
+                let top = block.y0.max(body.y0.min(block.y1 - title_h - 2.0 * s1));
+                let room = block.y1 - top - 2.0 * s1;
                 let max_lines = ((room / title_h).floor() as usize).max(1);
-                let mut y = block.y0 + s1;
+                let mut y = top + s1;
                 for line in wrap_lines(ctx, event.title, &ty.title, text_w, max_lines) {
                     ctx.text(&line, &ty.title, tinted.ink, Point::new(text_x, y), None);
                     y += title_h;
@@ -721,58 +912,19 @@ impl TimelineInteraction {
         geom: TimelineGeom,
     ) {
         let theme = ctx.theme;
-        let colors = &theme.tokens.colors;
         let Some(preview) = self.preview(area, model.days) else {
             return;
         };
-        let (column, start_min, end_min, title, fill, edge) = match preview {
-            TimelineEffect::Create {
-                day,
-                start_min,
-                end_min,
-            } => {
-                let Some(column) = model.days.iter().position(|item| *item == day) else {
-                    return;
-                };
-                // A new event being drawn is your own selection.
-                (
-                    column,
-                    start_min,
-                    end_min,
-                    model.untitled,
-                    colors.intent.selection_tint,
-                    colors.intent.you,
-                )
-            }
-            TimelineEffect::Move {
-                id,
-                day,
-                start_min,
-                dur_min,
-            } => {
-                let Some(column) = model.days.iter().position(|item| *item == day) else {
-                    return;
-                };
-                let Some(event) = model.events.iter().find(|event| event.id == id) else {
-                    return;
-                };
-                let color = event.color.color(theme);
-                let tinted = colors.tinted_chip_on(
-                    colors.surfaces.content,
-                    color,
-                    0.4,
-                    SMALL_TEXT_MIN_CONTRAST,
-                );
-                (
-                    column,
-                    start_min,
-                    start_min + dur_min,
-                    event.title,
-                    tinted.fill,
-                    color,
-                )
-            }
-            TimelineEffect::Select(_) | TimelineEffect::OpenDay(_) => return,
+        let Some(Ghost {
+            column,
+            start_min,
+            end_min,
+            title,
+            fill,
+            edge,
+        }) = Self::ghost(theme, model, preview)
+        else {
+            return;
         };
         let s1 = f64::from(theme.tokens.spacing.s1);
         let radius = f64::from(theme.tokens.radii.item);
@@ -814,10 +966,84 @@ impl TimelineInteraction {
         ctx.scene.pop_layer();
     }
 
+    /// What the drag ghost shows for `preview`: its column, minutes, title
+    /// and colours.
+    fn ghost<'a>(
+        theme: &ui::theme::Theme,
+        model: &'a TimelineRenderModel<'_, '_>,
+        preview: TimelineEffect,
+    ) -> Option<Ghost<'a>> {
+        let colors = &theme.tokens.colors;
+        let (column, start_min, end_min, title, fill, edge) = match preview {
+            TimelineEffect::Create {
+                day,
+                start_min,
+                end_min,
+            } => {
+                let column = model.days.iter().position(|item| *item == day)?;
+                // A new event being drawn is your own selection.
+                (
+                    column,
+                    start_min,
+                    end_min,
+                    model.untitled,
+                    colors.intent.selection_tint,
+                    colors.intent.you,
+                )
+            }
+            TimelineEffect::Move {
+                id,
+                day,
+                start_min,
+                dur_min,
+                ..
+            }
+            | TimelineEffect::Resize {
+                id,
+                day,
+                start_min,
+                end_min: dur_min,
+                ..
+            } => {
+                let dur_min = if matches!(preview, TimelineEffect::Resize { .. }) {
+                    dur_min - start_min
+                } else {
+                    dur_min
+                };
+                let column = model.days.iter().position(|item| *item == day)?;
+                let event = model.events.iter().find(|event| event.id == id)?;
+                let color = event.color.color(theme);
+                let tinted = colors.tinted_chip_on(
+                    colors.surfaces.content,
+                    color,
+                    0.4,
+                    SMALL_TEXT_MIN_CONTRAST,
+                );
+                (
+                    column,
+                    start_min,
+                    start_min + dur_min,
+                    event.title,
+                    tinted.fill,
+                    color,
+                )
+            }
+            TimelineEffect::Select(_) | TimelineEffect::OpenDay(_) => return None,
+        };
+        Some(Ghost {
+            column,
+            start_min,
+            end_min,
+            title,
+            fill,
+            edge,
+        })
+    }
+
     /// Geometry at the viewport's measured type, so paint, hit-testing and
     /// drag mapping all read one description of the header / strip / body.
     fn geometry(&self, area: Rect) -> TimelineGeom {
-        TimelineViewport::geometry_for(area, &self.viewport.tokens(), self.viewport.days_len())
+        self.viewport.current_geometry(area)
     }
 
     /// Measure the theme's type so header, strip and block heights grow
@@ -847,8 +1073,11 @@ impl TimelineInteraction {
             .block_rect(area, days_len, geom, col, start_min, end_min)
     }
 
-    pub fn layout(&mut self, area: Rect, initial_hour: f64, days_len: usize) {
-        self.viewport.layout(area, initial_hour, days_len);
+    /// Lay out `days_len` columns under an all-day strip of `allday_rows`
+    /// chips.
+    pub fn layout(&mut self, area: Rect, initial_hour: f64, days_len: usize, allday_rows: usize) {
+        self.viewport
+            .layout(area, initial_hour, (days_len, allday_rows));
     }
 
     fn wants_pointer_capture(&self) -> bool {
@@ -917,6 +1146,28 @@ impl TimelineInteraction {
     pub fn is_layout_dirty(&self) -> bool {
         self.viewport.is_layout_dirty()
     }
+}
+
+/// The drag ghost's content.
+struct Ghost<'a> {
+    column: usize,
+    start_min: i64,
+    end_min: i64,
+    title: &'a str,
+    fill: vello::peniko::Color,
+    edge: vello::peniko::Color,
+}
+
+/// `block` narrowed to its lane of the column, with a hairline between
+/// neighbours.
+fn in_lane(block: Rect, lane: Lane) -> Rect {
+    if lane.of <= 1 {
+        return block;
+    }
+    let width = block.width() / lane.of as f64;
+    let x0 = block.x0 + width * lane.index as f64;
+    let gap = if lane.index + 1 < lane.of { 1.0 } else { 0.0 };
+    Rect::new(x0, block.y0, x0 + width - gap, block.y1)
 }
 
 fn snap_minute(minute: i64) -> i64 {
@@ -989,9 +1240,11 @@ mod tests {
             let id = Uuid::new_v4();
             let span = TimelineSpan {
                 id,
+                original: days[1],
                 day: days[1],
                 start_min: 10 * 60,
                 end_min: 11 * 60,
+                lane: Lane::default(),
             };
             let from = point_at(1, 10 * 60 + 15);
             assert!(controller.begin_drag(area(), &days, &[span], from));
@@ -1000,6 +1253,7 @@ mod tests {
                 controller.preview(area(), &days),
                 Some(TimelineEffect::Move {
                     id,
+                    original: days[1],
                     day: days[4],
                     start_min: 14 * 60,
                     dur_min: 60,
@@ -1014,9 +1268,11 @@ mod tests {
             let id = Uuid::new_v4();
             let span = TimelineSpan {
                 id,
+                original: days[0],
                 day: days[0],
                 start_min: 8 * 60,
                 end_min: 9 * 60,
+                lane: Lane::default(),
             };
             let point = point_at(0, 8 * 60 + 30);
             controller.pointer = point;
@@ -1035,5 +1291,90 @@ mod tests {
             assert!(controller.preview(area(), &days).is_none());
             assert!(!controller.cancel_drag());
         }
+    }
+
+    #[test]
+    fn dragging_an_events_bottom_edge_changes_only_its_end() {
+        let mut controller = TimelineInteraction::new();
+        controller.test_set_offset_y(0.0);
+        let days = days();
+        let id = Uuid::new_v4();
+        let span = TimelineSpan {
+            id,
+            original: days[2],
+            day: days[2],
+            start_min: 9 * 60,
+            end_min: 10 * 60,
+            lane: Lane::default(),
+        };
+        // Just above the bottom edge is the grip.
+        let mut grip = point_at(2, 10 * 60);
+        grip.y -= 2.0;
+        assert!(controller.resize_grip_at(area(), &days, &[span], grip));
+        assert!(!controller.resize_grip_at(area(), &days, &[span], point_at(2, 9 * 60 + 30)));
+        assert!(controller.begin_drag(area(), &days, &[span], grip));
+        controller.update_drag(point_at(5, 11 * 60 + 40));
+        assert_eq!(
+            controller.preview(area(), &days),
+            Some(TimelineEffect::Resize {
+                id,
+                original: days[2],
+                day: days[2],
+                start_min: 9 * 60,
+                end_min: 11 * 60 + 45,
+            }),
+            "the day stays; the end snaps to a quarter hour"
+        );
+        // An end above the start is the shortest event instead.
+        controller.update_drag(point_at(2, 8 * 60));
+        assert!(matches!(
+            controller.preview(area(), &days),
+            Some(TimelineEffect::Resize { end_min, .. }) if end_min == 9 * 60 + 15
+        ));
+    }
+
+    #[test]
+    fn overlapping_events_share_their_day_side_by_side() {
+        let lane = |index, of| Lane { index, of };
+        // 9–10 and 9:30–11 overlap; 10–10:30 fits beside 9:30–11 in the
+        // first lane; 12–13 stands alone.
+        assert_eq!(
+            lanes(&[(540, 600), (570, 660), (600, 630), (720, 780)]),
+            vec![lane(0, 2), lane(1, 2), lane(0, 2), lane(0, 1)]
+        );
+        // Three at once take three lanes.
+        assert_eq!(
+            lanes(&[(540, 600), (540, 600), (540, 600)]),
+            vec![lane(0, 3), lane(1, 3), lane(2, 3)]
+        );
+        // Back to back is no overlap.
+        assert_eq!(
+            lanes(&[(540, 600), (600, 660)]),
+            vec![lane(0, 1), lane(0, 1)]
+        );
+        // A block hit lands in its own lane.
+        let mut controller = TimelineInteraction::new();
+        controller.test_set_offset_y(0.0);
+        let days = days();
+        let (left, right) = (Uuid::new_v4(), Uuid::new_v4());
+        let span = |id, lane| TimelineSpan {
+            id,
+            original: days[0],
+            day: days[0],
+            start_min: 9 * 60,
+            end_min: 10 * 60,
+            lane,
+        };
+        let spans = [span(left, lane(0, 2)), span(right, lane(1, 2))];
+        let mid = point_at(0, 9 * 60 + 30);
+        let geom = TimelineInteraction::test_geometry(area());
+        let quarter = TimelineInteraction::column_width(area(), 7, geom) / 4.0;
+        let hit = |x: f64| {
+            controller
+                .event_at(area(), &days, &spans, Point::new(x, mid.y))
+                .map(|span| span.id)
+        };
+        assert_eq!(hit(mid.x - quarter), Some(left));
+        assert_eq!(hit(mid.x + quarter), Some(right));
     }
 }

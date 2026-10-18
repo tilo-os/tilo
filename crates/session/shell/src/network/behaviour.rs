@@ -8,10 +8,12 @@
 /// Deterministic 16-bit peer salt from the durable iroh endpoint key.
 pub fn peer_salt_from_keypair(key: &iroh::SecretKey) -> u16 {
     let h = fnv1a_64(key.public().as_bytes());
-    ((h & 0xFFFF) as u16)
-        ^ (((h >> 16) & 0xFFFF) as u16)
-        ^ (((h >> 32) & 0xFFFF) as u16)
-        ^ (((h >> 48) & 0xFFFF) as u16)
+    tilo_desktop_model::ids::device_salt(
+        ((h & 0xFFFF) as u16)
+            ^ (((h >> 16) & 0xFFFF) as u16)
+            ^ (((h >> 32) & 0xFFFF) as u16)
+            ^ (((h >> 48) & 0xFFFF) as u16),
+    )
 }
 
 /// Fold an authenticated endpoint id to the numeric liveness handle carried

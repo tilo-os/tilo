@@ -731,7 +731,9 @@ pub fn session_connector(
     room: &str,
 ) -> ui::collaboration::HostSessionConnector {
     let (app, room) = (app.to_owned(), room.to_owned());
-    ui::collaboration::HostSessionConnector::new(move |_route| async move {
+    // The collaboration socket carries Files' selected descriptors to the
+    // broker, as a launched app's inherited connection does.
+    ui::collaboration::HostSessionConnector::with_descriptor_lane(move |_route| async move {
         let failed = |error: std::io::Error| runtime_portal::NotAvailable::ConnectionFailed(error);
         let services = session_services();
         crate::shell::launcher::register_in_process_launch(&app, &room);

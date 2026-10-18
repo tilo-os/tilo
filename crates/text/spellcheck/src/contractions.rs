@@ -3,8 +3,9 @@
 /// Each contraction's bare form, and the contraction. Word lists hold no
 /// apostrophes, so a corrector resolves these before any edit-distance
 /// search, which would pick a spelling neighbour ("dont" -> "done"). Bare
-/// forms that are words in their own right ("cant", "wont", "ill", "its",
-/// "well", "were", "shell") are absent. Sorted by bare form, which
+/// forms that are words in their own right ("ill", "its", "well", "were",
+/// "shell") are absent; "cant" and "wont" are corrected by
+/// [`crate::sure_correction`], since a word list holds them. Sorted by bare form, which
 /// [`contraction`] searches by halves.
 const CONTRACTIONS: &[(&str, &str)] = &[
     ("arent", "aren't"),

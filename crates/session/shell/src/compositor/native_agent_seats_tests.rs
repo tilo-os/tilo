@@ -302,7 +302,7 @@ fn an_agent_that_moves_to_a_free_strip_stays_there() {
     let _ = fx.seat("a");
     assert_eq!(fx.active_strip(), Some(strip_a));
 
-    // a switches strips itself, as Super+Down does.
+    // a switches strips itself, as Ctrl+Super+Down does.
     fx.frame_builder.with_chrome(|chrome| {
         let _ = chrome.focus_strip(crate::shell::state::StripId(other));
     });

@@ -83,7 +83,7 @@ pub fn apply_local_view(tree: &mut DesktopTree, intent: LocalViewIntent) {
                 .any(|s| s.id == strip && s.window_groups.iter().any(|g| g.id == group))
             {
                 tree.active_strip.insert(tree.active, strip);
-                tree.active_group.insert(strip, group);
+                tree.set_active_group(strip, group);
             }
         }
         other => {

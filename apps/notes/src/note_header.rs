@@ -162,7 +162,10 @@ impl NoteHeader {
             for tag in &self.tags {
                 let mut chip = Chip::new(&tag.name)
                     .with_id(format!("notes.tag-chip:{}", tag.id))
-                    .with_accessible_name(format!("Tag: {}", tag.name))
+                    .with_accessible_name(ui::i18n::I18nManager::format(
+                        "notes-a11y-tag",
+                        &[("tag", ui::i18n::ArgValue::from(tag.name.clone()))],
+                    ))
                     .tooltip(ui::i18n::I18nManager::format(
                         "notes-surface-tag",
                         &[("tag", tag.name.clone().into())],
@@ -200,7 +203,10 @@ impl NoteHeader {
             for backlink in &self.backlinks {
                 let mut chip = Chip::new(backlink_label(backlink))
                     .with_id(format!("notes.backlink-chip:{}", backlink.page))
-                    .with_accessible_name(format!("Linked from: {}", backlink.title))
+                    .with_accessible_name(ui::i18n::I18nManager::format(
+                        "notes-a11y-backlink",
+                        &[("title", ui::i18n::ArgValue::from(backlink.title.clone()))],
+                    ))
                     .tooltip(ui::i18n::I18nManager::format(
                         "notes-surface-backlink",
                         &[("title", backlink.title.clone().into())],

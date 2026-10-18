@@ -316,6 +316,8 @@ windows = { version = "0.62.2", optional = true, features = [
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
 
 [dev-dependencies]
+# Deterministic swapchain lifecycle tests, without a display or GPU.
+wgpu = { workspace = true, features = ["custom", "noop"] }
 serial_test.workspace = true
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 regex.workspace = true

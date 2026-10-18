@@ -157,7 +157,8 @@ mod tests {
             mailbox.insert(message.clone());
             assert!(
                 search(&mailbox)
-                    .search("ÁLA")
+                    // A match inside a word takes four letters.
+                    .search("ÁLAG")
                     .iter()
                     .any(|hit| hit.title == message.subject),
                 "Unicode case folding keeps a mixed-case substring discoverable"

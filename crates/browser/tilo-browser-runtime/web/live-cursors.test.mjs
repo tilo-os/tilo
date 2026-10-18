@@ -52,7 +52,7 @@ test('publishes the local pointer relative to the surface and clears it on leave
 });
 
 test('a pointer over the focused window leaves relative to it, as receivers place it', () => {
-  const windows = [{record: 'note-1', rect: [200, 100, 600, 400]}];
+  const windows = [{app: 'so.tilo.notes', record: 'note-1', rect: [200, 100, 600, 400]}];
   const focus = {app: 'so.tilo.notes', record: 'note-1'};
   assert.deepEqual(publishedPointer([250, 130], focus, windows), [50, 30]);
   assert.deepEqual(placePointer(publishedPointer([250, 130], focus, windows), focus, windows), [250, 130]);
@@ -124,15 +124,34 @@ test('marks agents apart and shows what they are doing', () => {
 
 test('a focused pointer is drawn inside the window of its record', () => {
   const windows = [
-    {record: 'uuid:notes', rect: [0, 40, 400, 600]},
-    {record: 'uuid:sheets', rect: [400, 40, 1000, 600]},
+    {app: 'so.tilo.notes', record: 'uuid:notes', rect: [0, 40, 400, 600]},
+    {app: 'so.tilo.sheets', record: 'uuid:sheets', rect: [400, 40, 1000, 600]},
   ];
   assert.deepEqual(placePointer([30, 20], {app: 'so.tilo.sheets', record: 'uuid:sheets'}, windows), [430, 60]);
   assert.deepEqual(placePointer([900, 20], {app: 'so.tilo.notes', record: 'uuid:notes'}, windows), [399, 60], 'kept within the window');
   assert.equal(placePointer([30, 20], {app: 'so.tilo.notes', record: 'uuid:other'}, windows), null, 'hidden while no window shows its record');
   assert.deepEqual(placePointer([30, 20], null, windows), [30, 20], 'an unfocused pointer is in surface coordinates');
   assert.deepEqual(placePointer([30, 20], {app: 'a', record: 'r'}, undefined), [30, 20], 'a single application has no windows');
+  assert.deepEqual(placePointer([30, 20], {app: 'so.tilo.browser-desktop', record: 'desktop'}, windows), [30, 20], 'a member focused on the desktop points in surface coordinates');
+});
 
+test('an app\'s room record is told apart by its app', () => {
+  // The live layer names an app's room record '' whichever app it is.
+  const windows = [
+    {app: 'so.tilo.notes', record: '', rect: [0, 40, 400, 600]},
+    {app: 'so.tilo.chat', record: '', rect: [400, 40, 1000, 600]},
+  ];
+  const chat = {app: 'so.tilo.chat', record: ''};
+  assert.deepEqual(publishedPointer([450, 100], chat, windows), [50, 60]);
+  assert.deepEqual(placePointer([50, 60], chat, windows), [450, 100]);
+  assert.equal(placePointer([50, 60], {app: 'so.tilo.sheets', record: ''}, windows), null);
+});
+
+test('a focused pointer is drawn as a marker inside its window', () => {
+  const windows = [
+    {app: 'so.tilo.notes', record: 'uuid:notes', rect: [0, 40, 400, 600]},
+    {app: 'so.tilo.sheets', record: 'uuid:sheets', rect: [400, 40, 1000, 600]},
+  ];
   const surface = element();
   const layer = fakeLayer();
   const f = frames();

@@ -3,7 +3,7 @@
 //! With more than one display, a strip is one sub-row per display: every
 //! window group belongs to exactly one display ([`OutputPartition`]), is laid
 //! out, panned and clipped there only, and is never drawn on another. The
-//! primary display carries the wheel disc and the full top bar; every other
+//! primary display carries the strip's leading gutter and the full top bar; every other
 //! display a compact bar along its own top edge. New windows open on the
 //! display with focus; focus moves between displays with the pointer and
 //! with Super+Left/Right past a display's last window, and a group moves to
@@ -20,10 +20,7 @@ use std::collections::HashMap;
 use ui::widget::{GroupRow, StripLane, Widget as _};
 use vello::kurbo::{Point, Rect};
 
-use super::{
-    OutputGeometry, STRIP_TRAILING_GUTTER_PX, ShellOverlayHost, sidebar_width_for_viewport,
-    workspace_rail_clearance_for_viewport,
-};
+use super::{OutputGeometry, STRIP_EDGE_GUTTER_PX, STRIP_TRAILING_GUTTER_PX, ShellOverlayHost};
 use crate::shell::display_bars::DisplayBars;
 use crate::shell::state::{Display, GroupId, StripId};
 use crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX;
@@ -57,6 +54,27 @@ fn distinct_outputs(outputs: &[OutputGeometry]) -> Vec<&OutputGeometry> {
         }
     }
     distinct
+}
+
+/// The connector of the focused display among `outputs`, for a desktop
+/// whose partition has `partitioned` displays and focuses `focused`: what
+/// [`ShellOverlayHost::focused_connector`] answers, for a caller already
+/// holding the chrome state. `None` on one display, where nothing needs
+/// telling apart.
+pub(super) fn focused_connector_in(
+    outputs: &[OutputGeometry],
+    partitioned: usize,
+    focused: Option<u32>,
+) -> Option<String> {
+    if outputs.len() < 2 || partitioned < 2 {
+        return None;
+    }
+    let distinct = distinct_outputs(outputs);
+    focused
+        .and_then(|id| distinct.iter().find(|o| o.id == id))
+        .or_else(|| distinct.first())
+        .map(|o| o.connector.clone())
+        .filter(|connector| !connector.is_empty())
 }
 
 /// The displays as the partition knows them, primary first, a mirror set as
@@ -169,7 +187,7 @@ impl ShellOverlayHost {
                 .is_some_and(|c| c.borrow().tree().desktop.outputs.displays.len() >= 2)
     }
 
-    /// The display the wheel disc and the full top bar live on: the first
+    /// The display the strip's leading gutter and the full top bar live on: the first
     /// the backend lists, which is the primary chosen in Settings.
     pub(super) fn primary_output(&self) -> Option<OutputGeometry> {
         distinct_outputs(&self.outputs)
@@ -195,6 +213,15 @@ impl ShellOverlayHost {
             .map(|o| (*o).clone())
     }
 
+    /// The connector of the display the person is working on (`DP-2`),
+    /// when the desktop spans several displays and the backend names them:
+    /// the display the brightness keys and "brighter" adjust.
+    pub fn focused_connector(&self) -> Option<String> {
+        self.focused_output()
+            .map(|output| output.connector)
+            .filter(|connector| !connector.is_empty())
+    }
+
     /// Where a desktop-wide overlay opens — palette, toasts, prompts,
     /// help, readouts: the focused display, or the whole desktop when there
     /// is one. [`Self::surface_area`] without an anchor.
@@ -213,27 +240,6 @@ impl ShellOverlayHost {
         let outputs = self.layer_outputs();
         self.layer_geometry(&outputs)
             .display_for(anchor.map(|p| Rect::from_points(p, p)))
-    }
-
-    /// Wheel-disc slot plus its gap, sized for the display it sits on.
-    pub(super) fn wheel_clearance(&self) -> f64 {
-        if self.sidebar.is_none() {
-            return 0.0;
-        }
-        let height = match self.primary_output() {
-            Some(primary) if self.is_partitioned() => primary.height,
-            _ => self.rect.height(),
-        };
-        workspace_rail_clearance_for_viewport(height)
-    }
-
-    /// The wheel disc's width, sized for the display it sits on.
-    pub(super) fn sidebar_width(&self) -> f32 {
-        let height = match self.primary_output() {
-            Some(primary) if self.is_partitioned() => primary.height,
-            _ => self.rect.height(),
-        };
-        sidebar_width_for_viewport(ui::num::f32_of_f64(height))
     }
 
     /// Bring the partition in line with the displays just reported. Called
@@ -338,13 +344,12 @@ impl ShellOverlayHost {
             .iter()
             .map(|o| o.y)
             .fold(f64::INFINITY, f64::min);
-        let wheel = self.wheel_clearance();
         order
             .iter()
             .filter_map(|id| {
                 let o = self.outputs.iter().find(|o| o.id == *id)?;
                 let leading_display = Some(o.id) == primary;
-                let leading = leading_display && self.sidebar.is_some();
+                let leading = leading_display;
                 // Every display but the primary draws its own bar along its
                 // top, and so does the primary below the desktop's top
                 // edge; the windows start beneath it. Taken from the
@@ -356,7 +361,7 @@ impl ShellOverlayHost {
                 } else {
                     0.0
                 };
-                let gutter = if leading { wheel } else { 0.0 };
+                let gutter = if leading { STRIP_EDGE_GUTTER_PX } else { 0.0 };
                 Some(StripLane {
                     output: o.id,
                     area: Rect::new(o.x, o.y + band, o.x + o.width, o.y + o.height),
@@ -460,9 +465,6 @@ impl ShellOverlayHost {
             .map(OutputGeometry::rect)
             .collect();
         let presenting = self.focused_output();
-        let beside_rail = presenting
-            .as_ref()
-            .is_some_and(|o| primary.as_ref().is_some_and(|p| p.id == o.id));
         if let Some(surface) = self.desktop_surface_mut() {
             if let Some(backdrop) = surface.backdrop_mut() {
                 backdrop.set_displays(&screens);
@@ -475,7 +477,7 @@ impl ShellOverlayHost {
                 .and_then(ui::widget::Widget::as_any_mut)
                 .and_then(|w| w.downcast_mut::<tilo_desktop::launchpad::CollaborationLaunchpad>())
             {
-                launchpad.set_presentation_area(presenting.map(|o| o.rect()), beside_rail);
+                launchpad.set_presentation_area(presenting.map(|o| o.rect()));
             }
             if let Some(bars) = surface
                 .display_chrome_mut()

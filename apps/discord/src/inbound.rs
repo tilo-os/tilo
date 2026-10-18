@@ -4,7 +4,8 @@
 //! output and plans nothing, and so does anything by a blocked persona.
 
 use discord_wire::event::{
-    Author, Command, MemberChanged, MessageCreated, MessageDeleted, MessageUpdated, ReactionChanged,
+    Author, Command, MemberChanged, MessageCreated, MessageDeleted, MessageUpdated,
+    ReactionChanged, UserName,
 };
 use discord_wire::op::{FetchAssetOp, InAttachment, MemberRolesOp};
 use std::fmt::Write as _;
@@ -90,6 +91,32 @@ pub struct CompleteLinkItem {
     pub discord_user: String,
     pub person: String,
     pub code_sha256: String,
+    pub user_name: String,
+    /// Empty when the account shows its username.
+    pub display_name: String,
+}
+
+/// `rename-link`: a linked account seen under newer names.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RenameItem {
+    pub discord_user: String,
+    pub user_name: String,
+    /// Empty when the account shows its username.
+    pub display_name: String,
+}
+
+/// A `rename-link` for `user` seen as `names`, when they are not what the
+/// link holds; nothing for an account nobody linked.
+fn rename(guild: &Guild, user: &str, names: Option<&UserName>) -> Option<RenameItem> {
+    let names = names?;
+    let link = guild.links.iter().find(|link| link.discord_user == user)?;
+    (link.user_name != names.user_name || link.display_name != names.display_name).then(|| {
+        RenameItem {
+            discord_user: user.to_owned(),
+            user_name: names.user_name.clone(),
+            display_name: names.display_name.clone().unwrap_or_default(),
+        }
+    })
 }
 
 /// Everything one Discord event does in Tilo, each list one verb.
@@ -115,6 +142,8 @@ pub struct InboundPlan {
     pub complete_links: Vec<CompleteLinkItem>,
     /// `unlink`.
     pub unlinks: Vec<String>,
+    /// `rename-link`.
+    pub renames: Vec<RenameItem>,
 }
 
 fn persona(user: &str) -> Persona {
@@ -413,6 +442,8 @@ pub fn plan_member(guild: &Guild, event: &MemberChanged, room: &serde_json::Valu
             Some(&event.roles),
         ));
     }
+    plan.renames
+        .extend(rename(guild, &event.user_id, event.user.as_ref()));
     plan
 }
 
@@ -436,6 +467,16 @@ pub fn plan_command(guild: &Guild, event: &Command) -> InboundPlan {
                 discord_user: event.user_id.clone(),
                 person,
                 code_sha256: hash.clone(),
+                user_name: event
+                    .user
+                    .as_ref()
+                    .map(|user| user.user_name.clone())
+                    .unwrap_or_default(),
+                display_name: event
+                    .user
+                    .as_ref()
+                    .and_then(|user| user.display_name.clone())
+                    .unwrap_or_default(),
             });
         }
         "unlink" if guild.links.iter().any(|l| l.discord_user == event.user_id) => {

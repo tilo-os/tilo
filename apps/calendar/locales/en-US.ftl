@@ -97,3 +97,9 @@ calendar-tasks-inbox = Inbox
 calendar-tasks-today = Today
 calendar-tasks-upcoming = Upcoming
 calendar-tasks-completed = Completed
+
+## A drag on an occurrence of a repeating event
+calendar-repeat-change = Change repeating event
+calendar-repeat-only-this = Only this event
+calendar-repeat-all-future = All future events
+calendar-repeat-failed = Couldn’t move the events: { $error }

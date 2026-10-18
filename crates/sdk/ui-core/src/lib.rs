@@ -436,13 +436,13 @@ pub use widget::command_palette::{
 };
 pub use widget::{AppCommand, AppKind, AppWidget, IconDescriptor};
 pub use widget::{Card, CardGrid, Section, card_column_width, card_columns};
+pub use widget::{ContentKind, NavItem, NavList, NavMode, NavPane, NavSection, NavShell};
 pub use widget::{EditOutcome, EditableLabel};
 pub use widget::{Element, Widget};
 pub use widget::{
     NativeView, NativeViewAccessibility, NativeViewBackend, NativeViewGeometry, NativeViewHost,
     NativeViewInput,
 };
-pub use widget::{NavItem, NavList, NavMode, NavPane, NavSection, NavShell};
 
 pub use widget::{RouteError, RouteHandle, Router};
 // Audit-timeline widgets + their shared types. The `ArtifactKind`
@@ -489,8 +489,7 @@ pub use history_source::runs::{
 };
 pub use richtext::{BaselineShift, FontFamily, RichSpan, RichTextLayout, TextAlign};
 pub use status_bubble::{
-    SAVE_GIVE_UP, SAVE_NOTICEABLE, SAVE_STALL, SaveAction, SaveNotice, SaveState,
-    SaveStatusSurface, StatusBubble,
+    SAVE_GIVE_UP, SAVE_STALL, SaveAction, SaveNotice, SaveState, SaveStatusSurface, StatusBubble,
 };
 pub use text_edit::{
     CaretWord, CharFilter, CharSplice, Edit, EditCore, Motion, SUGGESTION_SETTLE, TypingRun,

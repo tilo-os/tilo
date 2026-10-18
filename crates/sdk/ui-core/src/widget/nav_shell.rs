@@ -25,21 +25,32 @@
 //!   its control (`Icon::History`, a Plain icon button named "History") at
 //!   the trailing edge of the row, and it reads as on while History shows.
 //!   The app adds no History button of its own.
-//! - **Responsive:** below the width where the content would be squeezed
-//!   the sidebar collapses into a floating drawer under the header row (or,
-//!   in [`NavMode::Push`], becomes the first screen of a push stack); the
-//!   overview and the content become push screens with a Back button when
-//!   they no longer fit side by side; the inspector becomes a drawer from
-//!   the trailing edge. Behind an open drawer the other columns stay laid
-//!   out and painted, inert under the scrim, and the header row stays live.
-//!   A person's show/hide choice is remembered per window size class.
+//! - **Responsive:** at any width the shell picks the layout in which
+//!   everything shown is fully usable. The sidebar docks while it fits beside
+//!   the content's real minimum (its [`ContentKind`]), shrinking from its
+//!   width toward its own minimum first. Narrower, the window shows one
+//!   column at a time: the sidebar (or overview) and the content become push
+//!   screens with a Back button, and narrowing keeps the page the person was
+//!   on. Only a content-primary app ([`ContentKind::Document`]) floats its
+//!   sidebar as a drawer over the content instead. An inspector docks while
+//!   the content keeps its minimum beside it and floats from the trailing
+//!   edge otherwise. A drawer is never modal and dims nothing: the content
+//!   beside it stays visible and live, and a press on it puts the drawer
+//!   away. Each threshold has hysteresis (`metrics.layout_hysteresis`), so a
+//!   window resized near it does not flicker. A person's show/hide choice is
+//!   remembered per window size class. The narrowest window the shell works
+//!   at is its compact layout ([`NavShell::minimum_width`]), which the host
+//!   states to the window system.
 //! - **Resizable:** dragging the sidebar's trailing edge resizes it;
 //!   dragging it below its minimum width hides it.
 //! - **Regions:** the sidebar stands on `Region::Sidebar`, the inspector on
 //!   `Region::Inspector`, the overview and content on the window ground;
 //!   each column's children draw with that region's theme.
 //! - **Motion:** hide, show and push move with `motion.durations.base`;
-//!   under reduced motion they cross-fade.
+//!   under reduced motion they cross-fade. A resize that switches the layout
+//!   (docked ↔ one column at a time) moves the columns on from where they
+//!   stood, so nothing jumps under the person during a live resize; under
+//!   reduced motion the columns that moved fade in at their new place.
 //!
 //! There is no width, breakpoint, colour or padding to pass: the shell is
 //! semantic. A filter field for the sidebar's list goes in
@@ -85,22 +96,68 @@ use header_parts::{HeaderTitle, MoreActions};
 /// What the sidebar becomes when the window is too narrow to dock it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum NavMode {
-    /// A floating drawer over the content, summoned by the toggle — a
-    /// sidebar of destinations (mail, files, music).
+    /// The first screen of a push stack: one column at a time fills the
+    /// window, and choosing a destination pushes the content with a Back
+    /// button. Every app's compact layout, unless its content is a
+    /// [`ContentKind::Document`] (then the sidebar floats as a drawer).
     #[default]
-    Overlay,
-    /// The first screen of a push stack: choosing a destination pushes the
-    /// content with a Back button (settings, a list of categories).
     Push,
     /// Always docked: a compact icon rail (`NavList::rail`) that fits beside
     /// the content at every width.
     Docked,
 }
 
+/// What the shell's content is, so the shell knows the narrowest the
+/// content still works at. The sidebar docks while it fits beside that
+/// minimum; below it the window shows one column at a time. Apps say what
+/// their content is, never how wide it is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ContentKind {
+    /// A list or table of items: files, messages, tracks, events
+    /// (`metrics.list_min_width`).
+    List,
+    /// A reading column: a message, an article, a forecast
+    /// (`metrics.reading_min_width`).
+    Reading,
+    /// A page of settings, a form or a page of facts
+    /// (`metrics.page_min_width`). The default.
+    #[default]
+    Page,
+    /// A grid of media tiles: albums, photos, videos
+    /// (`metrics.grid_min_width`).
+    Grid,
+    /// A document or editor the window is for, whose sidebar (an outline,
+    /// the list of documents) is visited now and then: *content-primary*.
+    /// Too narrow to dock, the sidebar floats as a drawer over the content
+    /// instead of taking turns with it. Needs a reading column.
+    Document,
+}
+
+impl ContentKind {
+    /// The narrowest this kind of content still works at, from `metrics`
+    /// (`theme.tokens.metrics`, or [`crate::tokens::Metrics::BASE`] at 1×).
+    #[must_use]
+    pub fn min_width(self, metrics: &crate::tokens::Metrics) -> f32 {
+        match self {
+            Self::List => metrics.list_min_width,
+            Self::Reading | Self::Document => metrics.reading_min_width,
+            Self::Page => metrics.page_min_width,
+            Self::Grid => metrics.grid_min_width,
+        }
+    }
+
+    /// Whether the content is the window's point and its sidebar an
+    /// occasional visit: too narrow to dock, the sidebar floats over it.
+    #[must_use]
+    pub fn is_content_primary(self) -> bool {
+        self == Self::Document
+    }
+}
+
 /// A screen of the narrow push stack.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum NavPane {
-    /// The sidebar, as the first screen in [`NavMode::Push`].
+    /// The sidebar, as the first screen of a narrow window.
     Sidebar,
     /// The overview list.
     Overview,
@@ -293,8 +350,12 @@ struct Metrics {
     inspector: f64,
     drawer: f64,
     drawer_dismiss_band: f64,
-    content_min: f64,
-    detail_min: f64,
+    list_min: f64,
+    reading_min: f64,
+    page_min: f64,
+    grid_min: f64,
+    compact_min: f64,
+    hysteresis: f64,
     filter: f64,
     resize_grip: f64,
     scale: f64,
@@ -320,8 +381,12 @@ impl Metrics {
             inspector: f64::from(m.inspector_width) * growth,
             drawer: f64::from(m.drawer_width) * growth,
             drawer_dismiss_band: f64::from(m.min_pointer_target + s.s4),
-            content_min: f64::from(m.content_min_width) * growth,
-            detail_min: f64::from(m.detail_min_width) * growth,
+            list_min: f64::from(m.list_min_width) * growth,
+            reading_min: f64::from(m.reading_min_width) * growth,
+            page_min: f64::from(m.page_min_width) * growth,
+            grid_min: f64::from(m.grid_min_width) * growth,
+            compact_min: f64::from(m.window_min_width) * growth,
+            hysteresis: f64::from(m.layout_hysteresis),
             filter: crate::widget::text_control_height(
                 f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
                 theme,
@@ -363,6 +428,7 @@ struct ColumnFit {
 #[derive(Clone, Debug)]
 struct Inputs {
     mode: NavMode,
+    kind: ContentKind,
     metrics: Metrics,
     has_sidebar: bool,
     has_overview: bool,
@@ -402,12 +468,49 @@ struct Inputs {
     parts: Vec<Part>,
     /// How each column's actions fit, written by the layout policy.
     fit: Rc<RefCell<[ColumnFit; 4]>>,
+    /// The layout the last applied geometry chose, for hysteresis.
+    held: Held,
+}
+
+/// Which side of each threshold the last applied layout stood on (`None`
+/// before the first layout). A layout that switched away switches back only
+/// once the window is `metrics.hysteresis` past its threshold.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Held {
+    sidebar_docked: Option<bool>,
+    inspector_docked: Option<bool>,
+    list_fits: Option<bool>,
+    rail_fits: Option<bool>,
+}
+
+impl Held {
+    fn of(g: &NavGeometry) -> Self {
+        Self {
+            sidebar_docked: Some(g.sidebar == SidebarPlacement::Docked),
+            inspector_docked: Some(g.inspector == InspectorPlacement::Docked),
+            list_fits: Some(g.overview == OverviewPlacement::List && g.side_by_side),
+            // Wherever the list fits, its rail does too.
+            rail_fits: Some(g.side_by_side),
+        }
+    }
+}
+
+/// Whether `room` reaches `threshold`, given the side the layout stood on
+/// last: a layout that does not hold needs `band` more room to come back.
+fn reaches(room: f64, threshold: f64, held: Option<bool>, band: f64) -> bool {
+    let threshold = if held == Some(false) {
+        threshold + band
+    } else {
+        threshold
+    };
+    room >= threshold - 1e-6
 }
 
 impl Default for Inputs {
     fn default() -> Self {
         Self {
-            mode: NavMode::Overlay,
+            mode: NavMode::Push,
+            kind: ContentKind::default(),
             metrics: Metrics::default(),
             has_sidebar: false,
             has_overview: false,
@@ -433,6 +536,7 @@ impl Default for Inputs {
             push_progress: 1.0,
             parts: Vec::new(),
             fit: Rc::new(RefCell::new(Default::default())),
+            held: Held::default(),
         }
     }
 }
@@ -446,6 +550,30 @@ impl Inputs {
         self.user_sidebar
             .map_or(m.sidebar, |authored| authored * m.scale)
             .clamp(m.sidebar_min, m.sidebar_max)
+    }
+
+    /// The narrowest the content still works at, for its kind.
+    fn content_min(&self) -> f64 {
+        let m = &self.metrics;
+        match self.kind {
+            ContentKind::List => m.list_min,
+            ContentKind::Reading | ContentKind::Document => m.reading_min,
+            ContentKind::Page => m.page_min,
+            ContentKind::Grid => m.grid_min,
+        }
+    }
+
+    /// The narrowest window the shell's compact layout works at: one
+    /// column at a time (or the content under its drawer), never narrower
+    /// than phone width; a rail stays beside the content.
+    fn minimum_width(&self) -> f64 {
+        let m = &self.metrics;
+        let rail = if self.has_sidebar && self.mode == NavMode::Docked {
+            m.rail
+        } else {
+            0.0
+        };
+        (rail + self.content_min()).max(m.compact_min)
     }
 
     fn header_wanted(&self, column: Column) -> bool {
@@ -503,10 +631,6 @@ pub struct NavGeometry {
     back_column: Option<Column>,
     inspector_toggle_column: Option<Column>,
     history_column: Option<Column>,
-    pub scrim: Rect,
-    /// How far the drawer's scrim has faded in, `0..=1`; the theme's
-    /// `surfaces.scrim_strength` is applied at paint.
-    pub scrim_openness: f32,
     pub resize_handle: Rect,
 }
 
@@ -552,7 +676,6 @@ impl NavGeometry {
             history: t(self.history),
             window_controls: t(self.window_controls),
             window_row: t(self.window_row),
-            scrim: t(self.scrim),
             resize_handle: t(self.resize_handle),
             ..self.clone()
         }
@@ -624,26 +747,25 @@ impl NavGeometry {
         parts
     }
 
-    fn sidebar_modal(&self) -> bool {
-        self.sidebar == SidebarPlacement::Drawer && self.sidebar_column.width() > 0.0
+    /// Whether `p` is on the header row, which stays live beside a drawer.
+    fn window_row_contains(&self, p: Point) -> bool {
+        self.header_height > 0.0
+            && Column::ALL
+                .iter()
+                .any(|column| self.header(*column).contains(p))
+            || self.toggle.contains(p)
+            || self.back.contains(p)
+            || self.inspector_toggle.contains(p)
+            || self.history.contains(p)
     }
 
-    fn inspector_modal(&self) -> bool {
-        self.inspector == InspectorPlacement::Drawer && self.inspector_column.width() > 0.0
-    }
-
-    /// An open drawer is modal: the columns under its scrim take no input
-    /// and are not exposed; the header row stays live.
-    fn modal(&self) -> bool {
-        self.sidebar_modal() || self.inspector_modal()
-    }
-
-    fn in_drawer(&self, column: Column) -> bool {
-        match column {
-            Column::Sidebar => self.sidebar_modal(),
-            Column::Inspector => self.inspector_modal(),
-            Column::Overview | Column::Content => false,
-        }
+    /// An open floating drawer, from either edge. A drawer is never modal:
+    /// the content beside it stays visible, exposed and live, and a press
+    /// on it puts the drawer away.
+    fn open_drawer(&self) -> Option<Column> {
+        [Column::Sidebar, Column::Inspector]
+            .into_iter()
+            .find(|column| self.floating(*column) && self.column(*column).width() > 0.0)
     }
 
     fn floating(&self, column: Column) -> bool {
@@ -725,33 +847,46 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     if w <= 0.0 || h <= 0.0 {
         return g;
     }
-    let sw = inputs.sidebar_width().min(w);
     let ow = if inputs.has_overview { m.overview } else { 0.0 };
     let iw = if inputs.has_inspector {
         m.inspector
     } else {
         0.0
     };
-    let content_need = if inputs.has_overview {
-        ow + m.detail_min
-    } else {
-        m.content_min
-    };
+    let held = inputs.held;
+    let band = m.hysteresis;
+    let content_min = inputs.content_min();
+    let content_need = ow + content_min;
+    let rail_sidebar = inputs.mode == NavMode::Docked;
 
-    // 1. The sidebar docks while the content beside it keeps its minimum.
-    g.breakpoint = if inputs.has_sidebar && inputs.mode != NavMode::Docked {
-        sw + content_need
+    // 1. The sidebar docks while it fits beside the content's real minimum,
+    //    shrinking from its width toward its own minimum first. Below that
+    //    the window shows one column at a time (a push stack), or, for a
+    //    content-primary app, floats the sidebar over the content.
+    let preferred = inputs.sidebar_width().min(w);
+    let narrowest = if rail_sidebar {
+        preferred
+    } else {
+        m.sidebar_min.min(preferred)
+    };
+    g.breakpoint = if inputs.has_sidebar && !rail_sidebar {
+        narrowest + content_need
     } else {
         0.0
     };
     g.sidebar = if !inputs.has_sidebar {
         SidebarPlacement::None
-    } else if inputs.mode == NavMode::Docked || w >= g.breakpoint {
+    } else if rail_sidebar || reaches(w, g.breakpoint, held.sidebar_docked, band) {
         SidebarPlacement::Docked
-    } else if inputs.mode == NavMode::Push {
-        SidebarPlacement::Screen
-    } else {
+    } else if inputs.kind.is_content_primary() {
         SidebarPlacement::Drawer
+    } else {
+        SidebarPlacement::Screen
+    };
+    let sw = if g.sidebar == SidebarPlacement::Docked && !rail_sidebar {
+        preferred.min(w - content_need).max(narrowest)
+    } else {
+        preferred
     };
     let sidebar_layout = layout_of(g.sidebar);
     let sidebar_open = inputs.sidebar.is_open(sidebar_layout);
@@ -767,10 +902,16 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         0.0
     };
 
-    // 2. The inspector docks while the content keeps its minimum beside it.
+    // 2. The inspector docks while the content keeps its minimum beside it;
+    //    narrower, it floats over the content from the trailing edge.
     g.inspector = if !inputs.has_inspector {
         InspectorPlacement::None
-    } else if w - docked_target >= content_need + iw {
+    } else if reaches(
+        w - docked_target,
+        content_need + iw,
+        held.inspector_docked,
+        band,
+    ) {
         InspectorPlacement::Docked
     } else {
         InspectorPlacement::Drawer
@@ -791,9 +932,16 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
 
     // 3. Overview and content side by side while both fit; where the list
     //    does not but its rail does, the overview collapses into the rail.
+    //    Beside a docked sidebar the pair fits by construction.
     let region_target = w - docked_target - inspector_target;
-    let list_fits = region_target >= ow + m.detail_min;
-    let rail_fits = inputs.has_rail && region_target >= m.rail + m.detail_min;
+    let beside_sidebar = g.sidebar == SidebarPlacement::Docked && !rail_sidebar;
+    let list_fits = if beside_sidebar {
+        region_target >= content_need - 1e-6
+    } else {
+        reaches(region_target, content_need, held.list_fits, band)
+    };
+    let rail_fits =
+        inputs.has_rail && reaches(region_target, m.rail + content_min, held.rail_fits, band);
     g.overview = if !inputs.has_overview {
         OverviewPlacement::None
     } else if !list_fits && rail_fits {
@@ -881,15 +1029,13 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         }
         SidebarPlacement::Drawer => {
             if sidebar_reveal > 0.001 {
-                // Keep a pointer-sized strip of the scrim exposed so the
+                // Keep a pointer-sized strip of the content exposed so the
                 // drawer can be dismissed even when enlarged text fills it.
                 let dw = m.drawer.min((w - m.gap - m.drawer_dismiss_band).max(0.0));
                 let x0 = m.gap - (dw + m.gap) * (1.0 - sidebar_reveal);
                 g.sidebar_column = Rect::new(x0, drawer_top, x0 + dw, drawer_bottom);
                 (sidebar_header, sidebar_body) =
                     drawer_split(g.sidebar_column, hh, inputs.header_wanted(Column::Sidebar));
-                g.scrim = Rect::new(0.0, hh, w, h);
-                g.scrim_openness = unit_f32(sidebar_reveal);
             }
         }
         SidebarPlacement::Screen => {
@@ -905,7 +1051,7 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     if g.side_by_side {
         let x = region.x0 + screen_x(NavPane::Content);
         let lead = match g.overview {
-            OverviewPlacement::List => ow.min((region_w - m.detail_min).max(0.0)),
+            OverviewPlacement::List => ow.min((region_w - content_min).max(0.0)),
             OverviewPlacement::Rail => m.rail.min(region_w),
             OverviewPlacement::None => 0.0,
         };
@@ -947,10 +1093,6 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
                     hh,
                     inputs.header_wanted(Column::Inspector),
                 );
-                if g.scrim == Rect::ZERO {
-                    g.scrim = Rect::new(0.0, hh, w, h);
-                    g.scrim_openness = unit_f32(inspector_reveal);
-                }
             }
         }
     }
@@ -1227,7 +1369,7 @@ struct OpenBinding {
     wanted: Option<bool>,
 }
 
-/// What the host walks in place of a part under an open drawer's scrim:
+/// What the host walks in place of a push screen that is not in front:
 /// no focus, no semantics, no children. The part itself is still laid out,
 /// painted, synced and updated by the shell.
 #[derive(Debug, Default)]
@@ -1292,7 +1434,7 @@ pub struct NavShell {
     baseline: Vec<(NodeId, Style)>,
     /// The parts in the host tree, in build order.
     host_parts: Vec<Part>,
-    /// What the host meets in place of a part under a drawer's scrim, one
+    /// What the host meets in place of a part of a screen not in front, one
     /// per part in the tree.
     inert_parts: Vec<InertPart>,
     layout_theme: Theme,
@@ -1311,6 +1453,12 @@ pub struct NavShell {
     last_tick: Option<Instant>,
     /// Reduced motion: the sidebar and drawers fade in instead of sliding.
     fade: f64,
+    /// How far the columns a layout switch brought in have faded in, `0..=1`
+    /// (`1` at rest): the columns that appeared or moved where no slide
+    /// carries them, and under reduced motion every one of them.
+    switch_fade: f64,
+    /// Which columns ([`Column::index`]) the layout switch fades in.
+    switch_columns: [bool; 4],
     animating: bool,
     /// The host tree has been built once.
     built: bool,
@@ -1408,6 +1556,8 @@ impl NavShell {
             last_cursor: Point::ZERO,
             last_tick: None,
             fade: 1.0,
+            switch_fade: 1.0,
+            switch_columns: [false; 4],
             animating: false,
             built: false,
             structure_dirty: false,
@@ -1437,6 +1587,24 @@ impl NavShell {
     pub fn toast(&mut self, text: impl Into<String>, kind: ToastKind) {
         self.toasts.push(text, kind);
         self.toasts_dirty = true;
+    }
+
+    /// Show a notice with one button, `action` ("Undo"), beside its text.
+    /// [`Self::take_toast_action`] reports the press.
+    pub fn toast_with_action(
+        &mut self,
+        text: impl Into<String>,
+        kind: ToastKind,
+        action: impl Into<String>,
+    ) {
+        self.toasts.push_with_action(text, kind, action);
+        self.toasts_dirty = true;
+    }
+
+    /// The text of the notice whose button the person pressed since the
+    /// last call.
+    pub fn take_toast_action(&mut self) -> Option<String> {
+        self.toasts.take_activated()
     }
 
     /// Take down the notice showing, when its news no longer holds.
@@ -1595,12 +1763,31 @@ impl NavShell {
         self
     }
 
-    /// What the sidebar becomes in a narrow window.
+    /// What the sidebar becomes in a narrow window: the first push screen
+    /// (the default), or an icon rail docked at every width.
     #[must_use]
     pub fn mode(mut self, mode: NavMode) -> Self {
         self.inputs.borrow_mut().mode = mode;
         self.slots_changed();
         self
+    }
+
+    /// What the content is ([`ContentKind`]): the shell docks the sidebar
+    /// (and the inspector, and the overview beside the content) while the
+    /// content keeps the minimum its kind needs, and the window's narrowest
+    /// width is that minimum's compact layout.
+    #[must_use]
+    pub fn content_kind(mut self, kind: ContentKind) -> Self {
+        self.inputs.borrow_mut().kind = kind;
+        self.slots_changed();
+        self
+    }
+
+    /// The narrowest window this shell works at, in logical pixels: its
+    /// compact layout, one column at a time, at the theme it was last
+    /// built with ([`Widget::minimum_window_width`]).
+    pub fn minimum_width(&self) -> f64 {
+        self.inputs.borrow().minimum_width()
     }
 
     /// Give the shell a stable id for tests and inspection; its headings
@@ -2303,6 +2490,8 @@ impl NavShell {
             inputs.push_progress = 1.0;
         }
         self.fade = 1.0;
+        self.switch_fade = 1.0;
+        self.switch_columns = [false; 4];
         self.animating = false;
         self.structure_dirty = true;
         self.invalidate();
@@ -2475,8 +2664,9 @@ impl NavShell {
         }
     }
 
-    /// A part under an open drawer's scrim: laid out and painted, but it
-    /// takes no input and is not exposed. The header row stays live.
+    /// A part of a push screen that is not in front: laid out while it
+    /// slides, but it takes no input and is not exposed. A floating drawer
+    /// is not modal, so nothing beside it is inert.
     fn part_inert(&self, part: Part) -> bool {
         let g = &self.geometry;
         // Both screens remain laid out during a push animation, but only
@@ -2513,22 +2703,11 @@ impl NavShell {
                 return true;
             }
         }
-        if !g.modal() {
-            return false;
-        }
-        match part {
-            Part::Body(column) => !g.in_drawer(column),
-            Part::Filter => self
-                .geometry
-                .filter_column(&self.inputs.borrow())
-                .is_none_or(|column| !g.in_drawer(column)),
-            Part::Controls | Part::Rail => true,
-            _ => false,
-        }
+        false
     }
 
-    /// What the host meets for `part`: the part, or a stand-in while it is
-    /// under a drawer's scrim, so a walk that pairs children with the
+    /// What the host meets for `part`: the part, or a stand-in while its
+    /// push screen is not in front, so a walk that pairs children with the
     /// tree's nodes never reaches an inert column.
     fn exposed(&self, part: Part) -> Option<&dyn Widget> {
         if self.part_inert(part) {
@@ -2540,7 +2719,7 @@ impl NavShell {
     /// The parts the host walks: those in the host tree once it is built,
     /// in its order (the host pairs them with the tree's nodes), and every
     /// owned part before the first build, when there is no tree for their
-    /// order to disagree with. A part under a drawer's scrim answers as an
+    /// order to disagree with. A part of a screen not in front answers as an
     /// [`InertPart`]; an action in the More menu stays, so its door is still
     /// published.
     fn exposed_parts(&self) -> Vec<Part> {
@@ -2778,6 +2957,21 @@ impl NavShell {
                 }
             }
         }
+        if self.switch_fade < 1.0 {
+            // A layout switch's fade: `base`, at most `fast` under reduced
+            // motion.
+            let span = theme.motion().fade(base).as_secs_f64();
+            self.switch_fade = if span <= 0.0 {
+                1.0
+            } else {
+                (self.switch_fade + dt / span).min(1.0)
+            };
+            if self.switch_fade >= 1.0 {
+                self.switch_columns = [false; 4];
+            }
+            self.paint_dirty = true;
+            moving |= self.switch_fade < 1.0;
+        }
         if reduce && self.fade < 1.0 {
             let fast = theme.tokens.motion.durations.fast().as_secs_f64();
             self.fade = if fast <= 0.0 {
@@ -2786,7 +2980,7 @@ impl NavShell {
                 (self.fade + dt / fast).min(1.0)
             };
             self.paint_dirty = true;
-            self.animating = self.fade < 1.0;
+            self.animating = self.fade < 1.0 || moving;
             if !self.animating {
                 self.last_tick = None;
             }
@@ -2813,7 +3007,7 @@ impl NavShell {
     /// Note a change of size class: the sidebar's choice for the new class
     /// applies, and a collapse keeps the pane the person worked in. An
     /// inspector the app took away keeps the choice made for it.
-    fn reconcile_size_class(&mut self) {
+    fn reconcile_size_class(&mut self, before: &NavGeometry) {
         let layout = layout_of(self.geometry.sidebar);
         let stack = self.geometry.stack.clone();
         let previous = self.last_stack.replace(stack.clone());
@@ -2827,13 +3021,33 @@ impl NavShell {
             }
         }
         if previous.as_ref() != Some(&stack) {
+            let switched = previous.is_some();
             // The first layout opens on the stack's first screen unless the
             // app chose one; a later collapse keeps the pane the person
             // worked in.
+            // A later collapse lands where the keyboard is (a list the person
+            // is arrowing through stays in front, focus with it), else on
+            // the pane they last worked in.
             let keep = match (previous, self.pane_chosen) {
-                (None, false) => stack.first().copied().unwrap_or(NavPane::Content),
+                // A new window opens on the first list of items: the
+                // content's own list where it has one (a mail window on the
+                // inbox, a Files window on the folder; Back goes to the
+                // mailboxes or places), else the sidebar (Settings' list).
+                (None, false) => {
+                    let kind = self.inputs.borrow().kind;
+                    if stack.contains(&NavPane::Overview) {
+                        NavPane::Overview
+                    } else if kind == ContentKind::List {
+                        NavPane::Content
+                    } else {
+                        stack.first().copied().unwrap_or(NavPane::Content)
+                    }
+                }
                 (None, true) => self.front_pane(),
-                (Some(_), _) => self.active_hint.unwrap_or(NavPane::Content),
+                (Some(_), _) => self
+                    .focused_pane()
+                    .or(self.active_hint)
+                    .unwrap_or(NavPane::Content),
             };
             let mut inputs = self.inputs.borrow_mut();
             inputs.pane = if stack.is_empty() || stack.contains(&keep) {
@@ -2845,9 +3059,113 @@ impl NavShell {
             inputs.push_from = None;
             inputs.push_progress = 1.0;
             drop(inputs);
+            if switched {
+                self.move_into_layout(before);
+            }
             self.structure_dirty = true;
             self.update_toggle_names();
             self.invalidate();
+        }
+    }
+
+    /// Carry the columns from where they stood (`before`, in the shell's
+    /// own coordinates) into the layout a resize switched to, so nothing
+    /// jumps under the person during a live resize (motion,
+    /// `motion.durations.base`):
+    ///
+    /// - Narrowing into one column at a time, the screen in front slides
+    ///   from where it stood beside the sidebar to fill the window, the
+    ///   sidebar sliding out under the leading edge: the push stack's own
+    ///   slide, started part-way.
+    /// - Widening into a docked sidebar the person was not looking at, the
+    ///   sidebar slides in from the leading edge and the content makes room.
+    /// - A column that appears or moves where no slide carries it fades in.
+    ///
+    /// Under reduced motion nothing slides: every column that appeared or
+    /// moved fades in over `motion.durations.fast`.
+    fn move_into_layout(&mut self, before: &NavGeometry) {
+        let (w, h) = (self.rect.width(), self.rect.height());
+        if w <= 0.0 || h <= 0.0 {
+            return;
+        }
+        let reduce = self.layout_theme.reduce_motion;
+        // The new layout, settled on its front screen.
+        let after = plan(&self.inputs.borrow(), w, h);
+        let mut carried = [false; 4];
+        if !reduce {
+            let mut inputs = self.inputs.borrow_mut();
+            let front = inputs.pane;
+            let front_column = match front {
+                NavPane::Sidebar => Column::Sidebar,
+                NavPane::Overview => Column::Overview,
+                NavPane::Content => Column::Content,
+            };
+            let was = before.column(front_column);
+            let is = after.column(front_column);
+            if after.stack.contains(&front)
+                && was.width() > 0.0
+                && is.width() > 0.0
+                && (was.x0 - is.x0).abs() > 0.5
+            {
+                // Screen `i` stands at `(i - pos) * w` from its settled
+                // place: start the slide where the front screen stood.
+                let i = f64_of_usize(stack_index(&after.stack, front));
+                let last = f64_of_usize(after.stack.len().saturating_sub(1));
+                let from = (i - (was.x0 - is.x0) / w).clamp(0.0, last);
+                inputs.push_from = Some(from);
+                inputs.push_pos = Some(from);
+                inputs.push_progress = 0.0;
+                for (column, pane) in [
+                    (Column::Sidebar, NavPane::Sidebar),
+                    (Column::Overview, NavPane::Overview),
+                    (Column::Content, NavPane::Content),
+                ] {
+                    carried[column.index()] = after.stack.contains(&pane);
+                }
+            }
+            if before.sidebar != SidebarPlacement::Docked
+                && after.sidebar == SidebarPlacement::Docked
+                && before.sidebar_column.width() <= 0.0
+            {
+                inputs.sidebar.slide_in(SplitLayout::Docked);
+                // The sidebar slides in and the columns beside it make
+                // room as it does.
+                carried = [true; 4];
+            }
+        }
+        let mut faded = [false; 4];
+        for column in Column::ALL {
+            let (was, is) = (before.column(column), after.column(column));
+            let appeared = is.width() > 0.0 && was.width() <= 0.0;
+            let moved = is.width() > 0.0 && was.width() > 0.0 && (was.x0 - is.x0).abs() > 0.5;
+            faded[column.index()] = !carried[column.index()] && (appeared || moved);
+        }
+        if faded.contains(&true) {
+            self.switch_columns = faded;
+            self.switch_fade = 0.0;
+        }
+        if carried.contains(&true) || faded.contains(&true) {
+            self.last_tick.get_or_insert_with(crate::time::now);
+            self.animating = true;
+        }
+    }
+
+    /// The pane holding keyboard focus, if a list column holds it.
+    fn focused_pane(&self) -> Option<NavPane> {
+        fn holds_focus(widget: &dyn Widget) -> bool {
+            if widget.is_focused() {
+                return true;
+            }
+            let mut found = false;
+            widget.for_each_child(&mut |child| found = found || holds_focus(child));
+            found
+        }
+        if self.sidebar.as_deref().is_some_and(holds_focus) {
+            Some(NavPane::Sidebar)
+        } else if self.overview.as_deref().is_some_and(holds_focus) {
+            Some(NavPane::Overview)
+        } else {
+            None
         }
     }
 
@@ -2943,11 +3261,10 @@ impl NavShell {
         }
         self.paint_rules(f.scene, f.transform, f.theme, &g);
 
-        // Drawers over the columns, behind their scrim, under the header
-        // row; the row's buttons stay above everything.
-        let open_drawer = g.floating(Column::Sidebar) && g.sidebar_column.width() > 0.0
-            || g.floating(Column::Inspector) && g.inspector_column.width() > 0.0;
-        if open_drawer {
+        // Drawers over the columns, under the header row; the row's buttons
+        // stay above everything. No scrim: a drawer is not modal, and the
+        // content beside it stays as it is, under the drawer's shadow.
+        if g.open_drawer().is_some() {
             let faded = fade < 1.0;
             if faded {
                 f.scene.push_layer(
@@ -2956,15 +3273,6 @@ impl NavShell {
                     fade,
                     f.transform,
                     &self.rect,
-                );
-            }
-            if g.scrim.width() > 0.0 {
-                crate::overlay::scrim::modal(
-                    f.scene,
-                    f.transform,
-                    g.scrim,
-                    g.scrim_openness,
-                    f.theme,
                 );
             }
             for column in [Column::Inspector, Column::Sidebar] {
@@ -3077,10 +3385,16 @@ impl NavShell {
         }
         let local = self.column_theme(f.theme, Some(column));
         let clip = rect.intersect(self.rect);
+        // A column a layout switch brought in fades in.
+        let alpha = if self.switch_columns[column.index()] {
+            unit_f32(self.switch_fade)
+        } else {
+            1.0
+        };
         f.scene.push_layer(
             vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
-            1.0,
+            alpha,
             f.transform,
             &clip,
         );
@@ -3588,10 +3902,18 @@ impl Widget for NavShell {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        // The layout as it stood, in the shell's own coordinates: a switch
+        // of layout moves on from there.
+        let before = self
+            .geometry
+            .translated(Vec2::new(-self.rect.x0, -self.rect.y0));
         self.rect = crate::widget::layout_rect(taffy, node, origin);
         self.refresh_geometry();
-        self.reconcile_size_class();
+        self.reconcile_size_class(&before);
         self.refresh_geometry();
+        // The side of each threshold this layout stands on: the next one
+        // switches back only past the hysteresis band.
+        self.inputs.borrow_mut().held = Held::of(&self.geometry);
         let child_origin = Point::new(self.rect.x0, self.rect.y0);
         let child_nodes = taffy.children(node).unwrap_or_default();
         let parts = self.host_parts.clone();
@@ -3846,6 +4168,10 @@ impl Widget for NavShell {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn minimum_window_width(&self) -> Option<f64> {
+        Some(self.minimum_width())
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
@@ -4196,17 +4522,17 @@ impl NavShell {
             });
             return true;
         }
-        if g.scrim.width() > 0.0 && g.scrim.contains(p) {
-            let in_sidebar = g.sidebar_modal() && g.sidebar_column.contains(p);
-            let in_inspector = g.inspector_modal() && g.inspector_column.contains(p);
-            if !in_sidebar && !in_inspector {
-                if g.sidebar_modal() {
-                    self.toggle_sidebar();
-                } else if g.inspector_modal() {
-                    self.toggle_inspector();
-                }
-                return true;
+        // A press on the content beside an open drawer puts the drawer away
+        // (and does nothing else); the header row stays live.
+        if let Some(column) = g.open_drawer()
+            && !g.column(column).contains(p)
+            && !g.window_row_contains(p)
+        {
+            match column {
+                Column::Sidebar => self.toggle_sidebar(),
+                _ => self.toggle_inspector(),
             }
+            return true;
         }
         // Remember which content pane the person works in.
         if g.content_column.contains(p) {
@@ -4304,6 +4630,13 @@ impl NavShell {
                         Part::Body(_) | Part::Rail | Part::Filter | Part::Controls
                     )
                 });
+            }
+            // Over an open drawer, the pointer is the drawer's alone: what
+            // it does not take never falls through to the content under it.
+            if let Some(column) = self.geometry.open_drawer()
+                && self.geometry.column(column).contains(p)
+            {
+                order.retain(|(part, _)| self.part_column(*part) == Some(column));
             }
             let rank = |part: &Part| -> u8 {
                 if self

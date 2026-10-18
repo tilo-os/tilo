@@ -148,7 +148,7 @@ it is cheap enough to rely on.
 
 This also settles what search is for. It is not a file finder that happens to
 list apps; it is the way you reach any record from anywhere, and provenance is
-part of the result row. Drag onto a workspace spoke in the wheel disc stays as
+part of the result row. Drag onto a workspace in the overview stays as
 the bulk gesture, for when you are moving several things and already have them
 in front of you.
 

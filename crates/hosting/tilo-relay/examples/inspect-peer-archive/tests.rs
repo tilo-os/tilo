@@ -304,7 +304,7 @@ fn readable_export_contains_sent_content_and_shared_draft_without_changing_heads
     let writer_export = readable("so.tilo.word-processor", "tab:0000000000000001", writer).unwrap();
     assert_eq!(writer_export["body_text"], "Recovery test");
     assert_eq!(writer.base_heads(), before);
-    let mut chat = recovered.docs[&("so.tilo.chat".into(), String::new())].clone();
+    let chat = recovered.docs[&("so.tilo.chat".into(), String::new())].clone();
     let channel = chat::projection::read(&chat).channel_rows().remove(0).id;
     let mut part = AutoCommit::new();
     chat::demo::say_in_part(
@@ -315,15 +315,8 @@ fn readable_export_contains_sent_content_and_shared_draft_without_changing_heads
         "Sent archive content",
     )
     .unwrap();
-    // Historical archives can contain drafts from before drafts became private.
-    // Build that legacy shape without restoring a shared-draft live API.
-    let mut drafts = chat::drafts::ChatDrafts::default();
-    drafts.drafts.insert(
-        channel.clone(),
-        tilo_document::RichText::from_markdown("Unsent shared draft"),
-    );
-    tilo_resource::Fields::write_fields(&drafts, &mut chat, &automerge::ROOT).unwrap();
-    chat.commit();
+    // A draft is its writer's own, kept in their person record, never in
+    // the room's chat record this archive reads.
     let before = chat.base_heads();
     let export = readable("so.tilo.chat", "", &chat).unwrap();
     let row = export["channels"]
@@ -332,7 +325,7 @@ fn readable_export_contains_sent_content_and_shared_draft_without_changing_heads
         .iter()
         .find(|c| c["id"] == channel)
         .unwrap();
-    assert_eq!(row["draft"], "Unsent shared draft");
+    assert_eq!(row["draft"], "");
     assert_eq!(chat.base_heads(), before);
     let part_before = part.base_heads();
     let export = readable("so.tilo.chat", chat::parts::part(0).as_str(), &part).unwrap();

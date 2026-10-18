@@ -82,7 +82,7 @@ jobs:
           mkdir -p "$review/files"
           # The candidates name the image they were rendered on.
           bash tools/ci/golden-image.sh record "$BUILDER_IMAGE"
-          for directory in e2e wheel_disc; do
+          for directory in e2e; do
             python3 tools/test-assets.py \
               crates/session/shell/tests/snapshots/artifacts.json \
               --prune-identical-candidates "crates/session/shell/tests/snapshots/$directory"
@@ -101,28 +101,24 @@ jobs:
             crates/sdk/ui-core/tests/fixtures/typography \
             apps/ebook/tests/fixtures/typography \
             crates/session/shell/tests/snapshots/e2e \
-            crates/session/shell/tests/snapshots/wheel_disc \
             .config/visual-goldens-image \
             | xargs -0 -r git add -N --
           git diff --name-only --diff-filter=AM -- \
             crates/sdk/ui-core/tests/fixtures/typography \
             apps/ebook/tests/fixtures/typography \
             crates/session/shell/tests/snapshots/e2e \
-            crates/session/shell/tests/snapshots/wheel_disc \
             .config/visual-goldens-image \
             > "$review/changed-files.txt"
           git diff --stat -- \
             crates/sdk/ui-core/tests/fixtures/typography \
             apps/ebook/tests/fixtures/typography \
             crates/session/shell/tests/snapshots/e2e \
-            crates/session/shell/tests/snapshots/wheel_disc \
             .config/visual-goldens-image \
             > "$review/diff-stat.txt"
           git diff --binary -- \
             crates/sdk/ui-core/tests/fixtures/typography \
             apps/ebook/tests/fixtures/typography \
             crates/session/shell/tests/snapshots/e2e \
-            crates/session/shell/tests/snapshots/wheel_disc \
             .config/visual-goldens-image \
             > "$review/candidates.patch"
           while IFS= read -r path; do

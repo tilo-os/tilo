@@ -958,21 +958,7 @@ fn tab_request_message(
     request: crate::shell_tabs::TabRequest,
     instance: Option<u64>,
 ) -> crate::floating_surface::FloatingSurfaceClientMessage {
-    use crate::floating_surface::FloatingSurfaceClientMessage as Message;
-    use crate::shell_tabs::TabRequest;
-    match request {
-        TabRequest::OpenBeside { target, background } => Message::OpenTabBeside {
-            target,
-            background,
-            instance,
-        },
-        TabRequest::CloseThis => Message::CloseTab { instance },
-        TabRequest::ReopenClosed => Message::ReopenClosedTab,
-        TabRequest::PlaceNextWindowBeside { background } => Message::PlaceNextWindowBeside {
-            background,
-            instance,
-        },
-    }
+    request.message(instance)
 }
 
 impl App {
@@ -1006,8 +992,11 @@ impl App {
             }
             TabRequest::CloseThis => self.floating.close_window_requested = true,
             // A window this app starts itself is placed by the host's own
-            // window manager, and there is no closed-tab history to reopen.
-            TabRequest::ReopenClosed | TabRequest::PlaceNextWindowBeside { .. } => {}
+            // window manager, and there is no closed-tab history to reopen
+            // nor a group of tabs to step through.
+            TabRequest::ReopenClosed
+            | TabRequest::CycleTab { .. }
+            | TabRequest::PlaceNextWindowBeside { .. } => {}
         }
     }
 

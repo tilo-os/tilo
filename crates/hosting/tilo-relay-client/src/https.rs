@@ -1,6 +1,8 @@
-//! The browser carriers to the host (PR 541's model): HTTPS for the durable
-//! plane and certification. The live plane runs over WebTransport in the
-//! page and only needs [`live_grant`] from here.
+//! The HTTPS carrier to a host: the durable plane and certification for a
+//! browser page (through its `fetch`), and for a native device reaching a
+//! host that publishes no iroh address (`tilo_relay_session::RelayClient`
+//! over this link). The live plane runs over WebTransport in the page and
+//! only needs [`live_grant`] from here.
 //!
 //! A [`HttpsLink`] is the same session an iroh peer has: the
 //! [`auth`](tilo_relay_protocol::auth) challenge (the device signs only the
@@ -11,7 +13,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use tilo_relay_client::DeviceSigner;
+use crate::DeviceSigner;
 use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::auth::{self, AuthError, Hello, HelloAck2};
 use tilo_relay_protocol::certify::CertifyReply;
@@ -31,7 +33,7 @@ pub type HttpFuture<'a> = Pin<Box<dyn Future<Output = Result<(u16, Vec<u8>), Str
 
 /// `POST` to the host origin. The page implements it with `fetch`; native
 /// peers and tests with a Rust client. `Err` means the host was not reached.
-pub trait HttpClient: tilo_relay_client::MaybeSendSync {
+pub trait HttpClient: crate::MaybeSendSync {
     /// Post `body` to `path` (below the host origin), with the session token
     /// header when `session` is set.
     fn post(&self, path: &str, session: Option<&str>, body: Vec<u8>) -> HttpFuture<'_>;
@@ -236,7 +238,7 @@ pub async fn here(
 
 /// Take a record's channel content keys from the room's steward, as a
 /// public room's spectator, which is no channel member and asks nothing
-/// over the channel.
+/// over the channel. The answer carries the keys in their encoded form.
 ///
 /// # Errors
 ///
@@ -247,16 +249,14 @@ pub async fn channel_keys(
     client: &dyn HttpClient,
     session: &str,
     request: &tilo_relay_protocol::web::ChannelKeysRequest,
-) -> Result<channel_crypto::ChannelContentKeys, LinkError> {
-    let reply: tilo_relay_protocol::web::ChannelKeys = call(
+) -> Result<tilo_relay_protocol::web::ChannelKeys, LinkError> {
+    call(
         client,
         tilo_relay_protocol::web::CHANNEL_KEYS_PATH,
         Some(session),
         encode(request)?,
     )
-    .await?;
-    channel_crypto::ChannelContentKeys::from_bytes(&reply.keys)
-        .map_err(|error| LinkError::Malformed(error.to_string()))
+    .await
 }
 
 /// Send a member's input for a legacy window
@@ -364,6 +364,27 @@ pub async fn join(
     call(client, "/join", None, encode(step)?).await
 }
 
+/// One request of the host's workspace join exchange
+/// ([`WORKSPACE_JOIN_PATH`](tilo_relay_protocol::web::WORKSPACE_JOIN_PATH)):
+/// `request` is an encoded `JoinTransportRequest`, the answer the encoded
+/// response.
+///
+/// # Errors
+///
+/// Returns [`LinkError`] when the host is not reached or governs no rooms.
+pub async fn workspace_join(
+    client: &dyn HttpClient,
+    request: Vec<u8>,
+) -> Result<Vec<u8>, LinkError> {
+    call_raw(
+        client,
+        tilo_relay_protocol::web::WORKSPACE_JOIN_PATH,
+        None,
+        request,
+    )
+    .await
+}
+
 /// An authenticated HTTPS session with the host.
 pub struct HttpsLink {
     outbound: mpsc::UnboundedSender<Envelope>,
@@ -372,6 +393,7 @@ pub struct HttpsLink {
     client: Arc<dyn HttpClient>,
     end: watch::Sender<bool>,
     features: u64,
+    host: auth::AuthenticatedPeer,
 }
 
 impl HttpsLink {
@@ -405,7 +427,7 @@ impl HttpsLink {
         .map_err(|error| LinkError::Malformed(error.to_string()))?;
         // The host device is pinned, so it may be another person's: the
         // host of a room this device was invited to.
-        auth::verify_pinned_host_ack(
+        let host = auth::verify_pinned_host_ack(
             &challenge.ack,
             revocations,
             tilo_clock::unix_now_ns(),
@@ -457,6 +479,7 @@ impl HttpsLink {
             client,
             end,
             features,
+            host,
         })
     }
 
@@ -501,6 +524,12 @@ impl HttpsLink {
     /// The next envelope from the host; `None` once the link ended.
     pub async fn recv(&mut self) -> Option<Envelope> {
         self.inbound.recv().await
+    }
+
+    /// The host as the handshake verified it: the pinned device, and the
+    /// person whose root certified it.
+    pub fn host(&self) -> &auth::AuthenticatedPeer {
+        &self.host
     }
 
     /// The session token, for [`live_grant`].

@@ -479,6 +479,11 @@ impl HistoryRuntime {
 pub(super) struct WindowRuntime {
     pub(super) fullscreen_requested: bool,
     pub(super) fullscreen_active: bool,
+    /// The narrowest the window's layout works at, as of the last tree
+    /// build ([`crate::widget::minimum_window_width`]), and what the window
+    /// system was last told.
+    pub(super) minimum_width: Option<f64>,
+    pub(super) minimum_width_stated: Option<f64>,
     pub(super) title: Option<String>,
     pub(super) app_id: Option<String>,
 }
@@ -488,6 +493,8 @@ impl WindowRuntime {
         Self {
             fullscreen_requested: false,
             fullscreen_active: false,
+            minimum_width: None,
+            minimum_width_stated: None,
             title: None,
             app_id: None,
         }

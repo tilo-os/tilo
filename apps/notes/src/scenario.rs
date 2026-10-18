@@ -25,6 +25,7 @@ pub const SCENARIOS: &[&str] = &[
     "rename",
     "rename_commit",
     "slash",
+    "slash_query",
     "slash_applied",
     "heading",
     "fenced_code",
@@ -50,9 +51,10 @@ pub const SCENARIOS: &[&str] = &[
     "table_large_scrolled",
     "table_cell_edit",
     "image",
+    "image_sized",
+    "long_list",
     "image_edit",
     "status",
-    "saving",
     "save_retrying",
     "save_not_saved",
     "save_error",
@@ -63,6 +65,7 @@ pub const SCENARIOS: &[&str] = &[
     "find",
     "scrolled",
     "sidebar_scroll",
+    "mention",
 ];
 
 /// A 16:9-ish desktop window that shows the sidebar and a full page.
@@ -95,6 +98,8 @@ fn types_into_new_note(scenario: Option<&str>) -> bool {
                 | "paragraph_click"
                 | "typed_lists"
                 | "slash"
+                | "mention"
+                | "slash_query"
                 | "slash_applied"
                 | "heading"
                 | "fenced_code"
@@ -247,6 +252,36 @@ fn launch_body(scenario: Option<&str>) -> String {
             }
             source
         }
+        Some("image_sized") => format!(
+            "# Images stay part of the note\n\nA picture keeps the width it was sized to.\n\n![Settings external accounts|360](asset:{})\n",
+            blake3::hash(IMAGE).to_hex()
+        ),
+        Some("long_list") => {
+            let mut body = String::from("## Moving checklist\n\n");
+            for (index, step) in [
+                "Book the van",
+                "Order boxes",
+                "Pack the books",
+                "Forward the mail",
+                "Cancel the internet",
+                "Defrost the freezer",
+                "Photograph the meters",
+                "Clean the oven",
+                "Return the keys",
+                "Update the address",
+                "Unpack the kitchen",
+                "Invite the neighbours",
+            ]
+            .iter()
+            .enumerate()
+            {
+                let _ = writeln!(body, "{}. {step}", index + 1);
+                if index == 2 {
+                    body.push_str("   The heavy ones go in the small boxes.\n");
+                }
+            }
+            body
+        }
         Some("image" | "image_edit") => format!(
             "# Images stay part of the note\n\nWorkspace images load asynchronously without blocking typing or escaping the collaboration sandbox.\n\n![Settings external accounts](asset:{})\n",
             blake3::hash(IMAGE).to_hex()
@@ -316,7 +351,7 @@ pub fn actions(scenario: Option<&str>) -> Vec<Action> {
         let blocks = MainPanel::seed_blocks(body, |title| titles.get(title).copied());
         out.push(actions::write_body_action(id, &blocks));
     }
-    if matches!(scenario, Some("image" | "image_edit")) {
+    if matches!(scenario, Some("image" | "image_edit" | "image_sized")) {
         // The image itself: the body already names it by its digest.
         out.push(actions::keep_image_action(IMAGE.to_vec()));
     }
@@ -417,7 +452,7 @@ pub fn input(scenario: Option<&str>, driver: &mut FrameHarness) -> Result<(), St
             reveal_sidebar(driver);
             let rect = semantic_name_rect(driver, LAUNCH).ok_or("sidebar focus target missing")?;
             driver.click_at(rect.center().x, rect.center().y);
-            driver.key("?");
+            chord(driver, &["ctrl"], "/");
             if scenario == Some("shortcuts_bottom") {
                 driver.key("End");
             }
@@ -462,8 +497,10 @@ pub fn input(scenario: Option<&str>, driver: &mut FrameHarness) -> Result<(), St
                 "- Gather ideas",
                 "Write a first draft",
                 "",
+                "",
                 "1. Review the draft",
                 "Share with the team",
+                "",
                 "",
                 "- [ ] Follow up tomorrow",
             ]
@@ -477,6 +514,11 @@ pub fn input(scenario: Option<&str>, driver: &mut FrameHarness) -> Result<(), St
             }
         }
         Some("slash") => driver.type_text("/"),
+        Some("mention") => {
+            show_room(driver);
+            driver.type_text("Ask @");
+        }
+        Some("slash_query") => driver.type_text("Groceries for Monday /c"),
         Some("slash_applied") => {
             driver.type_text("/h1");
             driver.key("Enter");
@@ -508,7 +550,7 @@ pub fn input(scenario: Option<&str>, driver: &mut FrameHarness) -> Result<(), St
             driver.key("End");
             driver.type_text(" Chen");
         }
-        Some("image" | "image_edit") => {
+        Some("image" | "image_edit" | "image_sized") => {
             let deadline = ui::time::now() + std::time::Duration::from_secs(2);
             let target = loop {
                 driver.relayout();
@@ -594,7 +636,7 @@ pub fn input(scenario: Option<&str>, driver: &mut FrameHarness) -> Result<(), St
             }
         }
         Some("presence") => show_collaborators(driver)?,
-        Some("saving" | "save_error") => {
+        Some("save_error") => {
             let first = visible_block_rects(driver)
                 .into_iter()
                 .next()
@@ -644,6 +686,23 @@ fn show_collaborators(driver: &mut FrameHarness) -> Result<(), String> {
     presence.upsert_remote_cursor("bob".into(), [1500.0, 380.0], Some("Bob"));
     driver.set_presence_context(presence);
     Ok(())
+}
+
+/// The room around the note: two people and an agent the `@` list offers.
+fn show_room(driver: &mut FrameHarness) {
+    use ui::permissions::UserId;
+    use ui::presence::{ParticipantKind, PresenceCtx};
+    let mut presence = PresenceCtx::empty();
+    for (id, name, kind) in [
+        ("alice", "Alice Moreau", ParticipantKind::Person),
+        ("aaron", "Aaron Kim", ParticipantKind::Person),
+        ("agent:scribe", "Scribe", ParticipantKind::Agent),
+    ] {
+        presence.set_display_name(UserId(id.into()), name);
+        presence.set_participant_kind(UserId(id.into()), kind);
+    }
+    driver.set_presence_context(presence);
+    driver.relayout();
 }
 
 /// Open the narrow drawer when the notes tree is hidden behind it.

@@ -76,6 +76,15 @@ pub enum Action {
     /// Move to a live group's empty tab-bar grab zone. Unlike raw screen
     /// coordinates this remains valid in compact and normal viewport sweeps.
     MoveCursorGroupGrab(usize),
+    /// Move to 2 px inside a live group's leading (`leading: true`) or
+    /// trailing edge, at mid-height: where a person grabs a window's edge.
+    MoveCursorGroupEdge {
+        group: usize,
+        leading: bool,
+    },
+    /// Move the cursor `dx` px sideways from where it is, keeping its y, so a
+    /// drag can be stepped without baking viewport geometry into a shot.
+    MoveCursorBy(f64),
     /// Move an active whole-group drag beyond the named group's midpoint,
     /// resolving the after-slot without baking viewport geometry into a shot.
     MoveCursorGroupReorderTarget(usize),
@@ -333,38 +342,12 @@ pub enum Action {
         /// Milliseconds into the curve.
         at_ms: &'static [u64],
     },
-    /// Press on the workspace wheel's rim and drag it `dy` px vertically
-    /// in `steps` increments, WITHOUT releasing.
-    ///
-    /// Self-locating: the press lands on the disc's own laid-out rect,
-    /// so the scenario does not carry coordinates that go stale when the
-    /// sidebar's width changes with the viewport. Leaving the button
-    /// down is the point — the indicator stepping across workspaces is a
-    /// mid-drag state, and a scenario that released could never capture
-    /// it.
-    DragWheelRim {
-        dy: f64,
-        steps: u32,
-    },
-    /// Sample the workspace wheel's settle at fixed points along its
-    /// curve and capture each as `prefix-<ms>`.
-    ///
-    /// The escape [`Action::SampleTabReveal`] gives, pointed at the
-    /// wheel: a release's settle lasts about half a second and one
-    /// offscreen render costs more wall time than that, so stepping
-    /// frames catches the wheel where it was let go and then already
-    /// parked. This asks the disc to hold the production spring at a
-    /// chosen millisecond instead, and what renders is the production
-    /// `draw` there.
-    SampleWheelSettle {
-        prefix: &'static str,
-        /// Milliseconds into the settle.
-        at_ms: &'static [u64],
-    },
     /// Put the selection on the `idx`-th group of the active strip, or
     /// clear it entirely with `None` — which is the state rule 3 (place
     /// at a seam) is about.
     SelectGroup(Option<usize>),
+    /// Close the focused window, as its close button or `tab.close` does.
+    CloseFocusedWindow,
     /// Seed the status tray with a named hardware state.
     ///
     /// The live poller is deliberately absent from a `--shots` render —
@@ -426,8 +409,10 @@ pub enum Action {
     ///
     /// A capture of windows moving needs more than one of them on
     /// screen, and the default width is the whole display.
-    SetWindowWidths(u16),
+    SetWindowWidths(u32),
     SwitchWorkspace(usize),
+    /// Give every workspace its Lounge, as a session start does.
+    EnsureLounges,
     PushQsLevel(QsLevel),
     /// Open the production host-session first-login chrome with an isolated,
     /// nonexistent identity path so screenshot tests cannot mutate user data.
@@ -561,8 +546,8 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
     apply_pointer_and_capture(driver, action, sink);
     apply_open_window(driver, action);
     apply_add_hosted_tab(driver, action);
-    apply_hosted_window_and_wheel_drag(driver, action);
-    apply_wheel_and_reveal_samples(driver, action, sink);
+    apply_hosted_window(driver, action);
+    apply_reveal_samples(driver, action, sink);
     apply_make_space_sample_and_widths(driver, action, sink);
     apply_seed_status_and_file_picker(driver, action);
     apply_seed_wifi_and_select_group(driver, action);
@@ -639,6 +624,12 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
                 eprintln!("scenario: could not resolve group {index}'s drag handle");
             }
         }
+        Action::MoveCursorGroupEdge { group, leading } => {
+            if !driver.move_cursor_to_group_edge(*group, *leading) {
+                eprintln!("scenario: could not resolve group {group}'s edge");
+            }
+        }
+        Action::MoveCursorBy(dx) => driver.move_cursor_by(*dx),
         Action::MoveCursorGroupReorderTarget(index) => {
             if !driver.move_cursor_to_group_reorder_target(*index) {
                 eprintln!("scenario: could not resolve group {index}'s reorder target");
@@ -957,9 +948,9 @@ fn apply_add_hosted_tab(driver: &mut ShellDriver, action: &Action) {
     }
 }
 
-/// `Action::OpenHostedWindow` and `Action::DragWheelRim` — split out of
-/// [`apply`] to keep that dispatcher short.
-fn apply_hosted_window_and_wheel_drag(driver: &mut ShellDriver, action: &Action) {
+/// `Action::OpenHostedWindow` and `Action::EnableNativeAppSearch` — split
+/// out of [`apply`] to keep that dispatcher short.
+fn apply_hosted_window(driver: &mut ShellDriver, action: &Action) {
     match action {
         Action::OpenHostedWindow { app, title } => {
             let kind = app_kind_for(app);
@@ -997,140 +988,49 @@ fn apply_hosted_window_and_wheel_drag(driver: &mut ShellDriver, action: &Action)
                 Err(error) => eprintln!("scenario: could not enable native app search: {error}"),
             }
         }
-        Action::DragWheelRim { dy, steps } => {
-            driver.relayout();
-            let Some(rect) = driver
-                .host_mut()
-                .sidebar_wheel_mut_for_tests()
-                .map(|w| ui::Widget::get_rect(w))
-            else {
-                eprintln!("scenario: no wheel disc in the tree to drag");
-                return;
-            };
-            if rect.area() <= 0.0 {
-                eprintln!("scenario: the wheel disc has not laid out yet — paint first?");
-                return;
-            }
-            // Continue an existing gesture rather than starting a new
-            // one. Two of these back to back is how a scenario captures
-            // a drag at more than one depth, and pressing again half way
-            // through does not do that: the second press lands on
-            // whichever sector has rotated under the pointer by then,
-            // which the disc reads as *clicking* that workspace, and no
-            // drag starts at all. The release afterwards then has
-            // nothing to settle.
-            let in_flight = driver
-                .host_mut()
-                .sidebar_wheel_mut_for_tests()
-                .and_then(|w| w.drag_from.map(|_| w.last_cursor_pos))
-                .flatten();
-            let from = if let Some(p) = in_flight {
-                p
-            } else {
-                // A third of the way in from the rim, vertically
-                // centred: inside the arc at every rotation, and
-                // clear of the add-workspace button at the bottom.
-                let p = Point::new(
-                    rect.x0 + rect.width() * 0.66,
-                    f64::midpoint(rect.y0, rect.y1),
-                );
-                driver.move_cursor(p);
-                driver.press();
-                p
-            };
-            let n = (*steps).max(1);
-            for s in 1..=n {
-                let t = f64::from(s) / f64::from(n);
-                driver.move_cursor(Point::new(from.x, from.y + dy * t));
-                // One frame per increment so the follow spring actually
-                // integrates — with no frames between moves the rim
-                // never gets anywhere and the drag is a teleport.
-                driver.step_frames(1);
-            }
-        }
         _ => {}
     }
 }
 
-/// `Action::SampleWheelSettle` and `Action::SampleTabReveal` — split out
-/// of [`apply`] to keep that dispatcher short.
-fn apply_wheel_and_reveal_samples<S: SnapshotSink>(
-    driver: &mut ShellDriver,
-    action: &Action,
-    sink: &mut S,
-) {
-    match action {
-        Action::SampleWheelSettle { prefix, at_ms } => {
-            // Settle the content before sampling anything.
-            //
-            // Committing a workspace swaps the content underneath, and
-            // the strip that comes in has its own per-widget animations
-            // (a tab bar's reveal, a group's spawn fade). Sampling
-            // straight after the release caught those a frame or two in,
-            // and the earliest frames of the strip — which are the whole
-            // job of a sampled-curve capture — showed them rather than
-            // the wheel.
-            //
-            // Spending frames here is free: every sample re-derives the
-            // wheel's curve from the settle's recorded starting state,
-            // so whatever the spring does meanwhile is discarded. Only
-            // the content keeps the time, which is the point.
-            driver.step_frames(24);
+/// `Action::SampleTabReveal` — split out of [`apply`] to keep that
+/// dispatcher short.
+fn apply_reveal_samples<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut S) {
+    if let Action::SampleTabReveal { prefix, at_ms } = action {
+        // Freezing an animation curve at a chosen offset needs
+        // `bar_mut_for_tests`, which is `cfg(any(test,
+        // debug_assertions))` — the toolkit does not expose its
+        // internals to a release build, and should not start doing
+        // so for a capture tool. So this one scenario is
+        // debug-only; every other scenario builds and runs in
+        // release, which is what lets `shots` be built at all in
+        // the configuration a session actually ships in.
+        #[cfg(not(debug_assertions))]
+        {
+            let _ = (driver, sink, prefix, at_ms);
+            eprintln!(
+                "scenario: SampleTabReveal needs a debug build (it freezes an \
+                 animation curve through a debug-only accessor); skipping"
+            );
+        }
+        #[cfg(debug_assertions)]
+        {
+            // Lay out once so the hover that preceded this has latched a
+            // curve, then freeze it before a render's worth of wall time
+            // can retire it.
             driver.relayout();
-            for ms in *at_ms {
-                let held = match driver.host_mut().sidebar_wheel_mut_for_tests() {
-                    None => {
-                        eprintln!("scenario: no wheel disc in the tree to sample at {ms} ms");
-                        false
-                    }
-                    Some(w) => w.hold_rotation_at(std::time::Duration::from_millis(*ms)),
-                };
-                if !held {
-                    eprintln!("scenario: no wheel settle recorded to sample at {ms} ms");
-                }
-                driver.relayout();
-                let name: &'static str = Box::leak(format!("{prefix}-{ms:03}ms").into_boxed_str());
-                sink.capture(driver, name);
-            }
+            sample_held(
+                driver,
+                sink,
+                prefix,
+                at_ms,
+                "tab reveal in flight",
+                |row, at| {
+                    row.groups.iter_mut().fold(false, |any, g| {
+                        g.bar_mut_for_tests().hold_reveal_at(at) | any
+                    })
+                },
+            );
         }
-        Action::SampleTabReveal { prefix, at_ms } => {
-            // Freezing an animation curve at a chosen offset needs
-            // `bar_mut_for_tests`, which is `cfg(any(test,
-            // debug_assertions))` — the toolkit does not expose its
-            // internals to a release build, and should not start doing
-            // so for a capture tool. So this one scenario is
-            // debug-only; every other scenario builds and runs in
-            // release, which is what lets `shots` be built at all in
-            // the configuration a session actually ships in.
-            #[cfg(not(debug_assertions))]
-            {
-                let _ = (prefix, at_ms);
-                eprintln!(
-                    "scenario: SampleTabReveal needs a debug build (it freezes an \
-                     animation curve through a debug-only accessor); skipping"
-                );
-            }
-            #[cfg(debug_assertions)]
-            {
-                // Lay out once so the hover that preceded this has latched a
-                // curve, then freeze it before a render's worth of wall time
-                // can retire it.
-                driver.relayout();
-                sample_held(
-                    driver,
-                    sink,
-                    prefix,
-                    at_ms,
-                    "tab reveal in flight",
-                    |row, at| {
-                        row.groups.iter_mut().fold(false, |any, g| {
-                            g.bar_mut_for_tests().hold_reveal_at(at) | any
-                        })
-                    },
-                );
-            }
-        }
-        _ => {}
     }
 }
 
@@ -1280,6 +1180,34 @@ fn apply_seed_status_and_file_picker(driver: &mut ShellDriver, action: &Action) 
             }
             driver.host_mut().pump_file_picker();
             seed_file_picker_fixture(driver);
+            // The writer's Document tab is the window that asks: in front,
+            // focused, and the window the chooser is a sheet on.
+            let mut document = None;
+            driver.with_chrome(|chrome| {
+                let mut tree = chrome.tree_mut();
+                for strip in tree
+                    .desktop
+                    .workspaces
+                    .iter_mut()
+                    .flat_map(|workspace| &mut workspace.strips)
+                {
+                    for group in &mut strip.window_groups {
+                        if let Some(tab) = group.tabs.iter_mut().find(|tab| tab.title == "Document")
+                        {
+                            tab.tile = shell::shell::state::TileContent::Foreign {
+                                app_id: "so.tilo.word-processor".into(),
+                                surface_id: tab.id,
+                            };
+                            document = Some((strip.id, group.id, tab.id));
+                        }
+                    }
+                }
+            });
+            driver.relayout();
+            if let Some((strip, group, tab)) = document {
+                driver.host_mut().focus_window_on_strip(strip, group, tab);
+            }
+            driver.relayout();
             let queue = FilePickerQueue::new();
             driver.host_mut().set_portal_queues(
                 PromptQueueHandle::new(PromptResolver::Channel),
@@ -1306,12 +1234,17 @@ fn apply_seed_status_and_file_picker(driver: &mut ShellDriver, action: &Action) 
                 PickerFilter::from_pairs("Images", &[(1, "image/png".into())]),
             ])
             .current_name(save.then(|| "Untitled.md".to_string()));
-            // The reply receiver is dropped: a screenshot has nobody to
-            // hand the answer to. The dialog does not care — it is the
-            // portal side that reads a closed channel as "cancelled".
-            let (tx, _rx) = tokio::sync::oneshot::channel();
+            // The scenario waits on the answer the way the asking app does:
+            // a request whose app has gone is closed at the next frame.
+            thread_local! {
+                static WAITING: std::cell::RefCell<Vec<tokio::sync::oneshot::Receiver<Option<Vec<std::path::PathBuf>>>>> =
+                    const { std::cell::RefCell::new(Vec::new()) };
+            }
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            WAITING.with(|waiting| waiting.borrow_mut().push(rx));
             queue.spawn(shell::portal::FilePickerRequest {
                 caller: opts.caller,
+                parent_window: None,
                 title: opts.title,
                 save: opts.save,
                 directory: opts.directory,
@@ -1483,6 +1416,14 @@ fn apply_seed_wifi_and_select_group(driver: &mut ShellDriver, action: &Action) {
                 st.bump();
             });
         }
+        Action::CloseFocusedWindow => {
+            driver.with_chrome(|st: &mut ChromeState| {
+                if let Some(tab) = shell::shell::window_actions::active_tab_id(st) {
+                    let _ = shell::shell::window_actions::close_tab(st, tab);
+                }
+                st.bump();
+            });
+        }
         _ => {}
     }
 }
@@ -1551,6 +1492,12 @@ fn apply_window_and_workspace_actions(driver: &mut ShellDriver, action: &Action)
                     None => eprintln!("shots: this host mounts no Notes"),
                 }
             }
+        }
+        Action::EnsureLounges => {
+            driver.with_chrome(|st: &mut ChromeState| {
+                st.tree_mut().desktop.ensure_lounges();
+                st.bump();
+            });
         }
         Action::SwitchWorkspace(idx) => {
             driver.with_chrome(|st: &mut ChromeState| {
@@ -1675,6 +1622,19 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
         "palette_query": palette_query,
         "revision": st.revision,
         "groups_per_strip": groups_per_strip,
+        // Where each window is drawn and where the pointer is, so a resize
+        // can be read off a capture to the pixel.
+        "tab_tiles": host
+            .tab_tiles()
+            .iter()
+            .map(|(tab, r)| serde_json::json!([tab, r.x0, r.y0, r.x1, r.y1]))
+            .collect::<Vec<_>>(),
+        "strip_scroll": host
+            .strip_scroll_offsets()
+            .iter()
+            .map(|(strip, scroll, max)| serde_json::json!([strip, scroll, max]))
+            .collect::<Vec<_>>(),
+        "pointer": [driver.cursor().x, driver.cursor().y],
     })
     .to_string()
 }
@@ -1725,13 +1685,13 @@ const PAN_SETTLE_FRAMES: u32 = 16;
 /// Window width the strip is held at, in per-mille of the display's
 /// usable width. Half a screen each puts two windows in view with a
 /// third clipped at the edge.
-const HALF_WIDTH_PERMILLE: u16 = 500;
+const HALF_WIDTH_PERMILLE: u32 = 500;
 
 /// Window width, per-mille of the display's usable width, that puts three
 /// windows on screen at once. A third of the strip each is the shape a
 /// demo takes when it wants several apps visible together, and it is the
 /// shape a group's tab strip has the least room in.
-const THIRD_WIDTH_PERMILLE: u16 = 333;
+const THIRD_WIDTH_PERMILLE: u32 = 333;
 
 /// Points along the pill's 180 ms reveal curve worth looking at. Dense
 /// at the start, where the ease-out does most of its travelling.
@@ -1747,12 +1707,6 @@ const SIBLING_FADE_SAMPLES: &[u64] = &[0, 20, 40, 65, 100, 130];
 
 /// Frames to let the motion finish before the settled capture.
 const PLACEMENT_SETTLE_FRAMES: u32 = 8;
-
-/// Points along the workspace wheel settle for overscroll captures.
-const SETTLE_SAMPLES: &[u64] = &[0, 60, 140, 240, 400];
-
-/// One workspace on the wheel disc is 15° / 0.15 = 100 px of drag.
-const PER_WORKSPACE_PX: f64 = 100.0;
 
 /// Resolve a [`Action::SeedStatus`] preset name into the reading the
 /// poller would have published.
@@ -1919,7 +1873,10 @@ fn desk_widgets_scenario() -> Scenario {
             Action::Snapshot("10-closed"),
             Action::Super(SuperGesture::Peek),
             Action::Wait(14),
-            Action::Snapshot("11-super-peek"),
+            Action::Snapshot("11-super-peek-quiet-stage"),
+            Action::Super(SuperGesture::PeekFull),
+            Action::Wait(14),
+            Action::Snapshot("11b-super-peek-grown"),
             Action::Super(SuperGesture::PeekReleased),
             Action::SnapshotSequence {
                 prefix: "12-peek-released",
@@ -2883,7 +2840,7 @@ fn build_scenarios() -> Vec<Scenario> {
         },
         Scenario {
             name: "palette_typing",
-            description: "Open the command palette, type 'h', then close with Esc.",
+            description: "Open the command palette, type 'h', clear it with Esc, then close it with Esc.",
             actions: vec![
                 Action::Snapshot("01-desktop"),
                 Action::OpenPalette,
@@ -2891,9 +2848,13 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Snapshot("02-palette-open"),
                 Action::Type("h"),
                 Action::Snapshot("03-palette-typed-h"),
+                // Esc clears a query first and closes only an empty field.
                 Action::Key(Key::Named(NamedKey::Escape)),
                 Action::Wait(2),
-                Action::Snapshot("04-palette-closed"),
+                Action::Snapshot("04-palette-cleared"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::Wait(2),
+                Action::Snapshot("05-palette-closed"),
             ],
         },
         // Apps of the manifest registry this host cannot run: on a Mac
@@ -2920,6 +2881,51 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Snapshot("03-desktop-only-app"),
             ],
         },
+        // The search palette's interaction: a long result list that scrolls
+        // and offers the rest of a capped group, keyboard paging, a held
+        // modifier's preview, an argument step with values to pick from,
+        // and Escape clearing the query before it closes.
+        Scenario {
+            name: "palette_interaction",
+            description: "Search 's', page and tab through it, hold Shift on an app, pick a value for 'lock after', Escape out.",
+            actions: vec![
+                Action::OpenPalette,
+                Action::Wait(2),
+                Action::Type("s"),
+                Action::Wait(2),
+                Action::Snapshot("01-s"),
+                Action::Type("ettings"),
+                Action::Wait(2),
+                Action::Snapshot("02-settings"),
+                Action::Key(Key::Named(NamedKey::Tab)),
+                Action::Snapshot("03-tab"),
+                Action::Key(Key::Named(NamedKey::End)),
+                Action::Snapshot("04-end"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::Type("editor"),
+                Action::Wait(2),
+                Action::Modifiers(ModifiersState::SHIFT),
+                Action::Wait(1),
+                Action::Snapshot("05-editor-shift-held"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::Type("lock after"),
+                Action::Wait(2),
+                Action::Snapshot("06-lock-after"),
+                Action::Key(Key::Named(NamedKey::ArrowDown)),
+                Action::Key(Key::Named(NamedKey::Enter)),
+                Action::Wait(2),
+                Action::Snapshot("07-lock-after-values"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::Wait(2),
+                Action::Snapshot("08-back-to-results"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::Wait(2),
+                Action::Snapshot("09-query-cleared"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::Wait(2),
+                Action::Snapshot("10-closed"),
+            ],
+        },
         Scenario {
             name: "palette_close_anim",
             description: "Open the palette, Escape, and capture the exit animation frames.",
@@ -2942,8 +2948,7 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Snapshot("01-tabs-initial"),
                 Action::Drag {
                     // Approximate centres of pills 1 and 3 inside the first
-                    // window group's tab bar at viewport (1600, 900) with the
-                    // sidebar wheel taking ~200 px of left padding.
+                    // window group's tab bar at viewport (1600, 900).
                     from: Point::new(360.0, 130.0),
                     to: Point::new(560.0, 130.0),
                     steps: 8,
@@ -3060,132 +3065,79 @@ fn build_scenarios() -> Vec<Scenario> {
             ],
         },
         Scenario {
-            name: "wheel_scroll_workspaces",
-            description: "Scroll the workspace wheel via MouseWheel; capture every animation frame.",
+            name: "lounge",
+            description: "Every workspace's Lounge: first, with the room's chat, tasks and \
+             notes, and the strip switcher listing it above the person's own strips.",
             actions: vec![
-                // Move cursor over the wheel disc (left edge of viewport).
-                Action::MoveCursor(Point::new(80.0, 540.0)),
-                Action::Snapshot("00-pre"),
-                // Negative dy advances forward (LineDelta sign convention
-                // matches a wheel-down gesture). 8 lines × 16 px/line =
-                // 128 px, which at a 48-px detent is two workspaces plus a
-                // remainder the idle timer clears.
-                Action::MouseWheel { dx: 0.0, dy: -8.0 },
-                Action::SnapshotSequence {
-                    prefix: "detent-1",
-                    frames: 12,
-                    gap_frames: 1,
-                },
-                Action::MouseWheel { dx: 0.0, dy: -8.0 },
-                Action::SnapshotSequence {
-                    prefix: "detent-2",
-                    frames: 12,
-                    gap_frames: 1,
-                },
-            ],
-        },
-        Scenario {
-            name: "wheel_drag_feel",
-            description: "Drag the workspace wheel's rim across the list with the button held,              then sample the release settle along its curve.",
-            actions: vec![
-                Action::Snapshot("00-rest"),
-                // A third of a workspace: not yet past the boundary, so the
-                // indicator is still on the workspace we started from while
-                // the disc is visibly turned off its detent. Deliberately
-                // not one HALF — that is exactly the boundary, and a
-                // capture there tips one way or the other and shows neither
-                // state clearly.
-                Action::DragWheelRim {
-                    dy: -PER_WORKSPACE_PX * 0.35,
-                    steps: 10,
-                },
-                Action::Snapshot("01-part-way"),
-                Action::MouseRelease,
-                Action::Wait(45),
-                // One, two, three workspaces, each captured while still held.
-                Action::DragWheelRim {
-                    dy: -PER_WORKSPACE_PX,
-                    steps: 14,
-                },
-                Action::Snapshot("02-one-workspace-held"),
-                Action::DragWheelRim {
-                    dy: -PER_WORKSPACE_PX,
-                    steps: 14,
-                },
-                Action::Snapshot("03-two-workspaces-held"),
-                Action::MouseRelease,
-                Action::Wait(60),
-                Action::Snapshot("04-settled-at-the-end"),
-                // Now a flick: the same distance covered in a third of the
-                // moves, so the pointer is still travelling fast when the
-                // button comes up. Sampling THIS is the point — a release
-                // from rest has almost nothing to show, whereas a flick has
-                // to coast the length of the list and decelerate, which is
-                // the entire claim about weight.
-                Action::DragWheelRim {
-                    dy: PER_WORKSPACE_PX * 1.6,
-                    steps: 5,
-                },
-                Action::MouseRelease,
-                Action::SampleWheelSettle {
-                    prefix: "05-coast",
-                    at_ms: SETTLE_SAMPLES,
-                },
-                Action::Wait(60),
-                Action::Snapshot("06-landed"),
-            ],
-        },
-        Scenario {
-            name: "wheel_overscroll_at_the_end",
-            description: "Pull the workspace wheel past the first workspace, where the list ends,              and sample its return.",
-            actions: vec![
-                Action::Snapshot("00-rest"),
-                // Downward from the first workspace is off the top of the
-                // list. 90 px asks for 13.5°; resistance gives back far less.
-                Action::DragWheelRim {
-                    dy: 90.0,
-                    steps: 12,
-                },
-                Action::Snapshot("01-pulled"),
-                // More than three times the pull, for nowhere near three
-                // times the give. Kept inside the disc's own column: the
-                // pointer has to still be over the wheel when the button
-                // comes up, or the release is routed to whatever is under
-                // it instead and the gesture never ends.
-                Action::DragWheelRim {
-                    dy: 200.0,
-                    steps: 20,
-                },
-                Action::Snapshot("02-pulled-hard"),
-                Action::MouseRelease,
-                Action::SampleWheelSettle {
-                    prefix: "03-returning",
-                    at_ms: SETTLE_SAMPLES,
-                },
-                Action::Wait(60),
-                Action::Snapshot("04-back-at-the-end"),
-            ],
-        },
-        Scenario {
-            name: "wheel_summon_at_pointer",
-            description: "Pan the strip until the wheel scrolls away, summon it back to the \
-             pointer with Super+S, then dismiss it with Escape.",
-            actions: vec![
-                Action::MoveCursor(Point::new(900.0, 500.0)),
-                Action::Snapshot("00-docked"),
-                // Pan right, carrying the wheel off the left edge with the
-                // rest of the workspace canvas.
-                Action::MouseWheel { dx: -12.0, dy: 0.0 },
-                Action::MouseWheel { dx: -12.0, dy: 0.0 },
-                Action::Snapshot("01-scrolled-away"),
-                // Call it to the pointer, out on the right where the work is.
-                Action::MoveCursor(Point::new(1180.0, 620.0)),
+                Action::EnsureLounges,
+                Action::Relayout,
+                Action::Wait(10),
+                Action::Snapshot("00-lounge"),
                 Action::Modifiers(ModifiersState::SUPER),
                 Action::Key(Key::Character("s".into())),
                 Action::Modifiers(ModifiersState::empty()),
-                Action::Snapshot("02-summoned"),
+                Action::Wait(10),
+                Action::Snapshot("01-switcher"),
+            ],
+        },
+        Scenario {
+            name: "strip_switcher",
+            description: "The strip ribbon at rest, a new strip named from the keyboard \
+             (Super+S), the pointer coming to rest on the ribbon opening the card, \
+             renaming the first strip Lounge, and Escape closing it.",
+            actions: vec![
+                Action::MoveCursor(Point::new(800.0, 500.0)),
+                Action::WaitWall(1700),
+                Action::Snapshot("00-rest"),
+                Action::Modifiers(ModifiersState::SUPER),
+                Action::Key(Key::Character("s".into())),
+                Action::Modifiers(ModifiersState::empty()),
+                Action::Wait(10),
+                Action::Snapshot("01-super-s"),
+                Action::Key(Key::Named(NamedKey::ArrowDown)),
+                Action::Key(Key::Named(NamedKey::Enter)),
+                Action::Type("Research"),
+                Action::Wait(4),
+                Action::Snapshot("02-naming-a-new-strip"),
+                Action::Key(Key::Named(NamedKey::Enter)),
+                Action::Wait(4),
+                Action::Snapshot("03-created"),
+                Action::MoveCursor(Point::new(800.0, 500.0)),
+                Action::WaitWall(1700),
+                Action::MoveCursor(Point::new(1200.0, 462.0)),
+                Action::WaitWall(8),
+                Action::MoveCursor(Point::new(1350.0, 462.0)),
+                Action::WaitWall(8),
+                Action::MoveCursor(Point::new(1450.0, 462.0)),
+                Action::WaitWall(8),
+                Action::MoveCursor(Point::new(1515.0, 462.0)),
+                Action::WaitWall(8),
+                Action::MoveCursor(Point::new(1552.0, 462.0)),
+                Action::WaitWall(8),
+                Action::MoveCursor(Point::new(1572.0, 462.0)),
+                Action::WaitWall(8),
+                Action::MoveCursor(Point::new(1582.0, 462.0)),
+                Action::WaitWall(8),
+                Action::MoveCursor(Point::new(1587.0, 462.0)),
+                Action::WaitWall(8),
+                Action::MoveCursor(Point::new(1589.0, 462.0)),
+                Action::WaitWall(8),
+                Action::MoveCursor(Point::new(1590.0, 462.0)),
+                Action::WaitWall(8),
+                Action::WaitWall(120),
+                Action::Wait(10),
+                Action::Snapshot("04-aimed-open"),
+                Action::ClickNamed("strip_switcher.rename.1"),
+                Action::Key(Key::Named(NamedKey::Backspace)),
+                Action::Type("Lounge"),
+                Action::Wait(4),
+                Action::Snapshot("05-renaming"),
+                Action::Key(Key::Named(NamedKey::Enter)),
+                Action::Wait(4),
+                Action::Snapshot("06-renamed"),
                 Action::Key(Key::Named(NamedKey::Escape)),
-                Action::Snapshot("03-dismissed"),
+                Action::Wait(4),
+                Action::Snapshot("07-closed"),
             ],
         },
         Scenario {
@@ -3455,8 +3407,8 @@ fn build_scenarios() -> Vec<Scenario> {
              forward, then back — with the rail reading out where that is.",
             actions: vec![
                 // Cursor over the active tile / strip area (well below the
-                // topbar's persistent band and well to the right of the sidebar
-                // gutter).
+                // topbar's persistent band and well clear of the leading
+                // edge gutter).
                 Action::MoveCursor(Point::new(900.0, 500.0)),
                 Action::Snapshot("00-before"),
                 // A sideways swipe steps focus one window along the strip —
@@ -3958,8 +3910,8 @@ fn build_scenarios() -> Vec<Scenario> {
             ],
         },
         Scenario {
-            name: "searched_app_opens_at_rightmost_space",
-            description: "Search for an app with a full strip; it opens in the rightmost visible space before the first off-screen window.",
+            name: "searched_app_opens_beside_focus",
+            description: "Search for an app with a full strip; it opens as its own window right of the one you are in.",
             actions: vec![
                 Action::LoneWindow(0),
                 Action::SelectGroup(Some(0)),
@@ -3997,6 +3949,136 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::SetWindowWidths(333),
                 Action::Wait(8),
                 Action::Snapshot("03-after-open"),
+            ],
+        },
+        Scenario {
+            name: "strip_edge_resize",
+            description: "Notes, Terminal and Files side by side, Files focused. Hover and drag \
+                      Files' left edge (the seam it shares with Terminal) left and back, then \
+                      Shift+drag it, then drag its right edge: only Files changes width on a \
+                      plain drag, its opposite edge holds still, and Shift trades width with \
+                      Terminal alone.",
+            actions: vec![
+                Action::LoneWindow(0),
+                Action::SelectGroup(Some(0)),
+                Action::OpenHostedWindow {
+                    app: "Terminal",
+                    title: "Terminal",
+                },
+                Action::SelectGroup(Some(1)),
+                Action::OpenHostedWindow {
+                    app: "Files",
+                    title: "Files",
+                },
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::SetWindowWidths(300),
+                Action::SelectGroup(Some(2)),
+                Action::Wait(PLACEMENT_SETTLE_FRAMES * 3),
+                Action::Relayout,
+                Action::Snapshot("01-files-focused"),
+                Action::MoveCursorGroupEdge {
+                    group: 2,
+                    leading: true,
+                },
+                Action::Wait(2),
+                Action::Snapshot("02-hover-files-left-edge"),
+                Action::MousePress,
+                Action::MoveCursorBy(-40.0),
+                Action::Wait(1),
+                Action::Snapshot("03-drag-left-040"),
+                Action::MoveCursorBy(-40.0),
+                Action::Wait(1),
+                Action::Snapshot("03-drag-left-080"),
+                Action::MoveCursorBy(-40.0),
+                Action::Wait(1),
+                Action::Snapshot("03-drag-left-120"),
+                Action::MoveCursorBy(200.0),
+                Action::Wait(1),
+                Action::Snapshot("03-drag-right-080"),
+                Action::MouseRelease,
+                Action::Wait(PLACEMENT_SETTLE_FRAMES * 3),
+                Action::Snapshot("04-released"),
+                Action::MoveCursorGroupEdge {
+                    group: 2,
+                    leading: true,
+                },
+                Action::Modifiers(ModifiersState::SHIFT),
+                Action::MoveCursorBy(0.0),
+                Action::Wait(2),
+                Action::Snapshot("05-hover-shift"),
+                Action::Modifiers(ModifiersState::SHIFT),
+                Action::MousePress,
+                Action::MoveCursorBy(-60.0),
+                Action::Wait(1),
+                Action::Snapshot("06-shift-drag-left-060"),
+                Action::MoveCursorBy(-60.0),
+                Action::Wait(1),
+                Action::Snapshot("06-shift-drag-left-120"),
+                Action::MouseRelease,
+                Action::Modifiers(ModifiersState::empty()),
+                Action::Wait(PLACEMENT_SETTLE_FRAMES * 3),
+                Action::Snapshot("07-shift-released"),
+                Action::MoveCursorGroupEdge {
+                    group: 2,
+                    leading: false,
+                },
+                Action::Wait(2),
+                Action::Snapshot("08-hover-files-right-edge"),
+                Action::MousePress,
+                Action::MoveCursorBy(-60.0),
+                Action::Wait(1),
+                Action::Snapshot("09-drag-right-edge-in-060"),
+                Action::MouseRelease,
+                Action::Wait(PLACEMENT_SETTLE_FRAMES * 3),
+                Action::Snapshot("10-released"),
+            ],
+        },
+        Scenario {
+            name: "proximity_open_close_paste",
+            description: "Working in the first of three windows: open an app from search, close it again, \
+                      open clipboard history while typing, and change the volume while typing on the bottom line.",
+            actions: vec![
+                Action::LoneWindow(0),
+                Action::SelectGroup(Some(0)),
+                Action::OpenHostedWindow {
+                    app: "Files",
+                    title: "Files",
+                },
+                Action::SelectGroup(Some(1)),
+                Action::OpenHostedWindow {
+                    app: "Terminal",
+                    title: "Terminal",
+                },
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::Modifiers(ModifiersState::SUPER),
+                Action::Key(Key::Character("1".into())),
+                Action::Modifiers(ModifiersState::empty()),
+                Action::Wait(PLACEMENT_SETTLE_FRAMES * 3),
+                Action::Snapshot("00-working-in-the-first-window"),
+                Action::EnableNativeAppSearch,
+                Action::OpenPalette,
+                Action::Wait(2),
+                Action::Type("Editor"),
+                Action::Wait(2),
+                Action::Snapshot("01-search-result"),
+                Action::Key(Key::Named(NamedKey::Enter)),
+                Action::Wait(PLACEMENT_SETTLE_FRAMES * 3),
+                Action::Snapshot("02-opened-from-search"),
+                Action::CloseFocusedWindow,
+                Action::Wait(PLACEMENT_SETTLE_FRAMES * 3),
+                Action::Snapshot("03-closed-it-again"),
+                Action::SetTextCaret(Some(vello::kurbo::Rect::new(220.0, 420.0, 222.0, 440.0))),
+                Action::Modifiers(ModifiersState::SUPER),
+                Action::Key(Key::Character("v".into())),
+                Action::Modifiers(ModifiersState::empty()),
+                Action::Wait(16),
+                Action::Snapshot("04-super-v-while-typing"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::Wait(8),
+                Action::SetTextCaret(Some(vello::kurbo::Rect::new(780.0, 820.0, 782.0, 840.0))),
+                Action::SeedOsd("volume"),
+                Action::Wait(16),
+                Action::Snapshot("05-volume-while-typing-on-the-bottom-line"),
             ],
         },
         Scenario {
@@ -4137,9 +4219,9 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Snapshot("03-open"),
                 // Off the bar entirely: the pill closes again, and its body
                 // has to stay under the chips for the whole shrink. Park in
-                // the middle of the window card — the wheel disc down the
-                // left edge reacts to a pointer near it, which would move
-                // the whole strip and confuse what this is measuring.
+                // the middle of the window card, clear of the strip's edges
+                // and the right-edge strip ribbon, so nothing else reacts
+                // to the pointer and confuses what this is measuring.
                 Action::MoveCursor(Point::new(800.0, 500.0)),
                 Action::SampleTabReveal {
                     prefix: "04-closing",
@@ -4435,7 +4517,13 @@ mod tests {
                 typed.1, "h",
                 "after Type(\"h\") with palette open, the query should be 'h'"
             );
-            // Final state: palette closed.
+            let cleared = sink
+                .seen
+                .iter()
+                .find(|(n, _)| n == "04-palette-cleared")
+                .expect("scenario should snapshot 04-palette-cleared");
+            assert_eq!(cleared.1, "", "the first Esc clears the query");
+            // Final state: the second Esc closed the empty palette.
             assert!(
                 !d.host().palette_visible(),
                 "Esc should close the palette by the end of the scenario"
@@ -4844,8 +4932,14 @@ mod tests {
             "four half-width windows must overflow the display by more than a third of \
              a screen, or there is nothing to pan across (max_scroll_x = {rest_max})"
         );
+        // The strip's leading inset is the fixed edge gutter
+        // (`STRIP_EDGE_GUTTER_PX`, 32 px, the same as the trailing one).
+        assert!(
+            (rest_inset - 32.0).abs() < 0.5,
+            "the leading inset is the 32 px edge gutter (leading inset = {rest_inset})"
+        );
         // Focusing the first window reveals it by the least pan: flush with
-        // the screen edge, the wheel-disc gutter scrolled off to its left.
+        // the screen edge, the edge gutter scrolled off to its left.
         assert!(
             rest_x <= rest_inset + 1.0,
             "the strip starts with its first window flush at the screen edge \

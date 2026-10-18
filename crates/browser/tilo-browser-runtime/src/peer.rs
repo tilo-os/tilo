@@ -354,9 +354,10 @@ pub async fn host_info(post: Function) -> Result<String, JsError> {
     .map_err(js_error)
 }
 
-/// Certify this page's device key through the host's HTTPS origin. Calls
-/// `onPairingCode(code)` once the host queued the request. Resolves to
-/// `{cert, hostCert}` JSON for [`WasmPeer::start`].
+/// Certify this page's device key through the host's HTTPS origin, as the
+/// answer to the pairing invite `inviteHex` (16 bytes as hex) the person's
+/// link named, if any. Calls `onPairingCode(code)` once the host queued the
+/// request. Resolves to `{cert, hostCert}` JSON for [`WasmPeer::start`].
 ///
 /// # Errors
 ///
@@ -370,6 +371,7 @@ pub async fn certify_device(
     post: Function,
     user_public_key_hex: String,
     label: String,
+    invite_hex: Option<String>,
     custody: JsValue,
     on_pairing_code: Function,
 ) -> Result<String, JsError> {
@@ -378,12 +380,20 @@ pub async fn certify_device(
         .map_err(js_error)?
         .try_into()
         .map_err(|_| js_error("user public key must be 32 bytes"))?;
+    let invite: [u8; 16] = match invite_hex {
+        Some(text) => hex::decode(text)
+            .map_err(js_error)?
+            .try_into()
+            .map_err(|_| js_error("a pairing invite is 16 bytes"))?,
+        None => [0; 16],
+    };
     let host = Host::Https(Arc::new(PageHttp(post)));
-    let (cert, host_cert) = tilo_browser_peer::certify(&host, user, &label, &signer, |code| {
-        let _ = on_pairing_code.call1(&JsValue::NULL, &code.into());
-    })
-    .await
-    .map_err(js_error)?;
+    let (cert, host_cert) =
+        tilo_browser_peer::certify(&host, user, &label, invite, &signer, |code| {
+            let _ = on_pairing_code.call1(&JsValue::NULL, &code.into());
+        })
+        .await
+        .map_err(js_error)?;
     serde_json::to_string(&Certified {
         cert: &cert,
         host_cert: &host_cert,
@@ -677,8 +687,10 @@ pub async fn certify_with_root(
 }
 
 /// The new devices waiting at the host at `post` for the member root the
-/// page holds (`root`) to pair them: `[{digest, pairingCode, label,
-/// device}]` JSON, keys and digest as hex.
+/// page holds (`root`) to pair them: `[{digest, pairingCode, label, device,
+/// invite, requestedAtMs, country}]` JSON, keys, digest and invite as hex
+/// (`invite` null for a request no invite asked for, `country` null when the
+/// host does not know it).
 ///
 /// # Errors
 ///
@@ -698,6 +710,10 @@ pub async fn pending_pairings(post: Function, root: JsValue) -> Result<String, J
                     "pairingCode": entry.pairing_code,
                     "label": entry.request.device_label,
                     "device": hex::encode(entry.request.device_public_key),
+                    "invite": (entry.request.invite != [0; 16])
+                        .then(|| hex::encode(entry.request.invite)),
+                    "requestedAtMs": entry.requested_at_ns / 1_000_000,
+                    "country": entry.country,
                 })
             })
             .collect(),
@@ -706,7 +722,8 @@ pub async fn pending_pairings(post: Function, root: JsValue) -> Result<String, J
 }
 
 /// Pair (`approved`) or turn away the waiting device `digest_hex` at the
-/// host at `post`, with the member root the page holds.
+/// host at `post`, with the member root the page holds. Resolves to the
+/// certificate issued (JSON), or null when turned away.
 ///
 /// # Errors
 ///
@@ -717,15 +734,18 @@ pub async fn answer_pairing(
     root: JsValue,
     digest_hex: String,
     approved: bool,
-) -> Result<(), JsError> {
+) -> Result<Option<String>, JsError> {
     let root = PageSigner::from_js(&root)?;
     let digest: [u8; 32] = hex::decode(&digest_hex)
         .ok()
         .and_then(|bytes| bytes.try_into().ok())
         .ok_or_else(|| JsError::new("a request digest is 64 hex characters"))?;
-    tilo_browser_peer::answer_pairing(&PageHttp(post), &root, digest, approved)
+    let issued = tilo_browser_peer::answer_pairing(&PageHttp(post), &root, digest, approved)
         .await
-        .map_err(js_error)
+        .map_err(js_error)?;
+    issued
+        .map(|cert| serde_json::to_string(&cert).map_err(js_error))
+        .transpose()
 }
 
 // ---- Live frames as the JavaScript shape of `web/live-presence.mjs` -------

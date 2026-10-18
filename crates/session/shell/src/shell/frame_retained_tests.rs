@@ -450,7 +450,12 @@ fn assert_populated_tree_inventory(fixture: &PopulatedShellFixture) {
     assert_eq!(fixture.viewport(), (3840.0, 2160.0));
     assert_eq!(
         fixture.host().fixture_provider_ids(),
-        vec!["actions", "records", "file-picker"]
+        vec![
+            "actions",
+            "records",
+            "authentication-prompts",
+            "file-picker"
+        ]
     );
 
     let chrome = fixture.chrome();
@@ -2042,6 +2047,7 @@ fn pan_fixture(desktop: PanDesktop, theme: Theme) -> PopulatedShellFixture {
         frame.set_output_geometry(vec![crate::shell::output_scene::OutputGeometry {
             id: 0,
             monitor: String::new(),
+            connector: String::new(),
             x: 0.0,
             y: 0.0,
             width: width / desktop.scale,
@@ -2054,8 +2060,7 @@ fn pan_fixture(desktop: PanDesktop, theme: Theme) -> PopulatedShellFixture {
 }
 
 /// The demo desktop with three windows on its first strip and a copy of that
-/// strip below it: the docked wheel rides the first over the second, and the
-/// two strips' drawings meet in the gap between them.
+/// strip below it: the two strips' drawings meet in the gap between them.
 #[cfg(target_os = "linux")]
 fn two_strip_tree() -> crate::shell::state::WorkspaceTree {
     use crate::shell::state::{StripId, WindowWidth};
@@ -2098,8 +2103,7 @@ fn two_strip_tree() -> crate::shell::state::WorkspaceTree {
 
 /// `shown`, the composited output of `painted`, shows what the desktop drawn
 /// without layers shows: nothing the layers leave out or misplace (a strip's
-/// shadow in its neighbour's row, the wheel over the strip below, chrome a
-/// fraction of a pixel off) is lost. That desktop draws every edge at its
+/// shadow in its neighbour's row, chrome a fraction of a pixel off) is lost. That desktop draws every edge at its
 /// screen coordinates, the layers at canvas coordinates moved by whole
 /// pixels, so vello's offset variance shows along edges all over the output,
 /// never more than it does between two whole renders ([`OFFSET_STEPS`]);
@@ -2125,17 +2129,8 @@ fn assert_nothing_lost(
     let edge_noise = lost_max <= OFFSET_STEPS && lost.len() <= output / 100;
     if !edge_noise {
         eprintln!(
-            "strip layers {label}: strips {:?}, wheel {:?}, pans {:?}\n{}",
+            "strip layers {label}: strips {:?}, pans {:?}\n{}",
             painted.cache.as_ref().map(|cache| &cache.strips),
-            painted
-                .cache
-                .as_ref()
-                .and_then(|cache| cache.layers.wheel.as_ref().map(|wheel| (
-                    wheel.x,
-                    wheel.y,
-                    wheel.width,
-                    wheel.height
-                ))),
             frame.host().strip_scroll_offsets(),
             apart_map(&lost, size)
         );
@@ -2279,10 +2274,9 @@ fn a_strip_pan_composited_from_layers_matches_a_full_render_in_every_theme() {
     });
 }
 
-/// Pulling the strip past its start rides the docked wheel in from the
-/// screen edge, and its disc keeps going left of its slot to the edge of the
-/// screen. Composited from layers, the wheel's sprite used to stop at the
-/// slot, so the rubber band showed the disc cut off in a hard vertical edge.
+/// Pulling the strip past its start (the rubber band) uncovers what is left
+/// of its first window; composited from layers, the frame shows what a full
+/// render of it shows.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_rubber_band_past_the_strip_start_composited_from_layers_matches_a_full_render() {
@@ -2322,8 +2316,7 @@ fn a_rubber_band_past_the_strip_start_composited_from_layers_matches_a_full_rend
         let apart = pixels_apart(&shown, &full, size.0);
         assert!(
             apart.len() <= OFFSET_PIXELS,
-            "{label}: {} pixels differ from a full render (first {:?}); the wheel layer \
-             does not hold the disc the rubber band exposes",
+            "{label}: {} pixels differ from a full render (first {:?})",
             apart.len(),
             &apart[..apart.len().min(16)]
         );
@@ -2382,9 +2375,7 @@ fn a_strip_pan_at_200_percent_composited_from_layers_matches_a_full_render() {
     });
 }
 
-/// Two strips, the docked wheel riding the upper one over the lower: the
-/// upper strip pans, its shadows meet the lower strip's, and the wheel moves
-/// over the lower strip's windows.
+/// Two strips: the upper strip pans and its shadows meet the lower strip's.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_pan_over_two_strips_composited_from_layers_matches_a_full_render() {
@@ -2396,8 +2387,8 @@ fn a_pan_over_two_strips_composited_from_layers_matches_a_full_render() {
     });
 }
 
-/// Two strips on a 1920×1080 panel at 150 %: the wheel and the strips
-/// step by a device pixel, two thirds of a layout pixel.
+/// Two strips on a 1920×1080 panel at 150 %: the strips step by a device
+/// pixel, two thirds of a layout pixel.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_pan_over_two_strips_at_150_percent_composited_from_layers_matches_a_full_render() {
@@ -2563,20 +2554,12 @@ fn layers_apart(old: &FrameCache, new: &FrameCache) -> String {
         )
     }
     let mut text = format!(
-        "width {}/{} backdrop same {} chrome same {} workspace same {} wheel {:?}/{:?}\n",
+        "width {}/{} backdrop same {} chrome same {} workspace same {}\n",
         old.width,
         new.width,
         old.layers.backdrop.encoding_eq(&new.layers.backdrop),
         old.layers.chrome.encoding_eq(&new.layers.chrome),
         old.layers.workspace.encoding_eq(&new.layers.workspace),
-        old.layers
-            .wheel
-            .as_ref()
-            .map(|wheel| (wheel.x, wheel.y, wheel.width, wheel.height)),
-        new.layers
-            .wheel
-            .as_ref()
-            .map(|wheel| (wheel.x, wheel.y, wheel.width, wheel.height)),
     );
     for (index, (a, b)) in old.layers.strips.iter().zip(&new.layers.strips).enumerate() {
         let _ = writeln!(

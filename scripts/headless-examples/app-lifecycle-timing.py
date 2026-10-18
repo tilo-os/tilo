@@ -65,6 +65,11 @@ class Session:
             "TILO_PEER_KEY_PATH": os.path.join(root, "identity", "device", "keypair.bin"),
             "TILO_USER_ID": "lifecycle",
             "TILO_HEADLESS_SIZE": size,
+            # Paint on a paced render thread like a real output. Unpaced, the
+            # headless shell draws through a renderer that never publishes the
+            # session's pipeline seed, so every first open of an app compiled
+            # vello's pipelines that a live session hands it ready.
+            "TILO_HEADLESS_VBLANK_HZ": os.environ.get("TILO_HEADLESS_VBLANK_HZ", "60"),
             "TILO_IDLE_BLANK_SECS": "0",
             "TILO_IDLE_LOCK_SECS": "0",
             "TILO_IDLE_SUSPEND_SECS": "0",

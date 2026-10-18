@@ -402,17 +402,40 @@ pub enum OpenTarget {
     Beside,
     /// Force the new window into `GroupId` as a tab.
     Here(u64),
+    /// Its own group, right beside `GroupId`: what Ctrl+Enter in search
+    /// asks for, beside the focused window whatever the default would say.
+    RightOf(u64),
 }
 
-impl OpenTarget {
-    /// Appended to launchable palette rows so a result says where it
-    /// will land before the user commits.
-    pub fn result_hint(self) -> String {
-        match self {
-            OpenTarget::Beside => crate::shell::i18n::t("search-opens-beside"),
-            OpenTarget::Here(_) => crate::shell::i18n::t("search-opens-here"),
-        }
-    }
+/// A number no other chrome of this process has: what a cache keyed on a
+/// chrome tells two of them apart by.
+fn next_chrome_instance() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// State search reads that the overlay host owns, published by it as it
+/// changes so a keystroke never asks a subsystem.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SearchContextState {
+    /// The active workspace's windows (tabs), most recently focused first, as
+    /// Alt+Tab walks them: search lists "windows to go back to" in this order
+    /// and switches an app's row to its latest window.
+    pub recent_windows: Vec<crate::shell::state::TabId>,
+    /// Whether this view follows a collaborator: "Stop following" is only
+    /// offered then.
+    pub following: bool,
+    /// Whether dictation is listening: "Finish dictation" is only offered
+    /// then.
+    pub dictating: bool,
+}
+
+/// Where clipboard history was summoned to paste: the focused field's caret
+/// and the focused window, in desktop coordinates, either unknown.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PasteOrigin {
+    pub caret: Option<vello::kurbo::Rect>,
+    pub window: Option<vello::kurbo::Rect>,
 }
 
 /// One monitor's brightness control in Quick Settings.
@@ -424,6 +447,18 @@ pub struct DisplayBrightness {
     pub name: String,
     /// 0.0..=1.0.
     pub level: f32,
+}
+
+/// Put the display the person works on (`focused`, its connector) first,
+/// keeping the others in their order: Quick Settings shows that display's
+/// slider at the top.
+pub fn focused_display_first(displays: &mut Vec<DisplayBrightness>, focused: Option<&str>) {
+    if let Some(index) =
+        focused.and_then(|focused| displays.iter().position(|d| d.connector == focused))
+    {
+        let display = displays.remove(index);
+        displays.insert(0, display);
+    }
 }
 
 /// Local UI state; does not sync to peers — device settings like
@@ -444,6 +479,10 @@ pub struct QuickSettingsState {
     /// its own slider once there is more than one; empty falls back to the
     /// single `brightness` control.
     pub displays: Vec<DisplayBrightness>,
+    /// The connector of the display the person works on, when the desktop
+    /// spans several: what "brighter" and "dimmer" adjust. The overlay host
+    /// keeps it current whenever search refreshes.
+    pub focused_display: Option<String>,
     /// 0.0..=1.0.
     pub volume: f32,
     /// False after the audio service cannot provide a sink reading.
@@ -474,6 +513,11 @@ pub struct QuickSettingsState {
     /// `Root`) — pushing `Wifi`/`Bluetooth` flips the popover to the
     /// drill-in list.
     pub nav_stack: Vec<QsLevel>,
+    /// Set while clipboard history is open to paste (Super+V): where it was
+    /// summoned from, so it opens there instead of under the tray and a
+    /// choice is pasted into that field. `None` when history is browsed from
+    /// Quick Settings. Cleared whenever Quick Settings opens another way.
+    pub paste_origin: Option<PasteOrigin>,
     pub wifi_networks: Vec<WifiNetwork>,
     /// True only while `NetworkManager` discovery is outstanding.
     pub wifi_scanning: bool,
@@ -545,6 +589,7 @@ impl Default for QuickSettingsState {
             brightness: 0.6,
             brightness_available: false,
             displays: Vec::new(),
+            focused_display: None,
             volume: 0.4,
             volume_available: true,
             wifi: true,
@@ -560,6 +605,7 @@ impl Default for QuickSettingsState {
             rotation_available: os_actions::has_accelerometer(),
             rotation_lock: settings_store::hardware::ROTATION_LOCK.get(),
             nav_stack: vec![QsLevel::Root],
+            paste_origin: None,
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
             wifi_networks: Vec::new(),
@@ -585,6 +631,7 @@ impl QuickSettingsState {
             brightness: 0.6,
             brightness_available: true,
             displays: Vec::new(),
+            focused_display: None,
             volume: 0.4,
             volume_available: true,
             wifi: true,
@@ -600,6 +647,7 @@ impl QuickSettingsState {
             rotation_available: false,
             rotation_lock: false,
             nav_stack: vec![QsLevel::Root],
+            paste_origin: None,
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
             wifi_networks: Vec::new(),
@@ -630,6 +678,7 @@ impl QuickSettingsState {
 
     /// Replace stale drill-in history with one authoritative destination.
     pub fn show_level(&mut self, level: QsLevel) {
+        self.paste_origin = None;
         self.nav_stack.clear();
         self.nav_stack.push(QsLevel::Root);
         if level != QsLevel::Root {
@@ -660,8 +709,7 @@ impl std::fmt::Debug for RecordsWake {
 pub struct FullscreenDisplay {
     /// The compositor's id for the display.
     pub output: u32,
-    /// Whether it is the primary display, which carries the full top bar
-    /// and the wheel.
+    /// Whether it is the primary display, which carries the full top bar.
     pub primary: bool,
 }
 
@@ -696,6 +744,8 @@ pub struct ChromeState {
     pub search_resource_scope: Option<SearchResourceScope>,
     /// Set by the tab strip's "+", cleared when the palette closes.
     pub open_target: OpenTarget,
+    /// What the overlay host publishes for search as it changes.
+    pub search_context: SearchContextState,
     /// Copied here once per frame from
     /// [`crate::shell::status::StatusBridge`] with no lock held across
     /// a draw. `None` until a poller publishes.
@@ -827,7 +877,7 @@ pub struct ChromeState {
     /// separate from [`Self::fullscreen_group`], which the compositor
     /// rewrites every frame — a value parked there is wiped before
     /// state-dump can observe it. Unlike [`Self::maximized_group`], this
-    /// covers the output, including the wheel.
+    /// covers the output, including the top bar.
     user_fullscreen_group: Option<u64>,
     /// Id of the group put full screen with the tab's Expand chip. Kept
     /// separate from [`Self::fullscreen_group`], which the compositor
@@ -896,7 +946,6 @@ pub struct ChromeState {
     /// and toggles the focused client's `xdg_toplevel` fullscreen state,
     /// which only it holds the protocol handles for.
     fullscreen_toggle_requested: bool,
-    topbar_editor_requested: bool,
     /// Compositor-only remaining paints after overview / workspace switch
     /// (W16). The host's crossfade demand still clears when the curve
     /// settles — this count is not `needs_animation_frame`.
@@ -920,10 +969,15 @@ pub struct ChromeState {
     /// drains it and switches the seat and the physical keyboard at once;
     /// the persisted choice reaches them again on the settings poll.
     input_source_request: Option<usize>,
-    /// Docked at the strip's left edge by default; `Some(point)`
-    /// detaches the wheel to the pointer. Cleared on Escape or
-    /// picking a workspace.
-    wheel_summon: Option<vello::kurbo::Point>,
+    /// The strip switcher is open: its card, the workspace's strips and
+    /// its workspaces, beside the strip ribbon. The overlay host opens it on
+    /// pointer intent or Super+S and mirrors it here, so a state dump and
+    /// input routing read one fact.
+    strip_switcher_open: bool,
+    /// Someone asked to rename the focused strip without saying the name:
+    /// the overlay host opens the switcher's name field for it.
+    strip_rename_requested: bool,
+    strip_switcher_requested: bool,
     /// Last layout pass, so placement can ask "which border can the
     /// user actually see" without reaching into the widget tree.
     strip_viewport: Option<tilo_desktop_model::commands::StripViewport>,
@@ -940,6 +994,13 @@ pub struct ChromeState {
     /// Banners pointing at a task whose run waits for the person's answer,
     /// by banner, to the task they open.
     task_confirmation_toasts: BTreeMap<u64, String>,
+    /// Notifications of new devices asking to be the person, with the
+    /// request each answers and the code it shows.
+    device_asking_toasts: BTreeMap<u64, ([u8; 32], String)>,
+    /// Requests a notification was raised for, so it is raised once.
+    device_asking_seen: std::collections::BTreeSet<[u8; 32]>,
+    /// The person's answers to devices asking, for the network.
+    device_answers: Vec<([u8; 32], bool)>,
 }
 
 #[derive(Debug)]
@@ -1024,6 +1085,7 @@ impl ChromeState {
             search_scope: SearchScope::default(),
             search_resource_scope: None,
             open_target: OpenTarget::default(),
+            search_context: SearchContextState::default(),
             status: crate::shell::status::SystemStatus::default(),
             clock_activity: None,
             osd: None,
@@ -1034,10 +1096,7 @@ impl ChromeState {
             bar_popover_request: None,
             ws_grant_draft: tilo_desktop::workspace_settings::GrantDraft::default(),
             revision: 0,
-            instance: {
-                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            },
+            instance: next_chrome_instance(),
             appearance_generation: 0,
             observed_external_tree_revision: 0,
             activity_glance: ActivityGlance::default(),
@@ -1079,7 +1138,9 @@ impl ChromeState {
             peer_sync_requests: Vec::new(),
             presence_requests: Vec::new(),
             screenshot_sends: Vec::new(),
-            wheel_summon: None,
+            strip_switcher_open: false,
+            strip_rename_requested: false,
+            strip_switcher_requested: false,
             tracked_record_requests: Vec::new(),
             record_request_results: BTreeMap::new(),
             next_record_request_id: 1,
@@ -1088,7 +1149,6 @@ impl ChromeState {
             close_surface_requests: Vec::new(),
             window_transfers: super::window_transfer::WindowTransfers::default(),
             fullscreen_toggle_requested: false,
-            topbar_editor_requested: false,
             transition_paints_remaining: 0,
             shortcut_action_requests: Vec::new(),
             device_local_windows: Vec::new(),
@@ -1106,6 +1166,9 @@ impl ChromeState {
             pending_closed_tabs: Vec::new(),
             workspace_undo_toasts: BTreeMap::new(),
             task_confirmation_toasts: BTreeMap::new(),
+            device_asking_toasts: BTreeMap::new(),
+            device_asking_seen: std::collections::BTreeSet::new(),
+            device_answers: Vec::new(),
             records: RecordStore::in_memory(),
             pending_tab_records: VecDeque::new(),
             failed_tab_records: BTreeMap::new(),
@@ -1114,16 +1177,40 @@ impl ChromeState {
         }))
     }
 
-    /// Summon the wheel to `at`, or send it back to its dock with `None`.
-    pub fn set_wheel_summon(&mut self, at: Option<vello::kurbo::Point>) {
-        if self.wheel_summon != at {
-            self.wheel_summon = at;
+    /// Record whether the strip switcher's card is open.
+    pub fn set_strip_switcher_open(&mut self, open: bool) {
+        if self.strip_switcher_open != open {
+            self.strip_switcher_open = open;
             self.bump();
         }
     }
 
-    pub fn wheel_summon(&self) -> Option<vello::kurbo::Point> {
-        self.wheel_summon
+    /// Whether the strip switcher's card is open.
+    pub fn strip_switcher_open(&self) -> bool {
+        self.strip_switcher_open
+    }
+
+    /// Ask for the focused strip's name field in the strip switcher.
+    pub fn request_strip_rename(&mut self) {
+        self.strip_rename_requested = true;
+        self.bump();
+    }
+
+    /// Take the request [`Self::request_strip_rename`] left.
+    pub fn take_strip_rename_request(&mut self) -> bool {
+        std::mem::take(&mut self.strip_rename_requested)
+    }
+
+    /// Ask for the strip switcher's card, open for choosing: a click on
+    /// the strip's name in the top bar.
+    pub fn request_strip_switcher(&mut self) {
+        self.strip_switcher_requested = true;
+        self.bump();
+    }
+
+    /// Take the request [`Self::request_strip_switcher`] left.
+    pub fn take_strip_switcher_request(&mut self) -> bool {
+        std::mem::take(&mut self.strip_switcher_requested)
     }
 
     /// Called once per layout pass by the overlay host, so the
@@ -1259,15 +1346,6 @@ impl ChromeState {
         self.bump();
     }
 
-    pub fn request_topbar_editor(&mut self) {
-        self.topbar_editor_requested = true;
-        self.bump();
-    }
-
-    pub fn take_topbar_editor_request(&mut self) -> bool {
-        std::mem::take(&mut self.topbar_editor_requested)
-    }
-
     pub fn take_fullscreen_toggle_request(&mut self) -> bool {
         std::mem::take(&mut self.fullscreen_toggle_requested)
     }
@@ -1352,8 +1430,7 @@ impl ChromeState {
     }
 
     /// Either a client-requested fullscreen or a group the user
-    /// expanded with the tab's Expand chip — both suppress the top bar
-    /// and sidebar wheel.
+    /// expanded with the tab's Expand chip — both suppress the top bar.
     pub fn is_fullscreen(&self) -> bool {
         self.fullscreen_presentation
     }
@@ -1375,8 +1452,8 @@ impl ChromeState {
     }
 
     /// Whether what [`Self::is_fullscreen`] presents covers the primary
-    /// display, where the full top bar and the wheel live. A fullscreen on
-    /// another display leaves both in place.
+    /// display, where the full top bar lives. A fullscreen on another
+    /// display leaves it in place.
     pub fn presentation_covers_primary(&self) -> bool {
         self.fullscreen_presentation
             && self
@@ -1984,8 +2061,31 @@ impl ChromeState {
         self.overlays.quick_settings = opening;
         if opening {
             self.overlays.ws_settings = false;
+            self.quick_settings.paste_origin = None;
         }
         self.bump();
+    }
+
+    /// Back out of the Quick Settings page on screen (its Back chevron, or
+    /// Escape): to the page it was drilled into from, or, for clipboard
+    /// history opened to paste, out of Quick Settings altogether — it was
+    /// summoned on its own, at the caret, and has no page behind it there.
+    pub fn quick_settings_back(&mut self) {
+        if self.quick_settings.paste_origin.take().is_some() {
+            self.overlays.quick_settings = false;
+            self.quick_settings
+                .show_level(crate::shell::quick_settings::QsLevel::Root);
+        } else {
+            self.quick_settings.pop_level();
+        }
+        self.bump();
+    }
+
+    /// Open clipboard history to paste (Super+V): at `origin` (the caret,
+    /// else the focused window), and a choice goes into that field.
+    pub fn open_clipboard_history_to_paste(&mut self, origin: PasteOrigin) {
+        self.open_quick_settings_level(crate::shell::quick_settings::QsLevel::Clipboard);
+        self.quick_settings.paste_origin = Some(origin);
     }
 
     /// Reveal Quick Settings without toggle semantics, for deep links such as
@@ -2177,6 +2277,76 @@ impl ChromeState {
         self.task_confirmation_toasts
             .insert(toast.id, notice.task_id.clone());
         self.push_notification_full(toast)
+    }
+
+    /// Ask the person about a new device asking to be them, once: what it
+    /// is, when and from where it asked, and the code it shows, with
+    /// Approve and Decline (see [`Self::device_asking_actions`]).
+    pub fn push_device_asking(
+        &mut self,
+        device: &crate::shell::peer_sync_overlay::DeviceAskingSummary,
+    ) -> Option<u64> {
+        if !self.device_asking_seen.insert(device.digest) {
+            return None;
+        }
+        let from = device
+            .country
+            .as_deref()
+            .map_or_else(String::new, |country| {
+                crate::shell::i18n::t_args(
+                    "pairing-asks-from",
+                    &[("country", country.to_owned().into())],
+                )
+            });
+        let secs_ago = tilo_clock::unix_now_ms().saturating_sub(device.requested_at_ms) / 1000;
+        let when = ui::format::relative(i64::try_from(secs_ago).unwrap_or(i64::MAX));
+        let body = crate::shell::i18n::t_args(
+            "pairing-asks-body",
+            &[
+                ("device", device.label.clone().into()),
+                ("from", from.into()),
+                ("when", when.into()),
+                ("code", device.code.clone().into()),
+            ],
+        );
+        let mut toast = Notification::new(crate::shell::i18n::t("pairing-asks-title"), body)
+            .with_severity(NotificationSeverity::Info)
+            .with_icon_kind(NotificationIconKind::Permission)
+            .with_addressed(tilo_desktop::notifications::Addressed::Ask);
+        toast.dismiss_after = tilo_desktop::notifications::PERSISTENT_DISMISS;
+        self.device_asking_toasts
+            .insert(toast.id, (device.digest, device.code.clone()));
+        Some(self.push_notification_full(toast))
+    }
+
+    /// The buttons of notification `id` when it asks about a new device:
+    /// Approve (naming the code) and Decline.
+    pub fn device_asking_actions(&self, id: u64) -> Option<Vec<(String, String)>> {
+        let (_, code) = self.device_asking_toasts.get(&id)?;
+        Some(vec![
+            (
+                "approve".into(),
+                crate::shell::i18n::t_args("pairing-approve", &[("code", code.clone().into())]),
+            ),
+            ("decline".into(), crate::shell::i18n::t("pairing-decline")),
+        ])
+    }
+
+    /// The person answered notification `id` about a new device. Returns
+    /// whether it was one.
+    pub fn answer_device_asking(&mut self, id: u64, approve: bool) -> bool {
+        let Some((digest, _)) = self.device_asking_toasts.remove(&id) else {
+            return false;
+        };
+        self.device_answers.push((digest, approve));
+        self.dismiss_notification(id);
+        self.bump();
+        true
+    }
+
+    /// The person's answers to devices asking, since the last call.
+    pub fn take_device_answers(&mut self) -> Vec<([u8; 32], bool)> {
+        std::mem::take(&mut self.device_answers)
     }
 
     /// The deletion toast's Undo: put the workspace back where it was, on
@@ -2414,6 +2584,9 @@ impl ChromeState {
         let id = {
             let mut tree = self.tree_mut();
             let id = tree.append_empty_workspace(&name.into());
+            // Every workspace has its Lounge; the person's own strip keeps
+            // focus, so what they open goes there.
+            tree.desktop.ensure_lounges();
             tree.set_active(id);
             // A room with no owner has no administrators, so nobody can
             // grant anything in it, including the person who just made it.
@@ -2567,6 +2740,57 @@ impl ChromeState {
         index.is_some_and(|index| self.focus_strip_index(index))
     }
 
+    /// Add a strip named `name` to the active workspace and move to it.
+    ///
+    /// # Errors
+    ///
+    /// The model's refusal: no active workspace, or a name that is empty, too
+    /// long or holds control characters.
+    pub fn create_strip(&mut self, name: &str) -> Result<crate::shell::state::StripId, String> {
+        let command = tilo_desktop_model::commands::DesktopCommand::CreateStrip {
+            name: name.to_owned(),
+        };
+        let strip = self.tree_mut().commit_strip_command(&command)?;
+        self.bump();
+        Ok(strip)
+    }
+
+    /// Rename `strip` of the active workspace.
+    ///
+    /// # Errors
+    ///
+    /// The model's refusal: the strip is gone or another device's, or the
+    /// name is empty, too long or holds control characters.
+    pub fn rename_strip(
+        &mut self,
+        strip: crate::shell::state::StripId,
+        name: &str,
+    ) -> Result<(), String> {
+        let command = tilo_desktop_model::commands::DesktopCommand::RenameStrip {
+            strip: strip.raw(),
+            name: name.to_owned(),
+        };
+        self.tree_mut().commit_strip_command(&command)?;
+        self.bump();
+        Ok(())
+    }
+
+    /// The strip with focus in the active workspace: the stamped one, else
+    /// the first.
+    pub fn focused_strip_id(&self) -> Option<crate::shell::state::StripId> {
+        let tree = self.tree();
+        let ws = tree.desktop.active_workspace()?;
+        let strip = tree
+            .desktop
+            .active_strip
+            .get(&ws.id)
+            .copied()
+            .filter(|id| ws.strips.iter().any(|s| s.id == *id))
+            .or_else(|| ws.strips.first().map(|s| s.id));
+        drop(tree);
+        strip
+    }
+
     /// The strip an agent works in: `current` while it is still in the active
     /// workspace, else an empty strip nobody `claimed` yet, else a new strip
     /// named `label` at the bottom. `None` without an active workspace.
@@ -2585,7 +2809,11 @@ impl ChromeState {
             let free = ws
                 .strips
                 .iter()
-                .find(|s| s.window_groups.is_empty() && !claimed(s.id))
+                .find(|s| {
+                    s.window_groups.is_empty()
+                        && !claimed(s.id)
+                        && s.kind() == tilo_desktop_model::StripKind::Regular
+                })
                 .map(|s| s.id);
             if let Some(free) = free {
                 return Some(free);
@@ -2612,14 +2840,15 @@ impl ChromeState {
             let Some(ws) = tree.desktop.active_workspace_mut() else {
                 return false;
             };
-            let Some(index) = ws
-                .strips
-                .iter()
-                .position(|s| s.id == strip && s.window_groups.is_empty())
-            else {
+            let Some(index) = ws.strips.iter().position(|s| {
+                s.id == strip
+                    && s.window_groups.is_empty()
+                    && s.kind() == tilo_desktop_model::StripKind::Regular
+            }) else {
                 return false;
             };
-            if ws.strips.len() < 2 {
+            // The Lounge aside, a workspace keeps a strip of its own.
+            if ws.regular_strip_count() < 2 {
                 return false;
             }
             let ws_id = ws.id;
@@ -2863,6 +3092,7 @@ impl ChromeState {
             return;
         }
         self.task_confirmation_toasts.remove(&n.id);
+        self.device_asking_toasts.remove(&n.id);
         self.notification_log.retain(n);
     }
 
@@ -3009,6 +3239,18 @@ impl ChromeState {
         }
     }
 
+    /// The banner stack laid out `on_screen` at `now`, and whether the
+    /// person holds it: only banners on screen and unheld age
+    /// ([`NotificationLog::present`]). Viewer-local; no repaint.
+    pub fn present_notifications(
+        &mut self,
+        now: std::time::Instant,
+        on_screen: &[u64],
+        held: bool,
+    ) {
+        self.notification_log.present(now, on_screen, held);
+    }
+
     /// Called each frame by the overlay host. Expired toasts from a D-Bus
     /// `Notify` emit `NotificationClosed(id, 1)`.
     pub fn update_notification_lifecycle(&mut self, now: std::time::Instant) -> usize {
@@ -3034,6 +3276,18 @@ impl ChromeState {
     /// exposing content.
     pub fn notification_count(&self) -> usize {
         self.notification_log.active().len()
+    }
+
+    /// The newest banner about the whole machine (critical battery) that is
+    /// up: the lock screen shows it on every display. Only its title, which
+    /// the system wrote; never an app's words.
+    pub fn machine_alert(&self) -> Option<String> {
+        self.notification_log
+            .active()
+            .iter()
+            .rev()
+            .find(|notification| notification.machine_wide)
+            .map(|notification| notification.title.clone())
     }
 
     // ---------- History ----------
@@ -3356,6 +3610,22 @@ impl ChromeState {
                 let time = ui::clock::hour_minute((end / 60).into(), (end % 60).into());
                 t_args("quiet-status-focus-until", &[("time", time.into())])
             })
+    }
+
+    /// [`Self::quiet_status`] at the local time now.
+    pub fn quiet_status_now(&self) -> Option<String> {
+        use chrono::{Datelike, Timelike};
+        let local = chrono::Local::now();
+        self.quiet_status(
+            u16::try_from(
+                local
+                    .hour()
+                    .saturating_mul(60)
+                    .saturating_add(local.minute()),
+            )
+            .unwrap_or(0),
+            u8::try_from(local.weekday().num_days_from_monday()).unwrap_or(0),
+        )
     }
 
     // ---------- D-Bus notification wiring ----------
@@ -3819,35 +4089,6 @@ impl ChromeState {
 }
 
 pub type Chrome = Rc<RefCell<ChromeState>>;
-
-/// The workspace wheel's view of the shell: its summon flag lives in the
-/// chrome state, and a switch or a new workspace lands in the tree with a
-/// bump so the rest of the shell re-syncs on the next frame.
-pub struct ChromeWheel(pub Chrome);
-
-impl tilo_desktop::sidebar_wheel_disc::WheelHost for ChromeWheel {
-    fn summon(&self) -> Option<vello::kurbo::Point> {
-        self.0.borrow().wheel_summon()
-    }
-
-    fn dismiss_summon(&self) {
-        self.0.borrow_mut().set_wheel_summon(None);
-    }
-
-    fn active_workspace(&self) -> Option<crate::shell::state::WorkspaceId> {
-        Some(self.0.borrow().tree().desktop.active)
-    }
-
-    fn select_workspace(&self, workspace: crate::shell::state::WorkspaceId) {
-        let mut state = self.0.borrow_mut();
-        state.tree_mut().set_active(workspace);
-        state.bump();
-    }
-
-    fn add_workspace(&self) {
-        self.0.borrow_mut().add_workspace("Untitled");
-    }
-}
 
 #[cfg(test)]
 mod panel_exclusion_tests {

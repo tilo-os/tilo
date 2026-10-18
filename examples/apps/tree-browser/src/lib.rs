@@ -195,6 +195,7 @@ impl ResourceApp for App {
 
         Box::new(
             NavShell::new()
+                .content_kind(ui::widget::ContentKind::Page)
                 .mode(NavMode::Push)
                 .sidebar(Box::new(master))
                 .content(detail)

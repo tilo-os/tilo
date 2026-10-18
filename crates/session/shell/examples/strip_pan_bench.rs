@@ -343,6 +343,7 @@ impl Fixture {
             frame.set_output_geometry(vec![OutputGeometry {
                 id: 0,
                 monitor: String::new(),
+                connector: String::new(),
                 x: 0.0,
                 y: 0.0,
                 width: (width / case.scale).round(),

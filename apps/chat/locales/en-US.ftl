@@ -126,7 +126,6 @@ chat-context-sharing = Sharing live Chat context
 chat-context-following = Following live Chat context · Stop following in workspace controls
 chat-context-stop = Stop sharing
 chat-header-call-open = Open call
-chat-header-voice-call = Voice call
 
 chat-identity-available = Available
 chat-identity-in-voice = In voice
@@ -220,8 +219,7 @@ chat-agent-task-complete = Completed
 chat-agent-task-cancelled = Cancelled
 chat-agent-task-ended = Ended
 chat-agent-task-attention = Needs attention
-chat-agent-direction-saving = Saving direction…
-chat-agent-direction-saved = Saved — waiting for the agent to apply it
+chat-agent-direction-waiting = Waiting for the agent to apply your direction
 chat-agent-direction-applied = Applied — the agent is using your direction
 chat-agent-direction-refused = Direction was not saved. Your draft is kept.
 chat-agent-direction-outcome-unknown = Direction sent; waiting for Task Center to confirm the outcome
@@ -243,6 +241,7 @@ chat-resource-link-copied = Link copied
 chat-resource-link-unavailable = Link unavailable
 chat-voice-unavailable = Voice calls are unavailable until a media service is connected.
 chat-attachment-import-unavailable = Attachment import is unavailable on this host.
+chat-private-images-unavailable = Images can't be sent in this private conversation.
 
 # "You" belongs to the current reader; shared/legacy names identify their person.
 chat-person-unnamed = Someone ({ $tag })
@@ -336,3 +335,27 @@ chat-person-status = Set their status to { $new ->
     [offline] offline
    *[other] { $new }
 }
+
+## Making and changing channels
+chat-sheet-new-channel = Create channel
+chat-sheet-new-category = Create category
+chat-sheet-edit-channel = Edit channel
+chat-sheet-create-channel = Create channel
+chat-sheet-create-category = Create category
+chat-sheet-save = Save
+chat-sheet-cancel = Cancel
+chat-sheet-kind = Channel type
+chat-sheet-text = Text
+chat-sheet-text-about = Messages, pictures, files and threads
+chat-sheet-voice = Voice
+chat-sheet-voice-about = Talk, share your screen and see each other
+chat-sheet-channel-name = Name
+chat-sheet-category-name = Category name
+chat-sheet-text-placeholder = new-channel
+chat-sheet-voice-placeholder = Lounge
+chat-sheet-category-placeholder = Projects
+chat-sheet-category = Category
+chat-sheet-no-category = None
+chat-sheet-topic = Topic
+chat-sheet-topic-placeholder = What this channel is for (optional)
+chat-mention-alert = { $name } mentioned you in #{ $channel }

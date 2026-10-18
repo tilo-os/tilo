@@ -110,33 +110,62 @@ fn fold_timeline_drag_preserves_elapsed_duration_and_authored_zone() {
     let from = Point::new(block.center().x, block.y0 + 3.0);
     // Move within the repeated hour: the end must still choose the later fold.
     h.drag(from, Point::new(from.x, from.y - 0.25 * g.hour_h));
+    // The event repeats: the drag asks, and "Only this event" (the first
+    // row) moves this occurrence on its own.
+    assert!(h.app.repeat_scope_menu.is_open());
+    h.press_named(NamedKey::Enter);
     h.relayout();
-    let saved = crate::resource::read_doc(h.doc());
-    let event = saved.event(id).unwrap();
+    let occurrence = |doc: &AutoCommit| {
+        let saved = crate::resource::read_doc(doc);
+        let event = saved.event(id).unwrap().clone();
+        let edit = event
+            .occurrence_overrides
+            .iter()
+            .find(|edit| edit.original_date == day)
+            .cloned()
+            .expect("the dragged occurrence is moved on its own");
+        (event, edit)
+    };
+    let (event, edit) = occurrence(h.doc());
     assert_eq!(
-        event.start,
-        day.and_hms_opt(2, 30, 0).unwrap(),
+        edit.start,
+        Some(day.and_hms_opt(2, 30, 0).unwrap()),
         "status={:?}, selection={:?}, dispatched={:?}",
         h.app.status,
         h.app.selection,
         h.app.last_dispatched()
     );
-    assert_eq!(event.end, day.and_hms_opt(2, 35, 0).unwrap());
-    assert!(event.end_later_fold);
-    assert_eq!(event.elapsed_duration(), Duration::minutes(65));
+    assert_eq!(edit.end, Some(day.and_hms_opt(2, 35, 0).unwrap()));
+    assert!(edit.end_later_fold);
+    let (from_at, to_at) = crate::shown::instants(&event, day).unwrap();
+    assert_eq!(to_at - from_at, Duration::minutes(65));
+    assert_eq!(
+        event.start,
+        day.and_hms_opt(2, 45, 0).unwrap(),
+        "the series stays"
+    );
     assert_eq!(event.timezone, "Europe/Berlin");
     assert_eq!(event.recurrence, Recurrence::Weekly);
     // Then leave the fold, retaining the elapsed interval through persistence.
     let block = h.app.timeline.test_block_rect(area, 1, g, 0, 150, 215);
     let from = Point::new(block.center().x, block.y0 + 3.0);
     h.drag(from, Point::new(from.x, from.y + 2.0 * g.hour_h));
+    h.press_named(NamedKey::Enter);
     h.relayout();
-    let saved = crate::resource::read_doc(h.doc());
-    let event = saved.event(id).unwrap();
-    assert_eq!(event.start, day.and_hms_opt(4, 30, 0).unwrap());
-    assert_eq!(event.end, day.and_hms_opt(5, 35, 0).unwrap());
-    assert!(!event.end_later_fold);
-    assert_eq!(event.elapsed_duration(), Duration::minutes(65));
+    let (event, edit) = occurrence(h.doc());
+    assert_eq!(
+        edit.start,
+        Some(day.and_hms_opt(4, 30, 0).unwrap()),
+        "status={:?}, selection={:?}, dispatched={:?}, spans={:?}",
+        h.app.status,
+        h.app.selection,
+        h.app.last_dispatched(),
+        h.app.timeline_spans(&[day])
+    );
+    assert_eq!(edit.end, Some(day.and_hms_opt(5, 35, 0).unwrap()));
+    assert!(!edit.end_later_fold);
+    let (from_at, to_at) = crate::shown::instants(&event, day).unwrap();
+    assert_eq!(to_at - from_at, Duration::minutes(65));
     assert_eq!(event.timezone, "Europe/Berlin");
     assert!(h.app.last_dispatched().is_some());
 }
@@ -182,10 +211,20 @@ fn fold_conflicts_are_presented_after_opening_the_event() {
     let mut h = Harness::mount(app, 1200, 1900);
     h.relayout();
     let area = h.app.view_rect();
-    let g = TimelineInteraction::test_geometry(area);
+    let g = h.app.timeline.test_layout_geometry(area);
     let block = h.app.timeline.test_block_rect(area, 1, g, 0, 165, 195);
-    // Above the 02:50 event, so this gesture opens the first meeting.
-    h.click(Point::new(block.center().x, block.y0 + 1.0));
+    // The overlapping meetings share the column; aim at this one's lane,
+    // above the 02:50 event, so this gesture opens the first meeting.
+    let lane = h
+        .app
+        .timeline_spans(&[day])
+        .into_iter()
+        .find(|span| span.id == id)
+        .unwrap()
+        .lane;
+    let lane_w = block.width() / lane.of as f64;
+    let x = block.x0 + lane_w * (lane.index as f64 + 0.5);
+    h.click(Point::new(x, block.y0 + 1.0));
     h.mouse_button(ElementState::Released);
     h.relayout();
     assert_eq!(h.app.selection, Some(Sel::Event(id)));
@@ -435,7 +474,7 @@ fn layout_reflows_on_resize_instead_of_caching_first_frame_geometry() {
 
         // Resize the SAME instance narrow. A cached-from-first-frame mode would
         // stay Persistent; a correctly re-derived one flips to Overlay.
-        app.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
+        app.rect = Rect::new(0.0, 0.0, 480.0, 720.0);
         app.relayout();
         assert_eq!(
             app.sidebar.mode(),
@@ -444,7 +483,7 @@ fn layout_reflows_on_resize_instead_of_caching_first_frame_geometry() {
         );
         // Narrow + detail open: the sheet floats over the full-width
         // calendar.
-        assert_eq!(app.content_rect.width(), 560.0);
+        assert_eq!(app.content_rect.width(), 480.0);
         assert!(app.detail_rect.width() > 0.0);
         assert_ne!(
             app.content_rect, wide_content,
@@ -1435,17 +1474,21 @@ fn sidebar_presentation_follows_width_and_hides_via_its_toggle() {
     // Case `narrow_window_turns_the_sidebar_into_a_drawer`.
     {
         let mut app = CalendarApp::new_demo();
-        app.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
+        app.rect = Rect::new(0.0, 0.0, 480.0, 600.0);
         app.relayout();
         assert_eq!(app.sidebar.mode(), SidebarMode::Overlay);
         assert_eq!(app.content_rect.x0, app.rect.x0);
-        assert!(!app.sidebar.visible(), "the drawer is closed by default");
+        assert!(
+            !app.sidebar.visible(),
+            "the calendar is in front by default"
+        );
         app.sidebar.set_open(true);
         app.relayout();
         assert!(app.sidebar.visible());
-        assert!(
-            app.sidebar.rect().width() < app.rect.width() - 1.0,
-            "the drawer floats inside the window"
+        assert_eq!(
+            app.sidebar.rect().width(),
+            app.rect.width(),
+            "the list and the calendar take turns filling the window"
         );
     }
     // Case `desktop_sidebar_hides_and_only_the_sidebar_hides`.
@@ -1629,6 +1672,32 @@ fn mobile_event_editor_is_a_full_window_page_with_a_reachable_done_action() {
 }
 
 #[test]
+fn done_dismisses_the_mobile_editor_of_an_event_with_a_conflict() {
+    for (width, height) in [(360, 800), (800, 360)] {
+        let mut app = CalendarApp::new_demo();
+        let open = app.selected_event().expect("the sample event is open");
+        let start = app.model.event(open).unwrap().start + Duration::minutes(30);
+        app.model
+            .events
+            .push(crate::resource::event_at("Overlapping", start));
+        let mut h = Harness::mount(app, width, height);
+        h.resize(width, height);
+        assert!(h.app.form.conflict.area() > 0.0, "the conflict is shown");
+        let done = h
+            .app
+            .modal
+            .clone()
+            .and_then(|modal| modal.actions.first().copied())
+            .expect("Done is retained");
+        h.click(done.center());
+        assert!(
+            !h.app.detail_open,
+            "Done dismisses the editor at {width}x{height}"
+        );
+    }
+}
+
+#[test]
 fn view_switcher_lives_in_the_header_or_the_drawer_without_duplicates() {
     // Case `view_switcher_stays_in_the_header_until_it_does_not_fit`.
     {
@@ -1642,10 +1711,12 @@ fn view_switcher_lives_in_the_header_or_the_drawer_without_duplicates() {
 
         app.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
         app.relayout();
-        assert_eq!(app.sidebar.mode(), SidebarMode::Overlay);
+        assert_eq!(app.sidebar.mode(), SidebarMode::Persistent);
+        app.sidebar.set_collapsed(true);
+        app.relayout();
         assert!(
             app.topbar.switcher_visible(),
-            "a roomy header keeps the switcher beside a drawer"
+            "a roomy header keeps the switcher beside a hidden sidebar"
         );
 
         app.rect = Rect::new(0.0, 0.0, 460.0, 800.0);
@@ -2158,9 +2229,11 @@ fn caldav_sync_runs_off_thread_and_drains_results_tags_or_failure() {
         app.start_sync(&mut Edits::lend(&mut state));
         assert!(app.syncing, "a live sync is in flight");
         assert!(app.sync_rx.is_some(), "worker result channel is armed");
+        // The worker's reply wakes the app through its waking channel;
+        // waiting on a slow server paints nothing.
         assert!(
-            app.needs_animation_frame(),
-            "the loop must keep ticking so the result drains"
+            !app.needs_animation_frame(),
+            "waiting on the worker must not pump frames"
         );
         // Detach the worker so the test doesn't depend on the network.
         app.sync_rx = None;
@@ -2412,7 +2485,7 @@ fn calendar_visibility_and_account_collapse_filter_views_and_sidebar() {
         app.calendar_filter = Some("icloud/holidays".into());
 
         assert!(
-            app.visible_events_on(day).is_empty(),
+            app.visible_by_day(&[day])[0].is_empty(),
             "the collection filter narrows results but never bypasses the sidebar visibility setting"
         );
     }
@@ -2654,7 +2727,7 @@ fn week_timeline_scrolls_the_full_day_and_drags_create_and_reschedule() {
         h.app.view = View::Week;
         h.relayout();
 
-        let g = TimelineInteraction::test_geometry(h.app.view_rect());
+        let g = h.app.timeline.test_layout_geometry(h.app.view_rect());
         // The visible seven-day grid is narrow after navigation takes its
         // column. Its minimum reserves two caption lines per half hour.
         let theme = &h.app.layout_theme;
@@ -2688,7 +2761,7 @@ fn week_timeline_scrolls_the_full_day_and_drags_create_and_reschedule() {
         tall.app.show_calendar();
         tall.app.view = View::Week;
         tall.relayout();
-        let gt = TimelineInteraction::test_geometry(tall.app.view_rect());
+        let gt = tall.app.timeline.test_layout_geometry(tall.app.view_rect());
         assert!(
             gt.hour_h > TIMELINE_MIN_HOUR_H,
             "a tall window grows the hours to fill the space, got {}",
@@ -2710,7 +2783,7 @@ fn week_timeline_scrolls_the_full_day_and_drags_create_and_reschedule() {
         h.relayout();
 
         let area = h.app.view_rect();
-        let g = TimelineInteraction::test_geometry(area);
+        let g = h.app.timeline.test_layout_geometry(area);
         let days = h.app.timeline_days();
         let col = 0usize;
         let grid_x0 = area.x0 + g.gutter;
@@ -2778,7 +2851,7 @@ fn week_timeline_scrolls_the_full_day_and_drags_create_and_reschedule() {
         assert_eq!(start0.time(), min_to_time(11 * 60));
 
         let area = h.app.view_rect();
-        let g = TimelineInteraction::test_geometry(area);
+        let g = h.app.timeline.test_layout_geometry(area);
         let days = h.app.timeline_days();
         let col = days
             .iter()
@@ -2793,20 +2866,36 @@ fn week_timeline_scrolls_the_full_day_and_drags_create_and_reschedule() {
         let from = Point::new(x, block.y0 + 3.0);
         let to = Point::new(x, block.y0 + 3.0 + 2.0 * g.hour_h);
         h.drag(from, to);
+        // Design review repeats: the drag asks which events it moves.
+        assert!(h.app.repeat_scope_menu.is_open());
+        assert_eq!(
+            h.app.repeat_scope_menu.items(),
+            ["Only this event", "All future events"]
+        );
+        h.press_named(NamedKey::Enter);
 
-        let moved = h
+        let event = h
             .app
             .model
             .event(id)
             .expect("event still present after the move");
-        assert_eq!(moved.start.date(), today, "stayed in the same day column");
+        // "Only this event": the drag moves this occurrence, not the
+        // series.
+        assert_eq!(event.start, start0, "the series keeps its time");
+        let moved = event
+            .occurrence_overrides
+            .iter()
+            .find(|edit| edit.original_date == today)
+            .expect("the dragged occurrence is moved on its own");
+        let (start, end) = (moved.start.unwrap(), moved.end.unwrap());
+        assert_eq!(start.date(), today, "stayed in the same day column");
         assert_eq!(
-            moved.start.time(),
+            start.time(),
             min_to_time(13 * 60),
             "rescheduled two hours later (was {start0})"
         );
         assert_eq!(
-            (moved.end - moved.start).num_minutes(),
+            (end - start).num_minutes(),
             dur0,
             "duration preserved across the move"
         );
@@ -3676,4 +3765,73 @@ fn tasks_screen_rows_toggle_like_the_rail_and_open_like_the_agenda() {
     let open = open_of(&h.app, flights.id).expect("the row opens its task");
     h.click(Point::new(open.x1 - 4.0, open.center().y));
     assert_eq!(h.app.selected_task(), Some(flights.id));
+}
+
+/// Dragging an occurrence of a repeating event asks which events it moves,
+/// as Apple Calendar, Fantastical and Notion Calendar do. Dismissing the
+/// question changes nothing; "All future events" from the first occurrence
+/// moves the whole series.
+#[test]
+fn dragging_a_repeating_event_asks_only_this_or_all_future() {
+    let mut h = Harness::new(1200, 1900);
+    h.app.show_calendar();
+    h.app.view = View::Week;
+    h.relayout();
+    let today = h.app.today;
+    let before = h
+        .app
+        .model
+        .events
+        .iter()
+        .find(|e| e.title == "Design review")
+        .expect("seeded 11:00 event present")
+        .clone();
+    assert_eq!(before.start.date(), today, "the series starts today");
+    let area = h.app.view_rect();
+    let g = h.app.timeline.test_layout_geometry(area);
+    let days = h.app.timeline_days();
+    let col = days.iter().position(|d| *d == today).unwrap();
+    let block = h
+        .app
+        .timeline
+        .test_block_rect(area, days.len(), g, col, 11 * 60, 12 * 60);
+    let from = Point::new(block.center().x, block.y0 + 3.0);
+    let to = Point::new(from.x, from.y + 2.0 * g.hour_h);
+
+    // Dismissed: nothing moves.
+    h.drag(from, to);
+    assert!(h.app.repeat_scope_menu.is_open());
+    h.press_named(NamedKey::Escape);
+    assert!(!h.app.repeat_scope_menu.is_open());
+    assert!(h.app.pending_repeat.is_none());
+    assert_eq!(h.app.model.event(before.id), Some(&before));
+
+    // All future events, from the first occurrence: the series moves.
+    h.drag(from, to);
+    assert!(h.app.repeat_scope_menu.is_open());
+    h.press_named(NamedKey::ArrowDown);
+    h.press_named(NamedKey::Enter);
+    h.relayout();
+    let saved = crate::resource::read_doc(h.doc());
+    let series = saved.event(before.id).expect("the series stays itself");
+    assert_eq!(series.start, before.start + Duration::hours(2));
+    assert_eq!(series.end, before.end + Duration::hours(2));
+    assert_eq!(series.recurrence, before.recurrence);
+    assert_eq!(series.recurrence_until, before.recurrence_until);
+    assert!(
+        series
+            .occurrence_overrides
+            .iter()
+            .all(|edit| edit.original_date != today),
+        "no exception for the occurrence dragged"
+    );
+    assert_eq!(
+        saved
+            .events
+            .iter()
+            .filter(|e| e.title == "Design review")
+            .count(),
+        1,
+        "no second series"
+    );
 }

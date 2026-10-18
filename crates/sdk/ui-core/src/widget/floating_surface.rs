@@ -43,6 +43,91 @@ pub fn paint(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
     paint_rounded(scene, transform, rect, radius(theme), theme);
 }
 
+/// The one floating card: a notification banner, a toast, the command
+/// palette, a desk widget's card, the frame around an app's call or
+/// navigation card. It is the floating Panel's shape (its radius, capped
+/// for a card shorter than two corners) on an opaque ground: the panel
+/// ground, the derived panel edge and, on a dark material, the inner light
+/// edge, lifted by the floating elevation. Nothing behind a card reads
+/// through it; translucency belongs to scrims.
+#[must_use]
+pub fn card_radius(rect: Rect, theme: &Theme) -> f64 {
+    radius(theme).min(rect.height() / 2.0)
+}
+
+/// The shadow a floating card casts.
+#[must_use]
+pub fn card_shadow(theme: &Theme) -> crate::tokens::Shadow {
+    theme.tokens.elevation.floating
+}
+
+/// A floating card's ground ([`card_radius`]): the panel ground.
+#[must_use]
+pub fn card_ground(theme: &Theme) -> Color {
+    crate::chrome::panel_ground(theme)
+}
+
+/// Paint a floating card's shadow, `alpha` of its strength (a card that
+/// is still arriving).
+pub fn paint_card_shadow(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    alpha: f32,
+    theme: &Theme,
+) {
+    let mut shadow = card_shadow(theme);
+    shadow.color = shadow.color.multiply_alpha(alpha);
+    crate::surface::shadow(scene, transform, rect, card_radius(rect, theme), &shadow);
+}
+
+/// Paint a floating card's body without its shadow: the opaque ground and
+/// its edges. A host that fades or moves the shadow on its own paints it
+/// with [`paint_card_shadow`].
+pub fn paint_card_body(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
+    paint_card_body_with(scene, transform, rect, card_ground(theme), theme);
+}
+
+/// [`paint_card_body`] on another opaque `ground`: an app's own content
+/// ground inside the card's frame.
+pub fn paint_card_body_with(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    ground: Color,
+    theme: &Theme,
+) {
+    let radius = card_radius(rect, theme);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        ground,
+        None,
+        &RoundedRect::from_rect(rect, radius),
+    );
+    paint_card_edge(scene, transform, rect, theme);
+}
+
+/// A floating card's edges, drawn over its content: the panel edge and the
+/// inner light edge.
+pub fn paint_card_edge(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
+    let radius = card_radius(rect, theme);
+    scene.stroke(
+        &vello::kurbo::Stroke::new(1.0),
+        transform,
+        crate::chrome::panel_border(theme),
+        None,
+        &crate::surface::edge_outline(rect, radius),
+    );
+    crate::surface::floating_edge(scene, transform, rect, radius, theme);
+}
+
+/// Paint a whole floating card: its shadow and body.
+pub fn paint_card(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
+    paint_card_shadow(scene, transform, rect, 1.0, theme);
+    paint_card_body(scene, transform, rect, theme);
+}
+
 /// The radius of a menu panel holding a single row: the row's item radius
 /// plus the menu inset, concentric with the row, so one row never sits in
 /// a near-pill.

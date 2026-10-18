@@ -89,18 +89,6 @@ pub fn nearest_edge(area: Rect, p: Point) -> DockEdge {
     }
 }
 
-/// The direction the open card grows away from its edge: from the
-/// display edge inward. A slide toward the edge by this unit vector times
-/// a few pixels is how a widget leaves.
-#[must_use]
-pub fn outward(edge: DockEdge) -> Vec2 {
-    match edge {
-        DockEdge::Left => Vec2::new(-1.0, 0.0),
-        DockEdge::Right => Vec2::new(1.0, 0.0),
-        DockEdge::Bottom | DockEdge::BottomLeft | DockEdge::BottomRight => Vec2::new(0.0, 1.0),
-    }
-}
-
 /// Length of `size` along the stacking direction of `edge`.
 fn along(edge: DockEdge, size: Size) -> f64 {
     match edge {

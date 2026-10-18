@@ -193,6 +193,20 @@ pub enum AccountsEffect {
     /// Recover an interrupted Files mode change after closing the connection form.
     #[effect(row, job, device_only, idempotent, label = "Recover mode change")]
     RecoverCloudMode { account: String },
+    /// Link your account with a service this room is connected to (a
+    /// Discord server it bridges): the room's host makes the code to send
+    /// from there, which shows here once it answered.
+    #[effect(label = "Link account")]
+    LinkService {
+        #[param("The connector's app id")]
+        app: String,
+    },
+    /// Unlink your account with a service this room is connected to.
+    #[effect(destructive, label = "Unlink account")]
+    UnlinkService {
+        #[param("The connector's app id")]
+        app: String,
+    },
 }
 
 /// Answer `effect` on the area's model; a connection check runs on a
@@ -247,9 +261,53 @@ pub(crate) fn answer(
             app.remove_browser_identity(account)?;
             return Ok(Effected::done());
         }
+        AccountsEffect::LinkService { app: service } => {
+            app.accounts().linked().link(&service);
+            return Ok(Effected::done());
+        }
+        AccountsEffect::UnlinkService { app: service } => {
+            app.accounts().linked().unlink(&service);
+            return Ok(Effected::done());
+        }
         _ => {}
     }
     answer_model(app, effect, cx)
+}
+
+/// Answer an effect of the Thunderbird import review on `model`, or hand
+/// `effect` back when it is not one.
+fn answer_import(
+    model: &mut AccountsPane,
+    effect: AccountsEffect,
+    cx: &mut EffectCx<Settings, SettingsApp>,
+) -> Result<EffectAnswer, AccountsEffect> {
+    Ok(match effect {
+        AccountsEffect::DiscoverThunderbirdAccounts { .. }
+        | AccountsEffect::ChooseThunderbirdMetadata => Err(t("accounts-import-read-failed")),
+        AccountsEffect::InspectThunderbirdImport => {
+            model.import_review.inspect().map(Effected::value)
+        }
+        AccountsEffect::SelectThunderbirdAccount {
+            source,
+            authentication,
+            selected,
+            revision,
+        } => model
+            .import_review
+            .select(&source, &authentication, selected, revision)
+            .map(|()| {
+                model.changed = true;
+                Effected::done()
+            }),
+        AccountsEffect::CommitThunderbirdImport { revision } => {
+            commit_thunderbird_import(model, revision, cx)
+        }
+        AccountsEffect::CancelThunderbirdImport => model.import_review.cancel().map(|()| {
+            model.changed = true;
+            Effected::done()
+        }),
+        other => return Err(other),
+    })
 }
 
 fn answer_model(
@@ -259,36 +317,25 @@ fn answer_model(
 ) -> EffectAnswer {
     let shared = app.accounts().model();
     let mut model = shared.borrow_mut();
+    let effect = match answer_import(&mut model, effect, cx) {
+        Ok(answer) => return answer,
+        Err(effect) => effect,
+    };
     match effect {
         AccountsEffect::DiscoverThunderbirdAccounts { .. }
-        | AccountsEffect::ChooseThunderbirdMetadata => {
+        | AccountsEffect::ChooseThunderbirdMetadata
+        | AccountsEffect::InspectThunderbirdImport
+        | AccountsEffect::SelectThunderbirdAccount { .. }
+        | AccountsEffect::CommitThunderbirdImport { .. }
+        | AccountsEffect::CancelThunderbirdImport => {
             return Err(t("accounts-import-read-failed"));
-        }
-        AccountsEffect::InspectThunderbirdImport => {
-            return model.import_review.inspect().map(Effected::value);
-        }
-        AccountsEffect::SelectThunderbirdAccount {
-            source,
-            authentication,
-            selected,
-            revision,
-        } => {
-            model
-                .import_review
-                .select(&source, &authentication, selected, revision)?;
-            model.changed = true;
-        }
-        AccountsEffect::CommitThunderbirdImport { revision } => {
-            return commit_thunderbird_import(&mut model, revision, cx);
-        }
-        AccountsEffect::CancelThunderbirdImport => {
-            model.import_review.cancel()?;
-            model.changed = true;
         }
         AccountsEffect::RemoveBrowserServiceSession { .. }
         | AccountsEffect::PublishBrowserIdentity { .. }
         | AccountsEffect::SetBrowserIdentityEnabled { .. }
-        | AccountsEffect::RemoveBrowserIdentity { .. } => {
+        | AccountsEffect::RemoveBrowserIdentity { .. }
+        | AccountsEffect::LinkService { .. }
+        | AccountsEffect::UnlinkService { .. } => {
             return Err("Identity publication was not handled".into());
         }
         AccountsEffect::AddAccount { kind } => {
@@ -456,6 +503,8 @@ pub struct AccountsArea {
     /// The credential vault, its custody and the sync statuses, opened off
     /// the UI thread after the window's first frame ([`Self::start_read`]).
     read: crate::device_read::DeviceRead<AccountsRead>,
+    /// The linked accounts' revision the pane last showed.
+    linked_seen: std::cell::Cell<u64>,
 }
 
 /// What the External Accounts area opens of the device: the credential
@@ -496,6 +545,7 @@ impl AccountsArea {
             model: std::cell::OnceCell::new(),
             account_root: None,
             read: crate::device_read::DeviceRead::default(),
+            linked_seen: std::cell::Cell::new(0),
         }
     }
 
@@ -552,6 +602,9 @@ impl AccountsArea {
             if let Some(kind) = scene.and_then(|scene| scene.account_form) {
                 model = model.with_open_form_for_shot(kind);
             }
+            // Where the person stands with each connected service is asked
+            // of the room's host; the pane shows it once answered.
+            self.cx.linked.refresh();
             Rc::new(std::cell::RefCell::new(model.with_host(self.cx.clone())))
         })
     }
@@ -559,6 +612,7 @@ impl AccountsArea {
     /// Take in finished checks and sign-in steps, if the model exists.
     pub(crate) fn poll(&self) {
         self.remote.poll();
+        self.follow_linked();
         let finished = self
             .removal
             .borrow_mut()
@@ -577,6 +631,22 @@ impl AccountsArea {
             // demand intact; that view consumes it during its own sync.
             let changed = pane.poll();
             pane.changed |= changed;
+        }
+    }
+
+    /// The person's accounts with the services the room is connected to.
+    pub(crate) fn linked(&self) -> &ui::linked_accounts::LinkedAccounts {
+        &self.cx.linked
+    }
+
+    /// Show the linked accounts again when the room's host answered
+    /// something new about them.
+    fn follow_linked(&self) {
+        let revision = self.cx.linked.revision();
+        if self.linked_seen.replace(revision) != revision
+            && let Some(model) = self.model.get()
+        {
+            model.borrow_mut().changed = true;
         }
     }
 
@@ -1745,6 +1815,11 @@ impl AccountsPane {
         if let Some(id) = &self.reauth_id {
             panel.push(self.reauth_form(id));
         }
+        // The services this room is connected to come first: they belong to
+        // this room, and show only when it has one.
+        if let Some(linked) = self.linked_accounts_card() {
+            panel.push(linked);
+        }
         panel.push(self.browser_service_sessions_card());
         // Connected services lead. Empty providers belong to the one chooser,
         // not to an inventory of accounts the person has not connected.
@@ -1820,6 +1895,78 @@ impl AccountsPane {
             ));
         }
         card(&t("accounts-browser-sessions-title"), rows(body))
+    }
+
+    /// The person's accounts with the services this room is connected to
+    /// (a Discord server it bridges), as the profile card shows them: link
+    /// one, which shows the code to send from there, or unlink it. `None`
+    /// where the room is connected to none.
+    fn linked_accounts_card(&self) -> Option<SettingsSection> {
+        let accounts = self.cx.as_ref()?.linked.accounts();
+        if accounts.is_empty() {
+            return None;
+        }
+        let mut body = vec![note(&t("accounts-linked-about"))];
+        for account in accounts {
+            let service = || account.service.clone().into();
+            let app = account.app.clone();
+            body.push(match &account.state {
+                ui::linked_accounts::LinkState::Unlinked => setting_row(
+                    &account.service,
+                    Box::new(self.bound(
+                        Button::new(
+                            &format!("settings.linked.link:{app}"),
+                            &t_args("accounts-linked-link", &[("service", service())]),
+                        ),
+                        AccountsEffect::LinkService { app },
+                    )),
+                ),
+                ui::linked_accounts::LinkState::Linking(code) => {
+                    let copy = code.code.clone();
+                    let chip = ui::widget::Container::new()
+                        .with_background()
+                        .hug()
+                        .with_inset(ui::tokens::Rhythm::Tight)
+                        .with_child(Box::new(
+                            ui::widget::Text::new(&code.code)
+                                .with_id(format!("settings.linked.code:{app}"))
+                                .with_role(ui::TextRole::Code),
+                        ));
+                    setting_row_described(
+                        &account.service,
+                        &code.instruction,
+                        Box::new(
+                            Row::new()
+                                .no_wrap()
+                                .with_rhythm(ui::tokens::Rhythm::Sibling)
+                                .with_align_items(taffy::AlignItems::Center)
+                                .with_justify(taffy::JustifyContent::FlexEnd)
+                                .push(Box::new(chip))
+                                .push(Box::new(
+                                    Button::new(
+                                        &format!("settings.linked.copy:{app}"),
+                                        &t("accounts-linked-copy"),
+                                    )
+                                    .with_icon(ui::icons::Icon::Copy)
+                                    .on_click(move || ui::text_selection::clipboard_copy(&copy)),
+                                )),
+                        ),
+                    )
+                }
+                ui::linked_accounts::LinkState::Linked(name) => setting_row_described(
+                    &account.service,
+                    &name.label(),
+                    Box::new(self.bound(
+                        Button::new(
+                            &format!("settings.linked.unlink:{app}"),
+                            &t("accounts-linked-unlink"),
+                        ),
+                        AccountsEffect::UnlinkService { app },
+                    )),
+                ),
+            });
+        }
+        Some(card(&t("accounts-linked-title"), rows(body)))
     }
 
     fn browser_identity_card(&self) -> SettingsSection {
@@ -2087,34 +2234,53 @@ impl AccountsPane {
                     status.health == accounts::AccountSyncHealth::NeedsAuthentication
                 }),
             ));
-            if view.kind == AccountKind::Nextcloud {
-                actions.push(self.bound(
-                    Button::new(
-                        &format!("settings.accounts.calendars.{}", view.id),
-                        &t("accounts-nextcloud-calendars"),
-                    ),
-                    AccountsEffect::ConnectNextcloudCalendars {
-                        account: view.id.clone(),
-                    },
-                ));
-            }
-            if let Some(mount) = mount {
-                actions.extend(self.sync_actions(&view.id, mount.paused));
-            } else if self.can_recover_cloud_mode(view) {
-                details.push(t("accounts-recover-mode-description"));
-                actions.push(self.bound(
-                    Button::new(
-                        &format!("settings.accounts.recover-mode.{}", view.id),
-                        &t("accounts-recover-mode"),
-                    ),
-                    AccountsEffect::RecoverCloudMode {
-                        account: view.id.clone(),
-                    },
-                ));
-            }
+            actions.extend(self.cloud_row_actions(
+                view,
+                mount.map(|mount| mount.paused),
+                &mut details,
+            ));
         }
         let label = self.account_row_label(view, &mut details);
         item_row(&label, marks, &details, actions)
+    }
+
+    /// What a row offers for the account's calendars and synced files:
+    /// Nextcloud's calendars, then pausing or resuming a mounted account's
+    /// sync (`paused` is `None` without a mount), or recovering an account
+    /// whose files mode was lost, which says so in `details`.
+    fn cloud_row_actions(
+        &self,
+        view: &AccountView,
+        paused: Option<bool>,
+        details: &mut Vec<String>,
+    ) -> Vec<Button> {
+        let mut actions = Vec::new();
+        if view.kind == AccountKind::Nextcloud {
+            actions.push(self.bound(
+                Button::new(
+                    &format!("settings.accounts.calendars.{}", view.id),
+                    &t("accounts-nextcloud-calendars"),
+                ),
+                AccountsEffect::ConnectNextcloudCalendars {
+                    account: view.id.clone(),
+                },
+            ));
+        }
+        if let Some(paused) = paused {
+            actions.extend(self.sync_actions(&view.id, paused));
+        } else if self.can_recover_cloud_mode(view) {
+            details.push(t("accounts-recover-mode-description"));
+            actions.push(self.bound(
+                Button::new(
+                    &format!("settings.accounts.recover-mode.{}", view.id),
+                    &t("accounts-recover-mode"),
+                ),
+                AccountsEffect::RecoverCloudMode {
+                    account: view.id.clone(),
+                },
+            ));
+        }
+        actions
     }
 
     fn account_row_label(&self, view: &AccountView, details: &mut Vec<String>) -> String {
@@ -3834,11 +4000,12 @@ mod tests {
             let (_scratch, root) = scratch_root();
             let pane = AccountsPane::from_dir_in(root, dir, false);
             let composed = lay_out(&pane);
-            // One Add per kind, metadata import, and four maintenance actions
-            // on each of four accounts.
+            // One Add per kind, metadata import, four maintenance actions
+            // on each of four accounts, and the Nextcloud account's
+            // calendars.
             assert_eq!(
                 count_named(composed.as_ref(), "Button"),
-                AccountKind::ALL.len() + 1 + 16
+                AccountKind::ALL.len() + 1 + 16 + 1
             );
         }
 
@@ -4418,5 +4585,99 @@ mod tests {
             "the credential went with the account"
         );
         assert!(!root.mutation_pending(), "the removal's journal is cleared");
+    }
+
+    /// A room bridged to a Discord server, its host answering at once.
+    struct Bridged(std::cell::RefCell<ui::linked_accounts::LinkState>);
+
+    impl ui::linked_accounts::LinkedAccountsHost for Bridged {
+        fn accounts(&self) -> Vec<ui::linked_accounts::LinkedAccount> {
+            vec![ui::linked_accounts::LinkedAccount {
+                app: "so.tilo.discord".into(),
+                service: "Discord".into(),
+                state: self.0.borrow().clone(),
+            }]
+        }
+
+        fn revision(&self) -> u64 {
+            0
+        }
+
+        fn refresh(&self) {}
+
+        fn link(&self, _app: &str) {
+            *self.0.borrow_mut() =
+                ui::linked_accounts::LinkState::Linking(ui::linked_accounts::LinkCode {
+                    code: "ABCDEFGHJKLM".into(),
+                    instruction: "In Discord, type /link with this code. It works for 10 minutes."
+                        .into(),
+                });
+        }
+
+        fn unlink(&self, _app: &str) {
+            *self.0.borrow_mut() = ui::linked_accounts::LinkState::Unlinked;
+        }
+    }
+
+    /// Every name and value the pane gives assistive technology.
+    fn said(pane: &AccountsPane) -> Vec<String> {
+        fn walk(widget: &dyn Widget, out: &mut Vec<String>) {
+            if let Some(node) = widget.accessibility() {
+                out.extend(node.name);
+                out.extend(node.value);
+            }
+            for child in widget.children() {
+                walk(child, out);
+            }
+        }
+        let composed = lay_out(pane);
+        let mut out = Vec::new();
+        walk(composed.as_ref(), &mut out);
+        out
+    }
+
+    #[test]
+    fn linked_accounts_show_where_the_room_is_connected_to_a_service() {
+        let (scratch, root) = scratch_root();
+        let cx = PaneCx::in_file(scratch.path().join("settings.json"));
+        let pane = AccountsPane::from_dir_in(root.clone(), AccountDirectory::default(), false)
+            .with_host(cx.clone());
+        assert!(
+            !said(&pane).contains(&t("accounts-linked-title")),
+            "no section where no host lends linked accounts"
+        );
+
+        let host = Rc::new(Bridged(std::cell::RefCell::new(
+            ui::linked_accounts::LinkState::Unlinked,
+        )));
+        let linked = ui::linked_accounts::LinkedAccounts::new(host.clone());
+        let pane = AccountsPane::from_dir_in(root, AccountDirectory::default(), false)
+            .with_host(cx.with_linked_accounts(linked.clone()));
+        let shown = said(&pane);
+        assert!(shown.contains(&t("accounts-linked-title")), "{shown:?}");
+        assert!(
+            shown.contains(&"Link Discord account".to_owned()),
+            "{shown:?}"
+        );
+
+        linked.link("so.tilo.discord");
+        let shown = said(&pane);
+        assert!(
+            shown
+                .iter()
+                .any(|line| line.contains("In Discord, type /link with this code")),
+            "{shown:?}"
+        );
+        assert!(shown.contains(&"ABCDEFGHJKLM".to_owned()), "{shown:?}");
+        assert!(shown.contains(&t("accounts-linked-copy")), "{shown:?}");
+
+        *host.0.borrow_mut() =
+            ui::linked_accounts::LinkState::Linked(ui::linked_accounts::AccountName {
+                user_name: "ada.l".into(),
+                display_name: Some("Ada L".into()),
+            });
+        let shown = said(&pane);
+        assert!(shown.contains(&"Ada L · ada.l".to_owned()), "{shown:?}");
+        assert!(shown.contains(&t("accounts-linked-unlink")), "{shown:?}");
     }
 }

@@ -2863,8 +2863,14 @@ mod tests {
         assert_eq!(notifications.counts(), (0, 0));
         let notice = crate::notifications::Notification::new("Timer finished", "Tea is ready");
         let id = notice.id;
-        let expires = notice.created_at + notice.dismiss_after;
+        let shown = ui::time::now();
+        let expires = shown + notice.dismiss_after;
         notifications.post(notice);
+        assert!(
+            !notifications.expire(expires),
+            "a banner never on screen does not expire"
+        );
+        notifications.present(shown, &[id], false);
         assert!(notifications.expire(expires));
         handle
             .dispatch(

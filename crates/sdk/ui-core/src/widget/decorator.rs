@@ -382,6 +382,7 @@ decorator_trait! {
         fn nav_availability() -> crate::gesture::NavAvailability;
         fn dev_route() -> Option<super::router::RouteSnapshot>;
         fn appearance_intent() -> Option<crate::theme::AppearanceIntent>;
+        fn minimum_window_width() -> Option<f64>;
         fn needs_idle_sync() -> bool;
         fn wants_pointer_capture() -> bool;
         fn animation_detail() -> Option<String>;

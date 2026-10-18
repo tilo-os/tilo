@@ -1087,6 +1087,7 @@ impl Widget for StoreApp {
             let requested = Rc::clone(&self.back_requested);
             Box::new(
                 ui::widget::NavShell::new()
+                    .content_kind(ui::widget::ContentKind::Grid)
                     .with_id("store.shell")
                     .on_back(move || can.get(), move || requested.set(true)),
             )
@@ -3008,11 +3009,16 @@ mod tests {
             app.harness().set_theme(theme);
             let current = app.harness().scene().encoding().draw_data.clone();
             assert_ne!(current, previous, "the Store must paint the new theme");
+            assert_eq!(
+                app.harness().targets()["store.remote.name"].height(),
+                input_height,
+                "changing colours alone must not enlarge the form"
+            );
             previous = current;
         }
-        let mut scaled = Theme::light();
-        scaled.text_scale = 1.5;
-        app.harness().set_theme(scaled);
+        // Use the same resolved typography as the live accessibility setting;
+        // assigning text_scale alone leaves the type tokens at their old sizes.
+        app.harness().set_theme(Theme::light().with_text_scale(1.5));
         assert!(
             app.harness().targets()["store.remote.name"].height() > input_height,
             "the retained form must accommodate the larger text"
@@ -3023,6 +3029,30 @@ mod tests {
                 .iter()
                 .any(|control| control.name.as_deref() == Some("Add remote") && !control.disabled),
             "the normal owner can still use the scaled form"
+        );
+        let targets = app.harness().targets();
+        assert!(
+            targets["store.remote.url"].y0 >= targets["store.remote.name"].y1,
+            "larger text must not make the real form inputs overlap"
+        );
+        let scaled_scene = app.harness().scene().encoding().draw_data.clone();
+        assert_ne!(scaled_scene, previous, "larger text must also repaint");
+        app.harness().set_theme(Theme::light().with_text_scale(1.5));
+        assert_eq!(
+            app.harness().scene().encoding().draw_data,
+            scaled_scene,
+            "reapplying the same resolved text setting must not accumulate scaling"
+        );
+        app.harness().set_theme(Theme::light());
+        assert_eq!(
+            app.harness().targets()["store.remote.name"].height(),
+            input_height,
+            "returning to normal text must restore the form's original height"
+        );
+        assert_eq!(
+            app.harness().scene().encoding().draw_data,
+            previous,
+            "returning to normal text must restore the original offscreen paint"
         );
     }
 

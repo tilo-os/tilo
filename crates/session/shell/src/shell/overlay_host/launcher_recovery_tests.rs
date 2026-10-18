@@ -40,7 +40,7 @@ impl crate::shell::search::SearchProvider for RecoveryProvider {
                         .expect("bounded test attempts"),
                 );
                 if failing.get() {
-                    Err(crate::shell::search::action_api::ActionError::Refused(
+                    Err(crate::shell::search::action_api::ActionError::Explained(
                         "The application is temporarily unavailable. Try again.".into(),
                     ))
                 } else {
@@ -127,6 +127,12 @@ fn failed_palette_keyboard_invocation_keeps_context_for_retry_and_escape() {
     assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Enter))));
     assert_eq!(attempts.get(), 2);
     assert_recovery_context(&h);
+    assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Escape))));
+    assert!(
+        h.host.palette_visible(),
+        "the first Escape clears the query, keeping search open"
+    );
+    assert_eq!(h.host.palette_query(), "");
     assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Escape))));
     assert!(!h.host.palette_visible());
     assert_eq!(attempts.get(), 2, "cancel must not retry");
@@ -381,12 +387,11 @@ fn palette_progress_notice_does_not_mask_a_failed_activation() {
     assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Enter))));
     assert!(h.host.palette_visible());
     let entry = h.host.palette.visible_entries().first().copied().unwrap();
-    assert!(
-        entry
-            .description
-            .as_deref()
-            .unwrap()
-            .contains("application is unavailable")
+    // A refusal's diagnostic detail is for logs and agents; the row says
+    // what the person can do.
+    assert_eq!(
+        entry.description.as_deref(),
+        Some(crate::shell::i18n::t("host-action-try-again").as_str())
     );
     assert!(!entry.description.as_deref().unwrap().contains("Preparing"));
     assert_eq!(

@@ -453,7 +453,7 @@ mod tests {
         assert_eq!(
             sentences,
             [
-                format!("Saved {name}"),
+                format!("Added {name} to the saved places"),
                 "Set directions to travel by bike".to_owned(),
                 "Changed when transit journeys leave or arrive".to_owned(),
                 "Searched for Museum".to_owned(),

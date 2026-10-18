@@ -189,6 +189,9 @@ fn dictionary_suggestions(language: &str, word: &str, max: usize) -> Vec<String>
 /// apostrophe ([`contraction`]) are safe-listed, while the generic path accepts
 /// only an adjacent transposition matching the dictionary's first candidate.
 pub fn probable_correction(language: &str, word: &str) -> Option<String> {
+    if let Some(candidate) = sure_correction(language, word) {
+        return Some(candidate);
+    }
     if word.chars().count() < 3 {
         return None;
     }
@@ -254,6 +257,33 @@ pub fn probable_correction(language: &str, word: &str) -> Option<String> {
         return Some(match_word_case(word, candidate));
     }
     (loading::dictionaries()?.correction)(language, word, &lower)
+}
+
+/// A correction sure enough to apply although the word list holds the
+/// typed word: the English pronoun in lowercase ("i" is "I", "im" is "I'm")
+/// and "cant" / "wont", which people type for "can't" / "won't" far more
+/// often than they mean the rare nouns (as phone keyboards assume). Word
+/// lists are lowercase and hold "i", "cant" and "wont", and "i" / "im" are
+/// too short for [`probable_correction`]'s length floor. Backspace right
+/// after a correction takes it back.
+#[must_use]
+pub fn sure_correction(language: &str, word: &str) -> Option<String> {
+    if !is_english(language) {
+        return None;
+    }
+    let candidate = match word {
+        "i" => "I",
+        "im" | "Im" => "I'm",
+        _ => match word.to_lowercase().as_str() {
+            "cant" => "can't",
+            "wont" => "won't",
+            _ => return None,
+        },
+    };
+    Some(match word {
+        "i" | "im" | "Im" => candidate.to_owned(),
+        _ => match_word_case(word, candidate),
+    })
 }
 
 /// [`probable_correction`] past the curated list: an adjacent
@@ -874,8 +904,13 @@ mod tests {
                 ("doesnt", Some("doesn't")),
                 ("Doesnt", Some("Doesn't")),
                 ("ive", Some("I've")),
-                ("cant", None),
-                ("wont", None),
+                ("im", Some("I'm")),
+                ("Im", Some("I'm")),
+                ("i", Some("I")),
+                ("I", None),
+                ("IM", None),
+                ("cant", Some("can't")),
+                ("Wont", Some("Won't")),
             ] {
                 assert_eq!(
                     probable_correction("en_US", typed).as_deref(),

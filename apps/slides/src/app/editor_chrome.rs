@@ -1383,14 +1383,9 @@ impl SlidesApp {
             self.draw_inspector_contents(scene, t, tr, &local, chrome, &pal);
         }
 
-        // An open drawer floats over everything, behind its scrim.
+        // An open drawer floats over everything.
         let rail_floating = !rail_docked && chrome.rail.width() > 1.0;
         let inspector_floating = !inspector_docked && chrome.inspector.width() > 1.0;
-        if rail_floating {
-            self.rail_drawer.draw_scrim(scene, t, theme);
-        } else if inspector_floating {
-            self.inspector_drawer.draw_scrim(scene, t, theme);
-        }
         if rail_floating {
             let local = self.rail_drawer.paint_panel(scene, t, theme);
             self.draw_rail_contents(scene, t, tr, &local, chrome, &pal);

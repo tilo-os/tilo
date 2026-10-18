@@ -200,8 +200,12 @@ impl NavigationFrame {
     }
 }
 
-#[test]
-fn external_navigation_edge_resize_keeps_a_scrolled_strip_anchored() {
+/// Chat, the window in use on a scrolled strip, dragged by its left edge
+/// (the seam it shares with the document before it, which is Chat's because
+/// Chat is focused). Every frame: Chat's width follows the pointer, its right
+/// edge holds still, and the document slides at its own width. When
+/// `revise`, an unrelated snapshot revision lands between every two frames.
+fn drag_the_focused_windows_left_edge_on_a_scrolled_strip(revise: bool) {
     use tilo_desktop::composition::{NavigationChrome, WorkArea};
     use ui::widget::Widget;
 
@@ -223,41 +227,57 @@ fn external_navigation_edge_resize_keeps_a_scrolled_strip_anchored() {
         .set_theme(ui::Theme::light().with_reduce_motion(true));
     test.frame.poll_frame().unwrap();
     let row = test.surface().row(StripId(2)).unwrap();
-    let before = row.groups[0].get_rect();
-    let neighbor = row.groups[1].get_rect();
+    let document = row.groups[0].get_rect();
+    let chat = row.groups[1].get_rect();
     let pan = row.scroll_x();
-    assert!(pan > 100.0 && before.x1 > 20.0 && before.x1 < 1400.0);
-    let point = (before.x1 - 2.0, before.center().y);
+    assert!(pan > 100.0 && chat.x0 > 20.0 && chat.x0 < 1400.0);
+    let point = (chat.x0 + 2.0, chat.center().y);
     let moved = |x| ui::synthetic_input::cursor_moved(x, point.1);
     test.frame.send(&moved(point.0));
     test.frame.send(&ui::synthetic_input::mouse_press());
-    assert!(test.surface().row(StripId(2)).unwrap().groups[0].edge_resize_in_flight());
+    assert!(test.surface().row(StripId(2)).unwrap().groups[1].edge_resize_in_flight());
+    assert!(!test.surface().row(StripId(2)).unwrap().groups[0].edge_resize_in_flight());
     for delta in [20.0, 40.0, 60.0, 80.0] {
         test.frame.send(&moved(point.0 + delta));
+        if revise {
+            test.tree.workspaces[0].strips[0].name = format!("Revision {delta}");
+            test.reconcile();
+        }
         test.frame.poll_frame().unwrap();
         let row = test.surface().row(StripId(2)).unwrap();
-        let resized = row.groups[0].get_rect();
+        let resized = row.groups[1].get_rect();
         assert!(
-            (row.scroll_x() - pan).abs() < 1.0,
-            "the viewport stays under the hand: {pan} -> {}",
-            row.scroll_x()
+            (resized.x1 - chat.x1).abs() < 1.0,
+            "Chat's right edge holds still under the hand: {chat:?} -> {resized:?}"
         );
-        assert!((resized.x0 - before.x0).abs() < 1.0);
         assert!(
-            (resized.x1 - before.x1 - delta).abs() < 2.0,
-            "the trailing edge follows each actual pointer sample: {before:?} -> {resized:?}"
+            (resized.x0 - chat.x0 - delta).abs() < 2.0,
+            "its left edge follows each actual pointer sample: {chat:?} -> {resized:?}"
         );
-        assert!((row.groups[1].get_rect().width() - neighbor.width()).abs() < 1.0);
+        let slid = row.groups[0].get_rect();
+        assert!(
+            (slid.width() - document.width()).abs() < 1.0
+                && (slid.x1 - document.x1 - delta).abs() < 2.0,
+            "the document slides with the edge at its own width: {document:?} -> {slid:?}"
+        );
     }
     test.frame.send(&ui::synthetic_input::mouse_release());
-    assert!(!test.surface().row(StripId(2)).unwrap().groups[0].edge_resize_in_flight());
+    assert!(!test.surface().row(StripId(2)).unwrap().groups[1].edge_resize_in_flight());
     let intents = test.surface_mut().take_intents();
     assert!(intents.iter().any(|intent| matches!(
+        intent,
+        tilo_desktop::intents::DesktopIntent::Local(
+            tilo_desktop::intents::LocalViewIntent::Width { group: 4, .. }
+        )
+    )));
+    assert!(!intents.iter().any(|intent| matches!(
         intent,
         tilo_desktop::intents::DesktopIntent::Local(
             tilo_desktop::intents::LocalViewIntent::Width { group: 3, .. }
         )
     )));
+    test.frame.poll_frame().unwrap();
+    let released = test.surface().row(StripId(2)).unwrap().groups[1].get_rect();
     for intent in intents {
         if let tilo_desktop::intents::DesktopIntent::Local(view) = intent {
             tilo_desktop::intents::apply_local_view(&mut test.tree, view);
@@ -266,82 +286,22 @@ fn external_navigation_edge_resize_keeps_a_scrolled_strip_anchored() {
     test.reconcile();
     test.frame.poll_frame().unwrap();
     let row = test.surface().row(StripId(2)).unwrap();
-    assert!((row.scroll_x() - pan).abs() < 1.0);
-    assert!((row.groups[0].get_rect().x0 - before.x0).abs() < 1.0);
-    assert!((row.groups[0].get_rect().x1 - before.x1 - 80.0).abs() < 2.0);
+    let reconciled = row.groups[1].get_rect();
+    assert!(
+        (reconciled.x0 - released.x0).abs() < 2.0 && (reconciled.x1 - released.x1).abs() < 2.0,
+        "the persisted width changes nothing on screen: {released:?} -> {reconciled:?}"
+    );
+    assert!((reconciled.width() - (chat.width() - 80.0)).abs() < 2.0);
+}
+
+#[test]
+fn external_navigation_edge_resize_keeps_a_scrolled_strip_anchored() {
+    drag_the_focused_windows_left_edge_on_a_scrolled_strip(false);
 }
 
 #[test]
 fn external_navigation_edge_resize_survives_unrelated_snapshot_revision() {
-    use tilo_desktop::composition::{NavigationChrome, WorkArea};
-    use ui::widget::Widget;
-
-    let mut tree = navigation_tree();
-    tree.active_group.insert(StripId(2), 4);
-    let mut test = NavigationFrame::with_chrome(
-        tree,
-        1472,
-        SurfaceChrome {
-            navigation: NavigationChrome::External,
-            work_area: WorkArea::Flush {
-                top: 40.0,
-                bottom: 40.0,
-            },
-            ..SurfaceChrome::default()
-        },
-    );
-    test.frame
-        .set_theme(ui::Theme::light().with_reduce_motion(true));
-    test.frame.poll_frame().unwrap();
-    let row = test.surface().row(StripId(2)).unwrap();
-    let before = row.groups[0].get_rect();
-    let neighbor = row.groups[1].get_rect();
-    let pan = row.scroll_x();
-    assert!(pan > 100.0 && before.x1 > 20.0 && before.x1 < 1400.0);
-    let point = (before.x1 - 2.0, before.center().y);
-    let moved = |x| ui::synthetic_input::cursor_moved(x, point.1);
-    test.frame.send(&moved(point.0));
-    test.frame.send(&ui::synthetic_input::mouse_press());
-    assert!(test.surface().row(StripId(2)).unwrap().groups[0].edge_resize_in_flight());
-    for delta in [20.0, 40.0, 60.0, 80.0] {
-        test.frame.send(&moved(point.0 + delta));
-        test.tree.workspaces[0].strips[0].name = format!("Revision {delta}");
-        test.reconcile();
-        test.frame.poll_frame().unwrap();
-        let row = test.surface().row(StripId(2)).unwrap();
-        let resized = row.groups[0].get_rect();
-        assert!(
-            (row.scroll_x() - pan).abs() < 1.0,
-            "the viewport stays under the hand: {pan} -> {}",
-            row.scroll_x()
-        );
-        assert!((resized.x0 - before.x0).abs() < 1.0);
-        assert!(
-            (resized.x1 - before.x1 - delta).abs() < 2.0,
-            "the trailing edge follows each actual pointer sample: {before:?} -> {resized:?}"
-        );
-        assert!((row.groups[1].get_rect().width() - neighbor.width()).abs() < 1.0);
-    }
-    test.frame.send(&ui::synthetic_input::mouse_release());
-    assert!(!test.surface().row(StripId(2)).unwrap().groups[0].edge_resize_in_flight());
-    let intents = test.surface_mut().take_intents();
-    assert!(intents.iter().any(|intent| matches!(
-        intent,
-        tilo_desktop::intents::DesktopIntent::Local(
-            tilo_desktop::intents::LocalViewIntent::Width { group: 3, .. }
-        )
-    )));
-    for intent in intents {
-        if let tilo_desktop::intents::DesktopIntent::Local(view) = intent {
-            tilo_desktop::intents::apply_local_view(&mut test.tree, view);
-        }
-    }
-    test.reconcile();
-    test.frame.poll_frame().unwrap();
-    let row = test.surface().row(StripId(2)).unwrap();
-    assert!((row.scroll_x() - pan).abs() < 1.0);
-    assert!((row.groups[0].get_rect().x0 - before.x0).abs() < 1.0);
-    assert!((row.groups[0].get_rect().x1 - before.x1 - 80.0).abs() < 2.0);
+    drag_the_focused_windows_left_edge_on_a_scrolled_strip(true);
 }
 
 #[test]

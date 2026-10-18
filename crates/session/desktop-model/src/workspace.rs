@@ -506,6 +506,27 @@ impl Workspace {
         self.policy.is_owner(user)
     }
 
+    /// Whether a strip of the person's own (any strip but the Lounge) holds
+    /// a window. The Lounge starts with the room's chat, tasks and notes, so
+    /// its windows never make a workspace look used: one without windows of
+    /// its own still offers its launchpad.
+    #[must_use]
+    pub fn has_windows_outside_lounge(&self) -> bool {
+        self.strips.iter().any(|strip| {
+            strip.kind() == crate::layout::StripKind::Regular && !strip.window_groups.is_empty()
+        })
+    }
+
+    /// How many of the workspace's strips are the person's own, not the
+    /// Lounge. A workspace keeps at least one, for what they open.
+    #[must_use]
+    pub fn regular_strip_count(&self) -> usize {
+        self.strips
+            .iter()
+            .filter(|strip| strip.kind() == crate::layout::StripKind::Regular)
+            .count()
+    }
+
     /// Give the workspace another durable room id; its grants move with it.
     pub fn set_room(&mut self, room: RoomId) {
         self.room = room;

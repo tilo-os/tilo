@@ -35,21 +35,23 @@ fn sidebar_remains_docked_and_semantically_resizable_in_a_medium_chat_window() {
             surface.sidebar_rect().width(),
             surface.content_rect().width(),
         )),
-        Some((true, 228.0, 456.0))
+        Some((true, 304.0, 456.0))
     );
     assert!(app.harness().component_contract_violations().is_empty());
-    app.harness().resize((600, 720)).unwrap();
+    // Below the sidebar's minimum beside the conversation's (560), the
+    // channel list and the conversation take turns.
+    app.harness().resize((540, 720)).unwrap();
     assert!(
         app.harness()
             .resources()
             .iter()
             .all(|resource| resource.label != "Resize sidebar"),
-        "a genuinely narrow window uses the shared overlay drawer"
+        "a genuinely narrow window shows one column at a time"
     );
     app.harness().resize((760, 720)).unwrap();
     assert_eq!(
         app.with_surface::<ChatApp, _>(|surface| surface.sidebar_rect().width()),
-        Some(228.0),
+        Some(304.0),
         "the usable resized width survives narrow-window collapse"
     );
 }
@@ -88,7 +90,7 @@ fn sidebar_shared_resize_uses_the_complete_mounted_app_door() {
     );
     assert_eq!(
         app.with_surface::<ChatApp, _>(|surface| surface.left_flap.list_rect().width()),
-        Some(212.0)
+        Some(288.0)
     );
     let mut viewer = TestApp::<ChatShell>::with_role(ui::permissions::Role::Viewer).unwrap();
     viewer.harness().resize((960, 720)).unwrap();

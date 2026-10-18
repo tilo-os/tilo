@@ -36,19 +36,27 @@
 //! (`records.chain::<Part>()`), so it is opened and published with the
 //! window, and reaches it from a view or surface with
 //! [`RecordEnv::chain`](super::RecordEnv::chain). Edits of a part are not
-//! undone with the app's own: they are recorded in the part's history.
+//! undone with the app's own: they are recorded in the part's history, and
+//! the chain publishes the history verbs (`undo`, `redo`, `restore`,
+//! `checkpoint`) naming the part they change, so a person, an agent or the
+//! room's moderation takes back steps in a part through the same door.
+//!
+//! A part opened in the app's store by anyone — a peer's merged into an
+//! attached view, one this device asked the room for — is held from the
+//! next read on.
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use tilo_actions::{Action as _, ActionContext, ActionError, ActionInvoker, OperationKind};
+use tilo_actions::{ActionContext, ActionError, ActionInvoker, OperationKind};
 use tilo_resource::{Invoke, Reader, Resource};
 use ui_core::permissions::{LivePermissions, PermissionScope, TreePath};
 use ui_core::record::{RecordCheckout, RecordId, RecordKind, RecordOpenError, RecordStore};
 
 use super::dispatch::Dispatcher;
+use super::history::{PART_EDIT_TYPE, PartEdit};
 use super::live::Live;
 use super::record::RecordDoor;
 
@@ -57,7 +65,8 @@ use super::record::RecordDoor;
 pub(crate) const CHAIN_ACTION_TYPE: &str = "tilo.app.chain-action";
 
 /// How often a window looks for parts that arrived on this device without
-/// being opened (a new head synced in): listing the store reads its index.
+/// being opened (a new head synced in) when nothing told its store one did
+/// ([`RecordStore::note_kept`]): listing the store reads its index.
 const LOOK_EVERY: ui_core::time::Duration = ui_core::time::Duration::from_secs(1);
 
 /// A resource whose records are the parts of a chain kept beside the app's
@@ -95,12 +104,6 @@ pub trait Chained: Resource {
     }
 }
 
-/// The address a chain is published under.
-#[must_use]
-pub fn chain_resource_id(chain: &RecordId) -> String {
-    format!("chain:{}", chain.as_str())
-}
-
 /// What a window holds a chain with: the store of the app's records, who
 /// edits, and what they may do in the room.
 #[derive(Clone)]
@@ -127,7 +130,9 @@ pub(crate) struct ChainState<P: Chained> {
     /// publishes before it has a head.
     empty: Rc<P::State>,
     revision: Cell<u64>,
-    looked: Cell<Option<ui_core::time::Instant>>,
+    /// When the window last looked for a newer head, with the store's
+    /// [`RecordStore::kept_revision`] then.
+    looked: Cell<Option<(ui_core::time::Instant, u64)>>,
     published: RefCell<Option<((u64, u64), tilo_actions::Resource)>>,
 }
 
@@ -146,7 +151,7 @@ impl<P: Chained> ChainState<P> {
         let state = Self {
             room,
             base,
-            id: chain_resource_id(&P::chain()),
+            id: ui_core::record::chain_resource_id(&P::chain()),
             kind: RecordKind::new(P::KIND),
             parts: RefCell::default(),
             empty,
@@ -208,11 +213,21 @@ impl<P: Chained> ChainState<P> {
             }
             let _ = live.take_change();
         }
-        let due = self
-            .looked
-            .get()
-            .is_none_or(|at| at.elapsed() >= LOOK_EVERY);
-        if due {
+        // A part opened in the store since (a peer's merged in, one this
+        // device asked for and received) is held at once.
+        let opened: Vec<u64> = {
+            let parts = self.parts.borrow();
+            self.room
+                .store
+                .open_parts(&P::chain())
+                .into_iter()
+                .filter(|index| !parts.contains_key(index))
+                .collect()
+        };
+        for index in opened {
+            moved |= self.follow(index).is_ok();
+        }
+        if self.due() {
             moved |= self.look();
         }
         if moved {
@@ -221,10 +236,28 @@ impl<P: Chained> ChainState<P> {
         moved
     }
 
+    /// Whether to look for a newer head now: the store was told a record
+    /// arrived, or the last look is a while ago. Not while a frame reads the
+    /// store (a view's sync): opening a part takes the store's writer, so
+    /// the look waits for the frame's settle, where the window takes up what
+    /// it was sent, and the view's sync reads the part it opened.
+    fn due(&self) -> bool {
+        if !self.room.store.takes_writes() {
+            return false;
+        }
+        self.looked.get().is_none_or(|(at, kept)| {
+            kept != self.room.store.kept_revision()
+                || ui_core::time::now().saturating_duration_since(at) >= LOOK_EVERY
+        })
+    }
+
     /// Open every part newer than the head that this device holds. Whether
     /// one was.
     fn look(&self) -> bool {
-        self.looked.set(Some(ui_core::time::Instant::now()));
+        self.looked.set(Some((
+            ui_core::time::now(),
+            self.room.store.kept_revision(),
+        )));
         let head = self.parts.borrow().keys().next_back().copied();
         // Only the newest is the head; the parts between are opened when
         // someone reads back to them.
@@ -234,7 +267,11 @@ impl<P: Chained> ChainState<P> {
         if head.is_some_and(|head| newest <= head) {
             return false;
         }
-        self.hold(newest).is_ok()
+        self.hold(newest)
+            .map_err(|error| {
+                tracing::debug!(kind = P::KIND, part = newest, %error, "chain head not opened");
+            })
+            .is_ok()
     }
 
     /// Hold part `index`, which this device has or asks its room for.
@@ -342,11 +379,26 @@ impl<P: Chained> ChainState<P> {
         P::prepare(&mut action, &(self.base)()).map_err(ActionError::Refused)?;
         let index = P::part_for(&action, &self.parts()).map_err(ActionError::Refused)?;
         if let Some(permissions) = &self.room.permissions {
+            // Decided where the chain publishes the action, as the door
+            // decides it: a grant on the app, the parts' kind or the verb
+            // covers it.
             let need = tilo_resource::need_of::<P>(&action);
-            let mut node = TreePath::root().app(self.room.app_id);
-            if let Some(field) = &need.field {
-                node = node.field(field);
-            }
+            let node = if let Some(verb) = verb_of::<P>(&action) {
+                tilo_actions::action_node(
+                    &TreePath::root(),
+                    self.room.app_id,
+                    P::KIND,
+                    &self.id,
+                    need.field.as_deref(),
+                    &verb,
+                )
+            } else {
+                TreePath::root()
+                    .app(self.room.app_id)
+                    .kind(P::KIND)
+                    .resource(self.id.clone())
+                    .field(need.field.as_deref().unwrap_or_default())
+            };
             if !permissions.check(&PermissionScope::Action {
                 node,
                 kind: need.kind,
@@ -359,6 +411,64 @@ impl<P: Chained> ChainState<P> {
         }
         self.start(index).map_err(ActionError::Refused)?;
         let encoded = tilo_resource::encode::<P>(&action)?;
+        let created = self.write(index, &action, encoded, invoker)?;
+        Ok((index, created))
+    }
+
+    /// Apply a history verb to the part it names ([`PartEdit`]), invoked by
+    /// `invoker`: checked as an undoable change where the chain publishes
+    /// the verb, and written into the part's history as any of its steps.
+    /// Answers the part and its version after.
+    ///
+    /// # Errors
+    /// The participant may not, the part is neither here nor known to the
+    /// room, or history refused the edit.
+    fn apply_history(
+        &self,
+        edit: &PartEdit,
+        invoker: &ActionInvoker,
+    ) -> Result<serde_json::Value, ActionError> {
+        if let Some(permissions) = &self.room.permissions
+            && !permissions.check(&PermissionScope::Action {
+                node: tilo_actions::action_node(
+                    &TreePath::root(),
+                    self.room.app_id,
+                    P::KIND,
+                    &self.id,
+                    None,
+                    edit.verb(),
+                ),
+                kind: tilo_actions::ActionKind::Undoable,
+            })
+        {
+            return Err(ActionError::Refused(format!(
+                "you may not change the history of these {}",
+                P::LABEL.to_lowercase()
+            )));
+        }
+        self.hold(edit.part).map_err(ActionError::Refused)?;
+        let encoded = edit.encoded().map_err(ActionError::Refused)?;
+        self.write(edit.part, &edit.action::<P>(), encoded, invoker)?;
+        let now = self
+            .room
+            .store
+            .with(&P::chain().part(edit.part), |doc| {
+                super::history::version_name(&doc.get_heads())
+            })
+            .unwrap_or_default();
+        Ok(serde_json::json!({ "part": edit.part, "now": now }))
+    }
+
+    /// Write `action` into part `index`, which is open here, attributed to
+    /// `invoker` and recorded in the part's history. The item resources it
+    /// created.
+    fn write(
+        &self,
+        index: u64,
+        action: &dyn tilo_actions::Action,
+        encoded: tilo_actions::EncodedAction,
+        invoker: &ActionInvoker,
+    ) -> Result<Vec<String>, ActionError> {
         let context = ActionContext::for_resource(&self.id, P::KIND, P::LABEL)
             .with_app(self.room.app_id, self.room.app_title)
             .with_invoker(invoker.clone())
@@ -372,7 +482,7 @@ impl<P: Chained> ChainState<P> {
                 let writer = ui_core::bound_dispatch::document_writer(&invoker.actor, doc);
                 let applied = tilo_actions::apply_local_with_context(
                     doc,
-                    &action,
+                    action,
                     encoded,
                     Some(&writer),
                     context,
@@ -390,7 +500,7 @@ impl<P: Chained> ChainState<P> {
         self.room.store.schedule_committed_history(&id);
         self.refresh();
         self.moved();
-        Ok((index, created))
+        Ok(created)
     }
 
     /// The chain as it is published: the head's actions and every held
@@ -423,9 +533,32 @@ impl<P: Chained> ChainState<P> {
                     .filter(|child| seen.insert(child.id.clone())),
             );
         }
-        let published = route(resource, &self.id);
+        let mut published = route(resource, &self.id);
+        let own: std::collections::HashSet<String> = published
+            .actions
+            .iter()
+            .map(|spec| spec.id.clone())
+            .collect();
+        published.actions.extend(
+            super::history::part_edit_specs()
+                .into_iter()
+                .filter(|spec| !own.contains(&spec.id))
+                .map(|spec| super::record::route_operation(spec, CHAIN_ACTION_TYPE, &self.id)),
+        );
         *self.published.borrow_mut() = Some((revision, published.clone()));
         published
+    }
+}
+
+/// The verb `action` runs, as history names it: what a grant on one verb
+/// covers. `None` for a field edit.
+fn verb_of<P: Chained>(action: &P::Action) -> Option<String> {
+    use tilo_actions::Action as _;
+    let mut doc = ui_core::automerge::AutoCommit::new();
+    P::initialize(&mut doc).ok()?;
+    match action.describe(&doc)?.what {
+        tilo_actions::Did::Verb(call) => Some(call.action.action),
+        _ => None,
     }
 }
 
@@ -466,6 +599,14 @@ impl<P: Chained> RecordDoor for ChainState<P> {
         action: &tilo_actions::EncodedAction,
         invoker: &ActionInvoker,
     ) -> Result<(), String> {
+        if action.type_id == PART_EDIT_TYPE {
+            let edit: PartEdit =
+                tilo_actions::decode_json(&action.payload).map_err(|error| error.to_string())?;
+            return self
+                .apply_history(&edit, invoker)
+                .map(drop)
+                .map_err(|error| error.to_string());
+        }
         if action.type_id != P::ACTION_TYPE {
             return Err(format!("{} take no `{}` action", P::LABEL, action.type_id));
         }
@@ -481,6 +622,17 @@ impl<P: Chained> RecordDoor for ChainState<P> {
         action: &tilo_actions::EncodedAction,
         invoker: &ActionInvoker,
     ) -> Result<tilo_actions::ActionOutput, String> {
+        if action.type_id == PART_EDIT_TYPE {
+            let edit: PartEdit =
+                tilo_actions::decode_json(&action.payload).map_err(|error| error.to_string())?;
+            let value = self
+                .apply_history(&edit, invoker)
+                .map_err(|error| error.to_string())?;
+            return Ok(tilo_actions::ActionOutput {
+                value: Some(value),
+                resources: Vec::new(),
+            });
+        }
         if action.type_id != P::ACTION_TYPE {
             return Err(format!("{} take no `{}` action", P::LABEL, action.type_id));
         }
@@ -627,8 +779,21 @@ impl<P: Chained> Chain<P> {
         me: &str,
         base: impl Fn() -> Rc<<P::Base as Resource>::State> + 'static,
     ) -> Option<Self> {
+        Self::detached_in(RecordStore::in_memory(), app_id, me, base)
+    }
+
+    /// [`Self::detached`], held in `store`: one device's records of the
+    /// app in a room, for a test of what reaches that device's store from
+    /// another one.
+    #[must_use]
+    pub fn detached_in(
+        store: RecordStore,
+        app_id: &'static str,
+        me: &str,
+        base: impl Fn() -> Rc<<P::Base as Resource>::State> + 'static,
+    ) -> Option<Self> {
         let room = RoomRecords {
-            store: RecordStore::in_memory(),
+            store,
             me: me.to_owned(),
             permissions: None,
             app_id,

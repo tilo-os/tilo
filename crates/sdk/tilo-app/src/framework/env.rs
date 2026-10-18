@@ -22,6 +22,7 @@ pub struct RecordEnv<R: Resource> {
     pub(crate) alive: Weak<()>,
     pub(crate) dispatch: Dispatcher<R>,
     pub(crate) saved: LocalState<RecordSaveStatus>,
+    pub(crate) saves: super::saves::Saves,
     pub(crate) run: Run,
     pub(crate) storage: Rc<ViewStorage>,
     pub(crate) effects: Effects<R>,
@@ -34,6 +35,7 @@ impl<R: Resource> Clone for RecordEnv<R> {
             alive: self.alive.clone(),
             dispatch: self.dispatch.clone(),
             saved: self.saved.clone(),
+            saves: self.saves.clone(),
             run: self.run.clone(),
             storage: Rc::clone(&self.storage),
             effects: self.effects.clone(),
@@ -141,10 +143,20 @@ impl<R: Resource> RecordEnv<R> {
         self.dispatch.read_only()
     }
 
-    /// Whether the record's latest edits are durable, for a status line.
-    /// Saving is automatic; there is nothing to save by hand.
+    /// Whether the record's latest edits are durable, for automation and
+    /// for a view that presents the save status itself
+    /// ([`Saves::shown_by_view`](super::Saves::shown_by_view)). Saving is
+    /// automatic and the window already says what there is to say (only a
+    /// save that stalls or fails): never show this as "Saving…" or "Saved".
     pub fn save_status(&self) -> LocalState<RecordSaveStatus> {
         self.saved.clone()
+    }
+
+    /// The window's report of saves the app makes outside its record (a
+    /// file it writes), presented with the record's own on the window's
+    /// save status. See [`Saves`](super::Saves).
+    pub fn saves(&self) -> super::Saves {
+        self.saves.clone()
     }
 
     /// What the view is built for: a window someone uses, a past version in

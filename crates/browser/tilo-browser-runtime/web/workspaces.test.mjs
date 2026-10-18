@@ -320,11 +320,12 @@ test('a paired device is kept as its person and reconnects as them, never as a p
   const {calls, options, store} = harness();
   const person = '33'.repeat(32);
   const codes = [];
-  await pairViaHost({origin: 'https://rooms.example', room: 'ROOM', userPublicKey: person, workspace: commons, displayName: 'Ada',
-    memberships: options.memberships, fetch: options.fetch, onPairingCode: code => codes.push(code),
+  await pairViaHost({origin: 'https://rooms.example', room: 'ROOM', userPublicKey: person, invite: '0f'.repeat(16), workspace: commons,
+    displayName: 'Ada', memberships: options.memberships, fetch: options.fetch, onPairingCode: code => codes.push(code),
     pair: async pairing => { calls.connected.push(pairing); calls.offer = await pairing.admission(); return {room: 'ROOM'}; }});
   const paired = calls.connected[0];
   assert.equal(paired.userPublicKey, person);
+  assert.equal(paired.invite, '0f'.repeat(16), 'the request answers the link\u2019s invite');
   assert.equal(paired.identity, undefined, 'the root stays on the device that approves');
   assert.equal(paired.profile, `tilo-identity:${person}@rooms.example`);
   assert.equal(typeof paired.onPairingCode, 'function');
@@ -346,6 +347,8 @@ test('a pairing link that names no person is refused before anything is asked', 
   const {calls, options} = harness();
   await assert.rejects(pairViaHost({origin: 'https://rooms.example', room: 'ROOM', userPublicKey: 'nobody', pair: options.connect,
     memberships: options.memberships}), {code: 'invalid'});
+  await assert.rejects(pairViaHost({origin: 'https://rooms.example', room: 'ROOM', userPublicKey: '33'.repeat(32), invite: 'short',
+    pair: options.connect, memberships: options.memberships}), {code: 'invalid'});
   assert.equal(calls.connected.length, 0);
 });
 

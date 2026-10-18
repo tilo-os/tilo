@@ -51,14 +51,22 @@ mod native_open_with;
 mod selected_open;
 pub use clipboard_client::Receipt as ClipboardReceipt;
 pub(crate) use clipboard_client::UndoRequest;
+mod clash;
 mod notice;
+mod preview;
+use preview::Preview;
 mod read_text;
+use clash::{ClashChoice, PendingClash};
 mod selection_actions;
 use notice::{Notice, NoticeAction, NoticeClick};
 mod shown_selection;
 
+/// A copy or move shows its progress once it has run this long.
+const TRANSFER_SHOWN_AFTER: Duration = Duration::from_millis(600);
 /// How long a drag rests on a folder before the folder opens.
 const SPRING_OPEN: Duration = Duration::from_millis(700);
+/// The accessibility target prefix of the clash sheet's choices.
+const CLASH_TARGET: &str = "files-clash-choice:";
 /// The accessibility targets of the notice's action and close buttons.
 const NOTICE_ACTION_TARGET: &str = "files-notice-action";
 const NOTICE_DISMISS_TARGET: &str = "files-notice-dismiss";
@@ -67,6 +75,68 @@ const COLLAB_PANEL_MAX_LINES: usize = 20;
 /// Space kept clear at the bottom of the file viewport for the transient
 /// item/status pill. The pill includes its hover shadow, so this is larger
 /// than its measured text capsule: no file label or target may sit beneath it.
+/// A read-only copy of the file `member` of `archive`, made once per
+/// archive version in Files' cache, so opening it again reuses it.
+fn archive_member_copy(archive: &Path, member: &Path) -> std::io::Result<PathBuf> {
+    let modified = std::fs::metadata(archive)?
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |since| since.as_secs());
+    let digest = Sha256::digest(format!("{}\0{modified}", archive.display()).as_bytes());
+    let folder = config::config_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("archive-members")
+        .join(hex_prefix(&digest, 12))
+        .join(member.parent().unwrap_or_else(|| Path::new("")));
+    let name = member
+        .file_name()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a file"))?;
+    let copy = folder.join(name);
+    if copy.is_file() {
+        return Ok(copy);
+    }
+    std::fs::create_dir_all(&folder)?;
+    crate::archive::extract_member(archive, member, &copy)?;
+    Ok(copy)
+}
+
+/// A paste's policy for names the folder already has, as callers name it.
+fn paste_conflict(
+    name: Option<&str>,
+) -> Result<ui::collaboration::file_clipboard::Conflict, String> {
+    use ui::collaboration::file_clipboard::Conflict;
+    Ok(match name {
+        None | Some("keep-both") => Conflict::KeepBoth,
+        Some("skip") => Conflict::Skip,
+        Some("replace") => Conflict::Replace,
+        Some("ask") => Conflict::Ask,
+        Some(other) => {
+            return Err(format!(
+                "conflict must be keep-both, skip, replace or ask, not {other:?}"
+            ));
+        }
+    })
+}
+
+/// Whether `path` and `dir` are on one filesystem, so a move is a rename.
+/// When either can't be read, assume so: the move itself then says why.
+fn same_filesystem(path: &Path, dir: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        match (std::fs::symlink_metadata(path), std::fs::metadata(dir)) {
+            (Ok(a), Ok(b)) => a.dev() == b.dev(),
+            _ => true,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, dir);
+        true
+    }
+}
+
 /// The keys that run `command` in the listing, shown beside it in menus so
 /// the menu teaches the keyboard. Only commands with a key of their own.
 fn command_shortcut(command: &FileCommand) -> Option<ui::platform::Shortcut> {
@@ -184,6 +254,8 @@ enum OpFollowUp {
     Trash { count: usize },
     /// Offer to undo the move into `destination`.
     Move { destination: String },
+    /// Items a Replace moved to Trash: said only if that failed.
+    Replaced,
     /// Say how many of `count` were pasted; after Cut, take the moved ones
     /// off the clipboard (the ones that failed stay, to retry).
     Paste { count: usize, cut: bool },
@@ -599,6 +671,12 @@ pub struct FileExplorerWidget {
     /// The card over the file view for a change to take back or a failure
     /// to act on ([`notice`]).
     notice: Notice,
+    /// A copy or move waiting for the answer to a name clash.
+    clash: Option<PendingClash>,
+    /// The selected file shown large (Space).
+    preview: Option<Preview>,
+    /// Files another app is dropping here, gathered until the drop ends.
+    incoming: Vec<PathBuf>,
     /// The window's undo, as the host publishes it: what the Undo in a
     /// notice and in the menu asks for, the same one Ctrl+Z does.
     undo: ui::UndoAccess,
@@ -840,6 +918,8 @@ pub struct FileExplorerWidget {
     /// while this Files widget still owns the request; the shell gets a weak
     /// witness and cannot act after this widget has gone away.
     pending_document_open: Option<(u64, Rc<RefCell<ui::widget::DocumentOpenReply>>)>,
+    /// Files waiting to be opened while the host answers an earlier one.
+    open_queue: std::collections::VecDeque<PathBuf>,
     /// The file [`Self::pending_document_open`] is opening, to name it if
     /// the host refuses.
     document_open_path: Option<PathBuf>,
@@ -850,6 +930,11 @@ pub struct FileExplorerWidget {
     /// can be resolved to the folder it lands on (the view never sees the
     /// release — the app captures the pointer for the duration of the drag).
     drop_targets: crate::views::file_view::DropTargets,
+    /// Every visible item's rect, for a box selection.
+    item_rects: crate::views::file_view::ItemRects,
+    /// A box selection being drawn: where it started, where the pointer
+    /// is, and what was selected before it (kept with Ctrl).
+    marquee: Option<(Point, Point, Vec<usize>)>,
     /// The content pane's live scroll position, owned here so it survives the
     /// per-frame rebuild. Each rebuilt list/grid `Scrollable` binds to this
     /// cell (see [`ui::widget::Scrollable::with_persisted_offset`]); without
@@ -1064,7 +1149,7 @@ impl FileExplorerWidget {
                     }
                 }
                 Some(error) => {
-                    self.notify_failure(t("files-new-folder-failed-title"), &error, None)
+                    self.notify_failure(t("files-new-folder-failed-title"), &error, None);
                 }
             },
             OpFollowUp::Rename => match error {
@@ -1079,7 +1164,9 @@ impl FileExplorerWidget {
                     }
                 }
                 // The editor stays open so the name can be fixed.
-                Some(error) => self.notify_failure(t("files-rename-failed-title"), &error, None),
+                Some(error) => {
+                    self.notify_failure(t("files-rename-failed-title"), &error, None);
+                }
             },
             OpFollowUp::Trash { count } => match error {
                 None => {
@@ -1094,7 +1181,9 @@ impl FileExplorerWidget {
                         undoable,
                     );
                 }
-                Some(error) => self.notify_failure(t("files-trash-failed"), &error, None),
+                Some(error) => {
+                    self.notify_failure(t("files-trash-failed"), &error, None);
+                }
             },
             OpFollowUp::Move { destination } => {
                 let moved = outcome
@@ -1121,6 +1210,11 @@ impl FileExplorerWidget {
                 }
             }
             OpFollowUp::Paste { count, cut } => self.settle_paste(count, cut, outcome),
+            OpFollowUp::Replaced => {
+                if let Some(error) = error {
+                    self.notify_failure(t("files-trash-failed"), &error, None);
+                }
+            }
         }
     }
 
@@ -1176,6 +1270,11 @@ impl FileExplorerWidget {
     /// Say that something failed: `title` says what, `reason` why, and
     /// `action` is the way on, when there is one.
     fn notify_failure(&mut self, title: String, reason: &str, action: Option<NoticeAction>) {
+        if reason == crate::file_ops::CANCELLED {
+            // The person stopped it: what got through can be taken back.
+            self.notify_done(t("files-transfer-stopped"), true);
+            return;
+        }
         self.status = None;
         self.notice.show(
             title,
@@ -1201,6 +1300,7 @@ impl FileExplorerWidget {
             NoticeAction::Undo => {
                 self.undo.request(ui::UndoRequest::Undo);
             }
+            NoticeAction::CancelTransfer => crate::file_ops::cancel_transfers(),
             NoticeAction::OpenWith(path) => {
                 if let Some(i) = self.displayed_entries().iter().position(|e| e.path == path) {
                     self.selection.select_only(i);
@@ -1688,6 +1788,7 @@ impl FileExplorerWidget {
         // stays for the window's lifetime.
         let (path_widget, actions_widget, toolbar) = crate::toolbar::FileToolbar::new(cmds.clone());
         let nav = NavShell::new()
+            .content_kind(ui::widget::ContentKind::List)
             .with_id("files.shell")
             .content_header("", vec![Box::new(actions_widget)])
             .content_header_leading(Box::new(path_widget));
@@ -1718,6 +1819,9 @@ impl FileExplorerWidget {
             clipboard: Vec::new(),
             clipboard_cut: false,
             notice: Notice::default(),
+            clash: None,
+            preview: None,
+            incoming: Vec::new(),
             undo: ui::UndoAccess::default(),
             typing: ui::type_ahead::TypeAhead::default(),
             device: None,
@@ -1827,10 +1931,13 @@ impl FileExplorerWidget {
             drives: drives::Drives::default(),
             host_intent: None,
             pending_document_open: None,
+            open_queue: std::collections::VecDeque::new(),
             document_open_path: None,
             pending_launch: None,
             next_document_open_token: 0,
             drop_targets: Rc::new(std::cell::RefCell::new(Vec::new())),
+            item_rects: Rc::new(std::cell::RefCell::new(Vec::new())),
+            marquee: None,
             scroll_offset: Rc::new(Cell::new((0.0, 0.0))),
             list_slot: crate::views::file_list::ListSlot::default(),
             thumbs,
@@ -2045,9 +2152,9 @@ impl FileExplorerWidget {
                 });
                 None
             }
-            FilesEffect::Paste => {
+            FilesEffect::Paste { conflict } => {
                 if matches!(self.services, FileServices::Hosted(_)) || self.hosted_clipboard() {
-                    return self.paste_clipboard(invocation);
+                    return self.paste_clipboard(invocation, paste_conflict(conflict.as_deref())?);
                 }
                 self.paste()?;
                 None
@@ -2835,6 +2942,7 @@ impl FileExplorerWidget {
             .with_rename(self.renaming, self.rename_rect.clone())
             .with_cursor(self.last_cursor)
             .with_drop_targets(self.drop_targets.clone())
+            .with_item_rects(self.item_rects.clone())
             .with_thumbs(self.thumb_ctx())
             .with_list(self.list_slot.clone())
             .with_bottom_inset(f64::from(status_bubble_safe_inset(theme)));
@@ -3110,8 +3218,9 @@ impl FileExplorerWidget {
         };
         // In the order a person works: get somewhere, change things, see
         // them differently.
-        let rows: [(&str, Vec<Shortcut>); 13] = [
+        let rows: [(&str, Vec<Shortcut>); 14] = [
             ("files-shortcuts-open", vec![Shortcut::key("Enter")]),
+            ("files-shortcuts-preview", vec![Shortcut::key("Space")]),
             (
                 "files-shortcuts-back-forward",
                 vec![Shortcut::key("←").alt(), Shortcut::key("→").alt()],
@@ -3309,14 +3418,10 @@ impl FileExplorerWidget {
         self.toolbar.set_content_width(column.width());
     }
 
-    /// Whether `point` is over the places list (docked or drawn as a drawer).
+    /// Whether `point` is over the places list (docked, or the places
+    /// screen of a narrow window).
     fn in_places_list(&self, point: Point) -> bool {
         self.nav.is_sidebar_open() && self.nav.geometry().sidebar_column.contains(point)
-    }
-
-    /// Whether the places list is open as a drawer over the file view.
-    fn places_drawer_open(&self) -> bool {
-        self.nav.geometry().sidebar == SidebarPlacement::Drawer && self.nav.is_sidebar_open()
     }
 
     /// The content column below the shell's header row: where the file view
@@ -3330,14 +3435,6 @@ impl FileExplorerWidget {
             column.x1,
             column.y1,
         )
-    }
-
-    /// A narrow places drawer is a modal flap: the file view and every one of
-    /// its transient affordances live behind its scrim. The bubble is drawn by
-    /// this app (rather than by `NavShell`), so make that ownership boundary
-    /// explicit instead of accidentally painting it over the flap.
-    fn status_bubble_is_occluded_by_places_drawer(&self) -> bool {
-        self.places_drawer_open()
     }
 
     pub fn current_path(&self) -> PathBuf {
@@ -4181,16 +4278,8 @@ impl FileExplorerWidget {
                             )],
                         ),
                     ];
-                    if let Some(record_id) = entry.record_id {
-                        lines.push(t_args(
-                            "files-property-collaborative-record",
-                            &[arg("record", uuid::Uuid::from_bytes(record_id).to_string())],
-                        ));
-                    }
-                    if let Some(content_hash) = entry.content_hash {
-                        let hash = hex_prefix(&content_hash, 8);
-                        lines.push(t_args("files-property-content", &[arg("hash", hash)]));
-                    }
+                    // Record ids and content hashes are the system's
+                    // bookkeeping; agents read them through the actions.
                     if let Some(metadata) = &entry.rich_metadata {
                         let properties = &metadata.properties;
                         if let (Some(width), Some(height)) =
@@ -4803,6 +4892,10 @@ impl FileExplorerWidget {
                 true
             }
             FileCommand::Delete => self.apply_delete(),
+            FileCommand::ShowPathMenu { folders, at } => {
+                self.open_path_menu(folders, at);
+                true
+            }
             FileCommand::Undo => {
                 self.undo.request(ui::UndoRequest::Undo);
                 true
@@ -4817,7 +4910,11 @@ impl FileExplorerWidget {
             FileCommand::Cut => self.apply_cut(),
             FileCommand::Paste => {
                 if self.can_paste_clipboard() {
-                    self.perform(crate::effects::FilesEffect::Paste);
+                    // The person pasting is here to answer: clashing names
+                    // are asked about once.
+                    self.perform(crate::effects::FilesEffect::Paste {
+                        conflict: Some("ask".into()),
+                    });
                 }
                 true
             }
@@ -5579,6 +5676,40 @@ impl FileExplorerWidget {
         self.favs.clone()
     }
 
+    /// Stage the preview of the folder's first text file, for an offscreen
+    /// review.
+    #[doc(hidden)]
+    pub fn debug_show_preview(&mut self) {
+        let text = |entry: &Entry| {
+            entry.path.extension().is_some_and(|ext| {
+                ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("txt")
+            })
+        };
+        if let Some(i) = self.displayed_entries().iter().position(text) {
+            self.select(Some(i));
+            self.show_preview();
+        }
+    }
+
+    /// Stage the name-clash question, for an offscreen review. Nothing is
+    /// copied: the sheet is only shown.
+    #[doc(hidden)]
+    pub fn debug_show_clash(&mut self) {
+        let files: Vec<PathBuf> = self
+            .displayed_entries()
+            .iter()
+            .filter(|entry| !entry.is_dir)
+            .take(3)
+            .map(|entry| entry.path.clone())
+            .collect();
+        self.clash = Some(PendingClash::new(
+            files.clone(),
+            files,
+            self.current_path.join("Documents"),
+            true,
+        ));
+    }
+
     /// Stage the Undo notice a move to Trash shows, for an offscreen review.
     /// Nothing is moved: headless rendering never touches a person's Trash.
     #[doc(hidden)]
@@ -5602,11 +5733,11 @@ impl FileExplorerWidget {
         self.open_templates_submenu(anchor);
     }
 
-    /// Open the places drawer over the file view (the narrow layout's
-    /// hamburger action), settled deterministically for a headless
-    /// screenshot. In the wide layout the places list is already docked.
+    /// Bring the places list in front (a narrow window's places screen),
+    /// settled deterministically for a headless screenshot. In the wide
+    /// layout the places list is already docked.
     #[doc(hidden)]
-    pub fn debug_open_places_drawer(&mut self) {
+    pub fn debug_show_places(&mut self) {
         self.nav.open_sidebar();
         self.nav.snap();
     }
@@ -5803,7 +5934,7 @@ impl FileExplorerWidget {
                 self.debug_select(&[11]);
                 self.begin_rename();
             }
-            Some("places") => self.debug_open_places_drawer(),
+            Some("places") => self.debug_show_places(),
             Some("remote-account") => {
                 // A made-up account that needs signing in again: no real
                 // account store or vault is read.
@@ -5823,6 +5954,8 @@ impl FileExplorerWidget {
             Some("error") => self.debug_show_error_state(),
             Some("menu" | "archive-menu") => self.open_view_menu(),
             Some("undo-trash") => self.debug_show_trash_notice(),
+            Some("clash") => self.debug_show_clash(),
+            Some("preview") => self.debug_show_preview(),
             Some("context-menu") => {
                 // A right-click in the content pane, away from the toolbar's
                 // menu, with its first row armed as the keyboard would.
@@ -6020,7 +6153,63 @@ impl FileExplorerWidget {
         {
             return Some(parent.to_path_buf());
         }
+        if let Some((path, _)) = self.toolbar.crumb_at(pt)
+            && path != self.current_path
+            && !self.drag_paths.contains(&path)
+        {
+            return Some(path);
+        }
         self.place_target_at(pt).map(|(path, _)| path)
+    }
+
+    /// Show the copy or move under way once it has run long enough to be
+    /// worth watching, with Cancel; whether the card changed.
+    fn follow_transfers(&mut self, now: Instant) -> bool {
+        use std::sync::atomic::Ordering;
+        let running = crate::file_ops::active_transfers();
+        let Some(transfer) = running.iter().find(|transfer| {
+            transfer.started.is_some_and(|started| {
+                now.saturating_duration_since(started) >= TRANSFER_SHOWN_AFTER
+            })
+        }) else {
+            if running.is_empty() && self.notice.shows_progress() {
+                self.notice.dismiss();
+                self.structure_dirty = true;
+                return true;
+            }
+            return false;
+        };
+        let folder = Path::new(&transfer.folder).file_name().map_or_else(
+            || transfer.folder.clone(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        let title = t_args(
+            if transfer.copy {
+                "files-copying"
+            } else {
+                "files-moving"
+            },
+            &[
+                arg("count", i64_of_usize(transfer.count)),
+                arg("folder", folder),
+            ],
+        );
+        let body = t_args(
+            "files-transfer-progress",
+            &[
+                arg(
+                    "done",
+                    crate::i18n::format_bytes(transfer.done.load(Ordering::Relaxed)),
+                ),
+                arg(
+                    "total",
+                    crate::i18n::format_bytes(transfer.total.load(Ordering::Relaxed)),
+                ),
+            ],
+        );
+        self.notice.show_progress(title, body);
+        self.structure_dirty = true;
+        true
     }
 
     /// Open the folder a drag has rested on long enough; whether it did.
@@ -6041,6 +6230,284 @@ impl FileExplorerWidget {
         self.navigate(folder);
         self.structure_dirty = true;
         true
+    }
+
+    /// The preview or clash sheet, while one is up: it is the window's
+    /// whole semantic tree, as a modal is.
+    fn sheet_accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Politeness, Role};
+        if let Some(preview) = &self.preview {
+            return Some(
+                AccessNode::new(Role::Dialog)
+                    .with_name(preview.title().to_owned())
+                    .with_description(preview.detail().to_owned())
+                    .with_live(Politeness::Polite)
+                    .with_state(AccessState::new().focusable(true).focused(true).modal(true)),
+            );
+        }
+        if let Some(pending) = &self.clash {
+            let buttons = PendingClash::choice_labels()
+                .into_iter()
+                .enumerate()
+                .map(|(i, label)| {
+                    AccessNode::new(Role::Button)
+                        .with_name(label)
+                        .with_action_target(format!("{CLASH_TARGET}{i}"))
+                })
+                .collect();
+            return Some(
+                AccessNode::new(Role::Dialog)
+                    .with_name(pending.title())
+                    .with_description(PendingClash::detail())
+                    .with_live(Politeness::Assertive)
+                    .with_state(AccessState::new().focusable(true).focused(true).modal(true))
+                    .with_children(buttons),
+            );
+        }
+        None
+    }
+
+    /// The folders a long path bar hides, as a menu: each opens its folder.
+    fn open_path_menu(&mut self, folders: Vec<(String, PathBuf)>, at: Point) {
+        if folders.is_empty() {
+            return;
+        }
+        let mut menu = self.new_overlay_menu();
+        let mut commands = Vec::with_capacity(folders.len());
+        for (label, path) in folders {
+            menu.push(MenuItem::action(label, || {}));
+            commands.push(Some(FileCommand::Navigate(path)));
+        }
+        menu.open_at([at.x as f32, at.y as f32]);
+        self.context_menu = menu;
+        self.menu_commands = commands;
+        layout_menu_widget(&mut self.context_menu);
+        self.structure_dirty = true;
+    }
+
+    /// Files dragged in from another app: the folder under the pointer (or
+    /// the one shown) lights up, and the drop copies them there. Each file
+    /// arrives as its own event; they are gathered and copied as one.
+    fn route_incoming_drop(&mut self, event: &winit::event::WindowEvent) -> bool {
+        use winit::event::WindowEvent;
+        match event {
+            WindowEvent::HoveredFile(_) => {
+                self.drag_hover = self.folder_target_at(self.last_cursor);
+                self.structure_dirty = true;
+                true
+            }
+            WindowEvent::HoveredFileCancelled => {
+                self.drag_hover = None;
+                self.structure_dirty = true;
+                true
+            }
+            WindowEvent::DroppedFile(path) => {
+                self.incoming.push(path.clone());
+                self.structure_dirty = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Copy what another app dropped, once its files have all arrived.
+    fn take_incoming_drop(&mut self) {
+        if self.incoming.is_empty() {
+            return;
+        }
+        let paths = std::mem::take(&mut self.incoming);
+        let target = self.drag_hover.take().or_else(|| {
+            (!self.is_recent_view()
+                && !self.is_trash_view()
+                && crate::archive::location(&self.current_path).is_none())
+            .then(|| self.current_path.clone())
+        });
+        match target {
+            Some(folder) => self.transfer(paths, &folder, true),
+            None => self.status = Some(t("files-drop-nowhere")),
+        }
+    }
+
+    /// Show the primary selected item large.
+    fn show_preview(&mut self) {
+        let Some(entry) = self
+            .selection
+            .primary()
+            .and_then(|i| self.displayed_entries().get(i).cloned())
+        else {
+            self.preview = None;
+            return;
+        };
+        self.preview = Some(Preview::of(&entry, entry.content_is_local()));
+        self.structure_dirty = true;
+    }
+
+    /// The preview sheet takes every event while it is up: Space or Escape
+    /// close it, the arrow keys move through the folder with it open.
+    fn route_preview_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        modifiers: winit::event::Modifiers,
+    ) {
+        use winit::event::{ElementState, MouseButton, WindowEvent};
+        use winit::keyboard::{Key, NamedKey};
+        match event {
+            WindowEvent::KeyboardInput { event: key, .. } if key.state == ElementState::Pressed => {
+                match &key.logical_key {
+                    Key::Named(NamedKey::Space | NamedKey::Escape) => self.preview = None,
+                    Key::Named(
+                        NamedKey::ArrowUp
+                        | NamedKey::ArrowDown
+                        | NamedKey::ArrowLeft
+                        | NamedKey::ArrowRight,
+                    ) => {
+                        let len = self.displayed_entries().len();
+                        let forward = matches!(
+                            key.logical_key,
+                            Key::Named(NamedKey::ArrowDown | NamedKey::ArrowRight)
+                        );
+                        if len > 0 {
+                            let next = self.selection.primary().map_or(0, |i| {
+                                if forward {
+                                    (i + 1).min(len - 1)
+                                } else {
+                                    i.saturating_sub(1)
+                                }
+                            });
+                            self.selection.move_to(next, modifiers.state().shift_key());
+                            self.retain_shown_selection();
+                            self.show_preview();
+                        }
+                    }
+                    Key::Named(NamedKey::Enter) => {
+                        self.preview = None;
+                        self.open_selected();
+                    }
+                    _ => {}
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } if self
+                .preview
+                .as_ref()
+                .is_some_and(|preview| preview.closes_at(self.last_cursor)) =>
+            {
+                self.preview = None;
+            }
+            _ => {}
+        }
+        self.structure_dirty = true;
+    }
+
+    /// A press on empty space in the file view starts a box selection.
+    fn maybe_start_marquee(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        ctx: &ui::widget::EventCtx<'_>,
+    ) {
+        use winit::event::{ElementState, MouseButton, WindowEvent};
+        let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            ..
+        } = event
+        else {
+            return;
+        };
+        let at = self.last_cursor;
+        let on_item = self
+            .item_rects
+            .borrow()
+            .iter()
+            .any(|(_, rect)| rect.contains(at));
+        if *ctx.handled
+            || on_item
+            || self.pin_drag.is_some()
+            || !self.content_body_rect().contains(at)
+        {
+            return;
+        }
+        let keep = ctx.modifiers.state().control_key() || ctx.modifiers.state().shift_key();
+        let base = if keep {
+            self.selection.selected()
+        } else {
+            Vec::new()
+        };
+        if !keep {
+            self.selection.clear();
+            self.retain_shown_selection();
+        }
+        self.marquee = Some((at, at, base));
+        self.structure_dirty = true;
+    }
+
+    /// A box selection under way takes the pointer: it grows with the
+    /// pointer, selecting what it touches, and ends on release.
+    fn route_marquee_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        use winit::event::{ElementState, MouseButton, WindowEvent};
+        let Some((start, _, base)) = self.marquee.clone() else {
+            return false;
+        };
+        match event {
+            WindowEvent::CursorMoved { .. } => {
+                let now = self.last_cursor;
+                let area = vello::kurbo::Rect::from_points(start, now);
+                let mut chosen: std::collections::BTreeSet<usize> = base.into_iter().collect();
+                chosen.extend(
+                    self.item_rects
+                        .borrow()
+                        .iter()
+                        .filter(|(_, rect)| rect.intersect(area).area() > 0.0)
+                        .map(|(index, _)| *index),
+                );
+                let primary = chosen.iter().next().copied();
+                self.selection.replace_indices(chosen, primary);
+                self.retain_shown_selection();
+                if let Some(marquee) = self.marquee.as_mut() {
+                    marquee.1 = now;
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.marquee = None;
+            }
+            _ => return false,
+        }
+        *ctx.handled = true;
+        self.structure_dirty = true;
+        true
+    }
+
+    /// Paint the box selection being drawn.
+    fn draw_marquee(
+        &self,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        theme: &ui::Theme,
+    ) {
+        let Some((start, now, _)) = &self.marquee else {
+            return;
+        };
+        let area = vello::kurbo::Rect::from_points(*start, *now);
+        let ink = theme.tokens.colors.border_focus;
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            ink.with_alpha(0.12),
+            None,
+            &area,
+        );
+        scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, ink, None, &area);
     }
 
     /// The sidebar place a drop at `pt` lands in, with its row: the middle
@@ -6067,7 +6534,7 @@ impl FileExplorerWidget {
     /// Resolve and apply a drag's drop: move the carried row(s) into a folder
     /// (a row, or the parent via the Up target), else pin a single folder to
     /// Favourites when released over the sidebar. Clears the drag state.
-    fn finish_drag(&mut self) {
+    fn finish_drag(&mut self, copy: bool) {
         crate::external_drag::end();
         let target = self.folder_target_at(self.last_cursor);
         let over_sidebar = self.nav.is_sidebar_open()
@@ -6081,7 +6548,7 @@ impl FileExplorerWidget {
         self.drag_hover = None;
         self.spring = None;
         if let Some(dir) = target {
-            self.move_paths_into(&paths, &dir);
+            self.drop_paths_into(&paths, &dir, copy);
         } else if over_sidebar {
             // Only a single folder can be a favourite — files and multi-drags
             // are not pinnable. `is_dir` comes from the dragged row, so this
@@ -6108,37 +6575,151 @@ impl FileExplorerWidget {
         self.drag_origin_is_dir = false;
     }
 
-    /// Move each of `paths` into directory `dir` as a real filesystem move
-    /// (an honest side effect, not a CRDT action). No-ops and impossible moves
-    /// — into itself, into its own subtree, or into the folder it already lives
-    /// in — are skipped rather than erroring. Refreshes and reports the result.
-    fn move_paths_into(&mut self, paths: &[PathBuf], dir: &std::path::Path) {
-        let entries: Vec<String> = paths
+    /// Move (or with `copy`, copy) each of `paths` into directory `dir`. A
+    /// drop onto another filesystem copies, as a move there would be a copy
+    /// and a delete. No-ops and impossible moves — into itself, into its own
+    /// subtree, or into the folder it already lives in — are skipped rather
+    /// than erroring.
+    fn drop_paths_into(&mut self, paths: &[PathBuf], dir: &std::path::Path, copy: bool) {
+        let copy = copy || paths.iter().any(|src| !same_filesystem(src, dir));
+        let entries: Vec<PathBuf> = paths
             .iter()
             .filter(|src| {
                 let already_here = src.parent() == Some(dir);
                 let into_self = src.as_path() == dir;
                 let into_descendant = dir.starts_with(src);
-                !(already_here || into_self || into_descendant)
+                !((already_here && !copy) || into_self || into_descendant)
             })
-            .map(|src| src.display().to_string())
+            .cloned()
             .collect();
         if entries.is_empty() {
             self.status = Some(t("files-nothing-to-move"));
             return;
         }
-        let destination = dir.file_name().map_or_else(
-            || dir.display().to_string(),
-            |name| name.to_string_lossy().into_owned(),
-        );
-        self.queue(
-            crate::file_ops::FileOp::Move {
-                paths: entries,
-                folder: dir.display().to_string(),
-                create: false,
+        self.transfer(entries, dir, copy);
+    }
+
+    /// Copy or move `paths` into `dir`, first asking once what to do about
+    /// names `dir` already has.
+    fn transfer(&mut self, paths: Vec<PathBuf>, dir: &Path, copy: bool) {
+        let clashing = clash::clashing(&paths, dir, copy);
+        if clashing.is_empty() {
+            self.run_transfer(&paths, dir, copy);
+        } else {
+            self.clash = Some(PendingClash::new(paths, clashing, dir.to_path_buf(), copy));
+            self.structure_dirty = true;
+        }
+    }
+
+    /// Queue the copy or move of `paths` into `dir`; a taken name gets a
+    /// free one.
+    fn run_transfer(&mut self, paths: &[PathBuf], dir: &Path, copy: bool) {
+        if paths.is_empty() {
+            return;
+        }
+        let count = paths.len();
+        let paths: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
+        let folder = dir.display().to_string();
+        if copy {
+            self.queue(
+                crate::file_ops::FileOp::Copy { paths, folder },
+                OpFollowUp::Paste { count, cut: false },
+            );
+        } else {
+            let destination = dir.file_name().map_or_else(
+                || dir.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            );
+            self.queue(
+                crate::file_ops::FileOp::Move {
+                    paths,
+                    folder,
+                    create: false,
+                },
+                OpFollowUp::Move { destination },
+            );
+        }
+    }
+
+    /// Settle the clash question: `None` leaves everything as it was.
+    fn settle_clash(&mut self, choice: Option<ClashChoice>) {
+        let Some(pending) = self.clash.take() else {
+            return;
+        };
+        self.structure_dirty = true;
+        if pending.clipboard.is_some() {
+            use ui::collaboration::file_clipboard::Conflict;
+            let conflict = choice.map(|choice| match choice {
+                ClashChoice::Skip => Conflict::Skip,
+                ClashChoice::KeepBoth => Conflict::KeepBoth,
+                ClashChoice::Replace => Conflict::Replace,
+            });
+            if let Some(result) = self.local_clipboard.decide(conflict) {
+                self.complete_clipboard_publication(result);
+            }
+            return;
+        }
+        match choice {
+            None => {}
+            Some(ClashChoice::KeepBoth) => {
+                self.run_transfer(&pending.sources, &pending.folder, pending.copy);
+            }
+            Some(ClashChoice::Skip) => {
+                self.run_transfer(&pending.unclashing(), &pending.folder, pending.copy);
+            }
+            Some(ClashChoice::Replace) => {
+                // One step to undo: the replaced items come back from Trash
+                // and the new ones go.
+                let group = self
+                    .dispatcher
+                    .as_ref()
+                    .map(ui::framework::Dispatcher::begin_group);
+                self.queue(
+                    crate::file_ops::FileOp::Trash {
+                        paths: pending
+                            .replaced()
+                            .iter()
+                            .map(|path| path.display().to_string())
+                            .collect(),
+                    },
+                    OpFollowUp::Replaced,
+                );
+                self.run_transfer(&pending.sources, &pending.folder, pending.copy);
+                drop(group);
+            }
+        }
+    }
+
+    /// The clash sheet takes every event while it is up.
+    fn route_clash_event(&mut self, event: &winit::event::WindowEvent) {
+        use winit::event::{ElementState, MouseButton, WindowEvent};
+        use winit::keyboard::{Key, NamedKey};
+        let Some(pending) = self.clash.as_mut() else {
+            return;
+        };
+        match event {
+            WindowEvent::CursorMoved { .. } => {
+                self.structure_dirty |= pending.pointer_moved(self.last_cursor);
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => match pending.click(self.last_cursor) {
+                Some(clash::ClashClick::Choose(choice)) => self.settle_clash(Some(choice)),
+                Some(clash::ClashClick::Cancel) => self.settle_clash(None),
+                None => {}
             },
-            OpFollowUp::Move { destination },
-        );
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                match &event.logical_key {
+                    Key::Named(NamedKey::Escape) => self.settle_clash(None),
+                    // Enter takes the choice that loses nothing.
+                    Key::Named(NamedKey::Enter) => self.settle_clash(Some(ClashChoice::KeepBoth)),
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Copy (or, after Cut, move) the clipboard into the folder shown.
@@ -6146,13 +6727,13 @@ impl FileExplorerWidget {
         if self.clipboard.is_empty() {
             return Err("The clipboard is empty".into());
         }
+        let cut = self.clipboard_cut;
         let paths: Vec<String> = self
             .clipboard
             .iter()
             .map(|path| path.display().to_string())
             .collect();
         let folder = self.current_path.display().to_string();
-        let cut = self.clipboard_cut;
         let count = paths.len();
         let op = if cut {
             crate::file_ops::FileOp::Move {
@@ -6177,9 +6758,8 @@ impl FileExplorerWidget {
         capability: ui::widget::DocumentOpenCapability,
     ) -> Result<(), String> {
         if self.pending_document_open.is_some() {
-            // One request already owns the only reply slot. Keep that
-            // truthful pending state instead of replacing it with a second
-            // status that the first successful reply could not clear.
+            // One request owns the only reply slot; this one waits for it.
+            self.open_queue.push_back(path);
             return Ok(());
         }
         let token = self
@@ -6231,6 +6811,32 @@ impl FileExplorerWidget {
         }
     }
 
+    /// Enter: open every selected file, each in its app; a single folder
+    /// (or a selection of only folders) opens the primary one here.
+    fn open_selected(&mut self) {
+        let paths = self.selected_paths();
+        let files: Vec<PathBuf> = paths.iter().filter(|p| !p.is_dir()).cloned().collect();
+        if paths.len() <= 1 || files.is_empty() {
+            if let Some(p) = self.primary_path() {
+                self.open_path(p);
+            }
+            return;
+        }
+        for file in files {
+            self.open_path(file);
+        }
+    }
+
+    /// Hand the next waiting file to the host once it has answered the last.
+    fn open_next_queued(&mut self) {
+        while self.pending_document_open.is_none() && self.pending_launch.is_none() {
+            let Some(next) = self.open_queue.pop_front() else {
+                return;
+            };
+            self.open_path(next);
+        }
+    }
+
     /// Open a path: navigate into directories, else launch its app.
     fn open_path(&mut self, path: PathBuf) {
         let mut runner = SystemRunner;
@@ -6274,14 +6880,26 @@ impl FileExplorerWidget {
                     .any(|entry| entry.path.starts_with(&prefix));
             if member.as_ref().is_some_and(|entry| entry.is_dir) || is_implicit_directory {
                 self.navigate(path);
-            } else {
-                self.status = Some(t("files-archive-open-after-extract"));
+                return Ok(false);
             }
-            return Ok(false);
+            // A file inside an archive opens as a read-only copy of it.
+            return match archive_member_copy(&archive, &prefix) {
+                Ok(copy) => self.open_target(copy, runner),
+                Err(error) => {
+                    self.notify_open_failed(&path, &error.to_string());
+                    Ok(false)
+                }
+            };
         }
         if path.is_dir() {
             self.navigate(path);
             return Ok(false);
+        }
+        if self.pending_document_open.is_some() || self.pending_launch.is_some() {
+            // The host answers one open at a time; the rest wait their turn
+            // (Enter on several selected files opens each).
+            self.open_queue.push_back(path);
+            return Ok(true);
         }
         let hosted_route = match &self.services {
             FileServices::Legacy => None,
@@ -6639,6 +7257,12 @@ impl FileExplorerWidget {
                 (Some(hover.as_path()) == self.current_path.parent())
                     .then(|| self.toolbar.up_button_rect())
                     .flatten()
+            })
+            .or_else(|| {
+                self.toolbar
+                    .crumb_at(self.last_cursor)
+                    .filter(|(path, _)| path == hover)
+                    .map(|(_, rect)| rect)
             })
             .or_else(|| {
                 self.place_target_at(self.last_cursor)
@@ -7006,10 +7630,19 @@ impl FileExplorerWidget {
                         Some(FileCommand::OpenShortcutsMenu),
                     ));
                 }
-                spec.push((
-                    t("files-menu-send-nearby"),
-                    Some(FileCommand::OpenNearbySend),
-                ));
+                // Only offered while one of the person's devices is there
+                // to receive.
+                if self
+                    .nearby_send
+                    .targets()
+                    .iter()
+                    .any(|target| target.online)
+                {
+                    spec.push((
+                        t("files-menu-send-nearby"),
+                        Some(FileCommand::OpenNearbySend),
+                    ));
+                }
             }
             spec.push((String::new(), None));
             spec.push((t("files-menu-cut"), Some(FileCommand::Cut)));
@@ -8387,13 +9020,16 @@ impl FileExplorerWidget {
                 true
             }
             Key::Named(NamedKey::Enter) => {
-                if let Some(p) = self.primary_path() {
-                    self.open_path(p);
-                }
+                self.open_selected();
                 true
             }
             Key::Named(NamedKey::Backspace) => {
                 self.go_up();
+                true
+            }
+            // Space shows the selected file large, as in every file manager.
+            Key::Named(NamedKey::Space) if !self.selection.is_empty() => {
+                self.show_preview();
                 true
             }
             Key::Named(NamedKey::Delete) => {
@@ -8506,7 +9142,9 @@ impl FileExplorerWidget {
                     // delivered it. Nothing moves here.
                     self.cancel_drag();
                 } else {
-                    self.finish_drag();
+                    // Ctrl copies, as on every desktop; so does a drop onto
+                    // another disk, where a move would be a copy and delete.
+                    self.finish_drag(ctx.modifiers.state().control_key());
                 }
                 *ctx.handled = true;
                 self.structure_dirty = true;
@@ -8514,40 +9152,6 @@ impl FileExplorerWidget {
             }
             _ => false,
         }
-    }
-
-    /// Route an open compact Places drawer as a modal surface. The uncovered
-    /// strip is deliberately a dismiss backdrop, never a transparent route to
-    /// the file view: right-clicks, wheel input, and selection gestures must
-    /// not reach the list behind the scrim.
-    fn handle_places_drawer_modal_event(
-        &mut self,
-        event: &winit::event::WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-    ) -> bool {
-        if !self.places_drawer_open() {
-            return false;
-        }
-        let Ok(children) = ctx.taffy.children(ctx.node_id) else {
-            return false;
-        };
-        let Some(&nav_node) = children.first() else {
-            return false;
-        };
-        let path_before = self.current_path.clone();
-        self.nav
-            .handle_event(event, &mut ctx.reborrow(ctx.path, nav_node));
-        if self.drain_commands() | self.drain_opened() {
-            self.structure_dirty = true;
-        }
-        if self.current_path != path_before {
-            self.nav.close_sidebar();
-        }
-        // NavShell handles a left scrim press by closing; other events such as
-        // a right-click over the scrim are still swallowed here so they cannot
-        // construct a file-view context menu through the modal backdrop.
-        *ctx.handled = true;
-        true
     }
 
     /// The open context menu (or its flyout) gets first dibs on clicks +
@@ -8764,7 +9368,11 @@ impl FileExplorerWidget {
         ctx: &mut ui::widget::EventCtx<'_>,
     ) {
         let path_before = self.current_path.clone();
+        if self.route_marquee_event(event, ctx) {
+            return;
+        }
         self.forward_to_body(event, ctx);
+        self.maybe_start_marquee(event, ctx);
         if !*ctx.handled
             && let winit::event::WindowEvent::KeyboardInput { event: ke, .. } = event
             && self.handle_app_key(ke, *ctx.modifiers)
@@ -8775,9 +9383,13 @@ impl FileExplorerWidget {
         if self.drain_commands() {
             self.structure_dirty = true;
         }
-        // Going somewhere leaves the drawer that was open over the files.
-        if self.current_path != path_before && self.places_drawer_open() {
-            self.nav.close_sidebar();
+        // Going somewhere from the places screen of a narrow window shows
+        // the folder.
+        if self.current_path != path_before
+            && self.nav.front_pane() == ui::widget::NavPane::Sidebar
+            && !self.nav.geometry().stack.is_empty()
+        {
+            self.nav.show(ui::widget::NavPane::Content);
         }
     }
 }
@@ -9441,12 +10053,16 @@ impl Widget for FileExplorerWidget {
     fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         // Service calls finishing on the app runtime wake the event loop.
         let received = self.poll_received_share();
+        let transfers = self.follow_transfers(ui::time::now());
+        let previewed = self.preview.as_mut().is_some_and(Preview::poll);
         let notice_expired = self.notice.expire(ui::time::now());
         let sprang = self.spring_open_if_due(ui::time::now());
         self.structure_dirty |= notice_expired;
         self.poll_share_result()
             | received
             | notice_expired
+            | transfers
+            | previewed
             | sprang
             | self.poll_cloud()
             | self.poll_mounted_cloud()
@@ -9456,14 +10072,17 @@ impl Widget for FileExplorerWidget {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.adopt_preferences();
         // A control a caller invoked through the door (a toolbar button)
-        // queued its command; apply it before this frame is laid out.
-        if self.drain_commands() {
+        // queued its command, and a search hit or an agent's `open` queued
+        // the row it names; apply them before this frame is laid out.
+        if self.drain_commands() | self.drain_opened() {
             self.structure_dirty = true;
         }
         self.poll_cloud();
         self.poll_mounted_cloud();
         self.poll_deferred_document_open();
         self.poll_pending_launch();
+        self.open_next_queued();
+        self.take_incoming_drop();
         self.refresh_framework_history_target();
         self.refresh_metadata_if_due(ui::time::now());
         // One bounded catalogue page per idle/sync turn. The palette only
@@ -9535,9 +10154,31 @@ impl Widget for FileExplorerWidget {
             .chain(self.next_metadata_refresh)
             .chain(changed_directory)
             .chain(document_open_reply)
+            .chain(
+                (!self.open_queue.is_empty()
+                    && self.pending_document_open.is_none()
+                    && self.pending_launch.is_none())
+                .then(Instant::now),
+            )
             .chain(self.local_clipboard.next_wake())
             .chain(self.drives.next_wake())
             .chain(self.notice.deadline())
+            .chain((!self.incoming.is_empty()).then(Instant::now))
+            .chain(
+                self.preview
+                    .as_ref()
+                    .filter(|preview| preview.is_loading())
+                    .map(|_| Instant::now() + Duration::from_millis(50)),
+            )
+            .chain(
+                crate::file_ops::active_transfers()
+                    .first()
+                    .and_then(|transfer| transfer.started)
+                    .map(|started| {
+                        (started + TRANSFER_SHOWN_AFTER)
+                            .max(Instant::now() + Duration::from_millis(250))
+                    }),
+            )
             .chain(self.spring.as_ref().map(|(_, since)| *since + SPRING_OPEN))
             .chain(self.nav.next_wake_deadline())
             .min()
@@ -9623,11 +10264,11 @@ impl Widget for FileExplorerWidget {
         self.nav
             .draw_overlay(scene, transform, text_renderer, theme, presence);
         // Floating status bubble (item count / status + selection), above the
-        // content but below any open menus / drag ghost. A narrow drawer is a
-        // modal flap and its scrim must occlude every content affordance.
-        // A notice takes the bubble's place while it is up: one message at
-        // a time at the bottom of the file view.
-        if !self.status_bubble_is_occluded_by_places_drawer() {
+        // content but below any open menus / drag ghost, and only while the
+        // file view is on screen (not while a narrow window shows the places
+        // screen). A notice takes the bubble's place while it is up: one
+        // message at a time at the bottom of the file view.
+        if self.nav.geometry().content_column.width() > 0.0 {
             if self.notice.is_shown() {
                 let area = self.content_body_rect();
                 self.notice
@@ -9637,6 +10278,13 @@ impl Widget for FileExplorerWidget {
             }
         }
         self.draw_collab_panel(scene, transform, text_renderer, theme);
+        let window = self.rect;
+        if let Some(preview) = self.preview.as_mut() {
+            preview.paint(scene, transform, text_renderer, theme, window);
+        }
+        if let Some(pending) = self.clash.as_mut() {
+            pending.paint(scene, transform, text_renderer, theme, window);
+        }
         if self.context_menu.is_open() {
             layout_menu_widget(&mut self.context_menu);
             self.context_menu
@@ -9651,6 +10299,7 @@ impl Widget for FileExplorerWidget {
         // floats above everything else.
         self.resolve_staged_move_drag();
         self.draw_drop_highlight(scene, transform, theme);
+        self.draw_marquee(scene, transform, theme);
         self.draw_pin_ghost(scene, transform, text_renderer, theme);
         self.draw_app_chooser(scene, transform, text_renderer, theme, presence);
     }
@@ -9697,7 +10346,21 @@ impl Widget for FileExplorerWidget {
                 self.structure_dirty = true;
             }
         }
-        if self.notice.is_shown() && !self.places_drawer_open() && self.route_notice_event(event) {
+        if self.clash.is_some() {
+            self.route_clash_event(event);
+            *ctx.handled = true;
+            return;
+        }
+        if self.preview.is_some() {
+            self.route_preview_event(event, *ctx.modifiers);
+            *ctx.handled = true;
+            return;
+        }
+        if self.route_incoming_drop(event) {
+            *ctx.handled = true;
+            return;
+        }
+        if self.notice.is_shown() && self.route_notice_event(event) {
             *ctx.handled = true;
             return;
         }
@@ -9796,7 +10459,6 @@ impl Widget for FileExplorerWidget {
         // and an in-place rename all get first dibs on the event, in that
         // priority order; the first that consumes it stops routing.
         if self.handle_live_drag_event(event, ctx)
-            || self.handle_places_drawer_modal_event(event, ctx)
             || self.handle_open_menu_event(event, ctx)
             || self.handle_right_click_open_menu(event, ctx)
             || self.handle_zoom_wheel(event, ctx)
@@ -9901,6 +10563,9 @@ impl Widget for FileExplorerWidget {
         if self.app_chooser_open() {
             return self.app_chooser.accessibility();
         }
+        if let Some(sheet) = self.sheet_accessibility() {
+            return Some(sheet);
+        }
         if let Some(panel) = &self.collab_panel {
             let mut children = Vec::with_capacity(panel.lines.len() + 2);
             children
@@ -9979,6 +10644,7 @@ impl Widget for FileExplorerWidget {
                 let label = match action {
                     NoticeAction::Undo => t("files-notice-undo"),
                     NoticeAction::OpenWith(_) => t("files-notice-open-with"),
+                    NoticeAction::CancelTransfer => t("files-notice-cancel"),
                 };
                 buttons.push(
                     AccessNode::new(Role::Button)
@@ -10005,6 +10671,15 @@ impl Widget for FileExplorerWidget {
         _path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action;
+        if let Some(index) = target.strip_prefix(CLASH_TARGET)
+            && matches!(action, Action::Activate)
+        {
+            let choice = index.parse().ok().and_then(PendingClash::choice_at);
+            if choice.is_some() {
+                self.settle_clash(choice);
+            }
+            return choice.is_some();
+        }
         if matches!(action, Action::Activate)
             && (target == NOTICE_ACTION_TARGET || target == NOTICE_DISMISS_TARGET)
         {

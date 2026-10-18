@@ -873,11 +873,18 @@ impl App {
         if self.focused_widget_wants_tab_input() || !self.keyboard_nav_allowed(modal_rect) {
             return false;
         }
+        // Only Tab and Shift+Tab move focus. Ctrl+Tab and Ctrl+Shift+Tab a
+        // widget leaves unhandled are the desktop's next and previous tab
+        // (`crate::shell_tabs`), and Alt/Super chords are the desktop's too.
+        let modifiers = self.input.modifiers.state();
         if matches!(event, WindowEvent::KeyboardInput { event, .. }
             if event.state == winit::event::ElementState::Pressed
                 && event.logical_key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab))
+            && !modifiers.control_key()
+            && !modifiers.alt_key()
+            && !modifiers.super_key()
         {
-            return self.focus_tab(self.input.modifiers.state().shift_key());
+            return self.focus_tab(modifiers.shift_key());
         }
         false
     }

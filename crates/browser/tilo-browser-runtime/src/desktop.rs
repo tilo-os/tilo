@@ -7,6 +7,8 @@
 //! records themselves, so a reload restores the same windows on the same
 //! documents. A profile with no stored desktop is seeded with a window per
 //! requested application.
+pub(crate) type PersonIdentity = (String, (u8, u8, u8));
+
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
@@ -102,6 +104,8 @@ pub(crate) struct Inputs {
     pub permissions: Rc<RefCell<PermissionContext>>,
     pub models: ui::models::Models,
     pub provider_admin: ui::models::ProviderAdministration,
+    /// The peer whose room this desktop shows, when it has one.
+    pub peer: Option<u32>,
 }
 
 /// The person who made each strip or opened each window, by its id. Kept
@@ -139,6 +143,12 @@ pub(crate) struct Shared {
     /// Whether the room lets this desktop's person close and move what
     /// others made, as it last answered ([`crate::replication`] asks).
     pub moderates: Arc<AtomicBool>,
+    /// The person's accounts with the services this room is connected to,
+    /// read from the connectors' room records by the room's host
+    /// ([`PageRoomActions`]).
+    pub linked: tilo_app::linked_accounts::LinkedAccounts,
+    /// The room actions this desktop asked the room's host to run.
+    pub room_actions: PageRoomActions,
     /// Applications whose code is being fetched.
     loading: Rc<RefCell<std::collections::HashSet<&'static str>>>,
     /// Applications whose code failed to load since their tabs last asked.
@@ -227,6 +237,58 @@ impl Shared {
     /// Whether an application finished loading since the last call.
     pub fn take_arrived(&self) -> bool {
         self.arrived.replace(false)
+    }
+
+    /// Fetch a deferred application's code; its tabs are built again once
+    /// it is in, or show that it failed.
+    fn load(&self, app_id: &str, notify: &Arc<dyn Fn() + Send + Sync>) {
+        let Some((id, _)) = ui::application::registry::catalogue()
+            .into_iter()
+            .find(|(id, _)| *id == app_id)
+        else {
+            return;
+        };
+        if !self.loading.borrow_mut().insert(id) {
+            return;
+        }
+        let shared = self.clone();
+        let notify = Arc::clone(notify);
+        wasm_bindgen_futures::spawn_local(async move {
+            let loaded = ui::application::registry::load(id).await.is_some();
+            shared.loading.borrow_mut().remove(id);
+            if !loaded {
+                shared.failed.borrow_mut().insert(id.to_owned());
+            }
+            shared.arrived.set(true);
+            shared.wake();
+            notify();
+        });
+    }
+
+    /// The room's store of `definition`'s records: the one a window of it
+    /// opened, or opened now and flushed and replicated with the mount's.
+    fn room_store(
+        &self,
+        owners: &RecordOwners,
+        room: &str,
+        definition: &'static ApplicationDefinition,
+    ) -> Result<RecordStore, String> {
+        let home = (definition.app_id.to_owned(), room.to_owned());
+        if let Some(store) = self
+            .stores
+            .borrow()
+            .iter()
+            .find(|store| store.package_and_home() == home)
+        {
+            return Ok(store.clone());
+        }
+        // Clones share the owner registry: the same writer either way.
+        let store = owners
+            .clone()
+            .open(definition.app_id, room)
+            .map_err(|error| error.to_string())?;
+        self.stores.borrow_mut().push(store.clone());
+        Ok(store)
     }
 
     pub fn take_wake(&self) -> bool {
@@ -403,7 +465,7 @@ impl Shared {
         tree: &DesktopTree,
         me: &str,
         room: &str,
-        person: &mut dyn FnMut(&str) -> (String, (u8, u8, u8)),
+        person: &mut dyn FnMut(&str) -> PersonIdentity,
     ) -> HashMap<TabId, ui::widget::TabHolder> {
         if self.moderates.load(Ordering::Relaxed) {
             return HashMap::new();
@@ -502,13 +564,104 @@ impl Shared {
         };
         Some((app, record))
     }
+}
 
-    /// The record `tab` shows, once its component bound one.
-    pub fn record_of(&self, tab: TabId) -> Option<String> {
-        self.records
-            .borrow()
-            .get(&tab)
-            .map(|checkout| checkout.id.as_str().to_owned())
+/// The Settings app, which the page lends the person's linked accounts.
+const SETTINGS: &str = "so.tilo.settings";
+
+/// An action of a room record the desktop asked the room's host to run, as
+/// the page reads it from the mount's status (`room-action`) and answers it
+/// ([`crate::browser::desktop_room_action_answer`]).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct RoomActionRequest {
+    pub id: u32,
+    pub app: String,
+    pub action: String,
+    pub arguments: serde_json::Map<String, serde_json::Value>,
+}
+
+/// The room actions the desktop asked for and not answered yet.
+#[derive(Default)]
+struct RoomActionQueue {
+    next: u32,
+    outbox: Vec<RoomActionRequest>,
+    waiting: HashMap<u32, Box<dyn FnOnce(tilo_app::linked_accounts::ActionAnswer)>>,
+}
+
+/// The desktop's door to the room's records, run by the room's host: the
+/// page asks the host (`peer.actions`) to run each action as the person
+/// and hands the answer back. No app code runs in the page for it, so a
+/// connector the page never loads (Discord) answers too.
+#[derive(Clone, Default)]
+pub(crate) struct PageRoomActions {
+    queue: Rc<RefCell<RoomActionQueue>>,
+    /// The peer whose room this desktop shows, for the records it holds.
+    peer: Option<u32>,
+}
+
+impl PageRoomActions {
+    /// The requests the page has to send, once.
+    pub fn take_requests(&self) -> Vec<RoomActionRequest> {
+        std::mem::take(&mut self.queue.borrow_mut().outbox)
+    }
+
+    /// The page's answer to request `id`.
+    pub fn answer(&self, id: u32, answer: tilo_app::linked_accounts::ActionAnswer) {
+        let done = self.queue.borrow_mut().waiting.remove(&id);
+        if let Some(done) = done {
+            done(answer);
+        }
+    }
+}
+
+/// The person's linked accounts in this desktop's room, asked of the
+/// room's host through `shared`'s room actions; an answer wakes the mount.
+/// `shared` is the mount's before it holds them, so they hold no cycle.
+fn linked_accounts(
+    shared: &Shared,
+    notify: &Arc<dyn Fn() + Send + Sync>,
+) -> tilo_app::linked_accounts::LinkedAccounts {
+    let (woken, notify) = (shared.clone(), Arc::clone(notify));
+    tilo_app::linked_accounts::LinkedAccounts::new(Rc::new(
+        tilo_app::linked_accounts::RoomAccounts::new(
+            Rc::new(shared.room_actions.clone()),
+            Rc::new(move || {
+                woken.wake();
+                notify();
+            }),
+        ),
+    ))
+}
+
+impl tilo_app::linked_accounts::RoomRecordActions for PageRoomActions {
+    fn apps(&self) -> Vec<String> {
+        self.peer
+            .map(crate::replication::records)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(_, record)| record.is_empty())
+            .map(|(app, _)| app)
+            .filter(|app| app != crate::replication::DESKTOP_APP)
+            .collect()
+    }
+
+    fn invoke(
+        &self,
+        app: &str,
+        action: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+        done: Box<dyn FnOnce(tilo_app::linked_accounts::ActionAnswer)>,
+    ) {
+        let mut queue = self.queue.borrow_mut();
+        queue.next = queue.next.wrapping_add(1);
+        let id = queue.next;
+        queue.waiting.insert(id, done);
+        queue.outbox.push(RoomActionRequest {
+            id,
+            app: app.to_owned(),
+            action: action.to_owned(),
+            arguments,
+        });
     }
 }
 
@@ -525,12 +678,9 @@ impl Tiles {
             return Ok(store.clone());
         }
         let store = self
-            .inputs
-            .owners
-            .open(definition.app_id, &self.inputs.room)
-            .map_err(|error| error.to_string())?;
+            .shared
+            .room_store(&self.inputs.owners, &self.inputs.room, definition)?;
         self.stores.insert(definition.app_id, store.clone());
-        self.shared.stores.borrow_mut().push(store.clone());
         Ok(store)
     }
 
@@ -620,6 +770,10 @@ impl Tiles {
                 self.inputs.provider_admin.clone(),
             )?;
         }
+        // Settings shows the person's linked accounts beside their others.
+        if definition.app_id == SETTINGS {
+            context.lend(self.shared.linked.clone());
+        }
         let destination = Rc::clone(&self.shared.images);
         let mut component = ui::ImageStore::with_host_factory_with_max_dimension(
             Rc::new(move |max_dimension| {
@@ -662,27 +816,7 @@ impl Tiles {
     /// Fetch a deferred application's code; its tabs are built again once
     /// it is in, or show that it failed.
     fn load(&self, app_id: &str) {
-        let Some((id, _)) = ui::application::registry::catalogue()
-            .into_iter()
-            .find(|(id, _)| *id == app_id)
-        else {
-            return;
-        };
-        if !self.shared.loading.borrow_mut().insert(id) {
-            return;
-        }
-        let shared = self.shared.clone();
-        let notify = Arc::clone(&self.notify);
-        wasm_bindgen_futures::spawn_local(async move {
-            let loaded = ui::application::registry::load(id).await.is_some();
-            shared.loading.borrow_mut().remove(id);
-            if !loaded {
-                shared.failed.borrow_mut().insert(id.to_owned());
-            }
-            shared.arrived.set(true);
-            shared.wake();
-            notify();
-        });
+        self.shared.load(app_id, &self.notify);
     }
 
     fn private_feedback(&self, instance: TabId) -> Result<AppComponent, String> {
@@ -849,7 +983,9 @@ fn app_tab(id: TabId, app: &str, title: &str) -> Tab {
 }
 
 /// This device's share of the desktop id space, so ids it mints never
-/// collide with another device's once trees merge.
+/// collide with another device's once trees merge, and never fall in the
+/// namespace every member shares (the Lounge's,
+/// [`tilo_desktop_model::ids::SHARED_SALT`]) or in salt `0`, which has none.
 fn peer_salt(device: &str) -> u16 {
     // FNV-1a folded to 16 bits: stable across builds and platforms.
     let mut hash: u32 = 0x811c_9dc5;
@@ -858,7 +994,7 @@ fn peer_salt(device: &str) -> u16 {
         hash = hash.wrapping_mul(0x0100_0193);
     }
     let folded = (hash >> 16) ^ (hash & 0xffff);
-    u16::try_from(folded).unwrap_or(u16::MAX)
+    tilo_desktop_model::ids::device_salt(u16::try_from(folded).unwrap_or(u16::MAX))
 }
 
 /// Where a room's desktop lives in the profile. Changing it orphans stored
@@ -1159,7 +1295,9 @@ pub(crate) fn mount(
 ) -> Result<(DesktopSurface, DesktopHandle, Shared, Persistence), String> {
     let key = StorageKey::record(DESKTOP_PACKAGE, inputs.room.clone(), "desktop");
     let salt = peer_salt(&inputs.salt);
-    let shared = Shared::default();
+    let mut shared = Shared::default();
+    shared.room_actions.peer = inputs.peer;
+    shared.linked = linked_accounts(&shared, &notify);
     if let Some(startup) = inputs.feedback.take() {
         if startup.reporter().principal()
             != &tilo_actions::remote::CallerPrincipal::Person(inputs.author.clone())

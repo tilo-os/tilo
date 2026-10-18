@@ -3,7 +3,7 @@
 autotests = false
 name = "settings"
 version = "0.1.0"
-description = "Personal Settings: the device and account settings hub"
+description = "Settings: the device and account settings hub"
 edition = "2024"
 publish.workspace = true
 license.workspace = true

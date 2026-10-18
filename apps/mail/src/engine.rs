@@ -91,6 +91,13 @@ pub enum EngineRequest {
         account: AccountConfig,
         draft: Box<Draft>,
     },
+    /// Search an account's mail on its server for `text`, in the folders
+    /// that hold more than this device keeps (the inbox and the archive).
+    Search {
+        request_id: EngineRequestId,
+        account: AccountConfig,
+        text: String,
+    },
     /// Watch an account's inbox and say when it changes (IMAP IDLE), until
     /// the account is watched again or the engine stops.
     Watch {
@@ -157,6 +164,13 @@ impl EngineRequest {
             draft,
         }
     }
+    pub fn search(account: AccountConfig, text: String) -> Self {
+        Self::Search {
+            request_id: next_request_id(),
+            account,
+            text,
+        }
+    }
     pub fn watch(account: AccountConfig) -> Self {
         Self::Watch {
             request_id: next_request_id(),
@@ -185,6 +199,7 @@ impl EngineRequest {
             | Self::Purge { request_id, .. }
             | Self::Send { request_id, .. }
             | Self::Watch { request_id, .. }
+            | Self::Search { request_id, .. }
             | Self::OAuthAuthorize { request_id, .. } => *request_id,
         }
     }
@@ -202,6 +217,7 @@ impl EngineRequest {
             Self::Purge { .. } => EngineRequestKind::Purge,
             Self::Send { .. } => EngineRequestKind::Send,
             Self::Watch { .. } => EngineRequestKind::Watch,
+            Self::Search { .. } => EngineRequestKind::Search,
             Self::OAuthAuthorize { .. } => EngineRequestKind::OAuthAuthorize,
         }
     }
@@ -219,6 +235,7 @@ pub enum EngineRequestKind {
     Purge,
     Send,
     Watch,
+    Search,
     OAuthAuthorize,
 }
 
@@ -242,6 +259,14 @@ pub enum EngineEvent {
         account_id: String,
         folder: Folder,
         synced: crate::sync::Synced,
+    },
+    /// Mail a server search found: messages to show beside what this device
+    /// keeps, with where they are on the server left out (they stand
+    /// outside the folder windows the device syncs).
+    Found {
+        request_id: EngineRequestId,
+        account_id: String,
+        messages: Vec<Message>,
     },
     /// A watched inbox changed on its server: new mail, or another client
     /// read, starred or removed some. Carries the `Watch` that saw it.
@@ -285,6 +310,7 @@ impl EngineEvent {
             | Self::Fetched { request_id, .. }
             | Self::Sent { request_id, .. }
             | Self::Arrived { request_id, .. }
+            | Self::Found { request_id, .. }
             | Self::Authorized { request_id, .. }
             | Self::Error { request_id, .. }
             | Self::Completed { request_id, .. } => *request_id,
@@ -372,8 +398,9 @@ impl MailEngine for StubEngine {
                     message: "Local change saved; it was not synchronized to IMAP".into(),
                 });
             }
-            // Offline there is no server to watch; the request just ends.
-            EngineRequest::Watch { .. } => {}
+            // Offline there is no server to watch or search; the request
+            // just ends.
+            EngineRequest::Watch { .. } | EngineRequest::Search { .. } => {}
             EngineRequest::OAuthAuthorize { account_id, .. } => {
                 // Sign-in needs the live network stack; the offline build can't
                 // complete it. Surface a clear reason instead of silently
@@ -567,6 +594,19 @@ pub mod live {
             })
         }
 
+        /// The engine trusting `tls` instead of the system's roots: a test
+        /// server's own certificate.
+        #[cfg(test)]
+        pub(crate) fn trusting(
+            content: tilo_content::ContentStore,
+            wake: super::Wake,
+            tls: Arc<rustls::ClientConfig>,
+        ) -> Result<Self, String> {
+            let mut engine = Self::new(content, wake)?;
+            engine.tls = tls;
+            Ok(engine)
+        }
+
         /// Watch `account`'s inbox from now on, in place of any earlier
         /// watch of it.
         fn start_watch(
@@ -671,6 +711,22 @@ pub mod live {
                 let account = owner.clone();
                 let places = places.clone();
                 Box::pin(async move { sync_folder(session, &account, folder, &places, want).await })
+            })
+        }
+
+        fn handle_search(
+            &mut self,
+            account: &AccountConfig,
+            text: &str,
+        ) -> Result<Vec<Message>, String> {
+            let places = self.places_of(account)?;
+            let owner = account.clone();
+            let text = text.to_owned();
+            self.run(account, move |session| {
+                let account = owner.clone();
+                let places = places.clone();
+                let text = text.clone();
+                Box::pin(async move { search_server(session, &account, &places, &text).await })
             })
         }
 
@@ -893,6 +949,25 @@ pub mod live {
                 }
                 EngineRequest::Watch { account, .. } => {
                     self.start_watch(request_id, account, out);
+                }
+                EngineRequest::Search { account, text, .. } => {
+                    match self.handle_search(&account, &text) {
+                        Ok(messages) => {
+                            let _ = out.send(EngineEvent::Found {
+                                request_id,
+                                account_id: account.email,
+                                messages,
+                            });
+                        }
+                        Err(message) => {
+                            let _ = out.send(EngineEvent::Error {
+                                request_id,
+                                kind,
+                                context: "search".into(),
+                                message,
+                            });
+                        }
+                    }
                 }
                 EngineRequest::OAuthAuthorize {
                     account_id,
@@ -1287,6 +1362,48 @@ pub mod live {
             .collect())
     }
 
+    /// How many matches a server search brings from each folder, newest
+    /// first.
+    const SEARCH_PAGE: usize = 25;
+
+    /// Search the inbox and the archive (Gmail's All Mail) for `text`.
+    async fn search_server(
+        session: &mut ImapSession,
+        account: &AccountConfig,
+        places: &crate::sync::Places,
+        text: &str,
+    ) -> Result<Vec<Message>, String> {
+        let Some(quoted) = crate::sync::imap_quoted(text) else {
+            return Ok(Vec::new());
+        };
+        let now_min = crate::state::now_minutes();
+        let mut found = Vec::new();
+        for folder in [Folder::Inbox, Folder::Archive] {
+            let mailbox = places.name(folder);
+            let Ok(selected) = session.select(mailbox).await else {
+                continue;
+            };
+            let validity = selected.uid_validity.unwrap_or(0);
+            let mut uids: Vec<u32> = session
+                .uid_search(format!("TEXT {quoted}"))
+                .await
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .collect();
+            uids.sort_unstable();
+            let newest: Vec<u32> = uids.into_iter().rev().take(SEARCH_PAGE).collect();
+            let mut messages =
+                fetch_uids(session, account, folder, validity, &newest, now_min).await?;
+            // Outside the window this device syncs: no server place, so a
+            // refresh neither counts nor removes them.
+            for message in &mut messages {
+                message.server = None;
+            }
+            found.extend(messages);
+        }
+        Ok(found)
+    }
+
     /// What a fetch asks for: the whole message, without marking it read.
     const FETCH_ITEMS: &str = "(UID FLAGS INTERNALDATE BODY.PEEK[])";
 
@@ -1562,7 +1679,10 @@ pub mod live {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
         use tokio::net::{TcpListener, TcpStream};
 
-        use super::{connect_session, list_folders, resolve_auth, smtp_send_with_tls, sync_folder};
+        use super::{
+            LiveEngine, connect_session, list_folders, resolve_auth, smtp_send_with_tls,
+            sync_folder,
+        };
         use crate::model::{AccountConfig, Addr, AuthMethod, Draft, Folder};
         use crate::transport::build_mime;
 
@@ -1796,6 +1916,193 @@ pub mod live {
                     let _ = wr.write_all(b"250 2.0.0 Ok\r\n").await;
                 }
                 let _ = wr.flush().await;
+            }
+        }
+
+        /// A message as a server holds it.
+        fn mail(id: &str, subject: &str, body: &str) -> String {
+            format!(
+                "From: Ada <ada@analytical.example>\nTo: me@example.com\nSubject: {subject}\n\
+Message-ID: <{id}@analytical.example>\nDate: Thu, 01 Jan 2026 09:00:00 +0000\n\n{body}\n"
+            )
+        }
+
+        /// The engine driving one account against a server laid out like
+        /// Gmail or Outlook, as its worker does: the newest page, push of
+        /// new mail, an incremental refresh with another client's flags, an
+        /// archive into the provider's archive folder, and a server search
+        /// for mail older than the device keeps.
+        #[test]
+        #[allow(
+            clippy::too_many_lines,
+            reason = "one account's life with a server, each step depending on the last"
+        )]
+        fn an_account_lives_against_gmail_and_outlook_layouts() {
+            use crate::fake_imap::{FakeImap, Layout};
+            use crate::sync::{Synced, Want, Window};
+            use std::sync::mpsc::Receiver;
+
+            fn next(events: &Receiver<super::EngineEvent>) -> super::EngineEvent {
+                events
+                    .recv_timeout(tilo_test_env::hang_bound())
+                    .expect("the engine answers")
+            }
+            fn fetched(events: &Receiver<super::EngineEvent>) -> Synced {
+                loop {
+                    match next(events) {
+                        super::EngineEvent::Fetched { synced, .. } => return synced,
+                        super::EngineEvent::Error { message, .. } => panic!("{message}"),
+                        _ => {}
+                    }
+                }
+            }
+
+            for (layout, archive) in [
+                (Layout::Gmail, "[Gmail]/All Mail"),
+                (Layout::Outlook, "Archive"),
+            ] {
+                let server =
+                    // On the app runtime, which outlives this call, so the
+                    // server keeps serving.
+                    ui::rt::app()
+                        .block_on(FakeImap::start(layout, server_tls_config()))
+                        .unwrap();
+                server.append(
+                    archive,
+                    &mail("old", "Quarterly numbers", "From last year."),
+                    &["\\Seen"],
+                );
+                for n in 1..=3 {
+                    server.append(
+                        "INBOX",
+                        &mail(&format!("m{n}"), &format!("Note {n}"), "Hello."),
+                        &[],
+                    );
+                }
+                let account = AccountConfig {
+                    email: "me@example.com".into(),
+                    username: "me@example.com".into(),
+                    password: "app-password".into(),
+                    imap_host: "127.0.0.1".into(),
+                    imap_port: server.port,
+                    auth: AuthMethod::Password,
+                    ..Default::default()
+                };
+                let engine = LiveEngine::trusting(
+                    tilo_content::ContentStore::memory(),
+                    Arc::new(|| {}),
+                    accepting_client_config(),
+                )
+                .unwrap();
+                let (requests, events) = super::super::spawn_with(Box::new(engine));
+
+                // The newest page, with each message's place on the server.
+                requests
+                    .send(super::EngineRequest::fetch(account.clone(), Folder::Inbox))
+                    .unwrap();
+                let first = fetched(&events);
+                assert!(first.reset, "{layout:?}");
+                assert_eq!(first.messages.len(), 3);
+                let mut held = crate::model::Mailbox::default();
+                for message in first.messages {
+                    held.insert(message);
+                }
+                let known = Window::of(&held, "me@example.com", Folder::Inbox).unwrap();
+                assert_eq!((known.oldest, known.newest), (1, 3));
+
+                // New mail is pushed to a watching connection.
+                requests
+                    .send(super::EngineRequest::watch(account.clone()))
+                    .unwrap();
+                let deadline = tilo_test_env::hang_deadline();
+                while server.idling() == 0 {
+                    assert!(ui::time::now() < deadline, "the inbox is never watched");
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                server.append("INBOX", &mail("m4", "Fresh", "Just now."), &[]);
+                server.flag("INBOX", 1, "\\Seen");
+                loop {
+                    if let super::EngineEvent::Arrived { account_id, .. } = next(&events) {
+                        assert_eq!(account_id, "me@example.com");
+                        break;
+                    }
+                }
+
+                // A refresh brings only what is new, and what another client
+                // read.
+                requests
+                    .send(super::EngineRequest::fetch_wanting(
+                        account.clone(),
+                        Folder::Inbox,
+                        Want::Latest { known: Some(known) },
+                    ))
+                    .unwrap();
+                let refresh = fetched(&events);
+                assert!(!refresh.reset);
+                assert_eq!(refresh.messages.len(), 1, "{:?}", refresh.messages);
+                assert_eq!(refresh.messages[0].subject, "Fresh");
+                assert!(
+                    refresh.flags.contains(&(1, true, false)),
+                    "{:?}",
+                    refresh.flags
+                );
+
+                // Archiving moves it to where this provider archives.
+                let archived = held
+                    .messages
+                    .values()
+                    .find(|message| message.subject == "Note 3")
+                    .cloned()
+                    .unwrap();
+                requests
+                    .send(super::EngineRequest::move_message(
+                        account.clone(),
+                        Box::new(archived),
+                        Folder::Archive,
+                    ))
+                    .unwrap();
+                loop {
+                    match next(&events) {
+                        super::EngineEvent::Completed {
+                            kind: super::EngineRequestKind::Move,
+                            ..
+                        } => break,
+                        super::EngineEvent::Error { message, .. } => {
+                            panic!("{layout:?}: {message}")
+                        }
+                        _ => {}
+                    }
+                }
+                assert!(
+                    server
+                        .messages(archive)
+                        .iter()
+                        .any(|stored| String::from_utf8_lossy(&stored.raw).contains("Note 3")),
+                    "{layout:?}: archived into {archive}"
+                );
+                assert_eq!(server.messages("INBOX").len(), 3);
+
+                // A server search finds what the device never fetched.
+                requests
+                    .send(super::EngineRequest::search(
+                        account.clone(),
+                        "quarterly".into(),
+                    ))
+                    .unwrap();
+                let found = loop {
+                    match next(&events) {
+                        super::EngineEvent::Found { messages, .. } => break messages,
+                        super::EngineEvent::Error { message, .. } => panic!("{message}"),
+                        _ => {}
+                    }
+                };
+                assert!(
+                    found
+                        .iter()
+                        .any(|message| message.subject == "Quarterly numbers"
+                            && message.server.is_none()),
+                    "{layout:?}: {found:?}"
+                );
             }
         }
 

@@ -108,6 +108,9 @@ fn harness(shell: NavShell, w: u32, h: u32, theme: Theme) -> FrameHarness {
 
 fn settle(h: &mut FrameHarness, w: u32, height: u32) {
     h.root_mut::<NavShell>().snap();
+    // A resize that switches the layout starts its motion; land it.
+    h.relayout_at((w, height)).expect("layout settles");
+    h.root_mut::<NavShell>().snap();
     h.relayout_at((w, height)).expect("layout settles");
     h.relayout_at((w, height)).expect("layout settles");
 }
@@ -132,41 +135,328 @@ fn notes_shell() -> NavShell {
         .content_header("", Vec::new())
 }
 
-/// The sidebar docks only while the content beside it keeps the room it
-/// needs (a readable column); an 800 × 600 window would leave a document
-/// 520 px, so its sidebar becomes the drawer and the content gets the
-/// window.
+fn files_shell() -> NavShell {
+    NavShell::new()
+        .content_kind(ContentKind::List)
+        .sidebar(Probe::boxed("sidebar").0)
+        .content(Probe::boxed("content").0)
+        .sidebar_header("Places", Vec::new())
+        .content_header("Home", Vec::new())
+}
+
+fn settings_shell() -> NavShell {
+    NavShell::new()
+        .content_kind(ContentKind::Page)
+        .sidebar(Probe::boxed("sidebar").0)
+        .content(Probe::boxed("content").0)
+        .sidebar_header("Settings", Vec::new())
+        .content_header("Appearance", Vec::new())
+}
+
+fn document_shell() -> NavShell {
+    notes_shell().content_kind(ContentKind::Document)
+}
+
+// USER REQUIREMENT (2026-10-18): "it darkens out the actual content on the
+// right and i cant have content+sidebar at the same time … on very small
+// screens the sidebar OR app content should obviously be displayed full
+// screen"
+/// At any width the shell picks the layout in which everything shown is
+/// usable: docked while the sidebar fits beside the content's real minimum,
+/// one column at a time below that, and a drawer only for a content-primary
+/// app. No automatic width ever darkens the content.
 #[test]
-fn the_sidebar_collapses_when_the_content_would_be_squeezed() {
+fn the_sidebar_docks_while_the_contents_real_minimum_fits() {
     let theme = Theme::dark();
     let m = Metrics::resolve(&theme);
-    for (width, docked) in [
-        (1280_u32, true),
-        (1024, true),
-        (840, true),
-        (800, false),
-        (640, false),
+    use SidebarPlacement::{Docked, Drawer, Screen};
+    for (name, make, min, narrow) in [
+        ("files", files_shell as fn() -> NavShell, m.list_min, Screen),
+        ("settings", settings_shell, m.page_min, Screen),
+        ("notes", document_shell, m.reading_min, Drawer),
     ] {
-        let mut h = harness(notes_shell(), width, 600, theme.clone());
-        settle(&mut h, width, 600);
-        let g = geometry(&h);
-        assert!(
-            (g.breakpoint - (m.sidebar + m.content_min)).abs() < 1e-6,
-            "{width}: the breakpoint is the sidebar plus the content's need"
-        );
-        assert_eq!(
-            g.sidebar == SidebarPlacement::Docked,
-            docked,
-            "{width}: {:?}",
-            g.sidebar
-        );
-        let content = child_rect(&h, "content").expect("the content is laid out");
-        assert!(
-            content.width() >= m.content_min - 1e-6,
-            "{width}: the content keeps a readable column ({})",
-            content.width()
-        );
+        for width in [320_u32, 360, 480, 520, 560, 600, 720, 840, 900, 1400] {
+            let mut h = harness(make(), width, 700, theme.clone());
+            settle(&mut h, width, 700);
+            let g = geometry(&h);
+            let w = f64::from(width);
+            assert!(
+                (g.breakpoint - (m.sidebar_min + min)).abs() < 1e-6,
+                "{name} {width}: the sidebar at its minimum plus the content's"
+            );
+            let docked = w >= m.sidebar_min + min;
+            assert_eq!(
+                g.sidebar,
+                if docked { Docked } else { narrow },
+                "{name} {width}"
+            );
+            let content = child_rect(&h, "content");
+            if docked {
+                let content = content.expect("the content is laid out beside the sidebar");
+                let sidebar = child_rect(&h, "sidebar").expect("the sidebar is usable");
+                assert!(content.width() >= min - 1e-6, "{name} {width}: {content:?}");
+                assert!(
+                    (sidebar.width() - m.sidebar.min(w - min)).abs() < 0.5,
+                    "{name} {width}: the sidebar shrinks toward its minimum first ({sidebar:?})"
+                );
+                assert!(sidebar.x1 <= content.x0 + 0.5, "side by side");
+            } else if narrow == Screen {
+                assert_eq!(g.stack, [NavPane::Sidebar, NavPane::Content]);
+                // A new window opens on the first list of items: Files'
+                // folder, Settings' categories.
+                let (front, shown, away) = if name == "files" {
+                    (NavPane::Content, "content", "sidebar")
+                } else {
+                    (NavPane::Sidebar, "sidebar", "content")
+                };
+                assert_eq!(h.root::<NavShell>().front_pane(), front, "{name} {width}");
+                assert_eq!(
+                    child_rect(&h, shown).map(|r| r.width()),
+                    Some(w),
+                    "{name} {width}: it fills the window"
+                );
+                assert!(child_rect(&h, away).is_none(), "one at a time");
+                if name == "files" {
+                    assert!(g.back.width() > 0.0, "{name} {width}: Back to the places");
+                }
+            } else {
+                assert_eq!(
+                    content.map(|r| r.width()),
+                    Some(w),
+                    "{name} {width}: the document fills the window"
+                );
+            }
+            // No automatic width darkens anything: nothing is modal.
+            assert_eq!(g.open_drawer(), None, "{name} {width}");
+        }
     }
+    // A docked Files sidebar works down to 600 instead of 840.
+    assert!(m.sidebar_min + m.list_min <= 600.0);
+}
+
+// USER REQUIREMENT (2026-10-18): "the files app cant actually be resised to
+// just phone width"
+/// The narrowest window is the compact layout's: one column at a time at
+/// phone width, the content's minimum where that is wider.
+#[test]
+fn the_minimum_window_width_is_the_compact_layouts() {
+    for theme in [Theme::dark(), Theme::dark().with_text_scale(2.0)] {
+        let m = Metrics::resolve(&theme);
+        for (make, min) in [
+            (files_shell as fn() -> NavShell, m.list_min),
+            (settings_shell, m.page_min),
+            (document_shell, m.reading_min),
+            (mail_shell, m.page_min),
+        ] {
+            let mut h = harness(make(), 1280, 700, theme.clone());
+            settle(&mut h, 1280, 700);
+            let shell = h.root::<NavShell>();
+            let expected = min.max(m.compact_min);
+            assert!((shell.minimum_width() - expected).abs() < 1e-6);
+            assert_eq!(
+                crate::widget::minimum_window_width(shell),
+                Some(shell.minimum_width()),
+                "the host reads it from the tree"
+            );
+            assert!(
+                shell.minimum_width() <= 360.0 * f64::from(theme.text_growth()),
+                "phone width"
+            );
+            // At that width the compact layout shows something whole.
+            let width = shell.minimum_width().ceil();
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a small positive width"
+            )]
+            let px = width as u32;
+            settle(&mut h, px, 700);
+            let g = geometry(&h);
+            assert_ne!(g.sidebar, SidebarPlacement::Docked);
+            assert_eq!(g.open_drawer(), None);
+        }
+    }
+}
+
+/// A window resized near a threshold does not flicker: back to docked only
+/// `layout_hysteresis` past it.
+#[test]
+fn layout_changes_have_hysteresis() {
+    let theme = Theme::dark();
+    let m = Metrics::resolve(&theme);
+    let threshold = m.sidebar_min + m.list_min;
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "small positive widths"
+    )]
+    let px = |w: f64| w.round() as u32;
+    let mut h = harness(files_shell(), 1280, 700, theme);
+    settle(&mut h, 1280, 700);
+    let at = |h: &mut FrameHarness, w: f64| {
+        settle(h, px(w), 700);
+        geometry(h).sidebar
+    };
+    assert_eq!(at(&mut h, threshold), SidebarPlacement::Docked);
+    assert_eq!(at(&mut h, threshold - 1.0), SidebarPlacement::Screen);
+    assert_eq!(
+        at(&mut h, threshold + m.hysteresis - 1.0),
+        SidebarPlacement::Screen,
+        "not back until past the band"
+    );
+    assert_eq!(
+        at(&mut h, threshold + m.hysteresis),
+        SidebarPlacement::Docked
+    );
+    assert_eq!(
+        at(&mut h, threshold),
+        SidebarPlacement::Docked,
+        "docked holds down to the threshold"
+    );
+}
+
+// USER REQUIREMENT (2026-10-18): "on very small screens the sidebar OR app
+// content should obviously be displayed full screen"
+/// Narrowing a docked window keeps the person's place: they land on the
+/// page they were on, Back goes to the list, and widening docks again with
+/// the same page open.
+#[test]
+fn the_open_page_is_kept_across_docked_push_and_docked() {
+    let list = crate::widget::NavList::new(vec![crate::widget::NavSection::untitled(
+        "pages",
+        vec![
+            crate::widget::NavItem::new("general", "General"),
+            crate::widget::NavItem::new("appearance", "Appearance"),
+        ],
+    )])
+    .selected("appearance");
+    let shell = NavShell::new()
+        .sidebar(Box::new(list))
+        .content(Probe::boxed("content").0)
+        .content_header("Appearance", Vec::new());
+    let mut h = harness(shell, 1280, 700, Theme::dark());
+    settle(&mut h, 1280, 700);
+    // The person works in the page.
+    let point = geometry(&h).content_column.center();
+    h.dispatch_to_root(&crate::synthetic_input::cursor_moved(point.x, point.y));
+    h.dispatch_to_root(&crate::synthetic_input::mouse_press());
+    settle(&mut h, 360, 700);
+    let g = geometry(&h);
+    assert_eq!(g.sidebar, SidebarPlacement::Screen);
+    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Content);
+    assert_eq!(child_rect(&h, "content").map(|r| r.width()), Some(360.0));
+    assert!(g.back.width() > 0.0, "Back goes to the list");
+    assert!(h.root_mut::<NavShell>().back());
+    settle(&mut h, 360, 700);
+    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Sidebar);
+    assert!(
+        h.a11y_node_named("Appearance").is_some(),
+        "the list still marks the open page"
+    );
+    settle(&mut h, 1280, 700);
+    let g = geometry(&h);
+    assert_eq!(g.sidebar, SidebarPlacement::Docked);
+    assert!(g.content_column.width() > 0.0 && g.sidebar_column.width() > 0.0);
+    assert_eq!(g.stack, Vec::<NavPane>::new());
+}
+
+/// A live resize across the docking threshold moves the columns from where
+/// they stood instead of jumping: narrowing, the page slides from beside the
+/// sidebar to fill the window; widening, the sidebar slides back in.
+#[test]
+fn a_resize_across_the_threshold_moves_the_columns_from_where_they_stood() {
+    let shell = NavShell::new()
+        .sidebar(Probe::boxed("sidebar").0)
+        .content(Probe::boxed("content").0)
+        .content_header("Appearance", Vec::new());
+    let mut h = harness(shell, 1280, 700, Theme::dark());
+    settle(&mut h, 1280, 700);
+    let docked = geometry(&h);
+    assert_eq!(docked.sidebar, SidebarPlacement::Docked);
+    let point = docked.content_column.center();
+    h.dispatch_to_root(&crate::synthetic_input::cursor_moved(point.x, point.y));
+    h.dispatch_to_root(&crate::synthetic_input::mouse_press());
+    let docked_x = geometry(&h).content_column.x0;
+    assert!(docked_x > 0.0);
+
+    // Narrower than the sidebar beside the page's minimum.
+    h.relayout_at((400, 700)).expect("narrow");
+    let g = geometry(&h);
+    assert_eq!(g.sidebar, SidebarPlacement::Screen);
+    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Content);
+    assert!(
+        g.content_column.x0 > docked_x / 2.0 && g.content_column.x0 <= docked_x + 0.5,
+        "the page sets out from where it stood beside the sidebar: {} vs {docked_x}",
+        g.content_column.x0
+    );
+    assert!(h.root::<NavShell>().needs_animation_frame(), "and slides");
+    settle(&mut h, 400, 700);
+    assert_eq!(geometry(&h).content_column.x0, 0.0, "to fill the window");
+
+    // Wider again: the sidebar the person was not looking at slides in.
+    h.relayout_at((1280, 700)).expect("wide");
+    let g = geometry(&h);
+    assert_eq!(g.sidebar, SidebarPlacement::Docked);
+    assert!(
+        g.sidebar_column.width() < docked.sidebar_column.width(),
+        "the sidebar slides in rather than appearing"
+    );
+    assert!(h.root::<NavShell>().needs_animation_frame());
+    settle(&mut h, 1280, 700);
+    assert_eq!(geometry(&h).sidebar_column, docked.sidebar_column);
+}
+
+/// Under reduced motion nothing slides across a layout switch: the page
+/// stands in its new place at once and fades in there.
+#[test]
+fn under_reduced_motion_a_layout_switch_fades_instead_of_sliding() {
+    let shell = NavShell::new()
+        .sidebar(Probe::boxed("sidebar").0)
+        .content(Probe::boxed("content").0);
+    let mut theme = Theme::dark();
+    theme.reduce_motion = true;
+    let mut h = harness(shell, 1280, 700, theme);
+    settle(&mut h, 1280, 700);
+    let point = geometry(&h).content_column.center();
+    h.dispatch_to_root(&crate::synthetic_input::cursor_moved(point.x, point.y));
+    h.dispatch_to_root(&crate::synthetic_input::mouse_press());
+    h.relayout_at((400, 700)).expect("narrow");
+    let shell = h.root::<NavShell>();
+    assert_eq!(shell.geometry().content_column.x0, 0.0, "no slide");
+    assert!(shell.switch_fade < 1.0, "the page fades in");
+    assert!(shell.switch_columns[Column::Content.index()]);
+    assert!(shell.needs_animation_frame());
+}
+
+/// Keyboard focus survives a switch to one column at a time: a person
+/// arrowing through the list lands on the list screen, focus where it was.
+#[test]
+fn narrowing_keeps_the_keyboard_where_it_was() {
+    let list = crate::widget::NavList::new(vec![crate::widget::NavSection::untitled(
+        "pages",
+        vec![
+            crate::widget::NavItem::new("general", "General"),
+            crate::widget::NavItem::new("appearance", "Appearance"),
+        ],
+    )])
+    .selected("appearance");
+    let shell = NavShell::new()
+        .sidebar(Box::new(list))
+        .content(Probe::boxed("content").0);
+    let mut h = harness(shell, 1280, 700, Theme::dark());
+    settle(&mut h, 1280, 700);
+    let row = h.a11y_node_named("Appearance").expect("the list row");
+    h.perform_a11y_action(row, &crate::a11y::Action::Focus)
+        .expect("focus the list");
+    assert!(h.focused().is_some());
+    settle(&mut h, 360, 700);
+    assert_eq!(
+        h.root::<NavShell>().front_pane(),
+        NavPane::Sidebar,
+        "the list the keyboard is in stays in front"
+    );
+    assert!(h.focused().is_some(), "focus is kept");
+    assert!(h.a11y_node_named("Appearance").is_some());
 }
 
 #[test]
@@ -181,7 +471,8 @@ fn the_shell_follows_the_window_and_the_text_scale() {
             settle(&mut h, width, 800);
             let g = geometry(&h);
             let w = f64::from(width);
-            let breakpoint = m.sidebar + m.overview + m.detail_min;
+            let pair = m.overview + m.page_min;
+            let breakpoint = m.sidebar_min + pair;
             assert!((g.breakpoint - breakpoint).abs() < 1e-6, "{scale}x {width}");
             let expect_docked = w >= breakpoint;
             assert_eq!(
@@ -189,22 +480,21 @@ fn the_shell_follows_the_window_and_the_text_scale() {
                 if expect_docked {
                     SidebarPlacement::Docked
                 } else {
-                    SidebarPlacement::Drawer
+                    SidebarPlacement::Screen
                 },
                 "{scale}x {width}: the sidebar docks only beside unsqueezed content"
             );
-            let room = if expect_docked { w - m.sidebar } else { w };
             assert_eq!(
                 g.side_by_side,
-                room >= m.overview + m.detail_min,
+                expect_docked || w >= pair,
                 "{scale}x {width}: overview and content stand side by side only while both fit"
             );
             assert!(g.header_height >= f64::from(theme.tokens.metrics.header_height));
             if expect_docked {
-                assert!((g.sidebar_column.width() - m.sidebar).abs() < 0.5);
+                assert!((g.sidebar_column.width() - m.sidebar.min(w - pair)).abs() < 0.5);
                 assert_eq!(g.sidebar_column.x0, 0.0);
             } else {
-                assert_eq!(g.sidebar_column, Rect::ZERO, "a closed drawer is not shown");
+                assert_eq!(g.sidebar_column.width(), w, "the list is a whole screen");
             }
             // Every shown body sits under the one header row.
             for id in ["sidebar", "overview", "content"] {
@@ -216,27 +506,35 @@ fn the_shell_follows_the_window_and_the_text_scale() {
                     );
                 }
             }
-            // The toggle is always top-leading, one inset in.
-            if !g.stack.is_empty() && h.root::<NavShell>().front_pane() == NavPane::Content {
-                assert!(g.back.width() > 0.0);
-            } else {
+            // The toggle is top-leading, one inset in; a pushed screen has
+            // Back there instead, and the list screen neither.
+            let front = h.root::<NavShell>().front_pane();
+            if g.stack.is_empty() {
                 assert!((g.toggle.x0 - m.inset).abs() < 0.5, "{scale}x {width}");
                 assert!(g.toggle.y0 > 0.0 && g.toggle.y1 < g.header_height);
+            } else if front == NavPane::Sidebar {
+                assert_eq!(g.back, Rect::ZERO);
+            } else {
+                assert!(g.back.width() > 0.0);
             }
         }
     }
 }
 
 #[test]
-fn an_800_window_never_keeps_a_docked_sidebar_beside_squeezed_columns() {
+fn a_docked_sidebar_is_never_kept_beside_squeezed_columns() {
     let mut h = harness(mail_shell(), 800, 600, Theme::dark());
     settle(&mut h, 800, 600);
     let g = geometry(&h);
-    assert_eq!(g.sidebar, SidebarPlacement::Drawer);
+    assert_eq!(g.sidebar, SidebarPlacement::Screen);
+    h.root_mut::<NavShell>().show(NavPane::Content);
+    settle(&mut h, 800, 600);
+    let g = geometry(&h);
     assert!(g.side_by_side);
     let content = child_rect(&h, "content").expect("content laid out");
+    let m = Metrics::resolve(&Theme::dark());
     assert!(
-        content.width() >= f64::from(Theme::dark().tokens.metrics.detail_min_width) - 0.5,
+        content.width() >= m.page_min - 0.5,
         "the detail keeps its minimum ({})",
         content.width()
     );
@@ -263,22 +561,24 @@ fn the_sidebar_toggle_moves_and_the_choice_is_remembered_per_size_class() {
     );
     assert_eq!(child_rect(&h, "overview").map(|r| r.x0), Some(0.0));
 
-    // Narrow: a drawer, closed. Open it, then widen again.
-    settle(&mut h, 800, 800);
-    assert_eq!(geometry(&h).sidebar, SidebarPlacement::Drawer);
-    assert!(!h.root::<NavShell>().is_sidebar_open());
-    h.root_mut::<NavShell>().toggle_sidebar();
-    settle(&mut h, 800, 800);
-    assert!(h.root::<NavShell>().is_sidebar_open());
+    // Narrow: one column at a time; the list is a screen of its own.
+    settle(&mut h, 560, 800);
+    assert_eq!(geometry(&h).sidebar, SidebarPlacement::Screen);
     settle(&mut h, 1280, 800);
     assert!(
         !h.root::<NavShell>().is_sidebar_open(),
         "the wide window remembers the sidebar was hidden"
     );
-    settle(&mut h, 800, 800);
-    assert!(
-        !h.root::<NavShell>().is_sidebar_open(),
-        "a drawer is transient: it does not reopen by itself"
+    // Showing it again docks it, and the content reflows.
+    h.root_mut::<NavShell>().toggle_sidebar();
+    settle(&mut h, 1280, 800);
+    assert_eq!(
+        geometry(&h).sidebar_column.width(),
+        before.sidebar_column.width()
+    );
+    assert_eq!(
+        child_rect(&h, "overview").map(|r| r.x0),
+        Some(before.sidebar_column.x1)
     );
 }
 
@@ -295,6 +595,7 @@ fn a_toolbar_in_a_header_behind_the_drawer_settles() {
         )
     };
     let shell = NavShell::new()
+        .content_kind(ContentKind::Document)
         .sidebar(Probe::boxed("sidebar").0)
         .overview(Probe::boxed("overview").0)
         .content(Probe::boxed("content").0)
@@ -303,42 +604,60 @@ fn a_toolbar_in_a_header_behind_the_drawer_settles() {
         .content_header("", vec![toolbar()]);
     let mut h = harness(shell, 560, 860, Theme::dark());
     settle(&mut h, 560, 860);
+    assert_eq!(geometry(&h).sidebar, SidebarPlacement::Drawer);
     h.root_mut::<NavShell>().open_sidebar();
     settle(&mut h, 560, 860);
     assert!(h.root::<NavShell>().is_sidebar_open());
 }
 
+// USER REQUIREMENT (2026-10-18): "it darkens out the actual content on the
+// right"
+/// A content-primary app's drawer floats over the document without a scrim:
+/// the document stays visible and exposed, and a press on it puts the
+/// drawer away without reaching it.
 #[test]
-fn an_open_drawer_is_modal_and_floats_over_the_content() {
-    let mut h = harness(mail_shell(), 800, 600, Theme::dark());
-    settle(&mut h, 800, 600);
+fn an_open_drawer_floats_over_the_content_without_a_scrim() {
+    let (content, content_events) = Probe::boxed("content");
+    let shell = NavShell::new()
+        .content_kind(ContentKind::Document)
+        .sidebar(Probe::boxed("sidebar").0)
+        .content(content)
+        .sidebar_header("Notes", Vec::new())
+        .content_header("", Vec::new());
+    let mut h = harness(shell, 480, 600, Theme::dark());
+    settle(&mut h, 480, 600);
     h.root_mut::<NavShell>().open_sidebar();
-    settle(&mut h, 800, 600);
+    settle(&mut h, 480, 600);
     let g = geometry(&h);
     let gap = f64::from(Theme::dark().tokens.spacing.s2);
     assert!(
         (g.sidebar_column.x0 - gap).abs() < 0.5,
         "the drawer floats s2 in"
     );
-    assert!(g.scrim.width() > 0.0 && g.scrim_openness > 0.0);
+    assert_eq!(g.open_drawer(), Some(Column::Sidebar));
     let ids: Vec<_> = h
         .root::<NavShell>()
         .children()
         .iter()
         .filter_map(|child| child.test_id().map(str::to_owned))
         .collect();
-    assert_eq!(
-        ids,
-        ["sidebar", "nav-shell-sidebar"],
-        "only the drawer and its toggle take input and are exposed"
+    assert!(
+        ids.contains(&"content".to_owned()) && ids.contains(&"sidebar".to_owned()),
+        "not modal: the document stays exposed beside the drawer ({ids:?})"
     );
 
-    // A press on the scrim closes it.
+    // A press on the document beside it puts the drawer away, and only that.
+    let seen = content_events.get();
     let point = Point::new(g.sidebar_column.x1 + 40.0, 300.0);
     h.dispatch_to_root(&crate::synthetic_input::cursor_moved(point.x, point.y));
     let handled = h.dispatch_to_root(&crate::synthetic_input::mouse_press());
     assert!(handled);
     assert!(!h.root::<NavShell>().is_sidebar_open());
+    assert_eq!(
+        content_events.get(),
+        seen + 1,
+        "the document heard the pointer move, not the dismissing press"
+    );
 }
 
 #[test]
@@ -346,16 +665,26 @@ fn narrow_windows_push_the_content_over_the_overview() {
     let mut h = harness(mail_shell(), 560, 800, Theme::dark());
     settle(&mut h, 560, 800);
     let g = geometry(&h);
-    assert_eq!(g.stack, [NavPane::Overview, NavPane::Content]);
+    assert_eq!(
+        g.stack,
+        [NavPane::Sidebar, NavPane::Overview, NavPane::Content]
+    );
     assert_eq!(
         h.root::<NavShell>().front_pane(),
         NavPane::Overview,
-        "a narrow window opens on the overview"
+        "a narrow window opens on the content's list"
     );
-    assert_eq!(g.back, Rect::ZERO);
     assert!(
-        g.toggle.width() > 0.0,
-        "the drawer is summoned from the overview"
+        g.back.width() > 0.0,
+        "the overview goes back to the mailboxes"
+    );
+    assert!(h.root_mut::<NavShell>().back());
+    settle(&mut h, 560, 800);
+    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Sidebar);
+    assert_eq!(
+        geometry(&h).back,
+        Rect::ZERO,
+        "the first screen has no Back"
     );
 
     h.root_mut::<NavShell>().show(NavPane::Content);
@@ -380,20 +709,20 @@ fn push_mode_makes_the_sidebar_the_first_screen() {
         .mode(NavMode::Push)
         .sidebar(Probe::boxed("sidebar").0)
         .content(Probe::boxed("content").0);
-    let mut h = harness(shell, 560, 800, Theme::dark());
-    settle(&mut h, 560, 800);
+    let mut h = harness(shell, 360, 800, Theme::dark());
+    settle(&mut h, 360, 800);
     let g = geometry(&h);
     assert_eq!(g.sidebar, SidebarPlacement::Screen);
     assert_eq!(g.stack, [NavPane::Sidebar, NavPane::Content]);
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Sidebar);
     assert_eq!(g.toggle, Rect::ZERO, "a sidebar screen has no toggle");
-    assert_eq!(child_rect(&h, "sidebar").map(|r| r.width()), Some(560.0));
+    assert_eq!(child_rect(&h, "sidebar").map(|r| r.width()), Some(360.0));
 
     h.root_mut::<NavShell>().show(NavPane::Content);
-    settle(&mut h, 560, 800);
+    settle(&mut h, 360, 800);
     assert!(geometry(&h).back.width() > 0.0);
     assert!(h.root_mut::<NavShell>().back());
-    settle(&mut h, 560, 800);
+    settle(&mut h, 360, 800);
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Sidebar);
 
     // Wide, it docks like any sidebar.
@@ -414,8 +743,8 @@ fn choosing_a_destination_in_a_narrow_window_moves_on() {
         .mode(NavMode::Push)
         .sidebar(Box::new(list))
         .content(Probe::boxed("content").0);
-    let mut h = harness(shell, 560, 800, Theme::dark());
-    settle(&mut h, 560, 800);
+    let mut h = harness(shell, 360, 800, Theme::dark());
+    settle(&mut h, 360, 800);
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Sidebar);
     let g = geometry(&h);
     let row = crate::chrome::nav_row_height(&Theme::dark());
@@ -767,7 +1096,7 @@ fn an_unbuilt_shell_reports_structure_changes_once() {
 }
 
 #[test]
-fn the_modal_drawer_keeps_the_backdrops_wake_deadline() {
+fn an_open_drawer_keeps_the_contents_wake_deadline() {
     let deadline = crate::time::now() + crate::time::Duration::from_millis(900);
     let (mut content, _) = Probe::boxed("content");
     content
@@ -777,18 +1106,19 @@ fn the_modal_drawer_keeps_the_backdrops_wake_deadline() {
         .unwrap()
         .deadline = Some(deadline);
     let shell = NavShell::new()
+        .content_kind(ContentKind::Document)
         .sidebar(Probe::boxed("sidebar").0)
         .content(content);
-    let mut h = harness(shell, 560, 800, Theme::dark());
-    settle(&mut h, 560, 800);
+    let mut h = harness(shell, 480, 800, Theme::dark());
+    settle(&mut h, 480, 800);
     h.root_mut::<NavShell>().open_sidebar();
-    settle(&mut h, 560, 800);
-    assert!(geometry(&h).sidebar_modal());
+    settle(&mut h, 480, 800);
+    assert_eq!(geometry(&h).open_drawer(), Some(Column::Sidebar));
     assert_eq!(h.root::<NavShell>().next_wake_deadline(), Some(deadline));
 }
 
 #[test]
-fn modal_control_inventory_hides_backdrop_action_emitters() {
+fn a_drawer_leaves_the_contents_action_emitters_published() {
     let resource = tilo_actions::Resource::new("test-pane", "test", "Test").with_action(
         tilo_actions::ActionSpec::operation(
             "go",
@@ -802,16 +1132,18 @@ fn modal_control_inventory_hides_backdrop_action_emitters() {
     let button = Button::new("go", "Go")
         .on_action(tilo_actions::ActionBinding::unit_for(&resource, "go").unwrap());
     let shell = NavShell::new()
+        .content_kind(ContentKind::Document)
         .sidebar(Probe::boxed("sidebar").0)
         .content(Box::new(button));
-    let mut h = harness(shell, 560, 800, Theme::dark());
+    let mut h = harness(shell, 480, 800, Theme::dark());
     for open in [false, true, false] {
         if open {
             h.root_mut::<NavShell>().open_sidebar();
         } else {
             h.root_mut::<NavShell>().close_sidebar();
         }
-        settle(&mut h, 560, 800);
+        settle(&mut h, 480, 800);
+        assert_eq!(h.root::<NavShell>().is_sidebar_open(), open);
         let bindings = crate::widget::controls::control_action_bindings(h.root::<NavShell>());
         let inventory = bindings
             .iter()
@@ -822,9 +1154,9 @@ fn modal_control_inventory_hides_backdrop_action_emitters() {
             crate::widget::controls::has_action_control_bindings(h.root::<NavShell>()),
             inventory
         );
-        assert_eq!(
-            backdrop, !open,
-            "modal drawer hides the backdrop action emitter"
+        assert!(
+            backdrop,
+            "a drawer is not modal: the content's action stays published"
         );
     }
 }
@@ -922,7 +1254,7 @@ fn scrolling_reuses_measured_panes_without_reloading_fonts() {
 }
 
 #[test]
-fn retained_panes_remeasure_theme_resize_replacement_and_modal_backdrop_edits() {
+fn retained_panes_remeasure_theme_resize_replacement_and_edits_beside_a_drawer() {
     use automerge::transaction::Transactable;
     fn make(theme: Theme, viewport: (u32, u32), label: &str) -> FrameHarness {
         let mut state = State::new();
@@ -932,6 +1264,7 @@ fn retained_panes_remeasure_theme_resize_replacement_and_modal_backdrop_edits() 
         FrameHarness::for_root(
             state,
             NavShell::new()
+                .content_kind(ContentKind::Document)
                 .sidebar(Probe::boxed("sidebar").0)
                 .content(Box::new(content)),
             viewport,
@@ -962,10 +1295,10 @@ fn retained_panes_remeasure_theme_resize_replacement_and_modal_backdrop_edits() 
     settle(&mut fresh, 1400, 900);
     assert_eq!(text_rect(&mut h), text_rect(&mut fresh));
 
-    h.relayout_at((560, 800)).expect("narrow");
+    h.relayout_at((480, 800)).expect("narrow");
     h.root_mut::<NavShell>().open_sidebar();
-    settle(&mut h, 560, 800);
-    assert!(geometry(&h).sidebar_modal());
+    settle(&mut h, 480, 800);
+    assert_eq!(geometry(&h).open_drawer(), Some(Column::Sidebar));
     let before = text_rect(&mut h);
     h.state_mut()
         .doc
@@ -975,12 +1308,12 @@ fn retained_panes_remeasure_theme_resize_replacement_and_modal_backdrop_edits() 
             "first line\nsecond line\nthird line",
         )
         .unwrap();
-    h.relayout_at((560, 800))
-        .expect("modal backdrop edit measured");
+    h.relayout_at((480, 800))
+        .expect("edit beside the drawer measured");
     let changed = text_rect(&mut h);
     assert!(
         changed.height() > before.height(),
-        "the live backdrop gets changed text geometry"
+        "the document beside the drawer gets changed text geometry"
     );
     h.recompose().expect("authoritative full measurement");
     assert_eq!(text_rect(&mut h), changed);
@@ -989,16 +1322,16 @@ fn retained_panes_remeasure_theme_resize_replacement_and_modal_backdrop_edits() 
     // retained composition, even though its own intrinsic sizes are known.
     let mut replacement = make(
         scaled,
-        (560, 800),
+        (480, 800),
         "replacement\nsecond line\nthird line\nfourth line",
     );
-    settle(&mut replacement, 560, 800);
+    settle(&mut replacement, 480, 800);
     replacement.root_mut::<NavShell>().set_content(Box::new(
         crate::widget::Scrollable::new_vertical().with_child(Box::new(Text::new(
             "replacement\nsecond line\nthird line\nfourth line",
         ))),
     ));
-    settle(&mut replacement, 560, 800);
+    settle(&mut replacement, 480, 800);
     replacement.root_mut::<NavShell>().mark_drawn();
     let content = std::mem::replace(
         &mut replacement.root_mut::<NavShell>().content,
@@ -1009,7 +1342,7 @@ fn retained_panes_remeasure_theme_resize_replacement_and_modal_backdrop_edits() 
         "fixture: replacement is already measured and clean"
     );
     h.root_mut::<NavShell>().set_content(content);
-    h.relayout_at((560, 800))
+    h.relayout_at((480, 800))
         .expect("clean replacement measured");
     assert!(text_rect(&mut h).height() > changed.height());
 }
@@ -1033,8 +1366,8 @@ fn the_navigation_list_keeps_its_typed_identity_and_selected_activation_opens_co
         .mode(NavMode::Push)
         .sidebar(Box::new(list))
         .content(Probe::boxed("content").0);
-    let mut h = harness(shell, 560, 800, Theme::dark());
-    settle(&mut h, 560, 800);
+    let mut h = harness(shell, 360, 800, Theme::dark());
+    settle(&mut h, 360, 800);
     assert_eq!(
         h.root_mut::<NavShell>()
             .sidebar_mut::<crate::widget::NavList>()
@@ -1045,14 +1378,14 @@ fn the_navigation_list_keeps_its_typed_identity_and_selected_activation_opens_co
     );
     // Mutable typed access retires the host's raw layout maps, even when
     // used only to inspect a value. Publish a fresh admitted frame for AT.
-    h.relayout_at((560, 800))
+    h.relayout_at((360, 800))
         .expect("typed inspection republished");
     let inbox = h
         .a11y_node_named("Inbox")
         .expect("published navigation row");
     h.perform_a11y_action(inbox, &crate::a11y::Action::Activate)
         .expect("activating the already-selected destination");
-    settle(&mut h, 560, 800);
+    settle(&mut h, 360, 800);
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Content);
     assert_eq!(
         changes.get(),
@@ -1072,8 +1405,8 @@ fn push_navigation_keeps_back_operable_before_the_incoming_screen_is_visible() {
         .mode(NavMode::Push)
         .sidebar(Box::new(list))
         .content(Probe::boxed("content").0);
-    let mut h = harness(shell, 560, 800, Theme::dark());
-    settle(&mut h, 560, 800);
+    let mut h = harness(shell, 360, 800, Theme::dark());
+    settle(&mut h, 360, 800);
     let outgoing = h.a11y_node_named("Inbox").expect("initial navigation row");
     {
         let shell = h.root_mut::<NavShell>();
@@ -1081,7 +1414,7 @@ fn push_navigation_keeps_back_operable_before_the_incoming_screen_is_visible() {
         // The first animation sample is still wholly on the outgoing page.
         shell.inputs.borrow_mut().push_pos = Some(0.0);
     }
-    h.relayout_at((560, 800)).expect("incoming page frame");
+    h.relayout_at((360, 800)).expect("incoming page frame");
     assert!(geometry(&h).side_by_side, "no overview splits the content");
     assert!(
         h.a11y_node_named("Inbox").is_none(),
@@ -1102,7 +1435,7 @@ fn push_navigation_keeps_back_operable_before_the_incoming_screen_is_visible() {
                 && node.supports_action(crate::accesskit::Action::Click)
         })
         .expect("Back remains exported during the transition");
-    assert!(geometry(&h).back.x0 >= 0.0 && geometry(&h).back.x1 <= 560.0);
+    assert!(geometry(&h).back.x0 >= 0.0 && geometry(&h).back.x1 <= 360.0);
     h.perform_a11y_action(back.0, &crate::a11y::Action::Activate)
         .expect("Back cancels the in-flight navigation through AT");
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Sidebar);
@@ -1120,7 +1453,7 @@ fn a_hidden_inspector_animation_waits_until_the_drawer_is_painted() {
     let shell = NavShell::new()
         .content(Probe::boxed("content").0)
         .inspector(inspector);
-    let mut h = harness(shell, 800, 534, Theme::dark());
+    let mut h = harness(shell, 600, 534, Theme::dark());
     assert!(h.settle_for_capture(crate::time::Duration::from_secs(1)));
     let shell = h.root::<NavShell>();
     assert!(!shell.is_inspector_open());

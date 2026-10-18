@@ -14,7 +14,8 @@ What it does:
      HOME and the XDG dirs in a scratch profile, TILO_TEST_CONTROL
      set to the socket path, and DISPLAY + WAYLAND_DISPLAY unset.
   2. Waits up to 15s for the socket to appear.
-  3. Lists targets, picks the workspace wheel, clicks it.
+  3. Lists targets, opens the strip switcher (Super+S), clicks its card,
+     closes it (Escape).
   4. Opens global search (Super+Space), types "Files", proves its live state,
      waits for the transition to settle, and snapshots.
   5. Closes the palette (Escape), snapshots again.
@@ -232,11 +233,19 @@ def main() -> int:
         print(f"socket up: {SOCKET}")
         time.sleep(0.5)  # let the first paint complete
 
-        # 3. List targets + click wheel_disc.
+        # 3. List targets, open the strip switcher, click its card.
         resp = call(SOCKET, {"op": "list_targets"})
         print(f"  {len(resp['targets'])} targets")
-        require_ok(call(SOCKET, {"op": "click_named", "name": "wheel_disc"}))
-        print("  clicked wheel_disc")
+        require_ok(call(SOCKET, {"op": "key_down", "key": "Super"}))
+        require_ok(call(SOCKET, {"op": "key", "key": "s"}))
+        require_ok(call(SOCKET, {"op": "key_up", "key": "Super"}))
+        wait_until("strip switcher to open",
+                   lambda: state()["chrome"].get("strip_switcher_open"))
+        require_ok(call(SOCKET, {"op": "click_named", "name": "strip_switcher"}))
+        print("  clicked strip_switcher")
+        require_ok(call(SOCKET, {"op": "key", "key": "Escape"}))
+        wait_until("strip switcher to close",
+                   lambda: not state()["chrome"].get("strip_switcher_open"))
 
         # 4. Fresh profiles use Super+Space for machine-wide search.
         # Hold the modifier through the production key-down/up path.

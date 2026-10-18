@@ -196,6 +196,78 @@ impl crate::shell::search::SearchProvider for AppSourceFilterFixtureProvider {
     }
 }
 
+/// One hit of every kind it is given, for [`EVERY_KIND_QUERY`] alone.
+struct EveryKindFixtureProvider {
+    kinds: Vec<crate::shell::search::ResourceKind>,
+}
+
+/// A query no real source answers.
+const EVERY_KIND_QUERY: &str = "zqeverykind";
+
+impl crate::shell::search::SearchProvider for EveryKindFixtureProvider {
+    fn id(&self) -> &'static str {
+        "every-kind-fixture"
+    }
+
+    fn name(&self) -> &'static str {
+        "Every kind fixture"
+    }
+
+    fn resource_kinds(&self) -> &[crate::shell::search::ResourceKind] {
+        &self.kinds
+    }
+
+    fn query(
+        &self,
+        context: crate::shell::search::SearchContext<'_>,
+    ) -> Vec<crate::shell::search::SearchResult> {
+        if context.needle != EVERY_KIND_QUERY {
+            return Vec::new();
+        }
+        self.kinds
+            .iter()
+            .filter(|kind| context.wanted.contains(kind))
+            .map(|kind| {
+                crate::shell::search::SearchResult::nullary(
+                    kind.clone(),
+                    "every-kind-fixture",
+                    kind.label(),
+                    format!("Every kind {}", kind.label()),
+                    None,
+                    100,
+                    |_, _, _| {},
+                )
+            })
+            .collect()
+    }
+}
+
+/// Search for something every registered kind has a hit for: the filter
+/// band shows once results hold kinds to tell apart, and then only the
+/// kinds they hold, so this is how every chip gets onto the band.
+fn search_every_kind(h: &mut AbsorbHarness) {
+    let kinds = h.host.search_registry.registered_kinds();
+    h.host
+        .search_registry
+        .register(Rc::new(EveryKindFixtureProvider { kinds }));
+    h.host.palette.set_query(EVERY_KIND_QUERY);
+    h.host
+        .refresh_search_results(&AutoCommit::new(), &automerge::ROOT);
+}
+
+/// The band's kinds, in chip order, after [`search_every_kind`]: every kind
+/// the registry knows, each once.
+fn band_kinds_cover_the_registry(h: &AbsorbHarness) -> Vec<crate::shell::search::ResourceKind> {
+    let band: Vec<_> = h.host.search_filters.kinds().cloned().collect();
+    let registered = h.host.search_registry.registered_kinds();
+    assert_eq!(band.len(), registered.len(), "one chip per kind: {band:?}");
+    assert!(
+        registered.iter().all(|kind| band.contains(kind)),
+        "every kind found has a chip: {band:?}"
+    );
+    band
+}
+
 fn build_harness() -> AbsorbHarness {
     build_harness_sized(1600.0, 900.0)
 }
@@ -749,11 +821,11 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
         );
     }
 
-    /// Every kind chip, the "All" reset and every scope segment is a named,
+    /// Every kind chip and the "All" reset is a named,
     /// bounded semantic node carrying the rect production `draw` painted it
     /// at — so a screen reader, a script and the UX bench can name a chip
     /// rather than guess where the strip wrapped it to.
-    fn filter_chips_and_scope_segments_are_bounded_semantic_targets() {
+    fn filter_chips_are_bounded_semantic_targets() {
         use crate::shell::search::ResourceKind;
         use ui::a11y::Role;
         let (vw, vh) = (1280.0, 800.0);
@@ -763,6 +835,7 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
         // publish its query and result list, which the band follows.
         h.host.set_palette_focus(true);
         h.host.force_palette_settled();
+        search_every_kind(&mut h);
         settle(&mut h, vw, vh);
 
         let tree = h.host.accessibility().expect("the host publishes a tree");
@@ -783,7 +856,7 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
         assert_eq!(filters.name.as_deref(), Some("Search filters"));
         let (kinds_group, scope_group) = (&filters.children[0], &filters.children[1]);
 
-        let kinds = h.host.search_registry.registered_kinds();
+        let kinds = band_kinds_cover_the_registry(&h);
         let more_painted = h.host.search_filters.search_more_rect.area() > 0.0;
         assert_eq!(
             kinds_group.children.len(),
@@ -877,33 +950,11 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
             );
         }
 
-        let scopes = h.host.search_scope_list();
-        assert_eq!(scope_group.children.len(), scopes.len());
-        let checked = scope_group
-            .children
-            .iter()
-            .filter(|n| n.state.checked == Some(true))
-            .count();
-        assert_eq!(checked, 1, "exactly one scope is current");
-        for (idx, node) in scope_group.children.iter().enumerate() {
-            assert_eq!(node.role, Role::RadioButton);
-            let hit = h.host.search_filters.search_scope_segment_hit_rect(idx);
-            assert_eq!(node.bounds.map(ui::AccessBounds::to_rect), Some(hit));
-            let track = h.host.search_filters.search_scope_track_rect();
-            assert!(
-                hit.contains(h.host.search_filters.search_scope_pill_rect(idx).center())
-                    && (hit.height() - track.height().max(floor)).abs() < 0.01
-                    && (hit.center().y - track.center().y).abs() < 0.01,
-                "segment {idx}'s target is its slice of the track grown to the {floor} px floor: {hit:?} vs {track:?}"
-            );
-            assert!(
-                node.name
-                    .as_deref()
-                    .is_some_and(|n| n.starts_with("Scope: ")),
-                "scope names are prefixed: {:?}",
-                node.name
-            );
-        }
+        // The scope is the token at the start of the field, not a switch.
+        assert!(
+            scope_group.children.is_empty(),
+            "no scope segments in the band"
+        );
 
         // The controls share one centre line: chips and the scope switch
         // are laid out to the same control height in the band's first row.
@@ -927,18 +978,12 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
         // share top and bottom edges at the Selector height, and their
         // pointer targets share top and bottom edges at the floor.
         let all_rect = h.host.search_filters.search_all_chip_rect;
-        let track = h.host.search_filters.search_scope_track_rect();
+        let first_chip = h.host.search_filters.search_chip_rects[0];
         assert!(
-            (all_rect.y0 - track.y0).abs() < 0.5 && (all_rect.y1 - track.y1).abs() < 0.5,
-            "All chip {all_rect:?} and scope track {track:?} do not share top and bottom edges"
+            (all_rect.y0 - first_chip.y0).abs() < 0.5 && (all_rect.y1 - first_chip.y1).abs() < 0.5,
+            "All chip {all_rect:?} and the first kind {first_chip:?} share top and bottom edges"
         );
         let all_target = h.host.search_filters.search_all_chip_hit_rect();
-        let first_scope = h.host.search_filters.search_scope_segment_hit_rect(0);
-        assert!(
-            (all_target.y0 - first_scope.y0).abs() < 0.5
-                && (all_target.y1 - first_scope.y1).abs() < 0.5,
-            "All target {all_target:?} and scope target {first_scope:?} do not share top and bottom edges"
-        );
         assert!(
             (all_rect.height() - f64::from(Theme::dark().tokens.metrics.selector_height)).abs()
                 < 0.01,
@@ -952,97 +997,40 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
         );
     }
 
-    /// At 200 % text on a compact card the two scope labels need more than
-    /// the share of the band the switch may take beside the chips, so the
-    /// switch takes the first row alone, whole, and the chips start on the
-    /// next row: no "Works…", no overlap, one more reserved row (S1-29).
-    /// At 100 % on a wide card the switch shares the first row as before.
-    fn a_scope_switch_too_wide_to_share_the_first_row_takes_its_own() {
-        let (vw, vh) = (800.0, 700.0);
+    /// The scope is read with the query, as a token at the start of the
+    /// field, not as a switch standing in the band: Everywhere shows none,
+    /// a narrower scope names itself, and Backspace at the start of the
+    /// field widens it one step.
+    fn the_scope_is_a_token_in_the_field_that_backspace_widens() {
+        use crate::shell::chrome_state::SearchScope;
+        let (vw, vh) = (1280.0, 800.0);
         let mut h = build_harness_sized(vw, vh);
         h.host.set_palette_visible(true);
         h.host.set_palette_focus(true);
         h.host.force_palette_settled();
-        let theme = Theme::dark().with_text_scale(2.0);
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(2.0);
-        // Paint, relayout, paint: the first paint measures the switch and
-        // asks the palette for the extra row; the second lays out with it.
-        for _ in 0..3 {
-            let (tree, root) = lay_out_host_with_theme(&mut h.host, vw, vh, &theme);
-            h.taffy = tree;
-            h.root_node = root;
-            h.host.draw(
-                &mut Scene::new(),
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &ui::presence::PresenceCtx::default(),
-            );
-        }
-        assert!(
-            h.host.search_filters.scope_switch_has_own_row(),
-            "the measured switch ({}) exceeds its share of the {} px band",
-            h.host.search_filters.search_scope_measured_track_w(),
-            h.host.search_filters.search_banner_rect().width()
+        h.chrome.borrow_mut().search_scope = SearchScope::Workspace;
+        h.host
+            .refresh_open_palette(&AutoCommit::new(), &automerge::ROOT);
+        assert_eq!(
+            h.host.palette.scope_token(),
+            Some(
+                h.host
+                    .search_scope_pill_label(SearchScope::Workspace)
+                    .as_str()
+            ),
+            "a narrowed search names its scope in the field"
         );
-        let band = h.host.search_filters.search_banner_rect();
-        let row_h = h.host.palette.filter_strip_row_height();
-        let track = h.host.search_filters.search_scope_track_rect();
-        assert!(
-            (track.center().y - (band.y0 + row_h / 2.0)).abs() < 0.5,
-            "the switch sits on the band's first row: {track:?} in {band:?}"
+        settle(&mut h, vw, vh);
+        assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Backspace))));
+        assert_eq!(
+            h.chrome.borrow().search_scope,
+            SearchScope::All,
+            "Backspace at the start of the field searches everywhere"
         );
-        let measured = h.host.search_filters.search_scope_measured_track_w();
-        assert!(
-            (track.width() - measured.min(band.width())).abs() < 0.5,
-            "on its own row the switch is its full measured width ({measured}), capped only by the band ({}), not by the shared-row share: {track:?}",
-            band.width()
-        );
-        assert!(
-            measured <= band.width(),
-            "two scope labels at 200 % fit an 800 px card once the label is drawn at the person's size, not double-scaled: {measured} vs {}",
-            band.width()
-        );
-        for idx in 0..h.host.search_scope_list().len() {
-            let seg = h.host.search_filters.search_scope_pill_rect(idx);
-            let label = h
-                .host
-                .search_scope_pill_label(h.host.search_scope_list()[idx]);
-            let style = SearchFilters::filter_label_style(&theme);
-            let (w, _) = tr.measure_style(&label, None, &style);
-            assert!(
-                f64::from(w) + f64::from(theme.tokens.spacing.s2) <= seg.width(),
-                "{label:?} ({w} px) fits its segment {seg:?} whole"
-            );
-        }
-        let all = h.host.search_filters.search_all_chip_rect;
-        assert!(
-            all.y0 >= band.y0 + row_h - 0.5,
-            "the chips start on the second row: All {all:?} under row 1 of {band:?}"
-        );
-        assert!(
-            h.host.search_filters.search_chip_rows >= 2,
-            "the band reserved a row for the switch plus the chips' rows"
-        );
-        for (i, chip) in h.host.search_filters.search_chip_rects.iter().enumerate() {
-            assert!(
-                chip.intersect(track).is_zero_area(),
-                "chip {i} {chip:?} does not run under the switch {track:?}"
-            );
-        }
-
-        // Wide card, 100 %: the switch shares the first row with "All".
-        let (vw, vh) = (1280.0, 800.0);
-        let mut wide = build_harness_sized(vw, vh);
-        wide.host.set_palette_visible(true);
-        wide.host.set_palette_focus(true);
-        wide.host.force_palette_settled();
-        settle(&mut wide, vw, vh);
-        assert!(!wide.host.search_filters.scope_switch_has_own_row());
-        let all = wide.host.search_filters.search_all_chip_rect;
-        let track = wide.host.search_filters.search_scope_track_rect();
-        assert!((all.center().y - track.center().y).abs() < 0.5);
+        h.host
+            .refresh_open_palette(&AutoCommit::new(), &automerge::ROOT);
+        assert_eq!(h.host.palette.scope_token(), None, "Everywhere is no token");
+        assert!(h.host.palette_visible(), "and search stays open");
     }
 
     /// Below 100 % text the palette's row (`36·text_scale`) is shorter than
@@ -1060,6 +1048,7 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
         let theme = Theme::dark().with_text_scale(0.75);
         let mut tr = TextRenderer::new();
         tr.set_text_scale(0.75);
+        search_every_kind(&mut h);
         for _ in 0..3 {
             let (tree, root) = lay_out_host_with_theme(&mut h.host, vw, vh, &theme);
             h.taffy = tree;
@@ -1098,13 +1087,7 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
                 h.host.search_filters.search_more_hit_rect(),
             ));
         }
-        for idx in 0..h.host.search_scope_list().len() {
-            targets.push((
-                h.host.search_filters.search_scope_pill_rect(idx),
-                h.host.search_filters.search_scope_segment_hit_rect(idx),
-            ));
-        }
-        assert!(targets.len() >= 4, "the band has chips and scopes to check");
+        assert!(targets.len() >= 4, "the band has chips to check");
         for (pill, target) in &targets {
             assert!(
                 target.y0 >= band.y0 - 0.01 && target.y1 <= band.y1 + 0.01,
@@ -1180,8 +1163,8 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
     }
 
     filter_controls_grow_with_their_label_and_stay_inside_the_row();
-    filter_chips_and_scope_segments_are_bounded_semantic_targets();
-    a_scope_switch_too_wide_to_share_the_first_row_takes_its_own();
+    filter_chips_are_bounded_semantic_targets();
+    the_scope_is_a_token_in_the_field_that_backspace_widens();
     selector_targets_never_overlap_or_leave_the_band_at_small_text();
     filter_band_paints_selection_as_a_lift_never_as_accent();
 }
@@ -1199,6 +1182,7 @@ fn launcher_chips_fit_and_stay_reachable_at_every_width_and_text_size() {
         let theme = Theme::dark().with_text_scale(2.0);
         let mut tr = TextRenderer::new();
         tr.set_text_scale(2.0);
+        search_every_kind(&mut h);
         for _ in 0..4 {
             let (tree, root) = lay_out_host_with_theme(&mut h.host, 800.0, 700.0, &theme);
             h.taffy = tree;
@@ -1217,10 +1201,7 @@ fn launcher_chips_fit_and_stay_reachable_at_every_width_and_text_size() {
             "2× text on a compact card must keep leftover kinds behind More"
         );
         let style = SearchFilters::filter_label_style(&theme);
-        for (kind, rect) in h
-            .host
-            .search_registry
-            .registered_kinds()
+        for (kind, rect) in band_kinds_cover_the_registry(&h)
             .iter()
             .zip(&h.host.search_filters.search_chip_rects)
         {
@@ -1241,16 +1222,6 @@ fn launcher_chips_fit_and_stay_reachable_at_every_width_and_text_size() {
                 rect
             );
         }
-        for (i, scope) in h.host.search_scope_list().iter().enumerate() {
-            let label = h.host.search_scope_pill_label(*scope);
-            let (w, height) = tr.measure_style(&label, None, &style);
-            let rect = h.host.search_filters.search_scope_pill_rect(i);
-            assert!(
-                f64::from(w) + 10.0 <= rect.width(),
-                "{label} scope truncated"
-            );
-            assert!(f64::from(height) <= rect.height());
-        }
     }
 
     fn every_kind_is_reachable_at_every_width() {
@@ -1260,9 +1231,10 @@ fn launcher_chips_fit_and_stay_reachable_at_every_width_and_text_size() {
             let mut h = build_harness_sized(vw, vh);
             h.host.set_palette_visible(true);
             h.host.force_palette_settled();
+            search_every_kind(&mut h);
             settle(&mut h, vw, vh);
 
-            let kinds = h.host.search_registry.registered_kinds();
+            let kinds = band_kinds_cover_the_registry(&h);
             let rects = h.host.search_filters.search_chip_rects.clone();
             assert_eq!(
                 rects.len(),
@@ -1280,7 +1252,6 @@ fn launcher_chips_fit_and_stay_reachable_at_every_width_and_text_size() {
 
             let band = h.host.search_filters.search_banner_rect();
             let all = h.host.search_filters.search_all_chip_rect;
-            let track = h.host.search_filters.search_scope_track_rect();
             let mut painted: Vec<(String, Rect)> = vec![("All".to_string(), all)];
             painted.extend(
                 kinds
@@ -1333,13 +1304,6 @@ fn launcher_chips_fit_and_stay_reachable_at_every_width_and_text_size() {
                         painted[j].0
                     );
                 }
-                assert!(
-                    painted[i].1.intersect(track).area() <= 0.0,
-                    "at {vw}x{vh} the {} chip sits under the scope switch: \
-                     {:?} / {track:?}",
-                    painted[i].0,
-                    painted[i].1
-                );
             }
         }
     }
@@ -1352,12 +1316,10 @@ fn launcher_chips_fit_and_stay_reachable_at_every_width_and_text_size() {
         let mut h = build_harness_sized(vw, vh);
         h.host.set_palette_visible(true);
         h.host.force_palette_settled();
+        search_every_kind(&mut h);
         settle(&mut h, vw, vh);
 
-        let last_kind = h
-            .host
-            .search_registry
-            .registered_kinds()
+        let last_kind = band_kinds_cover_the_registry(&h)
             .last()
             .cloned()
             .expect("the registry has kinds");
@@ -1441,7 +1403,7 @@ fn launcher_chips_fit_and_stay_reachable_at_every_width_and_text_size() {
     clippy::too_many_lines,
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
-fn palette_chips_and_scopes_filter_without_dismissing_and_enter_activates_the_selection() {
+fn palette_chips_filter_without_dismissing_and_enter_activates_the_selection() {
     /// Clicking a kind chip or scope switch must filter, not be mistaken
     /// for a dismissal click outside the card. Drives the production
     /// `handle_event` router against rects `draw` just cached.
@@ -1449,6 +1411,7 @@ fn palette_chips_and_scopes_filter_without_dismissing_and_enter_activates_the_se
         let mut h = build_harness();
         h.host.set_palette_visible(true);
         h.host.force_palette_settled();
+        search_every_kind(&mut h);
         settle(&mut h, 1600.0, 900.0);
 
         assert!(
@@ -1519,11 +1482,10 @@ fn palette_chips_and_scopes_filter_without_dismissing_and_enter_activates_the_se
 
         let host_chip = h
             .host
-            .search_registry
-            .registered_kinds()
-            .iter()
+            .search_filters
+            .kinds()
             .position(|kind| *kind == ResourceKind::HostApplication)
-            .expect("Host Apps chip is registered");
+            .expect("the picker's band offers Host Apps");
         if h.host
             .search_filters
             .search_chip_rects
@@ -1607,11 +1569,13 @@ fn palette_chips_and_scopes_filter_without_dismissing_and_enter_activates_the_se
         );
     }
 
-    /// Same for the scope switch, which shares the band.
-    fn clicking_a_scope_segment_switches_scope_without_dismissing() {
+    /// A search narrowed to one resource names it in the field's token, a
+    /// breadcrumb Backspace leaves.
+    fn backspace_leaves_a_resource_scope_named_in_the_token() {
         use crate::shell::chrome_state::SearchScope;
         let mut h = build_harness();
         h.host.set_palette_visible(true);
+        h.host.set_palette_focus(true);
         h.host.force_palette_settled();
         h.chrome.borrow_mut().search_scope = SearchScope::Workspace;
         h.chrome.borrow_mut().search_resource_scope =
@@ -1623,50 +1587,26 @@ fn palette_chips_and_scopes_filter_without_dismissing_and_enter_activates_the_se
                 label: "Book of Tilo".into(),
                 kind: "ebook.book".into(),
             });
+        h.host
+            .refresh_open_palette(&AutoCommit::new(), &automerge::ROOT);
         assert_eq!(
-            h.host.search_scope_pill_label(SearchScope::Workspace),
-            "‹ Book of Tilo",
-            "the selected place pill doubles as a visible resource breadcrumb"
+            h.host.palette.scope_token(),
+            Some("‹ Book of Tilo"),
+            "the token doubles as a visible resource breadcrumb"
         );
-
-        paint_then_click(&mut h, |host| {
-            let workspace = host
-                .search_scope_list()
-                .iter()
-                .position(|scope| *scope == SearchScope::Workspace)
-                .expect("workspace scope segment");
-            host.search_filters
-                .search_scope_pill_rect(workspace)
-                .center()
-        });
+        settle(&mut h, 1600.0, 900.0);
+        assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Backspace))));
         assert!(
             h.chrome.borrow().search_resource_scope.is_none(),
-            "clicking the visible breadcrumb leaves the nested resource scope"
+            "Backspace leaves the nested resource scope"
         );
-
-        // The last segment is All (the scope list is
-        // [ActiveApp?, Workspace, All]).
-        paint_then_click(&mut h, |host| {
-            let last = host.search_scope_list().len() - 1;
-            host.search_filters.search_scope_pill_rect(last).center()
-        });
-
         assert!(h.host.palette_visible(), "the palette must stay open");
-        assert_eq!(
-            h.chrome.borrow().search_scope,
-            SearchScope::All,
-            "clicking the trailing segment must select the All scope"
-        );
-        assert!(
-            h.chrome.borrow().search_resource_scope.is_none(),
-            "choosing a place leaves the nested resource scope"
-        );
     }
 
     clicking_a_kind_chip_filters_without_dismissing_the_palette();
     host_apps_chip_exclusively_filters_a_new_window_picker();
     app_search_arrows_and_enter_activate_the_visibly_selected_row();
-    clicking_a_scope_segment_switches_scope_without_dismissing();
+    backspace_leaves_a_resource_scope_named_in_the_token();
 }
 
 #[test]
@@ -3194,8 +3134,13 @@ fn notification_reader_native_capture_and_resize_keep_the_last_line_reachable() 
 #[path = "launcher_recovery_tests.rs"]
 mod launcher_recovery_tests;
 
+#[path = "launcher_keystroke_cost_tests.rs"]
+mod launcher_keystroke_cost_tests;
 #[path = "launcher_ranking_tests.rs"]
 mod launcher_ranking_tests;
+
+#[path = "palette_steps_tests.rs"]
+mod palette_steps_tests;
 
 struct HoverRefreshProvider {
     revision: Rc<std::cell::Cell<u64>>,
@@ -3726,6 +3671,79 @@ fn notification_banner_completed_click_and_interrupted_gestures() {
             assert_eq!(h.chrome.borrow().notification_history().len(), 1);
         }
     }
+}
+
+/// The Notifications chord (Super+A) moves keyboard focus into the newest
+/// banner: it is held there, Escape dismisses it and gives focus back, and
+/// a key the banner does not act on goes on to the window. With no banner,
+/// the chord opens the centre as before.
+#[test]
+fn notifications_chord_focuses_the_newest_banner_and_escape_dismisses_it() {
+    let mut h = build_harness_sized(960.0, 540.0);
+    let theme = Theme::dark().with_reduce_motion(true);
+    let older = h.chrome.borrow_mut().push_notification_full(
+        tilo_desktop::notifications::Notification::new("Lena shared a file", "You can edit it."),
+    );
+    let newest = h.chrome.borrow_mut().push_notification_full(
+        tilo_desktop::notifications::Notification::new("Ada mentioned you", "Can you look?"),
+    );
+    settle_with_theme(&mut h, 960.0, 540.0, &theme);
+    let chord = winit::event::Modifiers::from(winit::keyboard::ModifiersState::SUPER);
+    assert!(pump_with_modifiers(
+        &mut h,
+        &key_pressed(Key::Character("a".into())),
+        chord
+    ));
+    assert!(h.host.banner_has_keyboard());
+    assert!(!h.chrome.borrow().overlays.quick_settings);
+    assert!(
+        h.chrome.borrow().notification_log().held(),
+        "a focused banner does not age"
+    );
+    assert!(h.host.banner_owns_key(&Key::Named(NamedKey::Escape)));
+    assert!(!h.host.banner_owns_key(&Key::Character("x".into())));
+    assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Escape))));
+    assert!(!h.host.banner_has_keyboard());
+    let live: Vec<u64> = h
+        .chrome
+        .borrow()
+        .notifications()
+        .iter()
+        .map(|n| n.id)
+        .collect();
+    assert_eq!(live, vec![older], "Escape dismissed the newest banner");
+    assert!(
+        h.chrome
+            .borrow()
+            .notification_history()
+            .iter()
+            .any(|n| n.id == newest)
+    );
+
+    settle_with_theme(&mut h, 960.0, 540.0, &theme);
+    assert!(pump_with_modifiers(
+        &mut h,
+        &key_pressed(Key::Character("a".into())),
+        chord
+    ));
+    assert!(h.host.banner_has_keyboard());
+    h.log.borrow_mut().clear();
+    let _ = pump(&mut h, &key_pressed(Key::Character("x".into())));
+    assert!(!h.host.banner_has_keyboard(), "typing on gives focus back");
+    assert_eq!(h.chrome.borrow().notifications().len(), 1);
+
+    h.chrome.borrow_mut().dismiss_notification(older);
+    settle_with_theme(&mut h, 960.0, 540.0, &theme);
+    assert!(pump_with_modifiers(
+        &mut h,
+        &key_pressed(Key::Character("a".into())),
+        chord
+    ));
+    assert!(!h.host.banner_has_keyboard());
+    assert!(
+        h.chrome.borrow().overlays.quick_settings,
+        "with no banner the chord opens the centre"
+    );
 }
 
 fn capture_banner_pointer_state(

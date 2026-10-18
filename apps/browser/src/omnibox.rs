@@ -69,8 +69,6 @@ pub struct Row {
     /// What choosing the row opens: an address for [`RowKind::Go`] and
     /// [`RowKind::History`], the query for the search kinds.
     pub url: String,
-    /// How often the page was visited ([`RowKind::History`] only).
-    pub visits: u32,
 }
 
 impl Row {
@@ -85,7 +83,6 @@ impl Row {
             },
             detail: display_url(&entry.url),
             url: entry.url.clone(),
-            visits: entry.visit_count,
         }
     }
 
@@ -95,7 +92,6 @@ impl Row {
             title: query.to_owned(),
             detail: String::new(),
             url: query.to_owned(),
-            visits: 0,
         }
     }
 }
@@ -393,7 +389,6 @@ pub fn build_rows(
             title: display_url(&url),
             detail: url.clone(),
             url,
-            visits: 0,
         });
     }
     let mut pages: Vec<Row> = Vec::new();
@@ -454,7 +449,6 @@ pub fn lead_with_address(rows: &mut Vec<Row>, address: &str) {
             title: shown,
             detail: url.clone(),
             url,
-            visits: 0,
         },
     );
     rows.truncate(MAX_ROWS);

@@ -48,6 +48,8 @@ pub struct SurfaceChrome {
     /// Drawn above the desktop along the edges of the displays other than
     /// the primary (their compact top bars). It takes no room in layout.
     pub display_chrome: Option<Box<dyn Widget>>,
+    /// The leading edge gutter: how far each strip's first window sits
+    /// in from the display's leading edge.
     pub leading_inset: f64,
     /// Schedule a host frame when a retained application changes asynchronously.
     pub notify: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
@@ -257,9 +259,11 @@ impl DesktopSurface {
                 )))
                 .push(Box::new(StripView::new(strips, active_strip)));
         }
+        // The Lounge's windows are there from the start; the launchpad stays
+        // until the person puts a window of their own somewhere.
         let empty_workspace = tree
             .active_workspace()
-            .is_some_and(|w| w.strips.iter().all(|s| s.window_groups.is_empty()));
+            .is_some_and(|w| !w.has_windows_outside_lounge());
         let empty_workspace_visible = chrome.empty_workspace.as_ref().map(|_| empty_workspace);
         let mut row_offset: usize = if external_navigation { 0 } else { 2 };
         if empty_workspace && let Some(empty) = chrome.empty_workspace {
@@ -688,10 +692,7 @@ impl DesktopSurface {
             return ReconcileOutcome::RebuildRequired;
         }
         self.retire_departed_requested_groups(tree);
-        let empty = workspace
-            .strips
-            .iter()
-            .all(|strip| strip.window_groups.is_empty());
+        let empty = !workspace.has_windows_outside_lounge();
         if self
             .empty_workspace_visible
             .is_some_and(|visible| visible != empty)
@@ -1142,8 +1143,8 @@ impl DesktopSurface {
     }
     /// The backdrop and the window content: everything [`Self::draw_bar`]
     /// paints over. A host drawing the desktop in one scene draws what sits
-    /// between the windows and the top bar (the docked wheel, notices,
-    /// floating surfaces) after this and before [`Self::draw_bar`], the
+    /// between the windows and the top bar (notices, floating
+    /// surfaces) after this and before [`Self::draw_bar`], the
     /// order [`Self::draw_sections`] composes the same layers in.
     pub fn draw_below_bar(
         &mut self,

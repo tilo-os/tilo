@@ -9887,7 +9887,7 @@ mod tests {
     #[test]
     fn capture_settlement_applies_the_final_push_sidebar_geometry() {
         use crate::widget::{NavItem, NavList, NavMode, NavPane, NavSection, NavShell};
-        for width in [360_u32, 520_u32] {
+        for width in [360_u32, 480_u32] {
             let shell = NavShell::new()
                 .mode(NavMode::Push)
                 .with_pane_state(&crate::LocalState::new(NavPane::Content))

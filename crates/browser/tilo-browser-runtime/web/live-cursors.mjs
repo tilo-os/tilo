@@ -34,17 +34,28 @@ export function markerStyle(kind, color) {
     : `${base};border-radius:0 8px 8px 8px`;
 }
 
+/** The desktop's own record, a member's focus while no window has it. */
+const DESKTOP_APP = 'so.tilo.browser-desktop';
+
+/** The shown window of the record `focus` names (`{app, record}`, as the
+ * live layer names it: `''` for an app's room record). */
+function windowOf(focus, windows) {
+  return windows?.find(candidate => candidate.app === focus.app && candidate.record === focus.record);
+}
+
 /**
  * Where to draw a remote pointer, in surface pixels. A pointer with a
  * `focus` is in that record's own surface (an agent points at the control
  * it drives in the record's window): it is drawn inside the window that
  * shows the record, kept within its bounds, and not at all while no window
- * here shows it. `windows` lists `{record, rect: [x0, y0, x1, y1]}`; without
- * it (a single application) every pointer is in the surface's coordinates.
+ * here shows it. A member focused on the desktop itself points in the
+ * surface's coordinates. `windows` lists `{app, record, rect: [x0, y0, x1,
+ * y1]}`; without it (a single application) every pointer is in the
+ * surface's coordinates.
  */
 export function placePointer(pointer, focus, windows) {
-  if (!focus || !windows) return pointer;
-  const window = windows.find(candidate => candidate.record === focus.record);
+  if (!focus || !windows || focus.app === DESKTOP_APP) return pointer;
+  const window = windowOf(focus, windows);
   if (!window) return null;
   const [x0, y0, x1, y1] = window.rect;
   const clamp = (value, low, high) => Math.min(Math.max(value, low), Math.max(low, high));
@@ -57,7 +68,7 @@ export function placePointer(pointer, focus, windows) {
  * {@link placePointer} reads it back; in surface pixels otherwise.
  */
 export function publishedPointer(point, focus, windows) {
-  const window = focus && windows?.find(candidate => candidate.record === focus.record);
+  const window = focus && focus.app !== DESKTOP_APP && windowOf(focus, windows);
   return window ? [point[0] - window.rect[0], point[1] - window.rect[1]] : point;
 }
 

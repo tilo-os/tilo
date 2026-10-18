@@ -92,6 +92,12 @@ impl QrWidget {
         self
     }
 
+    /// Place the code at `rect`, for a painter that lays out by hand rather
+    /// than through the widget tree.
+    pub fn set_bounds(&mut self, rect: Rect) {
+        self.rect = rect;
+    }
+
     /// Describe what scanning the code represents. A generic "QR code" name
     /// is supplied by default; applications should provide the useful payload
     /// meaning rather than forcing a screen-reader user to infer it visually.

@@ -437,6 +437,9 @@ pub struct TextInput {
     /// Where the last painted suggestion chip sits, for click-to-accept.
     suggestion_chip: Option<Rect>,
     last_autocorrection: Option<Autocorrection>,
+    /// A correction taken back with Backspace: where the word starts and
+    /// the word as typed. It is not corrected again there.
+    declined_autocorrection: Option<(usize, String)>,
     /// Set by a host that records the correction a word boundary makes as
     /// an edit of its own ([`Self::apply_pending_autocorrection`]), after
     /// the boundary itself: undoing it then gives back the word as typed.
@@ -738,6 +741,7 @@ impl TextInput {
             caret_word: CaretWord::default(),
             suggestion_chip: None,
             last_autocorrection: None,
+            declined_autocorrection: None,
             defer_autocorrection: false,
             pending_autocorrection: None,
             text_actions: Vec::new(),
@@ -3305,6 +3309,8 @@ impl TextInput {
 
     /// Mirror edits into caller-owned process-local memory without creating a
     /// CRDT object. Intended for passwords/PINs; use with [`Self::local`].
+    /// Publishing consumes the edit notification (`take_dirty`), just as a
+    /// document binding does; an idle sync never republishes a consumed edit.
     #[must_use]
     pub fn with_external_buffer(mut self, buffer: Arc<Mutex<String>>) -> Self {
         self.local_state = None;
@@ -4613,10 +4619,21 @@ impl TextInput {
         let dictionary = self
             .spell_dictionary
             .get_or_insert_with(spellcheck::Dictionary::default);
-        if dictionary.contains(&original) || self.personal_word(&original) {
+        if self
+            .declined_autocorrection
+            .as_ref()
+            .is_some_and(|(at, word)| *at == start && *word == original)
+        {
             return None;
         }
-        let replacement = spellcheck::probable_correction(&self.spell_language, &original)?;
+        let sure = spellcheck::sure_correction(&self.spell_language, &original);
+        if sure.is_none() && (dictionary.contains(&original) || self.personal_word(&original)) {
+            return None;
+        }
+        let replacement = match sure {
+            Some(sure) => sure,
+            None => spellcheck::probable_correction(&self.spell_language, &original)?,
+        };
         (replacement != original).then(|| AutocorrectionPreview {
             language: self.spell_language.clone(),
             start,
@@ -4661,6 +4678,8 @@ impl TextInput {
         };
         self.core.set_selection(correction.start, replace_end);
         self.insert_str(&correction.original);
+        self.last_autocorrection = None;
+        self.declined_autocorrection = Some((correction.start, correction.original));
         true
     }
 
@@ -5449,6 +5468,11 @@ impl Widget for TextInput {
         {
             value.zeroize();
             value.push_str(&self.text);
+            // This edit has been published. Replaying it on every sync can
+            // resurrect a secret after its owner clears an acknowledged save.
+            // Keep measurement invalidation separate from publication.
+            self.model_layout_dirty = true;
+            self.dirty = false;
         }
         if self.bound_text.is_some() {
             let _ = self.adopt_bound_text(state);

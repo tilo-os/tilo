@@ -448,3 +448,42 @@ pub async fn dial(
     .await
     .map_err(|_| "native relay connection timed out".to_string())?
 }
+
+/// [`dial`] the host `hint` pins over its HTTPS routes behind `http`: a
+/// host that publishes no iroh address. Only a certified host serves them,
+/// so the session pins its user and device as [`dial`] does an enrolled
+/// host; the session then carries no private action channel.
+///
+/// # Errors
+/// As [`dial`], and for a hint that pins a person's own device rather than a
+/// certified host.
+pub async fn dial_https(
+    http: std::sync::Arc<dyn tilo_relay_client::HttpClient>,
+    ws: u64,
+    hint: &TransportHint,
+    cert: DeviceCert,
+    key: SigningKey,
+    revocations: RevocationList,
+) -> Result<RelayCoeditSession, String> {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let (payload, trust) = IrohWorkspaceHostHintV1::authenticate_transport_hint(hint)
+            .map_err(|e| e.to_string())?;
+        if payload.workspace_id != ws {
+            return Err("native relay workspace pin mismatch".into());
+        }
+        if !matches!(trust, WorkspaceHostTrust::CertifiedHost) {
+            return Err("only a certified host is reached over HTTPS".into());
+        }
+        let own_device = cert.device_public_key;
+        let client =
+            RelayClient::connect_https(http, hint.host.device_public_key, cert, &key, revocations)
+                .await
+                .map_err(|e| e.to_string())?;
+        if client.relay_peer.cert != hint.host {
+            return Err("native relay authenticated a different host certificate".into());
+        }
+        RelayCoeditSession::join(client, ws, own_device).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|_| "native relay connection timed out".to_string())?
+}

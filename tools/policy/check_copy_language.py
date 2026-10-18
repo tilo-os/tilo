@@ -21,7 +21,17 @@ that (HIG section 4):
 - vague-button: a confirming button named "Continue", "OK", "Yes" or
   "Proceed" instead of by its outcome ("Move", "Delete");
 - glossary: a term that `copy_glossary.toml` replaces with the one word the
-  whole system uses for that thing ("Passcode" -> "Password").
+  whole system uses for that thing ("Passcode" -> "Password");
+- save-status: routine saving announced ("Saving…", "Saved", "Saved { $file }",
+  "Draft saved", "Gespeichert"). Saving is the system's job and says nothing;
+  the framework's save status (`ui::SaveStatusSurface`, presented for every
+  framework window) speaks only when a save stalls or fails (HIG §7, "Status
+  has two homes"). The same rule holds for string literals in production Rust
+  sources, where copy that bypasses the catalogue would slip past it.
+
+A message or literal that has to say it anyway (the save status's own
+one-time "Saved" after a failure) is listed in `copy_save_exceptions.toml`
+with the reason it is not routine; an entry that no longer matches fails.
 
 Catalogues that still carry old copy list it, per message and rule, in
 `copy_language_baseline/<unit>.txt` (the unit is the crate path with `/`
@@ -38,10 +48,14 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import rust_source  # noqa: E402
+
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 GLOSSARY = HERE / "copy_glossary.toml"
+SAVE_EXCEPTIONS = HERE / "copy_save_exceptions.toml"
 BASELINE = HERE / "copy_language_baseline"
 
 SOURCE_LOCALE = "en-US"
@@ -98,6 +112,31 @@ VAGUE_BUTTON = {
 }
 # Message ids that label a confirming button of a sheet or dialog.
 BUTTON_ID = re.compile(r"(?:^|-)(?:confirm|accept|proceed|primary|ok)(?:-button|-label)?$")
+
+# A whole visible line that only reports routine saving: the state ("Saving…",
+# "Saved."), the thing saved by name ("Saved …", "… saved", "Draft saved") or
+# its changes ("Saving latest changes…"). Placeables read as "…" here. A save
+# with an outcome the person cannot see otherwise names it in more words
+# ("Saved a copy as …", "Exported …") and does not match.
+_SAVED_THINGS_EN = r"(?:(?:all |your |the )?(?:latest )?(?:changes?|edits?|drafts?|work|…) )"
+ROUTINE_SAVE = {
+    "en": re.compile(
+        rf"{_SAVED_THINGS_EN}?(?:saved|saving)"
+        r"(?: (?:(?:your |the )?(?:latest )?(?:changes|draft|direction)|…))?"
+        r"(?:\s*[—–]\s.*)?\s*[.…!]*",
+        re.IGNORECASE),
+    "de": re.compile(
+        r"(?:(?:alle |deine |die )?(?:neueste |letzte )?(?:änderungen|entwurf|entwürfe|…) )?"
+        r"(?:gespeichert|(?:wird|werden) gespeichert)"
+        r"(?:\s*[—–]\s.*)?\s*[.…!]*",
+        re.IGNORECASE),
+}
+
+
+def routine_save(lang: str, line: str) -> bool:
+    pattern = ROUTINE_SAVE.get(lang)
+    return bool(pattern and pattern.fullmatch(line.strip()))
+
 
 # Upper-case tokens that are names, not shouting.
 ACRONYMS = frozenset("""
@@ -278,6 +317,79 @@ def violations(locale: str, message: Message, glossary: list[Term]) -> list[tupl
     misuse = misused_term(glossary, lang, message.key, text)
     if misuse:
         found.append(("glossary", misuse))
+    saved = next((line for line in lines if routine_save(lang, line)), None)
+    if saved:
+        found.append(("save-status",
+                      f"announces routine saving (\"{saved}\"); saving says nothing "
+                      "unless it stalls or fails (ui::SaveStatusSurface)"))
+    return found
+
+
+@dataclass(frozen=True)
+class SaveException:
+    """A message (`unit` + `key`) or a production string literal (`file` +
+    `text`) allowed to say "Saved"/"Saving", and why."""
+    unit: str | None
+    key: str | None
+    file: str | None
+    text: str | None
+
+
+def load_save_exceptions(path: Path) -> set[SaveException]:
+    data = tomllib.loads(path.read_text()) if path.exists() else {}
+    allowed = set()
+    for entry in data.get("allow", []):
+        if not entry.get("reason", "").strip():
+            raise ValueError(f"{path.name}: an exception has no reason: {entry}")
+        exception = SaveException(entry.get("unit"), entry.get("key"),
+                                  entry.get("file"), entry.get("text"))
+        if not ((exception.unit and exception.key) or (exception.file and exception.text)):
+            raise ValueError(f"{path.name}: name `unit` and `key`, or `file` and `text`: {entry}")
+        allowed.add(exception)
+    return allowed
+
+
+def rust_sources(root: Path) -> list[Path]:
+    """Production Rust sources of apps and crates."""
+    found = []
+    for top in ("apps", "crates"):
+        base = root / top
+        if not base.is_dir():
+            continue
+        for path in base.rglob("*.rs"):
+            relative = path.relative_to(root)
+            if ("target" in relative.parts or "src" not in relative.parts
+                    or any(part.startswith(".") for part in relative.parts)
+                    or rust_source.is_test_file(relative)):
+                continue
+            found.append(path)
+    return sorted(found)
+
+
+def routine_save_literals(root: Path) -> list[tuple[str, int, str]]:
+    """(file, line, text) of each production string literal that announces
+    routine saving in English."""
+    found = []
+    for path in rust_sources(root):
+        text = path.read_text(errors="replace")
+        if "Sav" not in text and "sav" not in text:
+            continue
+        code, literals = rust_source.lex(text)
+        # Mark each literal so blanking test items shows which it took.
+        marked = list(code)
+        for literal in literals:
+            for index in range(literal.start, literal.end):
+                if marked[index] != "\n":
+                    marked[index] = "x"
+        kept = rust_source.blank_test_items("".join(marked))
+        for literal in literals:
+            if literal.byte or kept[literal.start] != "x":
+                continue
+            value = re.sub(r"\{[^{}]*\}", "…", literal.value.replace("\\u{2026}", "…"))
+            # Lower-case literals are identifiers ("saved" as a state's id).
+            if value[:1].isupper() and routine_save("en", value):
+                found.append((path.relative_to(root).as_posix(),
+                              rust_source.line_number(text, literal.start), literal.value))
     return found
 
 
@@ -320,9 +432,12 @@ def scan(root: Path, glossary: list[Term]) -> dict[str, list[tuple[str, Message,
     return found
 
 
-def check(root: Path, glossary_path: Path, baseline_dir: Path) -> list[str]:
+def check(root: Path, glossary_path: Path, baseline_dir: Path,
+          save_exceptions_path: Path | None = None) -> list[str]:
     glossary = load_glossary(glossary_path)
     baseline = load_baseline(baseline_dir)
+    exceptions = load_save_exceptions(save_exceptions_path) if save_exceptions_path else set()
+    used: set[SaveException] = set()
     errors = []
     found = scan(root, glossary)
     for unit in sorted(set(found) | set(baseline)):
@@ -333,10 +448,25 @@ def check(root: Path, glossary_path: Path, baseline_dir: Path) -> list[str]:
             if entry in allowed:
                 seen.add(entry)
                 continue
+            if rule == "save-status":
+                exception = SaveException(unit, message.key.split(".")[0], None, None)
+                if exception in exceptions:
+                    used.add(exception)
+                    continue
             errors.append(f"{unit} {locale}.ftl:{message.line}: {message.key} {detail} [{rule}]")
         for locale, key, rule in sorted(allowed - seen):
             errors.append(f"{baseline_dir.name}/{unit}.txt: {locale} {key} {rule} "
                           "no longer applies; delete the line")
+    for file, line, text in routine_save_literals(root):
+        exception = SaveException(None, None, file, text)
+        if exception in exceptions:
+            used.add(exception)
+            continue
+        errors.append(f"{file}:{line}: \"{text}\" announces routine saving; saving says "
+                      "nothing unless it stalls or fails (ui::SaveStatusSurface) [save-status]")
+    name = save_exceptions_path.name if save_exceptions_path else "save exceptions"
+    for exception in sorted(exceptions - used, key=repr):
+        errors.append(f"{name}: {exception} no longer matches anything; delete it")
     return errors
 
 
@@ -347,7 +477,7 @@ def main(argv: list[str]) -> int:
             for locale, message, rule, _ in entries:
                 print(unit, locale, message.key.split(".")[0], rule)
         return 0
-    errors = check(ROOT, GLOSSARY, BASELINE)
+    errors = check(ROOT, GLOSSARY, BASELINE, SAVE_EXCEPTIONS)
     if errors:
         print("\n".join(errors))
         return 1

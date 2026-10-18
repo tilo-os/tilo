@@ -250,6 +250,47 @@ impl ShellDriver {
         true
     }
 
+    /// Put the cursor 2 px inside group `group_idx`'s leading or trailing
+    /// edge, at mid-height: on the edge grip a person grabs.
+    pub fn move_cursor_to_group_edge(&mut self, group_idx: usize, leading: bool) -> bool {
+        let strip_id = {
+            let state = self.chrome();
+            let tree = state.tree();
+            tree.desktop
+                .active_workspace()
+                .and_then(|workspace| workspace.strips.first())
+                .map(|strip| strip.id)
+        };
+        let Some(strip_id) = strip_id else {
+            return false;
+        };
+        let Some(rect) = self
+            .host_mut()
+            .group_at_for_tests(strip_id, group_idx)
+            .map(|group| group.get_rect())
+        else {
+            return false;
+        };
+        let x = if leading {
+            rect.x0 + 2.0
+        } else {
+            rect.x1 - 2.0
+        };
+        self.move_cursor(Point::new(x, rect.center().y));
+        true
+    }
+
+    /// Where the last dispatched pointer move put the cursor.
+    pub fn cursor(&self) -> Point {
+        self.last_cursor
+    }
+
+    /// Move the cursor `dx` px sideways from where it last was.
+    pub fn move_cursor_by(&mut self, dx: f64) {
+        let p = self.last_cursor;
+        self.move_cursor(Point::new(p.x + dx, p.y));
+    }
+
     /// Carry the active whole-group drag past another group's midpoint.
     /// The small over-travel makes the intended after-slot unambiguous while
     /// retaining the source grab's y coordinate and pointer capture.
@@ -319,6 +360,9 @@ impl ShellDriver {
     /// `Key(Tab)` then sees `is_mod = true` inside the host.
     pub fn set_modifiers(&mut self, state: ModifiersState) {
         self.modifiers = Modifiers::from(state);
+        // As the compositor does on `ModifiersChanged`: an open search
+        // previews what Enter does with the modifier held.
+        let _ = self.host_mut().note_held_modifiers(state);
     }
 
     /// Dispatch a single `WindowEvent` through the host's `handle_event`
@@ -1566,6 +1610,10 @@ impl ShellDriver {
             "palette_records" => self.scene_palette_records(),
             "palette_no_results" => self.scene_palette_no_results(),
             "palette_typed" => self.scene_palette_typed(),
+            "palette_rechner" => self.scene_palette_query("rechner"),
+            "palette_sum" => self.scene_palette_query("2+2"),
+            "palette_move" => self.scene_palette_query("move"),
+            "palette_files" => self.scene_palette_query("files"),
             "topbar-edit" => self.scene_topbar_edit(),
             "quick-settings" => self.scene_quick_settings(),
             "qs-edit" => self.scene_qs_edit(false),
@@ -1598,6 +1646,11 @@ impl ShellDriver {
             "launchpad" => self.scene_launchpad(),
             "launchpad-notes-card" => self.scene_launchpad_notes_card(),
             "peer-sync" => self.scene_peer_sync(),
+            "overview-lounge" => self.scene_overview_lounge(),
+            "join-field" => self.scene_join_field(),
+            "pairing-sheet" => self.scene_pairing_sheet(),
+            "device-asking" => self.scene_device_asking(),
+            "lounge-open" => self.scene_lounge_open(),
             "projection" => self.scene_projection(),
             "window-switcher" => self.scene_window_switcher(),
             "emoji-picker" => self.scene_emoji_picker(),
@@ -1655,6 +1708,104 @@ impl ShellDriver {
     fn scene_overview(&mut self) {
         self.with_chrome(|st| st.overlays.overview = true);
         self.fb.host_mut().force_overview_settled(true);
+    }
+
+    /// The community workspace a computer is in by default, among the
+    /// person's own: the overview offers to leave it, and to join another.
+    fn scene_overview_lounge(&mut self) {
+        let lounge = self.seed_lounge();
+        self.fb
+            .host_mut()
+            .set_site_rooms_for_shots(vec![lounge_site(lounge)]);
+        // People at their desks in the community workspace, as its
+        // presence reports them.
+        self.with_chrome(|st| {
+            let mut tree = st.tree_mut();
+            if let Some(ws) = tree
+                .desktop
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.room == lounge)
+            {
+                for (id, name) in [("mira", "Mira"), ("jonas", "Jonas"), ("li", "Li")] {
+                    ws.collaborators
+                        .push(shell::shell::state::Collaborator::new(id, name));
+                }
+            }
+        });
+        self.with_chrome(|st| st.overlays.overview = true);
+        self.fb.host_mut().force_overview_settled(true);
+    }
+
+    /// Append the community workspace, as joining it through its site does,
+    /// and answer its room.
+    fn seed_lounge(&mut self) -> shell::shell::state::RoomId {
+        let mut lounge = None;
+        self.with_chrome(|st| {
+            let mut tree = st.tree_mut();
+            let id = tree.append_empty_workspace("Lounge");
+            lounge = tree
+                .desktop
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.id == id)
+                .map(|workspace| workspace.room);
+        });
+        lounge.expect("the Lounge was appended")
+    }
+
+    /// "Join a workspace…" with a site typed in it.
+    fn scene_join_field(&mut self) {
+        self.fb.host_mut().prompt_join_for_shots("tilo.coffee");
+        self.step_frames(2);
+    }
+
+    /// "Pair a new device": the link as a QR code, the link and what to do.
+    fn scene_pairing_sheet(&mut self) {
+        let lounge = self.seed_lounge();
+        self.fb.host_mut().show_pairing_for_shots(&format!(
+            "https://tilo.coffee/#/@eu1.tilo.coffee/w/{lounge}?pair={}{}",
+            "a1".repeat(32),
+            "5c".repeat(16)
+        ));
+        self.step_frames(2);
+    }
+
+    /// The notification a new device asking to be the person raises.
+    fn scene_device_asking(&mut self) {
+        let asking = shell::shell::peer_sync_overlay::DeviceAskingSummary {
+            digest: [7; 32],
+            label: "Safari on iPhone".into(),
+            code: "482 917".into(),
+            requested_at_ms: tilo_clock::unix_now_ms(),
+            country: Some("NL".into()),
+        };
+        self.with_chrome(|st| {
+            st.push_device_asking(&asking);
+        });
+        self.step_frames(8);
+    }
+
+    /// The community workspace in front, as opening one of its links does.
+    fn scene_lounge_open(&mut self) {
+        let lounge = self.seed_lounge();
+        self.fb
+            .host_mut()
+            .set_site_rooms_for_shots(vec![lounge_site(lounge)]);
+        self.with_chrome(|st| {
+            let id = st
+                .tree()
+                .desktop
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.room == lounge)
+                .map(|workspace| workspace.id);
+            if let Some(id) = id {
+                st.tree_mut().set_active(id);
+            }
+            st.bump();
+        });
+        self.step_frames(4);
     }
 
     /// The same panel with the room actually shared: members on this room
@@ -1735,6 +1886,20 @@ impl ShellDriver {
         self.fb
             .host_mut()
             .set_palette_query("zzzz-nothing-matches-this");
+        let root = self.root_obj.clone();
+        self.fb
+            .host_mut()
+            .refresh_search_results_for_shots(&mut self.state, &root);
+    }
+
+    /// Search answering one typed query, for the queries search used to get
+    /// wrong: a German word that offered Restart, arithmetic, the move verb
+    /// and an open app's name.
+    fn scene_palette_query(&mut self, query: &str) {
+        self.fb.host_mut().set_palette_visible(true);
+        self.fb.host_mut().set_palette_focus(true);
+        self.fb.host_mut().force_palette_settled();
+        self.fb.host_mut().set_palette_query(query);
         let root = self.root_obj.clone();
         self.fb
             .host_mut()
@@ -2605,9 +2770,9 @@ impl ShellDriver {
 
     fn scene_notifications(&mut self) {
         use tilo_desktop::notifications::{Notification, NotificationSeverity};
-        // Backdate `created_at` past the slide-in window: at t=0 a
-        // toast's `enter` progress is ~0 and `slide_dx == TOAST_WIDTH`
-        // pushes it entirely off-screen-right.
+        // On screen since past the slide-in window: at t=0 a toast's
+        // `enter` progress is ~0 and `slide_dx == TOAST_WIDTH` pushes it
+        // entirely off-screen-right.
         let settled_at = Instant::now()
             .checked_sub(Duration::from_secs(1))
             .unwrap_or_else(Instant::now);
@@ -2624,14 +2789,14 @@ impl ShellDriver {
                     .with_app_name("Chat")
                     .with_from("Ada", "peer:ada")
                     .with_dismiss_after(Duration::from_secs(60))
-                    .with_created_at(settled_at),
+                    .with_shown_at(settled_at),
             );
             st.push_notification_full(
                 Notification::new("Lena shared “Q3 plan”", "You can edit it.")
                     .with_app_name("Files")
                     .with_from("Lena", "peer:lena")
                     .with_dismiss_after(Duration::from_secs(60))
-                    .with_created_at(settled_at),
+                    .with_shown_at(settled_at),
             );
             st.push_notification_full(
                 Notification::new(
@@ -2641,7 +2806,7 @@ impl ShellDriver {
                 .with_app_name("Backups")
                 .with_severity(NotificationSeverity::Warning)
                 .with_dismiss_after(Duration::from_secs(60))
-                .with_created_at(settled_at),
+                .with_shown_at(settled_at),
             );
         });
     }
@@ -2656,7 +2821,7 @@ impl ShellDriver {
                 Notification::new("Build finished", "All 524 tests passed")
                     .with_severity(NotificationSeverity::Info)
                     .with_dismiss_after(Duration::from_secs(60))
-                    .with_created_at(settled_at),
+                    .with_shown_at(settled_at),
             );
         });
     }
@@ -2673,11 +2838,11 @@ impl ShellDriver {
                 Notification::new("Meeting in 10 minutes", "Standup — Research workspace")
                     .with_severity(NotificationSeverity::Info)
                     .with_dismiss_after(Duration::from_secs(60))
-                    .with_created_at(settled_at),
+                    .with_shown_at(settled_at),
             );
             // Engage Do-Not-Disturb, then post two more — these are
-            // suppressed from the banner surface and held in
-            // history, so the DND pill reads "… · 2 held".
+            // suppressed from the banner surface and held in history.
+            // No card says so over the work: the bar's bell is silenced.
             st.set_dnd(true);
             st.push_notification_full(
                 Notification::new("Slow network", "Peer sync delayed")
@@ -2898,6 +3063,10 @@ impl ShellDriver {
         "palette_app_query",
         "palette_records",
         "palette_no_results",
+        "palette_rechner",
+        "palette_sum",
+        "palette_move",
+        "palette_files",
         "topbar-edit",
         "quick-settings",
         "qs-edit",
@@ -2923,6 +3092,11 @@ impl ShellDriver {
         "launchpad",
         "launchpad-notes-card",
         "peer-sync",
+        "overview-lounge",
+        "join-field",
+        "pairing-sheet",
+        "device-asking",
+        "lounge-open",
         "projection",
         "window-switcher",
         "emoji-picker",
@@ -3464,5 +3638,14 @@ mod tests {
             "both groups laid out before body click"
         );
         (files_tab_id, files_rect)
+    }
+}
+
+/// The community workspace as the network names it: tilo.coffee's.
+fn lounge_site(room: shell::shell::state::RoomId) -> shell::shell::network::SiteRoom {
+    shell::shell::network::SiteRoom {
+        room,
+        site: Some("tilo.coffee".into()),
+        community: true,
     }
 }

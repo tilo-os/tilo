@@ -11,6 +11,7 @@
     reason = "in a test these are the assertion, not a hazard; one recorded login per test"
 )]
 
+use std::fmt::Write as _;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -394,6 +395,81 @@ fn the_render_gate_holds_presentation_to_its_contract() {
     let missing = report(root, &["--render-gate"]);
     assert_eq!(missing.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&missing.stderr).contains("no session flight record at"));
+}
+
+/// The device's latency bar, opt-in: keys show within the budget at the
+/// median, and most direct frames repair only their damage or scan a
+/// client out instead of rendering the whole output.
+#[test]
+fn the_render_gate_holds_typing_and_damage_to_the_latency_bar() {
+    let directory = tempfile::tempdir().expect("directory");
+    let root = directory.path();
+    let enabled = "direct_scanout_status=enabled format=Xrgb8888 renderer_pci= earlier_failures=0 DRM direct scanout enabled\n";
+    let summary = |sparse: u32, scanout: u32| {
+        format!(
+            "frames=100 direct_frames=100 direct_dropped=0 flip_completions=100 unprofiled_frames=0 window_us=2000000 bridge_us=0 scanout_us=0 readback_bytes=0 output_bytes=0 avg_direct_us=6000 max_direct_us=9000 direct_sparse_frames={sparse} client_scanout_frames={scanout} direct_failures=0 direct_scanout_status=enabled direct_scanout_reason=\"not-initialized\" DRM render phase summary\n"
+        )
+    };
+    let keys = |present_ms: [u32; 3]| {
+        present_ms.iter().fold(String::new(), |mut lines, ms| {
+            let _ = writeln!(
+                lines,
+                "KEY-LATENCY app=org.alacritty key_to_commit_us=3000 key_to_submit_us=5000 key_to_present_us={}",
+                ms * 1000
+            );
+            lines
+        })
+    };
+    let bar = [
+        "--key-budget-ms",
+        "20",
+        "--min-damage-limited-percent",
+        "80",
+    ];
+
+    let fast = gate(
+        root,
+        &[enabled.to_owned(), summary(50, 40), keys([12, 15, 40])].concat(),
+        &bar,
+    );
+    assert!(fast.status.success(), "{fast:?}");
+
+    let dense = gate(
+        root,
+        &[enabled.to_owned(), summary(13, 0), keys([12, 15, 40])].concat(),
+        &bar,
+    );
+    assert_eq!(dense.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&dense.stderr).contains(
+            "13 of 100 direct frames repaired only their damage or scanned a client out, under 80 %"
+        ),
+        "{dense:?}"
+    );
+
+    let slow = gate(
+        root,
+        &[enabled.to_owned(), summary(90, 0), keys([50, 57, 89])].concat(),
+        &bar,
+    );
+    assert_eq!(slow.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&slow.stderr).contains(
+            "keys typed into org.alacritty took 57000 us to show at the median over 3 keys, budget 20000 us"
+        ),
+        "{slow:?}"
+    );
+
+    // Without the flags, neither is gated.
+    assert!(
+        gate(
+            root,
+            &[enabled.to_owned(), summary(13, 0), keys([50, 57, 89])].concat(),
+            &[]
+        )
+        .status
+        .success()
+    );
 }
 
 #[test]

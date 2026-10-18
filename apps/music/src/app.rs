@@ -852,7 +852,9 @@ impl MusicApp {
             scroll_target: None,
             frame_theme: None,
             content_height: 0.0,
-            drawer: SidebarDrawer::new().left(),
+            drawer: SidebarDrawer::new()
+                .left()
+                .content_kind(ui::widget::ContentKind::List),
             history: ui::widget::HistoryOpener::new(),
             history_rect: Rect::ZERO,
             bar_h: 0.0,

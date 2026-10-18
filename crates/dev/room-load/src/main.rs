@@ -370,7 +370,7 @@ async fn bench(args: BenchArgs) -> anyhow::Result<()> {
     );
 
     let relay = Arc::new(http::Plain::new(origin_addr(&started.origin)?));
-    let host_info = tilo_browser_peer::carrier::host_info(relay.as_ref())
+    let host_info = tilo_browser_peer::host_info(relay.as_ref())
         .await
         .map_err(|error| anyhow::anyhow!("host info: {error}"))?;
     let stats = Arc::new(stats::Stats::default());

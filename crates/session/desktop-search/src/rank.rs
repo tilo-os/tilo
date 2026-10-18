@@ -4,8 +4,8 @@
 use ui::search::FieldWeight;
 use ui::search::system::{RankField, provider_score, rank_fields};
 
-/// An app's searchable fields: its name and identity, its category and
-/// description, and every other word it is known by — the keywords its
+/// An app's searchable fields: its name in every language and its identity,
+/// its category and description, and every other word it is known by — the keywords its
 /// manifest declares (the generated registry knows them for every first-party
 /// app), and the initials of its name.
 pub fn application_fields(
@@ -20,7 +20,7 @@ pub fn application_fields(
         package_id,
         category,
         description,
-        [],
+        crate::availability::names_for(package_id).iter().copied(),
         keywords.iter().copied(),
     )
 }

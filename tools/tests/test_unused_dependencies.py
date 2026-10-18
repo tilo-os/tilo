@@ -34,6 +34,47 @@ class UnusedDependencyTests(unittest.TestCase):
             self.assertEqual(args[:2], ["machete", "--with-metadata"])
             self.assertCountEqual(args[2:], ["Cargo.toml", "apps", "tools", "crates"])
 
+    def test_metadata_runs_in_writable_snapshot_without_changing_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "-q", directory], check=True)
+            (root / "Cargo.toml").write_text("[workspace]\nmembers = []\n")
+            lock = root / "Cargo.lock"
+            lock.write_text("original lock\n")
+            lock.chmod(0o444)
+            standalone = root / "standalone"
+            standalone.mkdir()
+            manifest = standalone / "Cargo.toml"
+            manifest.write_text("[workspace]\n[package]\nname = 'standalone'\nversion = '0.1.0'\n")
+            (root / ".gitignore").write_text("ignored\n")
+            (root / "ignored").write_text("not a source input\n")
+            subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+            # A deleted tracked file must stay deleted in the snapshot.
+            manifest.unlink()
+            binary = root / "bin"
+            binary.mkdir()
+            cargo = binary / "cargo"
+            cargo.write_text(
+                '#!/bin/sh\nset -eu\n'
+                'test "$PWD" != "$TILO_REPO_ROOT"\n'
+                'test -f Cargo.toml\n'
+                'test ! -e standalone/Cargo.toml\n'
+                'test ! -e ignored\n'
+                'printf "%s" "$PWD" > "$SNAPSHOT"\n'
+                'printf "metadata lock\\n" > Cargo.lock\n'
+                'exit 1\n'
+            )
+            cargo.chmod(0o755)
+            snapshot = root / "snapshot-path"
+            env = dict(os.environ, TILO_REPO_ROOT=str(root), SNAPSHOT=str(snapshot),
+                       PATH=str(binary) + os.pathsep + os.environ["PATH"])
+            result = subprocess.run(["bash", str(SCRIPT)], env=env,
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertTrue(snapshot.exists(), "the metadata command must run")
+            self.assertEqual(lock.read_text(), "original lock\n")
+            self.assertFalse(Path(snapshot.read_text()).exists(), "snapshot must be cleaned on failure")
+
     def test_the_hakari_generated_crate_is_never_scanned(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

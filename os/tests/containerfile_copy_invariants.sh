@@ -255,7 +255,9 @@ containerfile="$repo/os/Containerfile"
 # hardware_profile.py no longer ships: the image reads its profile with the
 # compiled reader, so the component staging row for it is gone.
 # verify-no-python-runtime.sh is copied in for the rootfs's final checks.
-expected_contract=0b60d55a8bc7bf7c42bc8aefb859cf82dbb99e43ec5e475cc0041c5b1612a4c3
+# The community workspace's vendor default (/usr/share/tilo/community.toml),
+# which names the site a computer is in by default, is a deliberate addition.
+expected_contract=5b38cfd346cedfff89c98654689de89a044d790bcb627df9222f63bd42df30a6
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

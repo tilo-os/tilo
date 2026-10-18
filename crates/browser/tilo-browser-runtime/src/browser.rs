@@ -344,7 +344,7 @@ struct Desktop {
     /// The name and colour each person who opened a window here had when
     /// last seen, by user root: their windows still name them once they
     /// left.
-    people: RefCell<HashMap<String, (String, (u8, u8, u8))>>,
+    people: RefCell<HashMap<String, crate::desktop::PersonIdentity>>,
 }
 
 impl Desktop {
@@ -1077,6 +1077,7 @@ fn present_desktop(
             permissions,
             models: config.models()?,
             provider_admin: config.provider_admin()?,
+            peer: config.peer,
         },
         dyn_store,
         config.apps.as_deref(),
@@ -1204,33 +1205,18 @@ fn present_component(
         .load(config.instance)
         .map_err(error)?
         .map_or(RestoreInput::None, RestoreInput::Local);
+    let inputs = HostContextInputs {
+        records: record.clone(),
+        views,
+        device_id: config.device.clone(),
+        instance_id: config.instance,
+        permissions,
+        author: UserId(config.author()),
+        action_context: tilo_actions::ActionContext::default(),
+    };
     let mut context = match named_new {
-        Some(id) => HostContext::prepare_new_record(
-            definition,
-            HostContextInputs {
-                records: record.clone(),
-                views,
-                device_id: config.device.clone(),
-                instance_id: config.instance,
-                permissions,
-                author: UserId(config.author()),
-                action_context: tilo_actions::ActionContext::default(),
-            },
-            id,
-        ),
-        None => HostContext::prepare(
-            definition,
-            HostContextInputs {
-                records: record.clone(),
-                views,
-                device_id: config.device.clone(),
-                instance_id: config.instance,
-                permissions,
-                author: UserId(config.author()),
-                action_context: tilo_actions::ActionContext::default(),
-            },
-            &target,
-        ),
+        Some(id) => HostContext::prepare_new_record(definition, inputs, id),
+        None => HostContext::prepare(definition, inputs, &target),
     }
     .map_err(error)?;
     context.provide_models(config.models()?);
@@ -2145,13 +2131,11 @@ impl Mount {
         let mut encoder = handle
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        gpu.surface.blitter.copy(
+        ui::gpu::draw_target_to_surface(
             &handle.device,
             &mut encoder,
-            &gpu.surface.target_view,
-            &output
-                .texture
-                .create_view(&wgpu::TextureViewDescriptor::default()),
+            &gpu.surface,
+            &output.texture,
         );
         handle.queue.submit([encoder.finish()]);
         // The first frame is out: the pipelines it did not need compile now.
@@ -2685,10 +2669,12 @@ pub fn desktop_navigation_snapshot(id: u64) -> Result<Option<String>, JsValue> {
     })
 }
 
-/// Where the desktop shows each record right now: `[{record, rect: [x0, y0,
-/// x1, y1]}]` for the active tab of every window in the shown strip, in the
-/// surface's CSS pixels. The page draws a collaborator's pointer inside the
-/// window of the record it is focused on. `None` for a single application.
+/// Where the desktop shows each record right now: `[{app, record, rect:
+/// [x0, y0, x1, y1]}]` for the active tab of every window in the shown
+/// strip, in the surface's CSS pixels, each record named as the room's live
+/// layer names a member's focus. The page draws a collaborator's pointer
+/// inside the window of the record it is focused on. `None` for a single
+/// application.
 ///
 /// # Errors
 ///
@@ -2700,18 +2686,20 @@ pub fn desktop_record_windows(id: u64) -> Result<Option<String>, JsValue> {
         m.desktop
             .as_ref()
             .map(|d| {
-                let windows: Vec<serde_json::Value> = d
-                    .handle
-                    .shown_tabs()
-                    .into_iter()
-                    .filter_map(|(tab, rect)| {
-                        let record = d.shared.record_of(tab)?;
-                        Some(serde_json::json!({
-                            "record": record,
-                            "rect": [rect.x0, rect.y0, rect.x1, rect.y1],
-                        }))
-                    })
-                    .collect();
+                let shown = d.handle.shown_tabs();
+                let windows: Vec<serde_json::Value> = d.handle.read(|tree| {
+                    shown
+                        .into_iter()
+                        .filter_map(|(tab, rect)| {
+                            let (app, record) = d.shared.live_record_of(tree, tab)?;
+                            Some(serde_json::json!({
+                                "app": app,
+                                "record": record,
+                                "rect": [rect.x0, rect.y0, rect.x1, rect.y1],
+                            }))
+                        })
+                        .collect()
+                });
                 serde_json::to_string(&windows).map_err(error)
             })
             .transpose()
@@ -2880,6 +2868,34 @@ pub fn desktop_acknowledge(id: u64, text: &str) -> Result<(), JsValue> {
             .ok_or_else(|| error("Desktop unavailable"))?
             .handle
             .acknowledge(text);
+        m.window.request_redraw();
+        Ok(())
+    })
+}
+
+/// The room's host answered the room action `request` the desktop asked for
+/// (a `room-action` host request): `answer` is `{"ok": value}` or
+/// `{"error": "why"}`.
+///
+/// # Errors
+///
+/// Rejects a closed or single-application mount, or an answer of neither
+/// form.
+#[wasm_bindgen]
+pub fn desktop_room_action_answer(id: u64, request: u32, answer: &str) -> Result<(), JsValue> {
+    let answer: serde_json::Value = serde_json::from_str(answer).map_err(error)?;
+    let answer = match (answer.get("ok"), answer.get("error")) {
+        (Some(value), None) => Ok(value.clone()),
+        (None, Some(why)) => Err(why.as_str().unwrap_or("refused").to_owned()),
+        _ => return Err(error("a room action answer is {ok} or {error}")),
+    };
+    with_mount(id, |m| {
+        let desktop = m
+            .desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?;
+        desktop.shared.room_actions.answer(request, answer);
+        m.pending = true;
         m.window.request_redraw();
         Ok(())
     })

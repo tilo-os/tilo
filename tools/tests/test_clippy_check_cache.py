@@ -18,6 +18,8 @@ class ClippyCheckCacheTests(unittest.TestCase):
             tree = Path(folder)
             (tree / "tools/ci").mkdir(parents=True)
             shutil.copy(SCRIPT, tree / "tools/ci/clippy-check.sh")
+            # The script picks the package's features through this helper.
+            shutil.copy(ROOT / "tools/ci/package_features.py", tree / "tools/ci/package_features.py")
             bin_dir = tree / "bin"
             bin_dir.mkdir()
             seen = tree / "rustc-seen"
@@ -46,6 +48,8 @@ class ClippyCheckCacheTests(unittest.TestCase):
             tree = Path(folder)
             (tree / "tools/ci").mkdir(parents=True)
             shutil.copy(SCRIPT, tree / "tools/ci/clippy-check.sh")
+            # The script picks the package's features through this helper.
+            shutil.copy(ROOT / "tools/ci/package_features.py", tree / "tools/ci/package_features.py")
             shutil.copy(ROOT / "tools/ci/compiler_inputs.py", tree / "tools/ci/compiler_inputs.py")
             bin_dir = tree / "bin"
             bin_dir.mkdir()

@@ -40,6 +40,18 @@ pub enum PeerSyncRequest {
         recipient_user_public_key: [u8; 32],
     },
     AcceptInvite(String),
+    /// Leave a site's workspace: it goes from this computer, and is not
+    /// joined again unasked.
+    LeaveSite(crate::shell::state::RoomId),
+    /// Make a pairing link for a new device of the person.
+    InviteDevice,
+    /// The new devices asking under this computer's open pairing links.
+    DevicesAsking,
+    /// Approve or decline a new device asking to be the person.
+    AnswerDevice {
+        digest: [u8; 32],
+        approve: bool,
+    },
     PollEnrollment(u64),
     CancelEnrollment(u64),
     ListPendingInvitations,
@@ -138,10 +150,38 @@ pub enum InviteRecipientPath {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PeerSyncResponse {
-    EnrollmentPending { id: u64 },
-    EnrollmentJoined { id: u64, room: String },
+    EnrollmentPending {
+        id: u64,
+    },
+    EnrollmentJoined {
+        id: u64,
+        room: String,
+    },
     Message(String),
     PendingInvitations(Vec<PendingInvitationSummary>),
+    /// A pairing link for a new device, and when it stops admitting one
+    /// (Unix-epoch milliseconds).
+    PairingInvite {
+        link: String,
+        expires_at_ms: u64,
+    },
+    /// The new devices asking to be the person.
+    DevicesAsking(Vec<DeviceAskingSummary>),
+}
+
+/// A new device asking to be the person, as the approval card shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceAskingSummary {
+    /// The request, as the answer names it.
+    pub digest: [u8; 32],
+    /// What it calls itself (such as "Safari on iPhone").
+    pub label: String,
+    /// The code it shows.
+    pub code: String,
+    /// When the host received it, Unix-epoch milliseconds.
+    pub requested_at_ms: u64,
+    /// Where it came from, when the host can say (ISO 3166-1 alpha-2).
+    pub country: Option<String>,
 }
 
 impl From<String> for PeerSyncResponse {
@@ -170,6 +210,12 @@ pub struct PeerSyncSnapshot {
     pub invite_review_open: bool,
     pub invite_context: InviteContext,
     pub status: Option<String>,
+    /// "Pair a new device" is open.
+    pub pairing_open: bool,
+    /// Its link, once made: what the new device opens.
+    pub pairing_link: Option<String>,
+    /// The link went to the clipboard.
+    pub pairing_copied: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -188,6 +234,7 @@ enum Button {
     CancelPending([u8; 32]),
     PasteIdentity,
     CopyIdentity,
+    CopyPairLink,
 }
 
 /// What one painted target says, for assistive technology.
@@ -248,6 +295,9 @@ pub struct PeerSyncOverlay {
     enrollment: Option<u64>,
     enrollment_poll_at: Option<std::time::Instant>,
     retired_enrollments: std::collections::VecDeque<u64>,
+    /// Turns beside "Waiting for your new device…" while a pairing link is
+    /// out.
+    waiting: ui::widget::Spinner,
 }
 
 impl PeerSyncOverlay {
@@ -280,6 +330,58 @@ impl PeerSyncOverlay {
         self.state.connect_input.is_some()
             || self.state.invite_token.is_some()
             || self.state.invite_name.is_some()
+            || self.state.pairing_open
+    }
+
+    /// Open "Pair a new device": the link is being made.
+    pub fn prompt_pair(&mut self) {
+        self.retire_enrollment();
+        self.state.invite_name = None;
+        self.state.connect_input = None;
+        self.state.invite_token = None;
+        self.state.invite_review_open = false;
+        self.state.pairing_open = true;
+        self.state.pairing_link = None;
+        self.state.pairing_copied = false;
+        self.state.status = Some(t("pairing-making"));
+    }
+
+    /// Show the pairing link the network made, while the sheet is open.
+    pub fn show_pairing(&mut self, link: String) {
+        if !self.state.pairing_open {
+            return;
+        }
+        self.state.pairing_link = Some(link);
+        self.state.pairing_copied = false;
+        self.state.status = Some(t("pairing-waiting"));
+    }
+
+    /// Whether the sheet animates: its waiting indicator turns while a
+    /// pairing link is out.
+    #[must_use]
+    pub fn needs_animation_frame(&self) -> bool {
+        self.state.pairing_open
+            && self.state.pairing_link.is_some()
+            && ui::widget::Widget::needs_animation_frame(&self.waiting)
+    }
+
+    /// Say why no pairing link could be made.
+    pub fn pairing_failed(&mut self, error: &str) {
+        if self.state.pairing_open {
+            self.state.status = Some(error.to_owned());
+        }
+    }
+
+    /// Say that the device the link invited became one of the person's,
+    /// and close the sheet's waiting.
+    pub fn pairing_done(&mut self, label: &str) {
+        if self.state.pairing_open {
+            self.state.pairing_link = None;
+            self.state.status = Some(t_args(
+                "pairing-done",
+                &[("device", label.to_owned().into())],
+            ));
+        }
     }
 
     /// Set the display-only room context used by the invite review. Keeping it
@@ -398,12 +500,17 @@ impl PeerSyncOverlay {
                 self.enrollment_poll_at = None;
                 self.state.status = Some(format!("Join incomplete: {error}"));
             }
-            // An invitation action answers its caller, not this card.
+            // An invitation action answers its caller, not this card; leaving
+            // a workspace and pairing a device answer the surfaces that asked.
             (
                 PeerSyncRequest::PollEnrollment(_)
                 | PeerSyncRequest::CancelEnrollment(_)
                 | PeerSyncRequest::IssueInvitation(_)
-                | PeerSyncRequest::PrepareInvitation,
+                | PeerSyncRequest::PrepareInvitation
+                | PeerSyncRequest::LeaveSite(_)
+                | PeerSyncRequest::InviteDevice
+                | PeerSyncRequest::DevicesAsking
+                | PeerSyncRequest::AnswerDevice { .. },
                 _,
             ) => {}
 
@@ -669,7 +776,25 @@ impl PeerSyncOverlay {
                 self.retire_enrollment();
                 self.state.connect_input = None;
                 self.state.invite_name = None;
+                self.state.pairing_open = false;
+                self.state.pairing_link = None;
+                self.state.pairing_copied = false;
                 self.state.status = None;
+                EventOutcome::consumed()
+            }
+            Button::CopyPairLink => {
+                if let Some(link) = self.state.pairing_link.as_deref() {
+                    // The link makes whoever opens it a device of the person
+                    // once approved: it stays out of clipboard history and
+                    // sync, and leaves the clipboard after a while.
+                    if ui::try_clipboard_copy_secret(link, INVITE_ON_CLIPBOARD_FOR).outcome()
+                        == Some(true)
+                    {
+                        self.state.pairing_copied = true;
+                    } else {
+                        self.state.status = Some(t("peer-sync-copy-failed"));
+                    }
+                }
                 EventOutcome::consumed()
             }
             Button::CopyToken => {
@@ -868,7 +993,9 @@ impl PeerSyncOverlay {
             body: body_size,
             name: tokens.typography.size(TextRole::Caption).max(12.0),
         };
-        let title = t(if self.state.invite_review_open {
+        let title = t(if self.state.pairing_open {
+            "pairing-title"
+        } else if self.state.invite_review_open {
             "peer-sync-title-review"
         } else if self.state.invite_name.is_some() {
             "peer-sync-title-invite"
@@ -877,10 +1004,16 @@ impl PeerSyncOverlay {
         } else {
             "peer-sync-title-workspace-invite"
         });
+        // Pairing is a guided sheet of its own, under a heading.
+        let title_role = if self.state.pairing_open {
+            TextRole::Heading
+        } else {
+            TextRole::Body
+        };
         let title = text_renderer.elide_to_width_style(
             &title,
             f32_of_f64(m.avail),
-            &theme.text(TextRole::Body),
+            &theme.text(title_role),
         );
         text_renderer.draw_style(
             scene,
@@ -888,9 +1021,13 @@ impl PeerSyncOverlay {
             colors.text_primary,
             transform.pre_translate((rect.x0 + pad, y).into()),
             None,
-            &theme.text(TextRole::Body),
+            &theme.text(title_role),
         );
-        y += f64::from(title_size) + f64::from(tokens.spacing.s3);
+        y += if self.state.pairing_open {
+            f64::from(theme.text(TextRole::Heading).line_height_px()) + f64::from(tokens.spacing.s4)
+        } else {
+            f64::from(title_size) + f64::from(tokens.spacing.s3)
+        };
         let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
         // The footer first: its buttons stay anchored to the sheet's bottom
         // edge, wrapping onto more rows on a narrow sheet, and the body
@@ -918,7 +1055,12 @@ impl PeerSyncOverlay {
         if self.state.invite_name.is_some() && !self.state.pending_invitations.is_empty() {
             y = self.draw_pending_invitations(&mut ctx, &m, y);
         }
-        if let Some(status) = self.state.status.as_deref() {
+        if let Some(status) = self
+            .state
+            .status
+            .as_deref()
+            .filter(|_| !self.state.pairing_open)
+        {
             let status = ctx.text.elide_to_width_style(
                 status,
                 f32_of_f64(m.avail),
@@ -1093,6 +1235,9 @@ impl PeerSyncOverlay {
     }
 
     fn draw_body(&mut self, ctx: &mut PaintCtx<'_>, m: &SheetMetrics, y: f64) -> f64 {
+        if self.state.pairing_open {
+            return self.draw_pairing(ctx, m, y);
+        }
         let invite_name = self.state.invite_name.clone();
         if let Some(typed) = invite_name.as_deref() {
             if self.state.invite_review_open {
@@ -1114,6 +1259,168 @@ impl PeerSyncOverlay {
         } else {
             draw_receiving(ctx, m, y, self.state.connect_input.as_deref().unwrap_or(""))
         }
+    }
+
+    /// "Pair a new device": the link as a large code a phone scans, the
+    /// link in a chip that copies it, the three ways a new device uses it,
+    /// why it is safe, and the sheet waiting for the device.
+    fn draw_pairing(&mut self, ctx: &mut PaintCtx<'_>, m: &SheetMetrics, mut y: f64) -> f64 {
+        let Some(link) = self.state.pairing_link.clone() else {
+            // Making the link, a failure or the device paired: one line.
+            return self.draw_pairing_status(ctx, m, y);
+        };
+        let SheetMetrics { rect, .. } = *m;
+        let spacing = &ctx.theme.tokens.spacing;
+        let (s3, s4) = (f64::from(spacing.s3), f64::from(spacing.s4));
+
+        // The code, large and centred.
+        let side = PAIRING_QR_SIDE.min(m.avail);
+        let qr_x = rect.center().x - side / 2.0;
+        let mut code = ui::widget::qr::QrWidget::new(link.as_bytes())
+            .with_secret()
+            .with_alt(t("pairing-qr-alt"));
+        code.set_bounds(Rect::new(qr_x, y, qr_x + side, y + side));
+        ui::widget::Widget::draw(
+            &mut code,
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            ctx.theme,
+            &ui::presence::PresenceCtx::empty(),
+        );
+        y += side + s3;
+        y = self.draw_pair_link_chip(ctx, m, y, &link) + s4;
+        y = draw_pairing_ways(ctx, m, y) + s3;
+        y = draw_pairing_safe(ctx, m, y) + s4;
+        self.draw_pairing_waiting(ctx, m, y)
+    }
+
+    /// The sheet's one line while no link is out.
+    fn draw_pairing_status(&self, ctx: &mut PaintCtx<'_>, m: &SheetMetrics, y: f64) -> f64 {
+        let Some(status) = self.state.status.as_deref() else {
+            return y;
+        };
+        let body = ctx.theme.text(TextRole::Body);
+        let (_, height) = ctx
+            .text
+            .measure_style(status, Some(f32_of_f64(m.avail)), &body);
+        ctx.text.draw_style(
+            ctx.scene,
+            status,
+            ctx.theme.tokens.colors.text_primary,
+            ctx.transform.pre_translate((m.rect.x0 + m.pad, y).into()),
+            Some(f32_of_f64(m.avail)),
+            &body,
+        );
+        y + f64::from(height)
+    }
+
+    /// The link, shortened to its site, in a centred chip that copies it.
+    fn draw_pair_link_chip(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        m: &SheetMetrics,
+        y: f64,
+        link: &str,
+    ) -> f64 {
+        let theme = ctx.theme;
+        let tokens = &theme.tokens;
+        let caption = theme.text(TextRole::Caption);
+        let caption_h = f64::from(caption.line_height_px());
+        let (s2, s3) = (f64::from(tokens.spacing.s2), f64::from(tokens.spacing.s3));
+        let copied = self.state.pairing_copied;
+        let chip_text = if copied {
+            t("pairing-copied")
+        } else {
+            format!("{} · {}", short_pairing_link(link), t("pairing-copy-link"))
+        };
+        let icon = 14.0;
+        let (text_w, _) = ctx.text.measure_style(&chip_text, None, &caption);
+        let chip_h = f64::from(tokens.metrics.min_pointer_target).max(caption_h + s2 * 2.0);
+        let chip_w = (icon + s2 + f64::from(text_w) + s3 * 2.0).min(m.avail);
+        let cx = m.rect.center().x;
+        let chip = Rect::new(cx - chip_w / 2.0, y, cx + chip_w / 2.0, y + chip_h);
+        ctx.scene.fill(
+            Fill::NonZero,
+            ctx.transform,
+            rest_floor(theme),
+            None,
+            &RoundedRect::from_rect(chip, chip_h / 2.0),
+        );
+        let mid = chip.center().y;
+        ui::icons::draw_icon(
+            ctx.scene,
+            ctx.transform,
+            Rect::new(
+                chip.x0 + s3,
+                mid - icon / 2.0,
+                chip.x0 + s3 + icon,
+                mid + icon / 2.0,
+            ),
+            if copied {
+                ui::icons::Icon::Check
+            } else {
+                ui::icons::Icon::Copy
+            },
+            tokens.colors.text_primary,
+            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
+        let shown = ctx.text.elide_to_width_style(
+            &chip_text,
+            f32_of_f64((chip_w - icon - s2 - s3 * 2.0).max(0.0)),
+            &caption,
+        );
+        ctx.text.draw_style(
+            ctx.scene,
+            &shown,
+            tokens.colors.text_primary,
+            ctx.transform
+                .pre_translate((chip.x0 + s3 + icon + s2, mid - caption_h / 2.0).into()),
+            None,
+            &caption,
+        );
+        self.button_rects.push((Button::CopyPairLink, chip));
+        self.button_labels.push(DrawnLabel {
+            label: t("pairing-copy-link"),
+            description: None,
+            selected: None,
+        });
+        y + chip_h
+    }
+
+    /// Waiting, gently: a small turning indicator beside the line, centred.
+    fn draw_pairing_waiting(&mut self, ctx: &mut PaintCtx<'_>, m: &SheetMetrics, y: f64) -> f64 {
+        let theme = ctx.theme;
+        let caption = theme.text(TextRole::Caption);
+        let caption_h = f64::from(caption.line_height_px());
+        let s2 = f64::from(theme.tokens.spacing.s2);
+        let status = self
+            .state
+            .status
+            .clone()
+            .unwrap_or_else(|| t("pairing-waiting"));
+        let (status_w, _) = ctx.text.measure_style(&status, None, &caption);
+        let line_w = caption_h + s2 + f64::from(status_w);
+        let x = m.rect.center().x - line_w / 2.0;
+        self.waiting
+            .set_rect(Rect::new(x, y, x + caption_h, y + caption_h));
+        ui::widget::Widget::draw(
+            &mut self.waiting,
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            theme,
+            &ui::presence::PresenceCtx::empty(),
+        );
+        ctx.text.draw_style(
+            ctx.scene,
+            &status,
+            theme.tokens.colors.text_dim,
+            ctx.transform.pre_translate((x + caption_h + s2, y).into()),
+            None,
+            &caption,
+        );
+        y + caption_h
     }
 
     fn draw_recipient_choices(
@@ -1406,7 +1713,10 @@ impl PeerSyncOverlay {
     ) -> Vec<(String, Button, Rect, bool)> {
         let SheetMetrics { rect, pad, .. } = *m;
         let (text, theme) = (&mut *ctx.text, ctx.theme);
-        let buttons: Vec<(String, Button)> = if self.state.invite_review_open {
+        let buttons: Vec<(String, Button)> = if self.state.pairing_open {
+            // The link copies from its chip; the footer only closes.
+            vec![(t("pairing-done-button"), Button::Cancel)]
+        } else if self.state.invite_review_open {
             vec![
                 (t("peer-sync-create-invite"), Button::CreateInvite),
                 (t("peer-sync-back"), Button::BackToComposer),
@@ -1438,7 +1748,7 @@ impl PeerSyncOverlay {
         for (label, button) in buttons {
             let primary = matches!(
                 button,
-                Button::Join | Button::CopyToken | Button::CreateInvite
+                Button::Join | Button::CopyToken | Button::CreateInvite | Button::CopyPairLink
             );
             // Sized by the face itself (its label style, role and padding),
             // not by the label measured at the sheet's caption size: the
@@ -1509,6 +1819,7 @@ impl PeerSyncOverlay {
                         Button::CancelPending(_) => "cancel-pending",
                         Button::PasteIdentity => "paste-identity",
                         Button::CopyIdentity => "copy-identity",
+                        Button::CopyPairLink => "copy-pair-link",
                     },
                     *rect,
                 )
@@ -1518,6 +1829,11 @@ impl PeerSyncOverlay {
 
     #[cfg(test)]
     pub fn set_snapshot_for_tests(&mut self, snapshot: PeerSyncSnapshot) {
+        self.state = snapshot;
+    }
+
+    /// Show `snapshot`, for a screenshot scene.
+    pub fn set_snapshot_for_shots(&mut self, snapshot: PeerSyncSnapshot) {
         self.state = snapshot;
     }
 }
@@ -1581,7 +1897,13 @@ fn card_rect(host: Rect, state: &PeerSyncSnapshot, theme: &Theme) -> Rect {
     let w = f64::from(theme.tokens.metrics.panel_width_sheet)
         .min(host.width() - 2.0 * margin)
         .max(0.0);
-    let wanted: f64 = if state.invite_review_open {
+    let wanted: f64 = if state.pairing_open {
+        if state.pairing_link.is_some() {
+            PAIRING_SHEET_HEIGHT
+        } else {
+            200.0
+        }
+    } else if state.invite_review_open {
         330.0
     } else if state.invite_name.is_some() {
         if state.pending_invitations.is_empty() {
@@ -1590,7 +1912,7 @@ fn card_rect(host: Rect, state: &PeerSyncSnapshot, theme: &Theme) -> Rect {
             610.0
         }
     } else if state.connect_input.is_some() {
-        220.0
+        270.0
     } else {
         200.0
     };
@@ -1598,6 +1920,151 @@ fn card_rect(host: Rect, state: &PeerSyncSnapshot, theme: &Theme) -> Rect {
     let cx = f64::midpoint(host.x0, host.x1);
     let cy = f64::midpoint(host.y0, host.y1);
     Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0)
+}
+
+/// The height of "Pair a new device" with its link out: the heading, the
+/// code, the link chip, the three ways, the reassurance, the waiting line
+/// and the footer, with nothing left over below.
+const PAIRING_SHEET_HEIGHT: f64 = 576.0;
+
+/// The side of the pairing code: large enough for a phone camera from
+/// arm's length.
+const PAIRING_QR_SIDE: f64 = 232.0;
+
+/// The pairing link as its chip shows it: the site, then an ellipsis for
+/// the secret rest.
+fn short_pairing_link(link: &str) -> String {
+    url::Url::parse(link)
+        .ok()
+        .and_then(|url| url.host_str().map(|host| format!("{host}/…")))
+        .unwrap_or_else(|| "…".to_owned())
+}
+
+/// The three ways a new device uses the pairing link: its icon, the kind of
+/// device, and what to do on it.
+const PAIRING_WAYS: [(ui::icons::Icon, &str, &str); 3] = [
+    (
+        ui::icons::Icon::Phone,
+        "pairing-way-phone",
+        "pairing-way-phone-how",
+    ),
+    (
+        ui::icons::Icon::Monitor,
+        "pairing-way-computer",
+        "pairing-way-computer-how",
+    ),
+    (
+        ui::icons::Icon::Globe,
+        "pairing-way-browser",
+        "pairing-way-browser-how",
+    ),
+];
+
+/// The side of a way's icon.
+const PAIRING_WAY_ICON: f64 = 18.0;
+
+/// The column the ways and the reassurance share, centred under the code:
+/// its left edge, its width, and where the "how" text starts in it.
+fn pairing_column(ctx: &mut PaintCtx<'_>, m: &SheetMetrics) -> (f64, f64, f64) {
+    let body = ctx.theme.text(TextRole::Body);
+    let spacing = &ctx.theme.tokens.spacing;
+    let (s3, s4) = (f64::from(spacing.s3), f64::from(spacing.s4));
+    let mut label_w: f64 = 0.0;
+    let mut how_w: f64 = 0.0;
+    for (_, label, how) in PAIRING_WAYS {
+        label_w = label_w.max(f64::from(ctx.text.measure_style(&t(label), None, &body).0));
+        how_w = how_w.max(f64::from(ctx.text.measure_style(&t(how), None, &body).0));
+    }
+    let how_at = PAIRING_WAY_ICON + s3 + label_w + s4;
+    let width = (how_at + how_w).min(m.avail);
+    (m.rect.center().x - width / 2.0, width, how_at)
+}
+
+/// The three ways, one line each, in the shared column.
+fn draw_pairing_ways(ctx: &mut PaintCtx<'_>, m: &SheetMetrics, mut y: f64) -> f64 {
+    let (x0, width, how_at) = pairing_column(ctx, m);
+    let theme = ctx.theme;
+    let tokens = &theme.tokens;
+    let body = theme.text(TextRole::Body);
+    let body_h = f64::from(body.line_height_px());
+    let (s2, s3) = (f64::from(tokens.spacing.s2), f64::from(tokens.spacing.s3));
+    let icon = PAIRING_WAY_ICON;
+    let row_h = body_h.max(icon) + s2;
+    for (glyph, label, how) in PAIRING_WAYS {
+        let mid = y + row_h / 2.0;
+        ui::icons::draw_icon(
+            ctx.scene,
+            ctx.transform,
+            Rect::new(x0, mid - icon / 2.0, x0 + icon, mid + icon / 2.0),
+            glyph,
+            tokens.colors.text_dim,
+            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
+        ctx.text.draw_style(
+            ctx.scene,
+            &t(label),
+            tokens.colors.text_primary,
+            ctx.transform
+                .pre_translate((x0 + icon + s3, mid - body_h / 2.0).into()),
+            None,
+            &body,
+        );
+        let how_x = x0 + how_at;
+        let how = ctx.text.elide_to_width_style(
+            &t(how),
+            f32_of_f64((x0 + width - how_x).max(0.0)),
+            &body,
+        );
+        ctx.text.draw_style(
+            ctx.scene,
+            &how,
+            tokens.colors.text_dim,
+            ctx.transform
+                .pre_translate((how_x, mid - body_h / 2.0).into()),
+            None,
+            &body,
+        );
+        y += row_h;
+    }
+    y
+}
+
+/// Why pairing is safe, said once, beside a shield, in the shared column.
+fn draw_pairing_safe(ctx: &mut PaintCtx<'_>, m: &SheetMetrics, y: f64) -> f64 {
+    let (x0, column, _) = pairing_column(ctx, m);
+    let theme = ctx.theme;
+    let tokens = &theme.tokens;
+    let caption = theme.text(TextRole::Caption);
+    let caption_h = f64::from(caption.line_height_px());
+    let s2 = f64::from(tokens.spacing.s2);
+    let shield = 14.0;
+    let width = (column - shield - s2).max(0.0);
+    let safe = t("pairing-safe");
+    let (_, height) = ctx
+        .text
+        .measure_style(&safe, Some(f32_of_f64(width)), &caption);
+    ui::icons::draw_icon(
+        ctx.scene,
+        ctx.transform,
+        Rect::new(
+            x0,
+            y + (caption_h - shield) / 2.0,
+            x0 + shield,
+            y + (caption_h + shield) / 2.0,
+        ),
+        ui::icons::Icon::Shield,
+        tokens.colors.text_dim,
+        ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+    );
+    ctx.text.draw_style(
+        ctx.scene,
+        &safe,
+        tokens.colors.text_dim,
+        ctx.transform.pre_translate((x0 + shield + s2, y).into()),
+        Some(f32_of_f64(width)),
+        &caption,
+    );
+    y + f64::from(height)
 }
 
 fn parse_invite(token: &str) -> Option<crate::network::invite::PeerInviteToken> {
@@ -1887,22 +2354,54 @@ fn draw_receiving(ctx: &mut PaintCtx<'_>, m: &SheetMetrics, mut y: f64, typed: &
     let (scene, transform, text, theme) =
         (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
     let colors = &theme.tokens.colors;
-    let line = if typed.is_empty() {
-        t("peer-sync-paste-invite-hint")
+    let (line, understood) = if typed.is_empty() {
+        (t("peer-sync-paste-invite-hint"), false)
     } else {
-        t_args(
-            "peer-sync-token-characters",
-            &[
-                ("token", elide_token(typed).into()),
-                ("count", typed.chars().count().into()),
-            ],
-        )
+        match crate::shell::network::join_field::describe(typed) {
+            Some(line) => (line, true),
+            None => (
+                t_args(
+                    "peer-sync-token-characters",
+                    &[
+                        ("token", elide_token(typed).into()),
+                        ("count", typed.chars().count().into()),
+                    ],
+                ),
+                false,
+            ),
+        }
     };
+    if understood {
+        // What was typed, in a field, so the person sees what joins.
+        let field_h = f64::from(theme.tokens.metrics.min_pointer_target);
+        let field = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + field_h);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            rest_floor(theme),
+            None,
+            &RoundedRect::from_rect(field, f64::from(theme.tokens.radii.control)),
+        );
+        let style = theme.text(TextRole::Body);
+        let shown = text.elide_to_width_style(typed, f32_of_f64(avail - 24.0), &style);
+        let (_, shown_h) = text.measure_style(&shown, None, &style);
+        text.draw_style(
+            scene,
+            &shown,
+            colors.text_primary,
+            transform.pre_translate(
+                (field.x0 + 12.0, field.center().y - f64::from(shown_h) / 2.0).into(),
+            ),
+            None,
+            &style,
+        );
+        y = field.y1 + 8.0;
+    }
     let line = text.elide_to_width_style(&line, f32_of_f64(avail), &theme.text(TextRole::Caption));
     text.draw_style(
         scene,
         &line,
-        if typed.is_empty() {
+        if typed.is_empty() || understood {
             colors.text_dim
         } else {
             colors.text_primary
@@ -1912,7 +2411,7 @@ fn draw_receiving(ctx: &mut PaintCtx<'_>, m: &SheetMetrics, mut y: f64, typed: &
         &theme.text(TextRole::Caption),
     );
     y += f64::from(name) + 8.0;
-    if !typed.is_empty() {
+    if !typed.is_empty() && !understood {
         let incomplete = text.elide_to_width_style(
             &t("peer-sync-token-incomplete"),
             f32_of_f64(avail),
@@ -2027,6 +2526,24 @@ fn draw_code(ctx: &mut PaintCtx<'_>, at: Point, code: &str, avail: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The pairing sheet shows its link as the site only, animates only
+    /// while it waits for a device, and stops once closed.
+    #[test]
+    fn the_pairing_sheet_shows_the_site_and_waits_while_its_link_is_out() {
+        let shown = short_pairing_link("https://tilo.coffee/#/@eu1.tilo.coffee/w/x?pair=a1a1");
+        assert_eq!(shown, "tilo.coffee/…");
+        let mut overlay = PeerSyncOverlay::default();
+        overlay.prompt_pair();
+        assert!(!overlay.needs_animation_frame(), "nothing to wait for yet");
+        overlay.show_pairing("https://tilo.coffee/#/w/x?pair=a1".into());
+        assert!(
+            overlay.needs_animation_frame(),
+            "waiting for the new device"
+        );
+        overlay.pairing_done("Safari on iPhone");
+        assert!(!overlay.needs_animation_frame(), "the device paired");
+    }
 
     #[test]
     #[allow(

@@ -528,8 +528,36 @@ fn enter_on_empty_list_outdents_then_exits_and_numbered_lists_continue() {
         assert_eq!(numbered_ordinals(e.blocks()), vec![1, 2]);
     }
 
+    fn enter_on_an_empty_item_continues_the_item_above_then_leaves_the_list() {
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![Block::numbered(0, "first"), Block::numbered(0, "")]);
+        editor.focus_block(1, CursorPlacement::Start);
+        editor.apply_signal(1, &LineSignal::Enter { split_at: 0 });
+        assert!(matches!(editor.blocks()[1].kind, BlockKind::Paragraph));
+        assert_eq!(editor.blocks()[1].indent(), 1, "a line inside item 1");
+        // Written, it continues the item; the next item still counts on.
+        editor.blocks_mut()[1].line.set_text("more about first");
+        editor.blocks_mut().push(Block::numbered(0, "second"));
+        assert_eq!(numbered_ordinals(editor.blocks()), vec![1, 0, 2]);
+
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![Block::bullet(1, "inner"), Block::bullet(1, "")]);
+        editor.apply_signal(1, &LineSignal::Enter { split_at: 0 });
+        assert_eq!(
+            (editor.blocks()[1].kind.clone(), editor.blocks()[1].indent()),
+            (BlockKind::Paragraph, 2)
+        );
+        editor.apply_signal(1, &LineSignal::Enter { split_at: 0 });
+        assert_eq!(
+            (editor.blocks()[1].kind.clone(), editor.blocks()[1].indent()),
+            (BlockKind::Paragraph, 0),
+            "a second Enter leaves the list"
+        );
+    }
+
     enter_on_empty_top_level_list_exits_to_paragraph();
     enter_on_empty_nested_list_outdents_before_exiting();
+    enter_on_an_empty_item_continues_the_item_above_then_leaves_the_list();
     enter_continues_a_numbered_list();
 }
 
@@ -711,33 +739,43 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
         assert_eq!(e.blocks()[1].line.selection_range(), None);
     }
 
-    fn slash_menu_owns_ime_without_committing_filter_text_into_the_document() {
+    fn slash_query_is_typed_into_the_block_including_through_the_ime() {
         let mut editor = BlockEditor::new();
-        editor.set_blocks(vec![Block::paragraph("/")]);
+        editor.set_blocks(vec![Block::paragraph("")]);
         editor.focus_block(0, CursorPlacement::End);
-        editor.open_slash_menu_for_test();
 
         let send = |editor: &mut BlockEditor, event: &WindowEvent| {
             assert!(dispatch(editor, event));
         };
-
+        send(
+            &mut editor,
+            &WindowEvent::Ime(winit::event::Ime::Commit("/".into())),
+        );
+        assert!(editor.slash_menu().is_visible());
         send(
             &mut editor,
             &WindowEvent::Ime(winit::event::Ime::Preedit("h2".into(), Some((1, 1)))),
         );
-        assert_eq!(editor.blocks()[0].text(), "/");
-        assert_eq!(editor.slash_menu().filter(), "");
+        assert_eq!(
+            editor.slash_menu().filter(),
+            "",
+            "a preedit filters nothing"
+        );
 
         let mut scene = Scene::new();
         let mut renderer = TextRenderer::new();
         editor.draw_overlay(&mut scene, Affine::IDENTITY, &mut renderer, &Theme::dark());
-        assert!(Widget::ime_cursor_rect(&editor).is_some());
+        assert_eq!(
+            Widget::ime_cursor_rect(&editor),
+            editor.document_caret_rect(),
+            "the IME composes at the caret in the block"
+        );
 
         send(
             &mut editor,
             &WindowEvent::Ime(winit::event::Ime::Commit("h2".into())),
         );
-        assert_eq!(editor.blocks()[0].text(), "/");
+        assert_eq!(editor.blocks()[0].text(), "/h2", "the query is in the note");
         assert_eq!(editor.slash_menu().filter(), "h2");
         assert_eq!(editor.slash_menu().visible_len(), 1);
     }
@@ -745,7 +783,7 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
     click_focuses_the_block_under_the_cursor();
     ctrl_shift_arrow_extends_selection_across_blocks();
     plain_arrow_does_not_start_a_selection();
-    slash_menu_owns_ime_without_committing_filter_text_into_the_document();
+    slash_query_is_typed_into_the_block_including_through_the_ime();
 }
 
 /// Seed a canonical block list the way an action owner stores it.
@@ -1709,7 +1747,6 @@ fn try_convert_changes_kind_preserving_text() {
 
     fn try_convert_to_divider_appends_trailing_paragraph_when_focused() {
         let mut e = BlockEditor::new();
-        e.blocks[0].line.set_text("body");
         e.focused = Some(0);
         e.blocks[0].line.set_focus(true);
         e.is_focused = true;
@@ -1721,12 +1758,28 @@ fn try_convert_changes_kind_preserving_text() {
         assert_eq!(e.focused_index(), Some(1));
     }
 
+    fn try_convert_written_block_to_divider_keeps_the_writing_under_it() {
+        let mut e = BlockEditor::new();
+        e.blocks[0].line.set_text("body");
+        e.focus_block(0, CursorPlacement::End);
+        assert!(e.try_convert_to(0, BlockKind::Divider));
+        assert_eq!(e.blocks().len(), 2);
+        assert!(matches!(e.blocks()[0].kind, BlockKind::Divider));
+        assert_eq!(
+            e.blocks()[1].text(),
+            "body",
+            "converting never deletes text"
+        );
+        assert_eq!(e.focused_index(), Some(1), "the caret stays in it");
+    }
+
     try_convert_paragraph_to_h1();
     try_convert_h1_to_bullet_preserves_text_resets_indent();
     try_convert_paragraph_to_numbered();
     try_convert_bullet_to_paragraph();
     try_convert_to_same_kind_is_noop();
     try_convert_to_divider_appends_trailing_paragraph_when_focused();
+    try_convert_written_block_to_divider_keeps_the_writing_under_it();
 }
 
 #[test]
@@ -2686,4 +2739,231 @@ fn a_selection_for_an_agent_is_drawn_across_every_block_it_spans() {
         selection.bounds.unwrap().y1 <= untouched.y0,
         "a block outside the selection is no part of it"
     );
+}
+
+/// Type `text` key by key into the editor, as a keyboard does.
+fn type_keys(editor: &mut BlockEditor, text: &str) {
+    use crate::synthetic_input::{char_key, key_press};
+    for ch in text.chars() {
+        let typed = ch.to_string();
+        let event = if ch == ' ' {
+            key_press(Key::Named(NamedKey::Space), Some(" "))
+        } else {
+            char_key(&typed)
+        };
+        dispatch(editor, &event);
+    }
+}
+
+#[test]
+fn slash_commands_keep_what_was_written_and_the_query_stays_text() {
+    use crate::synthetic_input::named_key;
+    let focused_editor = |text: &str| {
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![Block::paragraph(text)]);
+        editor.focus_block(0, CursorPlacement::End);
+        editor
+    };
+    let texts = |editor: &BlockEditor| {
+        editor
+            .blocks()
+            .iter()
+            .map(|block| (block.kind.clone(), block.text().to_owned()))
+            .collect::<Vec<_>>()
+    };
+
+    // After text, a block kind starts a new block; the sentence stays.
+    let mut editor = focused_editor("Groceries for Monday");
+    type_keys(&mut editor, " /todo");
+    assert!(editor.slash_menu().is_visible());
+    assert_eq!(editor.blocks()[0].text(), "Groceries for Monday /todo");
+    dispatch(&mut editor, &named_key(NamedKey::Enter));
+    assert_eq!(
+        texts(&editor),
+        [
+            (BlockKind::Paragraph, "Groceries for Monday".to_owned()),
+            (
+                BlockKind::Checklist {
+                    indent: 0,
+                    done: false
+                },
+                String::new()
+            ),
+        ]
+    );
+    assert_eq!(
+        editor.focused_index(),
+        Some(1),
+        "the caret is in the new item"
+    );
+
+    // A divider after text goes under it and deletes nothing.
+    let mut editor = focused_editor("Section one");
+    type_keys(&mut editor, " /divider");
+    dispatch(&mut editor, &named_key(NamedKey::Enter));
+    assert_eq!(editor.blocks()[0].text(), "Section one");
+    assert!(matches!(editor.blocks()[1].kind, BlockKind::Divider));
+    assert_eq!(editor.blocks().len(), 3, "and leaves a line to write on");
+
+    // At the start of a block, the block itself turns, its text kept.
+    let mut editor = focused_editor("Plan");
+    editor.focus_block(0, CursorPlacement::Start);
+    type_keys(&mut editor, "/h2");
+    dispatch(&mut editor, &named_key(NamedKey::Enter));
+    assert_eq!(texts(&editor), [(BlockKind::Heading(2), "Plan".to_owned())]);
+
+    // "A / B": a space right after the slash is prose; the menu goes and
+    // everything typed is in the note.
+    let mut editor = focused_editor("A");
+    type_keys(&mut editor, " / B means either");
+    assert!(!editor.slash_menu().is_visible());
+    assert_eq!(editor.blocks()[0].text(), "A / B means either");
+
+    // "/xyz " matches nothing: the space ends the query and the menu.
+    let mut editor = focused_editor("");
+    type_keys(&mut editor, "/xyz and more");
+    assert!(!editor.slash_menu().is_visible());
+    assert_eq!(editor.blocks()[0].text(), "/xyz and more");
+
+    // Enter with nothing to choose ends the line.
+    let mut editor = focused_editor("");
+    type_keys(&mut editor, "/xyz");
+    assert!(editor.slash_menu().is_visible());
+    dispatch(&mut editor, &named_key(NamedKey::Enter));
+    assert!(!editor.slash_menu().is_visible());
+    assert_eq!(
+        texts(&editor),
+        [
+            (BlockKind::Paragraph, "/xyz".to_owned()),
+            (BlockKind::Paragraph, String::new())
+        ]
+    );
+
+    // Backspacing over the slash closes the menu; Escape keeps the text.
+    let mut editor = focused_editor("");
+    type_keys(&mut editor, "/h");
+    dispatch(&mut editor, &named_key(NamedKey::Backspace));
+    dispatch(&mut editor, &named_key(NamedKey::Backspace));
+    assert!(!editor.slash_menu().is_visible());
+    type_keys(&mut editor, "/co");
+    dispatch(&mut editor, &named_key(NamedKey::Escape));
+    assert!(!editor.slash_menu().is_visible());
+    assert_eq!(editor.blocks()[0].text(), "/co");
+}
+
+#[test]
+fn host_slash_commands_hand_the_block_to_the_host() {
+    use crate::synthetic_input::named_key;
+    use crate::widget::slash_menu::SlashHostCommand;
+    let mut editor = BlockEditor::new();
+    editor.set_slash_commands(true, &[SlashHostCommand::Page, SlashHostCommand::Image]);
+    editor.set_blocks(vec![Block::paragraph("Trip ideas")]);
+    editor.focus_block(0, CursorPlacement::End);
+    type_keys(&mut editor, " /sub");
+    dispatch(&mut editor, &named_key(NamedKey::Enter));
+    let request = editor.take_slash_request().expect("the host is asked");
+    assert_eq!(request.command, SlashHostCommand::Page);
+    assert_eq!(request.text, "Trip ideas ", "the query is gone");
+    assert_eq!(request.block, editor.blocks()[0].id);
+    assert!(editor.take_slash_request().is_none(), "once");
+
+    let page = PageEntry {
+        id: Uuid::from_u128(7),
+        title: "Trip ideas".into(),
+    };
+    assert!(editor.link_block_to_page(&request.block, &page));
+    assert_eq!(editor.blocks()[0].text(), "Trip ideas");
+    assert!(
+        editor.blocks()[0]
+            .line
+            .marks()
+            .iter()
+            .any(|span| span.mark == Mark::Link(page.id) && span.range == (0..10))
+    );
+
+    // Link to note opens the link picker where the slash was.
+    let mut editor = BlockEditor::new();
+    editor.set_slash_commands(true, &[]);
+    editor.set_link_pages(vec![page.clone()]);
+    editor.set_blocks(vec![Block::paragraph("See")]);
+    editor.focus_block(0, CursorPlacement::End);
+    type_keys(&mut editor, " /link");
+    dispatch(&mut editor, &named_key(NamedKey::Enter));
+    assert!(editor.link_popover().is_visible());
+    dispatch(&mut editor, &named_key(NamedKey::Enter));
+    assert_eq!(editor.blocks()[0].text(), "See Trip ideas");
+}
+
+#[test]
+fn a_picture_is_sized_by_its_handle_and_keeps_the_width_in_its_markdown() {
+    use crate::synthetic_input::{cursor_moved, mouse_input};
+    use winit::event::{ElementState, MouseButton};
+    assert_eq!(
+        markdown_image_parts("![Scan|240](a.png)"),
+        Some(("Scan", "a.png", Some(240)))
+    );
+    assert_eq!(
+        markdown_image_parts("![A|B](a.png)"),
+        Some(("A|B", "a.png", None)),
+        "a pipe in a description is text"
+    );
+    assert_eq!(
+        with_markdown_image_width("![Scan](a.png)", 300).as_deref(),
+        Some("![Scan|300](a.png)")
+    );
+
+    let bytes = crate::png::encode_rgba8(160, 100, &vec![255; 160 * 100 * 4]).unwrap();
+    let fetch: crate::image_store::Fetcher = std::sync::Arc::new(move |_| Some(bytes.clone()));
+    let mut editor = BlockEditor::new();
+    editor.set_blocks(vec![
+        Block::paragraph("![Scan|320](assets/scan.png)"),
+        Block::paragraph("Below"),
+    ]);
+    editor.set_image_store(Some(crate::ImageStore::new(&fetch)));
+    assert!(editor.prewarm_images_for_shots());
+    let mut renderer = TextRenderer::new();
+    layout_image_editor(&mut editor, 1000.0, &mut renderer);
+    let plate = editor.image_plate(0).expect("the picture is laid out");
+    assert!(
+        (plate.width() - 320.0).abs() <= 0.5,
+        "the sized width is honoured: {plate:?}"
+    );
+    assert!((plate.height() - 200.0).abs() <= 0.5, "at its aspect");
+
+    // Point at it, take the handle and drag it 80 px narrower.
+    let send = |editor: &mut BlockEditor, event: WindowEvent| dispatch(editor, &event);
+    send(
+        &mut editor,
+        cursor_moved(plate.center().x, plate.center().y),
+    );
+    let handle = editor
+        .image_resize_handle(0)
+        .expect("pointing shows the handle");
+    send(
+        &mut editor,
+        cursor_moved(handle.center().x, handle.center().y),
+    );
+    assert_eq!(
+        editor.cursor_shape(handle.center()),
+        Some(winit::window::CursorIcon::EwResize)
+    );
+    assert!(send(
+        &mut editor,
+        mouse_input(ElementState::Pressed, MouseButton::Left)
+    ));
+    send(
+        &mut editor,
+        cursor_moved(handle.center().x - 80.0, handle.center().y),
+    );
+    layout_image_editor(&mut editor, 1000.0, &mut renderer);
+    let live = editor.image_plate(0).unwrap();
+    assert!(
+        (live.width() - 240.0).abs() <= 0.5,
+        "it resizes live: {live:?}"
+    );
+    send(
+        &mut editor,
+        mouse_input(ElementState::Released, MouseButton::Left),
+    );
+    assert_eq!(editor.blocks()[0].text(), "![Scan|240](assets/scan.png)");
 }

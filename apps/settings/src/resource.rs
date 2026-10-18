@@ -69,21 +69,38 @@ pub fn parse_settings_uri(uri: &str) -> Result<SettingsEffect, String> {
         }
         .into());
     }
-    // Pane links only select a view; query and fragment metadata do not
-    // change that selection. Model links retain their stricter id validation.
+    // Pane links only select a view. A fragment naming a setting on the
+    // pane (`settings://keyboard#keyboard.layout`) shows that setting; any
+    // other query or fragment does not change the selection. Model links
+    // retain their stricter id validation.
     let pane = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    if let Some((_, fragment)) = rest.split_once('#')
+        && let Some(setting) = settings_store::index::setting(fragment)
+        && (setting.page == pane || pane_alias(pane) == setting.page)
+    {
+        return Ok(NavigationEffect::ShowSetting {
+            setting: setting.id.to_owned(),
+        }
+        .into());
+    }
     // Camera and other apps link to the privacy controls by their common
     // name; the pane is Permissions.
-    let pane = match pane {
-        "privacy" => "permissions",
-        "models" => "agent_models",
-        other => other,
-    };
+    let pane = pane_alias(pane);
     let category = Category::from_slug(pane).ok_or("unknown Settings pane in link")?;
     Ok(NavigationEffect::OpenPane {
         pane: category.slug().to_owned(),
     }
     .into())
+}
+
+/// The pane a link names by its common name: Camera and other apps link to
+/// the privacy controls as `privacy`.
+fn pane_alias(pane: &str) -> &str {
+    match pane {
+        "privacy" => "permissions",
+        "models" => "agent_models",
+        other => other,
+    }
 }
 
 /// Framework app: the settings widget is the surface over [`Settings`].
@@ -239,8 +256,8 @@ mod tests {
             .expect("reopen the same profile without arguments");
         assert_eq!(
             reopened.with_widget::<SettingsApp, _>(|settings| settings.selected()),
-            Some(Category::DEFAULT),
-            "the previous launch argument is not pending on the reopened window"
+            Some(Category::Power),
+            "the reopened window shows the page it showed, not the consumed launch's"
         );
         let mut other = TestApp::<SettingsShell>::new().expect("another ordinary window");
         assert_eq!(
@@ -286,6 +303,58 @@ mod tests {
         ] {
             assert!(parse_settings_uri(uri).is_err(), "{uri}");
         }
+    }
+
+    /// A fragment naming a setting on the linked page shows the setting; one
+    /// naming a setting elsewhere or nothing only opens the page.
+    #[test]
+    fn setting_links_show_their_setting() {
+        assert_eq!(
+            parse_settings_uri("settings://keyboard#keyboard.layout"),
+            Ok(NavigationEffect::ShowSetting {
+                setting: "keyboard.layout".into()
+            }
+            .into())
+        );
+        for setting in settings_store::index::SETTINGS {
+            assert_eq!(
+                parse_settings_uri(&setting.link()),
+                Ok(NavigationEffect::ShowSetting {
+                    setting: setting.id.into()
+                }
+                .into()),
+                "{}",
+                setting.link()
+            );
+            assert!(
+                Category::from_slug(setting.page).is_some(),
+                "{} is on a page Settings has",
+                setting.id
+            );
+        }
+        assert_eq!(
+            parse_settings_uri("settings://power#keyboard.layout"),
+            Ok(NavigationEffect::OpenPane {
+                pane: "power".into()
+            }
+            .into()),
+            "a setting on another page does not move the link elsewhere"
+        );
+    }
+
+    /// Settings shows every page of the index, in its order: the sidebar and
+    /// the desktop palette list the same pages.
+    #[test]
+    fn the_sidebar_lists_the_index_pages_in_order() {
+        let slugs: Vec<&str> = Category::ALL
+            .iter()
+            .map(|category| category.slug())
+            .collect();
+        let index: Vec<&str> = settings_store::index::PAGES
+            .iter()
+            .map(|page| page.slug)
+            .collect();
+        assert_eq!(slugs, index);
     }
 
     /// Model links name a validated model id, pane links a known pane, and

@@ -61,7 +61,7 @@ impl ShortcutCategory {
 
 impl ShortcutAction {
     /// Every rebindable desktop action, in the order it is listed.
-    pub const ALL: [Self; 51] = [
+    pub const ALL: [Self; 62] = [
         Self::Search,
         Self::WorkspaceOverview,
         Self::Lock,
@@ -77,6 +77,8 @@ impl ShortcutAction {
         Self::PreviousWorkspace,
         Self::NextWorkspace,
         Self::ToggleMaximize,
+        Self::MaximizeWindow,
+        Self::RestoreWindow,
         Self::DetachTab,
         Self::AttachTabLeft,
         Self::AttachTabRight,
@@ -98,6 +100,15 @@ impl ShortcutAction {
         Self::FocusGroup7,
         Self::FocusGroup8,
         Self::FocusGroup9,
+        Self::FocusStrip1,
+        Self::FocusStrip2,
+        Self::FocusStrip3,
+        Self::FocusStrip4,
+        Self::FocusStrip5,
+        Self::FocusStrip6,
+        Self::FocusStrip7,
+        Self::FocusStrip8,
+        Self::FocusStrip9,
         Self::OpenFiles,
         Self::OpenTerminal,
         Self::ClipboardHistory,
@@ -134,6 +145,8 @@ impl ShortcutAction {
             Self::PreviousWorkspace => "previous-workspace",
             Self::NextWorkspace => "next-workspace",
             Self::ToggleMaximize => "toggle-maximize",
+            Self::MaximizeWindow => "maximize-window",
+            Self::RestoreWindow => "restore-window",
             Self::DetachTab => "detach-tab",
             Self::AttachTabLeft => "attach-tab-left",
             Self::AttachTabRight => "attach-tab-right",
@@ -155,6 +168,15 @@ impl ShortcutAction {
             Self::FocusGroup7 => "focus-group-7",
             Self::FocusGroup8 => "focus-group-8",
             Self::FocusGroup9 => "focus-group-9",
+            Self::FocusStrip1 => "focus-strip-1",
+            Self::FocusStrip2 => "focus-strip-2",
+            Self::FocusStrip3 => "focus-strip-3",
+            Self::FocusStrip4 => "focus-strip-4",
+            Self::FocusStrip5 => "focus-strip-5",
+            Self::FocusStrip6 => "focus-strip-6",
+            Self::FocusStrip7 => "focus-strip-7",
+            Self::FocusStrip8 => "focus-strip-8",
+            Self::FocusStrip9 => "focus-strip-9",
             Self::OpenFiles => "open-files",
             Self::OpenTerminal => "open-terminal",
             Self::ClipboardHistory => "clipboard-history",
@@ -215,9 +237,20 @@ impl ShortcutAction {
             | Self::FocusGroup6
             | Self::FocusGroup7
             | Self::FocusGroup8
-            | Self::FocusGroup9 => ShortcutCategory::Navigation,
+            | Self::FocusGroup9
+            | Self::FocusStrip1
+            | Self::FocusStrip2
+            | Self::FocusStrip3
+            | Self::FocusStrip4
+            | Self::FocusStrip5
+            | Self::FocusStrip6
+            | Self::FocusStrip7
+            | Self::FocusStrip8
+            | Self::FocusStrip9 => ShortcutCategory::Navigation,
             Self::TabMenu
             | Self::ToggleMaximize
+            | Self::MaximizeWindow
+            | Self::RestoreWindow
             | Self::ToggleFullscreen
             | Self::DetachTab
             | Self::AttachTabLeft
@@ -372,8 +405,8 @@ pub static FIXED_SHORTCUTS: &[FixedShortcut] = &[
         &[key(&["Super"], "enter")],
     ),
     fixed(
-        "fixed-workspace-wheel",
-        "shortcut-workspace-wheel",
+        "fixed-strip-switcher",
+        "shortcut-strip-switcher",
         ShortcutCategory::Navigation,
         &[key(&["Super"], "s")],
     ),
@@ -616,6 +649,78 @@ mod tests {
         );
     }
 
+    /// Super+Up/Down maximize and restore, Ctrl+Super+Up/Down switch strips,
+    /// Shift+Ctrl+Super+Up/Down carry the focused group there, Super+1…9 go
+    /// to a strip and Ctrl+Super+1…9 to a window of it. None of these is a
+    /// fixed or reserved desktop chord, and each is one catalogue row.
+    #[test]
+    fn maximize_and_strip_chords_are_free_and_listed_once() {
+        let config = ShortcutConfig::default();
+        let rows = catalogue(&config);
+        let mut expected = vec![
+            ("maximize-window", "Super+Up".to_string()),
+            ("restore-window", "Super+Down".to_string()),
+            ("previous-strip", "Super+Ctrl+Up".to_string()),
+            ("next-strip", "Super+Ctrl+Down".to_string()),
+            (
+                "move-group-to-previous-strip",
+                "Super+Ctrl+Shift+Up".to_string(),
+            ),
+            (
+                "move-group-to-next-strip",
+                "Super+Ctrl+Shift+Down".to_string(),
+            ),
+        ];
+        let strips = [
+            "focus-strip-1",
+            "focus-strip-2",
+            "focus-strip-3",
+            "focus-strip-4",
+            "focus-strip-5",
+            "focus-strip-6",
+            "focus-strip-7",
+            "focus-strip-8",
+            "focus-strip-9",
+        ];
+        let groups = [
+            "focus-group-1",
+            "focus-group-2",
+            "focus-group-3",
+            "focus-group-4",
+            "focus-group-5",
+            "focus-group-6",
+            "focus-group-7",
+            "focus-group-8",
+            "focus-group-9",
+        ];
+        for (n, (strip, group)) in strips.into_iter().zip(groups).enumerate() {
+            expected.push((strip, format!("Super+{}", n + 1)));
+            expected.push((group, format!("Super+Ctrl+{}", n + 1)));
+        }
+        for (id, shown) in expected {
+            let chord = chord(&shown);
+            assert!(
+                desktop_owner(&chord).is_none(),
+                "{shown} is a fixed or reserved chord"
+            );
+            let holders: Vec<_> = rows
+                .iter()
+                .filter(|entry| entry.chords.contains(&chord))
+                .map(|entry| entry.id)
+                .collect();
+            assert_eq!(holders, vec![id], "{shown} belongs to {id} alone");
+        }
+        let maximize = entry(&config, "maximize-window").expect("listed");
+        assert_eq!(maximize.category, ShortcutCategory::Windows);
+        assert_eq!(maximize.label_key, "shortcut-name-maximize-window");
+        let strip = entry(&config, "focus-strip-1").expect("listed");
+        assert_eq!(strip.category, ShortcutCategory::Navigation);
+        assert_eq!(
+            ShortcutAction::from_id("focus-strip-1").and_then(ShortcutAction::focus_strip_index),
+            Some(0)
+        );
+    }
+
     #[test]
     fn a_rebind_onto_another_actions_chord_names_it_and_changes_nothing() {
         let mut config = ShortcutConfig::default();
@@ -648,7 +753,7 @@ mod tests {
         // of Previous workspace: moving it away and back is not a conflict.
         let mut config = ShortcutConfig::default();
         config
-            .set(ShortcutAction::PreviousWorkspace, chord("Super+Ctrl+Up"))
+            .set(ShortcutAction::PreviousWorkspace, chord("Super+Alt+Up"))
             .expect("a free chord");
         config
             .reset(ShortcutAction::PreviousWorkspace)

@@ -48,6 +48,9 @@ struct NoticeState {
     /// Bumped by every change, so the layer repaints only when one happened.
     revision: Cell<u64>,
     outcomes: RefCell<Vec<NotificationOutcome>>,
+    /// The person asked for the centre from the banner stack (its "more"
+    /// card); the layer opens it on its next pass.
+    centre_requested: Cell<bool>,
 }
 
 impl NoticeState {
@@ -76,6 +79,13 @@ impl NoticeState {
 impl NotificationHost for NoticeState {
     fn log(&self) -> Ref<'_, NotificationLog> {
         self.log.borrow()
+    }
+    fn present(&self, now: Instant, on_screen: &[u64], held: bool) {
+        self.log.borrow_mut().present(now, on_screen, held);
+    }
+    fn open_center(&self) {
+        self.centre_requested.set(true);
+        self.touch();
     }
     fn dismiss(&self, id: u64) {
         self.retire_active(id);
@@ -216,6 +226,12 @@ impl DesktopNotifications {
             self.log.touch();
         }
         changed
+    }
+
+    /// The banner stack laid out `on_screen` at `now`, `held` or not; see
+    /// [`NotificationLog::present`].
+    pub fn present(&self, now: Instant, on_screen: &[u64], held: bool) {
+        self.log.present(now, on_screen, held);
     }
 
     /// Restore a host's persisted history without showing it as new banners.
@@ -581,6 +597,9 @@ impl NotificationLayer {
             self.dirty |= self
                 .stack
                 .handle_pointer_event(host, event, scale, &mut handled);
+            if notifications.log.centre_requested.take() {
+                self.set_center_open(true);
+            }
             return handled;
         }
         self.stack.cancel_pointer_press();

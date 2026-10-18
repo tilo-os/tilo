@@ -154,7 +154,7 @@ pub enum Command {
     /// Move the pointer to `(x, y)` without pressing anything. [`Command::ClickAt`]/[`Command::Drag`] bundle press+release, which can't express drag-and-drop: the source must be *holding* the button when it calls `start_drag`, with the drop on a release after the pointer has moved over another client. These ops decompose that.
     PointerMove { x: f64, y: f64 },
     /// Give every window group in the active strip the same share of it, in permille. A group defaults to about three quarters of its strip, so two never fit together without this.
-    SetGroupWidth { permille: u16 },
+    SetGroupWidth { permille: u32 },
     /// Seed the production hand-off slot used by the hosted file manager. Files' own widget tests prove pointer-to-drag arming; compositor integration tests use this to isolate the Wayland hand-off boundary.
     SeedFilesDrag { paths: Vec<PathBuf> },
     /// Press or release a pointer button at the current position. `button` defaults to the left one; the right button drives the "select, right-click" gesture this desktop leans on.
@@ -877,7 +877,7 @@ pub enum PlannedAction {
     /// Re-paint the current scene off-screen and write the RGBA buffer to `path` as a PNG. Failures are logged via `eprintln!`, not propagated to the wire response.
     Snapshot { path: PathBuf },
     /// Give every live window group the same share of its strip, in permille. Applied to the widget tree, where the laid-out width lives.
-    SetGroupWidth { permille: u16 },
+    SetGroupWidth { permille: u32 },
     /// Publish paths through the hosted file manager's production external-drag slot.
     SeedFilesDrag { paths: Vec<PathBuf> },
     /// Run one already-validated action against the live CRDT. Carried as a planned action rather than executed inside `dispatch_command`, since invoking mutates the document and dispatch only ever holds it immutably. The executor re-resolves the address and re-checks `args` against a fresh catalogue, since the document may have moved on since planning.
@@ -2080,6 +2080,11 @@ pub const AGENT_CONTROL_NOT_PERMITTED: &str =
 pub const ADMIN_CONTROL_NOT_PERMITTED: &str = "the admin control socket serves the action model only \
      (actions list/invoke/status/cancel, windows, state-dump, foreign-frames); synthetic input and \
      screenshots exist only on a development session's test-control socket ($TILO_TEST_CONTROL)";
+
+/// Protocol error for an admin control command while first use runs: only
+/// the onboarding and authentication actions are served until it ends.
+pub const ADMIN_CONTROL_FIRST_USE_ONLY: &str =
+    "first use serves only its trusted onboarding and authentication actions";
 
 /// Protocol error for an action or screenshot asked for while the session
 /// is locked: nothing ran, and only the person at the device can unlock it.

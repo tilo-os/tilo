@@ -20,6 +20,10 @@ impl NotificationHost for Fixture {
     fn log(&self) -> Ref<'_, NotificationLog> {
         self.0.borrow()
     }
+    fn present(&self, now: ui::time::Instant, on_screen: &[u64], held: bool) {
+        self.0.borrow_mut().present(now, on_screen, held);
+    }
+    fn open_center(&self) {}
     // As the browser desktop answers: an ask's choices, the answer last.
     fn actions_for(&self, notice: &Notification) -> Vec<(String, String)> {
         if tilo_desktop_surface::is_host_offer(notice) {
@@ -73,6 +77,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ]
         } else if variant.as_deref() == Some("not-saved") {
             vec![not_saved()?]
+        } else if variant.as_deref() == Some("overflow") {
+            // More than fit: the rest fold into one card that opens the
+            // centre, and the newest holds keyboard focus.
+            (1..=6)
+                .map(|n| {
+                    Notification::new(format!("Build {n} finished"), "All tests passed")
+                        .with_app_name("Terminal")
+                })
+                .collect()
         } else {
             let mut ask = HostAction {
                 id: "keep-identity".into(),
@@ -113,6 +126,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &mut TextRenderer::new(),
             &theme,
         );
+        if variant.as_deref() == Some("overflow") && stack.focus_newest(&host) {
+            scene = Scene::new();
+            stack.draw(
+                &host,
+                &mut scene,
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &theme,
+            );
+        }
         OffscreenRenderer::new(width, HEIGHT).render_png(
             &scene,
             theme.tokens.colors.surfaces.base,

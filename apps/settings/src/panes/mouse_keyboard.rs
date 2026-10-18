@@ -857,6 +857,16 @@ pub enum InputEffect {
     },
     /// Reset this person's local dictionary. Other accounts are unchanged.
     ResetDictionary { revision: u64 },
+    /// Set which shortcut pastes in one app when the shell pastes for the
+    /// person (Super+V with an image or files), or `default` to go back to
+    /// what its app id suggests (Ctrl+Shift+V for terminals, else Ctrl+V).
+    #[effect(idempotent)]
+    SetPasteShortcut {
+        #[param("The app's id, such as `org.wezfurlong.wezterm`")]
+        app: String,
+        #[param("The shortcut", choices = ["ctrl_v", "ctrl_shift_v", "default"])]
+        shortcut: String,
+    },
     /// Map a drawing tablet onto one display, or the whole desktop.
     #[effect(idempotent)]
     SetTabletOutput {
@@ -1187,6 +1197,7 @@ fn apply(
         | E::EditDictionaryWord { .. }
         | E::RemoveDictionaryWord { .. }
         | E::ResetDictionary { .. } => {}
+        E::SetPasteShortcut { app, shortcut } => input.set_paste_shortcut(&app, &shortcut)?,
     }
     Ok(())
 }
@@ -1276,6 +1287,16 @@ pub(crate) fn answer(
             return ui::personal_dictionary::edit(revision, ui::personal_dictionary::Edit::Reset)
                 .map(|()| Effected::done())
                 .map_err(|error| error.to_string());
+        }
+        // Not a keyboard-source edit: no keyboard scope applies to it.
+        InputEffect::SetPasteShortcut { app, shortcut } => {
+            let settings = host.settings::<InputPrefs>();
+            let mut input = settings.get();
+            input.set_paste_shortcut(&app, &shortcut)?;
+            return settings
+                .set(&input)
+                .map(|()| Effected::done())
+                .map_err(|error| format!("the input settings could not be saved: {error}"));
         }
         _ => {}
     }
@@ -1625,12 +1646,17 @@ pub struct MouseKeyboardPane {
     dictionary_word: ui::LocalState<String>,
     dictionary_language: ui::LocalState<String>,
     dictionary_edits: RefCell<HashMap<DictionaryKey, DictionaryFields>>,
+    /// The app id typed into the paste-shortcut card's field.
+    paste_app: ui::LocalState<String>,
     /// The input section as shown: normalised.
     last: InputPrefs,
     catalog: Vec<CatalogEntry>,
     /// Why the device's layout list could not be read; `catalog` is then a
     /// short built-in list and says so.
     catalog_error: Option<String>,
+    /// The device's layout list is still being read: the page shows what
+    /// it holds, and only the chooser of layouts to add waits for it.
+    catalog_pending: bool,
     /// Which sections the attached devices call for.
     sections: InputSections,
     /// Attached drawing tablets and pads, one card each.
@@ -1673,9 +1699,11 @@ impl MouseKeyboardPane {
             dictionary_word: ui::LocalState::new(String::new()),
             dictionary_language: ui::LocalState::new(String::new()),
             dictionary_edits: RefCell::new(HashMap::new()),
+            paste_app: ui::LocalState::new(String::new()),
             last,
-            catalog: area.catalog().to_vec(),
-            catalog_error: area.catalog_error().map(str::to_owned),
+            catalog_pending: area.catalog_pending(),
+            catalog: Vec::new(),
+            catalog_error: None,
             sections: InputSections::for_devices(None),
             tablets: Vec::new(),
             pads: Vec::new(),
@@ -1694,6 +1722,10 @@ impl MouseKeyboardPane {
             last_editor: area.editor.get(),
             scopes: area.keyboard_scopes(),
         };
+        if !pane.catalog_pending {
+            pane.catalog = area.catalog().to_vec();
+            pane.catalog_error = area.catalog_error().map(str::to_owned);
+        }
         if pane.scopes.len() == 1 {
             let mut editor = pane.editor.get();
             editor.scope = pane
@@ -1768,7 +1800,11 @@ impl MouseKeyboardPane {
 
     fn build_composition(&self) -> Box<dyn Widget> {
         match self.page {
-            InputPage::Keyboard => crate::widgets::cards(self.keyboard_page()),
+            InputPage::Keyboard => {
+                let mut page = self.keyboard_page();
+                page.push(self.paste_shortcut_card());
+                crate::widgets::cards(page)
+            }
             InputPage::Spelling => {
                 crate::widgets::cards(vec![self.spell_checker_card(), self.dictionary_card()])
             }
@@ -2287,6 +2323,72 @@ impl MouseKeyboardPane {
             ),
         )));
         card(&t("input-dictionary-title"), rows(children))
+    }
+
+    /// Which shortcut pastes in an app when the shell pastes for the person
+    /// (Super+V with an image or files): terminals as their app id suggests,
+    /// and any app the person names here, so an unusual terminal is fixed
+    /// without a code change.
+    fn paste_shortcut_card(&self) -> crate::widgets::SettingsSection {
+        let set = |id: &str, label: &str, shortcut: &'static str| {
+            let app = self.paste_app.clone();
+            self.cx.bind(
+                Button::new(id, label),
+                effect(InputEffect::SET_PASTE_SHORTCUT)
+                    .map(move |()| (app.get(), shortcut.to_string())),
+            )
+        };
+        let mut children = vec![
+            crate::widgets::note(&t("input-paste-caption")),
+            field_row(
+                &t("input-paste-app"),
+                Box::new(
+                    TextInput::from_state(&self.paste_app)
+                        .with_id("paste.app")
+                        .with_accessible_name(t("input-paste-app"))
+                        .with_placeholder(t("input-paste-app-placeholder"))
+                        .with_spellcheck(false)
+                        .with_autocorrect(false),
+                ),
+            ),
+            crate::widgets::row(Box::new(
+                Row::new()
+                    .push(Box::new(set(
+                        "paste.ctrl_shift_v",
+                        &t("input-paste-ctrl-shift-v"),
+                        "ctrl_shift_v",
+                    )))
+                    .push(Box::new(set(
+                        "paste.ctrl_v",
+                        &t("input-paste-ctrl-v"),
+                        "ctrl_v",
+                    ))),
+            )),
+        ];
+        for (index, (app, shortcut)) in self.last.paste_shortcuts.iter().enumerate() {
+            let shown = if shortcut == "ctrl_shift_v" {
+                t("input-paste-ctrl-shift-v")
+            } else {
+                t("input-paste-ctrl-v")
+            };
+            children.push(setting_row(
+                &t_args(
+                    "input-paste-entry",
+                    &[
+                        ("app", ArgValue::from(app.as_str())),
+                        ("shortcut", ArgValue::from(shown)),
+                    ],
+                ),
+                Box::new(self.cx.bind_invocation(
+                    Button::new(&format!("paste.{index}.remove"), &t("input-paste-remove")),
+                    InputEffect::SetPasteShortcut {
+                        app: app.clone(),
+                        shortcut: "default".into(),
+                    },
+                )),
+            ));
+        }
+        card(&t("input-paste-title"), rows(children))
     }
 
     fn dictionary_word_row(
@@ -2819,6 +2921,18 @@ mod tests {
     pub(super) fn show_add_source(app: &mut TestApp<SettingsShell>, viewport: (u32, u32)) {
         crate::effects::show_pane(app, crate::categories::Category::Keyboard);
         app.settle();
+        // The layouts to add are read off the UI thread; the chooser offers
+        // them once the read has landed.
+        tilo_test_env::wait_until("the device's layouts are read", || {
+            app.settle();
+            app.with_widget::<crate::settings_app::SettingsApp, _>(|settings| {
+                !settings.input().catalog_pending()
+            }) == Some(true)
+        });
+        for _ in 0..5 {
+            app.settle();
+            let _ = app.harness().poll_frame();
+        }
         for _ in 0..30 {
             app.settle();
             let rect = app
@@ -2891,13 +3005,26 @@ mod tests {
             app.harness()
                 .click_named("input.source.add_picker")
                 .unwrap();
+            // The list opens on the next frame, as it does for a person.
+            app.settle();
             app.harness().render_png(&out.join("open.png"));
             app.harness().type_text("zzzz");
             app.harness().render_png(&out.join("no-matches.png"));
             app.harness().key("Escape");
+            app.settle();
             app.harness()
                 .click_named("input.source.add_picker")
-                .unwrap();
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "{name}: the chooser is still on the page after Escape closed its list \
+                         ({error}); showing {:?}",
+                        app.with_widget::<crate::settings_app::SettingsApp, _>(|settings| (
+                            settings.selected(),
+                            settings.sidebar_open()
+                        ))
+                    )
+                });
+            app.settle();
             app.harness().type_text("French");
             app.harness().render_png(&out.join("filtered.png"));
             app.harness().key("Return");

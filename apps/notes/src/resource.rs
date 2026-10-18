@@ -42,6 +42,9 @@ impl ResourceApp for NotesShell {
     fn view(cx: &mut ViewCx<Notebook>) -> Element {
         // `present` installs the framework's workspace before the first frame.
         let author = UserId(cx.me().unwrap_or("local").to_owned());
+        // A note's save status sits in its header row beside the title, on
+        // the note's own save status surface, so the window paints none.
+        cx.saves().shown_by_view();
         let mut app = NotesApp::empty_surface(&author, cx.save_status());
         if let Some((page, _)) = launched_note(&cx.launch()) {
             app.open_when_present(page);
@@ -67,7 +70,7 @@ impl ResourceApp for NotesShell {
             .file_stem()
             .and_then(|stem| stem.to_str())
             .filter(|stem| !stem.trim().is_empty())
-            .unwrap_or("Imported note");
+            .map_or_else(|| ui::i18n!("notes-imported-untitled"), str::to_owned);
         // Images next to a file named on the command line come with it.
         let (markdown, assets) = input.argument().map_or_else(
             || (markdown.to_owned(), Vec::new()),
@@ -77,7 +80,7 @@ impl ResourceApp for NotesShell {
         );
         vec![
             Notebook::IMPORT_MARKDOWN.with(crate::notebook::notebook::ImportMarkdown {
-                title: title.to_owned(),
+                title,
                 markdown,
                 images: assets.into_iter().map(|(_, bytes)| bytes).collect(),
                 note: Some(crate::notebook::page_id(page)),

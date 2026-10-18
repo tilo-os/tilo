@@ -95,6 +95,13 @@ fn extension_of_glob(pattern: &str) -> Option<String> {
 pub struct FilePickerRequest {
     /// Identity of the requesting app — host can show "{`app_id`} wants to open a file" in the dialog header.
     pub caller: PortalCaller,
+    /// The window the app says it asks from: the portal's `parent_window`
+    /// handle (`wayland:<exported handle>` or `x11:<window id>`), `None`
+    /// when the app named none. The dialog is a sheet on the asking window;
+    /// the shell picks that window among the caller's own
+    /// ([`crate::shell::file_picker_overlay`]), so a handle can only narrow
+    /// the choice, never point the sheet at another app's window.
+    pub parent_window: Option<String>,
     /// User-facing dialog title, provided by the calling app.
     pub title: String,
     /// `true` for `SaveFile` / `SaveFiles` flows, `false` for `OpenFile`; affects the action-button label ("Save" vs "Open").
@@ -189,6 +196,7 @@ impl FilePickerSpawnerHandle {
         let (tx, rx) = oneshot::channel();
         let req = FilePickerRequest {
             caller: opts.caller,
+            parent_window: opts.parent_window,
             title: opts.title,
             save: opts.save,
             directory: opts.directory,
@@ -210,6 +218,7 @@ impl FilePickerSpawnerHandle {
 #[derive(Debug)]
 pub struct FilePickerOptions {
     pub caller: PortalCaller,
+    pub parent_window: Option<String>,
     pub title: String,
     pub save: bool,
     pub directory: bool,
@@ -224,6 +233,7 @@ impl FilePickerOptions {
     pub fn new(caller: PortalCaller, title: impl Into<String>, save: bool) -> Self {
         Self {
             caller,
+            parent_window: None,
             title: title.into(),
             save,
             directory: false,
@@ -233,6 +243,15 @@ impl FilePickerOptions {
             current_name: None,
             filters: Vec::new(),
         }
+    }
+
+    /// The portal's `parent_window` argument; an empty handle names none.
+    #[must_use]
+    pub fn parent_window(mut self, handle: &str) -> Self {
+        self.parent_window = Some(handle.trim())
+            .filter(|handle| !handle.is_empty())
+            .map(str::to_string);
+        self
     }
 
     #[must_use]
@@ -424,6 +443,7 @@ mod tests {
             let (tx, _rx) = oneshot::channel();
             let req = FilePickerRequest {
                 caller: options.caller,
+                parent_window: None,
                 title: options.title,
                 save: false,
                 directory: true,
@@ -442,6 +462,7 @@ mod tests {
             let (tx, _rx) = oneshot::channel();
             let req = FilePickerRequest {
                 caller: PortalCaller::new(WorkspaceId(1), "app"),
+                parent_window: None,
                 title: "t".into(),
                 save: false,
                 directory: false,
@@ -460,6 +481,7 @@ mod tests {
             let (tx, _rx) = oneshot::channel();
             let req = FilePickerRequest {
                 caller: PortalCaller::new(WorkspaceId(1), "app"),
+                parent_window: None,
                 title: "t".into(),
                 save: true,
                 directory: false,

@@ -27,6 +27,8 @@ use ui::tilo_resource::Id;
 
 /// The Chat record kind the bridge mirrors.
 pub const CHAT_KIND: &str = "chat.workspace";
+/// The kind of the parts Chat keeps its messages in, beside its record.
+pub const MESSAGES_KIND: &str = "chat.messages";
 /// The room record kind whose role changes the bridge mirrors.
 pub const ROOM_KIND: &str = "tilo.room";
 
@@ -90,6 +92,8 @@ pub struct BridgePlan {
     pub complete_links: Vec<Value>,
     /// `unlink`.
     pub unlinks: Vec<Value>,
+    /// `rename-link`.
+    pub renames: Vec<Value>,
     /// Chat `create-category`, then `map` it.
     pub import_categories: Vec<Value>,
     /// Chat `create-channel`, then `map` it.
@@ -138,7 +142,7 @@ fn fired(event: &Value) -> Fired<'_> {
         verbs_of(did, &mut verbs);
     }
     match event.get("kind").and_then(Value::as_str) {
-        Some(CHAT_KIND) => Fired::Chat {
+        Some(CHAT_KIND | MESSAGES_KIND) => Fired::Chat {
             verbs,
             item: event.pointer("/item/id").and_then(Value::as_str),
             event,
@@ -208,7 +212,10 @@ fn channel_of<'a>(item: Option<&'a str>, event: &'a Value) -> &'a str {
 /// author with its text that the bridge has not sent yet.
 fn posted(guild: &Guild, chat: &Value, item: Option<&str>, event: &Value) -> Option<String> {
     let named = about(item, event);
-    if tilo::message(chat, named).is_some() {
+    // A reply in a thread is made on the message it answers, which its
+    // change names: that one is not the post.
+    let answers = event.pointer("/arguments/parent").and_then(Value::as_str);
+    if answers != Some(named) && tilo::message(chat, named).is_some() {
         return Some(named.to_owned());
     }
     let channel = channel_of(item, event);
@@ -562,6 +569,7 @@ fn inbound_plan(plan: &mut BridgePlan, read: Reading<'_>, inbound: InboundPlan) 
             .into_iter()
             .map(|user| json!({ "discord_user": user })),
     );
+    plan.renames.extend(values(inbound.renames));
 }
 
 #[cfg(test)]

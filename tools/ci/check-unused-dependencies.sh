@@ -16,7 +16,8 @@ script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo=${TILO_REPO_ROOT:-$(cd "$script_dir/../.." && pwd)}
 cd "$repo"
 paths=$(mktemp)
-trap 'rm -f -- "$paths"' EXIT
+scratch=
+trap 'rm -f -- "$paths"; [[ -z $scratch ]] || rm -rf -- "$scratch"' EXIT
 git ls-files -z --cached --others --exclude-standard -- \
     Cargo.toml '*/Cargo.toml' ':(top,exclude)vendor/**' >"$paths"
 mapfile -d '' manifests <"$paths"
@@ -104,4 +105,30 @@ if (( ${#scan[@]} == 0 )); then
         fi
     done
 fi
+# Metadata for standalone workspaces may create Cargo.lock. Check an isolated,
+# writable source snapshot instead of requiring a writable checkout (t mounts
+# its source read-only). Keep relative path dependencies and Cargo configuration.
+scratch=$(mktemp -d)
+git ls-files -z --cached --others --exclude-standard >"$paths"
+python3 - "$repo" "$scratch" "$paths" <<'PY'
+import os
+from pathlib import Path
+import shutil
+import sys
+
+source, destination, listing = map(Path, sys.argv[1:])
+for name in listing.read_bytes().split(b"\0"):
+    if not name:
+        continue
+    relative = Path(os.fsdecode(name))
+    original = source / relative
+    if not original.exists() and not original.is_symlink():
+        continue  # A locally deleted tracked file is not part of the snapshot.
+    copied = destination / relative
+    copied.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(original, copied, follow_symlinks=False)
+    if not copied.is_symlink():
+        copied.chmod(copied.stat().st_mode | 0o200)
+PY
+cd "$scratch"
 cargo machete --with-metadata "${scan[@]}"

@@ -156,6 +156,21 @@ on Linux, `Start-Process -Verb RunAs` on Windows. The helper holds no UI.
 }
 ```
 
+The native Full Tilo review remains distinct from prepared Linux setup. A
+legacy native request may omit `profile` (the helper defaults it to an empty
+map), `prepared_setup` and `migration`. The staged live installer then collects
+and confirms account and startup choices itself; first-boot account creation
+does not require a prepared bundle. This path does not promise migrated files,
+accounts or an enrolled identity. Those require their separately verified
+handoffs. A claimed prepared profile still requires actual encrypted custody;
+it must never be fabricated to enter the native Windows route. The current
+prepared-setup staging artifact is Linux-only.
+
+Opening this review records intent, not installability: the native host probe,
+architecture-specific internal release catalog and product release gate must
+all pass before installation is offered. The review does not enable the gate
+or qualify a Windows device.
+
 The helper never trusts the request for authority:
 
 1. It resolves `release` against `bundled_internal_releases()` compiled into the

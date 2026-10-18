@@ -2,18 +2,15 @@
 //!
 //! [`tilo_desktop::topbar::TopBarChrome`] draws the bar; this module answers
 //! it from the compositor's chrome state — status, clock, overlays, the
-//! Clocks app's live activity, the person's centre widgets — and carries out
-//! what it asks for.
+//! Clocks app's live activity — and carries out what it asks for.
 use crate::shell::chrome_state;
-use settings_store::hardware::{TopBarWidget as StoredWidget, TopBarWidgetsConfig};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 use tilo_desktop::chrome::{
     ActiveMediaUse, AppTrayIcon, AppTrayItem, AppTrayRequest, AppTrayStatus, Chrome, ChromeIntent,
     ChromeOverlays, ClockActivity, ClockSnapshot, DesktopChromeSnapshot, DesktopChromeSource,
-    LinkKind, LinkStatus, MediaKind, OwnChip, StripPlaces, SystemStatus, TelemetrySnapshot,
-    TopBarWidget, TopBarWidgets, VolumeState,
+    LinkKind, LinkStatus, MediaKind, OwnChip, StripPlaces, SystemStatus, VolumeState,
 };
 pub use tilo_desktop::topbar::*;
 use vello::kurbo::Rect;
@@ -31,7 +28,6 @@ pub fn native_source(chrome: chrome_state::Chrome) -> Chrome {
         chrome,
         clock: RefCell::new(ClockPoll::default()),
         fixture_clock,
-        widgets: RefCell::new(stored_widgets(TopBarWidgetsConfig::load())),
         pill: Cell::new(Rect::ZERO),
         people: RefCell::new(None),
     })
@@ -118,38 +114,6 @@ fn strip_places(state: &chrome_state::ChromeState) -> StripPlaces {
 struct ClockPoll {
     checked: Option<Instant>,
     notified_id: Option<String>,
-}
-
-fn stored_widgets(config: TopBarWidgetsConfig) -> TopBarWidgets {
-    TopBarWidgets {
-        widgets: config
-            .normalised()
-            .widgets
-            .into_iter()
-            .map(|widget| match widget {
-                StoredWidget::Clock => TopBarWidget::Clock,
-                StoredWidget::SystemMonitor => TopBarWidget::SystemMonitor,
-                StoredWidget::Calendar => TopBarWidget::Calendar,
-            })
-            .collect(),
-    }
-}
-
-fn save_widgets(widgets: &TopBarWidgets) {
-    let config = TopBarWidgetsConfig {
-        widgets: widgets
-            .widgets
-            .iter()
-            .map(|widget| match widget {
-                TopBarWidget::Clock => StoredWidget::Clock,
-                TopBarWidget::SystemMonitor => StoredWidget::SystemMonitor,
-                TopBarWidget::Calendar => StoredWidget::Calendar,
-            })
-            .collect(),
-    };
-    if let Err(error) = config.save() {
-        tracing::warn!(%error, "could not keep the top bar's widgets");
-    }
 }
 
 /// The app whose live activity the bar shows as its clock.
@@ -265,7 +229,6 @@ struct NativeChrome {
     chrome: chrome_state::Chrome,
     clock: RefCell<ClockPoll>,
     fixture_clock: Option<ClockSnapshot>,
-    widgets: RefCell<TopBarWidgets>,
     /// Where this bar last drew its workspace name: its menu opens there.
     pill: Cell<Rect>,
     people: RefCell<Option<People>>,
@@ -295,10 +258,6 @@ impl DesktopChromeSource for NativeChrome {
         self.chrome.borrow().tree().desktop.clone()
     }
 
-    fn take_topbar_editor_request(&self) -> bool {
-        self.chrome.borrow_mut().take_topbar_editor_request()
-    }
-
     fn snapshot(&self) -> DesktopChromeSnapshot {
         let mut state = self.chrome.borrow_mut();
         refresh_clock_activity(&mut state, &mut self.clock.borrow_mut());
@@ -307,7 +266,6 @@ impl DesktopChromeSource for NativeChrome {
             revision: state.revision,
             status: system_status(&state.status),
             clock: self.fixture_clock.clone().unwrap_or_else(clock_snapshot),
-            telemetry: TelemetrySnapshot::default(),
             overlays: ChromeOverlays {
                 overview: state.overlays.overview,
                 ws_settings: state.overlays.ws_settings,
@@ -318,6 +276,7 @@ impl DesktopChromeSource for NativeChrome {
             // keeps the bar.
             fullscreen: state.fullscreen_covers_primary(),
             notification_badge: state.notification_badge_total(),
+            notifications_quiet: state.quiet_status_now().is_some(),
             activity_glance: state.activity_glance.clone(),
             viewport_size: state.viewport_size(),
             clock_activity: state.clock_activity.as_ref().map(|activity| ClockActivity {
@@ -331,7 +290,6 @@ impl DesktopChromeSource for NativeChrome {
             active_exposures: state.active_exposures().to_vec(),
             // Native presence has no spectator role yet.
             watching: 0,
-            topbar_widgets: Some(self.widgets.borrow().clone()),
             strip_places: Some(people.places),
             top_bar: state.top_bar_presence(),
             own: Some(people.own),
@@ -365,6 +323,9 @@ impl DesktopChromeSource for NativeChrome {
             }
             ChromeIntent::HideClock => state.overlays.clock = false,
             ChromeIntent::SwitchStrip(strip) => return state.focus_strip(strip),
+            // The overlay host opens the strip switcher's card on its next
+            // update, as Super+S does, with the focused strip chosen.
+            ChromeIntent::ShowStrips => state.request_strip_switcher(),
             ChromeIntent::ClockCommand {
                 command,
                 activity_id,
@@ -420,11 +381,6 @@ impl DesktopChromeSource for NativeChrome {
             }
             // The native bar carries no Tilo mark: its About is in Settings.
             ChromeIntent::ToggleTiloMenu => return false,
-            ChromeIntent::SetTopBarWidgets(widgets) => {
-                let widgets = widgets.normalised();
-                save_widgets(&widgets);
-                *self.widgets.borrow_mut() = widgets;
-            }
         }
         state.bump();
         true
@@ -547,6 +503,21 @@ mod native_source_tests {
         );
     }
 
+    /// A click on the strip's name in the top bar asks for the strip
+    /// switcher, not the overview.
+    #[test]
+    fn the_strip_name_asks_for_the_strip_switcher() {
+        let chrome = chrome_state::ChromeState::new(WorkspaceTree::bootstrap_demo());
+        let source = native_source(chrome.clone());
+        assert!(source.intent(ChromeIntent::ShowStrips));
+        assert!(!chrome.borrow().overlays.overview, "not the overview");
+        assert!(chrome.borrow_mut().take_strip_switcher_request());
+        assert!(
+            !chrome.borrow_mut().take_strip_switcher_request(),
+            "one request, taken once"
+        );
+    }
+
     #[test]
     fn the_snapshot_reports_what_chrome_holds() {
         let chrome = chrome_state::ChromeState::new(WorkspaceTree::bootstrap_demo());
@@ -555,12 +526,6 @@ mod native_source_tests {
         assert_eq!(
             snapshot.status.battery_percent,
             chrome.borrow().status.battery_percent()
-        );
-        assert_eq!(snapshot.telemetry, TelemetrySnapshot::default());
-        assert!(
-            snapshot
-                .topbar_widgets
-                .is_some_and(|w| !w.widgets.is_empty())
         );
         assert_eq!(source.tree().active, chrome.borrow().tree().desktop.active);
     }

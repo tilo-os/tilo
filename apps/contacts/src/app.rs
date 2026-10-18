@@ -509,6 +509,7 @@ impl ContactsApp {
         let destination = LocalState::new(Some(ALL_DESTINATION.to_owned()));
         let sort_choice = LocalState::new(sort_value(SortKey::Name).to_owned());
         let mut shell = NavShell::new()
+            .content_kind(ui::widget::ContentKind::Page)
             .with_id("contacts.shell")
             .sidebar(Box::new(Self::sidebar_list(&[], &destination)))
             .overview(Box::new(ContactList::new(std::rc::Rc::clone(&shared))))
@@ -792,11 +793,11 @@ impl ContactsApp {
                         self.awaiting = Some(id);
                     }
                     self.selected = Some(id);
-                    self.show_toast(if form.is_new {
-                        "Contact created"
-                    } else {
-                        "Saved"
-                    });
+                    // An edited contact shows its changes as the form closes;
+                    // storing them says nothing.
+                    if form.is_new {
+                        self.show_toast("Contact created");
+                    }
                     self.mode = Mode::View;
                     self.shared.borrow_mut().reveal = Some(id);
                     self.unconfirmed_save = Some(form);

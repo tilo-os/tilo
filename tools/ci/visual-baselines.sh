@@ -26,7 +26,7 @@ done
 # Diff against the tree as given, uncommitted changes included, so the patch
 # holds only what the render changed.
 paths=(crates/sdk/ui-core/tests/fixtures/typography apps/ebook/tests/fixtures/typography
-       crates/session/shell/tests/snapshots/e2e crates/session/shell/tests/snapshots/wheel_disc
+       crates/session/shell/tests/snapshots/e2e
        .config/visual-goldens-image t.toml)
 export GIT_INDEX_FILE=$TMPDIR/visual-baselines.index
 git read-tree HEAD
@@ -42,7 +42,7 @@ UPDATE_TYPOGRAPHY_BASELINES=1 TILO_REQUIRE_GPU=1 \
 
 bash tools/ci/golden-image.sh record "$image"
 python3 tools/ci/t_toml.py write
-for directory in e2e wheel_disc; do
+for directory in e2e; do
     python3 tools/test-assets.py crates/session/shell/tests/snapshots/artifacts.json \
         --prune-identical-candidates "crates/session/shell/tests/snapshots/$directory"
 done

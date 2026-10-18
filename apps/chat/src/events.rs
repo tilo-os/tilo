@@ -65,7 +65,7 @@ impl<'a, 'doc> EventDispatch<'a, 'doc> {
 /// outside the taffy tree (the app lays them out by hand), so a throwaway leaf
 /// node satisfies the `Widget::handle_event` signature; the input only uses it
 /// to report a focus target, which the composer host maps to its retained owner.
-fn drive_text_input(
+pub(crate) fn drive_text_input(
     ti: &mut impl Widget,
     event: &WindowEvent,
     scale: f64,
@@ -150,6 +150,31 @@ impl ChatApp {
         handled
     }
 
+    /// Scroll what is under the pointer: the emoji grid, an open thread
+    /// (which keeps the wheel from the timeline behind it), or the timeline.
+    fn handle_wheel(&mut self, delta: &MouseScrollDelta, scale: f64) {
+        let dy = match delta {
+            MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 44.0,
+            MouseScrollDelta::PixelDelta(p) => p.y / scale,
+        };
+        if self.emoji_open && self.emoji_grid.contains(self.last_mouse) {
+            // Clamped against the content height when painted.
+            self.emoji_scroll = (self.emoji_scroll - dy).max(0.0);
+            return;
+        }
+        if self.thread_open.is_some() && self.thread_body.contains(self.last_mouse) {
+            return;
+        }
+        self.scroll += dy;
+        // A positive offset moves away from the live edge. Do this at event
+        // time rather than waiting for paint: `sync` may run between the
+        // input event and the next frame, and must not acknowledge messages
+        // the reader has just scrolled away from.
+        if dy > 0.0 {
+            self.timeline_at_end = false;
+        }
+    }
+
     pub(crate) fn dispatch_event(
         &mut self,
         event: &WindowEvent,
@@ -158,7 +183,7 @@ impl ChatApp {
         doc: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) -> bool {
-        if self.route_context_menu_event(event, scale, modifiers, doc) {
+        if self.route_modal_event(event, scale, modifiers, doc) {
             *handled = true;
             return false;
         }
@@ -191,31 +216,15 @@ impl ChatApp {
                     EventDispatch::new(event, scale, modifiers, doc, handled),
                 );
             }
+            // A file dropped on the conversation is shared there.
+            WindowEvent::DroppedFile(path) => {
+                if self.can_participate() {
+                    self.begin_attachment_import(path);
+                }
+                *handled = true;
+            }
             WindowEvent::MouseWheel { delta, .. } => {
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 44.0,
-                    MouseScrollDelta::PixelDelta(p) => p.y / scale,
-                };
-                if self.emoji_open && self.emoji_grid.contains(self.last_mouse) {
-                    // Clamped against the content height when painted.
-                    self.emoji_scroll = (self.emoji_scroll - dy).max(0.0);
-                    *handled = true;
-                    return false;
-                }
-                if self.thread_open.is_some() && self.thread_body.contains(self.last_mouse) {
-                    // At a thread boundary, do not bubble wheel input to the
-                    // hidden/main timeline behind the detail view.
-                    *handled = true;
-                    return false;
-                }
-                self.scroll += dy;
-                // A positive offset moves away from the live edge. Do this at
-                // event time rather than waiting for paint: `sync` may run
-                // between the input event and the next frame, and must not
-                // acknowledge messages the reader has just scrolled away from.
-                if dy > 0.0 {
-                    self.timeline_at_end = false;
-                }
+                self.handle_wheel(delta, scale);
                 *handled = true;
             }
             WindowEvent::MouseInput {
@@ -394,6 +403,17 @@ impl ChatApp {
     ) -> bool {
         let mut focus_requested = false;
         self.keyboard_target = None;
+        // The composer's `@` list floats over the timeline: a press on it
+        // picks someone in the composer, not whatever lies beneath.
+        if self
+            .focused_composer()
+            .mention_picker_rect()
+            .is_some_and(|list| list.contains(self.last_mouse))
+        {
+            self.route_composer_key(event, scale, modifiers, doc);
+            *handled = true;
+            return false;
+        }
         match self.hit_at(self.last_mouse) {
             Some(Hit::CallDragHandle) => {
                 let huddle = self.call_video_rect();
@@ -552,13 +572,14 @@ impl ChatApp {
         // activates the same `Hit` path as a pointer, including the composers.
         // This check deliberately precedes composer routing: a multiline input
         // must not swallow the application's navigation key.
-        // An `@name` being typed in a composer takes Tab to complete it.
+        // An open `@` list in the composer takes Tab to pick someone.
         if matches!(logical_key, Key::Named(NamedKey::Tab))
             && self.editing.is_none()
             && self.rename.is_none()
             && self.focused_composer().is_focused()
-            && self.complete_mention_on_tab(event, modifiers, doc)
+            && self.focused_composer().mention_picker_open()
         {
+            self.route_composer_key(event, scale, modifiers, doc);
             *handled = true;
             return;
         }
@@ -589,7 +610,8 @@ impl ChatApp {
             && !self.emoji_open
             && self.history_open.is_none()
             && !self.attach_open
-            && !matches!(logical_key, Key::Named(NamedKey::Escape));
+            && (!matches!(logical_key, Key::Named(NamedKey::Escape))
+                || self.focused_composer().mention_picker_open());
         if composer_owns {
             self.route_composer_key(event, scale, modifiers, doc);
             *handled = true;
@@ -721,6 +743,8 @@ impl ChatApp {
         self.focused_composer_mut().ensure_draft(doc);
         self.focused_composer_mut()
             .handle(event, scale, modifiers, doc);
+        let images = self.focused_composer_mut().take_pasted_images();
+        self.queue_pasted_images(images);
         match self.focused_composer_mut().take_outcome() {
             Some(FieldOutcome::Submit) => self.send_focused(doc),
             Some(FieldOutcome::Cancel) | None => {}
@@ -735,47 +759,20 @@ impl ChatApp {
         }
     }
 
-    /// Tab while an `@name` is being typed completes it with the best match
-    /// in the room, as a mention. Returns whether it did.
-    fn complete_mention_on_tab(
-        &mut self,
-        event: &WindowEvent,
-        modifiers: Modifiers,
-        doc: &mut ui::widget::Edits<'_>,
-    ) -> bool {
-        let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key: Key::Named(NamedKey::Tab),
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-        else {
-            return false;
-        };
-        if modifiers.state().shift_key() {
-            return false;
+    fn queue_pasted_images(&mut self, images: Vec<ui::clipboard::ClipboardImage>) {
+        // The device queue posts to a room channel, never a private conversation.
+        // Reject here rather than letting a later navigation publish private bytes.
+        if self.direct_person.is_some() || self.direct_agent.is_some() || self.task_goal.is_some() {
+            if !images.is_empty() {
+                self.attachment_status = Some(crate::i18n::t("chat-private-images-unavailable"));
+            }
+            return;
         }
-        let Some(before) = self.focused_composer().text_before_caret() else {
-            return false;
-        };
-        let participants = self.participants();
-        let Some(query) = crate::mention::picker_query(&before, before.len(), &participants) else {
-            return false;
-        };
-        let Some(who) = crate::mention::candidates(&participants, &query.query)
-            .first()
-            .map(|who| (*who).clone())
-        else {
-            return false;
-        };
-        let typed = before.len().saturating_sub(query.start);
-        let label = format!("@{}", who.name);
-        self.focused_composer_mut()
-            .complete_mention(doc, typed, &who.id, &label);
-        true
+        for image in images {
+            let extension = image.mime.rsplit('/').next().unwrap_or("png");
+            self.device_files
+                .push_back((format!("Pasted image.{extension}"), image.bytes));
+        }
     }
 
     /// Forward a `CursorMoved` or mouse release to every text input so hover
@@ -860,7 +857,7 @@ impl ChatApp {
             _ => Some(self.context_menu(
                 MenuTarget::Workspace(self.active_ws.clone()),
                 self.last_mouse,
-                vec![MenuAction::NewCategory],
+                MenuAction::for_workspace().to_vec(),
             )),
         };
         self.menu = menu;
@@ -978,8 +975,8 @@ impl ChatApp {
             Hit::AddChannel {
                 workspace,
                 category,
-            } if self.can_participate() => self.on_hit_add_channel(&workspace, &category, doc),
-            Hit::AddCategory(ws) if self.can_participate() => self.on_hit_add_category(&ws, doc),
+            } if self.can_participate() => self.on_hit_add_channel(&workspace, &category),
+            Hit::AddCategory(ws) if self.can_participate() => self.on_hit_add_to_workspace(&ws),
             Hit::FocusRename | Hit::FocusEdit => self.set_composer_focus(),
             Hit::Reaction { msg, emoji } => self.on_hit_reaction(&msg, &emoji, doc),
             Hit::AddReaction { msg, anchor } => self.open_emoji_picker(Some(msg), anchor),
@@ -1030,6 +1027,7 @@ impl ChatApp {
             Hit::AttachPick(path) => {
                 self.attach_file(doc, std::path::Path::new(&path));
             }
+            Hit::AttachDevice => self.choose_device_files(),
             Hit::StartCall if self.call_allows(crate::call::CallAction::Join) => {
                 self.on_hit_start_call(doc);
             }
@@ -1069,7 +1067,26 @@ impl ChatApp {
                 .search_opener
                 .open(ui::search::SearchRequest::this_app()),
             Hit::ToggleLeftFlap => self.left_flap.toggle(),
-            Hit::ToggleRightFlap => self.right_flap.toggle(),
+            Hit::ToggleRightFlap => {
+                if self.pins_open && self.right_flap_open() && self.thread_open.is_none() {
+                    self.pins_open = false;
+                } else {
+                    self.pins_open = false;
+                    self.right_flap.toggle();
+                }
+            }
+            Hit::TogglePins => {
+                if self.pins_open && self.right_flap_open() && self.thread_open.is_none() {
+                    self.right_flap.close();
+                    self.pins_open = false;
+                } else {
+                    self.close_thread();
+                    self.pins_open = true;
+                    self.right_flap.open();
+                }
+            }
+            // A pin whose message is gone has nowhere to lead.
+            Hit::RevealMessage(id) => drop(self.reveal_message(&id)),
             Hit::Dismiss => self.on_hit_dismiss(),
             // MessageMenu is a right-click affordance and drag handles are
             // handled at press time; permission-gated fallthroughs are no-ops.
@@ -1122,20 +1139,138 @@ impl ChatApp {
         }
     }
 
-    fn on_hit_add_channel(
-        &mut self,
-        workspace: &str,
-        category: &str,
-        doc: &mut ui::widget::Edits<'_>,
-    ) {
-        let id =
-            self.create_channel_now(doc, workspace, category, "new-channel", ChannelKind::Text);
-        self.begin_rename(MenuTarget::Channel(id));
+    fn on_hit_add_channel(&mut self, workspace: &str, category: &str) {
+        self.open_channel_sheet(crate::channel_sheet::ChannelSheet::new_channel(
+            workspace,
+            category,
+            ChannelKind::Text,
+        ));
     }
 
-    fn on_hit_add_category(&mut self, ws: &str, doc: &mut ui::widget::Edits<'_>) {
-        let id = self.create_category_now(doc, ws, "New category");
-        self.begin_rename(MenuTarget::Category(id));
+    /// The sidebar header's "+": what can be made in the workspace.
+    fn on_hit_add_to_workspace(&mut self, ws: &str) {
+        self.menu = Some(self.context_menu(
+            MenuTarget::Workspace(ws.to_owned()),
+            self.last_mouse,
+            MenuAction::for_workspace().to_vec(),
+        ));
+    }
+
+    /// Ask what to make or change in `sheet`, over everything else.
+    pub(crate) fn open_channel_sheet(&mut self, sheet: crate::channel_sheet::ChannelSheet) {
+        self.menu = None;
+        self.rename = None;
+        self.emoji_open = false;
+        self.attach_open = false;
+        self.channel_sheet = Some(sheet);
+        self.set_composer_focus();
+    }
+
+    /// Give an open modal (the channel sheet, a context menu) `event` first;
+    /// returns whether one took it. The sheet takes every event.
+    fn route_modal_event(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: Modifiers,
+        doc: &mut ui::widget::Edits<'_>,
+    ) -> bool {
+        if self.channel_sheet.is_some() {
+            self.route_channel_sheet_event(event, scale, modifiers, doc);
+            return true;
+        }
+        self.route_context_menu_event(event, scale, modifiers, doc)
+    }
+
+    /// Route `event` to the open channel sheet and apply what it settles on.
+    fn route_channel_sheet_event(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: Modifiers,
+        doc: &mut ui::widget::Edits<'_>,
+    ) {
+        let host_focused = self.host_focused;
+        let Some(sheet) = self.channel_sheet.as_mut() else {
+            return;
+        };
+        match sheet.handle(event, scale, modifiers, doc, host_focused) {
+            crate::channel_sheet::SheetOutcome::Open => {}
+            crate::channel_sheet::SheetOutcome::Cancelled => {
+                self.channel_sheet = None;
+                self.set_composer_focus();
+            }
+            crate::channel_sheet::SheetOutcome::Done(answer) => {
+                self.channel_sheet = None;
+                self.apply_channel_sheet(&answer, doc);
+                self.set_composer_focus();
+            }
+        }
+    }
+
+    /// Make or change what the sheet settled on, through the record's verbs
+    /// and field edits; a new text channel opens.
+    pub(crate) fn apply_channel_sheet(
+        &mut self,
+        answer: &crate::channel_sheet::SheetAnswer,
+        doc: &mut ui::widget::Edits<'_>,
+    ) {
+        use crate::channel_sheet::SheetMode;
+        let topic = (!answer.topic.is_empty()).then(|| answer.topic.clone());
+        match &answer.mode {
+            SheetMode::NewChannel => {
+                let before: std::collections::HashSet<Id> =
+                    self.channels.iter().map(|c| c.id.clone()).collect();
+                self.apply_now(
+                    doc,
+                    Chat::CREATE_CHANNEL.with(chat::CreateChannel {
+                        workspace: item(&answer.workspace),
+                        name: answer.name.clone(),
+                        category: answer.category.as_deref().map(item),
+                        kind: Some(answer.kind),
+                        topic,
+                    }),
+                );
+                self.reload(doc);
+                let made = self
+                    .channels
+                    .iter()
+                    .find(|c| !before.contains(&c.id))
+                    .map(|c| c.id.clone());
+                if let Some(id) = made
+                    && answer.kind == ChannelKind::Text
+                {
+                    self.on_hit_channel(id, doc);
+                }
+            }
+            SheetMode::NewCategory => {
+                self.apply_now(
+                    doc,
+                    Chat::CREATE_CATEGORY.with(chat::CreateCategory {
+                        workspace: item(&answer.workspace),
+                        name: answer.name.clone(),
+                    }),
+                );
+                self.reload(doc);
+            }
+            SheetMode::EditChannel(id) => {
+                let Some(channel) = self.channel(id).cloned() else {
+                    return;
+                };
+                let path = Chat::paths().channels.item(&item(id));
+                if channel.name != answer.name {
+                    self.apply_now(doc, path.name.set(answer.name.clone()));
+                }
+                if channel.topic != answer.topic {
+                    self.apply_now(doc, path.topic.set(answer.topic.clone()));
+                }
+                let category = (!channel.category.is_empty()).then(|| channel.category.clone());
+                if category != answer.category {
+                    self.apply_now(doc, path.category.set(answer.category.as_deref().map(item)));
+                }
+                self.reload(doc);
+            }
+        }
     }
 
     /// Add a channel named `name` to `category` of `workspace` now, as an
@@ -1160,28 +1295,6 @@ impl ChatApp {
         let insert = Chat::paths()
             .channels
             .insert_as(&item(&id), self.channels.len(), &channel);
-        self.apply_now(doc, insert);
-        self.reload(doc);
-        id
-    }
-
-    /// Add a category named `name` to `workspace` now, under an id minted
-    /// here, so its inline rename can follow at once.
-    fn create_category_now(
-        &mut self,
-        doc: &mut ui::widget::Edits<'_>,
-        workspace: &str,
-        name: &str,
-    ) -> String {
-        let id = fresh_id("cat");
-        let category = crate::record::Category {
-            workspace: item(workspace),
-            name: name.to_owned(),
-        };
-        let insert =
-            Chat::paths()
-                .categories
-                .insert_as(&item(&id), self.categories.len(), &category);
         self.apply_now(doc, insert);
         self.reload(doc);
         id
@@ -1374,12 +1487,19 @@ impl ChatApp {
                 }
                 _ => {}
             },
-            MenuTarget::Workspace(ws) => {
-                if action == MenuAction::NewCategory {
-                    let id = self.create_category_now(doc, &ws, "New category");
-                    self.begin_rename(MenuTarget::Category(id));
+            MenuTarget::Workspace(ws) => match action {
+                MenuAction::NewCategory => {
+                    self.open_channel_sheet(crate::channel_sheet::ChannelSheet::new_category(&ws));
                 }
-            }
+                MenuAction::NewChannelHere => {
+                    self.open_channel_sheet(crate::channel_sheet::ChannelSheet::new_channel(
+                        &ws,
+                        "",
+                        ChannelKind::Text,
+                    ));
+                }
+                _ => {}
+            },
         }
         self.reload(doc);
     }
@@ -1392,6 +1512,12 @@ impl ChatApp {
     ) {
         match action {
             MenuAction::Rename => self.begin_rename(MenuTarget::Channel(id.to_string())),
+            MenuAction::EditChannel => {
+                if let Some(channel) = self.channel(id) {
+                    let sheet = crate::channel_sheet::ChannelSheet::edit_channel(channel);
+                    self.open_channel_sheet(sheet);
+                }
+            }
             MenuAction::Delete => {
                 self.apply_now(
                     doc,
@@ -1441,15 +1567,12 @@ impl ChatApp {
                 Chat::DELETE_CATEGORY.with(chat::DeleteCategory { category: item(id) }),
             ),
             MenuAction::ToggleCollapse => self.toggle_category(id),
-            MenuAction::NewChannelHere => {
-                let new_id =
-                    self.create_channel_now(doc, &ws, id, "new-channel", ChannelKind::Text);
-                self.begin_rename(MenuTarget::Channel(new_id));
-            }
-            MenuAction::NewVoiceChannelHere => {
-                let new_id = self.create_channel_now(doc, &ws, id, "New Voice", ChannelKind::Voice);
-                self.begin_rename(MenuTarget::Channel(new_id));
-            }
+            MenuAction::NewChannelHere => self.open_channel_sheet(
+                crate::channel_sheet::ChannelSheet::new_channel(&ws, id, ChannelKind::Text),
+            ),
+            MenuAction::NewVoiceChannelHere => self.open_channel_sheet(
+                crate::channel_sheet::ChannelSheet::new_channel(&ws, id, ChannelKind::Voice),
+            ),
             _ => {}
         }
         self.reload(doc);
@@ -1636,6 +1759,8 @@ impl ChatApp {
         let blocks = m.blocks();
         self.edit_input.load(&blocks);
         self.editing = Some(id);
+        // The message being edited comes into view.
+        self.reveal_scroll_pending = true;
         self.focus = Focus::Main;
         self.menu = None;
         self.emoji_open = false;
@@ -1751,12 +1876,46 @@ impl ChatApp {
             return;
         }
         self.not_sent = None;
+        self.last_post = matches!(self.focus, Focus::Main)
+            .then(|| (self.active_channel.clone(), self.focused_composer().value()));
         self.focused_composer_mut().clear(doc);
         self.focused_composer_mut().sync(doc);
         if matches!(self.focus, Focus::Main) {
             self.jump_to_latest();
         }
         self.reload(doc);
+    }
+
+    /// When the room refused a message this window had already shown as
+    /// sent (and withdrew it), say so under the composer and put its text
+    /// back there to send again.
+    pub(crate) fn settle_refused_post(&mut self) {
+        let Some(chain) = &self.chain else {
+            return;
+        };
+        let refused = chain.dispatcher().refused();
+        let reason = refused.with(|refused| {
+            refused
+                .as_ref()
+                .filter(|refused| refused.by_room && refused.action == "post")
+                .map(|refused| refused.reason.clone())
+        });
+        let Some(reason) = reason else {
+            return;
+        };
+        refused.set(None);
+        self.not_sent = Some(reason);
+        if let Some((channel, text)) = self.last_post.take()
+            && channel == self.active_channel
+            && self.composer_main.value().trim().is_empty()
+        {
+            // The draft is the person's own record (or this device's), not
+            // the room's document: no room edit carries it.
+            let mut own = automerge::AutoCommit::new();
+            self.composer_main.ensure_draft(&own);
+            self.composer_main
+                .insert_text(&mut ui::widget::Edits::lend(&mut own), &text);
+        }
     }
 
     pub(crate) fn send_agent_focused(&mut self, doc: &ui::widget::Edits<'_>) -> bool {
@@ -1860,6 +2019,12 @@ impl ChatApp {
         self.emoji_open = false;
         self.emoji_target = None;
         self.history_open = None;
+        // Without a workspace on this device (a browser page) the files to
+        // share are the person's own: the platform's chooser opens at once.
+        if !self.external_services {
+            self.choose_device_files();
+            return;
+        }
         // A dismissed picker may still have one bounded enumeration worker.
         // Reopen its pending request instead of spawning another reader; this
         // keeps the reply channel backpressured and prevents a click storm
@@ -1883,16 +2048,16 @@ impl ChatApp {
         let sender = self.attachment_picker_result_tx.clone();
         let dir = crate::picker::attach_dir();
         let job = move || {
-            let result = if crate::picker::folder_readable(&dir) {
-                AttachmentPickerResult::Ready {
-                    generation,
-                    entries: crate::picker::list_attachments(&dir),
-                }
+            // No workspace here: the picker offers this device's files
+            // alone, with nothing to apologise for.
+            let entries = if crate::picker::folder_readable(&dir) {
+                crate::picker::list_attachments(&dir)
             } else {
-                AttachmentPickerResult::Failed {
-                    generation,
-                    reason: "workspace is unavailable".into(),
-                }
+                Vec::new()
+            };
+            let result = AttachmentPickerResult {
+                generation,
+                entries,
             };
             let _ = sender.send(result);
         };
@@ -1905,10 +2070,7 @@ impl ChatApp {
         let Ok(result) = self.attachment_picker_result_rx.try_recv() else {
             return;
         };
-        let generation = match &result {
-            AttachmentPickerResult::Ready { generation, .. }
-            | AttachmentPickerResult::Failed { generation, .. } => *generation,
-        };
+        let generation = result.generation;
         if self.attachment_picker_pending != Some(generation) {
             return;
         }
@@ -1921,15 +2083,81 @@ impl ChatApp {
             return;
         }
         self.attachment_picker_pending = None;
-        match result {
-            AttachmentPickerResult::Ready { entries, .. } => {
-                self.attach_entries = entries;
-                self.attachment_status = None;
-            }
-            AttachmentPickerResult::Failed { reason, .. } => {
-                self.attachment_status = Some(format!("Attachment picker failed: {reason}"));
+        self.attach_entries = result.entries;
+        self.attachment_status = None;
+    }
+
+    /// Open the platform's file chooser for files on this device (on the web,
+    /// the browser's own). What is chosen is imported as shared content and
+    /// posted, one file at a time.
+    pub(crate) fn choose_device_files(&mut self) {
+        if !self.can_participate() || self.device_pick.is_some() {
+            return;
+        }
+        self.attach_open = false;
+        let limit = usize::try_from(crate::record::MAX_ATTACHMENT_BYTES).unwrap_or(usize::MAX);
+        self.device_pick = Some(
+            ui::portal::PickRequest::open_multiple("Share files", "Share")
+                .max_contents_bytes(limit)
+                .send_contents(),
+        );
+    }
+
+    /// Take what the file chooser answered, and start the next waiting
+    /// file's import once none is in flight.
+    pub(crate) fn settle_device_files(&mut self) {
+        if let Some(pick) = &self.device_pick {
+            match pick.try_recv() {
+                Ok(ui::portal::ContentsOutcome::Picked(files)) => {
+                    self.device_pick = None;
+                    self.device_files
+                        .extend(files.into_iter().map(|file| (file.name, file.bytes)));
+                }
+                Ok(ui::portal::ContentsOutcome::Cancelled) => self.device_pick = None,
+                Ok(ui::portal::ContentsOutcome::Failed(reason)) => {
+                    self.device_pick = None;
+                    self.attachment_status = Some(format!(
+                        "Couldn't open the files ({reason}). Try choosing them again."
+                    ));
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.device_pick = None;
+                    self.attachment_status =
+                        Some("The file chooser closed. Try choosing the files again.".into());
+                }
             }
         }
+        if self.attachment_pending.is_none()
+            && let Some((name, bytes)) = self.device_files.pop_front()
+        {
+            self.begin_bytes_import(name, bytes);
+        }
+    }
+
+    /// Import `bytes`, a file named `name` from this device (chosen, pasted
+    /// or dropped), into the active channel.
+    pub(crate) fn begin_bytes_import(&mut self, name: String, bytes: Vec<u8>) -> bool {
+        if !self.can_participate() || self.attachment_pending.is_some() {
+            return false;
+        }
+        let token = self.attachment_next_token;
+        let Some(next) = token.checked_add(1) else {
+            return false;
+        };
+        self.attachment_next_token = next;
+        self.attachment_pending = Some(AttachmentImportPending {
+            token,
+            channel: self.active_channel.clone(),
+        });
+        self.attachment_status = Some(format!("Uploading {name}…"));
+        let sender = self.attachment_result_tx.clone();
+        let content = self.content.clone();
+        let job = move || {
+            let _ = sender.send(store_attachment(&content, token, name, &bytes));
+        };
+        run_worker("chat-attachment-import", job, &mut self.attachment_status);
+        true
     }
 
     /// Accept one attachment import. The path is consumed by a single bounded
@@ -2029,7 +2257,7 @@ impl ChatApp {
             let AttachmentImportResult::Failed { reason, .. } = result else {
                 return;
             };
-            self.attachment_status = Some(format!("Attachment import failed: {reason}"));
+            self.attachment_status = Some(format!("Not shared: {reason}"));
             return;
         };
         if !self.can_participate() {
@@ -2077,39 +2305,58 @@ fn prepare_attachment_import(
         reason: reason.into(),
     };
     let Ok((dir, name)) = tilo_files::file_at(path) else {
-        return fail("file is unavailable");
+        return fail("the file is no longer there; choose it again");
     };
     let limit = usize::try_from(crate::record::MAX_ATTACHMENT_BYTES).unwrap_or(usize::MAX);
     let bytes = match tilo_files::blocking::read_bounded(&dir, &name, limit) {
         Ok(Some(bytes)) => bytes,
-        Ok(None) => return fail("file exceeds 32 MiB"),
-        Err(_) => return fail("could not read file"),
+        Ok(None) => return fail("files up to 32 MiB can be shared"),
+        Err(_) => return fail("the file could not be read; check it still exists"),
     };
-    if bytes.is_empty() {
-        return fail("file is empty");
-    }
     let name = path
         .file_name()
         .map_or_else(|| "file".into(), |name| name.to_string_lossy().into_owned());
-    let meta = tilo_content::sniff(&bytes);
-    let blob = match content.put(&bytes) {
+    store_attachment(content, token, name, &bytes)
+}
+
+/// Keep `bytes`, a file named `name`, as shared content: what an attachment
+/// refers to, whichever way the file arrived.
+fn store_attachment(
+    content: &tilo_content::ContentStore,
+    token: u64,
+    name: String,
+    bytes: &[u8],
+) -> AttachmentImportResult {
+    let fail = |reason: &str| AttachmentImportResult::Failed {
+        token,
+        reason: reason.into(),
+    };
+    if bytes.is_empty() {
+        return fail("the file is empty");
+    }
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > crate::record::MAX_ATTACHMENT_BYTES {
+        return fail("files up to 32 MiB can be shared");
+    }
+    let meta = tilo_content::sniff(bytes);
+    let blob = match content.put(bytes) {
         Ok(blob) => blob,
         Err(error) => {
             eprintln!("chat: content store refused an attachment: {error}");
-            return fail("shared content store refused the attachment");
+            return fail("there is no room to keep it here; free some space and try again");
         }
     };
-    if content.read(&blob).as_deref() != Some(bytes.as_slice()) {
-        return fail("shared byte verification failed");
+    if content.read(&blob).as_deref() != Some(bytes) {
+        return fail("the stored copy did not match; try again");
     }
+    let video = crate::picker::is_video_name(&name);
     AttachmentImportResult::Ready {
         token,
-        name: name.clone(),
+        name,
         blob,
         size: u64::try_from(bytes.len()).unwrap_or(crate::record::MAX_ATTACHMENT_BYTES),
         width: meta.w,
         height: meta.h,
-        video: crate::picker::is_video_name(&name),
+        video,
     }
 }
 
@@ -2184,7 +2431,7 @@ mod tests {
             MenuTarget::Channel(_) => MenuAction::for_channel().to_vec(),
             MenuTarget::Category(_) => MenuAction::for_category().to_vec(),
             MenuTarget::Message(_) => MenuAction::for_message().to_vec(),
-            MenuTarget::Workspace(_) => vec![MenuAction::NewCategory],
+            MenuTarget::Workspace(_) => MenuAction::for_workspace().to_vec(),
         };
         let index = items
             .iter()
@@ -2299,10 +2546,11 @@ mod tests {
                 .find(|node| node.role == ui::a11y::Role::Menu)
                 .expect("open shared menu is in Chat's semantic tree");
             assert_eq!(menu.children.len(), MenuAction::for_channel().len());
-            assert_eq!(menu.children[0].name.as_deref(), Some("Rename channel"));
-            assert_eq!(menu.children[1].name.as_deref(), Some("Archive channel"));
+            assert_eq!(menu.children[0].name.as_deref(), Some("Edit channel"));
+            assert_eq!(menu.children[1].name.as_deref(), Some("Rename channel"));
+            assert_eq!(menu.children[2].name.as_deref(), Some("Archive channel"));
             assert_eq!(
-                menu.children[4].name.as_deref(),
+                menu.children[5].name.as_deref(),
                 Some("Delete channel"),
                 "the destructive action comes last"
             );
@@ -2324,7 +2572,7 @@ mod tests {
             }
             assert!(app.menu.is_none());
             assert!(
-                matches!(&app.rename, Some(MenuTarget::Channel(id)) if id == "c_random"),
+                app.channel_sheet.is_some(),
                 "Enter activates the safely focused non-destructive action"
             );
         }
@@ -2613,6 +2861,41 @@ mod tests {
         assert_eq!(retries, 1, "Retry stands under the composer");
     }
 
+    /// A post the room refuses after this window showed it as sent comes
+    /// back to the composer, marked as not sent.
+    #[test]
+    fn a_post_the_room_refuses_comes_back_to_the_composer() {
+        let (mut app, mut doc) = app_with_doc();
+        app.active_channel = "c_general".into();
+        app.focus = Focus::Main;
+        app.thread_open = None;
+        crate::testing::write_draft(&mut app, &mut doc, "over the budget");
+        app.on_hit(Hit::Send, &mut ui::widget::Edits::lend(&mut doc));
+        assert_eq!(
+            app.composer_main.value(),
+            "",
+            "sent, as far as this window knows"
+        );
+        let refused = app
+            .chain
+            .as_ref()
+            .expect("the window holds the messages")
+            .dispatcher()
+            .refused();
+        refused.set(Some(ui::framework::Refused {
+            action: "post".into(),
+            item: None,
+            reason: "the room is receiving too many changes from you".into(),
+            by_room: true,
+        }));
+        app.settle_refused_post();
+        assert_eq!(app.composer_main.value(), "over the budget");
+        assert_eq!(
+            app.not_sent.as_deref(),
+            Some("the room is receiving too many changes from you")
+        );
+    }
+
     #[test]
     fn semantic_send_reports_acceptance_only_when_it_appends_a_message() {
         let (mut app, mut doc) = app_with_doc();
@@ -2837,9 +3120,9 @@ mod tests {
             app.attach_open = true;
             app.attachment_picker_pending = Some(7);
             app.attachment_picker_result_tx
-                .try_send(AttachmentPickerResult::Failed {
+                .try_send(AttachmentPickerResult {
                     generation: 6,
-                    reason: "old worker".into(),
+                    entries: Vec::new(),
                 })
                 .unwrap();
             app.settle_attachment_picker();
@@ -2855,9 +3138,9 @@ mod tests {
             // cancellation, rather than leaking the bounded worker slot.
             app.attach_open = false;
             app.attachment_picker_result_tx
-                .try_send(AttachmentPickerResult::Failed {
+                .try_send(AttachmentPickerResult {
                     generation: 7,
-                    reason: "workspace is unavailable".into(),
+                    entries: Vec::new(),
                 })
                 .unwrap();
             app.settle_attachment_picker();
@@ -3110,7 +3393,7 @@ mod tests {
 
     #[test]
     fn channels_and_categories_are_created_renamed_and_reordered_from_the_sidebar() {
-        // Phase: add_channel_creates_and_opens_rename.
+        // Phase: add_channel_asks_then_creates_and_opens_it.
         {
             let (mut app, mut doc) = app_with_doc();
             let before = app.channels.len();
@@ -3121,11 +3404,26 @@ mod tests {
                 },
                 &mut ui::widget::Edits::lend(&mut doc),
             );
-            assert_eq!(app.channels.len(), before + 1);
-            assert!(
-                app.rename.is_some(),
-                "new channel opens the inline rename editor"
+            assert_eq!(
+                app.channels.len(),
+                before,
+                "nothing is made before it is named"
             );
+            assert!(app.channel_sheet.is_some(), "the channel sheet asks");
+            type_str(&mut app, &mut doc, "Launch Plans");
+            feed(&mut app, &mut doc, &named_key(NamedKey::Tab));
+            type_str(&mut app, &mut doc, "Dates");
+            feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
+            assert!(app.channel_sheet.is_none(), "Enter creates and closes it");
+            let made = app
+                .channels
+                .iter()
+                .find(|c| c.name == "launch-plans")
+                .expect("the channel is made under its kept name");
+            assert_eq!(made.category, "cat_acme_main");
+            assert_eq!(made.topic, "Dates");
+            assert_eq!(made.kind, ChannelKind::Text);
+            assert_eq!(app.active_channel, made.id, "a new text channel opens");
         }
 
         // Phase: inline_rename_writes_through.
@@ -3180,16 +3478,11 @@ mod tests {
                     .count()
             };
             let before = acme_cats(&app);
-            app.on_hit(
-                Hit::AddCategory("ws_acme".into()),
-                &mut ui::widget::Edits::lend(&mut doc),
-            );
+            app.open_channel_sheet(crate::channel_sheet::ChannelSheet::new_category("ws_acme"));
+            type_str(&mut app, &mut doc, "Research");
+            feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
             assert_eq!(acme_cats(&app), before + 1, "a category was created");
-            assert!(
-                app.rename.is_some(),
-                "a new category opens the inline rename editor"
-            );
-            app.cancel_rename();
+            assert!(app.categories.iter().any(|c| c.name == "Research"));
             let collapsed_before = app.category("cat_acme_main").unwrap().collapsed;
             app.on_hit(
                 Hit::CategoryToggle("cat_acme_main".into()),
@@ -3249,9 +3542,13 @@ mod tests {
             app.reconcile_flaps();
             assert!(!app.left_overlay(), "a wide window docks the sidebar");
             // Resize narrow on the SAME instance.
-            app.rect = vello::kurbo::Rect::new(0.0, 0.0, 560.0, 720.0);
+            app.rect = vello::kurbo::Rect::new(0.0, 0.0, 540.0, 720.0);
             app.reconcile_flaps();
-            assert!(app.left_overlay(), "narrowing reflows to a drawer");
+            assert!(
+                app.left_overlay(),
+                "narrowing reflows to one column at a time"
+            );
+            assert!(app.left_flap.is_push());
             // And widen again.
             app.rect = vello::kurbo::Rect::new(0.0, 0.0, 1280.0, 720.0);
             app.reconcile_flaps();
@@ -3386,6 +3683,51 @@ mod tests {
             app.land(doc);
             crate::testing::messages(doc, channel).len() == expected_count
         });
+    }
+
+    /// Where this device has no workspace (a browser page), Share opens the
+    /// platform's chooser at once; what it, a paste or a drop hands over is
+    /// shared from its bytes, one file at a time.
+    #[test]
+    fn files_from_this_device_are_shared_from_their_bytes() {
+        let (mut app, mut doc) = app_with_doc();
+        app.active_channel = "c_crit".into();
+        app.external_services = false;
+        app.on_hit(Hit::Attach, &mut ui::widget::Edits::lend(&mut doc));
+        assert!(app.device_pick.is_some(), "the platform's chooser is asked");
+        assert!(!app.attach_open, "no workspace listing where there is none");
+        app.device_pick = None;
+
+        let before = crate::testing::messages(&doc, "c_crit").len();
+        app.device_files
+            .push_back(("first.txt".into(), b"one".to_vec()));
+        app.device_files
+            .push_back(("second.txt".into(), b"two".to_vec()));
+        tilo_test_env::wait_until("both chosen files", || {
+            app.settle_device_files();
+            app.settle_attachment_import();
+            app.land(&mut doc);
+            crate::testing::messages(&doc, "c_crit").len() == before + 2
+        });
+        let names: Vec<String> = crate::testing::messages(&doc, "c_crit")
+            .iter()
+            .rev()
+            .take(2)
+            .filter_map(|message| message.attachment.as_ref().map(|a| a.name().to_owned()))
+            .collect();
+        assert_eq!(names, ["second.txt", "first.txt"]);
+
+        app.device_files.push_back(("empty.txt".into(), Vec::new()));
+        tilo_test_env::wait_until("the refused file", || {
+            app.settle_device_files();
+            app.settle_attachment_import();
+            app.attachment_pending.is_none() && app.device_files.is_empty()
+        });
+        assert_eq!(
+            app.attachment_status.as_deref(),
+            Some("Not shared: the file is empty"),
+            "a failure says what happened, never that a workspace is unavailable"
+        );
     }
 
     fn settle_picker_until(app: &mut ChatApp) {
@@ -3840,6 +4182,74 @@ mod tests {
     }
 
     #[test]
+    fn private_image_pastes_never_enter_the_room_upload_queue() {
+        for scenario in ["TaskGoalBeforeSetup", "agent-task", "person"] {
+            let (mut app, mut doc) = app_with_doc();
+            if scenario == "person" {
+                app.direct_person = Some("certified-person-key".into());
+            } else {
+                app.stage_scenario(scenario);
+            }
+            app.queue_pasted_images(vec![ui::clipboard::ClipboardImage {
+                mime: "image/png",
+                bytes: b"private image".to_vec(),
+            }]);
+            assert!(app.device_files.is_empty());
+            assert!(app.attachment_status.is_some());
+            app.on_hit(Hit::CurrentContext, &mut ui::widget::Edits::lend(&mut doc));
+            app.settle_device_files();
+            assert!(app.attachment_pending.is_none());
+        }
+        let (mut app, _) = app_with_doc();
+        app.queue_pasted_images(vec![ui::clipboard::ClipboardImage {
+            mime: "image/png",
+            bytes: b"room image".to_vec(),
+        }]);
+        assert_eq!(app.device_files.len(), 1);
+    }
+
+    #[test]
+    fn tasks_remain_reachable_without_a_workspace_rail() {
+        let (mut app, mut doc) = app_with_doc();
+        // A single workspace has no Inbox destination, but still needs Tasks.
+        let context = app.context_ws.clone();
+        app.channels.retain(|channel| channel.workspace == context);
+        app.workspaces.retain(|workspace| workspace.id == context);
+        app.left_flap.snap(true);
+        render_frame(&mut app, 1280.0, 800.0);
+        assert!(app.hits.iter().any(|(_, hit)| matches!(hit, Hit::Tasks)));
+        app.on_hit(Hit::Tasks, &mut ui::widget::Edits::lend(&mut doc));
+        assert!(app.task_goal.is_some());
+        app.left_flap.snap(true);
+        render_frame(&mut app, 1280.0, 800.0);
+        assert!(app.hits.iter().any(|(_, hit)| matches!(hit, Hit::NewTask)));
+        assert!(
+            app.hits
+                .iter()
+                .any(|(_, hit)| matches!(hit, Hit::CurrentContext))
+        );
+        app.on_hit(Hit::CurrentContext, &mut ui::widget::Edits::lend(&mut doc));
+        assert!(app.task_goal.is_none());
+        assert!(app.direct_agent.is_none());
+        assert_eq!(app.active_ws, context);
+    }
+
+    #[test]
+    fn inbox_leaves_private_task_navigation() {
+        for scenario in ["TaskGoalBeforeSetup", "agent-task"] {
+            let (mut app, mut doc) = app_with_doc();
+            app.stage_scenario(scenario);
+            app.left_flap.snap(true);
+            render_frame(&mut app, 1280.0, 800.0);
+            assert!(app.hits.iter().any(|(_, hit)| matches!(hit, Hit::Inbox)));
+            app.on_hit(Hit::Inbox, &mut ui::widget::Edits::lend(&mut doc));
+            assert!(app.inbox_open);
+            assert!(app.task_goal.is_none());
+            assert!(app.direct_agent.is_none());
+        }
+    }
+
+    #[test]
     fn private_headers_never_publish_channel_calls_or_invites() {
         for scenario in ["TaskGoalBeforeSetup", "agent-task", "Subtask"] {
             let (mut app, mut doc) = app_with_doc();
@@ -4262,7 +4672,10 @@ mod tests {
                 crate::render_chat::agent_task_status_lines(app.direct_agent_tasks().unwrap());
             assert!(lines.primary.contains("Working"));
             assert!(!lines.primary.contains("task:review"));
-            assert!(lines.receipt.unwrap().contains("waiting for the agent"));
+            assert_eq!(
+                lines.receipt,
+                Some(crate::i18n::t("chat-agent-direction-waiting"))
+            );
             let semantics = ui::Widget::accessibility(&app).unwrap();
             let heading = semantics
                 .children
@@ -4274,7 +4687,7 @@ mod tests {
                     .description
                     .as_deref()
                     .unwrap()
-                    .contains("waiting for the agent")
+                    .contains(&crate::i18n::t("chat-agent-direction-waiting"))
             );
             assert!(!crate::projection::has_draft(&doc, &app.active_channel));
 
@@ -4525,7 +4938,7 @@ mod tests {
         assert!(state.adopt_doc(doc.chat));
         let mut driver = FrameHarness::for_root(state, app, (960, 720), ui::Theme::dark());
         assert!(!driver.root::<ChatApp>().left_overlay());
-        driver.resize((700, 720)).expect("normal narrow layout");
+        driver.resize((620, 720)).expect("normal narrow layout");
         assert!(driver.root::<ChatApp>().left_overlay());
         driver.resize((960, 720)).expect("normal wide layout");
         assert!(!driver.root::<ChatApp>().left_overlay());
@@ -4581,7 +4994,7 @@ mod tests {
         );
         let root = driver.root::<ChatApp>();
         assert_eq!(root.left_flap.sidebar_rect().width(), 288.0);
-        assert_eq!(root.left_flap.list_rect().width(), 212.0);
+        assert_eq!(root.left_flap.list_rect().width(), 288.0);
         assert_eq!(
             driver.state_mut().doc.get_heads(),
             before,
@@ -4595,7 +5008,7 @@ mod tests {
         render_frame(&mut app, 760.0, 720.0);
         assert!(
             !app.left_overlay(),
-            "rail + sidebar + conversation detail fit at this width"
+            "sidebar + conversation detail fit at this width"
         );
         assert!(
             app.left_flap.content_rect().width()
@@ -4615,7 +5028,7 @@ mod tests {
                 "composer controls fit beside navigation"
             );
         }
-        render_frame(&mut app, 700.0, 720.0);
+        render_frame(&mut app, 620.0, 720.0);
         assert!(
             app.left_overlay(),
             "navigation becomes a drawer when conversation detail no longer fits"
@@ -4899,14 +5312,6 @@ mod tests {
                     .is_some_and(|name| name.starts_with("Inbox"))
             }));
             assert!(
-                root.children.iter().any(|node| {
-                    node.name
-                        .as_deref()
-                        .is_some_and(|name| name.contains("current workspace"))
-                }),
-                "the OS context is explicitly named"
-            );
-            assert!(
                 root.children
                     .iter()
                     .all(|node| node.name.as_deref() != Some("New Workspace")),
@@ -4939,8 +5344,13 @@ mod tests {
             app.stage_view("narrow");
             render_frame(&mut app, 390.0, 844.0);
             let channel = app.channel(&app.active_channel).expect("active channel");
-            let (_, header_tip) = app
-                .hover_tooltip_target(app.header_rect().center())
+            // Somewhere over the elided title, between the header's buttons.
+            let header = app.header_rect();
+            let header_tip = (0..40)
+                .map(|step| header.x0 + header.width() * f64::from(step) / 40.0)
+                .filter_map(|x| app.hover_tooltip_target(Point::new(x, header.center().y)))
+                .find(|(rect, _)| *rect == header)
+                .map(|(_, label)| label)
                 .expect("the elided header has a full hover label");
             assert!(header_tip.contains(&channel.name));
             assert!(header_tip.contains(&channel.topic));
@@ -4954,15 +5364,6 @@ mod tests {
                 app.hover_tooltip_target(rect.center())
                     .map(|(_, label)| label),
                 Some("Show conversation navigation".into())
-            );
-            let (call_rect, _) = app
-                .hits
-                .iter()
-                .find(|(_, hit)| matches!(hit, Hit::StartCall))
-                .expect("labelled call button");
-            assert!(
-                app.hover_tooltip_target(call_rect.center()).is_none(),
-                "the header title must not leak through a foreground control"
             );
         }
 
@@ -5062,6 +5463,8 @@ mod tests {
         let (mut app, mut doc) = app_with_doc();
         app.focus = Focus::Main;
         app.set_composer_focus();
+        // The editor learns who the room offers at `@` as it is drawn.
+        render_frame(&mut app, 1280.0, 720.0);
         let who = app
             .participants()
             .into_iter()
@@ -5276,7 +5679,12 @@ mod tests {
         service_streams(&mut app, "c_huddle", 3);
         let rows = app.roster_rows();
         assert_eq!(rows.len(), people);
-        assert!(rows.iter().all(|(_, channel)| channel.is_none()));
+        assert!(
+            rows.iter()
+                .filter(|(person, _)| !app.is_me(&person.id))
+                .all(|(_, channel)| channel.is_none()),
+            "an anonymous stream places nobody in the call"
+        );
         for stream in app.voice_in("c_huddle") {
             assert!(app.user_name(&stream.user).starts_with("Audio stream "));
         }
@@ -6014,6 +6422,7 @@ mod tests {
                     name: "planning".into(),
                     category: Some(item("cat_home_text")),
                     kind: None,
+                    topic: None,
                 }),
             )
             .unwrap();

@@ -15,7 +15,7 @@
 
 pub(crate) mod shared_displays;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -162,6 +162,10 @@ pub enum DisplayEffect {
     SetAutomaticDisplayInput { on: bool },
 }
 
+/// What staging a display change answers; the page shows the staged
+/// change in its own card rather than as a notice.
+const STAGED: &str = "Display change staged. Apply it to preview the new configuration.";
+
 /// Answer `effect` on the area's model.
 #[expect(
     clippy::needless_pass_by_value,
@@ -229,11 +233,23 @@ pub(crate) fn answer(
             app.displays().model().borrow().inspection(),
         ));
     }
-    app.displays()
-        .model()
-        .borrow_mut()
-        .apply(&effect)
-        .map(Effected::value)
+    let staged = {
+        let model = app.displays().model();
+        let mut model = model.borrow_mut();
+        let staged = model.apply(&effect)?;
+        if staged == STAGED {
+            model.notice = None;
+        }
+        staged
+    };
+    // A change that cannot leave a screen dark applies as it is chosen;
+    // only one that can is tried with Keep and Revert first.
+    if app.displays().model().borrow().of_device
+        && app.displays().model().borrow().staged_applies_at_once()
+    {
+        return answer(app, DisplayEffect::ApplyDisplayChanges, cx);
+    }
+    Ok(Effected::value(staged))
 }
 
 fn request_host_display(
@@ -560,10 +576,18 @@ fn snapshot_label(descriptor: &OutputDescriptor, builtin: bool) -> String {
         .map_or_else(|| base.clone(), |card| format!("{base} on {card}"))
 }
 
-/// Read capabilities only from the active compositor's leased snapshot.
-fn read_outputs() -> Vec<DisplayOutput> {
-    DisplayHardwareSnapshot::load()
-        .map_or_else(Vec::new, |snapshot| outputs_from_snapshot(&snapshot))
+/// Read capabilities only from the active compositor's leased snapshot;
+/// `None` when there is no snapshot to read (the compositor has not
+/// published one, or it is gone), which is not the same as no displays.
+fn read_outputs() -> Option<Vec<DisplayOutput>> {
+    let outputs = DisplayHardwareSnapshot::load().map(|snapshot| outputs_from_snapshot(&snapshot));
+    if outputs.is_none() {
+        tracing::warn!(
+            path = ?settings_store::hardware::display_snapshot_path(),
+            "the compositor's display snapshot is missing or not live"
+        );
+    }
+    outputs
 }
 
 fn outputs_from_snapshot(snapshot: &DisplayHardwareSnapshot) -> Vec<DisplayOutput> {
@@ -617,6 +641,28 @@ fn read_output_brightness(outputs: &[DisplayOutput]) -> BTreeMap<String, f32> {
         return BTreeMap::new();
     }
     output_brightness_from(outputs, &os_actions::BrightnessService::global().levels())
+}
+
+/// The external monitors among `outputs` that are dimmed in software.
+fn read_dimmed_by_tilo(outputs: &[DisplayOutput]) -> BTreeSet<String> {
+    dimmed_by_tilo_from(outputs, &os_actions::BrightnessService::global().levels())
+}
+
+fn dimmed_by_tilo_from(
+    outputs: &[DisplayOutput],
+    levels: &[os_actions::MonitorLevel],
+) -> BTreeSet<String> {
+    outputs
+        .iter()
+        .filter(|output| output.connected && !output.builtin)
+        .filter(|output| {
+            levels.iter().any(|level| {
+                level.connector == output.connector_label
+                    && level.kind == os_actions::BrightnessKind::Software
+            })
+        })
+        .map(|output| output.connector.clone())
+        .collect()
 }
 
 fn output_brightness_from(
@@ -770,6 +816,10 @@ pub struct DisplayModel {
     of_device: bool,
     brightness_control: Arc<dyn BrightnessControl>,
     outputs: Vec<DisplayOutput>,
+    /// Whether the compositor's display snapshot could be read: without
+    /// it the pane cannot tell what is connected, which it must not show
+    /// as "no displays".
+    outputs_read: bool,
     device_displays: Vec<settings_store::device_displays::DeviceDisplay>,
     person_devices: Vec<settings_store::person_displays::PersonDevice>,
     shared_display_prefs: Followed<shared_displays::SharedDisplayPrefs>,
@@ -786,6 +836,9 @@ pub struct DisplayModel {
     /// with their last known level. The built-in panel's backlight is the
     /// Brightness card's slider.
     output_brightness: BTreeMap<String, f32>,
+    /// The monitors among [`Self::output_brightness`] with no hardware
+    /// control, which the compositor darkens instead: their slider says so.
+    dimmed_by_tilo: BTreeSet<String>,
     pending_candidate: Option<DisplayConfig>,
     last_seen_transaction: Option<(u64, DisplayTransactionState)>,
     host_state: Option<settings_store::display_control::DisplayReply>,
@@ -946,9 +999,12 @@ impl DisplayModel {
             }),
         )
         .ok();
-        let outputs = read_outputs();
+        let read = read_outputs();
+        let outputs_read = read.is_some();
+        let outputs = read.unwrap_or_default();
         let output_config = DisplayConfig::load_for(&Self::display_set_of(&outputs));
         let output_brightness = read_output_brightness(&outputs);
+        let dimmed_by_tilo = read_dimmed_by_tilo(&outputs);
         let levels_landed = Arc::new(AtomicBool::new(false));
         let landed = Arc::clone(&levels_landed);
         let wake = ui::WakeHandle::new();
@@ -964,10 +1020,12 @@ impl DisplayModel {
             of_device: true,
             brightness_control: control,
             outputs,
+            outputs_read,
             ambient_sensor_available: false,
             brightness: 0.5,
             output_config,
             output_brightness,
+            dimmed_by_tilo,
             pending_candidate: None,
             pending_device_move: None,
             awaiting_device_move: None,
@@ -1049,10 +1107,12 @@ impl DisplayModel {
             of_device: false,
             brightness_control: Arc::new(NoBrightness),
             outputs: Vec::new(),
+            outputs_read: true,
             ambient_sensor_available: true,
             brightness: 0.62,
             output_config: DisplayConfig::default(),
             output_brightness: BTreeMap::new(),
+            dimmed_by_tilo: BTreeSet::new(),
             pending_candidate: None,
             pending_device_move: None,
             awaiting_device_move: None,
@@ -1093,6 +1153,33 @@ impl DisplayModel {
     /// connectors) is noise, so they are summarised in a caption instead.
     fn connected_outputs(&self) -> Vec<&DisplayOutput> {
         self.outputs.iter().filter(|o| o.connected).collect()
+    }
+
+    /// Whether the staged change can apply at once on this device, without
+    /// the 15-second try: nothing in it can leave a screen dark
+    /// ([`DisplayConfig::needs_confirmation_from`]), and no other change is
+    /// being tried.
+    fn staged_applies_at_once(&self) -> bool {
+        let Some(candidate) = &self.pending_candidate else {
+            return false;
+        };
+        let trying = self.transaction().is_some_and(|transaction| {
+            matches!(
+                transaction.state,
+                DisplayTransactionState::Requested
+                    | DisplayTransactionState::AwaitingConfirmation
+                    | DisplayTransactionState::ConfirmRequested
+                    | DisplayTransactionState::RevertRequested
+            )
+        });
+        let mut committed = self.output_config.clone();
+        for output in self.connected_outputs() {
+            committed
+                .outputs
+                .entry(output.connector.clone())
+                .or_insert_with(|| output.unconfigured());
+        }
+        !trying && !candidate.needs_confirmation_from(&committed)
     }
 
     /// The arrangement as it stands: the staged one, else the committed one.
@@ -1160,6 +1247,7 @@ impl DisplayModel {
             self.settle(transaction);
         }
         self.outputs = outputs_from_snapshot(&reply.observed);
+        self.outputs_read = true;
         self.output_config = reply.committed.clone();
         self.host_state = Some(reply);
         self.changed = true;
@@ -1763,7 +1851,7 @@ impl DisplayModel {
             format!("That display configuration is not possible: {error:?}")
         })?;
         self.pending_candidate = Some(next);
-        Ok("Display change staged. Apply it to preview the new configuration.".into())
+        Ok(STAGED.into())
     }
 
     /// Reconstruct the compositor's descriptor contract from a Settings
@@ -1926,7 +2014,9 @@ impl DisplayModel {
             .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
         if stamp != self.snapshot_stamp {
             self.snapshot_stamp = stamp;
-            self.outputs = read_outputs();
+            let read = read_outputs();
+            self.outputs_read = read.is_some();
+            self.outputs = read.unwrap_or_default();
             self.output_config = self.host_state.as_ref().map_or_else(
                 || DisplayConfig::load_for(&self.display_set()),
                 |state| state.committed.clone(),
@@ -1936,8 +2026,12 @@ impl DisplayModel {
         // Monitor probing finishes in the background; a monitor that turns
         // out to speak DDC/CI gains its slider once the probe lands.
         let controllable = read_output_brightness(&self.outputs);
-        if controllable.keys().ne(self.output_brightness.keys()) {
+        let dimmed_by_tilo = read_dimmed_by_tilo(&self.outputs);
+        if controllable.keys().ne(self.output_brightness.keys())
+            || dimmed_by_tilo != self.dimmed_by_tilo
+        {
             self.output_brightness = controllable;
+            self.dimmed_by_tilo = dimmed_by_tilo;
             self.changed = true;
         }
         let transaction = self.transaction();
@@ -1982,24 +2076,28 @@ impl DisplayModel {
         let arrangement = self.build_arrangement_card(&connected);
         let brightness = self.build_brightness_card();
 
-        let mut cards = vec![arrangement];
+        // What is being tried, or waits to be, leads: its countdown must be
+        // seen. Then the arrangement and the brightness people reach for
+        // most, each display's own settings, and the displays of other
+        // devices.
+        let mut cards: Vec<SettingsSection> = self.build_safety_card().into_iter().collect();
+        cards.push(arrangement);
+        if let Some(notice) = &self.notice {
+            cards.push(card(&t("display-card-title"), rows(vec![note(notice)])));
+        }
+        cards.push(brightness);
+        for (index, output) in connected.iter().enumerate() {
+            cards.push(self.build_output_card(index, output, &connected));
+        }
         if let Some(shared) = self.build_shared_displays_card() {
             cards.push(shared);
         }
         if let Some(devices) = self.build_device_arrangement_card() {
             cards.push(devices);
         }
-        if let Some(notice) = &self.notice {
-            cards.push(card(&t("display-card-title"), rows(vec![note(notice)])));
-        }
-        for (index, output) in connected.iter().enumerate() {
-            cards.push(self.build_output_card(index, output, &connected));
-        }
-        cards.push(self.build_safety_card());
         if let Some(tools) = self.build_trusted_tools_card() {
             cards.push(tools);
         }
-        cards.push(brightness);
         crate::widgets::cards(cards)
     }
 
@@ -2109,7 +2207,11 @@ impl DisplayModel {
         if connected.is_empty() {
             return card(
                 &t("display-card-title"),
-                rows(vec![note(&t("display-none"))]),
+                rows(vec![note(&t(if self.outputs_read {
+                    "display-none"
+                } else {
+                    "display-unreadable"
+                }))]),
             );
         }
         let disconnected = self.outputs.len() - connected.len();
@@ -2332,6 +2434,9 @@ impl DisplayModel {
                     ),
                 ),
             ));
+            if self.dimmed_by_tilo.contains(&output.connector) {
+                output_rows.push(note(&t("display-brightness-dimmed-by-tilo")));
+            }
         }
         output_rows.extend(self.build_output_primary_rows(output, connected, &config));
         output_rows.extend(self.build_output_mode_and_rotation_rows(output, &config));
@@ -2573,7 +2678,7 @@ impl DisplayModel {
 
     /// The safety/apply-transaction card, driven by the on-disk
     /// [`DisplayTransaction`] state machine.
-    fn build_safety_card(&self) -> SettingsSection {
+    fn build_safety_card(&self) -> Option<SettingsSection> {
         let transaction = self.transaction();
         match transaction.as_ref().map(|transaction| transaction.state) {
             Some(DisplayTransactionState::AwaitingConfirmation) => {
@@ -2583,27 +2688,25 @@ impl DisplayModel {
                     .map(|deadline| deadline.saturating_sub(unix_now_ms()).div_ceil(1_000))
                     .unwrap_or_default();
                 let seconds = i64::try_from(seconds).unwrap_or(i64::MAX);
-                let keep = t("display-keep");
-                let revert = t("display-revert-now");
-                card(
+                // One question, one pair of answers.
+                let revert = self.cx.bind_invocation(
+                    ui::widget::Button::new("settings.display.revert", &t("display-revert-now")),
+                    DisplayEffect::RevertDisplayChanges,
+                );
+                let keep = self.cx.bind_invocation(
+                    ui::widget::Button::new("settings.display.keep", &t("display-keep"))
+                        .role(ui::widget::ButtonRole::Primary),
+                    DisplayEffect::KeepDisplayChanges,
+                );
+                Some(card(
                     &t("display-keep-title"),
-                    rows(vec![
-                        note(&t_args(
-                            "display-keep-caption",
-                            &[("seconds", seconds.into())],
-                        )),
-                        self.cx.row(t("display-keep-ok")).button(
-                            "settings.display.keep",
-                            &keep,
-                            DisplayEffect::KeepDisplayChanges,
-                        ),
-                        self.cx.row(t("display-keep-wrong")).button(
-                            "settings.display.revert",
-                            &revert,
-                            DisplayEffect::RevertDisplayChanges,
-                        ),
-                    ]),
-                )
+                    rows(vec![crate::widgets::item_row(
+                        &t_args("display-keep-caption", &[("seconds", seconds.into())]),
+                        Vec::new(),
+                        &[],
+                        vec![revert, keep],
+                    )]),
+                ))
             }
             Some(
                 DisplayTransactionState::Requested
@@ -2614,7 +2717,10 @@ impl DisplayModel {
                     .as_ref()
                     .and_then(|transaction| transaction.message.as_deref())
                     .map_or_else(|| t("display-applying-caption"), str::to_string);
-                card(&t("display-applying-title"), rows(vec![note(&applying)]))
+                Some(card(
+                    &t("display-applying-title"),
+                    rows(vec![note(&applying)]),
+                ))
             }
             Some(DisplayTransactionState::Rejected) => {
                 let rejected = transaction
@@ -2630,26 +2736,26 @@ impl DisplayModel {
                         DisplayEffect::ApplyDisplayChanges,
                     ));
                 }
-                card(&t("display-rejected-title"), rows(content))
+                Some(card(&t("display-rejected-title"), rows(content)))
             }
             _ if self.pending_candidate.is_some() => {
                 let apply = t("display-apply");
-                card(
+                Some(card(
                     &t("display-apply-title"),
                     rows(vec![
-                        note(&t("display-apply-caption")),
-                        self.cx.row(t("display-apply-row")).button(
-                            "settings.display.apply",
-                            &apply,
-                            DisplayEffect::ApplyDisplayChanges,
-                        ),
+                        self.cx
+                            .row(t("display-apply-row"))
+                            .described(t("display-apply-caption"))
+                            .button(
+                                "settings.display.apply",
+                                &apply,
+                                DisplayEffect::ApplyDisplayChanges,
+                            ),
                     ]),
-                )
+                ))
             }
-            _ => card(
-                &t("display-config-title"),
-                rows(vec![note(&t("display-config-empty"))]),
-            ),
+            // Nothing staged and nothing being tried: no card.
+            _ => None,
         }
     }
 
@@ -3711,6 +3817,11 @@ mod tests {
         let level = |connector: &str, level: f32| os_actions::MonitorLevel {
             connector: connector.into(),
             level,
+            kind: if connector == "eDP-1" {
+                os_actions::BrightnessKind::Backlight
+            } else {
+                os_actions::BrightnessKind::Ddc
+            },
         };
         let (mut pane, rec) = recording(vec![
             display_with_modes("eDP-1", "Built-in display", true, Vec::new()),
@@ -3723,6 +3834,19 @@ mod tests {
             pane.output_brightness.keys().collect::<Vec<_>>(),
             ["DP-2"],
             "the panel keeps the Brightness card; a monitor without DDC/CI gets no slider"
+        );
+        let dimmed = dimmed_by_tilo_from(
+            &pane.outputs,
+            &[os_actions::MonitorLevel {
+                connector: "DP-3".into(),
+                level: 1.0,
+                kind: os_actions::BrightnessKind::Software,
+            }],
+        );
+        assert_eq!(
+            dimmed.into_iter().collect::<Vec<_>>(),
+            ["DP-3"],
+            "a monitor the compositor dims says so beside its slider"
         );
         pane.apply(&DisplayEffect::SetMonitorBrightness {
             display: "DP-2".into(),

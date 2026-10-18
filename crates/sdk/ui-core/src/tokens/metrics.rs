@@ -61,10 +61,10 @@ pub struct Metrics {
     pub drawer_width: f32,
     /// The overview column of an overview + detail pair (HIG §1b).
     pub overview_width: f32,
-    /// At or above this window width a sidebar docks beside its content;
-    /// below it the shell switches to separate screens or an overlay.
-    /// `sidebar_width` plus a content column that still reads
-    /// ([`Metrics::content_min_width`]).
+    /// A generic "wide window" width for painted apps that pick a compact
+    /// chrome by width: `sidebar_width` plus [`Metrics::content_min_width`].
+    /// `NavShell` and `SidebarDrawer` dock by the content's real minimum
+    /// instead.
     pub compact_breakpoint: f32,
     /// One row of a navigation list (`NavList`, `paint_nav_row`) at the
     /// default text scale; it grows with the body line like any shell
@@ -82,14 +82,33 @@ pub struct Metrics {
     pub sidebar_min_width: f32,
     /// Widest a person can drag a docked sidebar.
     pub sidebar_max_width: f32,
-    /// The room the content beside a sidebar needs: a readable column, the
-    /// width of a sheet ([`Metrics::panel_width_sheet`]). Narrower than this
-    /// the content would be squeezed, so the sidebar collapses into a
-    /// drawer instead (`compact_breakpoint − sidebar_width`).
+    /// A generous content column: the width of a sheet
+    /// ([`Metrics::panel_width_sheet`]). Painted apps that split their own
+    /// window use it; `NavShell` docks by the content's real minimum
+    /// instead (the `*_min_width` metrics of its `ContentKind`).
     pub content_min_width: f32,
-    /// Narrowest the detail column beside an overview may become before the
-    /// two become push screens.
+    /// Narrowest a detail column beside a list may become in a painted
+    /// app's own split. `NavShell` uses its content kind's minimum.
     pub detail_min_width: f32,
+    /// Narrowest a Tilo app's window becomes: its compact layout, one screen
+    /// at a time, at phone width. Resizing a window stops its edge here
+    /// (`widget::edge_resize`), so every app's compact layout must fit it.
+    pub window_min_width: f32,
+    /// The narrowest a list or table of items (files, messages, tracks)
+    /// still works at: name, a line of detail, a trailing value.
+    pub list_min_width: f32,
+    /// The narrowest a reading column (a message, an article) still works
+    /// at: about 45 characters of body text.
+    pub reading_min_width: f32,
+    /// The narrowest a page of settings, a form or a page of facts still
+    /// works at: a label above its control.
+    pub page_min_width: f32,
+    /// The narrowest a grid of media tiles still works at: two tiles.
+    pub grid_min_width: f32,
+    /// How much wider than its threshold a window must grow before a
+    /// layout that switched away switches back, so a window resized near a
+    /// threshold does not flicker between two layouts.
+    pub layout_hysteresis: f32,
     /// The widest a form, a settings page or a page of facts grows
     /// (`FormPage`, `Page`, `PropertyList`, `Container::readable`). Wider
     /// windows leave the extra room beside it.
@@ -141,6 +160,12 @@ impl Metrics {
         sidebar_max_width: 420.0,
         content_min_width: 560.0,
         detail_min_width: 360.0,
+        window_min_width: 320.0,
+        list_min_width: 320.0,
+        reading_min_width: 360.0,
+        page_min_width: 360.0,
+        grid_min_width: 280.0,
+        layout_hysteresis: 24.0,
         readable_width: 720.0,
         reading_measure: 640.0,
         chooser_width: 224.0,
@@ -224,6 +249,12 @@ impl Metrics {
             sidebar_max_width: self.sidebar_max_width * factor,
             content_min_width: self.content_min_width * factor,
             detail_min_width: self.detail_min_width * factor,
+            window_min_width: self.window_min_width * factor,
+            list_min_width: self.list_min_width * factor,
+            reading_min_width: self.reading_min_width * factor,
+            page_min_width: self.page_min_width * factor,
+            grid_min_width: self.grid_min_width * factor,
+            layout_hysteresis: self.layout_hysteresis * factor,
             readable_width: self.readable_width * factor,
             reading_measure: self.reading_measure * factor,
             chooser_width: self.chooser_width * factor,

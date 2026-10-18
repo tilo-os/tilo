@@ -1,5 +1,5 @@
 //! Rendering for the persistent chat surface: the navigation drawer (the
-//! workspace rail and the channel list), the conversation header, the grouped
+//! workspace's channel list), the conversation header, the grouped
 //! message timeline, the composer, and the detail drawer (people or a
 //! thread). All geometry is computed from `self.rect` and the drawers; every
 //! clickable area is recorded into `hits`.
@@ -17,8 +17,8 @@ use ui::TextKind;
 use ui::Widget;
 use ui::author::Author;
 use ui::chrome::{
-    self, NavCount, NavRowFace, NavSectionFace, SelectionState, nav_item_height,
-    nav_rail_item_height, nav_row_height, nav_row_layout, nav_section_height, nav_section_layout,
+    self, NavCount, NavRowFace, NavSectionFace, SelectionState, nav_item_height, nav_row_height,
+    nav_row_layout, nav_section_height, nav_section_layout,
 };
 use ui::format::bytes as format_bytes;
 use ui::icons::Icon;
@@ -37,7 +37,7 @@ use crate::agent_tasks::{AgentComposerIntent, AgentTaskReceipt, AgentTaskView};
 use crate::app::{ChatApp, Hit, MenuTarget};
 use crate::model::{
     self, AgentRoute, AgentStepOutcome, AgentWork, AgentWorkState, Attachment, ChannelKind,
-    Message, Presence,
+    Message, Presence, User,
 };
 use crate::paint::{band_at_least, elide, line_in, line_of, push_clip, text, width_of};
 
@@ -154,9 +154,10 @@ pub(crate) fn agent_task_status_lines(view: &AgentTaskView) -> AgentTaskStatusLi
         )
     };
     let receipt = view.start_error.clone().or_else(|| match &view.receipt {
-        AgentTaskReceipt::None => None,
-        AgentTaskReceipt::Saving => Some(crate::i18n::t("chat-agent-direction-saving")),
-        AgentTaskReceipt::Saved { .. } => Some(crate::i18n::t("chat-agent-direction-saved")),
+        // Storing the direction is the system's job; only what the agent
+        // does with it is news. A start refusal still takes precedence.
+        AgentTaskReceipt::None | AgentTaskReceipt::Saving => None,
+        AgentTaskReceipt::Saved { .. } => Some(crate::i18n::t("chat-agent-direction-waiting")),
         AgentTaskReceipt::Applied => Some(crate::i18n::t("chat-agent-direction-applied")),
         AgentTaskReceipt::Started => Some(crate::i18n::t("chat-agent-task-started")),
         AgentTaskReceipt::StopRequested => Some(crate::i18n::t("chat-agent-task-stopped")),
@@ -569,7 +570,7 @@ impl ChatApp {
     // ------------------------------------------------------- navigation header
     /// The navigation drawer's part of the window's header row: the sidebar
     /// toggle at its top-leading corner, the workspace (or Inbox) title and
-    /// the "new category" action. Who is here is the desktop's to show, not
+    /// the "create" action. Who is here is the desktop's to show, not
     /// the chat's.
     pub(crate) fn draw_nav_header(
         &self,
@@ -605,7 +606,7 @@ impl ChatApp {
                 tf,
                 tr,
                 theme,
-                &ButtonFace::icon_only(add, Icon::FolderPlus, "New category")
+                &ButtonFace::icon_only(add, Icon::Plus, "Create channel or category")
                     .hovered(self.hovered(add)),
             );
             ChatApp::push_hit(hits, add, Hit::AddCategory(self.active_ws.clone()));
@@ -636,75 +637,90 @@ impl ChatApp {
         );
     }
 
-    // ---------------------------------------------------------------- rail
-    /// The rail: Inbox (every workspace's conversations) and this workspace's
-    /// channels, as the toolkit's rail tiles. Inbox carries the unread count.
-    pub(crate) fn draw_rail(
+    // -------------------------------------------------------- destinations
+    /// The sidebar's top rows: Tasks, Inbox while there are other workspaces,
+    /// and the way back to this workspace's channels from either destination.
+    /// One workspace is one place; there is no list of servers beside it.
+    /// Returns the cursor `y` under them.
+    fn draw_destinations(
         &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintCtx<'_>,
+        side: Rect,
+        mut y: f64,
         hits: &mut Vec<(Rect, Hit)>,
-    ) {
-        let rail = self.rail_rect();
-        if rail.width() <= 0.5 {
-            return;
-        }
-        let mut y = rail.y0;
-        let unread: u32 = self.channels.iter().map(|channel| channel.unread).sum();
-        let inbox_h = nav_rail_item_height(theme, tr, "Inbox", rail.width());
-        let inbox = Rect::new(rail.x0, y, rail.x1, y + inbox_h);
-        let mut face = NavRowFace::new(inbox, "Inbox")
-            .rail()
-            .icon(Icon::Inbox)
-            .state(SelectionState::new(
-                self.inbox_open,
-                self.hovered(inbox),
-                false,
-            ));
-        if unread > 0 {
-            face = face.count(NavCount::Live(unread));
-        }
-        chrome::paint_nav_row(scene, tf, tr, theme, &face);
-        ChatApp::push_hit(hits, inbox, Hit::Inbox);
-        y += inbox_h;
-
-        // One contextual destination: the channels of the Tilo workspace
-        // that owns this Chat instance. Other workspaces are in Inbox.
-        if self.workspaces.iter().any(|ws| ws.id == self.context_ws) {
-            let row_h = nav_rail_item_height(theme, tr, "Channels", rail.width());
-            let row = Rect::new(rail.x0, y, rail.x1, y + row_h);
-            let face = NavRowFace::new(row, "Channels")
-                .rail()
+    ) -> f64 {
+        let PaintCtx {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let elsewhere = self.workspaces.iter().any(|ws| {
+            ws.id != self.context_ws
+                && self
+                    .channels
+                    .iter()
+                    .any(|c| c.workspace == ws.id && c.kind == ChannelKind::Text && !c.archived)
+        });
+        let task_mode = self.task_goal.is_some() || self.direct_agent.is_some();
+        let row_h = nav_row_height(theme);
+        y += f64::from(theme.tokens.spacing.s1);
+        if (self.inbox_open || task_mode)
+            && self.workspaces.iter().any(|ws| ws.id == self.context_ws)
+        {
+            let name = self
+                .workspaces
+                .iter()
+                .find(|ws| ws.id == self.context_ws)
+                .map_or_else(String::new, |ws| ws.name.clone());
+            let row = Rect::new(side.x0, y, side.x1, y + row_h);
+            let face = NavRowFace::new(row, &name)
                 .icon(Icon::Hash)
-                .state(SelectionState::new(
-                    !self.inbox_open && self.direct_agent.is_none() && self.task_goal.is_none(),
-                    self.hovered(row),
-                    false,
-                ));
+                .state(SelectionState::new(false, self.hovered(row), false));
             chrome::paint_nav_row(scene, tf, tr, theme, &face);
             ChatApp::push_hit(hits, row, Hit::CurrentContext);
             y += row_h;
         }
-        let label = crate::i18n::t("chat-agents-section");
-        let height = nav_rail_item_height(theme, tr, &label, rail.width());
-        let row = Rect::new(rail.x0, y, rail.x1, y + height);
+        let row = Rect::new(side.x0, y, side.x1, y + row_h);
         chrome::paint_nav_row(
             scene,
             tf,
             tr,
             theme,
-            &NavRowFace::new(row, &label)
-                .rail()
+            &NavRowFace::new(row, &crate::i18n::t("chat-agents-section"))
                 .icon(Icon::Plus)
-                .state(SelectionState::new(
-                    self.task_goal.is_some() || self.direct_agent.is_some(),
-                    self.hovered(row),
-                    false,
-                )),
+                .state(SelectionState::new(task_mode, self.hovered(row), false)),
         );
         ChatApp::push_hit(hits, row, Hit::Tasks);
+        y += row_h;
+        if !elsewhere && !self.inbox_open {
+            return y;
+        }
+        let mentions: u32 = self
+            .channels
+            .iter()
+            .filter(|c| c.workspace != self.context_ws)
+            .map(|c| c.mentions)
+            .sum();
+        let unread = self
+            .channels
+            .iter()
+            .any(|c| c.workspace != self.context_ws && c.unread > 0);
+        let row = Rect::new(side.x0, y, side.x1, y + row_h);
+        let mut face = NavRowFace::new(row, "Inbox")
+            .icon(Icon::Inbox)
+            .unread(unread)
+            .state(SelectionState::new(
+                self.inbox_open,
+                self.hovered(row),
+                false,
+            ));
+        if mentions > 0 {
+            face = face.count(NavCount::Live(mentions));
+        }
+        chrome::paint_nav_row(scene, tf, tr, theme, &face);
+        ChatApp::push_hit(hits, row, Hit::Inbox);
+        y + row_h
     }
 
     // ------------------------------------------------------------- sidebar
@@ -744,19 +760,25 @@ impl ChatApp {
         );
     }
 
-    /// Channels remain available in the rail while the task tree owns the
-    /// bounded navigation viewport, independent of its content height.
+    /// Channel and Inbox destinations stay above the task tree's bounded
+    /// navigation viewport, independent of its content height.
     fn draw_task_sidebar(
         &mut self,
         paint: &mut PaintCtx<'_>,
         side: Rect,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
+        let destinations_bottom = self.draw_destinations(
+            PaintCtx::new(paint.scene, paint.transform, paint.text, paint.theme),
+            side,
+            side.y0,
+            hits,
+        );
         let rows_top = self
             .draw_agent_navigation(
                 PaintCtx::new(paint.scene, paint.transform, paint.text, paint.theme),
                 side,
-                side.y0,
+                destinations_bottom,
                 true,
                 hits,
             )
@@ -811,7 +833,8 @@ impl ChatApp {
     ) {
         let row_h = nav_row_height(theme);
         let mut y =
-            self.draw_person_navigation(PaintCtx::new(scene, tf, tr, theme), side, side.y0, hits);
+            self.draw_destinations(PaintCtx::new(scene, tf, tr, theme), side, side.y0, hits);
+        y = self.draw_person_navigation(PaintCtx::new(scene, tf, tr, theme), side, y, hits);
         let mut first = y <= side.y0;
         let mut workspaces = self.workspaces.clone();
         workspaces.sort_by(|left, right| left.name.cmp(&right.name));
@@ -850,15 +873,16 @@ impl ChatApp {
                     return;
                 }
                 let row = Rect::new(side.x0, y, side.x1, y + row_h);
-                let mut face = NavRowFace::new(row, &channel.name).icon(Icon::Hash).state(
-                    SelectionState::new(
+                let mut face = NavRowFace::new(row, &channel.name)
+                    .icon(Icon::Hash)
+                    .unread(channel.unread > 0)
+                    .state(SelectionState::new(
                         channel.id == self.active_channel,
                         self.hovered(row),
                         false,
-                    ),
-                );
-                if channel.unread > 0 {
-                    face = face.count(NavCount::Live(channel.unread));
+                    ));
+                if channel.mentions > 0 {
+                    face = face.count(NavCount::Live(channel.mentions));
                 }
                 chrome::paint_nav_row(scene, tf, tr, theme, &face);
                 ChatApp::push_hit(hits, row, Hit::Channel(channel.id.clone()));
@@ -883,7 +907,8 @@ impl ChatApp {
             theme,
         } = paint;
         let mut y =
-            self.draw_person_navigation(PaintCtx::new(scene, tf, tr, theme), side, side.y0, hits);
+            self.draw_destinations(PaintCtx::new(scene, tf, tr, theme), side, side.y0, hits);
+        y = self.draw_person_navigation(PaintCtx::new(scene, tf, tr, theme), side, y, hits);
         y = self.draw_channel_group(
             PaintCtx::new(scene, tf, tr, theme),
             presence,
@@ -1372,9 +1397,12 @@ impl ChatApp {
                     false,
                 ),
             );
-            face = face.icon(if is_voice { Icon::Volume2 } else { Icon::Hash });
-            if ch.unread > 0 && !is_voice {
-                face = face.count(NavCount::Live(ch.unread));
+            face = face
+                .icon(if is_voice { Icon::Volume2 } else { Icon::Hash })
+                .unread(ch.unread > 0 && !is_voice);
+            // Unread talk reads in the name; a mention of you is the badge.
+            if ch.mentions > 0 && !is_voice {
+                face = face.count(NavCount::Live(ch.mentions));
             }
             let layout = nav_row_layout(theme, tr, &face);
             chrome::paint_nav_row(scene, tf, tr, theme, &face);
@@ -1407,7 +1435,8 @@ impl ChatApp {
         y
     }
 
-    /// The people connected to a voice channel, one nested row each.
+    /// The people in a voice channel's call, one nested row each, as the
+    /// room's presence says: seen from anywhere in the workspace.
     fn draw_voice_presence_rows(
         &self,
         paint: PaintCtx<'_>,
@@ -1422,15 +1451,15 @@ impl ChatApp {
             theme,
         } = paint;
         let row_h = nav_row_height(theme);
-        for stream in self.voice_in(channel_id) {
+        for person in self.voice_people(channel_id) {
             if y > side.y1 {
                 break;
             }
             let row = Rect::new(side.x0, y, side.x1, y + row_h);
-            let name = self.user_name(&stream.user);
-            let face = NavRowFace::new(row, &name).depth(1).avatar(
-                AvatarFace::new(&name, &stream.user).presence(self.identity_colour(&stream.user)),
-            );
+            let name = self.user_name(&person);
+            let face = NavRowFace::new(row, &name)
+                .depth(1)
+                .avatar(AvatarFace::new(&name, &person).presence(self.identity_colour(&person)));
             chrome::paint_nav_row(scene, tf, tr, theme, &face);
             y += row_h;
         }
@@ -1934,36 +1963,44 @@ impl ChatApp {
             text: tr,
             theme,
         } = paint;
-        let call_label = crate::i18n::t(if self.call.active {
-            "chat-header-call-open"
-        } else {
-            "chat-header-voice-call"
-        });
-        let probe = ButtonFace::new(Rect::ZERO, &call_label);
-        let call_w = probe.intrinsic_width(tr, theme);
-        let call = Rect::new(
-            right - call_w,
-            cy - control / 2.0,
-            right,
-            cy + control / 2.0,
-        );
+        // Calls happen in voice channels, joined from the sidebar; while
+        // one is on, the way back to its window stands here.
+        let mut right = right;
+        if self.call.active {
+            let call_label = crate::i18n::t("chat-header-call-open");
+            let probe = ButtonFace::new(Rect::ZERO, &call_label);
+            let call_w = probe.intrinsic_width(tr, theme);
+            let call = Rect::new(
+                right - call_w,
+                cy - control / 2.0,
+                right,
+                cy + control / 2.0,
+            );
+            Button::paint(
+                scene,
+                tf,
+                tr,
+                theme,
+                &ButtonFace::new(call, &call_label).hovered(self.hovered(call)),
+            );
+            ChatApp::push_hit(hits, call, Hit::StartCall);
+            right = call.x0 - f64::from(theme.tokens.spacing.s2);
+        }
+
+        let pins = square(Point::new(right - control / 2.0, cy), control);
         Button::paint(
             scene,
             tf,
             tr,
             theme,
-            &ButtonFace::new(call, &call_label).hovered(self.hovered(call)),
+            &ButtonFace::icon_only(pins, Icon::Pin, "Pinned messages")
+                .hovered(self.hovered(pins))
+                .pressed(self.pins_open && self.right_flap_open() && self.thread_open.is_none()),
         );
-        ChatApp::push_hit(hits, call, Hit::StartCall);
-
-        let people = square(
-            Point::new(
-                call.x0 - f64::from(theme.tokens.spacing.s2) - control / 2.0,
-                cy,
-            ),
-            control,
-        );
-        let open = self.right_flap_open() && self.thread_open.is_none();
+        ChatApp::push_hit(hits, pins, Hit::TogglePins);
+        let right = pins.x0 - f64::from(theme.tokens.spacing.s2);
+        let people = square(Point::new(right - control / 2.0, cy), control);
+        let open = self.right_flap_open() && self.thread_open.is_none() && !self.pins_open;
         Button::paint(
             scene,
             tf,
@@ -2210,7 +2247,8 @@ impl ChatApp {
         let max_start = area.y0;
         let min_start = (area.y1 - total).min(area.y0);
         if self.reveal_scroll_pending {
-            if let Some(target) = self.revealed_message.as_deref()
+            // A message shown from search, or one opened in the editor.
+            if let Some(target) = self.revealed_message.as_deref().or(self.editing.as_deref())
                 && let Some(target_index) = rows.iter().position(|row| row.idx_id == target)
             {
                 let before = rows
@@ -2247,6 +2285,7 @@ impl ChatApp {
             divider_h,
         );
 
+        let first_row_hit = hits.len();
         for rm in &rows {
             self.draw_row(
                 PaintCtx::new(scene, tf, tr, theme),
@@ -2257,6 +2296,13 @@ impl ChatApp {
                 hits,
             );
         }
+        // A row scrolled half out of the timeline is clipped where it is
+        // painted; so is what it answers to, never reaching the header.
+        let rows_hits = hits.split_off(first_row_hit);
+        hits.extend(rows_hits.into_iter().filter_map(|(rect, hit)| {
+            let clipped = rect.intersect(area);
+            (clipped.width() > 0.0 && clipped.height() > 0.0).then_some((clipped, hit))
+        }));
         if !self.timeline_at_end {
             self.draw_jump_to_latest(scene, tf, tr, theme, area, hits);
         }
@@ -2677,14 +2723,37 @@ impl ChatApp {
         let time_style = theme.text(TextRole::Caption).numeric();
         let clock = clock_label(m.ts);
         let th = line_of(ctx.text, &time_style);
+        let clock_x = end_x + f64::from(theme.tokens.spacing.s2);
         text(
             &mut ctx,
             &clock,
             &time_style,
             theme.text_dim,
-            Point::new(end_x + f64::from(theme.tokens.spacing.s2), *y + nh - th),
+            Point::new(clock_x, *y + nh - th),
             None,
         );
+        // A pinned message says so where its time is.
+        if m.pinned {
+            let icon = f64::from(theme.tokens.metrics.icon_sm);
+            let x = clock_x
+                + width_of(ctx.text, &clock, &time_style)
+                + f64::from(theme.tokens.spacing.s2);
+            let cy = *y + nh - th / 2.0;
+            Icon::Pin.draw(
+                ctx.scene,
+                tf,
+                Rect::new(x, cy - icon / 2.0, x + icon, cy + icon / 2.0),
+                theme.text_dim,
+            );
+            text(
+                &mut ctx,
+                "Pinned",
+                &time_style,
+                theme.text_dim,
+                Point::new(x + icon + f64::from(theme.tokens.spacing.s1), *y + nh - th),
+                None,
+            );
+        }
         *y += header_row_h(tr, theme);
     }
 
@@ -2830,8 +2899,7 @@ impl ChatApp {
             text_x + f64::from(text_w),
             *y + rm.body_h + 2.0 * pad,
         );
-        let focused = self.is_focused();
-        paint_field(scene, tf, theme, field, focused);
+        paint_field(scene, tf, theme, field);
         self.edit_input.set_placeholder("Edit message");
         self.edit_input.set_mention_paint(self.mention_paint(theme));
         self.edit_input.layout(
@@ -2839,7 +2907,7 @@ impl ChatApp {
             theme,
             tr,
         );
-        self.edit_input.set_focus(focused);
+        self.edit_input.set_focus(self.is_focused());
         self.edit_input.draw(scene, tf, tr, theme, presence);
         ChatApp::push_hit(hits, field, Hit::FocusEdit);
         *y = field.y1 + f64::from(sp.s2);
@@ -3221,7 +3289,6 @@ impl ChatApp {
             &draft,
             (
                 send_enabled,
-                focused,
                 self.direct_agent.is_none()
                     && self.direct_person.is_none()
                     && self.task_goal.is_none(),
@@ -3232,12 +3299,42 @@ impl ChatApp {
         );
         self.composer_main
             .set_mention_paint(self.mention_paint(theme));
+        self.composer_main.set_mention_people(self.mention_people());
+        self.composer_main.set_popover_bounds(self.rect);
         self.composer_main.layout(inner, theme, tr);
         self.composer_main.set_focus(focused);
         self.composer_main.draw(scene, tf, tr, theme, presence);
         let key = ChatApp::draft_presence_key(&self.active_channel);
+        // How a file being shared is doing, while the picker is closed: an
+        // upload under way, or why it was not shared.
+        let upload = self.attachment_status.as_deref().filter(|status| {
+            !self.attach_open
+                && (status.starts_with("Uploading")
+                    || status.starts_with("Not shared")
+                    || status.starts_with("Couldn't")
+                    || status.starts_with("The file chooser"))
+        });
         if let Some(reason) = &self.not_sent {
             Self::draw_not_sent(PaintCtx::new(scene, tf, tr, theme), rect, reason, hits);
+        } else if let Some(status) = upload {
+            let style = theme.text(TextRole::Caption);
+            let ink = if status.starts_with("Uploading") {
+                theme.text_dim
+            } else {
+                theme.tokens.colors.semantic.danger
+            };
+            let shown = elide(tr, status, &style, rect.width());
+            tr.draw_style(
+                scene,
+                &shown,
+                ink,
+                tf.pre_translate(vello::kurbo::Vec2::new(
+                    rect.x0,
+                    rect.y1 + f64::from(theme.tokens.spacing.s1),
+                )),
+                None,
+                &style,
+            );
         } else if self.direct_person.is_none()
             && self.direct_agent.is_none()
             && self.task_goal.is_none()
@@ -3256,7 +3353,7 @@ impl ChatApp {
             theme,
         } = paint;
         let style = theme.text(TextRole::Caption);
-        let y = field.y1 + f64::from(theme.tokens.spacing.s2);
+        let y = field.y1 + f64::from(theme.tokens.spacing.s1);
         let retry = "Retry";
         let strong = style.clone().strong();
         let retry_w = width_of(tr, retry, &strong);
@@ -3730,7 +3827,7 @@ impl ChatApp {
             theme.text_dim,
             tf.pre_translate(vello::kurbo::Vec2::new(
                 field.x0,
-                field.y1 + f64::from(theme.tokens.spacing.s2),
+                field.y1 + f64::from(theme.tokens.spacing.s1),
             )),
             None,
             &style,
@@ -3772,7 +3869,7 @@ impl ChatApp {
         paint: PaintCtx<'_>,
         rect: Rect,
         draft: &str,
-        (send_enabled, focused, attach, interactive): (bool, bool, bool, bool),
+        (send_enabled, attach, interactive): (bool, bool, bool),
         focus_hit: Hit,
         hits: &mut Vec<(Rect, Hit)>,
     ) -> Rect {
@@ -3784,7 +3881,7 @@ impl ChatApp {
         } = paint;
         let sp = &theme.tokens.spacing;
         let btn = ButtonFace::height(ControlSize::Regular, theme);
-        paint_field(scene, tf, theme, rect, focused);
+        paint_field(scene, tf, theme, rect);
         if interactive {
             ChatApp::push_hit(hits, rect, focus_hit);
         }
@@ -3824,10 +3921,11 @@ impl ChatApp {
             ChatApp::push_hit(hits, plus, Hit::Attach);
         }
 
+        // Enter sends. The send icon is a quiet one beside the emoji, for a
+        // pointer or a touch, lit once there is something to send.
         let send = composer_slot(&frame.trailing, 0);
         let send_face = ButtonFace::icon_only(send, Icon::Send, &send_label)
             .control_size(ControlSize::Regular)
-            .role(ButtonRole::Primary)
             .hovered(self.hovered(send));
         Button::paint(
             scene,
@@ -3902,12 +4000,15 @@ impl ChatApp {
             PaintCtx::new(scene, tf, tr, theme),
             comp,
             &draft,
-            (send_enabled, focused, false, true),
+            (send_enabled, false, true),
             Hit::FocusThread,
             hits,
         );
         self.composer_thread
             .set_mention_paint(self.mention_paint(theme));
+        self.composer_thread
+            .set_mention_people(self.mention_people());
+        self.composer_thread.set_popover_bounds(self.rect);
         self.composer_thread.layout(inner, theme, tr);
         self.composer_thread.set_focus(focused);
         self.composer_thread.draw(scene, tf, tr, theme, presence);
@@ -4366,38 +4467,133 @@ impl ChatApp {
         let body = Rect::new(panel.x0, head.y1, panel.x1, panel.y1);
         push_clip(scene, tf, body);
         let inset = f64::from(theme.tokens.spacing.s2);
-        let mut y = body.y0 + inset;
+        let mut y = body.y0;
         let mut ctx = PaintCtx::new(scene, tf, tr, theme);
-        for (person, voice) in &rows {
-            if y > panel.y1 {
-                break;
+        // Who is around first, then everyone else, each under a count.
+        let here = |person: &User, voice: &Option<String>| {
+            voice.is_some() || person.status != Presence::Offline
+        };
+        let online = rows.iter().filter(|(p, v)| here(p, v)).count();
+        let sections = [
+            (format!("Online — {online}"), true),
+            (format!("Offline — {}", rows.len() - online), false),
+        ];
+        for (index, (title, present)) in sections.iter().enumerate() {
+            let members: Vec<_> = rows
+                .iter()
+                .filter(|(p, v)| here(p, v) == *present)
+                .collect();
+            if members.is_empty() {
+                continue;
             }
-            // Named as the room names them, numbered when shared: the same
-            // label as their lines in the timeline.
-            let display = if person.is_agent && !self.is_me(&person.id) {
-                format!("{} (agent)", person.name)
-            } else {
-                self.user_name(&person.id)
-            };
-            let status = match voice {
-                Some(ch) => format!("In {ch}"),
-                None => presence_label(person.status).to_owned(),
-            };
-            let name = self.user_name(&person.id);
-            let face = ListRowFace::new(&display)
-                .secondary(&status)
-                .leading(RowLeading::Avatar(
-                    AvatarFace::new(&name, &person.id)
-                        .presence(self.identity_colour(&person.id))
-                        .status(avatar_status(person.status)),
-                ))
-                .selected(self.revealed_person.as_deref() == Some(person.id.as_str()));
-            let row_h = face.height(ctx.text, theme);
-            let row = Rect::new(body.x0 + inset, y, body.x1 - inset, y + row_h);
-            face.paint(&mut ctx, row);
-            y += row_h;
+            let section_h = nav_section_height(theme, index == 0 || online == 0);
+            chrome::paint_nav_section(
+                ctx.scene,
+                tf,
+                ctx.text,
+                theme,
+                &NavSectionFace::new(Rect::new(body.x0, y, body.x1, y + section_h), title),
+            );
+            y += section_h;
+            for (person, voice) in members {
+                if y > panel.y1 {
+                    break;
+                }
+                // Named as the room names them, numbered when shared: the
+                // same label as their lines in the timeline.
+                let display = if person.is_agent && !self.is_me(&person.id) {
+                    format!("{} (agent)", person.name)
+                } else {
+                    self.user_name(&person.id)
+                };
+                // A plain "Online" under every name says nothing the section
+                // has not; where someone is, or that they are away, does.
+                let status = match voice {
+                    Some(ch) => format!("In {ch}"),
+                    None if matches!(person.status, Presence::Idle | Presence::Dnd) => {
+                        presence_label(person.status).to_owned()
+                    }
+                    None => String::new(),
+                };
+                let name = self.user_name(&person.id);
+                let mut face = ListRowFace::new(&display)
+                    .leading(RowLeading::Avatar(
+                        AvatarFace::new(&name, &person.id)
+                            .presence(self.identity_colour(&person.id))
+                            .status(avatar_status(person.status)),
+                    ))
+                    .enabled(*present || !person.is_agent)
+                    .selected(self.revealed_person.as_deref() == Some(person.id.as_str()));
+                if !status.is_empty() {
+                    face = face.secondary(&status);
+                }
+                let row_h = face.height(ctx.text, theme);
+                let row = Rect::new(body.x0 + inset, y, body.x1 - inset, y + row_h);
+                face.paint(&mut ctx, row);
+                y += row_h;
+            }
         }
         scene.pop_layer();
+    }
+
+    /// The open channel's pinned messages, newest first, in the detail
+    /// drawer: each opens where it was written.
+    pub(crate) fn draw_pins(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        let panel = self.thread_rect();
+        let head = self.draw_panel_header(
+            PaintCtx::new(scene, tf, tr, theme),
+            panel,
+            "Pinned messages",
+            Hit::TogglePins,
+            hits,
+        );
+        let body = Rect::new(panel.x0, head.y1, panel.x1, panel.y1);
+        let pinned: Vec<&Message> = self.messages.iter().rev().filter(|m| m.pinned).collect();
+        let mut ctx = PaintCtx::new(scene, tf, tr, theme);
+        if pinned.is_empty() {
+            let content = EmptyStateContent {
+                icon: Some(Icon::Pin),
+                message: Some("Pin a message from its menu to keep it here for everyone."),
+                ..EmptyStateContent::new("Nothing pinned yet")
+            };
+            EmptyState::paint(&mut ctx, body, &content, self.last_mouse);
+            return;
+        }
+        push_clip(ctx.scene, tf, body);
+        let inset = f64::from(theme.tokens.spacing.s2);
+        let mut y = body.y0 + inset;
+        for m in pinned {
+            if y > body.y1 {
+                break;
+            }
+            let name = self.user_name(&m.author);
+            let when = format!("{} · {}", day_label(m.ts), clock_label(m.ts));
+            let face = ListRowFace::new(&name)
+                .meta(&when)
+                .secondary(&m.text)
+                .two_line_secondary()
+                .leading(RowLeading::Avatar(
+                    AvatarFace::new(&name, &m.author).presence(self.identity_colour(&m.author)),
+                ));
+            let row_h = face.height(ctx.text, theme);
+            let row = Rect::new(body.x0 + inset, y, body.x1 - inset, y + row_h);
+            let hovered = self.hovered(row);
+            face.interaction(ui::widget::Interaction {
+                hovered,
+                ..ui::widget::Interaction::default()
+            })
+            .paint(&mut ctx, row);
+            ChatApp::push_hit(hits, row, Hit::RevealMessage(m.id.clone()));
+            y += row_h;
+        }
+        ctx.scene.pop_layer();
     }
 
     // ------------------------------------------------------- attach picker
@@ -4432,11 +4628,14 @@ impl ChatApp {
             .secondary("Ag")
             .leading(RowLeading::Icon(Icon::Image))
             .height(tr, &local);
-        let body_h = if rows.is_empty() {
-            title_h
-        } else {
-            rows.len() as f64 * row_h
-        };
+        // This device's files first; the workspace's, where there is one,
+        // under their own caption.
+        let body_h = row_h
+            + if rows.is_empty() {
+                0.0
+            } else {
+                caption_h + pad + rows.len() as f64 * row_h
+            };
         let more = self.attach_entries.len().saturating_sub(max_rows);
         let panel_h = pad
             + title_h
@@ -4474,7 +4673,9 @@ impl ChatApp {
         );
         y = title_band.y1;
         if let Some(status) = status {
-            let failed = status.contains("failed") || status.contains("cancelled");
+            let failed = status.starts_with("Not shared")
+                || status.starts_with("Couldn't")
+                || status.contains("cancelled");
             let ink = if failed {
                 local.tokens.colors.semantic.danger
             } else {
@@ -4492,22 +4693,29 @@ impl ChatApp {
             );
             y = band.y1 + pad;
         }
-        if rows.is_empty() {
-            let message = if self.attachment_picker_pending.is_some() {
-                "Loading files"
-            } else {
-                "No files to share yet"
-            };
-            let band = Rect::new(panel.x0, y, panel.x1, y + title_h);
+        let device = Rect::new(panel.x0 + pad, y, panel.x1 - pad, y + row_h);
+        ListRowFace::new("Upload from this device")
+            .secondary("Files, pictures and videos up to 32 MiB")
+            .leading(RowLeading::Icon(Icon::Upload))
+            .interaction(ui::widget::Interaction {
+                hovered: self.hovered(device),
+                ..Default::default()
+            })
+            .paint(&mut ctx, device);
+        ChatApp::push_hit(hits, device, Hit::AttachDevice);
+        y = device.y1;
+        if !rows.is_empty() {
+            let band = Rect::new(panel.x0, y + pad, panel.x1, y + pad + caption_h);
             line_in(
                 &mut ctx,
-                message,
-                &local.text(TextRole::Body),
+                "From the workspace",
+                &local.text(TextRole::Caption),
                 local.text_dim,
                 inner_x,
                 band,
                 w - 2.0 * f64::from(sp.s4),
             );
+            y = band.y1;
         }
         for e in rows {
             let row = Rect::new(panel.x0 + pad, y, panel.x1 - pad, y + row_h);
@@ -4561,14 +4769,11 @@ impl ChatApp {
     }
 }
 
-/// A field's face: the raised well with its derived edge, and your focus
-/// ring while it has the caret.
-fn paint_field(scene: &mut Scene, tf: Affine, theme: &Theme, rect: Rect, focused: bool) {
+/// A composer's face: the raised well with its derived edge. It wears no
+/// focus ring: the caret in it says where typing goes, as in any chat.
+fn paint_field(scene: &mut Scene, tf: Affine, theme: &Theme, rect: Rect) {
     let radius = f64::from(theme.tokens.radii.control);
     ui::surface::card(scene, tf, rect, radius, theme.tokens.colors.surfaces.raised);
-    if focused {
-        ui::widget::paint_focus_ring(scene, tf, rect, radius, theme);
-    }
 }
 
 /// Who else is writing in the composer scoped by `key`, as a line: "Ada is
@@ -5025,7 +5230,23 @@ mod tests {
         assert!(status.primary.contains("Working"));
         assert!(status.primary.contains("Run 7"));
         assert!(!status.primary.contains(&task.title));
-        assert!(status.receipt.unwrap().contains("waiting for the agent"));
+        assert_eq!(
+            status.receipt,
+            Some(crate::i18n::t("chat-agent-direction-waiting"))
+        );
+    }
+
+    #[test]
+    fn saving_direction_is_quiet_but_start_errors_are_retained() {
+        let mut app = crate::app::ChatApp::new_ephemeral();
+        let view = app.agent_tasks.stage_capture("workspace", "scribe");
+        view.receipt = crate::agent_tasks::AgentTaskReceipt::Saving;
+        assert_eq!(super::agent_task_status_lines(view).receipt, None);
+        view.start_error = Some("Approval is no longer current".into());
+        assert_eq!(
+            super::agent_task_status_lines(view).receipt,
+            view.start_error
+        );
     }
 
     #[test]

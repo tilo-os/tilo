@@ -406,7 +406,7 @@
     },
     {
       "id": "so.tilo.settings",
-      "name": "Personal Settings",
+      "name": "Settings",
       "category": "System",
       "platforms": [
         "tilo-os"

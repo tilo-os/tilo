@@ -75,6 +75,11 @@ def used_keys(text: str, namespaces: set[str]) -> list[tuple[str, int]]:
         # Match-arm selectors describe stored values, not displayed copy.
         if re.match(r"\s*(?:=>|\|)", code[literal.end:]):
             continue
+        # A compared value inside a resolver's argument (`t(if id == "icloud"
+        # { … } else { … })`) is a state, not the key being resolved.
+        if (re.search(r"[=!]=\s*$", code[:literal.start])
+                or re.match(r"\s*[=!]=", code[literal.end:])):
+            continue
         if not direct and key.partition("-")[0] not in namespaces:
             continue
         if not direct and (contains(machine, literal.start)
@@ -87,6 +92,10 @@ def used_keys(text: str, namespaces: set[str]) -> list[tuple[str, int]]:
 TOOLKIT = "crates/sdk/ui-core"
 # Crates whose copy keys also travel through conditionals and tables.
 INDIRECT = {"apps/settings"}
+# Catalogues a crate's resolver falls back to after its own: Settings' `t`
+# resolves the shared provider administration copy it embeds
+# (apps/settings/src/i18n.rs).
+FALLBACK = {"apps/settings": ["crates/sdk/provider-settings-ui"]}
 
 
 def catalogues(crate: Path) -> dict[str, set[str]]:
@@ -105,6 +114,7 @@ def missing_copy(root: Path) -> list[str]:
     for crate in copy_crates(root):
         own = catalogues(crate)
         name = crate.relative_to(root).as_posix()
+        shared = [catalogues(root / fallback) for fallback in FALLBACK.get(name, [])]
         indirect = name in INDIRECT
         namespaces = {key.partition("-")[0] for key in own["en-US"]} if indirect else set()
         for path in sorted((crate / "src").rglob("*.rs")):
@@ -113,7 +123,9 @@ def missing_copy(root: Path) -> list[str]:
                 continue
             for key, line in used_keys(path.read_text(), namespaces):
                 for locale, keys in own.items():
-                    if key not in keys and key not in toolkit.get(locale, toolkit["en-US"]):
+                    if key in keys or key in toolkit.get(locale, toolkit["en-US"]):
+                        continue
+                    if not any(key in fallback.get(locale, ()) for fallback in shared):
                         errors.append(f"{path.relative_to(root)}:{line}: {locale} lacks {key}")
     return errors
 

@@ -1218,7 +1218,6 @@ impl GitClientApp {
             if self.drawer.reveal() <= 0.001 || panel.width() <= 0.0 {
                 return;
             }
-            self.drawer.draw_scrim(ctx.scene, ctx.transform, theme);
             // Everything under the drawer is inert while it is out; the row
             // above it stays live.
             self.targets.retain(|t| t.rect.y1 <= row.y1 + 0.5);

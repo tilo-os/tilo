@@ -551,18 +551,30 @@ fn palette_confirmations_cannot_forge_identity_or_admin_and_wait_for_the_overlay
                 .expect("identity action")
         };
         let before = chrome.borrow().tree().desktop.workspaces[0].sandbox.clone();
-        host.pending_palette_action = Some(action);
-        host.palette
-            .set_query(r#"{"id":"does-not-exist","confirm":false}"#);
-        host.activate_selected_result(
+        // The steps collected an unknown identity and a refusal to confirm.
+        let mut values = serde_json::Map::new();
+        values.insert("id".into(), serde_json::Value::from("does-not-exist"));
+        values.insert("confirm".into(), serde_json::Value::Bool(false));
+        host.palette_visible = true;
+        host.param_flow = Some(palette_flow::ParamFlow {
+            result: action,
+            values,
+            pending: Vec::new(),
+            asked: Vec::new(),
+            choices: Vec::new(),
+            query: String::new(),
+            prefill: None,
+        });
+        host.finish_param_flow(
             &mut ui::widget::Edits::lend(&mut document),
             &automerge::ROOT,
         );
 
         assert!(
-            host.pending_palette_action.is_some(),
+            host.param_flow.is_some(),
             "refused palette action remains editable"
         );
+        assert!(host.palette_visible, "and the palette stays open on it");
         assert_eq!(
             chrome.borrow().tree().desktop.workspaces[0].sandbox,
             before,
@@ -1109,6 +1121,9 @@ fn escape_unwinds_the_innermost_overlay_state_first() {
 )]
 fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
     fn shortcut_reference_covers_every_production_essential() {
+        // The rows spell chords in the US keycaps they are compared with,
+        // whatever layout another test or the process last published.
+        let _us = ui::keycaps::scoped(ui::Keycaps::US);
         let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
         let visible = rows
             .iter()
@@ -1118,7 +1133,7 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
             "Screenshot:Print Screen",
             "Switch windows:Alt+Tab",
             "Close tab:Alt+F4  /  Super+W",
-            "Reopen closed tab:Ctrl+Shift+T",
+            "Reopen closed tab:Super+Shift+T",
             "New window:Super+N",
             "Add tab here:Super+T",
             "Duplicate tab:Super+D",
@@ -1128,7 +1143,7 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
             "Overview:Super+Tab",
             "Lock screen:Super+L",
             "Quick Settings:Super+Q",
-            "Workspace wheel:Super+S",
+            "Strip switcher:Super+S",
             "Display layout:Super+P",
             "Capture screenshot:Super+Shift+S",
             "Picture in picture:Super+Shift+P",
@@ -1223,6 +1238,18 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
         let description = guide.description.as_deref().expect("guide description");
         assert!(description.contains("workspaces with"));
         assert!(description.contains("move groups with"));
+        assert!(
+            description.contains("maximize with Super+Up and restore with Super+Down"),
+            "{description}"
+        );
+        assert!(
+            description.contains("strips with Super+Ctrl+Up or Super+Ctrl+Down"),
+            "{description}"
+        );
+        assert!(
+            description.contains("straight to one with Super+1 through Super+9"),
+            "{description}"
+        );
         assert!(description.contains("Screenshot: Print Screen"));
         assert!(!description.contains("Shortcut guide:"));
     }
@@ -1235,6 +1262,38 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
     shortcut_reference_keycaps_fit_their_cells();
     shortcut_reference_columns_stay_semantically_grouped();
     shortcut_accessibility_names_workspace_and_group_navigation();
+}
+
+/// The guide lists maximize/restore and strip switching as editable pairs,
+/// and notes Super+1…9 for going straight to a strip, from the live table.
+#[test]
+fn shortcut_guide_teaches_maximize_and_strip_chords() {
+    use settings_store::hardware::{KeyChord, ShortcutAction as A, ShortcutConfig};
+    assert!(SHORTCUT_GUIDE_ROWS.contains(&(
+        "guide-row-maximize",
+        A::MaximizeWindow,
+        A::RestoreWindow
+    )));
+    assert!(SHORTCUT_GUIDE_ROWS.contains(&("guide-row-strips", A::PreviousStrip, A::NextStrip)));
+    assert!(SHORTCUT_GUIDE_ROWS.contains(&(
+        "guide-row-move-group-strip",
+        A::MoveGroupToPreviousStrip,
+        A::MoveGroupToNextStrip
+    )));
+    let mut config = ShortcutConfig::default();
+    let note = shortcuts::shortcut_strip_jump_note(&config);
+    assert!(
+        note.contains("Super+1") && note.contains("Super+9"),
+        "{note}"
+    );
+    config
+        .set(A::FocusStrip1, KeyChord::parse("Alt+Shift+1").unwrap())
+        .unwrap();
+    let note = shortcuts::shortcut_strip_jump_note(&config);
+    assert!(
+        note.contains("Alt+Shift+1"),
+        "the note follows a rebind: {note}"
+    );
 }
 
 #[test]
@@ -1259,14 +1318,18 @@ fn shortcut_guide_names_keys_as_the_active_layout_prints_them() {
             .expect("guide description")
     };
 
-    ui::keycaps::set_active(ui::Keycaps::from_xkb("de", ""));
-    let german_rows = shortcut_reference_rows(&host.shortcut_config);
-    let german = guide_description(&host);
-    ui::keycaps::set_active(ui::Keycaps::US);
+    let (german_rows, german) = {
+        let _german = ui::keycaps::scoped(ui::Keycaps::from_xkb("de", ""));
+        (
+            shortcut_reference_rows(&host.shortcut_config),
+            guide_description(&host),
+        )
+    };
+    let _english = ui::keycaps::scoped(ui::Keycaps::US);
     let english = guide_description(&host);
 
     assert!(german_rows.contains(&("Search everywhere".into(), "Strg+Umschalt+G".into())));
-    assert!(german_rows.contains(&("Reopen closed tab".into(), "Strg+Umschalt+T".into())));
+    assert!(german_rows.contains(&("Reopen closed tab".into(), "Super+Umschalt+T".into())));
     assert!(german.contains("Screenshot: Druck"), "{german}");
     assert!(german.contains("Strg+Umschalt+G"), "{german}");
     // The layout, not the stored chord, changed: switching back restores it.
@@ -1753,6 +1816,10 @@ fn invite_tokens_travel_through_the_clipboard_exactly() {
                 "42".repeat(32)
             ))),
             PeerSyncRequest::AcceptInvite(_)
+            | PeerSyncRequest::LeaveSite(_)
+            | PeerSyncRequest::InviteDevice
+            | PeerSyncRequest::DevicesAsking
+            | PeerSyncRequest::AnswerDevice { .. }
             | PeerSyncRequest::PollEnrollment(_)
             | PeerSyncRequest::CancelEnrollment(_) => Err("not here".to_string()),
             PeerSyncRequest::ListPendingInvitations => {

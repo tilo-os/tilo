@@ -75,13 +75,13 @@ impl StatusModel {
         &self.state
     }
 
-    pub fn save_text(&self) -> &'static str {
-        match self.state.save_status {
-            SaveStatus::Saved => "Saved",
-            SaveStatus::Saving => "Saving…",
-            SaveStatus::Failed => "Save failed",
-            SaveStatus::SessionOnly => "Not saved",
-        }
+    pub fn save_text(&self) -> String {
+        ui::i18n!(match self.state.save_status {
+            SaveStatus::Saved => "notes-status-saved",
+            SaveStatus::Saving => "notes-status-saving",
+            SaveStatus::Failed => "notes-status-failed",
+            SaveStatus::SessionOnly => "notes-status-not-saved",
+        })
     }
 
     /// A note that is not durable is never a quiet state: it stays on screen
@@ -95,32 +95,32 @@ impl StatusModel {
 
     /// The save state with why it is not durable and what to do about it.
     pub fn save_detail(&self) -> String {
-        let fix = "Copy this note somewhere safe, then reopen Notes";
         match (self.state.save_status, self.state.save_problem.as_deref()) {
-            (SaveStatus::Failed, Some(reason)) => format!("Save failed: {reason}. {fix}"),
-            (SaveStatus::Failed, None) => format!("Save failed. {fix}"),
-            (SaveStatus::SessionOnly, _) => {
-                format!("Not saved: this note has no storage on this device. {fix}")
-            }
-            _ => self.save_text().to_owned(),
+            (SaveStatus::Failed, Some(reason)) => ui::i18n::I18nManager::format(
+                "notes-status-failed-because",
+                &[("reason", ui::i18n::ArgValue::from(reason.to_owned()))],
+            ),
+            (SaveStatus::Failed, None) => ui::i18n!("notes-status-failed-detail"),
+            (SaveStatus::SessionOnly, _) => ui::i18n!("notes-status-no-storage"),
+            _ => self.save_text(),
         }
     }
 
     /// How much the notebook and the open note hold, as a sentence fragment.
     pub fn right_text(&self) -> String {
-        let pages = match self.state.page_count {
-            1 => "1 note".to_string(),
-            n => format!("{n} notes"),
-        };
+        let notes = self.state.page_count;
         match self.state.word_count {
-            Some(w) => {
-                let words = match w {
-                    1 => "1 word".to_string(),
-                    _ => format!("{w} words"),
-                };
-                format!("{pages}, {words}")
-            }
-            None => pages,
+            Some(words) => ui::i18n::I18nManager::format(
+                "notes-status-counts",
+                &[
+                    ("notes", ui::i18n::ArgValue::from(notes)),
+                    ("words", ui::i18n::ArgValue::from(words)),
+                ],
+            ),
+            None => ui::i18n::I18nManager::format(
+                "notes-status-note-count",
+                &[("notes", ui::i18n::ArgValue::from(notes))],
+            ),
         }
     }
 
@@ -149,6 +149,8 @@ mod tests {
 
     #[test]
     fn status_text_describes_save_state_counts_and_words() {
+        ui::i18n::I18nManager::init("en-US");
+        crate::metadata::register_messages();
         let mut bar = StatusModel::new();
         for (status, text) in [
             (SaveStatus::Saved, "Saved"),
@@ -199,6 +201,8 @@ mod tests {
 
     #[test]
     fn set_state_reports_change_only_when_observably_different() {
+        ui::i18n::I18nManager::init("en-US");
+        crate::metadata::register_messages();
         let mut bar = StatusModel::new();
         let s = StatusBarState {
             save_status: SaveStatus::Saved,
@@ -226,6 +230,8 @@ mod tests {
 
     #[test]
     fn a_note_that_is_not_durable_stays_visible_with_its_reason() {
+        ui::i18n::I18nManager::init("en-US");
+        crate::metadata::register_messages();
         let mut bar = StatusModel::new();
         bar.set_state(StatusBarState {
             save_status: SaveStatus::Failed,

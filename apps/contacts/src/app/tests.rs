@@ -3972,7 +3972,7 @@ fn check_save_round_trips_through_doc() {
         stored.iter().find(|x| x.id == id).unwrap().title,
         "Edited Title"
     );
-    assert_eq!(toast(&app), Some("Saved"));
+    assert_eq!(toast(&app), None, "a stored edit says nothing");
 }
 
 fn check_refused_save_reconciles_and_announces_an_error_without_claiming_success() {

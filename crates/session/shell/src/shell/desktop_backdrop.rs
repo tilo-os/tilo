@@ -8,7 +8,6 @@
 //! A custom wallpaper is per device.
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock, RwLock};
-use std::time::{Duration, Instant, SystemTime};
 pub use tilo_desktop::backdrop::DesktopBackdrop;
 use vello::peniko::ImageData;
 
@@ -54,7 +53,7 @@ pub fn native_wallpaper(workspace_id: &str) -> Option<ImageData> {
     crate::shell::test_support::ambient_start("workspace wallpaper lookup");
     if let Some(preview) =
         crate::portal::desktop_services::wallpaper_preview_file_for_workspace(workspace_id)
-            .and_then(|path| read_normalised_wallpaper(&path))
+            .and_then(|path| preview_picture(&path))
     {
         return Some(preview);
     }
@@ -202,27 +201,17 @@ fn shipped_generation() -> u64 {
 }
 
 /// What a workspace's wallpaper is, as far as its temperature is concerned:
-/// the preview file and its age, the age of the wallpaper registry, and
-/// which shipped picture is chosen and on screen.
-/// Cheap to read every few seconds; the image is decoded only when it moves.
-type WallpaperStamp = (
-    Option<std::path::PathBuf>,
-    Option<SystemTime>,
-    Option<SystemTime>,
-    Option<String>,
-    u64,
-);
+/// the preview file, the registry's generation, and which shipped picture is
+/// chosen and on screen. Read from memory only: the registry watch
+/// ([`custom_wallpapers`]) bumps its generation when the file changes.
+type WallpaperStamp = (Option<std::path::PathBuf>, u64, Option<String>, u64);
 
 fn wallpaper_stamp(workspace_id: &str) -> WallpaperStamp {
-    let modified = |path: &std::path::Path| std::fs::metadata(path).ok()?.modified().ok();
     let preview =
         crate::portal::desktop_services::wallpaper_preview_file_for_workspace(workspace_id);
-    let preview_modified = preview.as_deref().and_then(modified);
-    let registry_modified = modified(&crate::portal::desktop_services::wallpaper_state_path());
     (
         preview,
-        preview_modified,
-        registry_modified,
+        custom_wallpapers().generation(),
         current_choice(),
         shipped_generation(),
     )
@@ -250,59 +239,257 @@ pub fn native_workspace_hue(workspace_id: &str) -> Option<f32> {
     hue
 }
 
-#[derive(Default)]
-struct WallpaperRenderCache {
-    checked: Option<Instant>,
-    stamp: Option<SystemTime>,
-    records: Vec<crate::portal::desktop_services::WallpaperRecord>,
-    images: HashMap<String, ImageData>,
+/// The person's own wallpapers as the paint path sees them: the private
+/// registry and the pictures it names, decoded. Paint only reads memory. A
+/// watch on the registry's directory reloads it on a service thread when the
+/// file changes, and pictures decode on worker threads that wake the
+/// compositor when they are ready, while the picture already up stays up.
+/// The registry is read once on the spot when the session first asks (and a
+/// picture is decoded on the spot while nothing has been shown yet), so the
+/// first frame shows the person's wallpaper rather than a stand-in.
+struct CustomWallpapers {
+    registry: std::path::PathBuf,
+    cache_dir: std::path::PathBuf,
+    state: Mutex<CustomState>,
+    /// Bumped whenever the registry is reloaded or a picture lands.
+    generation: std::sync::atomic::AtomicU64,
 }
 
-fn wallpaper_render_cache() -> &'static Mutex<WallpaperRenderCache> {
-    static CACHE: OnceLock<Mutex<WallpaperRenderCache>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(WallpaperRenderCache::default()))
+#[derive(Default)]
+struct CustomState {
+    records: Vec<crate::portal::desktop_services::WallpaperRecord>,
+    /// Decoded pictures by cache file name; files are named by the hash of
+    /// their contents, so a name never comes to mean another picture.
+    images: HashMap<String, ImageData>,
+    /// Pictures decoding off the paint path, by cache file name.
+    decoding: std::collections::HashSet<String>,
+    /// Pictures that could not be read, until the registry changes.
+    unreadable: std::collections::HashSet<String>,
+    /// The picture last handed out per workspace and target, shown while
+    /// the one replacing it decodes.
+    shown: HashMap<(String, String), String>,
+}
+
+fn custom_wallpapers() -> &'static CustomWallpapers {
+    static CUSTOM: OnceLock<CustomWallpapers> = OnceLock::new();
+    let mut first = false;
+    let custom = CUSTOM.get_or_init(|| {
+        first = true;
+        CustomWallpapers::new(crate::portal::desktop_services::wallpaper_state_path())
+    });
+    if first {
+        custom.watch();
+    }
+    custom
+}
+
+impl CustomWallpapers {
+    /// The registry at `registry`, read now.
+    fn new(registry: std::path::PathBuf) -> Self {
+        let cache_dir =
+            crate::portal::desktop_services::wallpaper_cache_dir_for_renderer(&registry);
+        let custom = Self {
+            registry,
+            cache_dir,
+            state: Mutex::new(CustomState::default()),
+            generation: std::sync::atomic::AtomicU64::new(0),
+        };
+        custom.reload();
+        custom
+    }
+
+    fn generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    fn bump(&self) {
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    }
+
+    /// Read the registry again. Off the paint path except for the first read.
+    fn reload(&self) {
+        let records: Vec<crate::portal::desktop_services::WallpaperRecord> =
+            std::fs::read(&self.registry)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                .unwrap_or_default();
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        if state.records == records && state.unreadable.is_empty() {
+            return;
+        }
+        // Pictures neither named any more nor still on screen are let go
+        // (one on screen stays up until its replacement has decoded).
+        // Unreadable ones get another chance.
+        let CustomState { images, shown, .. } = &mut *state;
+        images.retain(|file, _| {
+            records.iter().any(|record| &record.cache_file == file)
+                || shown.values().any(|shown| shown == file)
+        });
+        state.unreadable.clear();
+        state.records = records;
+        drop(state);
+        self.bump();
+    }
+
+    /// Reload the registry whenever its directory reports a change to it,
+    /// on a service thread, and wake the compositor to draw what changed.
+    fn watch(&'static self) {
+        use notify::Watcher as _;
+        let Some(directory) = self.registry.parent().map(std::path::Path::to_path_buf) else {
+            return;
+        };
+        let Some(name) = self.registry.file_name().map(std::ffi::OsStr::to_os_string) else {
+            return;
+        };
+        // The directory may not exist before the first wallpaper is set.
+        let _ = std::fs::create_dir_all(&directory);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let Ok(mut watcher) = notify::recommended_watcher(move |event| {
+            let _ = tx.send(event);
+        }) else {
+            tracing::warn!("wallpaper registry: no file watch; changes show after a restart");
+            return;
+        };
+        if let Err(error) = watcher.watch(&directory, notify::RecursiveMode::NonRecursive) {
+            tracing::warn!(%error, "wallpaper registry: could not watch its directory");
+            return;
+        }
+        let spawned = std::thread::Builder::new()
+            .name("wallpaper-registry".into())
+            .spawn(move || {
+                // The watcher lives as long as the thread reading its events.
+                let _watcher = watcher;
+                while let Ok(event) = rx.recv() {
+                    let touches_registry = event.as_ref().is_ok_and(|event| {
+                        event
+                            .paths
+                            .iter()
+                            .any(|path| path.file_name() == Some(name.as_os_str()))
+                    });
+                    if touches_registry || event.is_err() {
+                        let before = self.generation();
+                        self.reload();
+                        if self.generation() != before {
+                            crate::shell::wake_compositor();
+                        }
+                    }
+                }
+            });
+        if let Err(error) = spawned {
+            tracing::warn!(%error, "wallpaper registry: could not start its watch");
+        }
+    }
+
+    /// The picture `workspace_id` shows as `target`, from memory.
+    fn image_for(&'static self, workspace_id: &str, target: &str) -> Option<ImageData> {
+        let file = {
+            let state = self.state.lock().ok()?;
+            crate::portal::desktop_services::wallpaper_record_for(
+                &state.records,
+                workspace_id,
+                target,
+            )?
+            .cache_file
+            .clone()
+        };
+        self.picture(&file, Some((workspace_id, target)))
+    }
+
+    /// The decoded picture in cache file `file`. One not decoded yet is
+    /// decoded on a worker while the picture shown for `slot` before stays
+    /// up; only the session's first picture is decoded on the spot.
+    fn picture(&'static self, file: &str, slot: Option<(&str, &str)>) -> Option<ImageData> {
+        if !safe_cache_name(file) {
+            return None;
+        }
+        let mut state = self.state.lock().ok()?;
+        if let Some(image) = state.images.get(file).cloned() {
+            if let Some((workspace, target)) = slot {
+                state
+                    .shown
+                    .insert((workspace.to_owned(), target.to_owned()), file.to_owned());
+            }
+            return Some(image);
+        }
+        if state.unreadable.contains(file) {
+            return None;
+        }
+        let first = state.images.is_empty() && state.decoding.is_empty();
+        if first {
+            drop(state);
+            let image = read_normalised_wallpaper(&self.cache_dir.join(file));
+            let mut state = self.state.lock().ok()?;
+            match &image {
+                Some(image) => {
+                    state.images.insert(file.to_owned(), image.clone());
+                    if let Some((workspace, target)) = slot {
+                        state
+                            .shown
+                            .insert((workspace.to_owned(), target.to_owned()), file.to_owned());
+                    }
+                }
+                None => {
+                    state.unreadable.insert(file.to_owned());
+                }
+            }
+            return image;
+        }
+        if state.decoding.insert(file.to_owned()) {
+            self.decode_aside(file.to_owned());
+        }
+        slot.and_then(|(workspace, target)| {
+            state.shown.get(&(workspace.to_owned(), target.to_owned()))
+        })
+        .and_then(|shown| state.images.get(shown))
+        .cloned()
+    }
+
+    fn decode_aside(&'static self, file: String) {
+        let path = self.cache_dir.join(&file);
+        let spawned = std::thread::Builder::new()
+            .name("wallpaper-decode".into())
+            .spawn(move || {
+                let image = read_normalised_wallpaper(&path);
+                let Ok(mut state) = self.state.lock() else {
+                    return;
+                };
+                state.decoding.remove(&file);
+                match image {
+                    Some(image) => {
+                        state.images.insert(file, image);
+                    }
+                    None => {
+                        state.unreadable.insert(file);
+                    }
+                }
+                drop(state);
+                self.bump();
+                crate::shell::wake_compositor();
+            });
+        if let Err(error) = spawned {
+            tracing::warn!(%error, "could not start decoding the wallpaper");
+            if let Ok(mut state) = self.state.lock() {
+                state.decoding.clear();
+            }
+        }
+    }
 }
 
 /// Return a normalised, private wallpaper image for the named local workspace.
 /// The cache only reads Tilo's 0600 registry and cache directory; it never
-/// dereferences the original document URI.
+/// dereferences the original document URI. Paint reads memory only
+/// ([`CustomWallpapers`]).
 pub fn wallpaper_image_for_workspace(workspace_id: &str, target: &str) -> Option<ImageData> {
-    let path = crate::portal::desktop_services::wallpaper_state_path();
-    let cache_dir = crate::portal::desktop_services::wallpaper_cache_dir_for_renderer(&path);
-    let mut cache = wallpaper_render_cache().lock().ok()?;
-    let now = Instant::now();
-    if cache
-        .checked
-        .is_none_or(|checked| now.duration_since(checked) >= Duration::from_millis(250))
-    {
-        cache.checked = Some(now);
-        let stamp = std::fs::metadata(&path)
-            .and_then(|metadata| metadata.modified())
-            .ok();
-        if stamp != cache.stamp {
-            cache.stamp = stamp;
-            cache.records = std::fs::read(&path)
-                .ok()
-                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-                .unwrap_or_default();
-            cache.images.clear();
-        }
-    }
-    let file = crate::portal::desktop_services::wallpaper_record_for(
-        &cache.records,
-        workspace_id,
-        target,
-    )?
-    .cache_file
-    .clone();
-    if !safe_cache_name(&file) {
-        return None;
-    }
-    if !cache.images.contains_key(&file) {
-        let image = read_normalised_wallpaper(&cache_dir.join(&file))?;
-        cache.images.insert(file.clone(), image);
-    }
-    cache.images.get(&file).cloned()
+    custom_wallpapers().image_for(workspace_id, target)
+}
+
+/// The picture a wallpaper preview shows, by its cache file name.
+fn preview_picture(path: &std::path::Path) -> Option<ImageData> {
+    let file = path.file_name()?.to_str()?;
+    custom_wallpapers().picture(file, None)
 }
 
 fn safe_cache_name(name: &str) -> bool {
@@ -501,5 +688,94 @@ mod tests {
         assert!(!backdrop.needs_redraw());
         *shown.borrow_mut() = second;
         assert!(backdrop.needs_redraw());
+    }
+
+    /// A custom wallpaper registry in a scratch directory, with one picture
+    /// per name in its cache, as the portal writes them.
+    fn scratch_registry(
+        pictures: &[(&str, [u8; 3])],
+    ) -> (tempfile::TempDir, std::path::PathBuf, Vec<String>) {
+        let dir = tempfile::tempdir().expect("scratch directory");
+        let registry = dir.path().join("portal").join("wallpapers.json");
+        let cache = dir.path().join("portal").join("wallpaper-cache");
+        std::fs::create_dir_all(&cache).expect("cache directory");
+        let names = pictures
+            .iter()
+            .enumerate()
+            .map(|(index, (_, colour))| {
+                let name = format!("{index:064x}.png");
+                let rgba: Vec<u8> = std::iter::repeat_n([colour[0], colour[1], colour[2], 255], 16)
+                    .flatten()
+                    .collect();
+                let png = ui::png::encode_rgba8(4, 4, &rgba).expect("encode");
+                std::fs::write(cache.join(&name), png).expect("picture");
+                name
+            })
+            .collect();
+        (dir, registry, names)
+    }
+
+    fn write_registry(registry: &std::path::Path, file: &str) {
+        let records = vec![crate::portal::desktop_services::WallpaperRecord {
+            workspace_id: "w".into(),
+            cache_file: file.into(),
+            target: "background".into(),
+        }];
+        let staged = registry.with_extension("partial");
+        std::fs::write(&staged, serde_json::to_vec(&records).expect("json")).expect("registry");
+        std::fs::rename(&staged, registry).expect("registry in place");
+    }
+
+    fn first_pixel(image: &vello::peniko::ImageData) -> [u8; 3] {
+        let data = image.data.data();
+        [data[0], data[1], data[2]]
+    }
+
+    /// The paint path reads the registry from memory: once loaded, a lookup
+    /// touches no file, so a busy disk can never stall a frame. A changed
+    /// registry arrives through the watch, and its picture decodes off the
+    /// paint path while the one shown stays up.
+    #[test]
+    fn custom_wallpapers_reach_paint_through_the_watch_not_through_stat() {
+        let (dir, registry, names) =
+            scratch_registry(&[("red", [200, 0, 0]), ("blue", [0, 0, 200])]);
+        write_registry(&registry, &names[0]);
+        let custom: &'static super::CustomWallpapers =
+            Box::leak(Box::new(super::CustomWallpapers::new(registry.clone())));
+        let shown = custom.image_for("w", "background").expect("first picture");
+        assert_eq!(first_pixel(&shown), [200, 0, 0]);
+
+        // No file read on a lookup: the registry and the picture can go.
+        let parked = dir.path().join("parked.json");
+        std::fs::rename(&registry, &parked).expect("move the registry away");
+        std::fs::remove_file(registry.with_file_name("wallpaper-cache").join(&names[0]))
+            .expect("remove the picture");
+        let again = custom.image_for("w", "background").expect("still shown");
+        assert_eq!(first_pixel(&again), [200, 0, 0]);
+        std::fs::rename(&parked, &registry).expect("registry back");
+
+        custom.watch();
+        let before = custom.generation();
+        write_registry(&registry, &names[1]);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut seen = None;
+        while std::time::Instant::now() < deadline {
+            if custom.generation() != before
+                && let Some(image) = custom.image_for("w", "background")
+                && first_pixel(&image) == [0, 0, 200]
+            {
+                seen = Some(image);
+                break;
+            }
+            // The picture shown meanwhile is the old one, never nothing.
+            if let Some(image) = custom.image_for("w", "background") {
+                assert!(
+                    [[200, 0, 0], [0, 0, 200]].contains(&first_pixel(&image)),
+                    "only the old or the new picture is ever shown"
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(seen.is_some(), "the watch delivered the new wallpaper");
     }
 }

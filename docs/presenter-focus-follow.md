@@ -57,12 +57,12 @@ involved.
 - **Follow.** Each follower defaults to `Following`. On every `epoch` bump the
   follower's compositor **navigates its own viewport** to bring the focus target into
   view — reusing the ordinary strip machinery: scroll the strip so the target group
-  is active/centered, switch workspace via the wheel-disc if the target lives on
-  another spoke, select the focused tab. Followers see the **real remote surfaces**
+  is active/centered, switch workspace if the target lives on
+  another workspace, select the focused tab. Followers see the **real remote surfaces**
   (already streamed for co-presence), not a video — full fidelity, and they can read
   their own peripheral context around it.
 - **Break away.** Any follower action that moves their own viewport (scroll the
-  strip, switch spoke, focus another group) flips them to `BrokenAway` locally — they
+  strip, switch workspace, focus another group) flips them to `BrokenAway` locally — they
   are never yanked around. A persistent **"Following <name> · Re-sync"** chip shows
   while someone is presenting; tapping it returns to `Following` and snaps to the
   current focus. New `epoch`s do not move a broken-away follower until they re-sync.
@@ -86,8 +86,8 @@ following/broken-away indicator so the presenter can see who's with them.
 Reuse:
 - **Presence transport** — `CollabEvent::Context` / `PresenceCtx` gossip carries
   `FocusPointer`. No new network path.
-- **Strip / wheel-disc navigation** — the compositor already knows how to make a
-  group active, scroll the strip, and switch spokes; follow = "navigate to *that*
+- **Strip / workspace navigation** — the compositor already knows how to make a
+  group active, scroll the strip, and switch workspaces; follow = "navigate to *that*
   group" driven by a remote pointer instead of local input.
 - **Co-presence surface streaming** — followers already receive the target's pixels
   because they're in the shared workspace; nothing new is encoded.
@@ -114,7 +114,7 @@ video. Both can be active for different participants in the same call.
   with the right target + epoch; a stale (lower-epoch) update is ignored.
 - Follow: applying a remote `FocusPointer` makes the target group active in the
   follower's compositor state (assert on the real strip/active-group path); a
-  cross-spoke target switches the wheel-disc spoke.
+  cross-workspace target switches the active workspace.
 - Break-away: local navigation flips the follower to `BrokenAway`; subsequent epochs
   do not move them; re-sync snaps to the current target.
 - Boundary: a non-co-present target routes to the `tilo-callstream` video path instead.

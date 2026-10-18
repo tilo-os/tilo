@@ -26,6 +26,86 @@ struct Publication {
     published: Option<Offer>,
     failure: Option<String>,
     phase: Phase,
+    /// A selection captured by name from the shown folder: the folder, the
+    /// entries still to send, and how many there are in all.
+    named: Option<NamedCapture>,
+}
+
+impl Publication {
+    /// How many entries the published offer must hold.
+    fn expected_count(&self) -> usize {
+        self.named
+            .as_ref()
+            .map_or(self.tickets.len(), |named| named.total)
+    }
+
+    /// The host's tickets now retain the actual objects: publish them.
+    fn captured(&mut self, sources: &[String]) -> Command {
+        self.retained.clear();
+        self.tickets = sources.to_vec();
+        self.phase = Phase::Publish;
+        Command::Publish {
+            sources: sources.to_vec(),
+            cut: self.cut,
+        }
+    }
+
+    /// The host holds the entries of `ticket`: send the next names, or
+    /// publish them all once every name is held.
+    fn next_named(&mut self, ticket: &str) -> Command {
+        self.tickets.push(ticket.to_owned());
+        if let Some(named) = self.named.as_mut()
+            && let Some(entries) = named.chunks.pop_front()
+        {
+            return Command::CaptureNamed {
+                folder: named.folder.clone(),
+                entries,
+            };
+        }
+        // Every entry is held by the host now.
+        self.retained.clear();
+        self.phase = Phase::Publish;
+        Command::Publish {
+            sources: self.tickets.clone(),
+            cut: self.cut,
+        }
+    }
+}
+
+/// A large selection by name: the shown folder and its entries.
+type NamedSelection = (
+    (SelectedDescriptor, Arc<RetainedObject>),
+    Vec<file_clipboard::NamedEntry>,
+);
+
+struct NamedCapture {
+    folder: SelectedDescriptor,
+    chunks: std::collections::VecDeque<Vec<file_clipboard::NamedEntry>>,
+    total: usize,
+}
+
+/// Split `entries` into commands that each stay well inside the wire bound.
+fn named_chunks(
+    entries: Vec<file_clipboard::NamedEntry>,
+) -> std::collections::VecDeque<Vec<file_clipboard::NamedEntry>> {
+    // Room for the folder's path, the command's framing and JSON overhead.
+    const BUDGET: usize = file_clipboard::MAX_WIRE_BYTES - 16 * 1024;
+    let mut chunks = std::collections::VecDeque::new();
+    let mut chunk = Vec::new();
+    let mut size = 0;
+    for entry in entries {
+        let bytes = serde_json::to_vec(&entry).map_or(BUDGET, |encoded| encoded.len() + 1);
+        if !chunk.is_empty() && size + bytes > BUDGET {
+            chunks.push_back(std::mem::take(&mut chunk));
+            size = 0;
+        }
+        size += bytes;
+        chunk.push(entry);
+    }
+    if !chunk.is_empty() {
+        chunks.push_back(chunk);
+    }
+    chunks
 }
 
 struct UndoJob {
@@ -62,6 +142,12 @@ pub(super) enum Completion {
         error: Option<String>,
     },
     Transferred(Receipt),
+    /// The paste waits for the person: the destination already has `count`
+    /// of the names, the first of them in `names`.
+    Conflicts {
+        names: Vec<String>,
+        count: usize,
+    },
 }
 
 #[derive(Default)]
@@ -76,6 +162,8 @@ pub(super) struct Client {
     ready: Option<Instant>,
     undo_queue: Rc<RefCell<Vec<UndoRequest>>>,
     undo: Option<UndoJob>,
+    /// A paste waits for the person to say what to do about clashing names.
+    asking: bool,
 }
 
 impl Client {
@@ -95,6 +183,7 @@ impl Client {
     pub(super) fn abandon(&mut self) {
         self.publication = None;
         self.transfer = None;
+        self.asking = false;
         self.awaiting = None;
         self.request = None;
         self.deadline = None;
@@ -144,6 +233,49 @@ impl Client {
             published: None,
             failure: None,
             phase: Phase::Capture,
+            named: None,
+        });
+        Ok(())
+    }
+
+    /// Publish entries of the shown folder by name: one folder descriptor
+    /// per command however many entries, so a selection is never bounded by
+    /// how many descriptors a message carries.
+    pub(super) fn publish_named(
+        &mut self,
+        invocation: InvocationId,
+        cut: bool,
+        folder: (SelectedDescriptor, Arc<RetainedObject>),
+        entries: Vec<file_clipboard::NamedEntry>,
+    ) -> Result<(), String> {
+        if self.busy() {
+            return Err("another clipboard operation is still running".into());
+        }
+        let total = entries.len();
+        let mut chunks = named_chunks(entries);
+        let first = chunks
+            .pop_front()
+            .ok_or_else(|| t("files-selection-empty"))?;
+        self.send(
+            invocation,
+            Command::CaptureNamed {
+                folder: folder.0.clone(),
+                entries: first,
+            },
+        )?;
+        self.publication = Some(Publication {
+            invocation,
+            cut,
+            retained: vec![folder.1],
+            tickets: Vec::new(),
+            published: None,
+            failure: None,
+            phase: Phase::Capture,
+            named: Some(NamedCapture {
+                folder: folder.0,
+                chunks,
+                total,
+            }),
         });
         Ok(())
     }
@@ -161,6 +293,7 @@ impl Client {
             published: None,
             failure: None,
             phase: Phase::Snapshot,
+            named: None,
         });
         Ok(())
     }
@@ -184,6 +317,7 @@ impl Client {
             published: None,
             failure: None,
             phase: Phase::Recover(operation),
+            named: None,
         });
         Ok(())
     }
@@ -330,18 +464,16 @@ impl Client {
                     sources,
                     destination: None,
                 },
-            ) if sources.len() == publication.retained.len() => {
-                // The acknowledged host tickets now retain the actual objects.
-                publication.retained.clear();
-                publication.tickets.clone_from(sources);
-                publication.phase = Phase::Publish;
-                Command::Publish {
-                    sources: sources.clone(),
-                    cut: publication.cut,
-                }
+            ) if publication.named.is_none() && sources.len() == publication.retained.len() => {
+                publication.captured(sources)
+            }
+            (Phase::Capture, Reply::CapturedNamed { ticket, count })
+                if publication.named.is_some() && *count > 0 =>
+            {
+                publication.next_named(ticket)
             }
             (Phase::Publish, Reply::Published { offer })
-                if offer.count == publication.tickets.len() && offer.cut == publication.cut =>
+                if offer.count == publication.expected_count() && offer.cut == publication.cut =>
             {
                 publication.published = Some(offer.clone());
                 publication.phase = Phase::Release;
@@ -418,13 +550,30 @@ impl Client {
         invocation: InvocationId,
         destination: SelectedDescriptor,
         retained: Arc<RetainedObject>,
+        conflict: file_clipboard::Conflict,
     ) -> Result<(), String> {
         if self.busy() {
             return Err("another clipboard operation is still running".into());
         }
         self.send(invocation, Command::Snapshot)?;
-        self.transfer = Some(transfer::Transfer::new(invocation, destination, retained));
+        self.transfer = Some(
+            transfer::Transfer::new(invocation, destination, retained).with_conflict(conflict),
+        );
         Ok(())
+    }
+
+    /// The person's answer to clashing names (`None` cancels the paste).
+    pub(super) fn decide(
+        &mut self,
+        conflict: Option<file_clipboard::Conflict>,
+    ) -> Option<Result<Completion, String>> {
+        if !self.asking {
+            return None;
+        }
+        self.asking = false;
+        let mut transfer = self.transfer.take()?;
+        let step = transfer.decide(conflict);
+        self.transfer_step(transfer, step)
     }
 
     pub(super) fn restore(
@@ -449,6 +598,12 @@ impl Client {
     ) -> Option<Result<Completion, String>> {
         match step {
             transfer::Step::Done(result) => Some(result.map(Completion::Transferred)),
+            transfer::Step::Ask { names, count } => {
+                // Hold the destination until the person answers.
+                self.transfer = Some(transfer);
+                self.asking = true;
+                Some(Ok(Completion::Conflicts { names, count }))
+            }
             transfer::Step::Send(command) => {
                 let paced = matches!(
                     command,
@@ -569,6 +724,13 @@ impl FileExplorerWidget {
         }
         self.refuse_while_answering()?;
         let invocation = invocation.ok_or_else(|| t("files-clipboard-unavailable"))?;
+        if row.is_none() && self.selected_paths().len() > file_clipboard::MAX_ENTRIES {
+            let (folder, entries) = self.named_selection()?;
+            self.local_clipboard
+                .publish_named(invocation, cut, folder, entries)?;
+            self.structure_dirty = true;
+            return Ok(super::Ran::Pending);
+        }
         let sources = match row {
             None => self.captured_selection()?,
             Some(path) => {
@@ -652,6 +814,7 @@ impl FileExplorerWidget {
     pub(super) fn paste_clipboard(
         &mut self,
         invocation: Option<InvocationId>,
+        conflict: file_clipboard::Conflict,
     ) -> Result<super::Ran, String> {
         if !self.hosted_clipboard() {
             return Err(t("files-clipboard-unavailable"));
@@ -666,6 +829,7 @@ impl FileExplorerWidget {
             invocation.ok_or_else(|| t("files-clipboard-unavailable"))?,
             descriptor,
             retained,
+            conflict,
         )?;
         self.structure_dirty = true;
         Ok(super::Ran::Pending)
@@ -740,6 +904,15 @@ impl FileExplorerWidget {
                     }));
                 }
             }
+            Ok(Completion::Conflicts { names, count }) => {
+                // The paste waits: one question, then the host carries out
+                // the answer under the same invocation.
+                self.clash = Some(super::PendingClash::clipboard(
+                    names,
+                    count,
+                    self.current_path.clone(),
+                ));
+            }
             Ok(Completion::Transferred(receipt)) => {
                 if let Some(reply) = self.effect_reply.take() {
                     reply.answer(Ok(ui::tilo_actions::ActionOutput {
@@ -760,6 +933,48 @@ impl FileExplorerWidget {
             }
         }
         self.structure_dirty = true;
+    }
+
+    /// A large selection in the folder shown, by name: the folder's own
+    /// retained object and, for each entry, its name and the object the
+    /// listing showed under it.
+    fn named_selection(&self) -> Result<NamedSelection, String> {
+        let folder = self
+            .shown_folder
+            .clone()
+            .ok_or_else(|| t("files-copy-too-large"))?;
+        let selected_folder = selected(&self.current_path, &folder)?;
+        let shown: std::collections::HashMap<&Path, &crate::model::Entry> = self
+            .entries
+            .iter()
+            .map(|entry| (entry.path.as_path(), entry))
+            .collect();
+        let entries = self
+            .selected_paths()
+            .iter()
+            .map(|path| {
+                let entry = shown
+                    .get(path.as_path())
+                    .filter(|entry| entry.path.parent() == Some(self.current_path.as_path()))
+                    .ok_or_else(|| t("files-copy-too-large"))?;
+                let observed = entry
+                    .observed
+                    .ok_or_else(|| t("files-clipboard-source-unavailable"))?;
+                let name = path
+                    .file_name()
+                    .and_then(|name| host_fs::names::unix_path_bytes(Path::new(name)))
+                    .ok_or_else(|| t("files-clipboard-source-unavailable"))?
+                    .to_vec();
+                Ok(file_clipboard::NamedEntry {
+                    name,
+                    expected: file_clipboard::ObjectIdentity {
+                        device: observed.device(),
+                        inode: observed.inode(),
+                    },
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok(((selected_folder, folder), entries))
     }
 
     pub(super) fn captured_selection(
@@ -960,6 +1175,94 @@ mod tests {
         assert_eq!(files.selected_paths(), vec![other]);
         assert!(files.local_clipboard.take_request().is_none());
         assert_eq!(std::fs::read(target).unwrap(), b"replacement");
+    }
+
+    /// Select all in a folder of hundreds of long names: the copy goes by
+    /// name, one folder descriptor per command, in as many commands as the
+    /// wire bound needs, then one publication of all of them.
+    #[test]
+    fn a_large_selection_copies_by_name_in_bounded_commands() {
+        let root = tempfile::tempdir().unwrap();
+        let names: Vec<String> = (0..600)
+            .map(|i| format!("{}{i:03}", "n".repeat(180)))
+            .collect();
+        for name in &names {
+            std::fs::write(root.path().join(name), b"x").unwrap();
+        }
+        let mut files = files(root.path());
+        files.run_effect(FilesEffect::SelectAll).unwrap();
+        let invocation = InvocationId(uuid::Uuid::new_v4());
+        assert!(matches!(
+            files
+                .run_effect_for(FilesEffect::CopySelection, Some(invocation))
+                .unwrap(),
+            Ran::Pending
+        ));
+        let mut tickets = Vec::new();
+        let mut seen = 0;
+        let publish_id = loop {
+            let (id, command) = request(&mut files, invocation);
+            match command {
+                Command::CaptureNamed { folder, entries } => {
+                    assert_eq!(
+                        folder.path,
+                        host_fs::names::unix_path_bytes(root.path()).unwrap()
+                    );
+                    assert!(
+                        serde_json::to_vec(&Command::CaptureNamed {
+                            folder,
+                            entries: entries.clone()
+                        })
+                        .unwrap()
+                        .len()
+                            <= file_clipboard::MAX_WIRE_BYTES
+                    );
+                    seen += entries.len();
+                    let ticket = uuid::Uuid::new_v4().to_string();
+                    tickets.push(ticket.clone());
+                    assert!(
+                        reply(
+                            &mut files,
+                            id,
+                            Ok(Reply::CapturedNamed {
+                                ticket,
+                                count: entries.len()
+                            })
+                        )
+                        .is_none()
+                    );
+                }
+                Command::Publish { sources, cut } => {
+                    assert!(!cut);
+                    assert_eq!(sources, tickets);
+                    break id;
+                }
+                other => panic!("unexpected {other:?}"),
+            }
+        };
+        assert_eq!(seen, 600);
+        assert!(tickets.len() > 1, "the wire bound splits the names");
+        let offer = Offer {
+            id: uuid::Uuid::new_v4().to_string(),
+            count: 600,
+            cut: false,
+        };
+        assert!(
+            reply(
+                &mut files,
+                publish_id,
+                Ok(Reply::Published {
+                    offer: offer.clone()
+                })
+            )
+            .is_none()
+        );
+        let (release_id, command) = request(&mut files, invocation);
+        assert_eq!(command, Command::Release { tickets });
+        assert_eq!(
+            reply(&mut files, release_id, Ok(Reply::Released)),
+            Some(Ok(Completion::Published(offer)))
+        );
     }
 
     #[test]

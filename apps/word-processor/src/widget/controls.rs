@@ -1531,7 +1531,6 @@ impl WordProcessorWidget {
         theme: &Theme,
     ) {
         if self.outline_drawer.sidebar_rect().width() > 0.5 {
-            self.outline_drawer.draw_scrim(scene, transform, theme);
             let local = self.outline_drawer.paint_panel(scene, transform, theme);
             let entries = self.outline_entries();
             let active = self.active_outline_block();
@@ -1558,7 +1557,6 @@ impl WordProcessorWidget {
             let local = theme.on_ground(ui::chrome::panel_ground(theme));
             self.draw_styles_panel(scene, transform, text_renderer, &local, self.rect);
         } else if self.inspector_drawer.sidebar_rect().width() > 0.5 {
-            self.inspector_drawer.draw_scrim(scene, transform, theme);
             let local = self.inspector_drawer.paint_panel(scene, transform, theme);
             let panel = self.inspector_drawer.sidebar_rect();
             self.draw_styles_panel(scene, transform, text_renderer, &local, panel);

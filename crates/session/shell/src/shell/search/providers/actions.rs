@@ -71,6 +71,79 @@ fn create_workspace(state: &mut ChromeState, args: &ActionArgs) -> Result<(), Ac
     Ok(())
 }
 
+const STRIP_CREATE_PARAMS: &[ActionParam] = &[ActionParam::optional(
+    "name",
+    ParamType::Text,
+    "1 to 48 characters without control characters. Omit to use the localized default name.",
+)];
+
+const STRIP_RENAME_PARAMS: &[ActionParam] = &[
+    ActionParam::optional(
+        "name",
+        ParamType::Text,
+        "The new name: 1 to 48 characters without control characters. Omit to open the \
+         strip switcher's name field on the focused strip for a person to type it.",
+    ),
+    ActionParam::optional(
+        "strip",
+        ParamType::Integer,
+        "Which strip of the active workspace, counting from 1. Defaults to the focused strip.",
+    ),
+];
+
+/// Longest strip name a person or an agent may give, in characters: what the
+/// strip switcher's row shows without eliding most of it.
+pub(crate) const STRIP_NAME_MAX_CHARS: usize = 48;
+
+/// A strip name as given, trimmed, or `None` when it is empty, too long or
+/// holds control characters.
+pub(crate) fn valid_strip_name(supplied: &str) -> Option<&str> {
+    let name = supplied.trim();
+    (!name.is_empty()
+        && name.chars().count() <= STRIP_NAME_MAX_CHARS
+        && !supplied.chars().any(char::is_control))
+    .then_some(name)
+}
+
+fn create_strip(state: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionError> {
+    let default_name = t("search-action-strip-create-default-name");
+    let supplied = args.text("name").unwrap_or(&default_name);
+    let name = valid_strip_name(supplied)
+        .ok_or_else(|| ActionError::Refused(t("search-action-strip-invalid-name")))?;
+    state
+        .create_strip(name)
+        .map(|_| ())
+        .map_err(ActionError::Refused)
+}
+
+fn rename_strip(state: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionError> {
+    let Some(supplied) = args.text("name") else {
+        if args.integer("strip").is_some() {
+            return Err(ActionError::Refused(t("search-action-strip-invalid-name")));
+        }
+        state.request_strip_rename();
+        return Ok(());
+    };
+    let name = valid_strip_name(supplied)
+        .ok_or_else(|| ActionError::Refused(t("search-action-strip-invalid-name")))?;
+    let strip = match args.integer("strip") {
+        None => state.focused_strip_id(),
+        Some(index) => usize::try_from(index)
+            .ok()
+            .and_then(|index| index.checked_sub(1))
+            .and_then(|index| {
+                let tree = state.tree();
+                let id = tree.desktop.active_workspace()?.strips.get(index)?.id;
+                drop(tree);
+                Some(id)
+            }),
+    }
+    .ok_or_else(|| ActionError::Refused(t("search-action-strip-rename-missing")))?;
+    state
+        .rename_strip(strip, name)
+        .map_err(ActionError::Refused)
+}
+
 /// What `record.bring` must be told.
 const RECORD_BRING_PARAMS: &[ActionParam] = &[
     ActionParam::required(
@@ -226,7 +299,6 @@ fn dedicated_contract(id: &str) -> Option<tilo_actions::ActionContract> {
 /// Actions that only open, inspect or dismiss shell views.
 const VIEW_ACTION_IDS: &[&str] = &[
     "desktop-tour.open",
-    "topbar.editor.open",
     "settings.open",
     "settings.members.open",
     "settings.privacy.open",
@@ -272,7 +344,9 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
             contract.reversible = true;
         }
         id if VIEW_ACTION_IDS.contains(&id) => contract = ActionContract::view(),
-        "workspace.create" => contract = workspace_create_contract(),
+        "workspace.create" | "strip.create" | "strip.rename" => {
+            contract = workspace_create_contract();
+        }
         "identity.connect" | "identity.select" | "identity.device.revoke" => {
             contract.kind = ActionKind::Outside;
             contract.risk = RiskLevel::Privileged;
@@ -291,7 +365,7 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
             contract.confirmation = ConfirmationPolicy::Confirm;
             contract.retry = RetryPolicy::AtMostOnce;
         }
-        "peer.invite" | "peer.connect" => {
+        "peer.invite" | "peer.connect" | "peer.pair-device" => {
             contract = ActionContract::view();
             contract.kind = ActionKind::Outside;
         }
@@ -352,12 +426,16 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
 
 pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
     match id {
-        "shortcut-help.toggle" | "overview.toggle" | "peer.invite" | "peer.connect" => {
-            tilo_actions::OperationKind::View
-        }
+        "shortcut-help.toggle"
+        | "overview.toggle"
+        | "peer.invite"
+        | "peer.connect"
+        | "peer.pair-device" => tilo_actions::OperationKind::View,
         id if VIEW_ACTION_IDS.contains(&id) => tilo_actions::OperationKind::View,
         "record.bring" | "peer.invite.named" | "agent.invite" | "agent.remove"
-        | "workspace.create" => tilo_actions::OperationKind::Document,
+        | "workspace.create" | "strip.create" | "strip.rename" => {
+            tilo_actions::OperationKind::Document
+        }
         _ if id.contains("#ownership.") => tilo_actions::OperationKind::Document,
         _ if WINDOW_FOCUS_ACTION_IDS.contains(&id) || id.starts_with("navigation.axis.") => {
             tilo_actions::OperationKind::View
@@ -1080,6 +1158,13 @@ const WINDOW_FOCUS_NTH_PARAMS: &[ActionParam] = &[ActionParam::required(
     "Which window group of the focused strip, counting from 1 (1 to 9).",
 )];
 
+/// Parameters of `strip.focus-nth`.
+const STRIP_FOCUS_NTH_PARAMS: &[ActionParam] = &[ActionParam::required(
+    "index",
+    ParamType::Integer,
+    "Which strip of the active workspace, counting from 1 at the top (1 to 9).",
+)];
+
 /// Relative window-management actions that move focus or the view.
 const WINDOW_FOCUS_ACTION_IDS: &[&str] = &[
     "window.focus-previous",
@@ -1091,6 +1176,7 @@ const WINDOW_FOCUS_ACTION_IDS: &[&str] = &[
     "tab.previous",
     "tab.next",
     "window.focus-nth",
+    "strip.focus-nth",
 ];
 
 /// Relative window-management actions that rearrange the desk.
@@ -1102,6 +1188,7 @@ const WINDOW_LAYOUT_ACTION_IDS: &[&str] = &[
     "group.move-to-display-previous",
     "group.move-to-display-next",
     "group.maximize",
+    "group.restore",
     "group.fullscreen",
     "group.narrower",
     "group.wider",
@@ -1220,6 +1307,13 @@ impl Action {
             "dictation-action-cancel-detail",
             |st, _| request_window_shortcut(st, ShortcutAction::DictationCancel),
         ),
+        // "emoji" or a lone ":" in search: the same picker Super+. opens.
+        chrome(
+            "emoji.picker",
+            "search-action-emoji-picker",
+            "search-action-emoji-picker-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::EmojiPicker),
+        ),
         chrome(
             "navigation.axis.enable",
             "search-action-axis-enable",
@@ -1256,15 +1350,6 @@ impl Action {
             "search-action-feedback-open",
             "search-action-feedback-open-subtitle",
             |st, _| crate::shell::feedback_entry::open(st),
-        ),
-        chrome(
-            "topbar.editor.open",
-            "search-action-topbar-editor",
-            "search-action-topbar-editor-subtitle",
-            |st, _| {
-                st.request_topbar_editor();
-                Ok(())
-            },
         ),
         chrome(
             "overview.toggle",
@@ -1850,6 +1935,15 @@ impl Action {
                 Ok(())
             },
         ),
+        chrome(
+            "peer.pair-device",
+            "search-action-pair-device",
+            "search-action-pair-device-subtitle",
+            |st, _| {
+                st.push_peer_sync_request(crate::shell::overlay_host::PeerSyncAction::PairDevice);
+                Ok(())
+            },
+        ),
         // The name must come from the inviter, not the invitee: a peer
         // announcing its own name could claim any name and have it render
         // next to a caret this room's capabilities gate. Recorded by the
@@ -2161,6 +2255,20 @@ impl Action {
             |st, _| request_window_shortcut(st, ShortcutAction::NextStrip),
         ),
         Action {
+            id: "strip.create",
+            label: "search-action-strip-create",
+            subtitle: "search-action-strip-create-subtitle",
+            params: STRIP_CREATE_PARAMS,
+            apply: create_strip,
+        },
+        Action {
+            id: "strip.rename",
+            label: "search-action-strip-rename",
+            subtitle: "search-action-strip-rename-subtitle",
+            params: STRIP_RENAME_PARAMS,
+            apply: rename_strip,
+        },
+        Action {
             id: "workspace.create",
             label: "search-action-workspace-create",
             subtitle: "search-action-workspace-create-subtitle",
@@ -2234,6 +2342,12 @@ impl Action {
             |st, _| request_window_shortcut(st, ShortcutAction::ToggleMaximize),
         ),
         chrome(
+            "group.restore",
+            "search-action-group-restore",
+            "search-action-group-restore-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::RestoreWindow),
+        ),
+        chrome(
             "group.fullscreen",
             "search-action-group-fullscreen",
             "search-action-group-fullscreen-subtitle",
@@ -2276,6 +2390,24 @@ impl Action {
                         ShortcutAction::ALL
                             .into_iter()
                             .find(|action| action.focus_group_index() == Some(index))
+                    })
+                    .ok_or_else(|| ActionError::Refused("index must be 1 to 9".into()))?;
+                request_window_shortcut(st, action)
+            },
+        },
+        Action {
+            id: "strip.focus-nth",
+            label: "search-action-strip-focus-nth",
+            subtitle: "search-action-strip-focus-nth-subtitle",
+            params: STRIP_FOCUS_NTH_PARAMS,
+            apply: |st, args| {
+                let action = args
+                    .integer("index")
+                    .and_then(|index| usize::try_from(index).ok()?.checked_sub(1))
+                    .and_then(|index| {
+                        ShortcutAction::ALL
+                            .into_iter()
+                            .find(|action| action.focus_strip_index() == Some(index))
                     })
                     .ok_or_else(|| ActionError::Refused("index must be 1 to 9".into()))?;
                 request_window_shortcut(st, action)
@@ -2809,6 +2941,35 @@ pub(crate) const DISPLAY_REVERT_ID: &str = "display.change.revert";
 pub(crate) const DISPLAY_OUTPUTS_INSPECT_ID: &str = "display.outputs.inspect";
 pub(crate) const BLUETOOTH_PAIRING_DECLINE_ID: &str = "bluetooth.pairing.decline";
 
+/// Whether a display change waits for Keep or Revert.
+fn display_change_waiting() -> bool {
+    use settings_store::hardware::{DisplayTransaction, DisplayTransactionState};
+    DisplayTransaction::load().is_some_and(|transaction| {
+        matches!(
+            transaction.state,
+            DisplayTransactionState::Requested
+                | DisplayTransactionState::AwaitingConfirmation
+                | DisplayTransactionState::ConfirmRequested
+        )
+    })
+}
+
+/// Whether the action `id` has something to act on now. Most always do;
+/// these act on something that comes and goes. Each reads state the
+/// session publishes as it changes, never storage or a device.
+fn action_available(id: &str, chrome: &ChromeState, display_waiting: bool) -> bool {
+    match id {
+        "projection.close" => chrome.overlays.projection,
+        "presence.follow.stop" => chrome.search_context.following,
+        DISPLAY_KEEP_ID | DISPLAY_REVERT_ID => display_waiting,
+        "dictation.finish" | "dictation.cancel" => chrome.search_context.dictating,
+        BLUETOOTH_PAIRING_DECLINE_ID => crate::bluetooth::PairingPromptHandle::global()
+            .current()
+            .is_some(),
+        _ => true,
+    }
+}
+
 /// Decline the Bluetooth pairing question on screen, or stop the pairing
 /// whose code it displays.
 ///
@@ -2993,6 +3154,10 @@ struct Catalogue {
     /// The per-source on/off switches, offered only to a query about search
     /// itself ([`asks_about_search_sources`]).
     source_switches: std::ops::Range<usize>,
+    /// Whether a display change waits for Keep or Revert, as the settings
+    /// document the catalogue was built from says: the catalogue is rebuilt
+    /// when that document changes, so this is never read per keystroke.
+    display_waiting: bool,
 }
 
 /// Everything the catalogue's rows are built from: whether a row exists,
@@ -3117,6 +3282,9 @@ impl Default for ActionsProvider {
 pub(crate) const PROVIDER_ID: &str = "actions";
 
 impl SearchProvider for ActionsProvider {
+    fn row_icon(&self, result: &SearchResult) -> Option<ui::icons::Icon> {
+        action_icon(&result.id)
+    }
     fn id(&self) -> &'static str {
         PROVIDER_ID
     }
@@ -3128,6 +3296,81 @@ impl SearchProvider for ActionsProvider {
     }
     fn available_in_active_app_scope(&self) -> bool {
         true
+    }
+    fn adjustable(&self, result: &SearchResult) -> bool {
+        matches!(result.id.as_str(), QS_VOLUME_ID | QS_BRIGHTNESS_ID)
+            || display_brightness_connector(&result.id).is_some()
+    }
+    /// ←/→ on Volume or Brightness: the same step "louder" or "dimmer" takes.
+    /// On one display's brightness row, that display moves by the same step.
+    fn adjust(
+        &self,
+        result: &SearchResult,
+        delta: i8,
+        doc: &mut ui::widget::Edits<'_>,
+        root: &automerge::ObjId,
+        chrome: &Chrome,
+    ) -> Result<(), ActionError> {
+        if let Some(connector) = display_brightness_connector(&result.id) {
+            let level = chrome
+                .borrow()
+                .quick_settings
+                .displays
+                .iter()
+                .find(|display| display.connector == connector)
+                .map(|display| (display.level * 100.0).round())
+                .ok_or_else(|| ActionError::Refused(format!("{connector} has no brightness")))?;
+            let step = if delta > 0 {
+                DISPLAY_BRIGHTNESS_STEP
+            } else {
+                -DISPLAY_BRIGHTNESS_STEP
+            };
+            let mut arguments = serde_json::Map::new();
+            arguments.insert(
+                "percent".into(),
+                serde_json::json!(f64::from((level + step).clamp(0.0, 100.0))),
+            );
+            let args = ActionArgs::bind_json(&result.params, &arguments)
+                .map_err(ActionError::Arguments)?;
+            return (result.on_open)(doc, root, chrome, &args);
+        }
+        let step = LEVEL_STEPS
+            .iter()
+            .find(|step| step.level == result.id && (step.delta > 0.0) == (delta > 0))
+            .ok_or_else(|| ActionError::Refused(format!("{} has no level to step", result.id)))?;
+        let args = stepped(&result.params, chrome, step.level, step.delta)?;
+        (result.on_open)(doc, root, chrome, &args)
+    }
+    fn match_reason(&self, result: &SearchResult, needle: &str) -> Option<String> {
+        let catalogue = self.catalogue.borrow().clone()?;
+        let at = *catalogue.by_id.get(&result.id)?;
+        crate::shell::search::match_reason_in(needle, result, catalogue.fields.get(at)?)
+    }
+    /// A radio's set-enabled form is for agents: a person flips the switch
+    /// row beside it, which already shows whether it is on. And an action
+    /// with nothing to act on (closing a sheet that is not open, declining a
+    /// pairing nobody asked for, stopping a follow that is not happening)
+    /// only takes a row from one that would do something: it is offered
+    /// only when the query names it exactly, where running it says why not.
+    fn hidden_from_people(
+        &self,
+        result: &SearchResult,
+        needle: &str,
+        chrome: &ChromeState,
+    ) -> bool {
+        if QS_TOGGLES
+            .iter()
+            .any(|toggle| toggle.set_enabled == result.id)
+        {
+            return true;
+        }
+        let display_waiting = self
+            .catalogue
+            .borrow()
+            .as_ref()
+            .is_some_and(|catalogue| catalogue.display_waiting);
+        !action_available(&result.id, chrome, display_waiting)
+            && tilo_search::fold(needle.trim()) != tilo_search::fold(&result.title)
     }
     /// An address is looked up in the whole table. The shell offers more
     /// actions than one palette page shows, so the first page of an empty
@@ -3243,6 +3486,143 @@ impl SearchProvider for ActionsProvider {
 }
 
 impl ActionsProvider {
+    /// With more than one display that can be dimmed, a brightness row for
+    /// each, named after its display, showing its level: ←/→ steps it in
+    /// place, Enter asks for a percentage. One display keeps the single
+    /// Brightness row.
+    fn push_display_brightness_rows(
+        &self,
+        out: &mut Vec<SearchResult>,
+        candidates: &mut ActionCandidates,
+        state: &ChromeState,
+    ) {
+        let displays = &state.quick_settings.displays;
+        if displays.len() < 2 || !self.qs_actions.action_available(QS_BRIGHTNESS_ID) {
+            return;
+        }
+        let Some(base) = out.iter().find(|row| row.id == QS_BRIGHTNESS_ID).cloned() else {
+            return;
+        };
+        let subtitle = t("search-brightness-display-subtitle");
+        for display in displays {
+            let id = format!("{QS_DISPLAY_BRIGHTNESS_PREFIX}{}", display.connector);
+            let run = Rc::clone(&base.on_open);
+            let params = base.params.clone();
+            let connector = display.connector.clone();
+            let on_open = Rc::new(
+                move |doc: &mut ui::widget::Edits<'_>,
+                      root: &automerge::ObjId,
+                      chrome: &Chrome,
+                      args: &ActionArgs| {
+                    let mut arguments = serde_json::Map::new();
+                    if let Some(percent) = args.number("percent") {
+                        arguments.insert("percent".into(), serde_json::json!(percent));
+                    }
+                    arguments.insert("display".into(), serde_json::json!(connector));
+                    let args = ActionArgs::bind_json(&params, &arguments)
+                        .map_err(ActionError::Arguments)?;
+                    run(doc, root, chrome, &args)
+                },
+            ) as Rc<crate::shell::search::OpenFn>;
+            let title = t_args(
+                "search-brightness-display",
+                &[("display", display.name.as_str().into())],
+            );
+            candidates.record(&title.to_lowercase(), &subtitle.to_lowercase(), &id);
+            out.push(SearchResult {
+                id,
+                title,
+                subtitle: Some(subtitle.clone()),
+                badge: Some(t_args(
+                    "search-level-percent",
+                    &[("percent", f64::from((display.level * 100.0).round()).into())],
+                )),
+                params: base
+                    .params
+                    .iter()
+                    .filter(|param| param.name != "display")
+                    .cloned()
+                    .collect(),
+                on_open,
+                on_invoke: None,
+                on_begin_invoke: None,
+                ..base.clone()
+            });
+        }
+    }
+
+    /// Louder, quieter, brighter, dimmer and mute, each derived from the
+    /// level's set row already in `out`, with the live level as its pill.
+    fn push_level_steps(
+        &self,
+        out: &mut Vec<SearchResult>,
+        candidates: &mut ActionCandidates,
+        state: &ChromeState,
+    ) {
+        for step in LEVEL_STEPS {
+            let Some(base) = out.iter().find(|row| row.id == step.level).cloned() else {
+                continue;
+            };
+            if !self.qs_actions.action_available(step.level) {
+                continue;
+            }
+            let (level, delta, params) = (step.level, step.delta, base.params.clone());
+            let run = Rc::clone(&base.on_open);
+            let on_open = Rc::new(
+                move |doc: &mut ui::widget::Edits<'_>,
+                      root: &automerge::ObjId,
+                      chrome: &Chrome,
+                      _args: &ActionArgs| {
+                    run(doc, root, chrome, &stepped(&params, chrome, level, delta)?)
+                },
+            ) as Rc<crate::shell::search::OpenFn>;
+            let title = t(step.title);
+            candidates.record(&title.to_lowercase(), "", step.id);
+            out.push(SearchResult {
+                id: step.id.to_string(),
+                title,
+                subtitle: None,
+                badge: Some(level_badge(state, level)),
+                params: Vec::new(),
+                on_open,
+                on_invoke: None,
+                on_begin_invoke: None,
+                ..base
+            });
+        }
+        if let Some(base) = out.iter().find(|row| row.id == QS_VOLUME_ID).cloned()
+            && self.qs_actions.action_available(QS_VOLUME_ID)
+        {
+            let actions = Rc::clone(&self.qs_actions);
+            let title = t("search-step-volume-mute");
+            candidates.record(&title.to_lowercase(), "", QS_MUTE_ID);
+            out.push(SearchResult {
+                id: QS_MUTE_ID.to_string(),
+                title,
+                subtitle: None,
+                badge: None,
+                params: Vec::new(),
+                on_open: Rc::new(
+                    move |_doc: &mut ui::widget::Edits<'_>,
+                          _root: &automerge::ObjId,
+                          chrome: &Chrome,
+                          _args: &ActionArgs| {
+                        if !current_shell_action_authorized(&chrome.borrow(), QS_MUTE_ID) {
+                            return Err(ActionError::Refused(format!(
+                                "current workspace authority no longer permits {QS_MUTE_ID}"
+                            )));
+                        }
+                        let backend = actions.actions.borrow().clone();
+                        backend.toggle_mute().map_err(ActionError::Refused)
+                    },
+                ),
+                on_invoke: None,
+                on_begin_invoke: None,
+                ..base
+            });
+        }
+    }
+
     /// The catalogue for the current state, built only if that is not the
     /// state the retained one was built from.
     fn catalogue(&self, ctx: &SearchContext<'_>) -> Rc<Catalogue> {
@@ -3320,12 +3700,6 @@ impl ActionsProvider {
         ctx: SearchContext<'_>,
         invite_offered: bool,
     ) -> Option<SearchResult> {
-        if action.id == "topbar.editor.open"
-            && ctx.chrome.fullscreen_group().is_some()
-            && ctx.chrome.is_fullscreen()
-        {
-            return None;
-        }
         // A session not running peer sync has nothing to invite into.
         if (action.id.starts_with("peer.") || INVITATION_ACTION_IDS.contains(&action.id))
             && !ctx.chrome.peer_sync_enabled
@@ -3410,7 +3784,7 @@ impl ActionsProvider {
                 (on_open, Some(begin))
             } else if matches!(
                 action.id,
-                "peer.invite" | "peer.connect" | "peer.invite.named"
+                "peer.invite" | "peer.connect" | "peer.invite.named" | "peer.pair-device"
             ) {
                 let action_id = action.id;
                 let on_open = Rc::new(
@@ -3435,7 +3809,7 @@ impl ActionsProvider {
                                     "current workspace authority no longer permits {action_id}"
                                 )));
                             }
-                            if action_id != "peer.connect"
+                            if !matches!(action_id, "peer.connect" | "peer.pair-device")
                                 && let Some(refusal) =
                                     crate::shell::invite_policy::active_invite_route(&state)
                                         .map_or(Some("no active workspace"), |route| {
@@ -3450,6 +3824,9 @@ impl ActionsProvider {
                                 }
                                 "peer.connect" => {
                                     crate::shell::overlay_host::PeerSyncAction::PromptConnect
+                                }
+                                "peer.pair-device" => {
+                                    crate::shell::overlay_host::PeerSyncAction::PairDevice
                                 }
                                 "peer.invite.named" => {
                                     let name = name_invited_peer(&state, args)?;
@@ -4121,7 +4498,7 @@ impl ActionsProvider {
                 on_begin_invoke,
             });
         }
-        // One-step switches for the radios: "wifi" finds "Wi-Fi: turn off", not a
+        // One-step switches for the radios: "wifi" finds the Wi-Fi switch, not a
         // form asking for `enabled`, and the row says what it is now. They run
         // the same set-enabled action with the opposite of the live state.
         for toggle in QS_TOGGLES {
@@ -4133,7 +4510,8 @@ impl ActionsProvider {
                 continue;
             }
             let on = radio_is_on(ctx.chrome, set_enabled_id);
-            let title = t(if on { toggle.turn_off } else { toggle.turn_on });
+            // A switch is its noun; the pill says whether it is on.
+            let title = t(toggle.name);
             let subtitle = t(toggle.subtitle);
             let params = base.params.clone();
             let opposite = move |chrome: &Chrome| -> Result<ActionArgs, ActionError> {
@@ -4176,6 +4554,13 @@ impl ActionsProvider {
                 ..base
             });
         }
+        for row in &mut out {
+            if matches!(row.id.as_str(), QS_VOLUME_ID | QS_BRIGHTNESS_ID) {
+                row.badge = Some(level_badge(ctx.chrome, &row.id));
+            }
+        }
+        self.push_level_steps(&mut out, &mut candidates, ctx.chrome);
+        self.push_display_brightness_rows(&mut out, &mut candidates, ctx.chrome);
         let actor = key.actor.clone();
         let ownership_resource = {
             let tree = ctx.chrome.tree();
@@ -4406,6 +4791,7 @@ impl ActionsProvider {
             fields: candidates.0,
             by_id,
             source_switches,
+            display_waiting: display_change_waiting(),
         }
     }
 }
@@ -4472,6 +4858,69 @@ pub(crate) fn action_keywords(id: &str) -> Vec<String> {
 /// Actions that change a setting the row itself shows, so choosing one
 /// leaves the palette open on the row's new state: a person flipping Wi-Fi
 /// or Do Not Disturb wants to see it flip, not lose the palette.
+/// The picture of an action, by what it acts on: the most specific family
+/// its id names (`appearance.theme.dark` before `appearance`). Families
+/// are whole id segments, so `tab` never claims `table.*`.
+pub(crate) fn action_icon(id: &str) -> Option<ui::icons::Icon> {
+    use ui::icons::Icon;
+    const FAMILIES: &[(&str, Icon)] = &[
+        ("quick-settings.wifi", Icon::Wifi),
+        ("quick-settings.network", Icon::Wifi),
+        ("quick-settings.bluetooth", Icon::Bluetooth),
+        ("quick-settings.airplane-mode", Icon::Plane),
+        ("quick-settings.devices", Icon::MonitorSmartphone),
+        ("quick-settings.clipboard", Icon::ClipboardPaste),
+        ("quick-settings", Icon::Settings2),
+        ("appearance.theme.dark", Icon::Moon),
+        ("appearance.theme.light", Icon::Sun),
+        ("appearance.high-contrast", Icon::Contrast),
+        ("appearance.language", Icon::Globe),
+        ("appearance", Icon::Palette),
+        ("notifications", Icon::Bell),
+        ("capture", Icon::Camera),
+        ("dictation", Icon::Mic),
+        ("presence.follow", Icon::Eye),
+        ("presence", Icon::User),
+        ("peer", Icon::UserPlus),
+        ("agent", Icon::Bot),
+        ("invitation", Icon::Send),
+        ("identity", Icon::Fingerprint),
+        ("ownership", Icon::Shield),
+        ("collaborators", Icon::Users),
+        ("history.undo", Icon::Undo2),
+        ("history", Icon::History),
+        ("room.activity", Icon::History),
+        ("record", Icon::FileText),
+        ("tab.close", Icon::Trash2),
+        ("tab.reopen", Icon::RotateCcw),
+        ("tab.split-right", Icon::Columns2),
+        ("tab.new.terminal", Icon::SquareTerminal),
+        ("window.new.terminal", Icon::SquareTerminal),
+        ("group.fullscreen", Icon::Maximize2),
+        ("group.maximize", Icon::Maximize2),
+        ("tab", Icon::AppWindow),
+        ("window", Icon::AppWindow),
+        ("group", Icon::AppWindow),
+        ("strip", Icon::Layers),
+        ("workspace", Icon::Layers),
+        ("overview", Icon::LayoutGrid),
+        ("projection", Icon::ScreenShare),
+        ("navigation", Icon::Navigation),
+        ("settings", Icon::Settings),
+        ("feedback", Icon::MessageSquare),
+        ("desktop-tour", Icon::Info),
+        ("shortcut-help", Icon::Keyboard),
+        ("topbar", Icon::Menu),
+    ];
+    FAMILIES
+        .iter()
+        .find(|(family, _)| {
+            id.strip_prefix(family)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+        })
+        .map(|(_, icon)| *icon)
+}
+
 pub(crate) fn toggles_in_place(id: &str) -> bool {
     matches!(
         id,
@@ -4482,6 +4931,8 @@ pub(crate) fn toggles_in_place(id: &str) -> bool {
             | "navigation.axis.enable"
             | "navigation.axis.disable"
     ) || QS_TOGGLES.iter().any(|toggle| toggle.id == id)
+        || LEVEL_STEPS.iter().any(|step| step.id == id)
+        || id == QS_MUTE_ID
 }
 
 /// The shortcut that does what an action does, as the active keyboard
@@ -4515,6 +4966,7 @@ const ACTION_SHORTCUTS: &[(&str, &str)] = &[
     ),
     ("group.move-to-display-next", "move-group-to-next-display"),
     ("group.maximize", "toggle-maximize"),
+    ("group.restore", "restore-window"),
     ("group.fullscreen", "toggle-fullscreen"),
     ("group.narrower", "resize-narrower"),
     ("group.wider", "resize-wider"),
@@ -4566,13 +5018,121 @@ pub(crate) fn action_shortcut(
 
 /// A Quick Settings radio offered as a one-step toggle: the set-enabled
 /// action it drives, its own id, and the catalogue keys of its row's title
-/// (to turn the radio on, or off) and subtitle.
+/// and subtitle.
 struct QsToggle {
     set_enabled: &'static str,
     id: &'static str,
-    turn_on: &'static str,
-    turn_off: &'static str,
+    /// The switch's name; its state is the row's pill.
+    name: &'static str,
     subtitle: &'static str,
+}
+
+/// A step up or down a Quick Settings level: "louder", "dimmer". The row
+/// runs the level's own set action with the live level moved by `delta`
+/// percent, so it is one Enter (or one more) instead of typing a number.
+struct LevelStep {
+    id: &'static str,
+    /// The set action whose level it moves.
+    level: &'static str,
+    delta: f32,
+    title: &'static str,
+}
+
+const LEVEL_STEPS: &[LevelStep] = &[
+    LevelStep {
+        id: "quick-settings.volume.up",
+        level: QS_VOLUME_ID,
+        delta: 5.0,
+        title: "search-step-volume-up",
+    },
+    LevelStep {
+        id: "quick-settings.volume.down",
+        level: QS_VOLUME_ID,
+        delta: -5.0,
+        title: "search-step-volume-down",
+    },
+    LevelStep {
+        id: "quick-settings.brightness.up",
+        level: QS_BRIGHTNESS_ID,
+        delta: 10.0,
+        title: "search-step-brightness-up",
+    },
+    LevelStep {
+        id: "quick-settings.brightness.down",
+        level: QS_BRIGHTNESS_ID,
+        delta: -10.0,
+        title: "search-step-brightness-down",
+    },
+];
+
+/// Muting is its own row: a step to zero would forget the level.
+pub(crate) const QS_MUTE_ID: &str = "quick-settings.volume.mute";
+
+/// One display's brightness row: `quick-settings.brightness.on.DP-2`.
+const QS_DISPLAY_BRIGHTNESS_PREFIX: &str = "quick-settings.brightness.on.";
+
+/// How far ←/→ moves one display's brightness row: the brightness keys'
+/// step, as "brighter" and "dimmer" take.
+const DISPLAY_BRIGHTNESS_STEP: f32 = 10.0;
+
+/// The connector a display's brightness row sets, from its id.
+fn display_brightness_connector(id: &str) -> Option<&str> {
+    id.strip_prefix(QS_DISPLAY_BRIGHTNESS_PREFIX)
+        .filter(|connector| !connector.is_empty())
+}
+
+/// The display the person works on, when the desktop spans several and its
+/// brightness can be set: what "brighter" and "dimmer" adjust.
+fn focused_brightness(
+    state: &ChromeState,
+) -> Option<&crate::shell::chrome_state::DisplayBrightness> {
+    let focused = state.quick_settings.focused_display.as_deref()?;
+    state
+        .quick_settings
+        .displays
+        .iter()
+        .find(|display| display.connector == focused)
+}
+
+/// The live level, in percent, of the Quick Settings set action `level`:
+/// for brightness, the level of the display the person works on.
+fn level_percent(state: &ChromeState, level: &str) -> f32 {
+    let share = if level == QS_VOLUME_ID {
+        state.quick_settings.volume
+    } else {
+        focused_brightness(state).map_or(state.quick_settings.brightness, |display| display.level)
+    };
+    (share * 100.0).round()
+}
+
+/// `"40 %"`: a level as its row's pill says it.
+fn level_badge(state: &ChromeState, level: &str) -> String {
+    t_args(
+        "search-level-percent",
+        &[("percent", f64::from(level_percent(state, level)).into())],
+    )
+}
+
+/// The arguments that set `level` to its live value moved by `delta`.
+fn stepped(
+    params: &[ActionParam],
+    chrome: &Chrome,
+    level: &str,
+    delta: f32,
+) -> Result<ActionArgs, ActionError> {
+    let mut arguments = serde_json::Map::new();
+    {
+        let state = chrome.borrow();
+        let percent = (level_percent(&state, level) + delta).clamp(0.0, 100.0);
+        arguments.insert("percent".into(), serde_json::json!(f64::from(percent)));
+        // "Brighter" acts on the display the person works on.
+        if level == QS_BRIGHTNESS_ID
+            && let Some(display) = focused_brightness(&state)
+        {
+            arguments.insert("display".into(), serde_json::json!(display.connector));
+        }
+    }
+    ActionArgs::bind_json(params, &arguments).map_err(ActionError::Arguments)
 }
 
 /// The Quick Settings radios offered as one-step toggles.
@@ -4580,22 +5140,19 @@ const QS_TOGGLES: &[QsToggle] = &[
     QsToggle {
         set_enabled: QS_WIFI_ID,
         id: "quick-settings.wifi.toggle",
-        turn_on: "search-toggle-wifi-on",
-        turn_off: "search-toggle-wifi-off",
+        name: "search-toggle-wifi",
         subtitle: "search-toggle-wifi-subtitle",
     },
     QsToggle {
         set_enabled: QS_BLUETOOTH_ID,
         id: "quick-settings.bluetooth.toggle",
-        turn_on: "search-toggle-bluetooth-on",
-        turn_off: "search-toggle-bluetooth-off",
+        name: "search-toggle-bluetooth",
         subtitle: "search-toggle-bluetooth-subtitle",
     },
     QsToggle {
         set_enabled: QS_AIRPLANE_ID,
         id: "quick-settings.airplane-mode.toggle",
-        turn_on: "search-toggle-airplane-mode-on",
-        turn_off: "search-toggle-airplane-mode-off",
+        name: "search-toggle-airplane-mode",
         subtitle: "search-toggle-airplane-mode-subtitle",
     },
 ];
@@ -4911,33 +5468,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn topbar_editor_catalogue_opens_the_native_request_and_hides_in_fullscreen() {
-        let chrome = chrome_with_room();
-        let provider = ActionsProvider::new();
-        let results = action_results(&provider, &chrome);
-        let editor = results
-            .iter()
-            .find(|row| row.id == "topbar.editor.open")
-            .expect("public editor action");
-        assert_eq!(editor.operation_kind, tilo_actions::OperationKind::View);
-        assert_eq!(editor.contract, Some(tilo_actions::ActionContract::view()));
-        invoke_action(&results, "topbar.editor.open", &chrome);
-        assert!(chrome.borrow_mut().take_topbar_editor_request());
-        assert!(!chrome.borrow_mut().take_topbar_editor_request());
-        {
-            let mut state = chrome.borrow_mut();
-            state.set_fullscreen_group(Some(1));
-            state.set_fullscreen_presentation(true);
-        }
-        assert!(
-            !action_results(&provider, &chrome)
-                .iter()
-                .any(|row| row.id == "topbar.editor.open")
-        );
-        assert!(!chrome.borrow_mut().take_topbar_editor_request());
-    }
-
     fn chrome_rc() -> crate::shell::chrome_state::Chrome {
         let handle: WorkspaceTreeHandle =
             crate::shell::state::WorkspaceTreeHandle::new(WorkspaceTree::default());
@@ -5235,11 +5765,21 @@ mod tests {
                     .unwrap();
             transaction.state = DisplayTransactionState::AwaitingConfirmation;
             transaction.save().unwrap();
-            std::fs::remove_file(&paths.copy).unwrap();
-            std::fs::create_dir(&paths.copy).unwrap();
+            // The copy stays readable (an unreadable copy may hold another
+            // process's edit and blocks the write), but its directory takes
+            // no new file, so only the copy's replacement fails.
+            use std::os::unix::fs::PermissionsExt as _;
+            let copy_dir = paths.copy.parent().unwrap().to_path_buf();
+            assert_ne!(Some(copy_dir.as_path()), paths.device.parent());
+            let writable = std::fs::metadata(&copy_dir).unwrap().permissions();
+            std::fs::set_permissions(&copy_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+            let stale_copy = std::fs::read(&paths.copy).unwrap();
             let ticket = begin_display_answer(&chrome_with_room(), id);
             crate::shell::durable_writer::global().flush();
-            assert!(ticket().unwrap().is_some());
+            let accepted = ticket();
+            std::fs::set_permissions(&copy_dir, writable).unwrap();
+            assert!(accepted.unwrap().is_some());
+            assert_eq!(std::fs::read(&paths.copy).unwrap(), stale_copy);
             let state = if id == DISPLAY_KEEP_ID {
                 "confirm_requested"
             } else {
@@ -5251,7 +5791,6 @@ mod tests {
             assert_eq!(record["display_transaction"]["id"], transaction.id);
             assert_eq!(record["display_transaction"]["state"], state);
             let accepted_revision = session.revision();
-            std::fs::remove_dir(&paths.copy).unwrap();
             session.refresh();
             assert_eq!(
                 session.revision(),
@@ -5755,6 +6294,11 @@ mod tests {
 
     #[test]
     fn empty_palette_builds_the_catalogue_once() {
+        // The catalogue is rebuilt when the settings document changes, and
+        // which document that is follows the environment: hold it still, as
+        // every test that changes either does, or a neighbour's settings
+        // write reads as this test's rebuild.
+        let _env = tilo_test_env::lock();
         let provider = Rc::new(ActionsProvider::new());
         let builds = Rc::clone(&provider.builds);
         let mut registry = crate::shell::search::SearchRegistry::new();
@@ -5808,7 +6352,59 @@ mod tests {
     }
 
     #[test]
+    fn actions_with_nothing_to_act_on_are_kept_from_people() {
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let row = |id: &str, title: &str| {
+            SearchResult::nullary(
+                ResourceKind::Action,
+                PROVIDER_ID,
+                id,
+                title,
+                None,
+                0,
+                |_, _, _| {},
+            )
+        };
+        let finish = row("dictation.finish", "Finish dictation");
+        let close = row("projection.close", "Close the display sheet");
+        let keep = row(DISPLAY_KEEP_ID, "Keep display settings");
+        {
+            let state = chrome.borrow();
+            assert!(
+                provider.hidden_from_people(&finish, "fi", &state),
+                "not dictating"
+            );
+            assert!(
+                provider.hidden_from_people(&close, "close", &state),
+                "no sheet open"
+            );
+            assert!(
+                provider.hidden_from_people(&keep, "keep", &state),
+                "no change waits"
+            );
+            assert!(
+                !provider.hidden_from_people(&close, "close the display sheet", &state),
+                "named exactly, it is offered and says why it can't run"
+            );
+        }
+        {
+            let mut state = chrome.borrow_mut();
+            state.search_context.dictating = true;
+            state.overlays.projection = true;
+        }
+        let state = chrome.borrow();
+        assert!(!provider.hidden_from_people(&finish, "fi", &state));
+        assert!(!provider.hidden_from_people(&close, "close", &state));
+    }
+
+    #[test]
     fn resolve_does_not_rank() {
+        // The catalogue is rebuilt when the settings document changes, and
+        // which document that is follows the environment: hold it still, as
+        // every test that changes either does, or a neighbour's settings
+        // write reads as this test's rebuild.
+        let _env = tilo_test_env::lock();
         let provider = ActionsProvider::new();
         let chrome = chrome_with_room();
         let doc = AutoCommit::new();
@@ -6019,13 +6615,13 @@ mod tests {
         };
 
         // Locale.
-        assert_eq!(language(&provider).as_deref(), Some("Set language"));
+        assert_eq!(language(&provider).as_deref(), Some("Change language"));
         let _restore = RestoreLocale;
         ui::i18n::I18nManager::set_locale("de-DE");
         assert_eq!(crate::shell::i18n::current_locale(), "de-DE");
-        assert_eq!(language(&provider).as_deref(), Some("Sprache festlegen"));
+        assert_eq!(language(&provider).as_deref(), Some("Sprache ändern"));
         ui::i18n::I18nManager::set_locale("en-US");
-        assert_eq!(language(&provider).as_deref(), Some("Set language"));
+        assert_eq!(language(&provider).as_deref(), Some("Change language"));
 
         // Active workspace: governance rows address the workspace now active.
         let (first_room, second, second_room) = {
@@ -6689,20 +7285,20 @@ mod tests {
         for (locale, title, subtitle) in [
             (
                 "en-US",
-                "Edit top bar",
-                "Reorder, add or remove top-bar widgets",
+                "Toggle workspace overview",
+                "Show all workspaces in the wheel view",
             ),
             (
                 "de-DE",
-                "Obere Leiste bearbeiten",
-                "Widgets der oberen Leiste neu anordnen, hinzufügen oder entfernen",
+                "Arbeitsbereichsübersicht ein- oder ausblenden",
+                "Alle Arbeitsbereiche in der Radansicht zeigen",
             ),
         ] {
             ui::i18n::I18nManager::set_locale(locale);
             let editor = Action::ALL
                 .iter()
-                .find(|action| action.id == "topbar.editor.open")
-                .expect("top-bar editor action");
+                .find(|action| action.id == "overview.toggle")
+                .expect("overview action");
             assert_eq!(t(editor.label), title);
             assert_eq!(t(editor.subtitle), subtitle);
             for action in Action::ALL {
@@ -6935,7 +7531,7 @@ mod tests {
             "writing the store without selecting the live catalogue leaves chrome English"
         );
         assert_eq!(t("tab-closed-undo"), "Rückgängig");
-        assert_eq!(t("search-action-appearance-language"), "Sprache festlegen");
+        assert_eq!(t("search-action-appearance-language"), "Sprache ändern");
     }
 
     #[test]
@@ -7540,6 +8136,97 @@ mod tests {
                 assert_eq!(contract.availability.is_available(), available, "{id}");
             }
         }
+    }
+
+    // USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
+    // brightness etc. should in general be raised on the correct (?)
+    // screen(s)… in consistent positions… also how to handle brightness
+    // controls on multiple screens" — search lists one brightness row per
+    // display, ←/→ adjusts it in place, and "brighter" acts on the display
+    // the person works on.
+    #[test]
+    fn search_has_a_brightness_row_per_display_and_brighter_moves_the_focused_one() {
+        use crate::shell::chrome_state::DisplayBrightness;
+        let recorder = Rc::new(RecordingQsActions::default());
+        let dispatcher: Rc<dyn crate::shell::quick_settings::actions::QsActions> = recorder.clone();
+        let provider = ActionsProvider::with_shared_qs_actions(Rc::new(SharedQsDispatcher::new(
+            dispatcher,
+            crate::shell::quick_settings::actions::QsActionAvailability::all(),
+        )));
+        let chrome = chrome_with_room();
+        {
+            let mut state = chrome.borrow_mut();
+            state.quick_settings.displays = vec![
+                DisplayBrightness {
+                    connector: "eDP-1".into(),
+                    name: "Built-in display".into(),
+                    level: 0.5,
+                },
+                DisplayBrightness {
+                    connector: "DP-1".into(),
+                    name: "Dell U2723".into(),
+                    level: 0.3,
+                },
+            ];
+            state.quick_settings.focused_display = Some("DP-1".into());
+        }
+        let mut doc = AutoCommit::new();
+        let results = provider.query(SearchContext {
+            query_scope: None,
+            include_programmatic: false,
+            needle: "quick-settings.",
+            wanted: &[ResourceKind::Action],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        });
+        let row = |id: &str| {
+            results
+                .iter()
+                .find(|result| result.id == id)
+                .cloned()
+                .unwrap_or_else(|| panic!("no row {id}"))
+        };
+        let panel = row("quick-settings.brightness.on.eDP-1");
+        assert_eq!(panel.title, "Brightness, Built-in display");
+        let monitor = row("quick-settings.brightness.on.DP-1");
+        assert_eq!(monitor.title, "Brightness, Dell U2723");
+        assert_eq!(monitor.badge.as_deref(), Some("30 %"));
+        assert!(provider.adjustable(&monitor), "←/→ steps it in place");
+        provider
+            .adjust(
+                &monitor,
+                1,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &chrome,
+            )
+            .expect("the step lands");
+        provider
+            .adjust(
+                &panel,
+                -1,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &chrome,
+            )
+            .expect("the step lands");
+        (row("quick-settings.brightness.up").on_open)(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &chrome,
+            &ActionArgs::none(),
+        )
+        .expect("brighter runs");
+        assert_eq!(
+            recorder.calls.borrow().as_slice(),
+            [
+                "brightness:DP-1:40",
+                "brightness:eDP-1:40",
+                "brightness:DP-1:50"
+            ],
+            "each row moves its own display; brighter moves the focused one"
+        );
     }
 
     #[derive(Default)]

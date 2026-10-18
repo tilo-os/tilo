@@ -419,7 +419,7 @@ impl PlotPanel {
 
     // -- paint ---------------------------------------------------------------
 
-    /// Paint the panel: the scrim of a floating drawer, the panel's ground,
+    /// Paint the panel: its ground,
     /// its header, the rows, the add button and the show/hide button. The
     /// active row shows a caret only while the window has keyboard focus.
     pub fn draw(
@@ -430,7 +430,6 @@ impl PlotPanel {
         theme: &Theme,
         formulas: Formulas<'_>,
     ) {
-        self.panel.paint_scrim(scene, t, theme);
         if self.panel.column() == Rect::ZERO {
             self.panel
                 .paint_toggle(scene, t, tr, theme, self.hover.toggle);

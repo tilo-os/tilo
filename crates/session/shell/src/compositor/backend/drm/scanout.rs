@@ -63,7 +63,7 @@ use crate::compositor::cursor::{self, CursorBitmap, CursorShape, PointerImage};
 use vello::{FineDamageRect, Scene};
 
 use super::output_signal::{
-    AdaptiveSync, HdrRequest, HdrSignal, OutputSignalStatus, adaptive_sync_capability,
+    AdaptiveSync, CrtcGamma, HdrRequest, HdrSignal, OutputSignalStatus, adaptive_sync_capability,
     device_has_adaptive_sync, find_property, hdr_capability,
 };
 use super::outputs::DrmOutputKey;
@@ -1907,6 +1907,8 @@ pub struct DrmScanout {
     cpu_maps: [Option<CpuMapping>; 2],
     /// The CRTC's adaptive-sync property and what was last written to it.
     adaptive_sync: AdaptiveSync,
+    /// The CRTC's gamma LUT, where software dimming lives when it can.
+    crtc_gamma: CrtcGamma,
     /// Pixel format of `buffers`. HDR swaps in a 10-bit pair.
     format: ScanoutFormat,
     /// The dumb-buffer pair not in use: the SDR pair while HDR dumb buffers
@@ -2068,6 +2070,7 @@ impl DrmScanout {
         let link = Self::first_modeset(&card, connector, mode, fb0, &flip)?;
 
         let adaptive_sync = AdaptiveSync::probe(&card, crtc, connector);
+        let crtc_gamma = CrtcGamma::probe(&card, crtc);
         let hdr_signal = HdrSignal::probe(&card, connector);
 
         // Best-effort: failure leaves `hw_cursor_active = false` and the software cursor takes over.
@@ -2136,6 +2139,7 @@ impl DrmScanout {
                 .is_ok_and(|value| value == "1")
                 || super::cpu_present::cpu_render_reason().is_some(),
             adaptive_sync,
+            crtc_gamma,
             format: ScanoutFormat::Xrgb8888,
             standby: None,
             hdr_signal,
@@ -2593,6 +2597,7 @@ impl DrmScanout {
         // write is a commit that would wait behind the modeset.
         if !self.flip_pending && self.presentable() {
             self.apply_adaptive_sync();
+            self.apply_gamma_dim();
         }
     }
 
@@ -2619,6 +2624,33 @@ impl DrmScanout {
         self.adaptive_sync.record_write(value, result.is_ok());
     }
 
+    /// Dim this output to `light` (linear light let through, `1.0`:
+    /// undimmed) in the CRTC's gamma LUT, where it has one. Written between
+    /// flips: now when none is queued, otherwise just before the next one.
+    pub fn set_software_dim(&mut self, light: f32) {
+        self.crtc_gamma.want(light, self.hdr_signal.enabled());
+        if !self.flip_pending && self.presentable() {
+            self.apply_gamma_dim();
+        }
+    }
+
+    /// The CRTC dims this output itself: every plane, a client buffer
+    /// scanned out directly included. Otherwise the compositor's final pass
+    /// must ([`crate::shell::software_dim::final_pass_dim`]).
+    pub fn software_dim_in_crtc(&self) -> bool {
+        self.crtc_gamma.carries()
+    }
+
+    fn apply_gamma_dim(&mut self) {
+        self.crtc_gamma.set_pq(self.hdr_signal.enabled());
+        if self.crtc_gamma.pending_write().is_none() {
+            return;
+        }
+        if let Err(error) = self.crtc_gamma.write(&self.card, self.crtc) {
+            tracing::warn!(%error, crtc = ?self.crtc, "DRM scanout: writing the dimming gamma LUT failed");
+        }
+    }
+
     /// The crtc this scanout drives, so hotplug can pick one still free.
     pub fn crtc(&self) -> crtc::Handle {
         self.crtc
@@ -2638,6 +2670,7 @@ impl DrmScanout {
             // nonblocking full modeset, and what needs a CRTC that scans
             // out (signal, adaptive sync, cursor) follows once it is up.
             self.adaptive_sync.forget_applied();
+            self.crtc_gamma.forget_applied();
             self.hdr_signal.forget();
             self.cursor_bound = false;
             self.with_link(|link, device| link.resume(device, false));
@@ -2668,7 +2701,9 @@ impl DrmScanout {
         // Another DRM master may have left adaptive sync and the HDR signal
         // either way.
         self.adaptive_sync.forget_applied();
+        self.crtc_gamma.forget_applied();
         self.apply_adaptive_sync();
+        self.apply_gamma_dim();
         self.hdr_signal.forget();
         self.match_signal_to_dumb_front();
         // Per-CRTC state, gone with the rest — without this the pointer is invisible after every VT switch.
@@ -3211,6 +3246,7 @@ impl DrmScanout {
     /// Queue a page flip to buffer `idx`, making it the new front. A transient `EBUSY`/`EAGAIN` skips the frame; a "not supported" errno latches the page-flip path off, falling back to `dirty_framebuffer`.
     fn flip_to(&mut self, idx: usize) -> bool {
         self.apply_adaptive_sync();
+        self.apply_gamma_dim();
         let Some(fb) = self.fb_at(idx) else {
             tracing::warn!("DRM scanout: no framebuffer at index {idx}; skipping page flip");
             return false;
@@ -3272,6 +3308,7 @@ impl DrmScanout {
 
     fn flush_dirty(&mut self, idx: usize) -> bool {
         self.apply_adaptive_sync();
+        self.apply_gamma_dim();
         if self.dirtyfb_unsupported {
             self.force_flush_via_set_crtc();
             self.note_publish(false, false);
@@ -3478,6 +3515,7 @@ impl DrmScanout {
             return DirectSubmit::Busy;
         }
         self.apply_adaptive_sync();
+        self.apply_gamma_dim();
         if targets.format.is_hdr() && !targets.crtc_bound {
             return self.bind_hdr_target(targets, index);
         }
@@ -3658,6 +3696,7 @@ impl DrmScanout {
             return DirectSubmit::Failed("HDR targets cannot flip to a client buffer".to_owned());
         }
         self.apply_adaptive_sync();
+        self.apply_gamma_dim();
         match self.queue_flip(client.framebuffer()) {
             Ok(()) => {
                 self.flip_pending = true;
@@ -3806,6 +3845,7 @@ impl DrmScanout {
         );
         self.match_signal_to_dumb_front();
         self.apply_adaptive_sync();
+        self.apply_gamma_dim();
         if self.hw_cursor_active
             && !self.cursor_bound
             && let Some(buf) = self.cursor_buffer.as_ref()

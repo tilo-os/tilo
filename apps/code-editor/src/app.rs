@@ -2268,10 +2268,10 @@ impl CodeApp {
     }
 
     /// Stage a populated status bar for a screenshot: a live multi-word
-    /// selection and a recent save notice.
+    /// selection and a recent notice.
     pub fn shots_status(&mut self) {
         self.shots_select_words();
-        self.note("Saved main.rs", false);
+        self.note("Reloaded main.rs from disk", false);
         self.refresh_status();
     }
 
@@ -3199,8 +3199,7 @@ impl Widget for CodeApp {
         }
         self.draw_content(scene, transform, text_renderer, theme, presence);
         if layout == SplitLayout::Overlay && self.sidebar_visible() {
-            // The scrim dims the content, then the drawer floats over it.
-            self.drawer.draw_scrim(scene, transform, theme);
+            // The drawer floats over the content.
             self.draw_sidebar(scene, transform, text_renderer, theme, presence);
         }
         if self.toggle_in_tab_strip() {

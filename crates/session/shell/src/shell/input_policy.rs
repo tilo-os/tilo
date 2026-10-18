@@ -714,6 +714,11 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
     if fb.host().window_switcher_active() {
         return true;
     }
+    // The strip switcher opened by Super+S, or naming a strip: arrows,
+    // Enter, typed letters and Escape are its.
+    if fb.host().strip_switcher_takes_keys() {
+        return true;
+    }
     let peer_sync_visible = fb.host().peer_sync_card_visible();
     let inner_surface_captures = fb.host().inner_surface_captures_input();
     let chrome = fb.chrome();
@@ -741,6 +746,7 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
 pub fn chrome_captures_pointer(fb: &FrameBuilder) -> bool {
     chrome_captures_input(fb)
         || fb.host().maximized_chrome_captures_pointer()
+        || fb.host().strip_switcher_captures_pointer()
         || fb.host().top_bar_captures_pointer()
         || fb.host().notification_banner_captures_pointer()
 }
@@ -842,11 +848,24 @@ pub fn track_forwarded_key<S: std::hash::BuildHasher>(
     }
 }
 
-/// How long Super must be held, alone, before the Super surface opens as a
-/// peek. A tap (press and release) is well under this; a person reaching
-/// for a chord usually presses its second key sooner, and one who holds
-/// Super this long without one is holding it to look.
+/// How long Super must be held, alone, before the Super surface starts to
+/// grow in as a peek. A tap (press and release) is well under this; a
+/// person reaching for a chord usually presses its second key sooner, and
+/// one who holds Super this long without one is holding it to look.
 pub const SUPER_HOLD: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// How long Super must be held, alone, before the peek grows from its quiet
+/// first stage (the widgets' glance forms and the time, nothing over the
+/// windows) into the whole surface (the search field, the scrim, every
+/// widget open). A person who held Super a moment too long while looking
+/// for a chord's second key (Super+Shift+Left, Super+]) sees at most the
+/// quiet stage, and the chord takes that away without a fade.
+pub const SUPER_FULL: std::time::Duration = std::time::Duration::from_millis(600);
+
+/// How far the pointer moves (physical px) while Super is held before the
+/// peek counts as being used and grows into the whole surface at once.
+/// More than a hand resting on a touchpad drifts.
+pub const SUPER_PEEK_MOTION_PX: f64 = 6.0;
 
 /// What Super alone asks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -854,15 +873,19 @@ pub enum SuperGesture {
     /// Pressed and released with nothing in between, before
     /// [`SUPER_HOLD`]: open the Super surface and keep it.
     Tap,
-    /// Held alone for [`SUPER_HOLD`]: open the Super surface as a peek.
+    /// Held alone for [`SUPER_HOLD`]: the peek's quiet first stage, the
+    /// widgets' glance forms and the time.
     Peek,
+    /// Held alone for [`SUPER_FULL`], or the pointer moved while peeking:
+    /// the peek grows into the whole surface.
+    PeekFull,
     /// The held Super came up: close the peek unless it was taken up.
     PeekReleased,
     /// A pointer press while peeking: the person is using the surface, so
     /// it stays when Super comes up.
     PeekTaken,
     /// Another key while peeking: the hold was a chord after all; close the
-    /// peek and let the chord run.
+    /// peek at once, without a fade, and let the chord run.
     PeekCancelled,
 }
 
@@ -874,13 +897,17 @@ pub enum SuperGesture {
 /// client receives, and a Super-click or Super-scroll does too. Time comes
 /// from the caller: [`Self::observe`] and [`Self::poll`] take the instant
 /// they reason about, and [`Self::deadline`] tells the loop when a held
-/// key turns into a peek, so nothing polls.
+/// key turns into a peek or grows, so nothing polls.
 #[derive(Debug, Default)]
 pub struct SuperTap {
     /// When the lone Super went down, while nothing else has happened.
     armed: Option<std::time::Instant>,
     /// The hold became a peek.
     peeking: bool,
+    /// The peek grew into the whole surface.
+    full: bool,
+    /// Where the pointer first was during the peek's quiet stage.
+    peek_origin: Option<(f64, f64)>,
 }
 
 impl SuperTap {
@@ -902,13 +929,13 @@ impl SuperTap {
                         // a fresh press starts one.
                         if !key.repeat {
                             self.armed = Some(now);
-                            self.peeking = false;
+                            self.end_peek();
                         }
                         None
                     }
                     (true, ElementState::Released) => {
                         let armed = self.armed.take();
-                        if std::mem::take(&mut self.peeking) {
+                        if self.end_peek() {
                             return Some(SuperGesture::PeekReleased);
                         }
                         armed
@@ -917,7 +944,7 @@ impl SuperTap {
                     }
                     (false, ElementState::Pressed) => {
                         self.armed = None;
-                        std::mem::take(&mut self.peeking).then_some(SuperGesture::PeekCancelled)
+                        self.end_peek().then_some(SuperGesture::PeekCancelled)
                     }
                     (false, ElementState::Released) => None,
                 }
@@ -928,31 +955,60 @@ impl SuperTap {
             }
             | WindowEvent::Touch(_) => {
                 self.armed = None;
-                std::mem::take(&mut self.peeking).then_some(SuperGesture::PeekTaken)
+                self.end_peek().then_some(SuperGesture::PeekTaken)
             }
             WindowEvent::MouseWheel { .. } => {
                 self.armed = None;
                 None
             }
+            WindowEvent::CursorMoved { position, .. } if self.peeking && !self.full => {
+                let p = (position.x, position.y);
+                let origin = *self.peek_origin.get_or_insert(p);
+                let moved = (p.0 - origin.0).hypot(p.1 - origin.1);
+                (moved >= SUPER_PEEK_MOTION_PX).then(|| self.grow())
+            }
             _ => None,
         }
     }
 
-    /// The peek, once Super has been held alone for [`SUPER_HOLD`] at `now`.
-    pub fn poll(&mut self, now: std::time::Instant) -> Option<SuperGesture> {
-        let at = self.armed?;
-        if self.peeking || now.saturating_duration_since(at) < SUPER_HOLD {
-            return None;
-        }
-        self.peeking = true;
-        Some(SuperGesture::Peek)
+    /// Forget the peek; whether there was one.
+    fn end_peek(&mut self) -> bool {
+        self.full = false;
+        self.peek_origin = None;
+        std::mem::take(&mut self.peeking)
     }
 
-    /// When a held Super turns into a peek.
+    fn grow(&mut self) -> SuperGesture {
+        self.full = true;
+        self.peek_origin = None;
+        SuperGesture::PeekFull
+    }
+
+    /// The peek, once Super has been held alone for [`SUPER_HOLD`] at `now`,
+    /// and its growth into the whole surface at [`SUPER_FULL`].
+    pub fn poll(&mut self, now: std::time::Instant) -> Option<SuperGesture> {
+        let at = self.armed?;
+        let held = now.saturating_duration_since(at);
+        if !self.peeking {
+            if held < SUPER_HOLD {
+                return None;
+            }
+            self.peeking = true;
+            return Some(SuperGesture::Peek);
+        }
+        (!self.full && held >= SUPER_FULL).then(|| self.grow())
+    }
+
+    /// When a held Super next turns into a peek, or the peek grows.
     pub fn deadline(&self) -> Option<std::time::Instant> {
-        self.armed
-            .filter(|_| !self.peeking)
-            .and_then(|at| at.checked_add(SUPER_HOLD))
+        let at = self.armed?;
+        if !self.peeking {
+            at.checked_add(SUPER_HOLD)
+        } else if !self.full {
+            at.checked_add(SUPER_FULL)
+        } else {
+            None
+        }
     }
 }
 
@@ -1016,7 +1072,14 @@ mod super_tap_tests {
             None
         );
         assert_eq!(tap.poll(t0 + SUPER_HOLD), Some(SuperGesture::Peek));
-        assert_eq!(tap.poll(ms(t0, 900)), None, "one peek per hold");
+        assert_eq!(
+            tap.deadline(),
+            Some(t0 + SUPER_FULL),
+            "the loop wakes again for the growth, not frame by frame"
+        );
+        assert_eq!(tap.poll(t0 + SUPER_HOLD), None, "one peek per hold");
+        assert_eq!(tap.poll(t0 + SUPER_FULL), Some(SuperGesture::PeekFull));
+        assert_eq!(tap.poll(ms(t0, 900)), None, "it grows once");
         assert_eq!(tap.deadline(), None);
         // Autorepeat while held changes nothing.
         let mut repeat = ui::synthetic_input::key_event(
@@ -1031,6 +1094,60 @@ mod super_tap_tests {
         );
         assert_eq!(
             tap.observe(&super_key(ElementState::Released), ms(t0, 1200)),
+            Some(SuperGesture::PeekReleased)
+        );
+    }
+
+    /// Holding Super a moment too long before a chord's second key: the
+    /// quiet stage shows, the chord cancels it, and the whole surface never
+    /// comes.
+    #[test]
+    fn a_chord_after_a_long_hold_cancels_the_quiet_stage_before_it_grows() {
+        let t0 = Instant::now();
+        let mut tap = SuperTap::default();
+        tap.observe(&super_key(ElementState::Pressed), t0);
+        assert_eq!(tap.poll(ms(t0, 420)), Some(SuperGesture::Peek));
+        assert_eq!(
+            tap.observe(
+                &key(Key::Named(NamedKey::ArrowLeft), ElementState::Pressed),
+                ms(t0, 480)
+            ),
+            Some(SuperGesture::PeekCancelled)
+        );
+        assert_eq!(tap.poll(t0 + SUPER_FULL), None, "no growth after a chord");
+        assert_eq!(tap.deadline(), None);
+        assert_eq!(
+            tap.observe(&super_key(ElementState::Released), ms(t0, 700)),
+            None
+        );
+    }
+
+    #[test]
+    fn moving_the_pointer_while_peeking_grows_the_surface_at_once() {
+        let t0 = Instant::now();
+        let mut tap = SuperTap::default();
+        let moved = |x: f64| ui::synthetic_input::cursor_moved(x, 100.0);
+        tap.observe(&super_key(ElementState::Pressed), t0);
+        assert_eq!(
+            tap.observe(&moved(10.0), ms(t0, 100)),
+            None,
+            "before the peek, motion is nothing"
+        );
+        tap.poll(t0 + SUPER_HOLD);
+        assert_eq!(tap.observe(&moved(10.0), ms(t0, 320)), None);
+        assert_eq!(
+            tap.observe(&moved(13.0), ms(t0, 330)),
+            None,
+            "a resting hand's drift"
+        );
+        assert_eq!(
+            tap.observe(&moved(30.0), ms(t0, 340)),
+            Some(SuperGesture::PeekFull)
+        );
+        assert_eq!(tap.observe(&moved(60.0), ms(t0, 350)), None, "once");
+        assert_eq!(tap.poll(t0 + SUPER_FULL), None);
+        assert_eq!(
+            tap.observe(&super_key(ElementState::Released), ms(t0, 900)),
             Some(SuperGesture::PeekReleased)
         );
     }
@@ -2183,6 +2300,7 @@ mod tests {
             let (reply, _parked) = tokio::sync::oneshot::channel();
             queue.spawn(crate::portal::FilePickerRequest {
                 caller: crate::portal::PortalCaller::new(workspace, "so.tilo.tests"),
+                parent_window: None,
                 title: "Insert image".into(),
                 save: false,
                 directory: false,

@@ -284,6 +284,7 @@ impl ApiTesterApp {
             &sink,
         );
         let nav = NavShell::new()
+            .content_kind(ui::widget::ContentKind::Document)
             .with_id("api.shell")
             .sidebar(sidebar::frame(Box::new(env_slot), Box::new(lists_slot)))
             .sidebar_header("", vec![sidebar::new_collection(&sink)])

@@ -12,12 +12,23 @@ use ui::i18n::ArgValue;
 
 ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
 
+/// Settings' pages and the settings on them, as the palette names them
+/// ([`settings_store::index`]).
+static SETTINGS_INDEX: ui::i18n::EmbeddedCatalog = {
+    let catalog = ui::i18n::EmbeddedCatalog::new("en-US", settings_store::index::CATALOGUES)
+        .with_system_locale();
+    #[cfg(test)]
+    let catalog = catalog.with_pinned_locale("en-US");
+    catalog
+};
+
 /// Load the shell's catalogue and the toolkit's widget labels on this
 /// thread, in the desktop's language. Startup calls it once; every lookup
 /// repeats it for free, so a thread that draws chrome without having
 /// resolved a shell string yet still gets translated toolkit widgets.
 pub fn ensure() {
     CATALOG.ensure();
+    SETTINGS_INDEX.ensure();
     ui::i18n::I18nManager::register_widget_messages();
 }
 

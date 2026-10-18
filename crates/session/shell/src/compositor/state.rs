@@ -2018,6 +2018,9 @@ impl State {
         let viewporter = ViewporterState::new::<Self>(&display_handle);
         let idle_inhibit_manager = IdleInhibitManagerState::new::<Self>(&display_handle);
         let toplevel_icon_manager = crate::compositor::toplevel_icon::manager(&display_handle);
+        // Advertise `zxdg_exporter_v2`: the handle a portal request names
+        // its window by (`parent_window`).
+        crate::compositor::window_handles::exporter(&display_handle);
         let (session_lock_state, output_management) = Self::privileged_globals(&display_handle);
         // Advertise touchpad gestures for a bare-TTY session with no host compositor; constructed before the struct literal moves `display_handle`.
         let pointer_gestures_state = PointerGesturesState::new::<Self>(&display_handle);
@@ -4297,7 +4300,13 @@ impl State {
     /// Deliver a Linux evdev keycode press/release to the seat keyboard. Shared by
     /// the `RemoteDesktop` and personal-fabric paths. Convert to Smithay's XKB
     /// keycode convention by adding eight, as the other remote input paths do.
-    fn inject_seat_key(&mut self, keycode: u32, pressed: bool, serial: Serial, time: u32) -> bool {
+    pub(crate) fn inject_seat_key(
+        &mut self,
+        keycode: u32,
+        pressed: bool,
+        serial: Serial,
+        time: u32,
+    ) -> bool {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return false;
         };
@@ -4321,7 +4330,7 @@ impl State {
     /// layout, so `NotifyKeyboardKeysym` can be delivered even though
     /// smithay's injection API is keycode-oriented. Scans the evdev/xkb
     /// keycode range for a key whose level-0 symbol matches; `None` when the layout can't produce the keysym (caller should fall back to `NotifyKeyboardKeycode`).
-    fn keysym_to_keycode(&mut self, target: u32) -> Option<u32> {
+    pub(crate) fn keysym_to_keycode(&mut self, target: u32) -> Option<u32> {
         use smithay::input::keyboard::{Keycode, Keysym};
         let keyboard = self.seat.get_keyboard()?;
         let target = Keysym::new(target);
@@ -7006,6 +7015,7 @@ impl XdgShellHandler for State {
         self.release_sheets_of_destroyed(surface_id);
         self.system_modals.retain(|id| *id != surface_id);
         crate::compositor::toplevel_icon::forget(surface_id);
+        crate::compositor::window_handles::forget(surface_id);
         if self.osk_surface == Some(surface_id) {
             self.osk_surface = None;
         }

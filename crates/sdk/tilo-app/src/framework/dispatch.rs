@@ -637,6 +637,7 @@ impl DispatchCore {
     }
 
     /// The last action refused here ([`Dispatcher::refused`]).
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn last_refused(&self) -> Option<Refused> {
         self.refused.get()
     }
@@ -884,11 +885,7 @@ impl<R: Resource> Dispatcher<R> {
     /// for any caller. So it is in a past version, and when the
     /// participant's role does not grant what the declaration needs.
     pub fn is_own_gesture<E: Effect>(&self, effect: &E) -> bool {
-        if self.core.past
-            || self.core.custody.is_some()
-            || super::effect::acting_for().is_some()
-            || ui_core::invocation_scope::current_invoker().is_some()
-        {
+        if !self.gesture_is_own() {
             return false;
         }
         let id = effect.id();
@@ -902,6 +899,16 @@ impl<R: Resource> Dispatcher<R> {
                     privileged: false,
                 })
             })
+    }
+
+    /// Whether what runs now is the person's own gesture at this device,
+    /// not automation: no invocation, effect, custody or past version is
+    /// acting.
+    fn gesture_is_own(&self) -> bool {
+        !(self.core.past
+            || self.core.custody.is_some()
+            || super::effect::acting_for().is_some()
+            || ui_core::invocation_scope::current_invoker().is_some())
     }
 
     /// Invoke `effect` as the live row `row` offers it
@@ -1094,6 +1101,36 @@ impl<R: Resource> Dispatcher<R> {
             return self.ask_first(invoke, &action);
         }
         self.apply_now(edits, &action)
+    }
+
+    /// [`Self::submit_now`] of the person's own gesture on the surface: the
+    /// button they pressed, the shortcut they typed, with arguments the
+    /// gesture itself supplied. Like a keystroke, such a gesture is its own
+    /// confirmation, so a destructive verb the surface offers with its own
+    /// way back (a message held so Undo takes it back unsent) applies now.
+    /// The confirmation stays with the callers who supply the arguments
+    /// themselves (the palette, a script, an agent): under any invocation,
+    /// an effect's handler, custody or a past version this is
+    /// [`Self::submit_now`], and the host asks as for any caller.
+    ///
+    /// # Errors
+    /// As [`Self::submit_now`].
+    pub fn submit_gesture(
+        &self,
+        edits: &mut Edits<'_>,
+        submit: impl Submit<R>,
+    ) -> Result<(), ActionError> {
+        if !self.gesture_is_own() {
+            return self.submit_now(edits, submit);
+        }
+        let invoke = submit.into_invoke().map_err(ActionError::Refused)?;
+        if invoke.is_group() {
+            return self.group_now(edits, &invoke);
+        }
+        let action = invoke
+            .build(tilo_resource::origin_now_ms())
+            .map_err(ActionError::Refused)?;
+        self.apply_now_as(edits, &action, self.core.context(), true)
     }
 
     /// Hand an action that needs confirming to the host's door, which asks

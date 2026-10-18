@@ -586,7 +586,6 @@ impl VideoEditorApp {
             }
             ShotScenario::SavedProject => {
                 let path = PathBuf::from("/home/you/Videos/Coastline_Doc_v3.qvp");
-                self.project_notice = Some(Notice::ok(project_workflow::saved_words(&path)));
                 self.project_path = Some(path);
                 // Saved *as it stands*, so the badge is off — which is the
                 // half of the button this scenario exists to show.

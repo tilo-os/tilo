@@ -1,13 +1,15 @@
 //! The browser desktop's top bar as a room shows it: the Tilo mark, the
 //! workspace's name as its one menu, desks, the time, the people here, your
 //! own avatar and quick settings. Captured wide and narrow, with the
-//! workspace menu open, your profile card open, and the People list with two
-//! people who share a name.
+//! workspace menu open, your profile card open (in a room bridged to a
+//! Discord server: your account there not linked, its link code shown, and
+//! linked), and the People list with two people who share a name.
 //!
 //! Run:  `cargo run -p tilo-desktop --example web_bar_shots -- [OUT_DIR]`
 //! Out:  `OUT_DIR` (default `target/look/web-bar`):
 //!       `bar-<dark|light|narrow>.png`, `workspace-menu.png`, `profile.png`,
-//!       `people.png`, `people-pills.png`
+//!       `profile-linking.png`, `profile-linked.png`, `people.png`,
+//!       `people-pills.png`
 
 #![allow(
     clippy::expect_used,
@@ -24,10 +26,11 @@ use taffy::{Display, FlexDirection, NodeId, Size, Style, TaffyTree};
 use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
 use tilo_desktop::chrome::{
     ChromeIntent, ClockSnapshot, DesktopChromeSnapshot, DesktopChromeSource, OwnChip, StripPlaces,
-    TopBarWidget, TopBarWidgets,
 };
 use tilo_desktop::collaborators::{CollaboratorsModel, CollaboratorsOverlay};
-use tilo_desktop::profile_card::{ProfileAction, ProfileCard, ProfileGroup, ProfileModel};
+use tilo_desktop::profile_card::{
+    LinkState, LinkedAccount, ProfileAction, ProfileCard, ProfileGroup, ProfileModel,
+};
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop::workspace_menu::{
     WorkspaceAction, WorkspaceChoice, WorkspaceMenu, WorkspaceMenuModel,
@@ -62,9 +65,6 @@ impl DesktopChromeSource for Room {
                 weekday: "Thu".into(),
                 date: "16 October".into(),
             },
-            topbar_widgets: Some(TopBarWidgets {
-                widgets: vec![TopBarWidget::Clock, TopBarWidget::Calendar],
-            }),
             strip_places: Some(StripPlaces::in_active_workspace(
                 &self.tree.borrow(),
                 &[StripId(10), StripId(11)],
@@ -272,8 +272,18 @@ fn workspace_model() -> WorkspaceMenuModel {
     }
 }
 
-fn profile_model() -> ProfileModel {
+/// The room's Discord bridge, with your account there in `state`.
+fn discord(state: LinkState) -> Vec<LinkedAccount> {
+    vec![LinkedAccount {
+        app: "so.tilo.discord".into(),
+        service: "Discord".into(),
+        state,
+    }]
+}
+
+fn profile_model(linked: Vec<LinkedAccount>) -> ProfileModel {
     ProfileModel {
+        linked,
         name: MY_NAME.into(),
         identity: ME.into(),
         colour: Some(vello::peniko::Color::from_rgb8(214, 140, 96)),
@@ -388,8 +398,33 @@ fn main() {
         let stage = harness.root_mut::<Stage>();
         stage.workspace.close();
         let (anchor, area) = (stage.bar.own_avatar_rect(), stage.rect);
-        stage.profile.toggle(&profile_model(), anchor, area);
+        stage
+            .profile
+            .toggle(&profile_model(discord(LinkState::Unlinked)), anchor, area);
         shoot(&mut harness, "profile.png");
+
+        harness
+            .root_mut::<Stage>()
+            .profile
+            .set_linked(discord(LinkState::Linking(
+                tilo_app::linked_accounts::LinkCode {
+                    code: "K7QMW2XRB4TD".into(),
+                    instruction: "In Discord, type /link with this code. It works for 10 minutes."
+                        .into(),
+                },
+            )));
+        shoot(&mut harness, "profile-linking.png");
+
+        harness
+            .root_mut::<Stage>()
+            .profile
+            .set_linked(discord(LinkState::Linked(
+                tilo_app::linked_accounts::AccountName {
+                    user_name: "quinn.davis".into(),
+                    display_name: Some("Quinn".into()),
+                },
+            )));
+        shoot(&mut harness, "profile-linked.png");
 
         let stage = harness.root_mut::<Stage>();
         stage.profile.close();

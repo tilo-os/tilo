@@ -342,12 +342,12 @@ fn a_tilo_message_deleted_in_discord_is_resent_unless_a_linked_moderator_did_it(
     g.links.push(Link {
         discord_user: "d_mod".into(),
         person: "u_mod".into(),
-        linked_at: 0,
+        ..Link::default()
     });
     g.links.push(Link {
         discord_user: "d_ed".into(),
         person: "u_ed".into(),
-        linked_at: 0,
+        ..Link::default()
     });
     let room = json!({"members": [{"person": "u_mod", "role": "moderator"}, {"person": "u_ed", "role": "editor"}]});
     let by = |executor: Option<&str>| MessageDeleted {
@@ -399,7 +399,7 @@ fn a_ban_blocks_and_hand_made_role_changes_are_reverted() {
     g.links.push(Link {
         discord_user: "u7".into(),
         person: "u_ada".into(),
-        linked_at: 0,
+        ..Link::default()
     });
     let room = json!({"members": [{"person": "u_ada", "role": "editor"}]});
     let changed = MemberChanged {
@@ -443,4 +443,70 @@ fn link_commands_find_the_pending_code_or_count_a_failure() {
         ..Command::default()
     };
     assert!(plan_command(&g, &unlink).unlinks.is_empty(), "not linked");
+}
+
+#[test]
+fn a_link_carries_the_names_and_a_member_seen_renamed_updates_them() {
+    let mut g = guild();
+    g.pending_links.push(PendingLink {
+        person: "u_ada".into(),
+        code_sha256: link::hash("aaaabbbbcccc"),
+        expires_ms: i64::MAX,
+    });
+    let named = |user_name: &str, display_name: Option<&str>| UserName {
+        user_name: user_name.into(),
+        display_name: display_name.map(str::to_owned),
+    };
+    let linking = Command {
+        user_id: "u7".into(),
+        name: "link".into(),
+        code_sha256: Some(link::hash("aaaabbbbcccc")),
+        user: Some(named("ada.l", Some("Ada L"))),
+        ..Command::default()
+    };
+    let item = &plan_command(&g, &linking).complete_links[0];
+    assert_eq!(item.user_name, "ada.l");
+    assert_eq!(item.display_name, "Ada L");
+
+    g.links.push(Link {
+        discord_user: "u7".into(),
+        person: "u_ada".into(),
+        user_name: "ada.l".into(),
+        display_name: Some("Ada L".into()),
+        ..Link::default()
+    });
+    let seen = |user: UserName| MemberChanged {
+        user_id: "u7".into(),
+        user: Some(user),
+        ..MemberChanged::default()
+    };
+    assert!(
+        plan_member(&g, &seen(named("ada.l", Some("Ada L"))), &json!({}))
+            .renames
+            .is_empty(),
+        "the same names change nothing"
+    );
+    assert_eq!(
+        plan_member(&g, &seen(named("ada.lovelace", None)), &json!({})).renames,
+        [RenameItem {
+            discord_user: "u7".into(),
+            user_name: "ada.lovelace".into(),
+            display_name: String::new(),
+        }]
+    );
+}
+
+#[test]
+fn names_come_from_the_member_object() {
+    let member = json!({"nick": null, "user": {"username": "ada.l", "global_name": "Ada L"}});
+    assert_eq!(
+        UserName::of_member(&member),
+        Some(UserName {
+            user_name: "ada.l".into(),
+            display_name: Some("Ada L".into()),
+        })
+    );
+    let same = json!({"user": {"username": "ada", "global_name": "ada"}});
+    assert_eq!(UserName::of_member(&same).unwrap().display_name, None);
+    assert_eq!(UserName::of_member(&json!({})), None);
 }

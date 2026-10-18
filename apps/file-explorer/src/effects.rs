@@ -90,7 +90,13 @@ pub enum FilesEffect {
     /// Copies (or moves, after Cut) what the window holds into the folder
     /// shown.
     #[effect(job, cancellable)]
-    Paste,
+    Paste {
+        #[param(
+            "For names the folder already has: keep both (the default), skip them, replace them (the existing items go to Trash), or ask the person in the window",
+            choices = ["keep-both", "skip", "replace", "ask"]
+        )]
+        conflict: Option<String>,
+    },
     /// Go to folder…
     ///
     /// Shows the folder at this absolute path; answers with its resource and

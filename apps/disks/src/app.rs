@@ -250,6 +250,7 @@ impl DisksApp {
     fn with_backend(backend: Backend, topo: Topology) -> Self {
         let intents = Intents::default();
         let shell = NavShell::new()
+            .content_kind(ui::widget::ContentKind::Page)
             .sidebar_header("Drives", vec![Box::new(view::rescan_button(&intents))])
             .with_id("disks-shell");
         Self {

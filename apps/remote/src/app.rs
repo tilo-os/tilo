@@ -640,6 +640,7 @@ impl RemoteApp {
             toasts: ToastStack::new(),
             toast_clock: None,
             shell: NavShell::new()
+                .content_kind(ui::widget::ContentKind::Document)
                 .with_id("remote.shell")
                 .mode(NavMode::Docked),
             immersive: None,

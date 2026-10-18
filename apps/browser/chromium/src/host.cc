@@ -11,6 +11,7 @@
 #include "page_automation.h"
 #include "agent_log.h"
 #include "paint_snapshot.h"
+#include "document_size.h"
 #include "fullscreen_state.h"
 #include "audio_pcm.h"
 #include "credential_document.h"
@@ -339,7 +340,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     agent_log_->Attach();
     paint_snapshot_=new tilo::PaintSnapshot(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});
     paint_snapshot_->Attach();
-    auto d=CefDictionaryValue::Create();d->SetBool("native_edit_history",true);d->SetBool("guarded_edit_history",true);d->SetBool("native_caret_text_input",true);d->SetInt("frame_rate",kOffscreenFrameRate);d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event(id_==1?"ready":"tab_ready",d);
+    document_size_=new tilo::DocumentSize(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});
+    document_size_->Attach();
+    auto d=CefDictionaryValue::Create();d->SetBool("native_edit_history",true);d->SetBool("guarded_edit_history",true);d->SetBool("native_caret_text_input",true);d->SetBool("document_size",true);d->SetInt("frame_rate",kOffscreenFrameRate);d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event(id_==1?"ready":"tab_ready",d);
     TraceGeometry("ready",id_);
     browser_->GetHost()->WasHidden(!visible_);
     if(closing) browser_->GetHost()->CloseBrowser(true);
@@ -361,6 +364,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     agent_log_=nullptr;
     if(paint_snapshot_)paint_snapshot_->Detach();
     paint_snapshot_=nullptr;
+    if(document_size_)document_size_->Detach();
+    document_size_=nullptr;
     if(startup_diagnostics_)startup_diagnostics_->Detach();
     startup_diagnostics_=nullptr;
     if(document_scripts_)document_scripts_->Detach();
@@ -455,7 +460,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       }
       return;
     }
-    if(type==PET_VIEW) { stale_paint_recovery_pending_=false;pixels_.assign(static_cast<const char*>(buffer),size);pixel_width_=width;pixel_height_=height; }
+    if(type==PET_VIEW) { stale_paint_recovery_pending_=false;pixels_.assign(static_cast<const char*>(buffer),size);pixel_width_=width;pixel_height_=height;if(document_size_)document_size_->Painted(); }
     else { popup_.assign(static_cast<const char*>(buffer),size);popup_width_=width;popup_height_=height; }
     EmitFrame();
   }
@@ -690,6 +695,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     }
     else if(op=="paint_capture") paint_snapshot_->Capture(d);
     else if(op=="paint_resource") paint_snapshot_->Resource(d);
+    else if(op=="document_size") document_size_->Enable(d->GetBool("enabled"));
     else if(op=="try_close_tab") {DetachVisible();}
     else if(op=="close_tab") {CloseNative();}
     else if(op=="navigate") {TraceGeometry("navigate-load-url",id_);frame->LoadURL(d->GetString("url"));}
@@ -1123,6 +1129,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   CefRefPtr<tilo::PageAutomation> page_automation_;
   CefRefPtr<tilo::AgentLog> agent_log_;
   CefRefPtr<tilo::PaintSnapshot> paint_snapshot_;
+  CefRefPtr<tilo::DocumentSize> document_size_;
   CefRefPtr<tilo::Capabilities> capabilities_;
   CefRefPtr<tilo::StartupDiagnostics> startup_diagnostics_;
   CefRefPtr<tilo::DocumentScripts> document_scripts_,composition_scripts_;std::vector<CefRefPtr<CefDictionaryValue>> pending_navigation_;
@@ -1191,6 +1198,24 @@ void AddFeature(CefRefPtr<CefCommandLine> command_line,const char* name,const st
   if((","+value+",").find(","+feature+",")!=std::string::npos) return;
   command_line->AppendSwitchWithValue(name,value.empty()?feature:value+","+feature);
 }
+// Privacy defaults nobody should have to find a setting for, as Safari and
+// Firefox ship them: a site embedded in another (an ad, a tracker's frame or
+// pixel) gets no cookies or storage of its own there, and WebRTC tells a page
+// only the public address the network already sees, never the device's
+// local ones. Both are profile preferences, so a private window's context
+// gets them too.
+void ApplyPrivacyDefaults(CefRefPtr<CefRequestContext> context) {
+  auto set=[&context](const char* name,CefRefPtr<CefValue> value) {
+    CefString error;
+    if(!context->SetPreference(name,value,error))
+      std::cerr<<"Could not set the privacy default "<<name<<": "<<error.ToString()<<"\n";
+  };
+  // content_settings::CookieControlsMode::kBlockThirdParty.
+  auto cookies=CefValue::Create();cookies->SetInt(1);
+  set("profile.cookie_controls_mode",cookies);
+  auto webrtc=CefValue::Create();webrtc->SetString("default_public_interface_only");
+  set("webrtc.ip_handling_policy",webrtc);
+}
 class App final : public CefApp,public CefBrowserProcessHandler {
  public:
   CefRefPtr<CefBrowserProcessHandler> GetBrowserProcessHandler() override { return this; }
@@ -1239,6 +1264,7 @@ class App final : public CefApp,public CefBrowserProcessHandler {
     } else {
       shared_context=CefRequestContext::CreateContext(CefRequestContext::GetGlobalContext(),request_filter);
     }
+    ApplyPrivacyDefaults(shared_context);
     downloads=new tilo::Downloads(
       downloads_directory,
       [](const std::string& name,CefRefPtr<CefDictionaryValue> fields){::Event(name,fields);},
@@ -1359,9 +1385,10 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     if(!type("request_id",VTYPE_INT) || d->GetInt("request_id")<=0 || !type("action",VTYPE_STRING))return false;
     const auto action=d->GetString("action").ToString();
     if(action!="outline" && action!="click" && action!="fill" && action!="select" && action!="press" && action!="submit" &&
-       action!="changes" && action!="at" && action!="settle" && action!="console" && action!="network")return false;
+       action!="changes" && action!="at" && action!="settle" && action!="console" && action!="network" && action!="reader")return false;
     const bool elementless=action=="outline" || action=="press" || action=="changes" || action=="at" || action=="settle" ||
-      action=="console" || action=="network";
+      action=="console" || action=="network" || action=="reader";
+    if((action=="reader")!=d->HasKey("enabled") || (d->HasKey("enabled") && !type("enabled",VTYPE_BOOL)))return false;
     if(d->HasKey("element") ? !type("element",VTYPE_STRING) || d->GetString("element").empty() || d->GetString("element").length()>64
                             : !elementless)return false;
     for(const char* flag:{"cross_origin","secret"})if(d->HasKey(flag) && !type(flag,VTYPE_BOOL))return false;
@@ -1386,6 +1413,11 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     auto styles=d->GetList("styles");if(!styles->GetSize() || styles->GetSize()>64)return false;
     for(size_t i=0;i<styles->GetSize();++i)if(styles->GetType(i)!=VTYPE_STRING || styles->GetString(i).empty() || styles->GetString(i).length()>64)return false;
     return true;
+  }
+  if(op=="document_size") {
+    CefDictionaryValue::KeyList keys;d->GetKeys(keys);
+    for(const auto& key:keys)if(key!="op" && key!="tab" && key!="enabled")return false;
+    return type("enabled",VTYPE_BOOL);
   }
   if(op=="paint_resource") return type("request_id",VTYPE_INT) && d->GetInt("request_id")>0 && type("url",VTYPE_STRING) && !d->GetString("url").empty() && d->GetString("url").length()<=1048576;
   if(op=="devtools_call") {

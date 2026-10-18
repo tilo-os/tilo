@@ -316,16 +316,15 @@ impl FileDesk {
             .and_then(|(bytes, _missing)| document::write(path, &bytes));
         match packed {
             Ok(()) => {
+                self.remember(path, &file);
+                // Saving where the artwork lives is the system's job and says
+                // nothing (the title names the file); a copy went somewhere
+                // out of sight, so say where.
                 if follow {
                     self.tools.file.set(Some(path.display().to_string()));
-                }
-                self.remember(path, &file);
-                let id = if follow {
-                    "canvas-saved"
                 } else {
-                    "canvas-duplicated"
-                };
-                self.say(id, &[("name", Self::name_of(path).into())]);
+                    self.say("canvas-duplicated", &[("name", Self::name_of(path).into())]);
+                }
             }
             Err(why) => self.say("canvas-save-failed", &[("why", why.into())]),
         }

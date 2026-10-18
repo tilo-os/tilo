@@ -846,6 +846,54 @@ fn link_claim(source: &CString, destination: &CString) -> libc::c_long {
     0
 }
 
+// Keep platform refusal in the claim operation so every outcome reaches the
+// caller's temporary-file cleanup without relying on a diverging result value.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn claim_identity_name(source: &CString, destination: &CString) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            source.as_ptr(),
+            libc::AT_FDCWD,
+            destination.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    #[cfg(target_os = "linux")]
+    let result = if result != 0 && no_replace_rename_unsupported() {
+        link_claim(source, destination)
+    } else {
+        result
+    };
+    #[cfg(target_os = "macos")]
+    // SAFETY: both paths are live NUL-terminated strings. RENAME_EXCL is the
+    // Darwin atomic no-replace claim; it cannot overwrite another creator.
+    let result = unsafe {
+        libc::renameatx_np(
+            libc::AT_FDCWD,
+            source.as_ptr(),
+            libc::AT_FDCWD,
+            destination.as_ptr(),
+            libc::RENAME_EXCL,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn claim_identity_name(_: &CString, _: &CString) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "atomic no-replace identity publication is unsupported on this platform",
+    ))
+}
+
 /// Publish a complete device key exactly once.
 ///
 /// `tilo_files::native::atomic::write_with_mode` is intentionally not used here: its final
@@ -898,48 +946,7 @@ fn publish_identity_bytes_no_clobber(
             "device-key temporary path contains a NUL byte",
         ))
     })?;
-    #[cfg(target_os = "linux")]
-    let result = unsafe {
-        libc::syscall(
-            libc::SYS_renameat2,
-            libc::AT_FDCWD,
-            source.as_ptr(),
-            libc::AT_FDCWD,
-            destination.as_ptr(),
-            libc::RENAME_NOREPLACE,
-        )
-    };
-    #[cfg(target_os = "linux")]
-    let result = if result != 0 && no_replace_rename_unsupported() {
-        link_claim(&source, &destination)
-    } else {
-        result
-    };
-    #[cfg(target_os = "macos")]
-    // SAFETY: both paths are live NUL-terminated strings. RENAME_EXCL is the
-    // Darwin atomic no-replace claim; it cannot overwrite another creator.
-    let result = unsafe {
-        libc::renameatx_np(
-            libc::AT_FDCWD,
-            source.as_ptr(),
-            libc::AT_FDCWD,
-            destination.as_ptr(),
-            libc::RENAME_EXCL,
-        )
-    };
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    let result = {
-        let _ = fs::remove_file(&temp);
-        return Err(PersistError::Io(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "atomic no-replace identity publication is unsupported on this platform",
-        )));
-    };
-    let claim = if result == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
-    };
+    let claim = claim_identity_name(&source, &destination);
     if claim.is_err() {
         let _ = fs::remove_file(&temp);
     }
@@ -1317,6 +1324,30 @@ mod tests {
     }
     use ed25519_dalek::Signer;
     use std::sync::{Arc, Barrier};
+
+    #[cfg(not(windows))]
+    #[test]
+    fn failed_identity_publication_removes_the_private_candidate() {
+        let tmp = identity_tempdir();
+        let destination = tmp.path().join("identity");
+        fs::create_dir(&destination).unwrap();
+
+        let result = publish_identity_bytes_no_clobber(&destination, &[7; 32], DEVICE_KEY_MODE);
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        assert!(matches!(result, Ok(false)), "{result:?}");
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        assert!(matches!(
+            result,
+            Err(PersistError::Io(ref error)) if error.kind() == io::ErrorKind::Unsupported
+        ));
+
+        let remaining: Vec<_> = fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(remaining, vec![destination.clone()]);
+        assert!(destination.is_dir());
+    }
 
     #[cfg(unix)]
     #[test]

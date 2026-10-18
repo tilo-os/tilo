@@ -173,7 +173,7 @@ def german_strings(ctx, res):
     titles = {a["id"]: a["title"] for a in ctx.vm.actions()}
     sample = {k: titles.get(k) for k in ("overview.toggle", "settings.open", "quick-settings.open")}
     res.metrics["titles"] = sample
-    english = {"Toggle workspace overview", "Open workspace settings", "Open quick settings"}
+    english = {"Show workspace overview", "Open workspace settings", "Open quick settings"}
     still = [v for v in sample.values() if v in english]
     expect(all(sample.values()), f"actions missing: {sample}")
     expect(not still, f"English titles in a German session: {still}")

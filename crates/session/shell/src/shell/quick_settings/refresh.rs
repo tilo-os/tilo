@@ -735,6 +735,7 @@ mod tests {
         let level = |connector: &str| qs::MonitorLevel {
             connector: connector.into(),
             level: 0.5,
+            kind: qs::BrightnessKind::Ddc,
         };
         let names: Vec<String> = display_brightness(
             vec![level("eDP-1"), level("DP-2"), level("HDMI-A-1")],

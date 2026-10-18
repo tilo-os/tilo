@@ -501,7 +501,7 @@ async function until(condition, timeout, every = 500) {
 
 /** In the page: the room's Chat window (opened if the desktop shows none)
  * and the first channel it can post in, `{window, resource}`. */
-const CHAT_CHANNEL = `(async () => {
+export const CHAT_CHANNEL = `(async () => {
   const chat = () => tiloMount.navigation.getSnapshot().entries.find(entry => entry.app === 'so.tilo.chat');
   if (!chat()) {
     const shown = tiloMount.navigation.getSnapshot();

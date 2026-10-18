@@ -71,6 +71,14 @@ pub(crate) fn record(
     });
 }
 
+/// The client surface whose frame `image` is, when the frame drew it.
+pub(crate) fn surface_of(images: &[DrawnImage], image: &ImageData) -> Option<SurfaceId> {
+    images
+        .iter()
+        .find(|drawn| drawn.image.data.id() == image.data.id())
+        .map(|drawn| drawn.surface)
+}
+
 /// A recorded image must occur exactly once across the whole composition.
 /// Otherwise a preview or another unrecorded use might also need repair.
 pub(crate) fn unique_uses<const N: usize>(scenes: [&Scene; N], images: &[DrawnImage]) -> bool {

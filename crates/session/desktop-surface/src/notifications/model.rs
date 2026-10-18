@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 use ui::theme::Theme;
 use ui::time::{Duration, Instant};
-use ui::widget::toast::ToastKind;
+use ui::widget::toast::{Dwell, ToastKind};
 
 use crate::i18n::t_args;
 
@@ -112,7 +112,8 @@ impl ScheduledNotificationTarget {
     }
 }
 
-/// Default dwell of a banner. Override via [`Notification::with_dismiss_after`].
+/// How long a banner stays up once it is on screen and nobody holds it.
+/// Override via [`Notification::with_dismiss_after`].
 pub const DEFAULT_DISMISS_AFTER: Duration = Duration::from_secs(5);
 
 /// Effective "never auto-expire" dwell, for notifications that must stay
@@ -169,14 +170,26 @@ pub enum Addressed {
 /// freedesktop notification id on the native desktop) used to answer the
 /// originating app.
 #[derive(Clone, Debug)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent delivery rule a sender or the system sets on its own"
+)]
 pub struct Notification {
     pub id: u64,
     pub title: String,
     pub body: String,
     pub icon_kind: NotificationIconKind,
     pub severity: NotificationSeverity,
+    /// When it arrived: what the centre's relative time reads.
     pub created_at: Instant,
+    /// How long the banner stays up, counted only while it is on screen and
+    /// nobody holds it ([`Self::dwell`]).
     pub dismiss_after: Duration,
+    /// How long the banner has been up for the person to read. Only the
+    /// banner stack advances it, through [`super::NotificationLog::present`]:
+    /// a banner that waited for a pause in typing, or did not fit on
+    /// screen, has spent none of [`Self::dismiss_after`].
+    pub dwell: Dwell,
     /// Set when a local application raised this notification through the
     /// host's notification protocol. `None` for the desktop's own notices.
     pub sender_id: Option<u32>,
@@ -215,6 +228,10 @@ pub struct Notification {
     /// ([`Addressed`]); see [`Self::addressed`] for the reading every gate
     /// uses.
     pub addressed: Option<Addressed>,
+    /// About the whole machine rather than the work at hand (critical
+    /// battery): shown on every display, not only the one in use. Only the
+    /// system sets it; an app's notification never does.
+    pub machine_wide: bool,
 }
 
 impl Notification {
@@ -229,6 +246,7 @@ impl Notification {
             severity: NotificationSeverity::default(),
             created_at: ui::time::now(),
             dismiss_after: DEFAULT_DISMISS_AFTER,
+            dwell: Dwell::new(),
             sender_id: None,
             remote_route: None,
             #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
@@ -242,6 +260,7 @@ impl Notification {
             show_on_lock_screen: true,
             show_preview: true,
             addressed: None,
+            machine_wide: false,
         }
     }
 
@@ -267,6 +286,13 @@ impl Notification {
     #[must_use]
     pub fn with_addressed(mut self, addressed: Addressed) -> Self {
         self.addressed = Some(addressed);
+        self
+    }
+
+    /// About the whole machine: every display shows it.
+    #[must_use]
+    pub fn machine_wide(mut self) -> Self {
+        self.machine_wide = true;
         self
     }
 
@@ -319,17 +345,31 @@ impl Notification {
         self
     }
 
-    /// Backdate `created_at` so a snapshot render skips the slide-in
-    /// animation and shows the banner settled rather than mid-entry.
+    /// Backdate when it arrived (a notification restored from an earlier
+    /// session keeps its age in the centre).
     #[must_use]
     pub fn with_created_at(mut self, t: Instant) -> Self {
         self.created_at = t;
         self
     }
 
-    /// `true` once `created_at + dismiss_after <= now`.
+    /// The banner has been on screen, unheld, since `t`: for a still render
+    /// that shows it settled rather than sliding in.
+    #[must_use]
+    pub fn with_shown_at(mut self, t: Instant) -> Self {
+        self.dwell.present(t, true, false);
+        self
+    }
+
+    /// `true` once the banner has been up, unheld, for its whole
+    /// [`Self::dismiss_after`]. A banner never shown never expires.
     pub fn is_expired_at(&self, now: Instant) -> bool {
-        now.saturating_duration_since(self.created_at) >= self.dismiss_after
+        self.dwell.is_over(self.dismiss_after, now)
+    }
+
+    /// What is left of the banner's time on screen at `now`.
+    pub fn time_left(&self, now: Instant) -> Duration {
+        self.dwell.left(self.dismiss_after, now)
     }
 }
 

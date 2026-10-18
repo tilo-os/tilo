@@ -460,6 +460,7 @@ fn navigation(
     );
     Box::new(
         NavShell::new()
+            .content_kind(ui::widget::ContentKind::Reading)
             .overview(overview)
             .overview_header(
                 CATALOG.t("messages-people"),

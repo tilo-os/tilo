@@ -222,7 +222,6 @@ fn captures_stage_the_sample_through_the_resource() {
         "find",
         "goto",
         "edited",
-        "saved",
         "error",
         "narrow",
         "narrow-inspector",

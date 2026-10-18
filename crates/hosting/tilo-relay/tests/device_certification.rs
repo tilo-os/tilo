@@ -28,6 +28,7 @@ fn browser_request(user: [u8; 32], device: &SigningKey) -> CertificationRequest 
         device_label: "Browser".into(),
         requested: DeviceCapabilities::member(),
         nonce: rand::random(),
+        invite: [0; 16],
         issued_at_ns: now.saturating_sub(1_000_000_000),
         expires_at_ns: now.saturating_add(60_000_000_000),
         signature: [0; 64],

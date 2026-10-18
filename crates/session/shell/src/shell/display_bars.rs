@@ -1,6 +1,6 @@
 //! The compact top bar each display other than the primary carries.
 //!
-//! The primary display holds the full top bar and the wheel disc. Every
+//! The primary display holds the full top bar. Every
 //! other display gets a compact bar along its own top edge — workspace
 //! navigation and the centre widget — so a person working on that display
 //! can see and change which workspace they are in without travelling to the

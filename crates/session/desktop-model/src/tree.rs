@@ -48,6 +48,15 @@ pub struct DesktopTree {
     /// non-closing group" (see [`Self::resolve_active_group`]).
     #[serde(default, deserialize_with = "deserialize_id_map")]
     pub active_group: HashMap<StripId, GroupId>,
+    /// Per strip, the groups that were active before the current one, most
+    /// recent last: the group-level twin of
+    /// [`crate::WindowGroup::focus_history`]. Closing the active group's last
+    /// window goes back to the most recent of these still on the strip, the
+    /// window you came from, not to whichever window happens to sit to its
+    /// right. What this device has been showing: never persisted. Written by
+    /// [`Self::set_active_group`].
+    #[serde(skip)]
+    pub group_focus_history: HashMap<StripId, Vec<GroupId>>,
     /// Which display each window group is shown on, on this device. Local
     /// layout: persisted with this device's desktop, never replicated.
     #[serde(default, skip_serializing_if = "OutputPartition::is_empty")]
@@ -82,6 +91,7 @@ impl Default for DesktopTree {
             active: WorkspaceId::default(),
             active_strip: HashMap::new(),
             active_group: HashMap::new(),
+            group_focus_history: HashMap::new(),
             outputs: OutputPartition::default(),
             collaborators: Vec::new(),
             room_records_held: HashMap::new(),
@@ -92,6 +102,51 @@ impl Default for DesktopTree {
 }
 
 impl DesktopTree {
+    /// Give every workspace its Lounge, first ([`crate::lounge::ensure`]).
+    /// Returns whether anything changed.
+    pub fn ensure_lounges(&mut self) -> bool {
+        let mut changed = false;
+        for index in 0..self.workspaces.len() {
+            changed |= self.ensure_lounge_at(index);
+        }
+        changed
+    }
+
+    /// [`Self::ensure_lounges`] for the workspace of `room` alone.
+    pub fn ensure_lounge_in(&mut self, room: RoomId) -> bool {
+        self.workspaces
+            .iter()
+            .position(|workspace| workspace.room == room)
+            .is_some_and(|index| self.ensure_lounge_at(index))
+    }
+
+    /// The Lounge of the workspace at `index`, carrying the focus remembered
+    /// for a Lounge whose id moved (its workspace joined a room).
+    fn ensure_lounge_at(&mut self, index: usize) -> bool {
+        let Some(workspace) = self.workspaces.get_mut(index) else {
+            return false;
+        };
+        let before = workspace
+            .strips
+            .iter()
+            .find(|strip| crate::ids::is_shared(strip.id.raw()))
+            .map(|strip| strip.id);
+        if !crate::lounge::ensure(workspace) {
+            return false;
+        }
+        let after = crate::lounge::strip_id(workspace);
+        let workspace_id = workspace.id;
+        if let Some(before) = before.filter(|before| *before != after) {
+            if self.active_strip.get(&workspace_id) == Some(&before) {
+                self.active_strip.insert(workspace_id, after);
+            }
+            if let Some(group) = self.active_group.remove(&before) {
+                self.active_group.insert(after, group);
+            }
+        }
+        true
+    }
+
     /// Read a tree from its JSON value.
     ///
     /// Readers in other crates go through this function instead of calling
@@ -160,17 +215,41 @@ impl DesktopTree {
         self.active_group.get(&strip_id).copied()
     }
 
-    /// Mark `group_id` as the active group of `strip_id`. Not validated
+    /// Mark `group_id` as the active group of `strip_id`, remembering the
+    /// group it replaces in [`Self::group_focus_history`]. Not validated
     /// against the strip's actual membership — the host's reconciler is
     /// expected to be the sole writer.
     pub fn set_active_group(&mut self, strip_id: StripId, group_id: GroupId) {
-        self.active_group.insert(strip_id, group_id);
+        let previous = self.active_group.insert(strip_id, group_id);
+        let history = self.group_focus_history.entry(strip_id).or_default();
+        if let Some(previous) = previous.filter(|previous| *previous != group_id) {
+            history.retain(|g| *g != previous);
+            history.push(previous);
+        }
+        history.retain(|g| *g != group_id);
+    }
+
+    /// The group of `strip_id` to show after the active one goes away: the
+    /// most recently active one still on the strip, other than `leaving`.
+    pub fn previously_active_group(&self, strip_id: StripId, leaving: GroupId) -> Option<GroupId> {
+        let strip = self
+            .workspaces
+            .iter()
+            .flat_map(|w| w.strips.iter())
+            .find(|s| s.id == strip_id)?;
+        self.group_focus_history
+            .get(&strip_id)?
+            .iter()
+            .rev()
+            .copied()
+            .find(|g| *g != leaving && strip.window_groups.iter().any(|w| w.id == *g))
     }
 
     /// Resolve the active group on `strip_id` under `is_closing`: if
-    /// closing, returns the next non-closing sibling right, falling
-    /// back left. Pure read; `None` if no group survives, or the strip
-    /// doesn't exist.
+    /// closing, returns the most recently active group that survives
+    /// ([`Self::group_focus_history`]), else the next non-closing sibling
+    /// right, falling back left. Pure read; `None` if no group survives, or
+    /// the strip doesn't exist.
     pub fn resolve_active_group(
         &self,
         strip_id: StripId,
@@ -209,6 +288,15 @@ impl DesktopTree {
             Some(id) => {
                 if !is_closing(id) {
                     return Some(id);
+                }
+                // The window the person came from, when it's still there.
+                if let Some(came_from) = self.group_focus_history.get(&strip_id).and_then(|h| {
+                    h.iter()
+                        .rev()
+                        .copied()
+                        .find(|g| !is_closing(*g) && strip.window_groups.iter().any(|w| w.id == *g))
+                }) {
+                    return Some(came_from);
                 }
                 // Recorded group is closing — find its index, then
                 // scan right for a survivor; if none, scan left.

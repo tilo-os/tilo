@@ -210,27 +210,27 @@ pub fn build_delete_request(
     }
 }
 
-pub async fn push_jobs(jobs: &[UploadJob]) -> MutationResult {
+pub fn push_jobs(jobs: &[UploadJob]) -> impl std::future::Future<Output = MutationResult> {
     #[cfg(feature = "live")]
     {
-        live::push_jobs_live(jobs).await
+        live::push_jobs_live(jobs)
     }
     #[cfg(not(feature = "live"))]
     {
         let _ = jobs;
-        MutationResult::default()
+        std::future::ready(MutationResult::default())
     }
 }
 
-pub async fn remove_jobs(jobs: &[RemoveJob]) -> MutationResult {
+pub fn remove_jobs(jobs: &[RemoveJob]) -> impl std::future::Future<Output = MutationResult> {
     #[cfg(feature = "live")]
     {
-        live::remove_jobs_live(jobs).await
+        live::remove_jobs_live(jobs)
     }
     #[cfg(not(feature = "live"))]
     {
         let _ = jobs;
-        MutationResult::default()
+        std::future::ready(MutationResult::default())
     }
 }
 
@@ -303,19 +303,19 @@ pub fn pull_calendar(
 /// Synchronise with durable per-collection checkpoints supplied by the caller.
 /// Keeping the checkpoint in the Automerge document (rather than a transport
 /// cache) makes restart and collaborative hand-off deterministic.
-pub async fn sync_all_with_checkpoints(
+pub fn sync_all_with_checkpoints(
     accounts: &[(CalDavConfig, Vec<RemoteCalendar>)],
     today: NaiveDate,
     checkpoints: &[(String, String)],
-) -> (SyncResult, SyncOutcome) {
+) -> impl std::future::Future<Output = (SyncResult, SyncOutcome)> {
     #[cfg(feature = "live")]
     {
-        live::sync_all_live_with_checkpoints(accounts, today, checkpoints).await
+        live::sync_all_live_with_checkpoints(accounts, today, checkpoints)
     }
     #[cfg(not(feature = "live"))]
     {
         let _ = (accounts, today, checkpoints);
-        (SyncResult::default(), SyncOutcome::Offline)
+        std::future::ready((SyncResult::default(), SyncOutcome::Offline))
     }
 }
 

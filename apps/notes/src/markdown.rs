@@ -475,8 +475,8 @@ fn parse_external_link(
 fn link_destination_end(bytes: &[u8], start: usize) -> Option<usize> {
     let mut depth = 0usize;
     let mut i = start;
-    while i < bytes.len() {
-        match bytes[i] {
+    while let Some(&byte) = bytes.get(i) {
+        match byte {
             b'\\' => i += 1,
             b'(' => depth += 1,
             b')' if depth == 0 => return Some(i),
@@ -681,7 +681,10 @@ pub fn parse(md: &str) -> Vec<BlockSpec> {
         {
             // Parse a nested region with its structural indentation removed.
             // Code indentation inside the fence remains ordinary source text.
-            let mut nested = body.to_string();
+            // A continuation under `1. ` is indented three spaces in
+            // CommonMark, one more than a level here: that odd space is
+            // indentation too, not the text's first character.
+            let mut nested = body.trim_start().to_string();
             while let Some(next) = lines.peek().copied() {
                 if !next.is_empty() && parse_list_indent(next).0 < depth {
                     break;
@@ -1227,6 +1230,28 @@ where
 mod tests {
     use super::*;
     use uuid::Uuid;
+
+    /// A paragraph continuing an ordered item, indented the CommonMark way
+    /// (three spaces under `1. `), is a line of that item without a stray
+    /// leading space.
+    #[test]
+    fn a_three_space_continuation_is_a_line_of_the_item() {
+        let blocks = specs_to_blocks(&parse(
+            "1. Pack the books\n   The heavy ones first.\n2. Next\n",
+        ));
+        let texts: Vec<_> = blocks
+            .iter()
+            .map(|block| (block.text().to_owned(), block.indent()))
+            .collect();
+        assert_eq!(
+            texts,
+            [
+                ("Pack the books".to_owned(), 0),
+                ("The heavy ones first.".to_owned(), 1),
+                ("Next".to_owned(), 0),
+            ]
+        );
+    }
 
     #[test]
     fn document_markdown_round_trips_byte_stably_and_normalises_on_save() {

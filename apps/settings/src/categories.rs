@@ -12,17 +12,18 @@ use ui::icons::Icon;
 /// category list a scannable structure rather than one flat run.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Section {
-    /// Network, Bluetooth — getting the device online and paired.
+    /// Network, Bluetooth, Devices & sync: getting online and connected.
     Connectivity,
-    /// Sound, Displays, Mouse & Keyboard, Printers — hardware.
+    /// Displays, sound, the input devices, printers and power: the hardware
+    /// in front of you.
     Devices,
-    /// Time & Date, Users, Region & Formats — the per-user system setup.
-    System,
-    /// External Accounts and device privacy — the integration and personal
-    /// security surfaces other apps depend on. Workspace roles deliberately
-    /// live with the workspace that owns them, not in this system app.
+    /// Appearance, accessibility, notifications, apps, language and time:
+    /// how the desktop behaves for you.
+    Personal,
+    /// The people, accounts and models other apps rely on, and the device's
+    /// privacy. Workspace roles live with the workspace that owns them.
     Hubs,
-    /// Updates, About — maintenance and identity.
+    /// Storage, updates and the device's identity.
     Maintenance,
 }
 
@@ -30,8 +31,8 @@ impl Section {
     /// Render order, top to bottom.
     pub const ALL: &'static [Section] = &[
         Section::Connectivity,
+        Section::Personal,
         Section::Devices,
-        Section::System,
         Section::Hubs,
         Section::Maintenance,
     ];
@@ -41,7 +42,7 @@ impl Section {
         match self {
             Section::Connectivity => "connectivity",
             Section::Devices => "devices",
-            Section::System => "system",
+            Section::Personal => "personal",
             Section::Hubs => "accounts-permissions",
             Section::Maintenance => "maintenance",
         }
@@ -52,9 +53,9 @@ impl Section {
         t(match self {
             Section::Connectivity => "settings-section-connectivity",
             Section::Devices => "settings-section-devices",
-            Section::System => "settings-section-system",
+            Section::Personal => "settings-section-personal",
             Section::Hubs => "settings-section-accounts-permissions",
-            Section::Maintenance => "settings-section-maintenance",
+            Section::Maintenance => "settings-section-system",
         })
     }
 }
@@ -89,368 +90,69 @@ pub enum Category {
     About,
 }
 
-/// Search-keyword tables backing [`Category::keywords`], one per category —
-/// pulled out of the match arms as data so that function stays a short
-/// dispatch table instead of a few hundred lines of array literals.
-const NETWORK_KEYWORDS: &[&str] = &[
-    "wifi",
-    "wi-fi",
-    "wired",
-    "ethernet",
-    "vpn",
-    "wireguard",
-    "proxy",
-    "internet",
-    "connection",
-];
-const SPEAKERS_KEYWORDS: &[&str] = &[
-    "speakers",
-    "stereo",
-    "stereo pair",
-    "surround",
-    "5.1",
-    "subwoofer",
-    "room",
-    "multiroom",
-    "calibrate",
-    "calibration",
-    "speaker group",
-];
-const BLUETOOTH_KEYWORDS: &[&str] = &[
-    "pair",
-    "pairing",
-    "device",
-    "headphones",
-    "keyboard",
-    "mouse",
-    "wireless",
-];
-const DEVICE_MESH_KEYWORDS: &[&str] = &[
-    "sync",
-    "continuity",
-    "devices",
-    "server",
-    "host",
-    "remote control",
-    "relay",
-    "copies",
-    "files",
-    "clipboard",
-    "file transfer",
-    "realtime sessions",
-    "wi-fi settings",
-    "media handoff",
-    "display extension",
-    "notification mirroring",
-    "gamepad",
-    "typed gamepad",
-    "handoff",
-    "privacy",
-];
-const SOUND_KEYWORDS: &[&str] = &[
-    "audio",
-    "volume",
-    "mute",
-    "microphone",
-    "mic",
-    "speaker",
-    "output",
-    "input",
-    "device",
-    "system sounds",
-];
-const DISPLAYS_KEYWORDS: &[&str] = &[
-    "monitor",
-    "screen",
-    "resolution",
-    "scale",
-    "brightness",
-    "night light",
-    "blue light",
-    "arrangement",
-    "external",
-];
-const KEYBOARD_KEYWORDS: &[&str] = &[
-    "keyboard",
-    "keyboard layout",
-    "input source",
-    "input method",
-    "language",
-    "qwerty",
-    "qwertz",
-    "azerty",
-    "dvorak",
-    "key repeat",
-    "layout",
-    "compose key",
-    "caps lock",
-    "typing",
-];
-const POINTING_KEYWORDS: &[&str] = &[
-    "mouse",
-    "pointer",
-    "trackpad",
-    "touchpad",
-    "scroll",
-    "natural scrolling",
-    "tap to click",
-    "cursor",
-    "tablet",
-    "pen",
-    "stylus",
-];
-const SPELLING_KEYWORDS: &[&str] = &[
-    "spell checker",
-    "spelling",
-    "autocorrect",
-    "auto-correct",
-    "dictionary",
-    "words",
-];
-const TIME_DATE_KEYWORDS: &[&str] = &[
-    "clock",
-    "timezone",
-    "time zone",
-    "ntp",
-    "24-hour",
-    "automatic time",
-    "calendar",
-];
-const USERS_KEYWORDS: &[&str] = &[
-    "accounts",
-    "people",
-    "administrator",
-    "admin",
-    "login",
-    "roles",
-];
-const PRINTERS_KEYWORDS: &[&str] = &["cups", "print", "queue", "job", "paper", "scanner"];
-const APPEARANCE_KEYWORDS: &[&str] = &[
-    "theme",
-    "dark mode",
-    "light mode",
-    "contrast",
-    "high contrast",
-    "reduce motion",
-    "text size",
-    "font",
-    "wallpaper",
-    "background picture",
-    "color",
-    "automatic theme",
-    "sunset",
-    "sunrise",
-    "top bar",
-    "menu bar",
-    "auto-hide",
-    "hide",
-];
-const ACCESSIBILITY_KEYWORDS: &[&str] = &[
-    "a11y",
-    "accessibility",
-    "universal access",
-    "screen reader",
-    "orca",
-    "on-screen keyboard",
-    "osk",
-    "cursor size",
-    "large cursor",
-    "pointer size",
-    "sticky keys",
-    "slow keys",
-    "visual alerts",
-    "high contrast",
-    "reduce motion",
-    "text size",
-    "zoom",
-];
-const NOTIFICATIONS_KEYWORDS: &[&str] = &[
-    "notification",
-    "notify",
-    "banner",
-    "alert",
-    "do not disturb",
-    "dnd",
-    "focus",
-    "quiet",
-    "sounds",
-    "lock screen",
-    "previews",
-    "badge",
-];
-const DEFAULT_APPS_KEYWORDS: &[&str] = &[
-    "default app",
-    "open with",
-    "file association",
-    "handler",
-    "browser",
-    "mail",
-    "pdf",
-];
-const STORAGE_KEYWORDS: &[&str] = &[
-    "disk space",
-    "cache",
-    "cleanup",
-    "app data",
-    "synced files",
-    "backup",
-];
-const EXTERNAL_ACCOUNTS_KEYWORDS: &[&str] = &[
-    "email",
-    "mail",
-    "imap",
-    "smtp",
-    "calendar",
-    "caldav",
-    "webdav",
-    "nextcloud",
-    "sync",
-    "cloud",
-];
-const AGENT_MODELS_KEYWORDS: &[&str] = &[
-    "agent",
-    "ai",
-    "model",
-    "models",
-    "provider",
-    "openai",
-    "anthropic",
-    "api key",
-    "vllm",
-    "local model",
-    "ollama",
-    "llm",
-    "tool calling",
-];
-const REGION_FORMATS_KEYWORDS: &[&str] = &[
-    "locale",
-    "language",
-    "currency",
-    "date format",
-    "time format",
-    "units",
-    "measurement",
-    "metric",
-    "imperial",
-];
-const PERMISSIONS_KEYWORDS: &[&str] = &[
-    "roles",
-    "access",
-    "sandbox",
-    "grants",
-    "file access",
-    "collaboration",
-    "security",
-    "privacy",
-    "encryption",
-    "disk unlock",
-    "secure boot",
-    "firewall",
-    "camera",
-    "microphone",
-];
-const UPDATES_KEYWORDS: &[&str] = &[
-    "software", "upgrade", "version", "bootc", "firmware", "rollback", "release",
-];
-const POWER_KEYWORDS: &[&str] = &[
-    "battery",
-    "charge",
-    "energy",
-    "power profile",
-    "performance",
-    "power saver",
-    "suspend",
-    "sleep",
-    "screen blank",
-];
-const KEYBOARD_SHORTCUTS_KEYWORDS: &[&str] = &[
-    "shortcuts",
-    "hotkeys",
-    "keybindings",
-    "keys",
-    "combinations",
-    "accelerators",
-    "workspace",
-];
-const ABOUT_KEYWORDS: &[&str] = &[
-    "device",
-    "identity",
-    "os",
-    "kernel",
-    "hostname",
-    "system",
-    "version",
-    "fingerprint",
-    "backup",
-    "portable backup",
-    "encrypted backup",
-    "recovery",
-];
-
 impl Category {
-    /// Canonical ordering used by the sidebar, grouped by [`Section`].
+    /// Canonical ordering used by the sidebar, grouped by [`Section`]: the
+    /// index's page order ([`settings_store::index::PAGES`]).
     pub const ALL: &'static [Category] = &[
         // Connectivity
         Category::Network,
         Category::Bluetooth,
         Category::DeviceMesh,
-        // Devices
-        Category::Sound,
-        Category::Speakers,
-        Category::Displays,
-        Category::Keyboard,
-        Category::KeyboardShortcuts,
-        Category::Printers,
-        // System
+        // Personal
         Category::Appearance,
         Category::Accessibility,
-        Category::Pointing,
-        Category::Spelling,
         Category::Notifications,
         Category::DefaultApps,
-        Category::Storage,
-        Category::Power,
-        Category::TimeDate,
-        Category::Users,
+        Category::Spelling,
         Category::RegionFormats,
+        Category::TimeDate,
+        // Devices
+        Category::Displays,
+        Category::Sound,
+        Category::Speakers,
+        Category::Keyboard,
+        Category::Pointing,
+        Category::KeyboardShortcuts,
+        Category::Printers,
+        Category::Power,
         // Hubs
+        Category::Users,
         Category::ExternalAccounts,
         Category::AgentModels,
         Category::Permissions,
         // Maintenance
+        Category::Storage,
         Category::Updates,
         Category::About,
     ];
 
-    /// The first (default) category shown on launch.
+    /// The category shown when Settings first opens and no link names one.
     pub const DEFAULT: Category = Category::Network;
 
     /// Which section this category groups under.
     pub fn section(self) -> Section {
         match self {
-            Category::Network | Category::Bluetooth => Section::Connectivity,
-            Category::DeviceMesh
+            Category::Network | Category::Bluetooth | Category::DeviceMesh => Section::Connectivity,
+            Category::Displays
             | Category::Sound
             | Category::Speakers
-            | Category::Displays
             | Category::Keyboard
+            | Category::Pointing
             | Category::KeyboardShortcuts
-            | Category::Printers => Section::Devices,
+            | Category::Printers
+            | Category::Power => Section::Devices,
             Category::Appearance
             | Category::Accessibility
-            | Category::Pointing
-            | Category::Spelling
             | Category::Notifications
             | Category::DefaultApps
-            | Category::Storage
-            | Category::Power
-            | Category::TimeDate
-            | Category::Users
-            | Category::RegionFormats => Section::System,
-            Category::ExternalAccounts | Category::AgentModels | Category::Permissions => {
-                Section::Hubs
-            }
-            Category::Updates | Category::About => Section::Maintenance,
+            | Category::Spelling
+            | Category::RegionFormats
+            | Category::TimeDate => Section::Personal,
+            Category::Users
+            | Category::ExternalAccounts
+            | Category::AgentModels
+            | Category::Permissions => Section::Hubs,
+            Category::Storage | Category::Updates | Category::About => Section::Maintenance,
         }
     }
 
@@ -462,67 +164,21 @@ impl Category {
             .filter(move |c| c.section() == section)
     }
 
+    /// This category's page in the index every search reads.
+    pub fn page(self) -> settings_store::index::Page {
+        settings_store::index::page(self.slug())
+            .unwrap_or_else(|| settings_store::index::Page { slug: self.slug() })
+    }
+
     /// User-facing label, rendered in the sidebar and reused as the pane
     /// header.
     pub fn label(self) -> String {
-        t(match self {
-            Category::Network => "settings-category-network",
-            Category::Bluetooth => "settings-category-bluetooth",
-            Category::DeviceMesh => "settings-category-devices-sync",
-            Category::Sound => "settings-category-sound",
-            Category::Speakers => "settings-category-speakers",
-            Category::Displays => "settings-category-displays",
-            Category::Keyboard => "settings-category-keyboard",
-            Category::Pointing => "settings-category-pointing",
-            Category::Spelling => "settings-category-spelling",
-            Category::KeyboardShortcuts => "settings-category-keyboard-shortcuts",
-            Category::TimeDate => "settings-category-time-date",
-            Category::Users => "settings-category-users",
-            Category::Printers => "settings-category-printers",
-            Category::Power => "settings-category-power",
-            Category::Appearance => "settings-category-appearance",
-            Category::Accessibility => "settings-category-accessibility",
-            Category::Notifications => "settings-category-notifications",
-            Category::DefaultApps => "settings-category-default-apps",
-            Category::Storage => "settings-category-storage",
-            Category::ExternalAccounts => "settings-category-external-accounts",
-            Category::AgentModels => "settings-category-agent-models",
-            Category::RegionFormats => "settings-category-region-formats",
-            Category::Permissions => "settings-category-permissions",
-            Category::Updates => "settings-category-updates",
-            Category::About => "settings-category-about",
-        })
+        t(&self.page().title_key())
     }
 
-    /// A one-line summary shown under the label in the content header.
+    /// A one-line summary of what the page holds.
     pub fn subtitle(self) -> String {
-        t(match self {
-            Category::Network => "settings-category-network-subtitle",
-            Category::Bluetooth => "settings-category-bluetooth-subtitle",
-            Category::DeviceMesh => "settings-category-devices-sync-subtitle",
-            Category::Sound => "settings-category-sound-subtitle",
-            Category::Speakers => "settings-category-speakers-subtitle",
-            Category::Displays => "settings-category-displays-subtitle",
-            Category::Keyboard => "settings-category-keyboard-subtitle",
-            Category::Pointing => "settings-category-pointing-subtitle",
-            Category::Spelling => "settings-category-spelling-subtitle",
-            Category::KeyboardShortcuts => "settings-category-keyboard-shortcuts-subtitle",
-            Category::TimeDate => "settings-category-time-date-subtitle",
-            Category::Users => "settings-category-users-subtitle",
-            Category::Printers => "settings-category-printers-subtitle",
-            Category::Power => "settings-category-power-subtitle",
-            Category::Appearance => "settings-category-appearance-subtitle",
-            Category::Accessibility => "settings-category-accessibility-subtitle",
-            Category::Notifications => "settings-category-notifications-subtitle",
-            Category::DefaultApps => "settings-category-default-apps-subtitle",
-            Category::Storage => "settings-category-storage-subtitle",
-            Category::ExternalAccounts => "settings-category-external-accounts-subtitle",
-            Category::AgentModels => "settings-category-agent-models-subtitle",
-            Category::RegionFormats => "settings-category-region-formats-subtitle",
-            Category::Permissions => "settings-category-permissions-subtitle",
-            Category::Updates => "settings-category-updates-subtitle",
-            Category::About => "settings-category-about-subtitle",
-        })
+        t(&self.page().subtitle_key())
     }
 
     /// Toolkit-owned vector icon rendered before the label in the sidebar.
@@ -539,14 +195,15 @@ impl Category {
             Category::Sound => Icon::Volume2,
             Category::Speakers => Icon::Speaker,
             Category::Displays => Icon::Monitor,
-            Category::Keyboard | Category::KeyboardShortcuts => Icon::Keyboard,
+            Category::Keyboard => Icon::Keyboard,
+            Category::KeyboardShortcuts => Icon::Command,
             Category::Pointing => Icon::Mouse,
             Category::Spelling => Icon::Type,
-            Category::TimeDate => Icon::Calendar,
+            Category::TimeDate => Icon::Clock,
             Category::Users => Icon::Users,
             Category::Printers => Icon::Printer,
             Category::Power => Icon::Battery,
-            Category::Accessibility => Icon::Eye,
+            Category::Accessibility => Icon::Accessibility,
             Category::Notifications => Icon::Bell,
             Category::DefaultApps => Icon::LayoutGrid,
             Category::Storage => Icon::HardDrive,
@@ -557,60 +214,52 @@ impl Category {
         }
     }
 
-    /// Search keywords for this category, beyond its label — the names of the
-    /// controls and concepts it houses, plus common synonyms. Search matches a
-    /// query against the label, subtitle, and these, so typing "night light",
-    /// "vpn", "battery", or "wallpaper" lands on the right pane even though
-    /// none of those words is the category's own name.
-    pub fn keywords(self) -> &'static [&'static str] {
-        match self {
-            Category::Network => NETWORK_KEYWORDS,
-            Category::Bluetooth => BLUETOOTH_KEYWORDS,
-            Category::DeviceMesh => DEVICE_MESH_KEYWORDS,
-            Category::Sound => SOUND_KEYWORDS,
-            Category::Speakers => SPEAKERS_KEYWORDS,
-            Category::Displays => DISPLAYS_KEYWORDS,
-            Category::Keyboard => KEYBOARD_KEYWORDS,
-            Category::Pointing => POINTING_KEYWORDS,
-            Category::Spelling => SPELLING_KEYWORDS,
-            Category::TimeDate => TIME_DATE_KEYWORDS,
-            Category::Users => USERS_KEYWORDS,
-            Category::Printers => PRINTERS_KEYWORDS,
-            Category::Appearance => APPEARANCE_KEYWORDS,
-            Category::Accessibility => ACCESSIBILITY_KEYWORDS,
-            Category::Notifications => NOTIFICATIONS_KEYWORDS,
-            Category::DefaultApps => DEFAULT_APPS_KEYWORDS,
-            Category::Storage => STORAGE_KEYWORDS,
-            Category::ExternalAccounts => EXTERNAL_ACCOUNTS_KEYWORDS,
-            Category::AgentModels => AGENT_MODELS_KEYWORDS,
-            Category::RegionFormats => REGION_FORMATS_KEYWORDS,
-            Category::Permissions => PERMISSIONS_KEYWORDS,
-            Category::Updates => UPDATES_KEYWORDS,
-            Category::Power => POWER_KEYWORDS,
-            Category::KeyboardShortcuts => KEYBOARD_SHORTCUTS_KEYWORDS,
-            Category::About => ABOUT_KEYWORDS,
-        }
+    /// What else this category is found by, beyond its label: each setting
+    /// on its page by its name in the desktop's language and its words in
+    /// every language, then the words people use for the page itself
+    /// ("wlan" and "wifi" both find Network), from the index the desktop
+    /// palette reads too.
+    pub fn search_terms(self) -> Vec<ui::widget::NavSearchTerm> {
+        use settings_store::index::{names_in_every_locale, words_in_every_locale};
+        let page = self.page();
+        let mut terms: Vec<ui::widget::NavSearchTerm> = page
+            .settings()
+            .map(|setting| {
+                ui::widget::NavSearchTerm::named(t(&setting.name_key()))
+                    .also(names_in_every_locale(&setting.name_key()))
+                    .also(words_in_every_locale(&setting.words_key()))
+            })
+            .collect();
+        terms.push(
+            ui::widget::NavSearchTerm::words(names_in_every_locale(&page.title_key()))
+                .also(words_in_every_locale(&page.words_key()))
+                .also([self.subtitle()]),
+        );
+        terms
     }
 
-    /// Whether this category matches a search query (case-insensitive). A
-    /// match is a substring hit against the label, the subtitle, or any of the
-    /// [`Category::keywords`]. An all-whitespace query matches everything (the
-    /// caller treats that as "no search").
+    /// Every word of [`Self::search_terms`], for a search entry's text.
+    pub fn search_words(self) -> Vec<String> {
+        self.search_terms()
+            .into_iter()
+            .flat_map(|term| term.name.into_iter().chain(term.words))
+            .collect()
+    }
+
+    /// Whether this category matches a search query (case-insensitive): a
+    /// substring of its label or of one of its [`Self::search_terms`]. An
+    /// all-whitespace query matches everything (the caller treats that as
+    /// "no search").
     pub fn matches(self, query: &str) -> bool {
         let q = query.trim().to_lowercase();
         if q.is_empty() {
             return true;
         }
-        if self.label().to_lowercase().contains(&q) || self.subtitle().to_lowercase().contains(&q) {
-            return true;
-        }
-        // A keyword matches a query it contains, or one that contains it as
-        // whole words: "turn on vpn" finds Network, but "wallpaper" must not
-        // find Printers through "paper".
-        let padded = format!(" {q} ");
-        self.keywords()
-            .iter()
-            .any(|k| k.contains(&q) || padded.contains(&format!(" {k} ")))
+        self.label().to_lowercase().contains(&q)
+            || self
+                .search_words()
+                .iter()
+                .any(|term| term.to_lowercase().contains(&q))
     }
 
     /// Stable identifier suffix used to compose `test_id`s and CRDT keys.
@@ -674,7 +323,10 @@ mod tests {
                 Section::ALL.contains(&c.section()),
                 "{c:?} section not in Section::ALL"
             );
-            assert!(!c.keywords().is_empty(), "{c:?} must carry search keywords");
+            assert!(
+                !c.search_terms().is_empty(),
+                "{c:?} must carry search terms"
+            );
         }
         assert_eq!(categories.len(), Category::ALL.len());
 

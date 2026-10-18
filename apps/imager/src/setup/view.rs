@@ -52,8 +52,6 @@ type CommandSink = Rc<RefCell<Vec<SetupCommand>>>;
 type WorkerTask = Box<dyn FnOnce() + Send + 'static>;
 type WorkerLauncher = fn(&str, WorkerTask) -> Result<(), String>;
 
-const FULL_OS_UNAVAILABLE: &str = "Full Tilo is not available on this computer yet.";
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SetupCapabilities {
     pub platform: Capabilities,
@@ -151,6 +149,7 @@ pub struct SetupApp {
     guided_mode: bool,
     guided_navigation: LocalState<bool>,
     guided_desktop: Option<guided_desktop::DesktopPreparation>,
+    desktop_only: bool,
     desktop_flow: DesktopFlow,
     desktop_revision: u64,
     review_saver: fn(&[super::controller::FolderChoice]) -> Result<(), String>,
@@ -258,6 +257,37 @@ impl SetupApp {
         app
     }
 
+    /// Review the canonical native Full Tilo pipeline without prepared identity
+    /// or migration custody. Intent does not enable installation capabilities.
+    #[must_use]
+    pub fn for_full_os() -> Self {
+        let mut app = Self::new();
+        app.review_full_os();
+        app
+    }
+
+    fn review_full_os(&mut self) {
+        self.controller.borrow_mut().review_full_os();
+        self.chosen_experience = Some(Experience::FullOs);
+        self.guided_mode = true;
+        self.refresh_guided_navigation();
+        self.status.clear();
+    }
+
+    /// Review native packages for the existing Linux account. No identity,
+    /// migration, familiar-folder lookup or disk probing belongs to this route.
+    #[must_use]
+    pub fn for_desktop() -> Self {
+        let mut app = Self::new();
+        app.desktop_only = true;
+        app.guided_mode = true;
+        app.controller.borrow_mut().review_desktop();
+        app.chosen_experience = Some(Experience::Desktop);
+        app.refresh_guided_navigation();
+        app.status.clear();
+        app
+    }
+
     /// Start what live setup reads from this computer: the Desktop host
     /// check, the familiar-folder lookup and the Full Tilo host probe.
     pub fn start_live(&mut self) {
@@ -271,8 +301,11 @@ impl SetupApp {
             self.refresh_guided_navigation();
             return;
         }
-        self.start_known_folder_lookup();
-        self.start_host_probe();
+        if !self.desktop_only {
+            self.start_known_folder_lookup();
+            self.start_host_probe();
+        }
+        self.refresh_guided_navigation();
     }
 
     /// Deterministic constructor for tests and screenshot fixtures.
@@ -337,6 +370,7 @@ impl SetupApp {
             guided_mode: false,
             guided_navigation: LocalState::new(false),
             guided_desktop: None,
+            desktop_only: false,
             desktop_flow,
             desktop_revision: 0,
             review_saver: super::desktop_continuation::persist_review,
@@ -1829,15 +1863,24 @@ impl SetupApp {
                     DesktopFailureKind::Download => "The download failed.",
                     DesktopFailureKind::NativeTransaction => "The installation failed.",
                 };
-                format!("{what} {message} Your folder choices are kept; check again to retry.")
+                if self.desktop_only {
+                    format!("{what} {message}")
+                } else {
+                    format!("{what} {message} Your folder choices are kept; check again to retry.")
+                }
             }
         };
-        let retained = match self.capabilities.platform.host {
-            HostOs::Windows => "Windows stays installed and remains the startup default.",
-            HostOs::Linux => {
-                "Your Linux installation stays as it is and remains the default session."
+        let retained = if self.desktop_only {
+            super::strings::t("installer-desktop-keep-existing")
+        } else {
+            match self.capabilities.platform.host {
+                HostOs::Windows => "Windows stays installed and remains the startup default.",
+                HostOs::Linux => {
+                    "Your Linux installation stays as it is and remains the default session."
+                }
+                HostOs::Other => "Your current system stays installed and remains the default.",
             }
-            HostOs::Other => "Your current system stays installed and remains the default.",
+            .to_owned()
         };
         Section::new(vec![Box::new(
             page::related()
@@ -1846,7 +1889,7 @@ impl SetupApp {
                         .with_id("setup.desktop.status")
                         .with_live(Politeness::Polite),
                 ))
-                .push(Box::new(Text::new(retained).dimmed())),
+                .push(Box::new(Text::new(&retained).dimmed())),
         )])
         .with_header(SectionHeader::heading("Tilo Desktop"))
     }
@@ -1968,7 +2011,7 @@ impl SetupApp {
         if experience == Experience::FullOs && !internal_offered {
             body = body.push(Box::new(
                 Section::new(vec![Box::new(
-                    Text::new(FULL_OS_UNAVAILABLE).with_live(Politeness::Polite),
+                    Text::new(&self.internal_readiness_text()).with_live(Politeness::Polite),
                 )])
                 .with_header(SectionHeader::heading("Before installing")),
             ));
@@ -5545,6 +5588,94 @@ mod tests {
             .build_json(&serde_json::Map::new())
             .map_err(|error| error.to_string())?;
         invoke_encoded_setup(app, &encoded)
+    }
+
+    #[test]
+    fn native_full_os_review_keeps_probe_refusal_and_verified_consumption() {
+        let app = SetupApp::for_full_os();
+        assert!(app.on_full_os_review());
+        assert!(!app.capabilities.platform.internal_dual_boot);
+        assert!(
+            !internal_action(&app, "install-internal")
+                .contract
+                .availability
+                .is_available()
+        );
+
+        let mut blocked = gated_app(
+            install_flow::tests::Fakes::new(vec![super::super::staging::probe::Blocker::NotGpt]),
+            HostOs::Windows,
+        );
+        blocked.app.review_full_os();
+        blocked.app.start_host_probe();
+        blocked.app.poll_background();
+        assert!(invoke_internal(&mut blocked.app, "install-internal").is_err());
+        assert!(blocked.fakes.launches.lock().unwrap().is_empty());
+
+        let mut fixture = gated_app(install_flow::tests::Fakes::new(Vec::new()), HostOs::Windows);
+        let app = &mut fixture.app;
+        app.review_full_os();
+        assert!(invoke_internal(app, "install-internal").is_err());
+        app.start_host_probe();
+        app.poll_background();
+        assert_eq!(fixture.fakes.probes.load(Ordering::SeqCst), 1);
+        assert!(invoke_internal(app, "install-internal").is_err());
+        invoke_internal(app, "start-internal-download").unwrap();
+        wait_for_app(
+            app,
+            "verified native download",
+            SetupApp::internal_download_ready,
+        );
+        let guard = app.guided_navigation_guard();
+        assert!(guard.get());
+        let mut window = launch(fixture.app, || ImportApp::for_shot("import-complete"));
+        assert!(
+            window
+                .effect(&SetupEffect::InstallInternal {
+                    reviewed: "stale-review".into(),
+                })
+                .is_err()
+        );
+        assert!(fixture.fakes.launches.lock().unwrap().is_empty());
+        let root = find_row(&window.harness().resources(), SETUP_ROW_ID).unwrap();
+        let internal = child_resource(&root, "imager.setup.internal");
+        window
+            .call_on(
+                internal.id.as_str(),
+                "install-internal",
+                serde_json::json!({}),
+            )
+            .unwrap();
+        assert!(!guard.get());
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            window.settle();
+            if window
+                .with_widget::<SetupApp, _>(|app| !app.internal_install.is_running())
+                .unwrap()
+            {
+                break;
+            }
+            assert!(ui::time::now() < deadline, "native staging must complete");
+        }
+        window
+            .with_widget::<SetupApp, _>(|app| {
+                assert!(matches!(
+                    app.internal_install.run_state(),
+                    RunState::Succeeded {
+                        action: HelperAction::Stage
+                    }
+                ))
+            })
+            .unwrap();
+        let launches = fixture.fakes.launches.lock().unwrap();
+        assert_eq!(launches.len(), 1);
+        assert!(launches[0].prepared_setup.is_none());
+        assert!(launches[0].migration.is_none());
+        assert!(launches[0].profile.is_empty());
+        assert_eq!(launches[0].plan_sha256, launches[0].plan.digest().unwrap());
+        assert_eq!(fixture.fakes.manifests.lock().unwrap()[0], fixture.bytes);
+        assert!(!guard.get());
     }
 
     fn run_inline(_: &str, task: WorkerTask) -> Result<(), String> {

@@ -278,6 +278,7 @@ pub fn output_geometry(outputs: &[Output]) -> Vec<crate::shell::overlay_host::Ou
             crate::shell::overlay_host::OutputGeometry {
                 id: o.id.0,
                 monitor,
+                connector: o.identity.connector.clone(),
                 x: logical.x0,
                 y: logical.y0,
                 width: logical.width(),
@@ -837,6 +838,19 @@ pub trait Backend {
     /// The output a fullscreen client is shown on, or `None`. Backends that
     /// drive adaptive sync engage it there.
     fn set_fullscreen_output(&mut self, _output: Option<OutputId>) {}
+
+    /// Whether this backend drives physical displays whose brightness the
+    /// session controls, so displays without a control of their own are
+    /// dimmed in software ([`Self::set_software_dim`]). A nested or headless
+    /// session has none.
+    fn software_dim_supported(&self) -> bool {
+        false
+    }
+
+    /// Dim each display named in `dims` (by its connector, with the share of
+    /// linear light it lets through, `1.0` undimmed) in software, and undim
+    /// every other ([`crate::shell::software_dim`]). Default no-op.
+    fn set_software_dim(&mut self, _dims: &[(String, f32)]) {}
 
     /// Adaptive sync is engaged on some output: pace frames by content
     /// readiness rather than a fixed refresh deadline.

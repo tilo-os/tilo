@@ -315,7 +315,7 @@ mod tests {
         g.links.push(Link {
             discord_user: "d_ada".into(),
             person: "u_ada".into(),
-            linked_at: 0,
+            ..Link::default()
         });
         assert_eq!(plan_member(&g, "d_ada", Some("moderator"), None), None);
     }
@@ -476,7 +476,7 @@ mod tests {
         g.links.push(Link {
             discord_user: "d_ada".into(),
             person: "u_ada".into(),
-            linked_at: 0,
+            ..Link::default()
         });
         let op = plan_member(
             &g,

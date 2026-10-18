@@ -50,8 +50,9 @@ pub enum OsdKind {
     /// Audio output level. `muted` swaps the glyph and empties the bar —
     /// a muted sink at 60% is silent, and the bar should say so.
     Volume { muted: bool },
-    /// Display backlight level.
-    Brightness,
+    /// A display's brightness. `display` names it when more than one
+    /// display can be dimmed, so the readout says which one changed.
+    Brightness { display: Option<OsdLabel> },
     /// Microphone capture mute. A toggle, not a level — the bar is
     /// omitted and the caption carries the state.
     MicMute { muted: bool },
@@ -164,6 +165,32 @@ fn level_to_percent(level: f32) -> u32 {
     (level * 100.0).round() as u32
 }
 
+/// A named display's reading beside the bar: `Dell U2723 62%`.
+fn display_percent(display: &str, percent: u32) -> String {
+    t_args(
+        "osd-display-percent",
+        &[("display", display.into()), ("percent", percent.into())],
+    )
+}
+
+/// Where an OSD may go: the display it shows on, and the focused field's
+/// caret (desktop coordinates), which it must not cover.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OsdArea {
+    pub viewport: Rect,
+    pub caret: Option<Rect>,
+}
+
+impl OsdArea {
+    /// The whole of `viewport`, with no caret to keep clear.
+    pub fn on(viewport: Rect) -> Self {
+        Self {
+            viewport,
+            caret: None,
+        }
+    }
+}
+
 /// One on-screen readout in flight.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Osd {
@@ -195,7 +222,18 @@ impl Osd {
     }
 
     pub fn brightness(level: f32) -> Self {
-        Self::at(OsdKind::Brightness, level.clamp(0.0, 1.0))
+        Self::display_brightness(level, None)
+    }
+
+    /// The brightness of the display named `display`; `None` when it is the
+    /// only display that can be dimmed and needs no name.
+    pub fn display_brightness(level: f32, display: Option<&str>) -> Self {
+        Self::at(
+            OsdKind::Brightness {
+                display: display.map(OsdLabel::new),
+            },
+            level.clamp(0.0, 1.0),
+        )
     }
 
     pub fn mic_mute(muted: bool) -> Self {
@@ -267,7 +305,7 @@ impl Osd {
         matches!(
             self.kind,
             OsdKind::Volume { .. }
-                | OsdKind::Brightness
+                | OsdKind::Brightness { .. }
                 | OsdKind::KeyboardBacklight
                 | OsdKind::Magnifier { .. }
         )
@@ -281,9 +319,18 @@ impl Osd {
                 "osd-volume",
                 &[("percent", level_to_percent(self.level).into())],
             ),
-            OsdKind::Brightness => t_args(
+            OsdKind::Brightness { display: None } => t_args(
                 "osd-brightness",
                 &[("percent", level_to_percent(self.level).into())],
+            ),
+            OsdKind::Brightness {
+                display: Some(display),
+            } => t_args(
+                "osd-brightness-display",
+                &[
+                    ("display", display.as_str().into()),
+                    ("percent", level_to_percent(self.level).into()),
+                ],
             ),
             OsdKind::MicMute { muted: true } => t("osd-microphone-muted"),
             OsdKind::MicMute { muted: false } => t("osd-microphone-on"),
@@ -414,16 +461,19 @@ impl Osd {
         match self.kind {
             OsdKind::Volume { muted: true } => t("osd-muted"),
             OsdKind::KeyboardBacklight if self.level <= 0.0 => t("osd-off"),
-            OsdKind::Volume { muted: false } | OsdKind::Brightness | OsdKind::KeyboardBacklight => {
-                percent()
-            }
+            OsdKind::Brightness {
+                display: Some(display),
+            } => display_percent(display.as_str(), level_to_percent(self.level)),
+            OsdKind::Volume { muted: false }
+            | OsdKind::Brightness { display: None }
+            | OsdKind::KeyboardBacklight => percent(),
             OsdKind::Magnifier { zoom } if zoom <= settings_store::magnifier::OFF => t("osd-off"),
             OsdKind::Magnifier { zoom } => settings_store::magnifier::zoom_label(zoom).into(),
             _ => self.caption(),
         }
     }
 
-    /// Paint this readout inside `viewport` at the supplied lifecycle alpha,
+    /// Paint this readout inside `area` at the supplied lifecycle alpha,
     /// returning the pill's resting rect (`None` when nothing was painted).
     /// The OSD is intentionally non-interactive, so it owns no hit targets.
     pub fn draw(
@@ -432,9 +482,10 @@ impl Osd {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        viewport: Rect,
+        area: OsdArea,
         alpha: f32,
     ) -> Option<Rect> {
+        let viewport = area.viewport;
         if alpha <= 0.0 {
             return None;
         }
@@ -471,7 +522,7 @@ impl Osd {
             .text(TextRole::Label)
             .with_weight(TextWeight::Medium)
             .with_kind(TextKind::Numeric);
-        let pill = OsdPill::layout(viewport, theme, text_renderer, &self, &text_style);
+        let pill = OsdPill::layout(area, theme, text_renderer, &self, &text_style);
         ui::chrome::shell::paint_panel(scene, transform, pill.rect, theme, 1.0);
         draw_glyph(scene, transform, pill.glyph, theme, self.kind);
         if let Some(bar) = pill.bar {
@@ -529,8 +580,11 @@ pub(crate) struct OsdPill {
 }
 
 impl OsdPill {
+    /// Bottom-centred on `area`'s display, or top-centred when that would
+    /// cover the caret the person is typing at: a volume key pressed while
+    /// writing in a terminal must not hide the prompt line.
     pub(crate) fn layout(
-        viewport: Rect,
+        area: OsdArea,
         theme: &Theme,
         text_renderer: &mut TextRenderer,
         osd: &Osd,
@@ -541,15 +595,19 @@ impl OsdPill {
         let (pad, gap) = (f64::from(sp.s4), f64::from(sp.s3));
         let text_value = osd.value_text();
         let (value_w, text_h) = text_renderer.measure_style(&text_value, None, style);
+        let viewport = area.viewport;
         let has_bar = osd.has_level();
         // A level's value slot is as wide as its widest reading, so the bar
         // does not shift as the number gains digits or the sink mutes.
         let mut slot = f64::from(value_w);
         if has_bar {
-            let widest = [
-                t_args("osd-percent", &[("percent", 100.into())]),
-                t("osd-muted"),
-            ];
+            let full = match osd.kind {
+                OsdKind::Brightness {
+                    display: Some(display),
+                } => display_percent(display.as_str(), 100),
+                _ => t_args("osd-percent", &[("percent", 100.into())]),
+            };
+            let widest = [full, t("osd-muted")];
             for reading in widest {
                 let (w, _) = text_renderer.measure_style(&reading, None, style);
                 slot = slot.max(f64::from(w));
@@ -563,7 +621,15 @@ impl OsdPill {
         let height = height.min(viewport.height());
         let x0 = viewport.center().x - width / 2.0;
         let y1 = (viewport.y1 - f64::from(sp.s16)).max(viewport.y0 + height);
-        let rect = Rect::new(x0, y1 - height, x0 + width, y1);
+        let mut rect = Rect::new(x0, y1 - height, x0 + width, y1);
+        let clearance = crate::shell::desk_widgets::CARET_CLEARANCE;
+        if area
+            .caret
+            .is_some_and(|caret| caret.inflate(clearance, clearance).overlaps(rect))
+        {
+            let y0 = (viewport.y0 + f64::from(sp.s16)).min(viewport.y1 - height);
+            rect = Rect::new(x0, y0, x0 + width, y0 + height);
+        }
         let cy = rect.center().y;
         let glyph = Rect::new(
             rect.x0 + pad,
@@ -612,7 +678,7 @@ fn draw_glyph(
     let (icon, tint) = match kind {
         OsdKind::Volume { muted: true } => (ui::icons::Icon::VolumeX, colors.text_primary),
         OsdKind::Volume { muted: false } => (ui::icons::Icon::Volume2, colors.text_primary),
-        OsdKind::Brightness => (ui::icons::Icon::Sun, colors.text_primary),
+        OsdKind::Brightness { .. } => (ui::icons::Icon::Sun, colors.text_primary),
         OsdKind::MicMute { muted } => (
             ui::icons::Icon::MicOff,
             if muted {
@@ -715,6 +781,63 @@ pub fn raise(current: &mut Option<Osd>, mut next: Osd) {
         next.shown_since = live.shown_since;
     }
     *current = Some(next);
+}
+
+/// The display a readout shows on, chosen when it is raised and kept for its
+/// life: a readout never jumps to another display while it is up.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OsdPin {
+    /// The life of the readout this display was chosen for
+    /// ([`Osd::shown_since`]).
+    shown_since: Instant,
+    /// The press it last answered ([`Osd::raised_at`]).
+    raised_at: Instant,
+    /// The display, in desktop coordinates.
+    pub display: Rect,
+}
+
+/// Where `osd` shows while the person works on `focused`, given where it was
+/// pinned and every display there is. Feedback goes to the display the
+/// person works on, and only there:
+/// - a new readout opens on `focused`;
+/// - while it is up it stays where it opened, even when the person moves to
+///   another display: it fades out where it is;
+/// - a press made from another display while it is up starts it afresh on
+///   that display (`true`: the caller replays the fade-in there);
+/// - a readout whose display went away moves to `focused`.
+pub fn pin_display(
+    pin: Option<OsdPin>,
+    osd: &Osd,
+    focused: Rect,
+    displays: &[Rect],
+) -> (OsdPin, bool) {
+    let fresh = OsdPin {
+        shown_since: osd.shown_since,
+        raised_at: osd.raised_at,
+        display: focused,
+    };
+    let Some(pin) = pin.filter(|pin| {
+        pin.shown_since == osd.shown_since
+            && (displays.contains(&pin.display) || pin.display == focused)
+    }) else {
+        return (fresh, false);
+    };
+    if pin.raised_at != osd.raised_at && pin.display != focused {
+        return (
+            OsdPin {
+                shown_since: osd.raised_at,
+                ..fresh
+            },
+            true,
+        );
+    }
+    (
+        OsdPin {
+            raised_at: osd.raised_at,
+            ..pin
+        },
+        false,
+    )
 }
 
 /// Drop an expired slab. Returns `true` when something was cleared, so
@@ -897,7 +1020,7 @@ mod tests {
             let mut cur = None;
             raise(&mut cur, Osd::volume(0.3, false));
             raise(&mut cur, Osd::brightness(0.9));
-            assert_eq!(cur.unwrap().kind, OsdKind::Brightness);
+            assert_eq!(cur.unwrap().kind, OsdKind::Brightness { display: None });
         }
 
         fn expiry_reports_whether_it_changed_anything() {
@@ -922,6 +1045,77 @@ mod tests {
         expiry_reports_whether_it_changed_anything();
     }
 
+    // USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
+    // brightness etc. should in general be raised on the correct (?)
+    // screen(s)… in consistent positions… also how to handle brightness
+    // controls on multiple screens" — feedback on the display in use, and a
+    // pill never jumps displays while it is up.
+    #[test]
+    fn a_readout_stays_on_the_display_it_opened_on_until_the_next_press() {
+        let panel = Rect::new(0.0, 0.0, 1472.0, 920.0);
+        let monitor = Rect::new(1472.0, 0.0, 3392.0, 1080.0);
+        let displays = [panel, monitor];
+        let mut current = None;
+        raise(&mut current, Osd::volume(0.4, false));
+        let osd = current.expect("raised");
+        let (pin, restart) = pin_display(None, &osd, panel, &displays);
+        assert_eq!(
+            pin.display, panel,
+            "a new readout opens where the person works"
+        );
+        assert!(!restart);
+
+        // The person moves to the monitor while the readout is up.
+        let (pin, restart) = pin_display(Some(pin), &osd, monitor, &displays);
+        assert_eq!(pin.display, panel, "it fades out where it is");
+        assert!(!restart);
+
+        // The next press, made from the monitor, brings it there.
+        let mut next = Osd::volume(0.45, false);
+        next.raised_at = osd
+            .raised_at
+            .checked_add(Duration::from_millis(200))
+            .expect("later");
+        raise(&mut current, next);
+        let pressed = current.expect("raised again");
+        assert_eq!(pressed.shown_since, osd.shown_since, "updated in place");
+        let (pin, restart) = pin_display(Some(pin), &pressed, monitor, &displays);
+        assert_eq!(
+            pin.display, monitor,
+            "the next press shows it on the new display"
+        );
+        assert!(restart, "and it fades in there");
+
+        // A press on the display it already shows on keeps it there.
+        let mut live = pressed;
+        live.shown_since = live.raised_at;
+        let (pin, _) = pin_display(Some(pin), &live, monitor, &displays);
+        let mut again = live;
+        again.raised_at = live
+            .raised_at
+            .checked_add(Duration::from_millis(100))
+            .expect("later");
+        let (pin, restart) = pin_display(Some(pin), &again, monitor, &displays);
+        assert_eq!(pin.display, monitor);
+        assert!(!restart);
+
+        // Its display unplugged: the readout goes where the person works.
+        let (pin, _) = pin_display(Some(pin), &again, panel, &[panel]);
+        assert_eq!(pin.display, panel);
+    }
+
+    #[test]
+    fn a_brightness_readout_names_its_display_only_when_given_one() {
+        assert_eq!(
+            Osd::display_brightness(0.6, None).caption(),
+            "Brightness 60%"
+        );
+        let named = Osd::display_brightness(0.6, Some("Dell U2723"));
+        assert_eq!(named.caption(), "Brightness 60%, Dell U2723");
+        assert_eq!(named.value_text(), "Dell U2723 60%");
+        assert!(named.has_level());
+    }
+
     #[test]
     fn an_input_source_readout_names_the_layout_and_stays_bounded() {
         let osd = Osd::input_source("German (no dead keys)");
@@ -944,7 +1138,41 @@ mod tests {
         let mut text = TextRenderer::new();
         text.set_text_scale(1.0);
         let style = theme.text(TextRole::Label);
-        OsdPill::layout(viewport, theme, &mut text, osd, &style)
+        OsdPill::layout(OsdArea::on(viewport), theme, &mut text, osd, &style)
+    }
+
+    #[test]
+    fn the_readout_moves_to_the_top_rather_than_cover_the_caret() {
+        let theme = Theme::dark();
+        let viewport = Rect::new(0.0, 0.0, 1600.0, 900.0);
+        let mut text = TextRenderer::new();
+        text.set_text_scale(1.0);
+        let style = theme.text(TextRole::Label);
+        let osd = Osd::volume(0.5, false);
+        let bottom = pill(&osd, &theme, viewport).rect;
+        assert!(bottom.y1 > 800.0, "fixture: bottom-centred by default");
+
+        // Typing on the bottom line, under the pill (a terminal prompt).
+        let caret = Rect::new(790.0, bottom.y0 + 4.0, 792.0, bottom.y0 + 22.0);
+        let area = OsdArea {
+            viewport,
+            caret: Some(caret),
+        };
+        let moved = OsdPill::layout(area, &theme, &mut text, &osd, &style).rect;
+        assert!(
+            moved.y1 < viewport.center().y,
+            "top-centred instead: {moved:?}"
+        );
+        assert!((moved.center().x - viewport.center().x).abs() < 1e-6);
+        assert!(!caret.inflate(24.0, 24.0).overlaps(moved));
+
+        // A caret elsewhere leaves it where it always is.
+        let elsewhere = OsdArea {
+            viewport,
+            caret: Some(Rect::new(100.0, 300.0, 102.0, 318.0)),
+        };
+        let kept = OsdPill::layout(elsewhere, &theme, &mut text, &osd, &style).rect;
+        assert_eq!(kept, bottom);
     }
 
     #[test]
@@ -1018,7 +1246,7 @@ mod tests {
                 Affine::IDENTITY,
                 &mut tr,
                 &large,
-                viewport,
+                OsdArea::on(viewport),
                 1.0,
             );
             assert_eq!(
@@ -1095,7 +1323,7 @@ mod tests {
                     Affine::IDENTITY,
                     &mut text,
                     &theme,
-                    viewport,
+                    OsdArea::on(viewport),
                     1.0,
                 );
                 let path = out.join(format!("{name}-{kind}.png"));

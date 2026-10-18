@@ -1326,6 +1326,7 @@ params = []
                     handshake: Handshake {
                         workspace_id: room.to_string(),
                         app_id: "so.tilo.notes".into(),
+                        surface: None,
                     },
                     presentation_version: version,
                 },

@@ -3,12 +3,12 @@
 
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
-#[cfg(target_os = "linux")]
 use std::time::Instant;
 
 use settings::SettingsShell;
 use settings::accounts::AccountRoot;
 use settings::panes::accounts::{AccountsPane, BrowserOpener};
+use settings::panes::model::PaneModel;
 use ui::framework::testing::TestApp;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -657,15 +657,16 @@ fn google_connected_files_and_gmail_have_one_provider_card() -> TestResult {
             .header("Content-Type", "application/json")
             .body(r#"{"emailAddress":"ada@example.org"}"#),
     ]);
+    // Both services share one registration, as required for one consent.
+    let mut clients = account_custody::ClientTable::default();
+    clients.google.client_id = "google-services-client".into();
+    clients.google.scopes.files = vec!["https://www.googleapis.com/auth/drive".into()];
+    clients.google.scopes.mail = vec!["https://mail.google.com/".into()];
     let custodian = profile
         .root
         .custodian()
+        .with_client_table(clients)
         .with_issuer_endpoints(account_custody::OAuthIssuer::Google, auth.provider())
-        .with_provider(
-            account_custody::OAuthCloud::GoogleDrive,
-            auth.provider(),
-            "drive-client",
-        )
         .with_gmail_profile_endpoint(format!("{}/profile", gmail.url()))
         .with_storage_config(
             account_custody::OAuthCloud::GoogleDrive,
@@ -727,7 +728,24 @@ fn google_connected_files_and_gmail_have_one_provider_card() -> TestResult {
         "remove-account",
         serde_json::json!({}),
     )?;
-    settings.settle();
+    // Removal returns while its vault worker is running. Wait for the pane's
+    // work (including its queued reload), not for the expected account count:
+    // a completed failure must still reach the assertions below.
+    let started = Instant::now();
+    loop {
+        settings.settle();
+        let busy = settings
+            .surface::<settings::SettingsApp, _>(|app| app.accounts().model().borrow().busy())
+            .ok_or("mounted Settings surface")?;
+        if !busy {
+            break;
+        }
+        assert!(
+            started.elapsed() < tilo_test_env::hang_bound(),
+            "account removal did not finish"
+        );
+        std::thread::yield_now();
+    }
     assert_mail_remaining(
         &profile.root.store(),
         &settings.harness().inspection_json()?,

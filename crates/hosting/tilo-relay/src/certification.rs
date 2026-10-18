@@ -77,6 +77,9 @@ impl Asked {
 /// A queued request: its digest, pairing code and a receiver of its answer.
 type Queued = ([u8; 32], String, watch::Receiver<Option<CertifyReply>>);
 
+/// The pairing invites answered, as (person, invite).
+type AnsweredInvites = std::collections::HashSet<([u8; 32], [u8; 16])>;
+
 /// The certification ALPN handler.
 #[derive(Clone)]
 pub struct CertificationProtocol {
@@ -84,6 +87,9 @@ pub struct CertificationProtocol {
     policy: CertificationPolicy,
     pending: Arc<Mutex<HashMap<[u8; 32], Pending>>>,
     confirmations: Arc<Mutex<HashMap<[u8; 32], Asked>>>,
+    /// The pairing invites an approver answered, by person: an invite is
+    /// for one device, so a second request naming it is refused.
+    answered_invites: Arc<Mutex<AnsweredInvites>>,
 }
 
 impl std::fmt::Debug for CertificationProtocol {
@@ -107,6 +113,7 @@ impl CertificationProtocol {
             policy: CertificationPolicy::browser(),
             pending: Arc::new(Mutex::new(HashMap::new())),
             confirmations: Arc::new(Mutex::new(HashMap::new())),
+            answered_invites: Arc::new(Mutex::new(std::collections::HashSet::new())),
         }
     }
 
@@ -165,12 +172,13 @@ impl CertificationProtocol {
     ///
     /// Returns the reason the request is refused.
     pub fn enqueue(&self, request: CertificationRequest, now_ns: u64) -> Result<Queued, String> {
-        self.enqueue_with(request, None, now_ns, false)
+        self.enqueue_with(request, None, now_ns, false, None)
     }
 
     /// [`Self::enqueue`], also for a member of a workspace this host serves
     /// (`member`: the request names such a member's root), whose own devices
-    /// answer it through [`Self::member_approve`].
+    /// answer it through [`Self::member_approve`]. `country` is where a
+    /// trusted proxy says the request came from, shown to the approver.
     ///
     /// # Errors
     ///
@@ -180,8 +188,9 @@ impl CertificationProtocol {
         request: CertificationRequest,
         now_ns: u64,
         member: bool,
+        country: Option<String>,
     ) -> Result<Queued, String> {
-        self.enqueue_with(request, None, now_ns, member)
+        self.enqueue_with(request, None, now_ns, member, country)
     }
 
     /// Answer a member's root-signed approver command: their own pending
@@ -243,7 +252,7 @@ impl CertificationProtocol {
         {
             return Err("a delegate proposal names its delegate and rooms".into());
         }
-        self.enqueue_with(request, Some(proposal), now_ns, false)
+        self.enqueue_with(request, Some(proposal), now_ns, false, None)
             .map(|(digest, code, _)| (digest, code))
     }
 
@@ -284,6 +293,7 @@ impl CertificationProtocol {
         agent: Option<DelegateProposal>,
         now_ns: u64,
         member: bool,
+        country: Option<String>,
     ) -> Result<Queued, String> {
         request
             .verify_at(now_ns)
@@ -293,6 +303,14 @@ impl CertificationProtocol {
         }
         if self.revocations().is_revoked(&request.device_public_key) {
             return Err("device is revoked".into());
+        }
+        if request.invite != [0; 16]
+            && self
+                .answered_invites
+                .lock_recover()
+                .contains(&(request.user_public_key, request.invite))
+        {
+            return Err("this pairing link was used already; make a new one".into());
         }
         let digest = request.digest().map_err(|error| error.to_string())?;
         let pairing_code = request.pairing_code().map_err(|error| error.to_string())?;
@@ -312,6 +330,8 @@ impl CertificationProtocol {
                     request,
                     request_digest: digest,
                     pairing_code: pairing_code.clone(),
+                    requested_at_ns: now_ns,
+                    country,
                 },
                 answer,
                 agent,
@@ -531,7 +551,13 @@ impl CertificationProtocol {
                     }
                 };
                 entry.answer.send_replace(Some(reply));
+                let invite = entry.entry.request.invite;
                 drop(pending);
+                if invite != [0; 16] {
+                    self.answered_invites
+                        .lock_recover()
+                        .insert((*approver, invite));
+                }
                 ApproverReply::Decided
             }
         }
@@ -689,6 +715,7 @@ mod confirmation_tests {
             device_label: "Phone".into(),
             requested: DeviceCapabilities::member(),
             nonce: [3; 16],
+            invite: [0; 16],
             issued_at_ns: now,
             expires_at_ns: now.checked_add(60_000_000_000).unwrap(),
             signature: [0; 64],
@@ -723,6 +750,7 @@ mod confirmation_tests {
             device_label: "Phone".into(),
             requested: DeviceCapabilities::member(),
             nonce: [4; 16],
+            invite: [0; 16],
             issued_at_ns: now,
             expires_at_ns: now.checked_add(200_000_000).unwrap(),
             signature: [0; 64],
@@ -750,7 +778,7 @@ mod confirmation_tests {
             "a stranger's request is refused"
         );
         let (digest, code, _) = protocol
-            .enqueue_member(request.clone(), unix_now_ns(), true)
+            .enqueue_member(request.clone(), unix_now_ns(), true, None)
             .unwrap();
         let owner = protocol.identity.user_public_key;
         let ApproverReply::Pending(listed) =

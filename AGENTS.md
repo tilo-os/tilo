@@ -159,7 +159,7 @@ There is no message-passing layer. Consequences:
 ### `shell` — `Workspace → Strip → WindowGroup → Tab`
 
 Tabs tile within a group; groups scroll horizontally within a strip; strips stack vertically;
-workspaces switch via the wheel disc. Tabs are a **frame** primitive grouping arbitrary apps —
+strips and workspaces switch via the strip switcher (right-edge ribbon, Super+S). Tabs are a **frame** primitive grouping arbitrary apps —
 not per-app tabs.
 
 Each workspace is a bubblewrap sandbox with its own file-access policy; a path outside it

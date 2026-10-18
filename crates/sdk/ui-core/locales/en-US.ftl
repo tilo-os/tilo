@@ -259,7 +259,9 @@ close-retry = Retry
 close-keep-editing = Keep Editing
 close-broker-disconnected = The save service disconnected. Your document is still open.
 
-notes-image-edit = Edit image
+block-image-untitled = Picture
+block-image-missing = Not on this device yet
+notes-image-edit = Edit description
 notes-image-done = Done
 notes-image-source = Image description and destination
 table-edit-source = Edit source
@@ -267,7 +269,7 @@ table-edit-visual = Edit table
 table-add-row = Add row
 table-add-column = Add column
 
-block-editor-drag-hint = Click for block type · Drag to move · Alt+↑/↓
+block-editor-empty = Write something…
 block-editor-find-placeholder = Find in note
 block-editor-find-no-results = No results
 block-editor-find-previous = Previous match
@@ -276,10 +278,7 @@ block-editor-find-close = Close find
 block-editor-change-type = Change block type
 block-editor-copy-code-hint = Copy code
 
-block-editor-code-exit-hint = Ctrl+Enter to leave code
-block-editor-code-exit-compact = Ctrl+Enter ↵
 block-editor-code-copied = Copied
-block-editor-code-keyboard-hint = Ctrl+Enter: write below · Ctrl+Shift+Enter: write above · Tab / Shift+Tab: indent / outdent · Ctrl+Shift+C: copy code
 widget-breadcrumb = Path
 
 widget-filepicker-cancel = Cancel
@@ -424,18 +423,9 @@ history-action-invalid = That History request isn't valid.
 palette-name = Command palette
 palette-results = Results
 palette-placeholder = Search…
-palette-hint-navigate = Navigate
-palette-hint-select = Select
-palette-hint-open = Open
-palette-hint-run = Run
-palette-hint-close = Close
-palette-result-count = { $count ->
-    [one] 1 result
-   *[other] { $count } results
-}
 palette-empty = Nothing to show
 palette-no-results = No results for “{ $query }”
-palette-no-results-hint = Try fewer words, or widen the scope
+palette-no-results-hint = Check the spelling, or try another word
 palette-searching = Searching…
 
 # Calendar section headings in the workspace activity timeline.
@@ -445,7 +435,6 @@ day-tomorrow = Tomorrow
 history-day-this-week = This week
 history-day-earlier = Earlier
 
-save-status-saving = Saving…
 save-status-stalled = Couldn't save yet. Retrying…
 save-status-not-saved = Not saved
 save-status-not-saved-detail = Your changes are still here.
@@ -472,6 +461,11 @@ find-bar-replace = Replace
 find-bar-replace-all = Replace all
 find-bar-position = { $current } of { $total }
 find-bar-no-matches = No matches
+widget-mention-agent = Agent
+widget-mention-shortcut = Shortcut
+widget-mention-app = App
+widget-mention-bot = Bot
+widget-mention-list = People to mention
 widget-block-duplicate = Duplicate block and children
 
 widget-block-duplicate-selection = Duplicate selected or focused blocks
@@ -490,6 +484,28 @@ block-callout-tip = Tip
 block-callout-important = Important
 block-callout-warning = Warning
 block-callout-caution = Caution
+
+slash-menu-name = Block types
+slash-menu-filter = Filter blocks…
+slash-paragraph = Paragraph
+slash-heading-1 = Heading 1
+slash-heading-2 = Heading 2
+slash-heading-3 = Heading 3
+slash-bullet = Bullet list
+slash-numbered = Numbered list
+slash-checklist = Checklist
+slash-page = Sub-note
+slash-link-page = Link to note
+slash-image = Image
+slash-quote = Quote
+slash-code = Code block
+slash-table = Table
+slash-tex = TeX formula
+slash-typst = Typst formula
+slash-divider = Divider
+link-popover-name = Link notes
+link-popover-filter = Find a note…
+filter-menu-no-matches = No matches
 
 dictation-record-once = Record once
 dictation-finish = Finish
@@ -561,3 +577,41 @@ widget-screenshot-copied = Copied
 widget-screenshot-send-workspace = Save to this workspace's files
 widget-screenshot-send-no-device = No other device is online
 widget-screenshot-send-device = Send to { $device }
+
+## Block editor
+block-a11y-formula-source = Source editor
+block-a11y-formula-visual = Visual editor
+block-a11y-copy-lang = Copy { $lang } code
+block-a11y-move-up = Move block up
+block-a11y-move-down = Move block down
+block-a11y-open-embed = Open embedded note { $title }
+block-a11y-embed-description = Live preview of a linked note
+block-a11y-table-column = Column { $column }
+block-a11y-table-cell = Cell { $row }, { $column }
+block-a11y-table-header-row = Header row
+block-a11y-table-row = Row { $row }
+block-a11y-table = Table
+block-a11y-open-link = Open linked note
+block-a11y-open-external = Open web link
+block-a11y-block = { $kind } block { $position }
+block-a11y-level = Level { $level }
+block-a11y-document = Drag a block's handle to reorder it. Alt+Up and Alt+Down move the focused block. Tab nests it under the block above and Shift+Tab moves it back out; Escape, then Tab, leaves the editor.
+block-formula-empty = Type a formula above to preview it
+block-formula-diagnostic = Preview: { $message }
+block-formula-source = Source
+block-formula-visual = Visual
+block-kind-paragraph = Paragraph
+block-kind-quote = Quote
+block-kind-heading = Heading
+block-kind-bullet = Bullet
+block-kind-numbered = Numbered item
+block-kind-checklist = Checklist item
+block-kind-code = Code block
+block-kind-table = Table
+block-kind-divider = Divider
+block-kind-callout = Callout
+block-kind-named-callout = { $name } callout
+block-embed-missing-title = Note not found
+block-embed-missing = The linked note was deleted.
+block-kind-code-short = Code
+block-table-add-cell = Add cell

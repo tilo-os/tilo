@@ -1075,6 +1075,7 @@ impl VpnApp {
 impl VpnApp {
     fn new_shell(intents: &Intents, main_action: &ToolbarActionSlot) -> NavShell {
         NavShell::new()
+            .content_kind(ui::widget::ContentKind::Page)
             .overview_header("Connections", vec![Box::new(view::import_button(intents))])
             .content_header(
                 "",

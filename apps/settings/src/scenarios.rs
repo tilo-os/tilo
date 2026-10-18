@@ -43,6 +43,8 @@ const NARROW_LIST: &str = "narrow-list";
 const SEARCH: &str = "search";
 const ACCOUNT_FORM: &str = "account-form";
 const ACCOUNTS_NARROW: &str = "accounts-narrow";
+const ACCOUNTS_LINKING: &str = "accounts-linking";
+const ACCOUNTS_LINKED: &str = "accounts-linked";
 
 /// Every scenario: one per pane, then the layouts and flows.
 pub fn names() -> &'static [&'static str] {
@@ -56,6 +58,8 @@ pub fn names() -> &'static [&'static str] {
                 SEARCH,
                 ACCOUNT_FORM,
                 ACCOUNTS_NARROW,
+                ACCOUNTS_LINKING,
+                ACCOUNTS_LINKED,
                 DEVICE_DISPLAYS,
                 STORAGE_DRIVES,
                 "keyboard-single",
@@ -100,6 +104,44 @@ pub struct CaptureScene {
     pub storage_devices: Vec<crate::panes::storage::DeviceResidency>,
     /// Stand-in remembered NTFS drives, for the drives capture.
     pub remembered_drives: Vec<ntfs_mount::protocol::RememberedDrive>,
+    /// A room bridged to Discord, and where the person's account there
+    /// stands, for the linked-accounts captures.
+    pub linked_account: Option<ui::linked_accounts::LinkState>,
+    /// Where the person stands with a stand-in community workspace, for
+    /// the devices & sync capture.
+    pub community: Option<ui::tilo_actions::remote::community::CommunityStatus>,
+    /// The person's trusted devices, as a stand-in for the host's device
+    /// list, for the devices & sync capture.
+    pub fleet_devices: Vec<ui::tilo_actions::remote::identity_admin::FleetDevice>,
+}
+
+/// A capture's room bridged to Discord, its person's account standing as
+/// the scenario says.
+pub(crate) struct CaptureBridge(pub ui::linked_accounts::LinkState);
+
+impl ui::linked_accounts::LinkedAccountsHost for CaptureBridge {
+    fn accounts(&self) -> Vec<ui::linked_accounts::LinkedAccount> {
+        vec![ui::linked_accounts::LinkedAccount {
+            app: "so.tilo.discord".into(),
+            service: "Discord".into(),
+            state: self.0.clone(),
+        }]
+    }
+    fn revision(&self) -> u64 {
+        0
+    }
+    // A capture asks no host: what it shows stands.
+    fn refresh(&self) {}
+    fn link(&self, _app: &str) {}
+    fn unlink(&self, _app: &str) {}
+}
+
+/// The capture code the linking scenario shows.
+fn capture_link_code() -> ui::linked_accounts::LinkCode {
+    ui::linked_accounts::LinkCode {
+        code: "K7QMW2XRB4TD".into(),
+        instruction: "In Discord, type /link with this code. It works for 10 minutes.".into(),
+    }
 }
 
 /// Prepare `fixture`'s capture: every capture shows the sample accounts.
@@ -134,7 +176,67 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
         } else {
             Vec::new()
         },
+        linked_account: match fixture.scenario() {
+            Some(ACCOUNTS_LINKING) => {
+                Some(ui::linked_accounts::LinkState::Linking(capture_link_code()))
+            }
+            Some(ACCOUNTS_LINKED) => Some(ui::linked_accounts::LinkState::Linked(
+                ui::linked_accounts::AccountName {
+                    user_name: "quinn.davis".into(),
+                    display_name: Some("Quinn".into()),
+                },
+            )),
+            _ => None,
+        },
+        community: (fixture.scenario() == Some(Category::DeviceMesh.slug()))
+            .then(community_fixture),
+        fleet_devices: if fixture.scenario() == Some(Category::DeviceMesh.slug()) {
+            fleet_fixture()
+        } else {
+            Vec::new()
+        },
     });
+}
+
+/// The person's trusted devices: the laptop in use, a phone just paired
+/// from its browser, and a home server.
+fn fleet_fixture() -> Vec<ui::tilo_actions::remote::identity_admin::FleetDevice> {
+    use ui::tilo_actions::remote::identity_admin::FleetDevice;
+    let device = |label: &str, key: &str, fingerprint: &str, current, can_host| FleetDevice {
+        label: label.into(),
+        key_hex: key.repeat(8),
+        fingerprint: fingerprint.into(),
+        current,
+        revoked: false,
+        can_host,
+    };
+    vec![
+        device(
+            "Ada's MacBook",
+            "4f2a9c1e",
+            "4F 2A 9C 1E 7B D3",
+            true,
+            false,
+        ),
+        device(
+            "Safari on iPhone",
+            "b81d03e6",
+            "B8 1D 03 E6 5A 92",
+            false,
+            false,
+        ),
+        device("Home server", "6c47f2a0", "6C 47 F2 A0 E1 38", false, true),
+    ]
+}
+
+/// A computer in its site's community workspace, as the host's status
+/// answers it.
+fn community_fixture() -> ui::tilo_actions::remote::community::CommunityStatus {
+    ui::tilo_actions::remote::community::CommunityStatus {
+        site: Some("https://tilo.coffee/".into()),
+        joined: true,
+        left: false,
+    }
 }
 
 /// Three devices of one person: a laptop holding work nothing else has
@@ -330,7 +432,9 @@ pub fn staged(scenario: Option<&str>) -> Staged {
         Some(NARROW) => Staged::Pane(Category::RegionFormats),
         Some(NARROW_LIST) => Staged::List(Category::RegionFormats),
         Some(SEARCH) => Staged::Search(Category::Appearance),
-        Some(ACCOUNT_FORM | ACCOUNTS_NARROW) => Staged::Pane(Category::ExternalAccounts),
+        Some(ACCOUNT_FORM | ACCOUNTS_NARROW | ACCOUNTS_LINKING | ACCOUNTS_LINKED) => {
+            Staged::Pane(Category::ExternalAccounts)
+        }
         Some(slug) if CODEC_SCENARIOS.contains(&slug) => Staged::Pane(Category::Updates),
         Some(slug) => Staged::Pane(Category::from_slug(slug).unwrap_or(Category::Appearance)),
     }

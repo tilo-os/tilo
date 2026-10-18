@@ -91,6 +91,26 @@ impl Places {
     }
 }
 
+/// `text` as an IMAP quoted string, for a search: `None` for text the
+/// quoted form cannot carry (anything but printable ASCII), which only the
+/// local search then looks for.
+pub fn imap_quoted(text: &str) -> Option<String> {
+    let text = text.trim();
+    if text.is_empty() || !text.chars().all(|c| c.is_ascii() && !c.is_ascii_control()) {
+        return None;
+    }
+    let mut quoted = String::with_capacity(text.len() + 2);
+    quoted.push('"');
+    for c in text.chars() {
+        if c == '"' || c == '\\' {
+            quoted.push('\\');
+        }
+        quoted.push(c);
+    }
+    quoted.push('"');
+    Some(quoted)
+}
+
 /// How many messages one page brings.
 pub const PAGE: u32 = 50;
 
@@ -230,6 +250,18 @@ mod tests {
             "Drafts",
             "a folder the server does not list keeps its usual name"
         );
+    }
+
+    #[test]
+    fn search_text_is_quoted_for_imap_or_left_to_the_local_search() {
+        assert_eq!(imap_quoted(" invoice ").as_deref(), Some("\"invoice\""));
+        assert_eq!(
+            imap_quoted(r#"say "hi" \ bye"#).as_deref(),
+            Some(r#""say \"hi\" \\ bye""#)
+        );
+        assert_eq!(imap_quoted("Grüße"), None);
+        assert_eq!(imap_quoted("line\nbreak"), None);
+        assert_eq!(imap_quoted("  "), None);
     }
 
     #[test]

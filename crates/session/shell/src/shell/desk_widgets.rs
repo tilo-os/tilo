@@ -1,5 +1,6 @@
 //! Desk widgets: the things the person keeps around their work (what is
-//! playing, the people in this workspace), and when each shows itself.
+//! playing, the people in this workspace, the date, how busy the machine
+//! is), and when each shows itself.
 //!
 //! A widget is in one of three forms:
 //!
@@ -28,12 +29,15 @@
 //! timeline. The overlay host feeds it and paints its decisions
 //! (`overlay_host::desk`).
 
+pub mod calendar;
 pub mod layout;
+pub mod system_monitor;
 pub mod team;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
+use ui::tokens::Durations;
 use vello::kurbo::{Point, Rect};
 
 pub use settings_store::desk_widgets::{
@@ -62,14 +66,26 @@ pub const REACH_HOLD: Duration = Duration::from_millis(600);
 /// back, so a hand that overshoots its edge by a few pixels does not lose it.
 pub const LEAVE_GRACE: Duration = Duration::from_millis(300);
 
-/// Fade in, as a widget arrives at its edge.
-pub const FADE_IN: Duration = Duration::from_millis(180);
-/// Fade out, when typing starts: quicker, so the edge is quiet by the
-/// second keystroke.
-pub const FADE_OUT: Duration = Duration::from_millis(120);
-/// How far a widget slides in from its edge as it fades in. Edge-only
-/// motion: nothing travels across the screen.
-pub const SLIDE_PX: f64 = 6.0;
+/// How long a widget takes to change how much of it shows, from the
+/// theme's motion durations.
+///
+/// - **Leaving is instant.** A widget goes away because the person started
+///   typing (or covered the desk, or let go of Super): motion draws the eye,
+///   and something leaving has nothing to say, so it is simply gone by the
+///   time the key lands.
+/// - **Arriving unasked is slow**, opacity only, at the edge: on a pause
+///   the widgets come back over [`Durations::slow`], too gently to pull the
+///   eye from the line just written.
+/// - **Arriving asked for is quick**: reaching for its edge, Super, or a
+///   click answers the person over [`Durations::fast`].
+#[must_use]
+pub fn fade(arriving: bool, asked: bool, durations: Durations) -> Duration {
+    match (arriving, asked) {
+        (false, _) => Duration::ZERO,
+        (true, true) => durations.fast(),
+        (true, false) => durations.slow(),
+    }
+}
 
 /// The space kept clear around the text caret, so a widget near it never
 /// sits on the line being typed.
@@ -108,8 +124,12 @@ pub struct Context<'a> {
     pub strip: Option<u64>,
     /// The focused field's caret, in desktop coordinates.
     pub caret: Option<Rect>,
-    /// The Super surface is up: every widget with content is open.
+    /// The whole Super surface is up: every widget with content is open.
     pub super_surface: bool,
+    /// The Super surface's quiet first stage (Super held, not yet grown):
+    /// every widget with content in its glance form, whatever the person
+    /// was doing.
+    pub super_glance: bool,
     /// Another surface owns the desk (Quick Settings, the overview, plain
     /// search, a sheet): widgets stay away under it.
     pub covered: bool,
@@ -271,6 +291,12 @@ impl DeskBoard {
         self.opened
     }
 
+    /// The widget the pointer reached for, while that reach holds.
+    #[must_use]
+    pub fn reached(&self) -> Option<WidgetId> {
+        self.reached.map(|(id, _)| id)
+    }
+
     /// Advance the timers to `ctx.now` and decide every widget's form.
     /// Returns whether any form changed.
     pub fn update(&mut self, ctx: &Context<'_>) -> bool {
@@ -323,6 +349,7 @@ impl DeskBoard {
             if before == Form::Away
                 && form != Form::Away
                 && !ctx.super_surface
+                && !ctx.super_glance
                 && !reached
                 && (settled_under || self.held.contains(&slot.id))
             {
@@ -350,6 +377,13 @@ impl DeskBoard {
         }
         if ctx.super_surface {
             return Form::Open;
+        }
+        if ctx.super_glance {
+            return if self.opened == Some(slot.id) {
+                Form::Open
+            } else {
+                Form::Glance
+            };
         }
         if ctx.covered {
             return Form::Away;
@@ -442,6 +476,7 @@ mod tests {
         slots: Vec<Slot>,
         caret: Option<Rect>,
         super_surface: bool,
+        super_glance: bool,
         strip: Option<u64>,
     }
 
@@ -453,6 +488,7 @@ mod tests {
                 slots: slots(),
                 caret: None,
                 super_surface: false,
+                super_glance: false,
                 strip: Some(1),
             }
         }
@@ -464,6 +500,7 @@ mod tests {
                 strip: self.strip,
                 caret: self.caret,
                 super_surface: self.super_surface,
+                super_glance: self.super_glance,
                 covered: false,
                 slots: &self.slots,
             };
@@ -697,5 +734,37 @@ mod tests {
         rig.pointer((900.0, 500.0), pause + Duration::from_millis(10));
         rig.pointer((880.0, 490.0), pause + Duration::from_millis(80));
         assert_eq!(rig.at(pause + Duration::from_millis(200)).0, Form::Glance);
+    }
+
+    /// Super held, before it grows: the glance forms, even mid-typing and
+    /// for "only when I ask" widgets; nothing opens until the surface grows.
+    #[test]
+    fn the_super_quiet_stage_brings_every_glance_and_opens_none() {
+        let t0 = Instant::now();
+        let mut rig = Rig::new();
+        rig.prefs.music.show = ShowMode::Ask;
+        rig.typed(t0);
+        assert_eq!(rig.at(t0), (Form::Away, Form::Away));
+        rig.super_glance = true;
+        assert_eq!(rig.at(ms(t0, 400)), (Form::Glance, Form::Glance));
+        rig.super_glance = false;
+        rig.super_surface = true;
+        assert_eq!(rig.at(ms(t0, 700)), (Form::Open, Form::Open));
+        rig.super_surface = false;
+        assert_eq!(
+            rig.at(ms(t0, 800)),
+            (Form::Away, Form::Away),
+            "let go mid-typing: back to away"
+        );
+    }
+
+    #[test]
+    fn widgets_leave_at_once_and_arrive_slowly_unless_asked_for() {
+        let d = Durations::default();
+        assert_eq!(fade(false, false, d), Duration::ZERO, "typing: gone");
+        assert_eq!(fade(false, true, d), Duration::ZERO);
+        assert_eq!(fade(true, false, d), d.slow(), "a pause: slow");
+        assert!(fade(true, false, d) >= Duration::from_millis(400));
+        assert_eq!(fade(true, true, d), d.fast(), "reached for: quick");
     }
 }

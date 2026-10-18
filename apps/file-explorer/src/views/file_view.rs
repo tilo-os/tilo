@@ -145,6 +145,10 @@ pub struct FolderDropTarget {
 /// layout (cleared + refilled), analogous to the rename-rect channel.
 pub type DropTargets = Rc<RefCell<Vec<FolderDropTarget>>>;
 
+/// Host-owned sink of every visible item's index and rect, republished with
+/// the drop targets, for a box selection drawn over the view.
+pub type ItemRects = Rc<RefCell<Vec<(usize, Rect)>>>;
+
 pub struct FileView {
     entries: Vec<Entry>,
     selection: SelectionModel,
@@ -182,6 +186,7 @@ pub struct FileView {
     /// Host-owned sink for this view's folder rows, republished each layout so
     /// the host can resolve which folder a drag is dropped onto.
     drop_targets: Option<DropTargets>,
+    item_rects: Option<ItemRects>,
     /// The shared thumbnail service + peniko memo. `None` disables previews (the
     /// view falls back to type glyphs), which keeps the widget usable in
     /// contexts without a thumbnail service.
@@ -224,6 +229,7 @@ impl FileView {
             rename_rect: None,
             pressed_row: None,
             drop_targets: None,
+            item_rects: None,
             thumbs: None,
             workspace_roots: Rc::from([]),
             list: ListSlot::default(),
@@ -237,6 +243,14 @@ impl FileView {
     #[must_use]
     pub fn with_drop_targets(mut self, sink: DropTargets) -> Self {
         self.drop_targets = Some(sink);
+        self
+    }
+
+    /// Publish every visible item's rect into `sink` each layout, for a box
+    /// selection the host draws.
+    #[must_use]
+    pub fn with_item_rects(mut self, sink: ItemRects) -> Self {
+        self.item_rects = Some(sink);
         self
     }
 
@@ -482,9 +496,11 @@ impl FileView {
             return;
         };
         let mut out = Vec::new();
+        let mut items = Vec::new();
         match self.mode {
             ViewMode::List => {
                 for (index, rect) in self.list.row_rects() {
+                    items.push((index, rect));
                     if let Some(entry) = self.entries.get(index)
                         && entry.is_dir
                     {
@@ -505,6 +521,9 @@ impl FileView {
                     .enumerate()
                 {
                     let rect = self.cell_rect(range.start + offset);
+                    if Self::fits_viewport_bottom(rect, vp) {
+                        items.push((range.start + offset, rect));
+                    }
                     if entry.is_dir && Self::fits_viewport_bottom(rect, vp) {
                         out.push(FolderDropTarget {
                             path: entry.path.clone(),
@@ -515,6 +534,9 @@ impl FileView {
             }
         }
         *sink.borrow_mut() = out;
+        if let Some(rects) = &self.item_rects {
+            *rects.borrow_mut() = items;
+        }
     }
 
     /// The item under a logical point, or `None` (header band, gaps, empties).
@@ -1677,6 +1699,7 @@ mod tests {
         let sink = new_sink();
         let view = FileView::new(&items(2), &SelectionModel::new(), &sink);
         let nav = ui::widget::NavShell::new()
+            .content_kind(ui::widget::ContentKind::List)
             .sidebar(Box::new(ui::widget::Text::new("Places")))
             .content(Box::new(view));
         let theme = Theme::dark().with_text_scale(2.0);
@@ -2602,7 +2625,7 @@ mod tests {
             "File, 4\u{a0}kB",
             "Available offline",
             "Kept offline",
-            "Durably replicated",
+            "Kept on other devices",
             "Shared with 1 recipient",
         ] {
             assert!(

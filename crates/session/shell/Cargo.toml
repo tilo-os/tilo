@@ -19,7 +19,7 @@ scheduled-idle-benchmark = []
 netns-e2e = []
 # Integration-only native broker fixtures. This forwards the shared broker's
 # equally gated fixture entry point; ordinary shell spawning never selects it.
-test-support = ["tilo-action-broker/test-support", "dep:tilo-net", "ui/test-support", "tilo-identity-ceremony/test-support"]
+test-support = ["tilo-action-broker/test-support", "ui/test-support", "tilo-identity-ceremony/test-support"]
 # Deterministic test seams for the `shots` renderer and the integration
 # tests (the `*_for_shots` setters, a candidate xwayland-satellite path).
 # The name outlived the removed `--mode hosted` loop whose input socket it
@@ -60,8 +60,12 @@ required-features = ["test-support"]
 
 [dependencies]
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
-# Read the app SDK snapshot only in the owned native boundary fixture.
-tilo-net = { path = "../../platform/tilo-net", optional = true }
+# HTTPS to the hosts and web sites of workspaces this computer reaches over
+# the web: their entry, admission door and host routes.
+tilo-net = { path = "../../platform/tilo-net", features = ["http", "json"] }
+# The member's side of pairing a new device through a shared host: the
+# pending requests and the answer, as a page that holds the root asks them.
+tilo-browser-peer = { path = "../../browser/tilo-browser-peer", default-features = false }
 
 agent-provider-config = { path = "../../agent/provider-config" }
 # Native task HTTP stays in the trusted host, behind the owner fence.
@@ -81,6 +85,8 @@ tilo-moq = { path = "../../hosting/tilo-moq", features = ["relay"] }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 tilo-files = { path = "../../platform/tilo-files", features = ["json"] }
 bounded-command = { path = "../../system/bounded-command" }
+# The wire format of the network-answers helper search runs (exchange rates).
+tilo-net-answers = { path = "../../system/net-answers", default-features = false }
 # The MLS vault's master and signer keys: Secret Service or Keychain.
 tilo-secrets.workspace = true
 tempfile.workspace = true
@@ -404,6 +410,8 @@ collab-fixtures = { path = "../../collab/collab-fixtures" }
 # A browser in the room a node governs, for the node's own session to share
 # sealed records with.
 tilo-browser-peer = { path = "../../browser/tilo-browser-peer" }
+# A site's entry and admission door in front of an in-process host.
+test-http = { path = "../../dev/test-http" }
 tilo-agent-participant = { path = "../../agent/agent-participant" }
 rand_chacha.workspace = true
 pollster.workspace = true

@@ -78,7 +78,8 @@ impl NativeWorkspaceAction {
 }
 
 /// A command about the person the profile card offers: each opens the
-/// Settings page where it is done, the way search reaches those pages.
+/// Settings page where it is done, the way search reaches those pages,
+/// except pairing, which opens its own sheet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum NativeProfileAction {
     /// Their identities on this device and how each is protected.
@@ -104,12 +105,12 @@ impl NativeProfileAction {
         Self::ALL.into_iter().find(|action| action.id() == id)
     }
 
-    /// The Settings page it opens.
-    fn settings_link(self) -> &'static str {
+    /// The Settings page it opens; none for pairing, which opens its sheet.
+    fn settings_link(self) -> Option<&'static str> {
         match self {
-            Self::Identities => "settings://users",
-            Self::Backup => "settings://about",
-            Self::PairDevice => "settings://devices_sync",
+            Self::Identities => Some("settings://users"),
+            Self::Backup => Some("settings://about"),
+            Self::PairDevice => None,
         }
     }
 
@@ -247,6 +248,10 @@ impl ShellOverlayHost {
             name,
             identity,
             colour,
+            // The native shell does not ask the room's host for linked
+            // accounts yet; none hides the section rather than showing a
+            // service the person cannot link from here.
+            linked: Vec::new(),
 
             // The name is the identity's own; no rename of it is reachable
             // from the shell, so the card shows it and Settings' identities
@@ -330,10 +335,7 @@ impl ShellOverlayHost {
         }
     }
 
-    fn apply_profile_choice(&self, choice: &ProfileChoice) {
-        let Some(chrome) = self.chrome.as_ref() else {
-            return;
-        };
+    fn apply_profile_choice(&mut self, choice: &ProfileChoice) {
         let ProfileChoice::Action(id) = choice else {
             // The card offers no name field here.
             return;
@@ -341,14 +343,16 @@ impl ShellOverlayHost {
         let Some(action) = NativeProfileAction::from_id(id) else {
             return;
         };
-        if let Err(error) =
-            crate::shell::uri_open::open_in_workspace(action.settings_link(), chrome)
-        {
-            tracing::warn!(
-                ?error,
-                link = action.settings_link(),
-                "could not open Settings"
-            );
+        let Some(link) = action.settings_link() else {
+            // Pairing opens its guided sheet right here.
+            self.open_pairing();
+            return;
+        };
+        let Some(chrome) = self.chrome.as_ref() else {
+            return;
+        };
+        if let Err(error) = crate::shell::uri_open::open_in_workspace(link, chrome) {
+            tracing::warn!(?error, link, "could not open Settings");
         }
     }
 

@@ -144,7 +144,9 @@ impl ShellNetwork {
                     std::thread::sleep(POLL);
                     response = self.poll_enrollment(id)?;
                 }
-                PeerSyncResponse::PendingInvitations(_) => {
+                PeerSyncResponse::PendingInvitations(_)
+                | PeerSyncResponse::PairingInvite { .. }
+                | PeerSyncResponse::DevicesAsking(_) => {
                     return Err("unexpected enrollment response".into());
                 }
             }

@@ -85,7 +85,17 @@ impl AppCatalogue {
         wanted: &tilo_actions::remote::ViewResourceQuery,
         permissions: &PermissionContext,
     ) -> Vec<ActionDescriptor> {
-        let Some(kind) = self.kind(app_id) else {
+        // A part of a chain the app keeps beside its record (a chat's
+        // messages) is of the part's own resource, as its identity names it.
+        let part = ui::record::identity(doc)
+            .filter(|checkout| checkout.id.chain_part().is_some())
+            .and_then(|checkout| {
+                ui::framework::hosted_kinds()
+                    .get(checkout.kind.as_str())
+                    .copied()
+            })
+            .filter(|kind| kind.app_id() == Some(app_id));
+        let Some(kind) = part.or_else(|| self.kind(app_id)) else {
             return Vec::new();
         };
         discover_views(kind, app_id, doc, wanted, permissions)
@@ -196,6 +206,17 @@ pub struct Replica {
     /// route plan): a bot's steps read through them, where a person's
     /// reads go through the record's mounted component.
     offers_reads: bool,
+}
+
+/// Whether any member of the room may ask the host to run `descriptor` for
+/// themselves ([`tilo_actions::MEMBER_OWN_TAG`]).
+#[must_use]
+pub fn member_own(descriptor: &ActionDescriptor) -> bool {
+    descriptor
+        .contract
+        .tags
+        .iter()
+        .any(|tag| tag == tilo_actions::MEMBER_OWN_TAG)
 }
 
 impl Replica {
@@ -364,19 +385,40 @@ impl Replica {
     }
 
     /// Every document operation the participant may perform through the
-    /// view now, as inert descriptors; for a bot, the record's read effects
-    /// too.
+    /// view now, as inert descriptors — those on the parts of a chain the
+    /// app keeps beside the record included — and the effects any member may ask
+    /// the host to run for themselves ([`tilo_actions::MEMBER_OWN_TAG`]);
+    /// for a bot, the record's read effects too.
     #[must_use]
     pub fn survey(&self) -> Vec<ActionDescriptor> {
-        if !self.offers_reads {
-            return self.view.operations();
+        let resources = self.view.resources();
+        // A chain the app keeps beside the record publishes its parts'
+        // document actions routed to the part they change: document
+        // operations all the same.
+        let mut in_chains = std::collections::HashSet::new();
+        for resource in resources
+            .iter()
+            .flat_map(|resource| std::iter::once(resource).chain(&resource.children))
+        {
+            if ui::record::chain_of_resource_id(resource.id.as_str()).is_some() {
+                chain_ids(resource, &mut in_chains);
+            }
         }
-        tilo_actions::door::survey(&self.view.resources())
+        tilo_actions::door::survey(&resources)
             .into_iter()
-            .filter(|descriptor| {
-                descriptor.kind == tilo_actions::OperationKind::Document
-                    || (descriptor.kind == tilo_actions::OperationKind::Effect
-                        && descriptor.contract.kind == policy::ActionKind::Read)
+            .filter(|descriptor| match descriptor.kind {
+                tilo_actions::OperationKind::Document => true,
+                tilo_actions::OperationKind::Effect
+                    if in_chains.contains(descriptor.address.resource.as_str()) =>
+                {
+                    true
+                }
+                tilo_actions::OperationKind::Effect => {
+                    member_own(descriptor)
+                        || (self.offers_reads
+                            && descriptor.contract.kind == policy::ActionKind::Read)
+                }
+                tilo_actions::OperationKind::View => false,
             })
             .collect()
     }
@@ -532,6 +574,84 @@ impl Replica {
         }
         self.view.merge(mutation).map_err(AppError::Merge)?;
         Ok(())
+    }
+
+    /// Whether `record` is one the app keeps beside this one — a part of a
+    /// chain it publishes ([`ui::framework::Chain`]), such as a chat's
+    /// messages — which the replica holds with its own
+    /// ([`Self::apply_record`]) and the app's actions reach through the
+    /// chain, as in a window.
+    #[must_use]
+    pub fn keeps_beside(&self, record: &RecordId) -> bool {
+        self.view.beside(record).is_some()
+    }
+
+    /// The records held beside this one ([`Self::keeps_beside`]), by id.
+    #[must_use]
+    pub fn records_beside(&self) -> Vec<RecordId> {
+        self.view
+            .records_beside()
+            .into_iter()
+            .map(|checkout| checkout.id)
+            .collect()
+    }
+
+    /// Merge another participant's durable change into `record`: this
+    /// replica's own ([`Self::apply`]), or one its app keeps beside it
+    /// ([`Self::keeps_beside`]), opened from a whole document the first
+    /// time. Changes that build on nothing that record holds are left
+    /// alone.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::Merge`] when the record is neither, or refuses
+    /// the change.
+    pub fn apply_record(
+        &mut self,
+        record: &RecordId,
+        mutation: &DocumentMutation,
+    ) -> Result<(), AppError> {
+        if record == self.record_id() {
+            return self.apply(mutation);
+        }
+        self.view
+            .merge_record(record, mutation)
+            .map(drop)
+            .map_err(AppError::Merge)
+    }
+
+    /// This participant's changes to the records held beside this one
+    /// since the last call, by record: a part it started whole, any other
+    /// as its new changes.
+    pub fn take_record_mutations(&mut self) -> Vec<(RecordId, DocumentMutation)> {
+        self.records_beside()
+            .into_iter()
+            .filter_map(|record| {
+                let mutation = self.view.take_record_changes(&record)?;
+                Some((record, mutation))
+            })
+            .collect()
+    }
+
+    /// Read `record`: this replica's own, or one held beside it.
+    pub fn read_record<R>(
+        &self,
+        record: &RecordId,
+        read: impl FnOnce(&automerge::AutoCommit) -> R,
+    ) -> Option<R> {
+        if record == self.record_id() {
+            self.read(read)
+        } else {
+            self.view.read_record(record, read)
+        }
+    }
+}
+
+/// The ids of `resource` and everything published under it.
+fn chain_ids(resource: &tilo_actions::Resource, out: &mut std::collections::HashSet<String>) {
+    out.insert(resource.id.as_str().to_owned());
+    for child in &resource.children {
+        chain_ids(child, out);
     }
 }
 

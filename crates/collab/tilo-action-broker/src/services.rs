@@ -1067,6 +1067,34 @@ pub trait IdentityAdminServices: Send + Sync {
     ) -> Result<tilo_actions::remote::Pending<IdentityAdminOutcome>, String>;
 }
 
+/// Starting a community step (on
+/// [`tilo_actions::remote::community::RESOURCE`]) for `actor` in `room`.
+pub type CommunityRequest<'a> = IdentityAdminRequest<'a>;
+
+/// How a community step ended.
+pub type CommunityOutcome = DevicePairingOutcome;
+
+/// The community workspace a computer is in by default, kept by the host:
+/// where the person stands, joining it again after they left, and leaving
+/// it. The broker answers it under
+/// [`tilo_actions::remote::community::PROVIDER`], only to a caller on this
+/// machine confined to a room, under [`Self::app_id`]'s policy.
+pub trait CommunityServices: Send + Sync {
+    /// The application whose controls reach the steps as their person.
+    fn app_id(&self) -> &str;
+    /// Every step, described.
+    fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor>;
+    /// Start one admitted step; joining answers once the site did.
+    ///
+    /// # Errors
+    ///
+    /// Why the step may not start.
+    fn start(
+        &self,
+        request: &CommunityRequest<'_>,
+    ) -> Result<tilo_actions::remote::Pending<CommunityOutcome>, String>;
+}
+
 pub trait ContinuationServices: Send + Sync {
     /// Reports one application instance's continuation metadata.
     ///
@@ -1653,6 +1681,9 @@ pub struct HostServices {
     /// The person's identities and their devices, administered by the
     /// host. Without it no door offers them.
     pub identity_admin: Option<Arc<dyn IdentityAdminServices>>,
+    /// The community workspace a computer is in by default. Without it no
+    /// door offers its steps.
+    pub community: Option<Arc<dyn CommunityServices>>,
     pub continuations: Option<Arc<dyn ContinuationServices>>,
     pub workspace_control: Option<Arc<dyn WorkspaceControlServices>>,
     pub realtime: Option<Arc<dyn RealtimeServices>>,

@@ -1,0 +1,36 @@
+[package]
+name = "tilo-net-answers"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Answers search needs from the network (exchange rates), fetched by a confined helper process so the compositor never touches the network."
+
+[lib]
+name = "tilo_net_answers"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tilo-net-answers"
+path = "src/main.rs"
+required-features = ["fetch"]
+
+[features]
+# The helper binary: the network and its confinement. Search depends on the
+# library alone, without them, so the compositor links no HTTP client.
+default = ["fetch"]
+fetch = ["dep:tilo-sandbox-core", "dep:tilo-net"]
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+workspace-hack = { version = "0.1" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Confines the helper to reading the trust bundle and resolver files and to
+# connecting to HTTPS.
+tilo-sandbox-core = { path = "../sandbox-core", optional = true }
+tilo-net = { path = "../../platform/tilo-net", features = ["blocking"], optional = true }
+
+[lints]
+workspace = true

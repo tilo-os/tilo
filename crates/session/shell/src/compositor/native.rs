@@ -465,7 +465,6 @@ struct NativeRedrawReasons {
     capture: bool,
     keepalive: bool,
     lock_clock: bool,
-    lock_animation: bool,
     /// A media-key readout drawn over the lock surface is fading or due to clear.
     lock_osd: bool,
     /// An earlier tick counted a change but painted no frame for it: the
@@ -490,7 +489,7 @@ impl NativeRedrawReasons {
                     || self.presentation
                     || self.capture))
             || (!session_locked && self.keepalive)
-            || (session_locked && (self.lock_clock || self.lock_animation || self.lock_osd))
+            || (session_locked && (self.lock_clock || self.lock_osd))
     }
 
     /// The reasons [`Self::content_changed`] counts, as frame-trace
@@ -517,7 +516,6 @@ impl NativeRedrawReasons {
             (desktop && self.capture, r::CAPTURE),
             (desktop && self.keepalive, r::KEEPALIVE),
             (session_locked && self.lock_clock, r::LOCK_CLOCK),
-            (session_locked && self.lock_animation, r::LOCK_ANIMATION),
             (session_locked && self.lock_osd, r::LOCK_OSD),
             (self.owed, r::OWED),
         ]
@@ -800,6 +798,8 @@ const SLOW_KEY: Duration = Duration::from_millis(8);
 
 impl KeySteps {
     fn start() -> Self {
+        // A handler noted for an earlier key is not this key's.
+        let _ = crate::compositor::key_latency::take_key_handler();
         Self {
             started: Instant::now(),
             steps: ClientSteps::start(),
@@ -810,9 +810,18 @@ impl KeySteps {
 impl Drop for KeySteps {
     fn drop(&mut self) {
         let total = self.started.elapsed();
+        let handler = crate::compositor::key_latency::take_key_handler();
         if total >= SLOW_KEY {
             self.steps.mark("rest");
-            eprintln!("SLOW-KEY total={total:?} ({})", self.steps);
+            match handler {
+                Some(handler) => {
+                    eprintln!(
+                        "SLOW-KEY total={total:?} handler={handler:?} ({})",
+                        self.steps
+                    );
+                }
+                None => eprintln!("SLOW-KEY total={total:?} ({})", self.steps),
+            }
         }
     }
 }
@@ -962,8 +971,10 @@ impl LockClock {
         notification_count: usize,
         now_playing: Option<&'a crate::shell::now_playing::PlayerSnapshot>,
         keyboard: Option<ui::passcode_keyboard::PasscodeKeyboard>,
+        alert: Option<&'a str>,
     ) -> LockView<'a> {
         LockView {
+            alert,
             keyboard,
             password_len: lock.buffer_len(),
             error: lock.error(),
@@ -988,7 +999,11 @@ fn publish_accessibility_tree(
 ) {
     accessibility.set_window_focus(true);
     if let Some(view) = lock {
-        let outputs = lock_outputs(outputs, frame_builder.scene_size());
+        let outputs = lock_outputs(
+            outputs,
+            frame_builder.scene_size(),
+            focused_display_id(frame_builder),
+        );
         accessibility.update_if_active(|| {
             lock_screen::build_accessibility_tree(&outputs, frame_builder.theme(), view)
         });
@@ -1095,52 +1110,26 @@ fn widget_park_deadline(tick_started: Instant, deadline: Option<Instant>) -> Opt
     deadline.filter(|deadline| *deadline > tick_started)
 }
 
-// A due animation remains dirty until it paints, but is no longer a wake
-// deadline. Keeping an expired deadline here would busy-spin while waiting
-// for display cadence or presenter retirement. Those wake sources already
-// carry the pending frame; future animation deadlines still wake the idle loop.
-fn lock_animation_park_deadline(now: Instant, deadline: Option<Instant>) -> Option<Instant> {
-    deadline.filter(|deadline| *deadline > now)
-}
-
-/// How long after the last input a visible lock backdrop keeps moving. It
-/// then holds still until someone touches the machine: a locked laptop left
-/// on the desk must not repaint at the backdrop's cadence until it blanks.
-const LOCK_BACKDROP_MOTION: Duration = Duration::from_secs(20);
-
-/// The lock backdrop animates only while it can be seen and someone is
-/// there. Behind a blanked panel the backend drops every frame, so building
-/// them would keep an unattended, locked machine awake at the backdrop's
-/// cadence.
-fn lock_animation_deadline(
-    theme: &ui::theme::Theme,
-    session: &SessionManager,
-    has_wallpaper: bool,
-    last_frame: Instant,
-    now: Instant,
-) -> Option<Instant> {
-    lock_screen::animation_deadline(
-        theme,
-        session.is_locked()
-            && !session.is_blanked()
-            && session.idle_for(now) < LOCK_BACKDROP_MOTION,
-        has_wallpaper,
-        last_frame,
-    )
-}
-
 /// How often a locked session re-reads its players, so the lock card follows
 /// a track change or a pause made elsewhere.
 const LOCK_MEDIA_REFRESH: Duration = Duration::from_secs(1);
 
 /// Every output the lock overlay covers, or one spanning the viewport before
-/// any output has been reported.
+/// any output has been reported. The display the person was working on
+/// (`focused`, an output id) comes first: the lock screen puts the password
+/// field and its caret on the first output and its artwork on the others.
 fn lock_outputs(
     outputs: &[crate::compositor::backend::Output],
     viewport: (f64, f64),
+    focused: Option<u32>,
 ) -> Vec<LockOutput> {
-    let outputs: Vec<LockOutput> = outputs
-        .iter()
+    let mut ordered: Vec<&crate::compositor::backend::Output> = outputs.iter().collect();
+    if let Some(index) = focused.and_then(|id| ordered.iter().position(|o| o.id.0 == id)) {
+        let output = ordered.remove(index);
+        ordered.insert(0, output);
+    }
+    let outputs: Vec<LockOutput> = ordered
+        .into_iter()
         .map(|o| LockOutput {
             origin: (f64::from(o.position.0), f64::from(o.position.1)),
             size: (f64::from(o.size.0), f64::from(o.size.1)),
@@ -1156,6 +1145,17 @@ fn lock_outputs(
     } else {
         outputs
     }
+}
+
+/// The output id of the display the person works on, as the desktop's
+/// partition records it.
+fn focused_display_id(frame_builder: &FrameBuilder) -> Option<u32> {
+    frame_builder
+        .chrome()
+        .tree()
+        .desktop
+        .outputs
+        .focused_display()
 }
 
 /// The player the lock screen shows: the one the now-playing card would,
@@ -1878,6 +1878,31 @@ fn apply_app_tab_request(
     true
 }
 
+/// Step through the tabs of the group `app_id`'s focused tab is in: the app
+/// had the Ctrl+Tab first and left it alone. The connection vouches for the
+/// app id, so an app steps only through its own focused tab's group; a
+/// request that arrives after focus moved elsewhere does nothing.
+fn apply_app_cycle_tab(
+    frame_builder: &mut FrameBuilder,
+    app_id: &str,
+    instance: Option<u64>,
+    forward: bool,
+) -> bool {
+    let focused = crate::shell::app_tabs::is_focused_app_tab(
+        &frame_builder.chrome().tree(),
+        app_id,
+        instance,
+    );
+    focused
+        && frame_builder
+            .host_mut()
+            .cycle_focused_tab(if forward { 1 } else { -1 })
+}
+
+#[cfg(test)]
+#[path = "native_app_tab_tests.rs"]
+mod app_tab_tests;
+
 // This is the ordered protocol event pump; its branches share authentication
 // and handoff state that is clearer when kept in a single state-machine tick.
 #[allow(
@@ -2323,6 +2348,12 @@ fn pump_floating_surface_service(
                         None,
                         crate::shell::app_tabs::AppTabRequest::ReopenClosed,
                     );
+                }
+                ui::floating_surface::FloatingSurfaceClientMessage::CycleTab {
+                    forward,
+                    instance,
+                } => {
+                    changed |= apply_app_cycle_tab(frame_builder, &app_id, instance, forward);
                 }
                 ui::floating_surface::FloatingSurfaceClientMessage::PlaceNextWindowBeside {
                     background,
@@ -3033,6 +3064,33 @@ impl InvocationProgress for FrameInvocationProgress<'_> {
     fn next_change(&self) -> Option<tilo_actions::remote::Pending<()>> {
         self.fb.host().next_invocation_change()
     }
+}
+
+/// A control request that held the loop this long is named in the session
+/// log, so a stall an agent or a test caused says which request it was.
+const SLOW_CONTROL_REQUEST: Duration = Duration::from_millis(20);
+
+/// Log `line`'s operation when handling it on the loop took `elapsed`. Only
+/// the `op` field is read: a request can carry a secret (a lock passcode).
+fn note_slow_control_request(line: &str, elapsed: Duration) {
+    // Every other field is skipped, never copied out of the zeroized line.
+    #[derive(serde::Deserialize)]
+    struct Op<'a> {
+        #[serde(borrow)]
+        op: Option<&'a str>,
+    }
+    if elapsed < SLOW_CONTROL_REQUEST {
+        return;
+    }
+    let op = serde_json::from_str::<Op<'_>>(line)
+        .ok()
+        .and_then(|request| request.op)
+        .unwrap_or_default();
+    // A measurement line for the session log, like SLOW-ITER.
+    eprintln!(
+        "SLOW-CONTROL op={op} loop_ms={:.1}",
+        elapsed.as_secs_f64() * 1000.0
+    );
 }
 
 /// The earliest a held-back invocation needs the loop again although
@@ -4115,14 +4173,9 @@ impl ControlState for FrameBuilderControlState<'_> {
                     "maximize": { "x": maximize.x0, "y": maximize.y0, "w": maximize.width(), "h": maximize.height() },
                     "restore": { "x": restore.x0, "y": restore.y0, "w": restore.width(), "h": restore.height() },
                 })),
-            // Super+S detaches the workspace wheel from the strip's left
-            // edge and places it at this point. `null` means docked. The
-            // disc's `test_id` is always `wheel_disc`, so a harness that
-            // only diffs target names cannot see the summon.
-            "wheel_summon": chrome.wheel_summon().map(|p| serde_json::json!({
-                "x": p.x,
-                "y": p.y,
-            })),
+            // Super+S (or hovering the right-edge strip ribbon) opens the
+            // strip switcher card; `true` while it is up.
+            "strip_switcher_open": chrome.strip_switcher_open(),
             // Super+F on a Tilo window sets this; a client xdg fullscreen does too.
             // Maximize is a different field (`workspace_tree` group.maximized).
             "fullscreen_group": chrome.fullscreen_group(),
@@ -4170,7 +4223,9 @@ struct PendingClientSnapshot {
 /// How a screenshot's write went, shared between the deferred write and the
 /// request that asked for it: the request is answered only once the file at
 /// its path is complete, so a caller never reads a PNG still being written.
-type SnapshotOutcome = std::rc::Rc<std::cell::RefCell<Option<Result<(), String>>>>;
+/// Where a screenshot written off the loop reports how it went; the
+/// request's answer waits for it ([`pump_pending_test_control_conn`]).
+type SnapshotOutcome = std::sync::Arc<std::sync::Mutex<Option<Result<(), String>>>>;
 
 /// Per-process state the test-control wire needs to execute
 /// [`PlannedAction`]s, mirroring `ShellDriver`'s fields: modifier snapshot, auxiliary `AutoCommit` doc, root `ObjId`, focus cursor.
@@ -5183,12 +5238,9 @@ fn execute_planned_action(
                 ctx.deferred_snapshot_reply = Some(outcome);
             } else {
                 let drag = snapshot_drag(state.as_deref());
-                if let Err(message) = write_snapshot_png(fb, path, drag, ctx.snapshot_crop) {
-                    return Some(Err(InvokeFailure {
-                        code: "snapshot_failed".into(),
-                        message,
-                    }));
-                }
+                let outcome = SnapshotOutcome::default();
+                start_snapshot(fb, path, drag, ctx.snapshot_crop, &outcome);
+                ctx.deferred_snapshot_reply = Some(outcome);
             }
         }
         PlannedAction::InvokeAction {
@@ -5335,7 +5387,7 @@ static SNAPSHOT_RENDERER: std::sync::OnceLock<
     std::sync::Mutex<Option<ui::offscreen::OffscreenRenderer>>,
 > = std::sync::OnceLock::new();
 
-/// How many `OffscreenRenderer`s [`write_snapshot_png`] has built: one per
+/// How many `OffscreenRenderer`s [`SnapshotJob::write`] has built: one per
 /// distinct viewport size, *not* per thread — what
 /// `snapshot_renderer_outlives_the_thread_that_built_it` asserts, since the
 /// abort a per-thread cache causes can't be observed from inside the binary it kills.
@@ -5381,8 +5433,7 @@ fn defer_client_snapshot(
     // A shot still waiting is the older one: it goes out now, as it is.
     if let Some(pending) = ctx.pending_snapshot.take() {
         let drag = snapshot_drag(Some(state));
-        let written = write_snapshot_png(fb, &pending.path, drag, pending.crop);
-        *pending.outcome.borrow_mut() = Some(written);
+        start_snapshot(fb, &pending.path, drag, pending.crop, &pending.outcome);
     }
     let surfaces = match ctx.snapshot_window {
         Some(window) => foreign::toplevel_surface(state, window)
@@ -5398,7 +5449,7 @@ fn defer_client_snapshot(
         path: path.to_path_buf(),
         crop: ctx.snapshot_crop,
         settle: crate::compositor::client_settle::Settle::begin(state, &surfaces, Instant::now()),
-        outcome: std::rc::Rc::clone(&outcome),
+        outcome: std::sync::Arc::clone(&outcome),
     });
     Some(outcome)
 }
@@ -5424,16 +5475,15 @@ fn publish_settled_snapshot(ctx: &mut TestControlCtx, fb: &mut FrameBuilder, sta
         return;
     };
     let drag = snapshot_drag(Some(state));
-    let written = write_snapshot_png(fb, &pending.path, drag, pending.crop);
-    *pending.outcome.borrow_mut() = Some(written);
+    start_snapshot(fb, &pending.path, drag, pending.crop, &pending.outcome);
 }
 
-/// Re-paint the current scene into a cached `OffscreenRenderer` and encode
-/// it as a PNG at `path`. A bad viewport, missing adapter, or I/O or
-/// encoder failure is returned to the request that asked for the shot
-/// rather than taking the calloop pump down. Split out of `execute_planned_action` so unit tests
-/// can exercise it against a hand-built `FrameBuilder` directly.
-fn write_snapshot_png(
+/// Take a screenshot to `path`: the scene is drawn here, on the loop (it
+/// is the loop's state), and rendered, encoded and written on a worker
+/// that reports to `outcome` and wakes the loop. Rendering and encoding a
+/// 2944x1840 PNG took the live desktop's loop hundreds of milliseconds,
+/// during which no key and no frame got through.
+fn start_snapshot(
     fb: &mut FrameBuilder,
     path: &std::path::Path,
     drag: Option<(
@@ -5441,7 +5491,47 @@ fn write_snapshot_png(
         crate::compositor::drag_feedback::DragVisual,
     )>,
     crop: Option<vello::kurbo::Rect>,
-) -> Result<(), String> {
+    outcome: &SnapshotOutcome,
+) {
+    let job = match prepare_snapshot(fb, path, drag, crop) {
+        Ok(job) => job,
+        Err(message) => {
+            *outcome.lock_recover() = Some(Err(message));
+            return;
+        }
+    };
+    let report = std::sync::Arc::clone(outcome);
+    let spawned = std::thread::Builder::new()
+        .name("tilo-snapshot".into())
+        .spawn(move || {
+            let written = job.write();
+            *report.lock_recover() = Some(written);
+            crate::shell::wake_compositor();
+        });
+    if let Err(error) = spawned {
+        *outcome.lock_recover() =
+            Some(Err(format!("could not start the snapshot writer: {error}")));
+    }
+}
+
+/// A screenshot drawn on the loop, to be rendered and written off it.
+struct SnapshotJob {
+    scene: vello::Scene,
+    size: (u32, u32),
+    crop: Option<vello::kurbo::Rect>,
+    path: std::path::PathBuf,
+}
+
+/// The loop's part of a screenshot: the settled scene, as a capture sees it.
+fn prepare_snapshot(
+    fb: &mut FrameBuilder,
+    path: &std::path::Path,
+    drag: Option<(
+        vello::kurbo::Point,
+        crate::compositor::drag_feedback::DragVisual,
+    )>,
+    crop: Option<vello::kurbo::Rect>,
+) -> Result<SnapshotJob, String> {
     let (w, h) = fb.scene_size();
     // Scene dimensions are always non-negative pixel counts; clamped rather
     // than a bare `as u32` so a pathological value saturates instead of wrapping.
@@ -5480,67 +5570,86 @@ fn write_snapshot_png(
     // The snapshot leaves the display — to a script, a test or an agent — so
     // it sees protected windows and secret prompts as a capture does.
     let scene = fb.capture_scene(&scene).into_owned();
-    // The renderer is kept between snapshots, rebuilt only on viewport resize.
-    //
-    // `OffscreenRenderer::try_new` initialises every vello shader pipeline, so
-    // building one per call put a full pipeline build inside every snapshot:
-    // measured at 1920x1080, ~450ms/frame vs ~70ms actual render+encode.
-    // See [`SNAPSHOT_RENDERER`] for why the cache is a `static`, not `thread_local!`.
+    Ok(SnapshotJob {
+        scene,
+        size: (w, h),
+        crop,
+        path: path.to_path_buf(),
+    })
+}
 
-    // `try_new`, not `new` inside `catch_unwind`: in a release build a panic
-    // outside a `tilo_rt::panic_boundary` aborts, so a caught panic can't
-    // happen — the `Result` is what
-    // keeps the compositor alive with no wgpu adapter (CI without llvmpipe).
-    // Failure isn't cached: the slot stays empty so a later snapshot retries.
-    let cache = SNAPSHOT_RENDERER.get_or_init(|| std::sync::Mutex::new(None));
-    // The mutex only needs to guard the renderer slot; encoding the PNG and
-    // writing it to disk below are unrelated work and don't need it held, so
-    // the guard's scope ends here once `rgba` is copied out.
-    let rgba = {
-        // A panic elsewhere poisons the mutex without damaging what it guards
-        // (an intact renderer or empty slot) — recover rather than compound the failure.
-        let mut slot = cache.lock_recover();
-        let stale = match slot.as_ref() {
-            Some(renderer) => renderer.width != w || renderer.height != h,
-            None => true,
-        };
-        if stale {
-            match ui::offscreen::OffscreenRenderer::try_new(w, h) {
-                Ok(renderer) => {
-                    SNAPSHOT_RENDERERS_BUILT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    // Assigning drops any previous renderer here, mid-execution — the one place it's safe to.
-                    *slot = Some(renderer);
-                }
-                Err(e) => {
-                    *slot = None;
-                    return Err(format!("no offscreen renderer: {e}"));
+impl SnapshotJob {
+    /// Render, crop, encode and write the shot. Runs on any thread: the
+    /// renderer is the process-wide [`SNAPSHOT_RENDERER`].
+    fn write(self) -> Result<(), String> {
+        let Self {
+            scene,
+            size: (w, h),
+            crop,
+            path,
+        } = self;
+        // The renderer is kept between snapshots, rebuilt only on viewport resize.
+        //
+        // `OffscreenRenderer::try_new` initialises every vello shader pipeline, so
+        // building one per call put a full pipeline build inside every snapshot:
+        // measured at 1920x1080, ~450ms/frame vs ~70ms actual render+encode.
+        // See [`SNAPSHOT_RENDERER`] for why the cache is a `static`, not `thread_local!`.
+
+        // `try_new`, not `new` inside `catch_unwind`: in a release build a panic
+        // outside a `tilo_rt::panic_boundary` aborts, so a caught panic can't
+        // happen — the `Result` is what
+        // keeps the compositor alive with no wgpu adapter (CI without llvmpipe).
+        // Failure isn't cached: the slot stays empty so a later snapshot retries.
+        let cache = SNAPSHOT_RENDERER.get_or_init(|| std::sync::Mutex::new(None));
+        // The mutex only needs to guard the renderer slot; encoding the PNG and
+        // writing it to disk below are unrelated work and don't need it held, so
+        // the guard's scope ends here once `rgba` is copied out.
+        let rgba = {
+            // A panic elsewhere poisons the mutex without damaging what it guards
+            // (an intact renderer or empty slot) — recover rather than compound the failure.
+            let mut slot = cache.lock_recover();
+            let stale = match slot.as_ref() {
+                Some(renderer) => renderer.width != w || renderer.height != h,
+                None => true,
+            };
+            if stale {
+                match ui::offscreen::OffscreenRenderer::try_new(w, h) {
+                    Ok(renderer) => {
+                        SNAPSHOT_RENDERERS_BUILT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        // Assigning drops any previous renderer here, mid-execution — the one place it's safe to.
+                        *slot = Some(renderer);
+                    }
+                    Err(e) => {
+                        *slot = None;
+                        return Err(format!("no offscreen renderer: {e}"));
+                    }
                 }
             }
-        }
-        // A shot is one render with no next frame to repair it, so it waits
-        // out Vello growing its buffers: one that did not fit drops the paths
-        // encoded last, and the scene draws every display in turn, so the
-        // second display came back empty while the first looked whole.
-        let Some(rendered) = slot.as_mut().map(|renderer| {
-            renderer.try_render_resilient(&scene, vello::peniko::Color::TRANSPARENT)
-        }) else {
-            return Err("no offscreen renderer".to_string());
+            // A shot is one render with no next frame to repair it, so it waits
+            // out Vello growing its buffers: one that did not fit drops the paths
+            // encoded last, and the scene draws every display in turn, so the
+            // second display came back empty while the first looked whole.
+            let Some(rendered) = slot.as_mut().map(|renderer| {
+                renderer.try_render_resilient(&scene, vello::peniko::Color::TRANSPARENT)
+            }) else {
+                return Err("no offscreen renderer".to_string());
+            };
+            let rgba = rendered?;
+            // `rgba` is now an owned buffer with no tie to the renderer, so the
+            // mutex guard can go before the encode/write work below.
+            drop(slot);
+            rgba
         };
-        let rgba = rendered?;
-        // `rgba` is now an owned buffer with no tie to the renderer, so the
-        // mutex guard can go before the encode/write work below.
-        drop(slot);
-        rgba
-    };
-    let (w, h, rgba) = match crop {
-        Some(crop) => crop_rgba(&rgba, (w, h), crop),
-        None => (w, h, rgba),
-    };
-    if w == 0 || h == 0 {
-        return Err("the crop is empty, nothing to write".to_string());
+        let (w, h, rgba) = match crop {
+            Some(crop) => crop_rgba(&rgba, (w, h), crop),
+            None => (w, h, rgba),
+        };
+        if w == 0 || h == 0 {
+            return Err("the crop is empty, nothing to write".to_string());
+        }
+        let png = ui::png::encode_rgba8(w, h, &rgba).map_err(|e| format!("encode: {e}"))?;
+        write_whole(&path, &png).map_err(|e| format!("write {}: {e}", path.display()))
     }
-    let png = ui::png::encode_rgba8(w, h, &rgba).map_err(|e| format!("encode: {e}"))?;
-    write_whole(path, &png).map_err(|e| format!("write {}: {e}", path.display()))
 }
 
 /// Write `bytes` to a sibling file and rename it over `path`, so a reader
@@ -5660,7 +5769,7 @@ fn pump_pending_test_control_conn(
         progress => return progress,
     }
     if let Some((outcome, response)) = conn.pending_snapshot.take() {
-        let written = outcome.borrow_mut().take();
+        let written = outcome.lock_recover().take();
         return match written {
             None => {
                 conn.pending_snapshot = Some((outcome, response));
@@ -6274,6 +6383,7 @@ fn pump_test_control_conn(
                 return injected_input;
             }
             Ok(Some(())) => {
+                let handling_started = Instant::now();
                 // A listing that waits: armed, and the action surface read,
                 // before the listing is — a change landing while it is read
                 // still counts.
@@ -6300,11 +6410,19 @@ fn pump_test_control_conn(
                             Vec::new(),
                         )
                     }
-                    Ok(request) if conn.admin && frame_builder.host().onboarding_active()
-                        && !super::admin_control::first_use_permitted(&request.command) => (
-                            test_control::Response::Err { code: "not_permitted".into(), message: "first use serves only its trusted onboarding and authentication actions".into() },
+                    Ok(request)
+                        if conn.admin
+                            && frame_builder.host().onboarding_active()
+                            && !super::admin_control::first_use_permitted(&request.command) =>
+                    {
+                        (
+                            test_control::Response::Err {
+                                code: "not_permitted".into(),
+                                message: test_control::ADMIN_CONTROL_FIRST_USE_ONLY.into(),
+                            },
                             Vec::new(),
-                        ),
+                        )
+                    }
                     Ok(request) if conn.agent && !request.command.agent_permitted() => (
                         test_control::Response::Err {
                             code: "not_permitted".to_string(),
@@ -6350,7 +6468,11 @@ fn pump_test_control_conn(
                             }
                             continue;
                         }
-                        if conn.admin && agent.is_none() && !session.is_locked() && !frame_builder.host().onboarding_active() {
+                        if conn.admin
+                            && agent.is_none()
+                            && !session.is_locked()
+                            && !frame_builder.host().onboarding_active()
+                        {
                             if let test_control::Command::ActionsEnumerate { query, .. } =
                                 &request.command
                             {
@@ -6564,6 +6686,7 @@ fn pump_test_control_conn(
                         },
                     },
                 };
+                note_slow_control_request(&line, handling_started.elapsed());
                 match queue_test_control_response(conn, &resp) {
                     PendingConnectionProgress::Closed
                     | PendingConnectionProgress::OutputPending => return injected_input,
@@ -7555,6 +7678,8 @@ fn power_notification_to_incoming(
         sender_name: None,
         sound: Some(settings_store::system_sounds::SystemSoundEvent::LowBattery),
         incoming_call: false,
+        // Critical battery is about the whole machine: every display shows it.
+        machine_wide: n.critical,
     }
 }
 
@@ -8144,6 +8269,8 @@ fn install_session_peer_sync(
     let net = Arc::new(handle);
     net.join_at_boot();
     net.follow_host_rooms();
+    net.follow_community();
+    crate::shell::link_open::attach_network(&net);
     net.attach_session_inhibitors(frame_builder.host().session_inhibitors());
     frame_builder.set_enrolled_action_network(Arc::clone(&net));
     install_wifi_secret_bridge(frame_builder.host_mut(), Arc::clone(&net));
@@ -10013,6 +10140,9 @@ pub fn run() {
     // A media player's answer to a transport key, as the OSD to raise.
     let (transport_osd, transport_osds) =
         crate::session_runtime::mailbox::<crate::shell::osd::Osd>(Arc::clone(&session_wake));
+    // Displays without a brightness control of their own, dimmed by the
+    // compositor to their slider's level.
+    let mut software_dim = SoftwareDimSync::default();
     // The volume and mute keys' writes, on a thread of their own from the
     // first press on: `wpctl` must never hold up input or painting.
     let mut media_key_audio: Option<crate::shell::audio_writer::AudioWriter> = None;
@@ -10335,9 +10465,6 @@ pub fn run() {
     // full-scene keepalive consumed a material fraction of a software-rendered
     // VM core despite no changing pixels; every real producer already carries
     // an explicit redraw/revision/deadline edge.
-    let lock_animation_epoch = Instant::now();
-    let mut last_lock_animation_frame = lock_animation_epoch;
-    let mut lock_has_wallpaper = false;
     let mut last_lock_clock_refresh = Instant::now();
     let mut lock_player: Option<crate::shell::now_playing::PlayerSnapshot> = None;
     let mut lock_pointer: Option<vello::kurbo::Point> = None;
@@ -10468,6 +10595,10 @@ pub fn run() {
         Instant::now().checked_add(d)
     });
     let mut stats_since = Instant::now();
+    // Report windows in which nothing painted, folded into the next report
+    // that has something to say: an idle session must not write two lines
+    // every two seconds into a bounded session log.
+    let mut paint_stats_idle = Duration::ZERO;
     let (mut frames_total, mut frames_painted) = (0u32, 0u32);
     let (mut cause_events, mut cause_revision, mut cause_anim) = (0u32, 0u32, 0u32);
     let (mut cause_session, mut cause_keepalive) = (0u32, 0u32);
@@ -10591,9 +10722,18 @@ pub fn run() {
                 .flip_queued_at
                 .and(retired.display.vblank)
                 .unwrap_or(retired.at);
-            let keys = crate::compositor::key_latency::tracker().frames_retired(serial, shown_at);
+            let (keys, summary) = {
+                let mut tracker = crate::compositor::key_latency::tracker();
+                (
+                    tracker.frames_retired(serial, shown_at),
+                    tracker.summary(shown_at),
+                )
+            };
             for sample in keys {
                 eprintln!("{sample}");
+            }
+            if let Some(summary) = summary {
+                eprintln!("{summary}");
             }
             if let Some(switch) = frame_builder
                 .host_mut()
@@ -10979,6 +11119,11 @@ pub fn run() {
                     // Instrumentation: the clock starts when the loop takes the event off the
                     // backend; the first painted frame after closes the input-to-present measurement.
                     metrics.note_input(Instant::now());
+                    // Strip layers warming at rest stop at their next step:
+                    // the frame this input makes is about to need the GPU.
+                    if let Some(pipe) = present_pipe.as_ref() {
+                        pipe.note_input();
+                    }
                     // Physical priority: the host's own keyboard/mouse blocks every remote
                     // peer for the next half second, stamped at the funnel so lock/VT/power-key branches count as takeover too.
                     state.remote_input_firewall.note_local_input(Instant::now());
@@ -11050,8 +11195,11 @@ pub fn run() {
                                 button: MouseButton::Left,
                                 ..
                             } => {
-                                let outputs =
-                                    lock_outputs(backend.outputs(), frame_builder.scene_size());
+                                let outputs = lock_outputs(
+                                    backend.outputs(),
+                                    frame_builder.scene_size(),
+                                    focused_display_id(&frame_builder),
+                                );
                                 let view = LockView {
                                     now_playing: lock_player.as_ref(),
                                     keyboard: lock_keyboard.shown(),
@@ -11157,18 +11305,22 @@ pub fn run() {
                         // here, and the lock paint draws their OSD.
                         let airplane_mode =
                             frame_builder.chrome().quick_settings.radios.airplane_mode;
-                        let displays = if matches!(
+                        let brightness_key = matches!(
                             mk,
                             crate::shell::media_keys::MediaKey::BrightnessUp
                                 | crate::shell::media_keys::MediaKey::BrightnessDown
-                        ) {
-                            os_actions::BrightnessService::global().levels()
+                        );
+                        let displays = if brightness_key {
+                            brightness_displays(
+                                os_actions::BrightnessService::global().levels(),
+                                backend.outputs(),
+                            )
                         } else {
                             Vec::new()
                         };
-                        let pointer = frame_builder.host().pointer_position();
-                        let under_pointer = pointer
-                            .and_then(|p| output_connector_at(backend.outputs(), (p.x, p.y)));
+                        // The display the person works on, not the one the
+                        // pointer happens to rest on.
+                        let focused_display = frame_builder.host().focused_connector();
                         let audio: &crate::shell::audio_writer::AudioWriter = media_key_audio
                             .get_or_insert_with(|| {
                                 crate::shell::audio_writer::AudioWriter::system(
@@ -11185,10 +11337,25 @@ pub fn run() {
                                 airplane_mode,
                                 brightness: crate::shell::media_keys::BrightnessKeys {
                                     displays: &displays,
-                                    under_pointer,
+                                    focused: focused_display.as_deref(),
+                                    all: test_control_ctx.modifiers.state().shift_key(),
                                 },
                             },
                         );
+                        if brightness_key {
+                            // Quick Settings' per-display sliders follow the
+                            // levels the key just set.
+                            let levels = os_actions::BrightnessService::global().levels();
+                            frame_builder.with_chrome(|st| {
+                                for display in &mut st.quick_settings.displays {
+                                    if let Some(level) =
+                                        levels.iter().find(|l| l.connector == display.connector)
+                                    {
+                                        display.level = level.level;
+                                    }
+                                }
+                            });
+                        }
                         match response {
                             Some(crate::shell::media_keys::Response::Osd(osd)) => {
                                 frame_builder.with_chrome(|st| publish_media_osd(st, osd));
@@ -11382,6 +11549,14 @@ pub fn run() {
                     // Carry the modifier mask forward so the next event dispatched (or the
                     // lock-chord check above) sees the right Ctrl/Shift/Alt/Super state.
                     test_control_ctx.modifiers = modifiers;
+                    // An open search previews on its selected row what Enter
+                    // does with the modifier just pressed or released.
+                    if frame_builder
+                        .host_mut()
+                        .note_held_modifiers(modifiers.state())
+                    {
+                        session_changed = true;
+                    }
                 }
                 BackendEvent::KeyboardConfiguration { scope, settings } => {
                     frame_builder.host_mut().set_keyboard_scope(scope.clone());
@@ -12253,6 +12428,37 @@ pub fn run() {
             frame_builder.host_mut(),
             Instant::now(),
         );
+        // A clipboard history choice for an app running inside the shell
+        // takes that app's own paste: Ctrl+V into its focused widget, which
+        // reads the clipboard the choice just set.
+        for _ in 0..frame_builder.host_mut().take_in_process_pastes() {
+            let ctrl = winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+            let v = winit::keyboard::Key::Character("v".into());
+            let events = [
+                winit::event::WindowEvent::ModifiersChanged(ctrl),
+                ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+                    v.clone(),
+                    None,
+                    winit::event::ElementState::Pressed,
+                )),
+                ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+                    v,
+                    None,
+                    winit::event::ElementState::Released,
+                )),
+                winit::event::WindowEvent::ModifiersChanged(winit::event::Modifiers::default()),
+            ];
+            for event in &events {
+                frame_builder.dispatch_event(
+                    event,
+                    &ctrl,
+                    &mut ui::widget::Edits::lend(&mut test_control_ctx.doc),
+                    &test_control_ctx.root_obj,
+                    &mut test_control_ctx.focus,
+                );
+            }
+            injected_redraw_pending = true;
+        }
         // An app's idle inhibitor holds the screen on only while its window is visible.
         crate::compositor::idle_inhibit::sync_idle_inhibitors(
             &mut state,
@@ -12992,6 +13198,7 @@ pub fn run() {
             frame_builder.with_chrome(|st| publish_media_osd(st, osd));
             session_changed = true;
         }
+        software_dim.sync(backend.as_mut(), &session_wake);
         let markers_suppressed = session.is_locked() || frame_builder.host().onboarding_active();
         let markers_retired =
             revalidate_native_agent_markers(&mut state, &mut frame_builder, markers_suppressed);
@@ -13370,14 +13577,6 @@ pub fn run() {
                     .is_some_and(|portal| portal.screencast.has_streams()),
             keepalive: keepalive_due,
             lock_clock: lock_clock_due,
-            lock_animation: lock_animation_deadline(
-                frame_builder.theme(),
-                &session,
-                lock_has_wallpaper,
-                last_lock_animation_frame,
-                iter_t0,
-            )
-            .is_some_and(|deadline| iter_t0 >= deadline),
             lock_osd: lock_screen::lock_osd_frame_due(frame_builder.chrome().osd, iter_t0),
             owed: content_owed,
         };
@@ -13466,7 +13665,19 @@ pub fn run() {
                     cause_keepalive = cause_keepalive.saturating_add(1);
                 }
             }
-            if stats_since.elapsed() >= Duration::from_secs(2) {
+            if stats_since.elapsed() >= Duration::from_secs(2) && frames_painted == 0 {
+                // Idle: keep tallying wakes, report once painting resumes.
+                paint_stats_idle = paint_stats_idle.saturating_add(stats_since.elapsed());
+                frames_total = 0;
+                stats_since = Instant::now();
+            } else if stats_since.elapsed() >= Duration::from_secs(2) {
+                if !paint_stats_idle.is_zero() {
+                    eprintln!(
+                        "paint-stats: idle {:.0}s before this, nothing painted",
+                        paint_stats_idle.as_secs_f64()
+                    );
+                    paint_stats_idle = Duration::ZERO;
+                }
                 let animation_host_labels =
                     crate::shell::animation_diagnostics::host_labels(animation_sources_seen.host)
                         .collect::<Vec<_>>()
@@ -13559,11 +13770,13 @@ pub fn run() {
             );
             if session.is_locked() {
                 let clock = LockClock::now();
+                let alert = frame_builder.chrome().machine_alert();
                 let view = clock.view(
                     &lock,
                     frame_builder.chrome().notification_count(),
                     lock_player.as_ref(),
                     lock_keyboard.shown(),
+                    alert.as_deref(),
                 );
                 publish_accessibility_tree(
                     &mut native_accessibility,
@@ -13605,14 +13818,22 @@ pub fn run() {
                 let theme = frame_builder.theme().clone();
                 // The lock overlay covers every known output (single on winit/headless;
                 // DRM lays monitors side-by-side).
-                let lock_outputs = lock_outputs(backend.outputs(), frame_builder.scene_size());
+                let lock_outputs = lock_outputs(
+                    backend.outputs(),
+                    frame_builder.scene_size(),
+                    focused_display_id(&frame_builder),
+                );
                 let clock = LockClock::now();
+                // Critical battery is about the whole machine: every display
+                // of the lock screen says so.
+                let alert = frame_builder.chrome().machine_alert();
                 let view = clock.view(
                     &lock,
                     // Count-only summary on the lock screen — no bodies leak.
                     frame_builder.chrome().notification_count(),
                     lock_player.as_ref(),
                     lock_keyboard.shown(),
+                    alert.as_deref(),
                 );
                 frame_builder.set_lock_keyboard_keys(
                     lock_screen::keyboard_keys(&lock_outputs, &theme, &view)
@@ -13630,17 +13851,12 @@ pub fn run() {
                         )
                     })
                 };
-                lock_has_wallpaper = wallpaper.is_some();
-                last_lock_animation_frame = iter_t0;
-                let mut lock_scene = lock_screen::draw_lock_scene_at_time(
+                let mut lock_scene = lock_screen::draw_lock_scene_with_wallpaper(
                     &lock_outputs,
                     &theme,
                     frame_builder.text_renderer_mut(),
                     &view,
                     wallpaper.as_ref(),
-                    iter_t0
-                        .saturating_duration_since(lock_animation_epoch)
-                        .as_secs_f64(),
                 );
                 // Media keys stay live while locked; their readout is drawn
                 // here because the desktop chrome that normally paints it is
@@ -14140,12 +14356,14 @@ pub fn run() {
             // screen may not paint again for as long as it stays unchanged.
             if accessibility_changed {
                 let clock = session.is_locked().then(LockClock::now);
+                let alert = frame_builder.chrome().machine_alert();
                 let view = clock.as_ref().map(|clock| {
                     clock.view(
                         &lock,
                         frame_builder.chrome().notification_count(),
                         lock_player.as_ref(),
                         lock_keyboard.shown(),
+                        alert.as_deref(),
                     )
                 });
                 publish_accessibility_tree(
@@ -14454,19 +14672,6 @@ pub fn run() {
             frame_clock.next_deadline(),
             [
                 ("widget", app_tick.park_deadline(&frame_builder, pipe_ready)),
-                (
-                    "lock-animation",
-                    lock_animation_park_deadline(
-                        park_now,
-                        lock_animation_deadline(
-                            frame_builder.theme(),
-                            &session,
-                            lock_has_wallpaper,
-                            last_lock_animation_frame,
-                            park_now,
-                        ),
-                    ),
-                ),
                 ("lock-clock", lock_clock_deadline),
                 ("lock-media", lock_media_deadline),
                 ("run-deadline", run_deadline),
@@ -14727,9 +14932,12 @@ fn sync_quick_settings_from_osd(
         crate::shell::osd::OsdKind::Volume { .. } => {
             quick_settings.volume = osd.level;
         }
-        crate::shell::osd::OsdKind::Brightness => {
+        crate::shell::osd::OsdKind::Brightness { display: None } => {
             quick_settings.brightness = osd.level;
         }
+        // A named display's slider follows the brightness service's levels,
+        // read back after the key.
+        crate::shell::osd::OsdKind::Brightness { display: Some(_) } => {}
         crate::shell::osd::OsdKind::AirplaneMode { on } => {
             quick_settings.radios.airplane_mode = on;
         }
@@ -14746,6 +14954,44 @@ fn sync_quick_settings_from_osd(
         | crate::shell::osd::OsdKind::InputSource(_)
         | crate::shell::osd::OsdKind::KeysCaptured { .. }
         | crate::shell::osd::OsdKind::PadMode { .. } => {}
+    }
+}
+
+#[cfg(test)]
+mod lock_focus_tests {
+    use super::lock_outputs;
+    use crate::compositor::backend::headless::output_fixture;
+    use crate::compositor::lock_screen::LockLayout;
+
+    // USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
+    // brightness etc. should in general be raised on the correct (?)
+    // screen(s)… in consistent positions… also how to handle brightness
+    // controls on multiple screens" — the lock screen's password field and
+    // caret are on the display the person was working on, artwork on the
+    // others.
+    #[test]
+    fn the_lock_screen_puts_the_password_field_on_the_focused_display() {
+        let outputs = output_fixture("laptop-beside-1080p").expect("fixture");
+        let theme = ui::theme::Theme::dark();
+        for focused in [&outputs[1], &outputs[0]] {
+            let lock = lock_outputs(&outputs, (0.0, 0.0), Some(focused.id.0));
+            assert_eq!(lock.len(), outputs.len(), "every display is covered");
+            let shown = focused.scene_rect();
+            let password = LockLayout::for_output(lock[0], &theme).password;
+            assert!(
+                password.area() > 0.0 && shown.union(password) == shown,
+                "the password field {password:?} is on the focused display {shown:?}"
+            );
+        }
+        let unfocused = lock_outputs(&outputs, (0.0, 0.0), None);
+        assert_eq!(
+            unfocused[0].origin,
+            (
+                f64::from(outputs[0].position.0),
+                f64::from(outputs[0].position.1)
+            ),
+            "without a focused display the primary carries it"
+        );
     }
 }
 
@@ -14779,24 +15025,7 @@ mod media_osd_publication_tests {
 /// Session-owned ambient-light loop. Settings only records policy; the
 /// compositor owns the display and therefore owns applying that policy after
 /// Settings exits. Missing sensors/backlights simply produce no write.
-/// Connector of the output containing `point` in compositor coordinates.
-fn output_connector_at(
-    outputs: &[crate::compositor::backend::Output],
-    point: (f64, f64),
-) -> Option<&str> {
-    outputs
-        .iter()
-        .find(|output| {
-            let (x, y) = (f64::from(output.position.0), f64::from(output.position.1));
-            point.0 >= x
-                && point.1 >= y
-                && point.0 < x + f64::from(output.size.0)
-                && point.1 < y + f64::from(output.size.1)
-        })
-        .map(|output| output.identity.connector.as_str())
-        .filter(|connector| !connector.is_empty())
-}
-
+///
 /// Follow the ambient light sensor every two seconds while automatic
 /// brightness is on. Turning it on or off in Settings wakes the worker at
 /// once rather than on its next sample.
@@ -14829,6 +15058,99 @@ fn spawn_auto_brightness_worker(settings: settings_store::live::LiveSettings) {
                 };
             }
         });
+}
+
+/// Keeps the backend's software dimming in line with the brightness service:
+/// a display without a backlight or DDC/CI is dimmed by the compositor to its
+/// slider's level ([`os_actions::software_luminance`]), whether the level was
+/// set here (keys, Quick Settings, search) or in Settings, whose writes the
+/// service follows ([`os_actions::BrightnessService::follow_memory`]).
+#[derive(Default)]
+struct SoftwareDimSync {
+    started: bool,
+    /// The service generation last applied.
+    generation: Option<u64>,
+    /// The outputs it was applied to, by id: a new one is dimmed as it
+    /// appears.
+    outputs: Vec<u32>,
+}
+
+impl SoftwareDimSync {
+    /// Apply what changed since the last call. Costs a comparison when
+    /// nothing did; the service wakes the loop through `wake` when a level
+    /// changes on another thread.
+    fn sync(&mut self, backend: &mut dyn Backend, wake: &crate::session_runtime::Wake) {
+        if !backend.software_dim_supported() {
+            return;
+        }
+        let service = os_actions::BrightnessService::global();
+        if !self.started {
+            self.started = true;
+            service.on_change(Arc::clone(wake));
+            service.follow_memory();
+        }
+        let generation = service.generation();
+        let same_outputs = backend
+            .outputs()
+            .iter()
+            .map(|output| output.id.0)
+            .eq(self.outputs.iter().copied());
+        if same_outputs && self.generation == Some(generation) {
+            return;
+        }
+        if !same_outputs {
+            self.outputs = backend.outputs().iter().map(|output| output.id.0).collect();
+            // A monitor that just appeared is probed once, off this thread;
+            // the generation moves when it lands.
+            service.rescan();
+        }
+        self.generation = Some(generation);
+        let dims: Vec<(String, f32)> = service
+            .software_levels()
+            .into_iter()
+            .map(|(connector, level)| (connector, os_actions::software_luminance(level)))
+            .collect();
+        backend.set_software_dim(&dims);
+    }
+}
+
+/// Every display whose brightness can be set, named for the readout and
+/// Quick Settings: "Built-in display" for the laptop panel, else the
+/// monitor's EDID name, else its connector.
+fn brightness_displays(
+    levels: Vec<os_actions::MonitorLevel>,
+    outputs: &[crate::compositor::backend::Output],
+) -> Vec<crate::shell::chrome_state::DisplayBrightness> {
+    levels
+        .into_iter()
+        .map(|level| {
+            let identity = outputs
+                .iter()
+                .map(|output| &output.identity)
+                .find(|identity| identity.connector == level.connector);
+            let name = if os_actions::brightness::is_builtin_connector(&level.connector) {
+                crate::shell::i18n::t("display-identify-builtin")
+            } else {
+                identity
+                    .map(|identity| {
+                        settings_store::hardware::MonitorIdentity {
+                            make: identity.make.clone(),
+                            model: identity.model.clone(),
+                            serial: identity.serial.clone(),
+                            physical_size_mm: None,
+                        }
+                        .display_name()
+                    })
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or_else(|| level.connector.clone())
+            };
+            crate::shell::chrome_state::DisplayBrightness {
+                connector: level.connector,
+                name,
+                level: level.level,
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -15841,47 +16163,6 @@ mod tests {
         ] {
             assert!(visible_lock_edge.content_changed(true));
         }
-        // Phase `due_lock_animation_waits_for_cadence_or_presenter_instead_of_spinning`.
-        {
-            let due_at = Instant::now();
-            let now = due_at + Duration::from_millis(1);
-            let due = Some(due_at);
-            let frame = now + Duration::from_millis(8);
-            assert_eq!(
-                native_loop_park(
-                    now,
-                    false,
-                    false,
-                    true,
-                    frame,
-                    [lock_animation_park_deadline(now, due)]
-                ),
-                Some(Duration::from_millis(8))
-            );
-            assert_eq!(
-                native_loop_park(
-                    now,
-                    false,
-                    false,
-                    false,
-                    frame,
-                    [lock_animation_park_deadline(now, due)]
-                ),
-                Some(IDLE_BACKEND_POLL)
-            );
-            let future = Some(now + Duration::from_millis(42));
-            assert_eq!(
-                native_loop_park(
-                    now,
-                    false,
-                    false,
-                    false,
-                    frame,
-                    [lock_animation_park_deadline(now, future)]
-                ),
-                Some(Duration::from_millis(42))
-            );
-        }
         // Phase `an_answered_widget_deadline_does_not_spin_the_loop`.
         {
             let due_at = Instant::now();
@@ -15915,58 +16196,6 @@ mod tests {
                 Some(future)
             );
         }
-        // Phase `blanked_lock_stops_animating_until_the_panel_wakes`.
-        {
-            let theme = ui::theme::Theme::dark();
-            let t0 = Instant::now();
-            let config = IdleConfig {
-                blank_timeout: Some(Duration::from_secs(10)),
-                lock_timeout: Some(Duration::from_secs(5)),
-                suspend_timeout: None,
-            };
-            let mut session = SessionManager::new(config, t0);
-            let at = |secs| t0 + Duration::from_secs(secs);
-            session.tick(at(6));
-            assert!(session.is_locked() && !session.is_blanked());
-            assert!(
-                lock_animation_deadline(&theme, &session, false, t0, at(6)).is_some(),
-                "a visible lock animates its backdrop"
-            );
-            session.tick(at(11));
-            assert!(session.is_locked() && session.is_blanked());
-            assert!(
-                lock_animation_deadline(&theme, &session, false, t0, at(11)).is_none(),
-                "a blanked panel must not keep the loop building lock frames"
-            );
-            session.note_activity(at(12));
-            assert!(session.is_locked() && !session.is_blanked());
-            assert!(lock_animation_deadline(&theme, &session, false, t0, at(12)).is_some());
-        }
-        // Phase `an_untouched_visible_lock_stops_animating`.
-        {
-            let theme = ui::theme::Theme::dark();
-            let t0 = Instant::now();
-            let config = IdleConfig {
-                blank_timeout: None,
-                lock_timeout: Some(Duration::from_secs(5)),
-                suspend_timeout: None,
-            };
-            let mut session = SessionManager::new(config, t0);
-            let at = |secs| t0 + Duration::from_secs(secs);
-            session.tick(at(6));
-            assert!(session.is_locked() && !session.is_blanked());
-            assert!(lock_animation_deadline(&theme, &session, false, t0, at(6)).is_some());
-            session.tick(at(21));
-            assert!(
-                lock_animation_deadline(&theme, &session, false, t0, at(21)).is_none(),
-                "a lock nobody has touched for {LOCK_BACKDROP_MOTION:?} holds still"
-            );
-            session.note_activity(at(30));
-            assert!(
-                lock_animation_deadline(&theme, &session, false, t0, at(30)).is_some(),
-                "input moves it again"
-            );
-        }
         // Phase `lock_osd_fade_repaints_only_while_the_lock_is_visible`.
         {
             let fading = NativeRedrawReasons {
@@ -15978,15 +16207,6 @@ mod tests {
                 !fading.content_changed(false),
                 "the unlocked host drives its own OSD frames"
             );
-        }
-        // Phase `artwork_repaints_only_while_the_lock_is_visible`.
-        {
-            let artwork = NativeRedrawReasons {
-                lock_animation: true,
-                ..NativeRedrawReasons::default()
-            };
-            assert!(artwork.content_changed(true));
-            assert!(!artwork.content_changed(false));
         }
         // Phase `locked_clock_gets_an_explicit_minute_refresh_edge`.
         {
@@ -18314,14 +18534,23 @@ mod tests {
             writer
                 .write_all(format!("{line}\n").as_bytes())
                 .expect("write request");
-            pump_test_control_conn(
-                &mut conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
+            // A screenshot is written off the loop: its answer goes out on
+            // the pump after the writer reported.
+            let started = Instant::now();
+            loop {
+                pump_test_control_conn(
+                    &mut conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
+                );
+                if conn.pending_snapshot.is_none() || started.elapsed() > Duration::from_secs(30) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
             let test_control::Response::Err { code: answered, .. } = socket_response(&mut reader)
             else {
                 panic!("{line} (locked: {locked}) must answer an error");
@@ -18707,6 +18936,14 @@ mod tests {
         ctx: &mut TestControlCtx,
     ) {
         super::execute_planned_action(action, fb, ctx, None);
+        // A screenshot is written off the loop; the tests read it as the
+        // request's answer would, once it is written.
+        if let Some(outcome) = ctx.deferred_snapshot_reply.take() {
+            let started = Instant::now();
+            while outcome.lock_recover().is_none() && started.elapsed() < Duration::from_secs(60) {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        }
     }
 
     #[test]
@@ -18747,70 +18984,6 @@ mod tests {
             fb.relayout();
             let scene = fb.paint();
             assert!(!scene.encoding().is_empty());
-        }
-        // Phase `click_on_wheel_plus_slot_grows_workspace_count`.
-        // Click sequence at the wheel-disc's plus slot mutates chrome state —
-        // proves planned actions reach the host's click handlers, not a void.
-        //
-        // The bootstrap tree seeds three demo workspaces; the plus slot calls
-        // `chrome.add_workspace("Untitled")`, growing the count to four —
-        // asserting on the count is more robust than internal widget state, since chrome is the contract every consumer sees.
-        {
-            let mut fb = FrameBuilder::new((1600, 900));
-            // Paint once so the wheel-disc populates its plus_rect (the press handler
-            // hit-tests against it; it's `Rect::ZERO` until the first draw pass).
-            let _ = fb.paint();
-            // Find the wheel disc rect by its opt-in `test_id`, then search it for the
-            // affordance rather than re-deriving where `draw` puts it — scanning the whole footprint keeps the test layout-agnostic.
-            let registry = fb.widget_registry();
-            let wheel_rect = registry
-                .get("wheel_disc")
-                .copied()
-                .expect("wheel_disc test_id resolves on bootstrap tree");
-
-            let initial_count = fb.chrome().tree().desktop.workspaces.len();
-
-            // Sweep the footprint bottom-up in 4px rows until one click lands on
-            // the affordance; misses are harmless (rim press drags back, row press switches workspace).
-            let mut ctx = TestControlCtx::new();
-            let mut found = false;
-            // Integer-counted sweep (not a float-terminated `while`): the `if`
-            // breaks below reproduce the original `y > y0` / `x < x1` bounds
-            // exactly, so a generously wide static loop cap is safe — it never
-            // runs anywhere near it before hitting one of them.
-            'sweep: for row in 0..10_000u32 {
-                let y = wheel_rect.y1 - 4.0 - f64::from(row) * 4.0;
-                if y <= wheel_rect.y0 {
-                    break;
-                }
-                for col in 0..10_000u32 {
-                    let x = wheel_rect.x0 + 4.0 + f64::from(col) * 8.0;
-                    if x >= wheel_rect.x1 {
-                        break;
-                    }
-                    execute_planned_action(&PlannedAction::CursorMoved { x, y }, &mut fb, &mut ctx);
-                    execute_planned_action(
-                        &PlannedAction::MouseLeftButton { pressed: true },
-                        &mut fb,
-                        &mut ctx,
-                    );
-                    execute_planned_action(
-                        &PlannedAction::MouseLeftButton { pressed: false },
-                        &mut fb,
-                        &mut ctx,
-                    );
-                    if fb.chrome().tree().desktop.workspaces.len() > initial_count {
-                        found = true;
-                        break 'sweep;
-                    }
-                }
-            }
-            assert!(
-                found,
-                "sweep of clicks across the wheel disc's footprint should hit the \
-                 add-workspace affordance and grow the workspace count from \
-                 {initial_count}"
-            );
         }
         // Phase `synthetic_touchpad_gestures_reach_the_shell_through_the_tracker`.
         // The same tracker as libinput's path decides what the fingers meant.
@@ -19186,31 +19359,6 @@ mod tests {
                 "on_screen_keyboard_surface": null,
             })
         );
-    }
-
-    #[test]
-    fn state_dump_chrome_includes_wheel_summon() {
-        let fb = FrameBuilder::new((1600, 900));
-        let state = FrameBuilderControlState {
-            fb: &fb,
-            doc: None,
-            shares: None,
-            lock: None,
-            seat: None,
-            resolved: None,
-        };
-        assert_eq!(
-            state.chrome_state_json().get("wheel_summon"),
-            Some(&serde_json::Value::Null),
-            "the wheel starts docked"
-        );
-
-        fb.chrome_handle()
-            .borrow_mut()
-            .set_wheel_summon(Some(vello::kurbo::Point::new(1180.0, 450.0)));
-        let summoned = &state.chrome_state_json()["wheel_summon"];
-        assert_eq!(summoned["x"].as_f64(), Some(1180.0));
-        assert_eq!(summoned["y"].as_f64(), Some(450.0));
     }
 
     /// The state dump says who asks for animation frames, and asking must
@@ -20384,10 +20532,10 @@ fn apply_shell_gesture(
 /// an audience surface) wins, then the requested `wl_output`; if it was
 /// removed, use the output currently containing the window's centre, then the
 /// first live output as a deterministic hotplug fallback.
-/// Super+F on a Tilo window covers the output, including the wheel.
+/// Super+F on a Tilo window covers the whole output.
 /// Hosted Tilo apps are xdg clients too; sending them a protocol
 /// fullscreen never sets `chrome.fullscreen_group` (W07). Maximize
-/// (Super+M) stays beside the wheel. A focused xdg surface with no
+/// (Super+M) keeps the top bar. A focused xdg surface with no
 /// window group still takes the protocol path.
 fn toggle_focused_client_fullscreen(state: &mut State, frame: &mut FrameBuilder) {
     use smithay::wayland::shell::xdg::XdgShellHandler;

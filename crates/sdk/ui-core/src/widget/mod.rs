@@ -1711,6 +1711,14 @@ pub trait Widget {
 
     fn set_focus(&mut self, _focused: bool) {}
 
+    /// The window holding this content fills its display (a maximized
+    /// window): it has nothing beside it to round its corners against or
+    /// to set it apart from, so content that frames or clips itself to the
+    /// window's shape draws edge to edge instead. A client surface drawn
+    /// that way, last and unclipped, is one the display can scan out
+    /// directly. Content that frames nothing ignores it.
+    fn set_full_bleed(&mut self, _full_bleed: bool) {}
+
     /// The form's validation verdict for this control, set by
     /// [`Field::with_error`]: an invalid control edges itself in danger ink
     /// and reports `invalid` to assistive technology. Controls without a
@@ -2163,6 +2171,16 @@ pub trait Widget {
     /// Level-triggered; the App recurses [`Self::children`] itself, so
     /// containers need not forward it. First `Some` wins.
     fn appearance_intent(&self) -> Option<crate::theme::AppearanceIntent> {
+        None
+    }
+
+    /// The narrowest this window still works at, in logical pixels: the
+    /// minimum of its compact layout (a `NavShell` answers with one column
+    /// at a time). The host states it to the window system, so the desktop
+    /// stops a resize there. `None`: no opinion. The host walks the tree
+    /// itself ([`minimum_window_width`]), so containers need not forward
+    /// it; the first `Some` wins.
+    fn minimum_window_width(&self) -> Option<f64> {
         None
     }
 
@@ -3087,9 +3105,31 @@ pub use sidebar::{
     SidebarSide,
 };
 mod nav_shell;
+
+/// The narrowest the window `root` lays out still works at
+/// ([`Widget::minimum_window_width`]): the first widget in the tree with an
+/// opinion, outermost first.
+pub fn minimum_window_width<W: Widget + ?Sized>(root: &W) -> Option<f64> {
+    // A retained boundary (an app in a tile) answers inside its own scope.
+    let _entry = root
+        .callback_binding()
+        .map(|binding| binding.enter())
+        .transpose()
+        .ok()?;
+    if let Some(width) = root.minimum_window_width() {
+        return Some(width);
+    }
+    let mut found = None;
+    root.for_each_child(&mut |child| {
+        if found.is_none() {
+            found = minimum_window_width(child);
+        }
+    });
+    found
+}
 pub mod window_header;
 pub use nav_shell::{
-    InspectorPlacement, NavGeometry, NavMode, NavPane, NavShell, OverviewPlacement,
+    ContentKind, InspectorPlacement, NavGeometry, NavMode, NavPane, NavShell, OverviewPlacement,
     SidebarPlacement,
 };
 pub use window_header::{
@@ -3097,7 +3137,9 @@ pub use window_header::{
     WindowHeader, WindowHistory,
 };
 mod nav_list;
-pub use nav_list::{NavAction, NavDrop, NavItem, NavItemStatus, NavList, NavSection};
+pub use nav_list::{
+    NavAction, NavDrop, NavItem, NavItemStatus, NavList, NavSearchTerm, NavSection,
+};
 mod document_viewport;
 pub use document_viewport::{
     ContentDraw, DEFAULT_MAX_ZOOM, DEFAULT_MIN_ZOOM, DEFAULT_PADDING, DEFAULT_PAN_STEP,
@@ -3132,7 +3174,11 @@ mod editable_label;
 pub use editable_label::{EditOutcome, EditableLabel};
 pub mod acknowledgement;
 pub mod autocomplete;
-pub use autocomplete::{Autocomplete, AutocompleteOutcome, Suggester, Suggestion, SuggestionList};
+pub use autocomplete::{
+    Autocomplete, AutocompleteOutcome, Suggester, Suggestion, SuggestionList, SuggestionPerson,
+};
+pub mod mention_picker;
+pub use mention_picker::{MentionCandidate, MentionQuery};
 mod number_input;
 pub use number_input::{NumberInput, NumberStepperFace, StepperPart};
 pub mod marks;
@@ -3144,19 +3190,21 @@ pub mod block_editor;
 pub mod paint_damage;
 pub use block_editor::{
     Block, BlockContent, BlockEditOp, BlockEditor, BlockKind, CalloutKind, CursorPlacement,
-    DocumentPosition, DocumentSelection, EditScope, PresenceKeyFn, TransclusionPreview,
-    legacy_block_id,
+    DocumentPosition, DocumentSelection, EditScope, PresenceKeyFn, SlashRequest,
+    TransclusionPreview, legacy_block_id,
 };
 mod filter_menu;
 pub use filter_menu::FilterMenu;
 pub mod slash_menu;
-pub use slash_menu::SlashMenu;
+pub use slash_menu::{SlashCommand, SlashHostCommand, SlashMenu};
 pub mod link_popover;
 pub use link_popover::{LinkPopover, PageEntry};
 pub mod page_sidebar;
 pub use page_sidebar::{PageSidebar, PageSidebarEvent};
 mod dropdown;
 pub use dropdown::{Dropdown, DropdownFace, FILTER_MIN_OPTIONS};
+pub mod aim;
+pub use aim::Trajectory;
 mod hover_intent;
 pub use hover_intent::EdgeAim;
 pub mod top_edge_reveal;
@@ -3216,10 +3264,10 @@ pub use window_group::{
     WindowGroup, WindowGroupBounds, WindowWidth, max_group_px, maximized_chrome_height,
     merged_controls_width, min_group_px, permille_for_px,
 };
+pub mod edge_resize;
+pub use edge_resize::{EdgeGrab, ResizeMode, WidthLimits, WindowEdge};
 mod resize_handle;
-pub use resize_handle::{
-    HANDLE_HIT_HALF_PX, HANDLE_HOVER_PX, HANDLE_SLOT_PX, HANDLE_VISIBLE_PX, ResizeHandle,
-};
+pub use resize_handle::{HANDLE_HIT_HALF_PX, HANDLE_SLOT_PX, HANDLE_VISIBLE_PX, ResizeHandle};
 mod group_row;
 pub use group_row::{
     CrossStripDetach, GroupRow, GroupTopology, JUMP_PX_PER_DETENT, OutputSpan, Pan, StripLane,

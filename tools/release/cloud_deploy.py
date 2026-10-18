@@ -92,6 +92,9 @@ class Service:
     manifest: str
     health: str
     platform: str = DEFAULT_PLATFORM
+    # Fields its health URL must answer with besides the revision (a room service's
+    # `relay = "up"`): a service can answer while what it serves is down.
+    expect: tuple[tuple[str, str], ...] = ()
 
     @property
     def registry(self) -> str:
@@ -130,8 +133,11 @@ def load_target(text: str, source: str) -> Target:
         missing = [key for key in ("name", "image", "manifest", "health") if not isinstance(entry.get(key), str)]
         if missing:
             raise PromotionError(f"{source}: service {index + 1} has no {', '.join(missing)}")
+        expect = entry.get("expect", {})
+        if not isinstance(expect, dict) or not all(isinstance(value, str) for value in expect.values()):
+            raise PromotionError(f"{source}: {entry['name']}'s expect must map fields to strings")
         service = Service(entry["name"], entry["image"], entry["manifest"], entry["health"],
-                          entry.get("platform", DEFAULT_PLATFORM))
+                          entry.get("platform", DEFAULT_PLATFORM), tuple(sorted(expect.items())))
         if "/" not in service.image or "@" in service.image or ":" in service.image.split("/", 1)[1]:
             raise PromotionError(f"{source}: {service.name}'s image {service.image!r} is not a repository")
         if urllib.parse.urlsplit(service.health).scheme != "https":
@@ -723,8 +729,12 @@ def plan_from(args, source: Source, registry: Registry, git: Git) -> Plan:
 
 # --- Watching a rollout ---------------------------------------------------------
 
-def probe(transport: Transport, service: Service, expected: str | None) -> str | None:
-    """None when the service answers healthy with the expected build, else what is wrong."""
+def probe(transport: Transport, service: Service, expected: str | None, strict: bool = True) -> str | None:
+    """None when the service answers healthy with the expected build, else what is wrong.
+
+    `strict` requires every field of the service's `expect`. Otherwise a field the build does
+    not report passes (an older build rolled back to may predate it), and only a different
+    value fails."""
     try:
         reply = transport("GET", service.health, {"Accept": "application/json", "Cache-Control": "no-store"}, None)
     except PromotionError as error:
@@ -738,18 +748,22 @@ def probe(transport: Transport, service: Service, expected: str | None) -> str |
     revision = document.get("revision") if isinstance(document, dict) else None
     if expected and revision != expected:
         return f"{service.health} reports {revision or 'no revision'}, not {expected[:12]}"
+    for field, value in service.expect:
+        reported = document.get(field) if isinstance(document, dict) else None
+        if reported != value and (strict or reported is not None):
+            return f"{service.health} reports {field} {reported!r}, not {value!r}"
     return None
 
 
 def watch(transport: Transport, target: Target, expected: Mapping[str, str | None],
-          clock: Callable[[], float], sleep: Callable[[float], None]) -> str | None:
+          clock: Callable[[], float], sleep: Callable[[float], None], strict: bool = True) -> str | None:
     """Wait until every service in `expected` reports its build, then stays healthy for the
     target's settle time. None when it did, else why not."""
     start = clock()
     healthy_since = None
     while True:
         problems = [problem for name, revision in expected.items()
-                    if (problem := probe(transport, target.service(name), revision))]
+                    if (problem := probe(transport, target.service(name), revision, strict))]
         now = clock()
         if not problems:
             if healthy_since is None:
@@ -835,7 +849,8 @@ def roll_back(args, plan: Plan, transport: Transport, clock, sleep, problem: str
         print(f"Could not roll back: {source.name} moved while this ran", file=sys.stderr)
         return 1
     print(f"Committed the previous pins to {source.name}; waiting for them")
-    back = watch(transport, source.target, {name: plan.current[name].built for name in plan.moves}, clock, sleep)
+    back = watch(transport, source.target, {name: plan.current[name].built for name in plan.moves}, clock, sleep,
+                 strict=False)
     if back is None:
         print("Rolled back: the previous images are healthy again.", file=sys.stderr)
     else:

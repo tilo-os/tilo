@@ -199,6 +199,7 @@ pub fn parse_eml(raw: &[u8], timestamp_min: i64, folder: Folder) -> Option<Messa
                 hydrated: !content.is_empty(),
                 content_id: None,
                 content,
+                kept: false,
             }
         })
         .collect();

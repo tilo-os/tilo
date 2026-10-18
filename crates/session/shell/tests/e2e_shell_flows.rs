@@ -205,9 +205,44 @@ static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 // Test 1: open + close overview
 
+/// The toolkit's clock (`ui::time`) for a golden run: every step reads the
+/// next frame, `FRAME` apart, from one start, however long the machine
+/// takes. A Notes tile's startup save is still unconfirmed when the run
+/// begins, and on a slow builder the wall clock passed the save surface's
+/// stall bound before the shot, so the overview golden sometimes caught the
+/// "Saved" that ends a stalled save. On this clock the run spans a few
+/// hundred milliseconds, every time. The overview's own crossfade keeps the
+/// wall clock (`std::time`), which the run still sleeps through.
+struct FrameClock {
+    start: ui::time::Instant,
+    frame: u32,
+}
+
+impl FrameClock {
+    const FRAME: Duration = Duration::from_millis(50);
+
+    fn new() -> Self {
+        Self {
+            start: ui::time::now(),
+            frame: 0,
+        }
+    }
+
+    /// Run `step` at the next frame's instant.
+    fn step<T>(&mut self, step: impl FnOnce() -> T) -> T {
+        let at = Self::FRAME
+            .checked_mul(self.frame)
+            .and_then(|offset| self.start.checked_add(offset))
+            .expect("a run of frames stays within the clock's range");
+        self.frame = self.frame.saturating_add(1);
+        ui::time::testing::with_monotonic_time(at, step)
+    }
+}
+
 #[test]
 fn e2e_open_close_overview() {
     let _guard = TEST_LOCK.lock_recover();
+    let mut clock = FrameClock::new();
     // bootstrap_demo already seeds 3 workspaces, so the Overview grid has
     // cards to paint without further appends.
     let tree = WorkspaceTree::bootstrap_demo();
@@ -217,24 +252,26 @@ fn e2e_open_close_overview() {
         .expect("overview pixel oracle requires an offscreen adapter");
     let out_dir = screenshots_dir();
 
-    let mut h = Harness::new(&tree);
-    h.draw_to(Some(&mut offscreen), &out_dir.join("e2e-01-desktop.png"));
+    let mut h = clock.step(|| Harness::new(&tree));
+    clock.step(|| h.draw_to(Some(&mut offscreen), &out_dir.join("e2e-01-desktop.png")));
 
     // The probe only computes the workspace name's centre; the click flows
     // through `ShellOverlayHost::handle_event` and opens the workspace
     // menu, whose Overview row opens the overview.
-    let hit = workspace_pill_hit(&tree, &theme, h.chrome.clone());
-    h.click(hit.x, hit.y);
-    let host = h
-        .root
-        .as_any_mut()
-        .and_then(|widget| widget.downcast_mut::<ShellOverlayHost>())
-        .expect("the root is the shell overlay host");
-    assert!(
-        host.workspace_menu_labels().is_some(),
-        "root-level click on the workspace name should open the workspace menu"
-    );
-    assert!(host.choose_in_workspace_menu("Overview"));
+    let hit = clock.step(|| workspace_pill_hit(&tree, &theme, h.chrome.clone()));
+    clock.step(|| h.click(hit.x, hit.y));
+    clock.step(|| {
+        let host = h
+            .root
+            .as_any_mut()
+            .and_then(|widget| widget.downcast_mut::<ShellOverlayHost>())
+            .expect("the root is the shell overlay host");
+        assert!(
+            host.workspace_menu_labels().is_some(),
+            "root-level click on the workspace name should open the workspace menu"
+        );
+        assert!(host.choose_in_workspace_menu("Overview"));
+    });
     assert!(
         h.chrome.borrow().overlays.overview,
         "the workspace menu's Overview row should open the overview overlay"
@@ -244,55 +281,63 @@ fn e2e_open_close_overview() {
     // first draw after the target changes, so `needs_animation_frame()`
     // reads `false` until that draw runs — without this priming draw the
     // loop below exits immediately and captures the pre-fade desktop.
-    {
+    clock.step(|| {
         let mut scene = Scene::new();
         let presence = PresenceCtx::default();
         h.root
             .draw(&mut scene, Affine::IDENTITY, &mut h.tr, &h.theme, &presence);
-    }
+    });
 
     // `needs_animation_frame()` is a weak loop guard so this can't sleep forever.
     let deadline = Instant::now() + Duration::from_millis(600);
-    while h.root.needs_animation_frame() && Instant::now() < deadline {
+    while clock.step(|| h.root.needs_animation_frame()) && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
         // Re-draw so the tick functions see elapsed time — they advance on draw,
         // not on wall clock.
-        let mut scene = Scene::new();
-        let presence = PresenceCtx::default();
-        h.root
-            .draw(&mut scene, Affine::IDENTITY, &mut h.tr, &h.theme, &presence);
+        clock.step(|| {
+            let mut scene = Scene::new();
+            let presence = PresenceCtx::default();
+            h.root
+                .draw(&mut scene, Affine::IDENTITY, &mut h.tr, &h.theme, &presence);
+        });
     }
 
-    h.draw_to(
-        Some(&mut offscreen),
-        &out_dir.join("e2e-02-overview-open.png"),
-    );
+    clock.step(|| {
+        h.draw_to(
+            Some(&mut offscreen),
+            &out_dir.join("e2e-02-overview-open.png"),
+        );
+    });
 
-    h.pump(&named_key(NamedKey::Escape));
+    clock.step(|| h.pump(&named_key(NamedKey::Escape)));
     assert!(
         !h.chrome.borrow().overlays.overview,
         "Escape should close the overview overlay"
     );
 
-    {
+    clock.step(|| {
         let mut scene = Scene::new();
         let presence = PresenceCtx::default();
         h.root
             .draw(&mut scene, Affine::IDENTITY, &mut h.tr, &h.theme, &presence);
-    }
+    });
 
     let deadline = Instant::now() + Duration::from_millis(600);
-    while h.root.needs_animation_frame() && Instant::now() < deadline {
+    while clock.step(|| h.root.needs_animation_frame()) && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
-        let mut scene = Scene::new();
-        let presence = PresenceCtx::default();
-        h.root
-            .draw(&mut scene, Affine::IDENTITY, &mut h.tr, &h.theme, &presence);
+        clock.step(|| {
+            let mut scene = Scene::new();
+            let presence = PresenceCtx::default();
+            h.root
+                .draw(&mut scene, Affine::IDENTITY, &mut h.tr, &h.theme, &presence);
+        });
     }
-    h.draw_to(
-        Some(&mut offscreen),
-        &out_dir.join("e2e-03-overview-closed.png"),
-    );
+    clock.step(|| {
+        h.draw_to(
+            Some(&mut offscreen),
+            &out_dir.join("e2e-03-overview-closed.png"),
+        );
+    });
 
     // The pixel oracle must observe the actual rendered production frames.
     for name in [
@@ -841,25 +886,34 @@ fn overlay_host_keys_and_corner_clicks_open_close_and_navigate_overlays() {
             let before =
                 chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0].active_tab;
 
-            let mods = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+            // Ctrl+Tab belongs to the focused app first (keyboard_focus_wire
+            // and app_tabs cover it); the desktop's own spelling adds Super.
+            let mods = Modifiers::from(
+                winit::keyboard::ModifiersState::SUPER | winit::keyboard::ModifiersState::CONTROL,
+            );
             let handled = pump_host(&mut host, &named_key(NamedKey::Tab), mods);
-            assert!(handled, "Ctrl+Tab must be consumed by the overlay host");
+            assert!(
+                handled,
+                "Super+Ctrl+Tab must be consumed by the overlay host"
+            );
             assert!(
                 !chrome.borrow().overlays.overview,
-                "Ctrl+Tab is tab navigation; only Super+Tab opens the overview"
+                "Super+Ctrl+Tab is tab navigation; only Super+Tab opens the overview"
             );
             let after =
                 chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0].active_tab;
-            assert_ne!(after, before, "Ctrl+Tab must select the next tab");
+            assert_ne!(after, before, "Super+Ctrl+Tab must select the next tab");
 
             let backwards = Modifiers::from(
-                winit::keyboard::ModifiersState::CONTROL | winit::keyboard::ModifiersState::SHIFT,
+                winit::keyboard::ModifiersState::SUPER
+                    | winit::keyboard::ModifiersState::CONTROL
+                    | winit::keyboard::ModifiersState::SHIFT,
             );
             assert!(pump_host(&mut host, &named_key(NamedKey::Tab), backwards));
             assert_eq!(
                 chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0].active_tab,
                 before,
-                "Ctrl+Shift+Tab must return to the previous tab"
+                "Super+Ctrl+Shift+Tab must return to the previous tab"
             );
         }
 
@@ -968,7 +1022,7 @@ fn overlay_host_keys_and_corner_clicks_open_close_and_navigate_overlays() {
                 &out_dir.join("e2e-06-quick-settings-pre.png"),
             );
 
-            // With the sidebar click-guard narrowed, the click reaches TopBarChrome.
+            // The click reaches TopBarChrome.
             let hit = tray_pill_hit(&tree, &theme, h.chrome.clone());
             h.click(hit.x, hit.y);
             assert!(

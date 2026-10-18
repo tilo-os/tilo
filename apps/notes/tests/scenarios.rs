@@ -293,6 +293,23 @@ fn reached(
                 && node.state.expanded == Some(true)
                 && !node.state.hidden
         }),
+        Some("mention") => {
+            matches!(blocks, [block] if block.text() == "Ask @")
+                && observed(driver, |node| {
+                    node.role == ui::a11y::Role::List
+                        && node.name.as_deref() == Some("People to mention")
+                        && !node.children.is_empty()
+                })
+        }
+        Some("slash_query") => {
+            matches!(blocks, [block] if block.text() == "Groceries for Monday /c")
+                && observed(driver, |node| {
+                    node.semantic_key.as_deref() == Some("notes.slash-menu")
+                        && node.value.as_deref() == Some("c")
+                        && node.children.first().and_then(|row| row.name.as_deref())
+                            == Some("Checklist")
+                })
+        }
         Some("slash_applied") => {
             matches!(blocks, [block] if matches!(block.kind, BlockKind::Heading(1)) && block.text() == "Overview")
         }
@@ -360,6 +377,24 @@ fn reached(
                 .text()
                 .starts_with("![Settings external accounts](asset:")
         }),
+        Some("image_sized") => blocks.iter().any(|block| {
+            block.text().contains("|360](asset:")
+        }) && observed(driver, |node| {
+            node.role == ui::a11y::Role::Image
+                && node.name.as_deref() == Some("Settings external accounts")
+        }),
+        Some("long_list") => {
+            let numbered = blocks
+                .iter()
+                .filter(|block| matches!(block.kind, BlockKind::Numbered { indent: 0 }))
+                .count();
+            numbered == 12
+                && blocks.iter().any(|block| {
+                    matches!(block.kind, BlockKind::Paragraph)
+                        && block.indent() == 1
+                        && block.text() == "The heavy ones go in the small boxes."
+                })
+        }
         Some("image") => blocks.iter().any(|block| {
             block
                 .text()
@@ -419,7 +454,7 @@ fn reached(
             node.name.as_deref() == Some("Reference 28") && node.bounds.is_some()
         }),
         Some("status") => observed(driver, |node| node.name.as_deref() == Some("Saved")),
-        Some("saving" | "save_retrying") => {
+        Some("save_retrying") => {
             observed(driver, |node| node.name.as_deref() == Some("Saving…"))
         }
         Some("save_not_saved") => observed(driver, |node| {

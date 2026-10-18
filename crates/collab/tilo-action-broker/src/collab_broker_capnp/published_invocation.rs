@@ -384,7 +384,7 @@ impl OriginalInvocationData {
                 self.spec.kind == tilo_actions::OperationKind::Effect
                     && action == "recover-clipboard-transfers"
             }
-            Command::Capture { .. } | Command::Release { .. } => {
+            Command::Capture { .. } | Command::CaptureNamed { .. } | Command::Release { .. } => {
                 self.spec.kind == tilo_actions::OperationKind::Effect
                     && matches!(
                         action,

@@ -9,6 +9,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "API Tester",
         category: "Development",
         platforms: &["linux", "macos", "web"],
+        names: &["API-Tester"],
         keywords: &[
             "postman",
             "insomnia",
@@ -28,6 +29,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Backups",
         category: "System",
         platforms: &["linux", "macos"],
+        names: &["Datensicherung"],
         keywords: &[
             "backup",
             "restore",
@@ -46,6 +48,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Browser",
         category: "Network",
         platforms: &["linux", "macos"],
+        names: &[],
         keywords: &[
             "web",
             "internet",
@@ -64,6 +67,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Calculator",
         category: "Utility",
         platforms: &["linux", "macos", "web"],
+        names: &["Rechner"],
         keywords: &[
             "calc",
             "math",
@@ -82,6 +86,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Calendar",
         category: "Office",
         platforms: &["linux", "macos", "web"],
+        names: &["Kalender"],
         keywords: &[
             "agenda",
             "schedule",
@@ -105,6 +110,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Camera",
         category: "Multimedia",
         platforms: &["linux", "macos", "web"],
+        names: &["Kamera"],
         keywords: &[
             "webcam",
             "photo",
@@ -123,6 +129,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Canvas",
         category: "Multimedia",
         platforms: &["linux", "macos", "web"],
+        names: &[],
         keywords: &[
             "draw",
             "drawing",
@@ -144,6 +151,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Chat",
         category: "Network",
         platforms: &["linux", "macos", "web"],
+        names: &[],
         keywords: &[
             "messenger",
             "instant messaging",
@@ -161,6 +169,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Chip Design",
         category: "Development",
         platforms: &["linux", "macos", "web"],
+        names: &["Chip-Entwurf"],
         keywords: &[
             "eda",
             "vlsi",
@@ -185,6 +194,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Clocks",
         category: "Utility",
         platforms: &["linux", "macos", "web"],
+        names: &["Uhren"],
         keywords: &[
             "clock",
             "alarm",
@@ -205,6 +215,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Code Editor",
         category: "Development",
         platforms: &["linux", "macos"],
+        names: &["Code-Editor"],
         keywords: &[
             "ide",
             "text editor",
@@ -225,6 +236,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Contacts",
         category: "Office",
         platforms: &["linux", "macos", "web"],
+        names: &["Kontakte"],
         keywords: &[
             "address book",
             "people",
@@ -246,6 +258,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Containers",
         category: "Development",
         platforms: &["tilo-os"],
+        names: &[],
         keywords: &[
             "docker",
             "podman",
@@ -263,6 +276,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Database Client",
         category: "Development",
         platforms: &["linux", "macos"],
+        names: &["Datenbank-Client"],
         keywords: &[
             "database",
             "sql",
@@ -283,6 +297,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Diff & Merge",
         category: "Development",
         platforms: &["linux", "macos", "web"],
+        names: &["Vergleichen und Zusammenführen"],
         keywords: &[
             "diff",
             "merge",
@@ -304,6 +319,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Discord",
         category: "Network",
         platforms: &["linux"],
+        names: &[],
         keywords: &[
             "voice chat",
             "communities",
@@ -318,6 +334,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Disk Usage Analyzer",
         category: "System",
         platforms: &["linux", "macos"],
+        names: &["Festplattenbelegung"],
         keywords: &[
             "disk space",
             "storage",
@@ -343,6 +360,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Disks",
         category: "System",
         platforms: &["tilo-os"],
+        names: &["Laufwerke"],
         keywords: &[
             "disk",
             "drive",
@@ -370,6 +388,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "E-Book Reader",
         category: "Office",
         platforms: &["linux", "macos", "web"],
+        names: &["E-Book-Leser"],
         keywords: &[
             "ebooks",
             "e-book",
@@ -396,6 +415,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Feeds",
         category: "Network",
         platforms: &["linux", "macos", "web"],
+        names: &["Nachrichtenfeeds"],
         keywords: &[
             "rss",
             "atom",
@@ -414,6 +434,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Files",
         category: "System",
         platforms: &["linux", "macos"],
+        names: &["Dateien"],
         keywords: &[
             "files",
             "file manager",
@@ -436,6 +457,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Firewall",
         category: "System",
         platforms: &["tilo-os"],
+        names: &[],
         keywords: &[
             "security",
             "network security",
@@ -456,6 +478,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Git",
         category: "Development",
         platforms: &["linux", "macos"],
+        names: &[],
         keywords: &[
             "git",
             "version control",
@@ -475,6 +498,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Hex Editor",
         category: "Development",
         platforms: &["linux", "macos", "web"],
+        names: &["Hex-Editor"],
         keywords: &[
             "hex",
             "binary",
@@ -492,6 +516,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Tilo Installer",
         category: "System",
         platforms: &["linux", "macos"],
+        names: &[],
         keywords: &[
             "iso",
             "usb stick",
@@ -517,6 +542,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Logs",
         category: "System",
         platforms: &["tilo-os"],
+        names: &["Protokolle"],
         keywords: &[
             "log",
             "journal",
@@ -539,6 +565,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Mail",
         category: "Office",
         platforms: &["linux", "macos"],
+        names: &[],
         keywords: &[
             "email",
             "e-mail",
@@ -563,6 +590,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Maps",
         category: "Utility",
         platforms: &["linux", "macos", "web"],
+        names: &["Karten"],
         keywords: &[
             "map",
             "navigation",
@@ -589,6 +617,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Messages",
         category: "Network",
         platforms: &["linux", "macos", "web"],
+        names: &[],
         keywords: &[
             "messaging",
             "direct messages",
@@ -604,6 +633,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Model Providers",
         category: "System",
         platforms: &["tilo-os", "linux", "macos", "web"],
+        names: &["Modellanbieter"],
         keywords: &[
             "model providers",
             "AI",
@@ -621,6 +651,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "System Monitor",
         category: "System",
         platforms: &["linux", "macos"],
+        names: &["Systemüberwachung"],
         keywords: &[
             "task manager",
             "processes",
@@ -653,6 +684,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Music",
         category: "Multimedia",
         platforms: &["linux", "macos", "web"],
+        names: &["Musik"],
         keywords: &[
             "audio",
             "songs",
@@ -679,6 +711,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Notes",
         category: "Office",
         platforms: &["linux", "macos", "web"],
+        names: &["Notizen"],
         keywords: &[
             "note",
             "memo",
@@ -700,6 +733,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Passwords",
         category: "Utility",
         platforms: &["linux", "macos", "web"],
+        names: &["Passwörter"],
         keywords: &[
             "password manager",
             "password",
@@ -726,6 +760,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "PDF Viewer",
         category: "Office",
         platforms: &["linux", "macos", "web"],
+        names: &["PDF-Betrachter"],
         keywords: &[
             "pdf",
             "document viewer",
@@ -745,6 +780,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Photos",
         category: "Graphics",
         platforms: &["linux", "macos", "web"],
+        names: &["Fotos"],
         keywords: &[
             "pictures",
             "images",
@@ -767,6 +803,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Print Centre",
         category: "Utility",
         platforms: &["tilo-os"],
+        names: &["Druckzentrale"],
         keywords: &[
             "printer",
             "printing",
@@ -789,6 +826,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "App Publisher",
         category: "Utility",
         platforms: &["linux", "macos"],
+        names: &["App-Veröffentlichung"],
         keywords: &[
             "publish",
             "release",
@@ -814,6 +852,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Remote Desktop",
         category: "Network",
         platforms: &["linux", "macos"],
+        names: &["Entfernter Desktop"],
         keywords: &[
             "remote desktop",
             "rdp",
@@ -835,6 +874,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Scratchpad",
         category: "Office",
         platforms: &["linux", "macos", "web"],
+        names: &["Notizblock"],
         keywords: &[
             "scratch",
             "notepad",
@@ -855,9 +895,10 @@ pub(super) const APPS: &[CatalogApp] = &[
     },
     CatalogApp {
         id: "so.tilo.settings",
-        name: "Personal Settings",
+        name: "Settings",
         category: "System",
         platforms: &["tilo-os"],
+        names: &["Einstellungen"],
         keywords: &[
             "preferences",
             "system settings",
@@ -885,6 +926,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Sheets",
         category: "Office",
         platforms: &["linux", "macos", "web"],
+        names: &["Tabellen"],
         keywords: &[
             "spreadsheet",
             "spreadsheets",
@@ -908,6 +950,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Shortcuts",
         category: "Utility",
         platforms: &["linux", "macos", "web"],
+        names: &["Kurzbefehle"],
         keywords: &[
             "automation",
             "workflows",
@@ -928,6 +971,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Slides",
         category: "Office",
         platforms: &["linux", "macos", "web"],
+        names: &["Präsentationen"],
         keywords: &[
             "presentation",
             "presentations",
@@ -949,6 +993,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Snippets",
         category: "Development",
         platforms: &["linux", "macos", "web"],
+        names: &["Textbausteine"],
         keywords: &[
             "snippet",
             "text expander",
@@ -970,6 +1015,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Speed Test",
         category: "System",
         platforms: &["linux", "macos", "web"],
+        names: &["Geschwindigkeitstest"],
         keywords: &[
             "speedtest",
             "internet speed",
@@ -995,6 +1041,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "App Store",
         category: "System",
         platforms: &["tilo-os"],
+        names: &[],
         keywords: &[
             "app store",
             "store",
@@ -1024,6 +1071,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Terminal",
         category: "System",
         platforms: &["linux", "macos"],
+        names: &[],
         keywords: &[
             "shell",
             "console",
@@ -1047,6 +1095,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Theme Studio",
         category: "System",
         platforms: &["linux", "macos", "web"],
+        names: &["Design-Studio"],
         keywords: &[
             "theme",
             "themes",
@@ -1079,6 +1128,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "TOTP",
         category: "Utility",
         platforms: &["linux", "macos", "web"],
+        names: &[],
         keywords: &[
             "authenticator",
             "2fa",
@@ -1105,6 +1155,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Tube",
         category: "Multimedia",
         platforms: &["linux", "macos", "web"],
+        names: &[],
         keywords: &[
             "youtube",
             "video",
@@ -1133,6 +1184,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Typst Editor",
         category: "Office",
         platforms: &["linux", "macos", "web"],
+        names: &["Typst-Editor"],
         keywords: &[
             "typst",
             "latex",
@@ -1157,6 +1209,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Video Editor",
         category: "Multimedia",
         platforms: &["linux", "macos", "web"],
+        names: &["Videobearbeitung"],
         keywords: &[
             "video editing",
             "timeline",
@@ -1180,6 +1233,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Video Player",
         category: "Multimedia",
         platforms: &["linux", "macos", "web"],
+        names: &["Videoplayer"],
         keywords: &[
             "movie",
             "movies",
@@ -1205,6 +1259,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "VPN Studio",
         category: "Network",
         platforms: &["tilo-os"],
+        names: &[],
         keywords: &[
             "vpn",
             "wireguard",
@@ -1230,6 +1285,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Weather",
         category: "Utility",
         platforms: &["linux", "macos", "web"],
+        names: &["Wetter"],
         keywords: &[
             "forecast",
             "temperature",
@@ -1260,6 +1316,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Windows Apps",
         category: "System",
         platforms: &["tilo-os"],
+        names: &["Windows-Apps"],
         keywords: &[
             "windows",
             "wine",
@@ -1285,6 +1342,7 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Word Processor",
         category: "Office",
         platforms: &["linux", "macos", "web"],
+        names: &["Textverarbeitung"],
         keywords: &[
             "word",
             "docs",

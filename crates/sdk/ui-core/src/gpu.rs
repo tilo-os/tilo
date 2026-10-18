@@ -14,9 +14,11 @@
 //!
 //! Not a patched vello: `RenderSurface`'s fields are public and
 //! `Renderer::new` takes a plain `&Device`, so only `DeviceHandle` needed
-//! reimplementing, for its private `adapter` field. vello stays unmodified,
-//! and this file stays close to `vello::util`'s own logic so the two can be
-//! compared when vello moves.
+//! reimplementing, for its private `adapter` field. The one change to
+//! `vello::util` is that `RenderSurface::blitter` is optional, so a surface
+//! the target reaches by a texture copy compiles no blit pipeline
+//! (`vendor/PATCHES.md`); this file stays close to `vello::util`'s own logic
+//! so the two can be compared when vello moves.
 //!
 //! It also decides which backends the instance is made with
 //! (`default_backends`): without OpenGL whenever OpenGL could not be
@@ -576,8 +578,11 @@ impl RenderContext {
         tilo_startup_metrics::mark("surface-targets-create-start");
         let (target_texture, target_view) = create_targets(width, height, &handle.device);
         tilo_startup_metrics::mark("surface-targets-create-done");
+        // A surface the target reaches by a texture copy never blits: its
+        // blit pipeline would be compiled on every window's way to its first
+        // frame for nothing.
         tilo_startup_metrics::mark("surface-blitter-create-start");
-        let blitter = TextureBlitter::new(&handle.device, format);
+        let blitter = (!direct_copy).then(|| TextureBlitter::new(&handle.device, format));
         tilo_startup_metrics::mark("surface-blitter-create-done");
         let surface = RenderSurface {
             surface,
@@ -613,6 +618,44 @@ impl RenderContext {
             return;
         };
         surface.surface.configure(&handle.device, &surface.config);
+    }
+}
+
+/// Put `surface`'s render target into the acquired `texture` of its
+/// swapchain: a texture copy when the surface was configured for one, else
+/// its blit.
+pub fn draw_target_to_surface(
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    surface: &RenderSurface<'_>,
+    texture: &Texture,
+) {
+    match surface.blitter.as_ref() {
+        Some(blitter) => blitter.copy(
+            device,
+            encoder,
+            &surface.target_view,
+            &texture.create_view(&wgpu::TextureViewDescriptor::default()),
+        ),
+        None => encoder.copy_texture_to_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &surface.target_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d {
+                width: surface.config.width,
+                height: surface.config.height,
+                depth_or_array_layers: 1,
+            },
+        ),
     }
 }
 

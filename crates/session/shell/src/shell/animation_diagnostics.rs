@@ -14,7 +14,7 @@ pub(crate) const HOST_SOURCE_NAMES: [&str; 16] = [
     "capture-studio",
     "projection",
     "content",
-    "sidebar",
+    "strip_switcher",
     "capture-mirror",
     "screenshot-markup",
     "notification",
@@ -42,7 +42,7 @@ pub(crate) struct HostDemandInputs {
     pub room_replay: bool,
     pub projection: bool,
     pub content: bool,
-    pub sidebar: bool,
+    pub strip_switcher: bool,
     pub capture_mirror: bool,
     pub screenshot_markup: bool,
     pub notification: bool,
@@ -64,7 +64,7 @@ pub(crate) fn host_bits(inputs: &HostDemandInputs) -> u32 {
         | (u32::from(inputs.capture_studio) << 8)
         | (u32::from(inputs.projection) << 9)
         | (u32::from(inputs.content) << 10)
-        | (u32::from(inputs.sidebar) << 11)
+        | (u32::from(inputs.strip_switcher) << 11)
         | (u32::from(inputs.capture_mirror) << 12)
         | (u32::from(inputs.screenshot_markup) << 13)
         | (u32::from(inputs.notification) << 14)
@@ -176,7 +176,7 @@ mod tests {
             room_replay: false,
             projection: false,
             content: false,
-            sidebar: false,
+            strip_switcher: false,
             capture_mirror: false,
             screenshot_markup: false,
             notification: false,

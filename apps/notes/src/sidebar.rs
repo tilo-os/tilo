@@ -13,9 +13,9 @@
 //! first child), F2 renames, Delete deletes (never Backspace — the editor
 //! and the tree can both hold focus), Alt-↑ / Alt-↓ reorder among siblings,
 //! Tab / Shift-Tab (or Alt-→ / Alt-←) indent / outdent, and the Menu key or
-//! Shift-F10 open the page menu. Creating a child of the selection
-//! (Cmd-N / Ctrl-N) is handled one level up in `NotesApp`, so it works
-//! whichever pane has focus.
+//! Shift-F10 open the page menu. New notes (Ctrl+N at the top level,
+//! Ctrl+Shift+N inside the selection) are handled one level up in
+//! `NotesApp`, so they work whichever pane has focus.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -114,8 +114,8 @@ pub(crate) fn note_context_menu() -> ContextMenu {
 /// The menu on empty sidebar space: a new top-level note, or an import.
 fn empty_area_items() -> Vec<MenuItem> {
     vec![
-        MenuItem::icon_action(Icon::FilePlus, "New note", || {}),
-        MenuItem::icon_action(Icon::CloudDownload, "Import Markdown", || {}),
+        MenuItem::icon_action(Icon::FilePlus, ui::i18n!("notes-empty-action"), || {}),
+        MenuItem::icon_action(Icon::CloudDownload, ui::i18n!("notes-import-title"), || {}),
     ]
 }
 
@@ -388,7 +388,6 @@ impl PageSidebar {
             .selection_follows_focus(true)
             .rename_on_double_click()
             .tab_indents(true)
-            .with_row_hint(ui::i18n!("notes-affordance-note-row"))
             .with_row_actions(vec![
                 TreeRowAction::new(Icon::Plus, ui::i18n!("notes-affordance-new-child"))
                     .accessible_name(ui::i18n!("notes-a11y-new-child-under")),

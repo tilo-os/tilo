@@ -34,11 +34,16 @@
 //! confirmed the heading, so a pointer that stops short lets go instead of
 //! pinning the row.
 //!
+//! Transit and aim are read from the system's one pointer predictor,
+//! [`super::aim::Trajectory`].
+//!
 //! The state is pure: every method takes the instant it reasons about, so
 //! slow and fast pointer paths are tested against a synthetic timeline.
 
+use super::aim::Trajectory;
+pub(crate) use super::aim::{SETTLE, in_aim_hull};
 use crate::time::{Duration, Instant};
-use vello::kurbo::{Point, Rect, Vec2};
+use vello::kurbo::{Point, Rect};
 
 /// How long the pointer rests on an item before it opens. Shorter than a
 /// deliberate pause, longer than the time a pointer sweeping across a row
@@ -48,17 +53,6 @@ pub(crate) const DWELL: Duration = Duration::from_millis(100);
 /// How long a change held by heading waits once the pointer stops moving
 /// toward what it was heading for without arriving.
 pub(crate) const AIM_HOLD: Duration = Duration::from_millis(300);
-
-/// A moving pointer reports at least every 16 ms; one silent this long has
-/// stopped where it last was.
-pub(crate) const SETTLE: Duration = Duration::from_millis(50);
-
-/// At or below this speed (px/ms, 50 px/s) a pointer is settling where it is.
-const SETTLE_SPEED: f64 = 0.05;
-
-/// Recent pointer samples kept; the oldest is the triangle's apex, so a
-/// single jittery sample cannot point the cone the wrong way.
-const APEX_SAMPLES: usize = 3;
 
 /// One item of the row, as laid out now.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -126,8 +120,7 @@ pub(crate) struct HoverIntent {
     /// The item the last sample was over.
     rest: Option<usize>,
     last: Option<Last>,
-    /// Newest last.
-    samples: Vec<(Point, Instant)>,
+    path: Trajectory,
 }
 
 impl HoverIntent {
@@ -161,22 +154,18 @@ impl HoverIntent {
     /// A pointer sample.
     pub(crate) fn on_motion(&mut self, s: &Sample<'_>, now: Instant) {
         let p = s.p;
-        let apex = self.samples.first().map(|(a, _)| *a);
-        if self.samples.len() >= APEX_SAMPLES {
-            self.samples.remove(0);
-        }
-        self.samples.push((p, now));
+        self.path.push(p, now);
         self.settle(now);
 
         // A repeated position says nothing about direction.
-        let from = apex.filter(|a| *a != p);
+        let from = self.path.apex().filter(|a| *a != p);
         let toward = |r: Rect| from.is_some_and(|a| in_aim_hull(p, a, r));
         // From inside a clickable control only settling counts, never
         // heading: a pointer already on it is passing or aiming.
         let heading = |r: Rect| !r.contains(p) && toward(r);
         let under = s.under.map(|u| u.idx);
         let control = s.controls.iter().copied().find(|r| r.contains(p));
-        let settling = settling(&self.samples, control);
+        let settling = self.path.settling(control);
         self.rest = under;
         self.last = Some(Last {
             at: now,
@@ -299,29 +288,24 @@ impl HoverIntent {
 /// The state is pure: every method takes the instant it reasons about.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct EdgeAim {
-    /// Newest last, at most [`APEX_SAMPLES`].
-    samples: Vec<(Point, Instant)>,
+    path: Trajectory,
 }
 
 impl EdgeAim {
     /// Forget the trajectory, e.g. when the pointer leaves the display or
     /// jumps to another one.
     pub fn clear(&mut self) {
-        self.samples.clear();
+        self.path.clear();
     }
 
     /// A pointer sample at `p`. Returns the index of the target in `targets`
     /// the pointer is aiming at, the first one when several qualify.
     pub fn on_motion(&mut self, p: Point, now: Instant, targets: &[Rect]) -> Option<usize> {
-        let apex = self.samples.first().map(|(a, _)| *a);
-        if self.samples.len() >= APEX_SAMPLES {
-            self.samples.remove(0);
-        }
-        self.samples.push((p, now));
-        let from = apex.filter(|a| *a != p)?;
-        targets.iter().position(|target| {
-            in_aim_hull(p, from, *target) && comes_to_rest_in(&self.samples, *target)
-        })
+        self.path.push(p, now);
+        let from = self.path.apex().filter(|a| *a != p)?;
+        targets
+            .iter()
+            .position(|target| in_aim_hull(p, from, *target) && self.path.comes_to_rest_in(*target))
     }
 
     /// The target the pointer has come to rest in at `now`: still for
@@ -329,149 +313,21 @@ impl EdgeAim {
     /// corner ends this way, with no slow sample to read.
     #[must_use]
     pub fn rested_in(&self, now: Instant, targets: &[Rect]) -> Option<usize> {
-        let (p, at) = self.samples.last().copied()?;
-        let (from, _) = self.samples.first().copied()?;
-        if now.saturating_duration_since(at) < SETTLE || from == p {
-            return None;
-        }
-        targets
-            .iter()
-            .position(|target| target.contains(p) && !target.contains(from))
+        self.path.rested_in(now, targets)
     }
 
     /// Whether the pointer is resting where it is: slow at its last sample,
     /// or silent for [`SETTLE`] since. Without motion seen, it is.
     #[must_use]
     pub fn settled(&self, now: Instant) -> bool {
-        let Some((p, t)) = self.samples.last().copied() else {
-            return true;
-        };
-        if now.saturating_duration_since(t) >= SETTLE {
-            return true;
-        }
-        let Some((q, tq)) = self
-            .samples
-            .len()
-            .checked_sub(2)
-            .and_then(|i| self.samples.get(i))
-            .copied()
-        else {
-            return true;
-        };
-        let ms = t.saturating_duration_since(tq).as_secs_f64() * 1000.0;
-        ms > 0.0 && (p - q).hypot() / ms <= SETTLE_SPEED
+        self.path.settled(now)
     }
 
     /// When [`Self::settled`] next changes with no further input.
     #[must_use]
     pub fn deadline(&self, now: Instant) -> Option<Instant> {
-        if self.settled(now) {
-            return None;
-        }
-        self.samples.last().map(|(_, at)| *at + SETTLE)
+        self.path.settle_deadline(now)
     }
-}
-
-/// Whether the trajectory in `samples` ends inside `target`: slow there
-/// already, or decelerating toward a stop inside it.
-fn comes_to_rest_in(samples: &[(Point, Instant)], target: Rect) -> bool {
-    let n = samples.len();
-    let Some((p, t)) = samples.last().copied() else {
-        return false;
-    };
-    let Some((q, tq)) = n.checked_sub(2).and_then(|i| samples.get(i)).copied() else {
-        return false;
-    };
-    let speed = |a: Point, ta: Instant, b: Point, tb: Instant| {
-        let ms = tb.saturating_duration_since(ta).as_secs_f64() * 1000.0;
-        if ms <= 0.0 {
-            f64::INFINITY
-        } else {
-            (b - a).hypot() / ms
-        }
-    };
-    let v = speed(q, tq, p, t);
-    if v <= SETTLE_SPEED {
-        return target.contains(p);
-    }
-    let Some((o, to)) = n.checked_sub(3).and_then(|i| samples.get(i)).copied() else {
-        return false;
-    };
-    let v0 = speed(o, to, q, tq);
-    let dt = t.saturating_duration_since(tq).as_secs_f64() * 1000.0;
-    if !(v < v0 && v0.is_finite() && dt > 0.0) {
-        return false;
-    }
-    let decel = (v0 - v) / dt;
-    let dir: Vec2 = (p - q) / (p - q).hypot();
-    target.contains(p + dir * (v * v / (2.0 * decel)))
-}
-
-/// Whether the newest sample shows the pointer settling: slow enough to be
-/// stopping where it is, or decelerating so hard that it will stop inside
-/// the `control` it is in.
-fn settling(samples: &[(Point, Instant)], control: Option<Rect>) -> bool {
-    let n = samples.len();
-    let Some((p, t)) = samples.last().copied() else {
-        return true;
-    };
-    let Some((q, tq)) = n.checked_sub(2).and_then(|i| samples.get(i)).copied() else {
-        // No motion seen yet: the pointer appeared where it is.
-        return true;
-    };
-    let speed = |a: Point, ta: Instant, b: Point, tb: Instant| {
-        let ms = tb.saturating_duration_since(ta).as_secs_f64() * 1000.0;
-        if ms <= 0.0 {
-            f64::INFINITY
-        } else {
-            (b - a).hypot() / ms
-        }
-    };
-    let v = speed(q, tq, p, t);
-    if v <= SETTLE_SPEED {
-        return true;
-    }
-    let (Some(control), Some((o, to))) = (
-        control,
-        n.checked_sub(3).and_then(|i| samples.get(i)).copied(),
-    ) else {
-        return false;
-    };
-    let v0 = speed(o, to, q, tq);
-    let dt = t.saturating_duration_since(tq).as_secs_f64() * 1000.0;
-    if !(v < v0 && v0.is_finite() && dt > 0.0) {
-        return false;
-    }
-    // Constant deceleration: the pointer stops `v² / 2a` further on.
-    let decel = (v0 - v) / dt;
-    let dir: Vec2 = (p - q) / (p - q).hypot();
-    control.contains(p + dir * (v * v / (2.0 * decel)))
-}
-
-/// Whether `p` lies in the convex hull of `apex` and `target`: inside the
-/// target, or inside a triangle from the apex to one of its edges.
-pub(crate) fn in_aim_hull(p: Point, apex: Point, target: Rect) -> bool {
-    if target.contains(p) {
-        return true;
-    }
-    let corners = [
-        Point::new(target.x0, target.y0),
-        Point::new(target.x1, target.y0),
-        Point::new(target.x1, target.y1),
-        Point::new(target.x0, target.y1),
-    ];
-    (0..corners.len()).any(|i| in_triangle(p, apex, corners[i], corners[(i + 1) % corners.len()]))
-}
-
-fn in_triangle(p: Point, a: Point, b: Point, c: Point) -> bool {
-    let cross =
-        |o: Point, u: Point, v: Point| (u.x - o.x) * (v.y - o.y) - (u.y - o.y) * (v.x - o.x);
-    let d1 = cross(p, a, b);
-    let d2 = cross(p, b, c);
-    let d3 = cross(p, c, a);
-    let has_neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
-    let has_pos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
-    !(has_neg && has_pos)
 }
 
 #[cfg(test)]
