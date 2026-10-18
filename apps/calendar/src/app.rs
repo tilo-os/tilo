@@ -76,6 +76,7 @@ use crate::topbar::{Action as TopbarAction, Topbar};
 
 mod editor;
 mod month_view;
+mod repeat_scope;
 mod sidebar_view;
 mod status;
 
@@ -299,6 +300,11 @@ pub struct CalendarApp {
     notes_content_h: f64,
     /// The sidebar's overflow menu (export, import).
     sidebar_menu: Popover,
+    /// "Only this event / All future events", asked after a drag on an
+    /// occurrence of a repeating event.
+    repeat_scope_menu: Popover,
+    /// The drag that question is about, until it is answered or dismissed.
+    pending_repeat: Option<repeat_scope::PendingRepeatChange>,
     /// Opens the platform search from the header's search button.
     search_opener: ui::search::SearchOpener,
     /// The month navigator at the bottom of the sidebar.
@@ -504,6 +510,10 @@ impl CalendarApp {
             sidebar_menu: Popover::new()
                 .with_items(["Export calendar", "Import calendar"])
                 .with_label("Calendar file"),
+            repeat_scope_menu: Popover::new()
+                .with_items(repeat_scope::choices())
+                .with_label(repeat_scope::label()),
+            pending_repeat: None,
             mini_month: DatePicker::new(today)
                 .with_today(today)
                 .navigator()
@@ -1717,8 +1727,8 @@ impl CalendarApp {
 
     /// Reschedule an occurrence to a new day and start on the viewer's clock,
     /// keeping its length: the timeline's drag-to-move. A one-off event moves;
-    /// a repeating one moves only the occurrence dragged, as every calendar
-    /// does when nothing asks otherwise.
+    /// of a repeating one only the occurrence dragged moves, the person's
+    /// "Only this event" answer (`repeat_scope`).
     fn move_event(
         &mut self,
         id: Id,
@@ -1772,7 +1782,7 @@ impl CalendarApp {
 
     /// Give an occurrence a new end, `end` on the viewer's clock: the
     /// timeline's drag on a block's bottom edge. A repeating event changes
-    /// only the occurrence dragged.
+    /// only the occurrence dragged ("Only this event", `repeat_scope`).
     fn resize_event(
         &mut self,
         id: Id,
@@ -1922,14 +1932,26 @@ impl CalendarApp {
                 day,
                 start_min,
                 ..
-            } => self.move_event(id, original, (day, start_min), doc),
+            } => self.change_occurrence(
+                id,
+                original,
+                repeat_scope::DragChange::Move { day, start_min },
+                doc,
+            ),
             TimelineEffect::Resize {
                 id,
                 original,
                 day,
                 end_min,
                 ..
-            } => self.resize_event(id, original, day.and_time(min_to_time(end_min)), doc),
+            } => self.change_occurrence(
+                id,
+                original,
+                repeat_scope::DragChange::Resize {
+                    end: day.and_time(min_to_time(end_min)),
+                },
+                doc,
+            ),
             TimelineEffect::Select(id) => self.apply_action(Action::OpenEvent(id), doc),
             TimelineEffect::OpenDay(day) => self.apply_action(Action::OpenDay(day), doc),
         }
@@ -4242,6 +4264,17 @@ impl Widget for CalendarApp {
                 presence,
             );
         }
+        if self.repeat_scope_menu.is_open() {
+            self.repeat_scope_menu.set_viewport(self.rect);
+            Widget::draw_overlay(
+                &mut self.repeat_scope_menu,
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            );
+        }
         self.draw_status(scene, transform, text_renderer, theme);
     }
 
@@ -4260,6 +4293,12 @@ impl Widget for CalendarApp {
             && self.handle_segmented_touch(touch, ctx.scale_factor, &mut ctx.state)
         {
             *ctx.handled = true;
+            return;
+        }
+
+        // The question a drag on a repeating event asks owns input while it
+        // is open.
+        if self.handle_repeat_scope_event(event, ctx) {
             return;
         }
 

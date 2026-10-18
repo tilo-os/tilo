@@ -110,8 +110,11 @@ fn fold_timeline_drag_preserves_elapsed_duration_and_authored_zone() {
     let from = Point::new(block.center().x, block.y0 + 3.0);
     // Move within the repeated hour: the end must still choose the later fold.
     h.drag(from, Point::new(from.x, from.y - 0.25 * g.hour_h));
+    // The event repeats: the drag asks, and "Only this event" (the first
+    // row) moves this occurrence on its own.
+    assert!(h.app.repeat_scope_menu.is_open());
+    h.press_named(NamedKey::Enter);
     h.relayout();
-    // The event repeats, so the drag moves this occurrence on its own.
     let occurrence = |doc: &AutoCommit| {
         let saved = crate::resource::read_doc(doc);
         let event = saved.event(id).unwrap().clone();
@@ -147,6 +150,7 @@ fn fold_timeline_drag_preserves_elapsed_duration_and_authored_zone() {
     let block = h.app.timeline.test_block_rect(area, 1, g, 0, 150, 215);
     let from = Point::new(block.center().x, block.y0 + 3.0);
     h.drag(from, Point::new(from.x, from.y + 2.0 * g.hour_h));
+    h.press_named(NamedKey::Enter);
     h.relayout();
     let (event, edit) = occurrence(h.doc());
     assert_eq!(
@@ -2862,13 +2866,20 @@ fn week_timeline_scrolls_the_full_day_and_drags_create_and_reschedule() {
         let from = Point::new(x, block.y0 + 3.0);
         let to = Point::new(x, block.y0 + 3.0 + 2.0 * g.hour_h);
         h.drag(from, to);
+        // Design review repeats: the drag asks which events it moves.
+        assert!(h.app.repeat_scope_menu.is_open());
+        assert_eq!(
+            h.app.repeat_scope_menu.items(),
+            ["Only this event", "All future events"]
+        );
+        h.press_named(NamedKey::Enter);
 
         let event = h
             .app
             .model
             .event(id)
             .expect("event still present after the move");
-        // Design review repeats: the drag moves this occurrence, not the
+        // "Only this event": the drag moves this occurrence, not the
         // series.
         assert_eq!(event.start, start0, "the series keeps its time");
         let moved = event
@@ -3754,4 +3765,73 @@ fn tasks_screen_rows_toggle_like_the_rail_and_open_like_the_agenda() {
     let open = open_of(&h.app, flights.id).expect("the row opens its task");
     h.click(Point::new(open.x1 - 4.0, open.center().y));
     assert_eq!(h.app.selected_task(), Some(flights.id));
+}
+
+/// Dragging an occurrence of a repeating event asks which events it moves,
+/// as Apple Calendar, Fantastical and Notion Calendar do. Dismissing the
+/// question changes nothing; "All future events" from the first occurrence
+/// moves the whole series.
+#[test]
+fn dragging_a_repeating_event_asks_only_this_or_all_future() {
+    let mut h = Harness::new(1200, 1900);
+    h.app.show_calendar();
+    h.app.view = View::Week;
+    h.relayout();
+    let today = h.app.today;
+    let before = h
+        .app
+        .model
+        .events
+        .iter()
+        .find(|e| e.title == "Design review")
+        .expect("seeded 11:00 event present")
+        .clone();
+    assert_eq!(before.start.date(), today, "the series starts today");
+    let area = h.app.view_rect();
+    let g = h.app.timeline.test_layout_geometry(area);
+    let days = h.app.timeline_days();
+    let col = days.iter().position(|d| *d == today).unwrap();
+    let block = h
+        .app
+        .timeline
+        .test_block_rect(area, days.len(), g, col, 11 * 60, 12 * 60);
+    let from = Point::new(block.center().x, block.y0 + 3.0);
+    let to = Point::new(from.x, from.y + 2.0 * g.hour_h);
+
+    // Dismissed: nothing moves.
+    h.drag(from, to);
+    assert!(h.app.repeat_scope_menu.is_open());
+    h.press_named(NamedKey::Escape);
+    assert!(!h.app.repeat_scope_menu.is_open());
+    assert!(h.app.pending_repeat.is_none());
+    assert_eq!(h.app.model.event(before.id), Some(&before));
+
+    // All future events, from the first occurrence: the series moves.
+    h.drag(from, to);
+    assert!(h.app.repeat_scope_menu.is_open());
+    h.press_named(NamedKey::ArrowDown);
+    h.press_named(NamedKey::Enter);
+    h.relayout();
+    let saved = crate::resource::read_doc(h.doc());
+    let series = saved.event(before.id).expect("the series stays itself");
+    assert_eq!(series.start, before.start + Duration::hours(2));
+    assert_eq!(series.end, before.end + Duration::hours(2));
+    assert_eq!(series.recurrence, before.recurrence);
+    assert_eq!(series.recurrence_until, before.recurrence_until);
+    assert!(
+        series
+            .occurrence_overrides
+            .iter()
+            .all(|edit| edit.original_date != today),
+        "no exception for the occurrence dragged"
+    );
+    assert_eq!(
+        saved
+            .events
+            .iter()
+            .filter(|e| e.title == "Design review")
+            .count(),
+        1,
+        "no second series"
+    );
 }
