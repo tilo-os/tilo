@@ -622,6 +622,8 @@ def run_session(args: argparse.Namespace, out_dir: Path, session_root: Path) -> 
     for artifact in (trace, summary, out_dir / f"{label}.stats.json"):
         artifact.unlink(missing_ok=True)
     (session_root / "run").mkdir(mode=0o700)
+    # The session trusts settings only below an existing login home.
+    (session_root / "home").mkdir(mode=0o700)
     # Keep the control socket inside the same private runtime directory passed
     # to the compositor.  Choosing it from the caller's XDG_RUNTIME_DIR first
     # and then replacing XDG_RUNTIME_DIR below makes the driver wait on a path

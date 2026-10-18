@@ -512,11 +512,16 @@ pub fn paint_tilo_mark(scene: &mut Scene, transform: Affine, rect: Rect, theme: 
     scene.fill(Fill::NonZero, view, block, None, &block_shape);
 }
 
-/// How the bar's focus last arrived, which decides whether its ring shows.
+/// How the bar's focus last arrived, which decides whether its ring shows
+/// and whether it holds an auto-hiding bar shown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FocusOrigin {
+    /// Tab reached the bar, or a key went to it while it had focus.
     Keyboard,
     Pointer,
+    /// The shell placed its focus here with no input (the first focusable
+    /// control while a window types): nobody is reading the bar.
+    Placed,
 }
 
 /// The bell in the bar's status cluster.
@@ -910,7 +915,7 @@ impl TopBarChrome {
             last_cursor: None,
             focused: false,
             focused_control: None,
-            focus_origin: FocusOrigin::Keyboard,
+            focus_origin: FocusOrigin::Placed,
             time_wake: None,
             strips: strips::StripSwitcher::default(),
         };
@@ -4347,6 +4352,14 @@ impl Widget for TopBarChrome {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        // Tab moving focus into the bar is reading it with the keyboard,
+        // hidden or not: that focus shows its ring and holds it shown.
+        if let WindowEvent::KeyboardInput { event, .. } = event
+            && event.state == winit::event::ElementState::Pressed
+            && event.logical_key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab)
+        {
+            self.focus_origin = FocusOrigin::Keyboard;
+        }
         // A hidden bar is not there: whatever is under its strip gets the
         // input. The host shows it first when it is reached for.
         if self.presence() == TopBarPresence::Hidden {
@@ -4357,8 +4370,10 @@ impl Widget for TopBarChrome {
                 state: winit::event::ElementState::Pressed,
                 ..
             } => self.focus_origin = FocusOrigin::Pointer,
+            // A key the focused bar takes is keyboard use of the bar; focus
+            // the shell merely placed here is not, until one arrives.
             WindowEvent::KeyboardInput { event, .. }
-                if event.state == winit::event::ElementState::Pressed =>
+                if self.focused && event.state == winit::event::ElementState::Pressed =>
             {
                 self.focus_origin = FocusOrigin::Keyboard;
             }
@@ -4629,7 +4644,7 @@ impl Widget for TopBarChrome {
         }
         self.focused = focused;
         if !focused {
-            self.focus_origin = FocusOrigin::Keyboard;
+            self.focus_origin = FocusOrigin::Placed;
         }
         if focused && self.focused_control.is_none() {
             self.focused_control = self
@@ -5386,13 +5401,30 @@ mod tests {
 
     /// Your colour rings a top-bar control only for keyboard focus. Clicking
     /// the bar used to light its first stop in your colour, though no
-    /// keyboard was involved.
+    /// keyboard was involved. Focus the shell merely placed on the bar (its
+    /// first focusable control, while a window has the keyboard) is not
+    /// keyboard use either: it shows no ring and holds no auto-hiding bar
+    /// shown, or a maximized window's bar stayed up for as long as nobody
+    /// pressed a key.
     #[test]
     fn the_focus_ring_follows_the_keyboard_not_a_click() {
+        let tab = ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+            winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
+            None,
+            winit::event::ElementState::Pressed,
+        ));
         let mut bar = sample_chrome();
         bar.set_focus(true);
         assert!(
-            bar.focus_ring_visible(),
+            !bar.focus_ring_visible() && !bar.holds_itself_shown(),
+            "focus placed with no input is nobody reading the bar"
+        );
+        bar.set_focus(false);
+
+        let _ = dispatch_topbar_event(&mut bar, &tab);
+        bar.set_focus(true);
+        assert!(
+            bar.focus_ring_visible() && bar.holds_itself_shown(),
             "keyboard traversal into the bar shows it"
         );
 
@@ -5417,10 +5449,11 @@ mod tests {
 
         let _ = dispatch_topbar_event(&mut bar, &press);
         bar.set_focus(false);
+        let _ = dispatch_topbar_event(&mut bar, &tab);
         bar.set_focus(true);
         assert!(
             bar.focus_ring_visible(),
-            "focus arriving afresh starts unpointed"
+            "focus tabbed into afresh starts unpointed"
         );
     }
 
