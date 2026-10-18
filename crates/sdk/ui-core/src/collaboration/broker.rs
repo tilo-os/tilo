@@ -2735,7 +2735,7 @@ type HostAsyncStream = Pin<Box<dyn HostAsyncIo>>;
 
 /// The descriptor lane of a host session's collaboration stream, when it
 /// has one: what the app hands the broker (Files' selected objects) rides
-/// that stream as SCM_RIGHTS ([`runtime_portal::descriptor_lane_stream`]).
+/// that stream as SCM_RIGHTS ([`runtime_portal::DescriptorStreamSource`]).
 type HostDescriptorLane = runtime_portal::DescriptorLane;
 
 type HostSessionFuture = std::pin::Pin<
