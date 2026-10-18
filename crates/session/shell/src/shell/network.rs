@@ -6817,12 +6817,6 @@ impl ShellNetwork {
             PersonalFabricPayload::Action(bytes) => {
                 self.dispatch_personal_fabric_action(peer, identity.device_pubkey, route, &bytes);
             }
-            PersonalFabricPayload::MediaTransfer(_) => {
-                // The retired media lane: a device that predates the unified
-                // transfer lane. Its bytes are never accepted; the handoff
-                // fails on the sender's timeout like any other unanswered one.
-                tracing::debug!(peer = %peer, "dropping legacy personal media transfer frame");
-            }
             PersonalFabricPayload::NearbyTransfer(frame) => {
                 let Ok(source) = crate::shell::personal_continuity::DeviceId::new(hex::encode(
                     identity.device_pubkey,
