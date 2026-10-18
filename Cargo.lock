@@ -107,7 +107,7 @@ version = "0.1.0"
 dependencies = [
  "accounts",
  "base64",
- "browser-continuity",
+ "browser-continuity-core",
  "cloud-source",
  "cloud-source-dropbox",
  "cloud-source-gdrive",

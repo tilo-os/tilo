@@ -36,7 +36,7 @@ default = ["custody"]
 hints = ["dep:tilo-seal", "dep:serde_json", "dep:url", "dep:zeroize", "dep:sha2"]
 custody = [
     "hints",
-    "dep:browser-continuity",
+    "dep:browser-continuity-core",
     "dep:tilo-seal",
     "dep:rustix",
     "tilo-oauth/client",
@@ -57,7 +57,7 @@ custody = [
 ]
 
 [dependencies]
-browser-continuity = { path = "../../browser/browser-continuity", optional = true }
+browser-continuity-core = { path = "../../browser/browser-continuity-core", optional = true }
 accounts = { path = "../accounts" }
 tilo-seal = { path = "../tilo-seal", optional = true }
 rustix = { workspace = true, features = ["process"], optional = true }
