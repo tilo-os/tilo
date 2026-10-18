@@ -155,6 +155,13 @@ pub enum RoomEvent {
         people: u32,
         /// Open spectator sessions.
         spectators: u32,
+        /// Some of the members online, for the site's directory of public
+        /// workspaces (at most [`crate::directory::MAX_FACES`]).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        here: Vec<crate::directory::Face>,
+        /// How many people belong to the room.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        members: u32,
     },
     /// A member was removed from the persistent room.
     MemberRemoved {
@@ -251,6 +258,15 @@ impl RoomEvent {
     }
 }
 
+/// Whether a count is nothing, which the line leaves out.
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if hands the field by reference"
+)]
+fn is_zero(count: &u32) -> bool {
+    *count == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,6 +340,11 @@ mod tests {
             RoomEvent::Online {
                 people: 3,
                 spectators: 9,
+                here: vec![crate::directory::Face {
+                    user_public_key: "cd".repeat(32),
+                    name: "Ada".into(),
+                }],
+                members: 40,
             },
             RoomEvent::MemberRemoved {
                 user_public_key: "cd".repeat(32),
@@ -366,7 +387,9 @@ mod tests {
         assert_eq!(
             RoomEvent::Online {
                 people: 7,
-                spectators: 2
+                spectators: 2,
+                here: Vec::new(),
+                members: 0,
             }
             .to_line(),
             "tilo-room-operator {\"event\":\"online\",\"people\":7,\"spectators\":2}"

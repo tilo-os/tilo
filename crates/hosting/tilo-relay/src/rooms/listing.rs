@@ -11,7 +11,9 @@
 //! can redeem and the one-time token of a pre-admission at the default role,
 //! so their redemption is admitted at once, as the room's owner decided when
 //! they published it. The listing is that decision; no one is asked per
-//! join, and nobody's root signs a grant per person.
+//! join. The host signs each such grant with its own device key, and a
+//! redemption is admitted only under a grant the owner or this host's door
+//! signed while the room is public.
 //!
 //! Moderation is the room's own: a banned person is refused at the door, the
 //! room's moderators remove and ban through its governance, each admission
@@ -260,6 +262,28 @@ impl Rooms {
         });
     }
 
+    /// Who of `room`'s members is in it now by `online` (user roots with an
+    /// open session here): some of their faces, how many they are, and how
+    /// many people belong to the room.
+    ///
+    /// # Errors
+    ///
+    /// The room is not governed here.
+    pub async fn presence(
+        &self,
+        room: &str,
+        online: &BTreeSet<[u8; 32]>,
+    ) -> Result<(Vec<Face>, u32, u32), CollaborationError> {
+        let summary = self.room(room).await?.lock().await.summary();
+        let (here, here_count) = faces(&summary.members, online);
+        let members = summary
+            .members
+            .iter()
+            .filter(|member| !member.removed)
+            .count();
+        Ok((here, here_count, u32::try_from(members).unwrap_or(u32::MAX)))
+    }
+
     /// The public rooms as the directory lists them, the people of each in
     /// it now by `online` (user roots with an open session here).
     pub async fn directory(&self, online: &BTreeSet<[u8; 32]>) -> Vec<DirectoryEntry> {
@@ -311,19 +335,21 @@ impl Rooms {
         let user = person(&join.user_public_key)?;
         let now = tilo_clock::unix_now_ns();
         let token = hex::encode(rand::random::<[u8; 32]>());
-        let grant = PreAdmission {
+        let mut grant = PreAdmission {
             room: room.to_owned(),
             role: listing.default_role,
             token_sha256: Sha256::digest(token.as_bytes()).into(),
             label: DOOR_LABEL.to_owned(),
             expires_at_ns: now.saturating_add(DOOR_INVITATION_NS),
-            owner_user_public_key: self.inner.host.cert.user_public_key,
-            // The owner's listing is the decision to admit; a door's grant
-            // carries no per-person signature, and nothing verifies one on
-            // redemption (only `/rooms` pre-admissions are checked as the
-            // owner's when they are recorded).
+            owner_user_public_key: [0; 32],
             signature: [0; 64],
         };
+        // The door's grant is signed by this host's device key, which the
+        // redemption checks against the host and the room's listing
+        // ([`Rooms::pre_admission_signer`]).
+        grant
+            .sign(&self.inner.host.key)
+            .map_err(|error| CollaborationError::new(error.to_string()))?;
         let issued = {
             let governed = self.room(room).await?;
             let mut governed = governed.lock().await;
@@ -366,6 +392,32 @@ impl Rooms {
         };
         self.written(room, true).await?;
         Ok((issued, token))
+    }
+
+    /// Whether `grant`, recorded for an invitation to `room`, was signed by
+    /// someone who may admit people there: the room's owner (this relay's
+    /// person), or this host's own door while the room is public.
+    ///
+    /// # Errors
+    ///
+    /// The signature does not verify, or its signer may not admit anyone.
+    pub(super) fn pre_admission_signer(
+        &self,
+        room: &str,
+        grant: &PreAdmission,
+    ) -> Result<(), String> {
+        grant.verify()?;
+        let host = &self.inner.host.cert;
+        if grant.owner_user_public_key == host.user_public_key {
+            return Ok(());
+        }
+        if grant.owner_user_public_key == host.device_public_key
+            && grant.label == DOOR_LABEL
+            && self.listing(room).is_some()
+        {
+            return Ok(());
+        }
+        Err("the pre-admission is signed by neither the room's owner nor its host's door".into())
     }
 
     /// Tell the people who run the public room `room` that someone reported
@@ -467,7 +519,9 @@ mod door_tests {
     };
     use tilo_peer_state::join::MemberRole;
     use tilo_relay_protocol::directory::{DoorJoin, Listing};
-    use tilo_relay_protocol::rooms::{JoinReply, JoinStep, RoomRole, join_proof_digest};
+    use tilo_relay_protocol::rooms::{
+        JoinReply, JoinStep, PreAdmission, RoomRole, join_proof_digest,
+    };
     use tilo_relay_session::rooms::RemoveMemberRequest;
     use tilo_user_identity::DeviceCert;
 
@@ -549,9 +603,20 @@ mod door_tests {
             .admit_listed(room, join)
             .await
             .map_err(|error| error.to_string())?;
+        Ok(redeem(rooms, issued.signed_invitation, token, key, cert).await)
+    }
+
+    /// Redeem `invitation` with the door's `token`, as the person's device.
+    async fn redeem(
+        rooms: &Rooms,
+        invitation: Vec<u8>,
+        token: String,
+        key: &ed25519_dalek::SigningKey,
+        cert: &DeviceCert,
+    ) -> JoinReply {
         let JoinReply::Challenge { challenge } = rooms
             .page_join(JoinStep::Ask {
-                invitation: issued.signed_invitation,
+                invitation,
                 device_cert: cert.clone(),
                 request_id: rand::random(),
             })
@@ -560,14 +625,98 @@ mod door_tests {
             panic!("no challenge");
         };
         let signature = key.sign(&join_proof_digest(&challenge)).to_bytes();
-        Ok(rooms
+        rooms
             .page_join(JoinStep::ProvePreAdmitted {
                 challenge,
                 signature,
                 name: "Cy".into(),
                 token: token.into_bytes(),
             })
-            .await)
+            .await
+    }
+
+    #[tokio::test]
+    async fn a_door_grant_with_a_forged_or_zero_signature_admits_nobody() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, owner) = governor();
+        let relay = view_read_relay(dir.path(), &key, &owner).await;
+        let rooms = relay.rooms().unwrap();
+        let room = rooms.create("Plaza").await.unwrap().room;
+        rooms
+            .publish(
+                &room,
+                &owner,
+                Listing {
+                    description: String::new(),
+                    default_role: RoomRole::Editor,
+                },
+            )
+            .await
+            .unwrap();
+        let host_device = owner.device_public_key;
+        let forgeries: [(&str, Box<dyn FnOnce(&mut PreAdmission) + Send>); 3] = [
+            (
+                "a zero signature",
+                Box::new(|grant: &mut PreAdmission| grant.signature = [0; 64]),
+            ),
+            (
+                "a stranger's key",
+                Box::new(|grant: &mut PreAdmission| {
+                    grant
+                        .sign(&ed25519_dalek::SigningKey::from_bytes(&[77; 32]))
+                        .unwrap();
+                }),
+            ),
+            (
+                "a stranger's signature in the host's name",
+                Box::new(move |grant: &mut PreAdmission| {
+                    grant
+                        .sign(&ed25519_dalek::SigningKey::from_bytes(&[78; 32]))
+                        .unwrap();
+                    grant.owner_user_public_key = host_device;
+                }),
+            ),
+        ];
+        for (what, forge) in forgeries {
+            let (guest_key, guest) = guest_device();
+            let join = DoorJoin {
+                user_public_key: hex::encode(guest.user_public_key),
+                display_name: "Mallory".into(),
+            };
+            let (issued, token) = rooms.admit_listed(&room, &join).await.unwrap();
+            rooms
+                .room(&room)
+                .await
+                .unwrap()
+                .lock()
+                .await
+                .admissions
+                .tamper(issued.invite_id, forge);
+            let reply = redeem(rooms, issued.signed_invitation, token, &guest_key, &guest).await;
+            assert!(
+                !matches!(reply, JoinReply::Admitted { .. }),
+                "{what} admitted someone: {reply:?}"
+            );
+            let members = rooms.summary(&room).await.unwrap().members;
+            assert!(
+                members
+                    .iter()
+                    .all(|member| member.user_public_key != guest.user_public_key),
+                "{what}: not a member"
+            );
+        }
+
+        // The door's own grant, as the host signed it, admits.
+        let (guest_key, guest) = guest_device();
+        let join = DoorJoin {
+            user_public_key: hex::encode(guest.user_public_key),
+            display_name: "Cy".into(),
+        };
+        assert!(matches!(
+            walk_in_as(rooms, &room, &join, &guest_key, &guest).await,
+            Ok(JoinReply::Admitted { .. })
+        ));
+        relay.shutdown().await;
     }
 
     // USER REQUIREMENT (2026-10-19): "you just set a default role for people,

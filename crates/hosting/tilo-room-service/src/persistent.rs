@@ -105,6 +105,9 @@ pub(crate) struct Shared {
     seats: std::sync::Mutex<Seats>,
     /// Spectator seats, under the spectator cap.
     watching: std::sync::Mutex<Seats>,
+    /// Some of the members online and how many belong, as the room last
+    /// reported them, for the site's directory.
+    presence: std::sync::Mutex<(Vec<tilo_relay_protocol::directory::Face>, u32)>,
 }
 
 impl Shared {
@@ -154,6 +157,7 @@ impl Shared {
             guests: std::sync::Mutex::new(guests),
             seats: std::sync::Mutex::new(Seats::new(max_guests)),
             watching: std::sync::Mutex::new(Seats::new(max_spectators)),
+            presence: std::sync::Mutex::default(),
         })
     }
 
@@ -530,7 +534,13 @@ impl Persistent {
                     eprintln!("tilo-room-service: a spectator was refused: {reason}");
                     self.settle(&format!("spectate:{device_public_key}"), Err(reason));
                 }
-                Ok(RoomEvent::Online { people, spectators }) => {
+                Ok(RoomEvent::Online {
+                    people,
+                    spectators,
+                    here,
+                    members,
+                }) => {
+                    *self.shared.presence.lock_recover() = (here, members);
                     for (seats, online) in [
                         (&self.shared.seats, people),
                         (&self.shared.watching, spectators),
@@ -653,6 +663,7 @@ impl Persistent {
         description: String,
     ) -> Option<tilo_relay_protocol::directory::DirectoryPage> {
         let room = self.child.lock().await.as_ref()?.room.clone();
+        let (here, members) = self.shared.presence.lock_recover().clone();
         Some(tilo_relay_protocol::directory::DirectoryPage {
             workspaces: vec![tilo_relay_protocol::directory::DirectoryEntry {
                 room,
@@ -661,9 +672,9 @@ impl Persistent {
                 default_role: GUEST_ROLE,
                 // `/join` beside the directory, on this service's origin.
                 door: "./".into(),
-                here: Vec::new(),
+                here,
                 here_count: self.online(),
-                members: 0,
+                members,
                 last_active_ms: None,
                 community: true,
             }],
@@ -1042,6 +1053,8 @@ mod tests {
             .report(&RoomEvent::Online {
                 people: 2,
                 spectators: 5,
+                here: Vec::new(),
+                members: 0,
             })
             .await;
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1068,12 +1081,16 @@ mod tests {
             .report(&RoomEvent::Online {
                 people: 2,
                 spectators: 0,
+                here: Vec::new(),
+                members: 0,
             })
             .await;
         relay
             .report(&RoomEvent::Online {
                 people: 1,
                 spectators: 0,
+                here: Vec::new(),
+                members: 0,
             })
             .await;
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1278,12 +1295,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_directory_shows_who_is_online_as_the_room_reports_them() {
+        let (persistent, mut relay, _dir) = persistent(10, 10).await;
+        let ada = tilo_relay_protocol::directory::Face {
+            user_public_key: "cd".repeat(32),
+            name: "Ada".into(),
+        };
+        relay
+            .report(&RoomEvent::Online {
+                people: 1,
+                spectators: 0,
+                here: vec![ada.clone()],
+                members: 12,
+            })
+            .await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let page = persistent
+            .directory("Plaza".into(), String::new())
+            .await
+            .expect("the room is up");
+        let listed = &page.workspaces[0];
+        assert!(listed.community);
+        assert_eq!(listed.here, vec![ada]);
+        assert_eq!(listed.here_count, 1);
+        assert_eq!(listed.members, 12);
+    }
+
+    #[tokio::test]
     async fn spectators_have_their_own_cap() {
         let (persistent, mut relay, _dir) = persistent(1, 3).await;
         relay
             .report(&RoomEvent::Online {
                 people: 1,
                 spectators: 3,
+                here: Vec::new(),
+                members: 0,
             })
             .await;
         tokio::time::sleep(Duration::from_millis(50)).await;

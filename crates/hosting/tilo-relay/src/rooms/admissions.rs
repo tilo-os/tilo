@@ -151,6 +151,19 @@ impl Admissions {
         self.save()
     }
 
+    /// Change the grant recorded for `invite_id` in place, as an attacker
+    /// with the room's files would.
+    #[cfg(test)]
+    pub(super) fn tamper(&mut self, invite_id: [u8; 32], change: impl FnOnce(&mut PreAdmission)) {
+        if let Some(granted) = self
+            .grants
+            .iter_mut()
+            .find(|granted| granted.invite_id == invite_id)
+        {
+            change(&mut granted.grant);
+        }
+    }
+
     pub(super) fn notices(&self) -> Vec<RoomNotice> {
         self.notices.clone()
     }
