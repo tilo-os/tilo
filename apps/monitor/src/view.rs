@@ -160,10 +160,12 @@ pub(crate) enum Request {
     },
     /// Sample the machine now: Refresh, or a retry of an unreadable list.
     Refresh,
-    /// The inspector's Stop process.
-    Stop(u32),
+    /// The inspector's End process.
+    End(u32),
     /// The inspector's Kill process.
     Kill(u32),
+    /// The inspector's End app, for the app the process belongs to.
+    EndApp(u32),
 }
 
 /// What the process list shows in place of rows.
@@ -1585,7 +1587,7 @@ pub(crate) struct ProcessDetail<'a> {
     /// the table shows summed subtrees and the process has children: the
     /// numbers its row shows.
     pub with_children: Option<(f32, u64)>,
-    /// Where the Stop and Kill buttons ask for the process's effects, which
+    /// Where the End and Kill buttons ask for the process's effects, which
     /// the host confirms like the palette's and an agent's.
     pub requests: Shared,
 }
@@ -1623,6 +1625,9 @@ pub(crate) fn process_detail(detail: Option<&ProcessDetail<'_>>) -> Element {
         Property::new("User", process.user.clone()).with_kind(TextKind::Identifier),
         Property::new("Status", process.status.clone()),
     ]);
+    if let Some(app) = &process.app {
+        properties.push(Property::new("App", app.clone()).with_kind(TextKind::Identifier));
+    }
     if let Some(parent) = &detail.parent {
         properties.push(Property::new("Parent", parent.clone()));
     }
@@ -1635,18 +1640,21 @@ pub(crate) fn process_detail(detail: Option<&ProcessDetail<'_>>) -> Element {
         properties
             .push(Property::new("Open files", files.to_string()).with_kind(TextKind::Numeric));
     }
-    properties.extend([
+    properties.push(
         Property::new("Running for", fmt_uptime(process.run_secs)).with_kind(TextKind::Numeric),
-        Property::new("Command", process.cmd.clone()).with_kind(TextKind::Code),
-    ]);
+    );
+    // A command line is shown only where the person allowed command lines.
+    if !process.cmd.is_empty() {
+        properties.push(Property::new("Command", process.cmd.clone()).with_kind(TextKind::Code));
+    }
 
     let mut actions = Row::new().no_wrap();
     let pid = process.pid;
-    for (id, label, request, role) in [
+    let mut buttons = vec![
         (
-            "monitor.stop",
-            "Stop process",
-            Request::Stop(pid),
+            "monitor.end",
+            "End process",
+            Request::End(pid),
             ButtonRole::Secondary,
         ),
         (
@@ -1655,7 +1663,16 @@ pub(crate) fn process_detail(detail: Option<&ProcessDetail<'_>>) -> Element {
             Request::Kill(pid),
             ButtonRole::Destructive,
         ),
-    ] {
+    ];
+    if process.app.is_some() {
+        buttons.push((
+            "monitor.end-app",
+            "End app",
+            Request::EndApp(pid),
+            ButtonRole::Destructive,
+        ));
+    }
+    for (id, label, request, role) in buttons {
         let requests = Rc::clone(&detail.requests);
         let button = Button::new(id, label)
             .role(role)

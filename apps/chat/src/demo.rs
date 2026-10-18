@@ -867,6 +867,7 @@ pub fn post(channel: &str, text: &str, parent: Option<&str>) -> Invoke<ChatPart>
         body: None,
         attachment: None,
         mentions: None,
+        written: None,
     })
 }
 

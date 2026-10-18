@@ -8268,6 +8268,7 @@ dependencies = [
  "tilo-rt",
  "tilo-sandbox-core",
  "tilo-startup-metrics",
+ "tilo-system-stats",
  "tilo-test-env",
  "tokio",
  "toml 1.0.6+spec-1.1.0",
@@ -9495,6 +9496,7 @@ dependencies = [
  "taffy",
  "tilo-app",
  "tilo-automerge-fork",
+ "tilo-system-stats",
  "tilo-vello",
  "tilo-winit",
  "tracing",
@@ -14842,6 +14844,7 @@ dependencies = [
  "tilo-secret-vault",
  "tilo-secrets",
  "tilo-startup-metrics",
+ "tilo-system-stats",
  "tilo-test-env",
  "tilo-thumbnail",
  "tilo-tray-host",
@@ -19405,6 +19408,20 @@ dependencies = [
  "thiserror 2.0.21",
  "tilo-model-gateway",
  "tilo-segment",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-system-stats"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "wire-frame",
  "workspace-hack",
 ]
 

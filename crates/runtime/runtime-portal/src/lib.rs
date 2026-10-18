@@ -33,6 +33,15 @@ pub mod runtime_request;
 pub mod service_socket;
 pub mod tools;
 
+/// The app ↔ runtime interface's one version: what an app and the session
+/// services the launcher connects it to (collaboration, the filesystem and
+/// its document media, the app host, the identity broker, shell-owned
+/// tools) speak. The launcher connects an app only when its manifest names
+/// this version (docs/architecture/compatibility.md); `interface.toml`
+/// holds the schema, and the repository policy fails a change to it that
+/// keeps the number.
+pub const RUNTIME_INTERFACE_VERSION: u32 = 2;
+
 use std::env;
 use std::io;
 
@@ -57,6 +66,8 @@ use rustix::io::fcntl_getfd;
 use rustix::io::{FdFlags, fcntl_setfd};
 #[cfg(test)]
 use tilo_lock::RwLockRecover as _;
+#[cfg(feature = "rpc")]
+use tokio::io::{AsyncRead, AsyncWrite};
 #[cfg(all(unix, feature = "rpc"))]
 use tokio::net::UnixStream;
 #[cfg(feature = "rpc")]
@@ -427,6 +438,49 @@ pub mod fd_transport;
 
 #[cfg(all(unix, feature = "rpc"))]
 pub mod descriptor_lane;
+
+/// The descriptor lane of a connected stream, when the host has one: what a
+/// client hands a service rides that stream as `SCM_RIGHTS`
+/// ([`descriptor_lane`]). A host without descriptors carries none.
+#[cfg(all(unix, feature = "rpc"))]
+pub type DescriptorLane = Option<descriptor_lane::DescriptorSender>;
+/// A host without descriptors has no lane value to send.
+#[cfg(all(not(unix), feature = "rpc"))]
+pub type DescriptorLane = Option<std::convert::Infallible>;
+
+/// A connected stream that carries a descriptor lane on the hosts that have
+/// one. The wrapping lives here, beside the lane it makes, so a caller never
+/// selects a target to hand a service what the person selected.
+#[cfg(all(unix, feature = "rpc"))]
+pub trait DescriptorStreamSource: AsyncRead + AsyncWrite + Sized {
+    /// `self` with a lane its writes carry, and the lane to hand the peer.
+    fn with_descriptor_lane(self) -> (impl AsyncRead + AsyncWrite, DescriptorLane);
+}
+
+#[cfg(all(unix, feature = "rpc"))]
+impl DescriptorStreamSource for UnixStream {
+    fn with_descriptor_lane(self) -> (impl AsyncRead + AsyncWrite, DescriptorLane) {
+        let lane = descriptor_lane::DescriptorSender::new();
+        (
+            descriptor_lane::DescriptorStream::sending(self, lane.clone()),
+            Some(lane),
+        )
+    }
+}
+
+/// A host without descriptors carries every stream unchanged.
+#[cfg(all(not(unix), feature = "rpc"))]
+pub trait DescriptorStreamSource: AsyncRead + AsyncWrite + Sized {
+    /// `self` unchanged: this host has no lane to hand the peer.
+    fn with_descriptor_lane(self) -> (impl AsyncRead + AsyncWrite, DescriptorLane);
+}
+
+#[cfg(all(not(unix), feature = "rpc"))]
+impl<T: AsyncRead + AsyncWrite> DescriptorStreamSource for T {
+    fn with_descriptor_lane(self) -> (impl AsyncRead + AsyncWrite, DescriptorLane) {
+        (self, None)
+    }
+}
 
 /// A child forked between a descriptor's creation and its `exec` holds a copy of
 /// that descriptor until the `exec` closes it (every descriptor here is

@@ -247,11 +247,15 @@ class KeyLatencyFailureTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             shell = Path(directory) / 'shell'
             shell.touch()
-            args = SimpleNamespace(shell_bin=str(shell), client_bin=str(shell),
-                app='dev.tilo.notes', out=Path(directory), label='app', width=100,
-                height=100, hz=60, startup_timeout=1, app_timeout=1, settle=0,
-                seed=1, keys=1, warmup=0, input='seat', interval_ms=0,
-                damage='full', buffers='shm')
+            # The harness's own arguments, so a new option cannot leave this
+            # fixture describing an interface the runner no longer has.
+            args = runner.build_parser().parse_args([
+                '--shell-bin', str(shell), '--client-bin', str(shell),
+                '--app', 'dev.tilo.notes', '--out', directory, '--label', 'app',
+                '--width', '100', '--height', '100', '--hz', '60',
+                '--startup-timeout', '1', '--app-timeout', '1', '--settle', '0',
+                '--seed', '1', '--keys', '1', '--warmup', '0', '--input', 'seat',
+                '--interval-ms', '0', '--damage', 'full', '--buffers', 'shm'])
             bench = mock.Mock()
             bench.wait_for_socket.return_value = True
             bench.wait_for_wayland_socket.return_value = 'wayland-1'
@@ -281,11 +285,13 @@ class KeyLatencyFailureTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             shell = Path(directory) / 'shell'
             shell.touch()
-            args = SimpleNamespace(shell_bin=str(shell), client_bin=str(shell.with_name('missing')),
-                app='dev.tilo.notes', out=Path(directory), label='app', width=100, height=100, hz=60)
+            args = runner.build_parser().parse_args([
+                '--shell-bin', str(shell), '--client-bin', str(shell.with_name('missing')),
+                '--app', 'dev.tilo.notes', '--out', directory, '--label', 'app',
+                '--width', '100', '--height', '100', '--hz', '60',
+                '--startup-timeout', '1'])
             with mock.patch.object(runner.subprocess, 'run', side_effect=OSError('provision reached')):
                 with self.assertRaisesRegex(OSError, 'provision reached'):
-                    args.startup_timeout = 1
                     runner.measure(args)
 
 

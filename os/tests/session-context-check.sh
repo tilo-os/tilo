@@ -87,30 +87,28 @@ fi
 
 # --- host apps ------------------------------------------------------------
 # The session starts its XDG autostart entries through tilo-launcher run-host
-# as soon as the desktop has a workspace; each must get its own scope.
-app_scopes=
+# as soon as the desktop has a workspace; each must get its own cgroup in the
+# compositor's delegated app tree.
+slice="/sys/fs/cgroup/user.slice/user-$uid.slice/user@$uid.service/app.slice"
+app_cgroups=
 for _ in $(seq 1 30); do
-  app_scopes=$(systemctl --user list-units --type=scope --state=running --plain --no-legend 'app-tilo-*' \
-    | awk '{ print $1 }')
-  [ -n "$app_scopes" ] && break
+  app_cgroups=$(ls -d "$slice"/tilo-apps-*.scope/app-* 2>/dev/null || true)
+  [ -n "$app_cgroups" ] && break
   sleep 2
 done
-if [ -n "$app_scopes" ]; then
-  ok "the launcher started host apps in their own scopes: $(echo $app_scopes)"
+if [ -n "$app_cgroups" ]; then
+  ok "the launcher started host apps in their own cgroups: $(for c in $app_cgroups; do printf '%s ' "${c##*/}"; done)"
 else
-  bad 'no app-tilo-*.scope: launched apps got no scope from the user manager'
+  bad 'no app cgroup in a tilo-apps-*.scope: launched apps got no cgroup of their own'
 fi
-for unit in $app_scopes; do
-  cgroup=$(systemctl --user show "$unit" -p ControlGroup --value)
-  if [ -z "$cgroup" ] || [ ! -r "/sys/fs/cgroup$cgroup/cgroup.procs" ]; then
-    continue
-  fi
+for cgroup in $app_cgroups; do
+  [ -r "$cgroup/cgroup.procs" ] || continue
   while read -r pid; do
     domain=$(domain_of "$pid")
     if [ -n "$domain" ] && [ "$domain" != "$user_domain" ]; then
-      bad "$(comm_of "$pid") (pid $pid) in $unit runs as $domain"
+      bad "$(comm_of "$pid") (pid $pid) in ${cgroup##*/} runs as $domain"
     fi
-  done <"/sys/fs/cgroup$cgroup/cgroup.procs"
+  done <"$cgroup/cgroup.procs"
 done
 
 # Nothing of this account runs as the display manager: not the session, not

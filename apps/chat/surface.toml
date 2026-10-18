@@ -135,6 +135,14 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "set-channel-category"
+kind = "undoable"
+params = [
+  { name = "channel", required = true, schema = { type = "string" } },
+  { name = "category", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
 id = "delete-channel"
 destructive = true
 kind = "undoable"
@@ -255,6 +263,7 @@ params = [
   { name = "body", required = false, schema = { type = ["array", "null"], items = { type = "object", additionalProperties = false, properties = { align = { type = ["string", "null"] }, attrs = { type = "object" }, kind = { type = "string" }, level = { type = ["integer", "null"] }, marks = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, end = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, value = { oneOf = [{ type = "object", additionalProperties = false, properties = { Bool = { type = "boolean" } }, required = ["Bool"] }, { type = "object", additionalProperties = false, properties = { Int = { type = "integer" } }, required = ["Int"] }, { type = "object", additionalProperties = false, properties = { Str = { type = "string" } }, required = ["Str"] }] } }, required = ["start", "end", "name", "value"] } }, ordered = { type = ["boolean", "null"] }, text = { type = "string" } }, required = ["kind", "text", "marks"] } } },
   { name = "attachment", required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { name = { type = "string" }, blob = { type = "string" }, height = { type = "integer", maximum = 4294967295, minimum = 0 }, kind = { type = "string" }, size = { type = "integer", minimum = 0 }, width = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["kind", "name", "blob"] } },
   { name = "mentions", required = false, schema = { type = ["array", "null"], items = { type = "object", additionalProperties = false, properties = { is_agent = { type = "boolean" }, len = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, user = { type = "string" } }, required = ["user", "start", "len", "is_agent"] } } },
+  { name = "written", required = false, schema = { type = ["integer", "null"] } },
 ]
 
 [[resources.verbs]]

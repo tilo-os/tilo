@@ -1,6 +1,8 @@
 //! Route-owned observations of synchronous local input. Snapshot identities and
 //! child aliases are frozen before execution; draining never queries a directory.
-use super::*;
+#[cfg(feature = "native")]
+use super::WindowEvent;
+use super::{App, action_directory_snapshot};
 use crate::local_document_action::{InputRoute, Queue};
 use std::{collections::HashMap, rc::Rc};
 
@@ -89,6 +91,7 @@ impl App {
         self.local_input_capture.evicted
     }
 
+    #[cfg(feature = "native")]
     pub(super) fn begin_local_input_event(
         &mut self,
         event: &WindowEvent,
@@ -109,16 +112,26 @@ impl App {
         }
     }
 
+    /// Record that input has no authenticated publication. Editing continues;
+    /// the status is the same every time, so only its first appearance asks
+    /// for a frame (a scroll or keystroke must not repaint the window whole).
+    fn note_local_input_unsigned(&mut self) {
+        if self.local_input_capture.failure.is_none() {
+            self.local_input_capture.failure = Some(crate::i18n::I18nManager::lookup_plain(
+                "history-local-action-unsigned",
+            ));
+            self.needs_sync = true;
+        }
+    }
+
     pub(super) fn begin_local_input_capture(&mut self) -> crate::local_document_action::Scope {
         if !self.collaboration.manager.is_connected() {
             let routes = self.local_input_capture.offline_routes.clone();
             if routes.is_empty() && self.actions.action_directory_snapshot.is_none() {
                 // No authenticated publication: preserve editing, but do not
-                // invent a caller, route, revision or admission.
-                self.local_input_capture.failure = Some(crate::i18n::I18nManager::lookup_plain(
-                    "history-local-action-unsigned",
-                ));
-                self.needs_sync = true;
+                // invent a caller, route, revision or admission. The status is
+                // idempotent; only its first appearance needs a frame.
+                self.note_local_input_unsigned();
                 return crate::local_document_action::suspend();
             }
             for route in &routes {
@@ -155,10 +168,7 @@ impl App {
         self.publish_action_surface();
         if self.actions.action_directory_snapshot.is_none() {
             drop(background);
-            self.local_input_capture.failure = Some(crate::i18n::I18nManager::lookup_plain(
-                "history-local-action-unsigned",
-            ));
-            self.needs_sync = true;
+            self.note_local_input_unsigned();
             return crate::local_document_action::suspend();
         }
         let mut routes: Vec<InputRoute> = Vec::new();
@@ -272,24 +282,25 @@ impl App {
             }
         }
         for route in recovery_routes {
-            if !self.local_input_capture.recovered_routes.contains(&route) {
-                match self.restore_local_input_checkpoint(&route) {
-                    Ok(()) => {
-                        self.local_input_capture.recovered_routes.insert(route);
-                    }
-                    // A live owner can be ahead of its durable checkpoint,
-                    // including immediately after the edit being drained here.
-                    // That is ordinary save progress, not failed capture. Keep
-                    // recovery eligible for the next pump; explicit recovery
-                    // still reports these conditions to its caller.
-                    Err(error)
-                        if matches!(
-                            error.as_str(),
-                            "private action checkpoint is not durable"
-                                | "document checkpoint is not durable"
-                        ) => {}
-                    Err(error) => failures.push(error),
+            if self.local_input_capture.recovered_routes.contains(&route) {
+                continue;
+            }
+            match self.restore_local_input_checkpoint(&route) {
+                Ok(()) => {
+                    self.local_input_capture.recovered_routes.insert(route);
                 }
+                // A live owner can be ahead of its durable checkpoint,
+                // including immediately after the edit being drained here.
+                // That is ordinary save progress, not failed capture. Keep
+                // recovery eligible for the next pump; explicit recovery
+                // still reports these conditions to its caller.
+                Err(error)
+                    if matches!(
+                        error.as_str(),
+                        "private action checkpoint is not durable"
+                            | "document checkpoint is not durable"
+                    ) => {}
+                Err(error) => failures.push(error),
             }
         }
         let now = crate::time::now();
@@ -493,7 +504,9 @@ impl App {
                 history.retained_bytes += retained_size(&capture, &receipt);
                 history.retained.push_back((capture, receipt));
                 while history.retained.len() > 128 || history.retained_bytes > 4 * 1024 * 1024 {
-                    let (capture, receipt) = history.retained.pop_front().unwrap();
+                    let Some((capture, receipt)) = history.retained.pop_front() else {
+                        break;
+                    };
                     history.retained_bytes -= retained_size(&capture, &receipt);
                     history.evicted += 1;
                 }
@@ -532,6 +545,7 @@ impl App {
         Ok(())
     }
 
+    #[cfg(feature = "native")]
     pub(super) fn local_input_capture_deadline(&self) -> Option<crate::time::Instant> {
         self.collaboration
             .manager
@@ -611,11 +625,9 @@ impl App {
         });
         match result {
             Ok(admission) => {
-                let pending = self
-                    .local_input_capture
-                    .pending
-                    .remove(&request_id)
-                    .unwrap();
+                let Some(pending) = self.local_input_capture.pending.remove(&request_id) else {
+                    return;
+                };
                 if let Err(error) = self.stage_local_action_evidence(
                     &pending.route,
                     &pending.capture,
@@ -627,7 +639,9 @@ impl App {
                 history.retained_bytes += retained_size(&pending.capture, &admission);
                 history.retained.push_back((pending.capture, admission));
                 while history.retained.len() > 128 || history.retained_bytes > 4 * 1024 * 1024 {
-                    let (capture, admission) = history.retained.pop_front().unwrap();
+                    let Some((capture, admission)) = history.retained.pop_front() else {
+                        break;
+                    };
                     history.retained_bytes -= retained_size(&capture, &admission);
                     history.evicted += 1;
                     tracing::warn!(

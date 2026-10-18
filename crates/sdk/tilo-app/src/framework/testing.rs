@@ -1175,7 +1175,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// the door, or by the room after this window applied it.
     pub fn refused(&mut self) -> Option<super::Refused> {
         self.harness()
-            .with_widget_mut(|root: &mut ResourceRoot| root.refused())
+            .with_widget_mut(|root: &mut ResourceRoot| root.dispatch.refused.get())
             .flatten()
     }
 

@@ -202,11 +202,17 @@ it did not make, and never changes a permission it does not own.
   channel adopts the unmapped Tilo channel whose slug matches in the same
   category, else one whose slug matches in a category of Tilo's own (one no
   Discord category joins, such as the channels a room opened with), so the
-  room's `general` is the server's #general rather than a second one. What
+  room's `general` is the server's #general rather than a second one. A
+  channel joined that way moves into its Discord channel's category
+  (`set-channel-category`), and a category of Tilo's own those moves leave
+  empty is deleted, so the room is laid out as the server is. What
   has no match is created in Tilo. When every Discord channel
   is mapped, the Tilo categories and channels that matched nothing are
-  listed in `tilo_only` and `ownership` becomes `Adopted`. Message history is
-  not imported.
+  listed in `tilo_only` and `ownership` becomes `Adopted`. The first time
+  the worker meets the server it reads the newest 50 messages of each text
+  channel and reports them after the layout, as if just posted, so the
+  adopted room starts with that history; each is posted at the time it was
+  written (Chat's `post` keeps `written` for a message a bot brings over).
 - **After adoption.** A category or channel created in Discord later is
   imported the same way. One deleted on either side lets its pair go: the map
   entry is removed and both ids are kept apart (`tilo_only`,

@@ -91,11 +91,11 @@ crates = ["tilo-location"]
 paths = ["ui::location", "tilo_location"]
 
 [uses.processes]
-crates = ["tilo-process", "portable-pty", "bounded-command"]
+crates = ["tilo-process", "portable-pty", "bounded-command", "tilo-system-stats"]
 paths = ["process::Command", "tilo_process"]
 
 [uses."system-info"]
-crates = ["sysinfo"]
+crates = ["sysinfo", "tilo-system-stats"]
 
 [uses.speech]
 crates = ["tts"]

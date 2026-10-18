@@ -158,6 +158,8 @@ pub(crate) const RESERVED_CHILD_FDS: &[i32] = &[
     #[cfg(target_os = "linux")]
     crate::retained_view::ALIAS_ARGS_FD,
     #[cfg(target_os = "linux")]
+    crate::system_stats::CHILD_FD,
+    #[cfg(target_os = "linux")]
     crate::retained_view::SELECTED_PARENT_FD,
     #[cfg(target_os = "linux")]
     crate::owned_service::RETAINED_SELECTED_REPLACEMENT_PERMIT_FD,

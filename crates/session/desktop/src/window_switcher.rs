@@ -121,16 +121,18 @@ pub struct PlainWindows;
 
 impl WindowSource for PlainWindows {}
 
-/// The host's live window pictures, keyed by tab.
+/// The host's live window pictures. A host draws each window straight
+/// from what it already holds (a client's current buffer, a window it
+/// paints itself), so a picture is there in the very frame that asks.
 pub trait WindowThumbnails {
-    /// A picture of `tab` is on hand.
-    fn has(&self, tab: u64) -> bool;
+    /// A picture of `window` is on hand now.
+    fn has(&self, window: &SwitcherWindow) -> bool;
 
-    /// Paint the picture of `tab` fitted inside `rect`, keeping its shape.
-    /// Returns the rect it covers, or `None` when there is none.
+    /// Paint the picture of `window` fitted inside `rect`, keeping its
+    /// shape. Returns the rect it covers, or `None` when there is none.
     fn paint(
         &mut self,
-        tab: u64,
+        window: &SwitcherWindow,
         scene: &mut Scene,
         transform: Affine,
         rect: Rect,
@@ -142,13 +144,13 @@ pub trait WindowThumbnails {
 pub struct NoThumbnails;
 
 impl WindowThumbnails for NoThumbnails {
-    fn has(&self, _tab: u64) -> bool {
+    fn has(&self, _window: &SwitcherWindow) -> bool {
         false
     }
 
     fn paint(
         &mut self,
-        _tab: u64,
+        _window: &SwitcherWindow,
         _scene: &mut Scene,
         _transform: Affine,
         _rect: Rect,
@@ -1152,7 +1154,7 @@ impl WindowSwitcher {
     pub fn preview_state(window: &SwitcherWindow, previews: &dyn WindowThumbnails) -> PreviewState {
         match window.preview {
             PreviewSource::Withheld => PreviewState::Withheld,
-            _ if previews.has(window.address.tab) => PreviewState::Live,
+            _ if previews.has(window) => PreviewState::Live,
             _ => PreviewState::None,
         }
     }
@@ -1398,7 +1400,7 @@ pub fn draw_preview_well(
             &well_rr,
         );
         let painted = previews
-            .paint(window.address.tab, scene, transform, well.rect, theme)
+            .paint(window, scene, transform, well.rect, theme)
             .is_some();
         scene.pop_layer();
         painted

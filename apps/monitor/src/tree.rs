@@ -434,6 +434,7 @@ mod tests {
             run_secs: 120,
             open_files: Some(8),
             kernel: false,
+            app: None,
         }
     }
 

@@ -92,6 +92,9 @@ collab-types = { path = "../../collab/collab-types" }
 # The received-file admission protocol spoken to the filesystem service.
 fs-protocol = { path = "../../system/fs-protocol" }
 wire-frame = { path = "../../system/wire-frame" }
+# The system information service's handoff, written before the app holds
+# the connection (`system_stats`).
+tilo-system-stats = { path = "../../system/system-stats" }
 uuid.workspace = true
 # Host applications: the `.desktop` entries already installed on the
 # machine. Kept in its own crate because nothing about it is Tilo

@@ -469,19 +469,25 @@ fn widgets_stay_away_under_other_surfaces_and_beside_a_live_call() {
     assert_eq!(host.desk_form(WidgetId::Music), Form::Glance);
 }
 
-/// Counts the system monitor's reads, so a test sees when it reads at all.
-struct CountingMonitor(Rc<std::cell::Cell<usize>>);
+/// Counts the system monitor's subscriptions, so a test sees when it is sent
+/// readings at all.
+struct CountingMonitor {
+    started: Rc<std::cell::Cell<usize>>,
+    subscribed: Rc<std::cell::Cell<bool>>,
+}
 
 impl crate::shell::desk_widgets::system_monitor::Source for CountingMonitor {
-    fn cpu(&self) -> Option<crate::shell::desk_widgets::system_monitor::CpuTimes> {
-        self.0.set(self.0.get() + 1);
-        None
+    fn start(&mut self, _wake: Option<crate::session_runtime::Wake>) {
+        self.started.set(self.started.get() + 1);
+        self.subscribed.set(true);
     }
-    fn memory_percent(&self) -> Option<u8> {
-        Some(40)
+    fn stop(&mut self) {
+        self.subscribed.set(false);
     }
-    fn temperature_celsius(&self) -> Option<i16> {
-        None
+    fn latest(&mut self) -> Option<tilo_system_stats::protocol::SystemStats> {
+        self.subscribed
+            .get()
+            .then(tilo_system_stats::protocol::SystemStats::default)
     }
 }
 
@@ -491,10 +497,13 @@ impl crate::shell::desk_widgets::system_monitor::Source for CountingMonitor {
 /// while it is away.
 #[test]
 fn the_calendar_and_system_monitor_are_desk_widgets_that_read_only_while_shown() {
-    use crate::shell::desk_widgets::system_monitor::SAMPLE_EVERY;
     let (mut host, _chrome, _) = desk();
-    let reads = Rc::new(std::cell::Cell::new(0));
-    host.set_monitor_source_for_tests(Box::new(CountingMonitor(reads.clone())));
+    let started = Rc::new(std::cell::Cell::new(0));
+    let subscribed = Rc::new(std::cell::Cell::new(false));
+    host.set_monitor_source_for_tests(Box::new(CountingMonitor {
+        started: started.clone(),
+        subscribed: subscribed.clone(),
+    }));
     let t0 = Instant::now();
     host.update_desk(t0);
     assert_eq!(
@@ -503,7 +512,7 @@ fn the_calendar_and_system_monitor_are_desk_widgets_that_read_only_while_shown()
         "not added yet"
     );
     assert_eq!(host.desk_form(WidgetId::SystemMonitor), Form::Away);
-    assert_eq!(reads.get(), 0, "an absent monitor reads nothing");
+    assert_eq!(started.get(), 0, "an absent monitor is sent nothing");
 
     let mut prefs = host.desk_widget_prefs().clone();
     prefs.calendar.enabled = true;
@@ -513,11 +522,10 @@ fn the_calendar_and_system_monitor_are_desk_widgets_that_read_only_while_shown()
     host.update_desk(ms(t0, 10));
     assert_eq!(host.desk_form(WidgetId::Calendar), Form::Glance);
     assert_eq!(host.desk_form(WidgetId::SystemMonitor), Form::Glance);
-    assert_eq!(reads.get(), 1, "read as it appears");
-    assert!(
-        host.desk_wake_deadline(ms(t0, 20)) <= Some(ms(t0, 10) + SAMPLE_EVERY),
-        "the next reading is a wake, not a frame pump"
-    );
+    assert_eq!(started.get(), 1, "subscribed as it appears");
+    assert!(subscribed.get());
+    host.update_desk(ms(t0, 20));
+    assert_eq!(started.get(), 1, "one subscription while it shows");
     let names: Vec<String> = host.desk_test_rects().into_iter().map(|(n, _)| n).collect();
     assert!(names.contains(&"desk.calendar".to_string()), "{names:?}");
     assert!(
@@ -525,13 +533,13 @@ fn the_calendar_and_system_monitor_are_desk_widgets_that_read_only_while_shown()
         "{names:?}"
     );
 
-    // Typing sends it away: no more reads, and nothing to wake for.
+    // Typing sends it away: unsubscribed, and nothing to wake for.
     host.note_client_typing(Some(ms(t0, 100)), ms(t0, 100));
     assert_eq!(host.desk_form(WidgetId::SystemMonitor), Form::Away);
-    host.update_desk(ms(t0, 100) + SAMPLE_EVERY);
-    assert_eq!(reads.get(), 1, "away: not read");
+    host.update_desk(ms(t0, 100) + Duration::from_secs(2));
+    assert!(!subscribed.get(), "away: sent nothing");
     assert_eq!(
-        host.desk_wake_deadline(ms(t0, 100) + SAMPLE_EVERY),
+        host.desk_wake_deadline(ms(t0, 100) + Duration::from_secs(2)),
         Some(ms(t0, 100) + GLANCE_AFTER_PAUSE),
         "only the pause wakes the desk"
     );

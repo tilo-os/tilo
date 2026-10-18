@@ -1,43 +1,36 @@
-//! Rendering the live window previews shell chrome shows.
+//! Rendering the window previews the switcher cannot draw live.
 //!
-//! The switcher and the overview ask for previews through
+//! A client window is never rendered here: chrome draws it straight from
+//! its buffer in the frame store
+//! ([`crate::shell::window_previews::paint_client_frame`]), so its preview
+//! is there in the first frame. The overview also paints shell-drawn
+//! windows live. What is left is a shell-drawn window on an Alt+Tab card:
+//! the switcher asks through
 //! [`crate::shell::overlay_host::ShellOverlayHost::window_preview_requests`],
-//! which also owns the throttle, the turn order and the memory bound. This
-//! renders each requested window into one small offscreen GPU target and
-//! hands the pixels back:
+//! which owns the throttle, the turn order and the memory bound, and this
+//! paints the window through the same live path a screenshot of it takes
+//! ([`FrameBuilder::paint_capture_targets`]), crops it to its window, and
+//! renders it into one small offscreen GPU target that exists only while
+//! previews are wanted.
 //!
-//! - a **client** window is drawn from its latest buffer in the frame store
-//!   (already cut to the window's own geometry), scaled on the GPU, and only
-//!   when that buffer changed since its last preview;
-//! - a window the **shell** draws is painted through the same live path a
-//!   screenshot of it takes ([`FrameBuilder::paint_capture_targets`]) and
-//!   cropped to its window the same way.
-//!
-//! One renderer at the largest preview size serves every window; it exists
-//! only while previews are wanted.
-//!
-//! The rendering never runs on the compositor thread: a preview waits on a
-//! GPU submission and its readback (and a client frame kept on the GPU on a
-//! readback of its own), which on a busy or software GPU outlasted a frame
-//! and stalled the whole desktop. The compositor thread decides what to
-//! render and builds a shell window's scene (that needs its live widgets);
-//! a worker thread of its own takes the client snapshot, renders, reads back
-//! and hands the pixels back through a channel, waking the loop to collect
-//! them. The worker owns the offscreen renderer: wgpu's device and queue are
-//! thread-safe, and the renderer is created, used and dropped on that one
-//! thread.
+//! The rendering never runs on the compositor thread: a render waits on a
+//! GPU submission and its readback, which on a busy or software GPU
+//! outlasted a frame and stalled the whole desktop. The compositor thread
+//! builds the window's scene (that needs its live widgets); a worker thread
+//! of its own renders, reads back and hands the pixels back through a
+//! channel, waking the loop to collect them. The worker owns the offscreen
+//! renderer: wgpu's device and queue are thread-safe, and the renderer is
+//! created, used and dropped on that one thread.
 
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::Instant;
 
 use ui::offscreen::OffscreenRenderer;
 use vello::Scene;
-use vello::kurbo::{Affine, Rect};
-use vello::peniko::{Extend, Fill, ImageBrush, ImageQuality};
+use vello::kurbo::Affine;
 
-use crate::compositor::foreign::store;
 use crate::compositor::frame::FrameBuilder;
 use crate::shell::window_previews::{
     MAX_PREVIEW_HEIGHT, MAX_PREVIEW_WIDTH, RENDERS_PER_REFRESH, preview_size,
@@ -55,19 +48,12 @@ pub struct PreviewRefresh {
     pub collected: usize,
 }
 
-/// Where a preview's pixels come from, as the render thread is told.
-enum Source {
-    /// A client's latest frame in the frame store, taken on the render
-    /// thread (it may need a readback of its own).
-    Client { surface: u64, seq: u64 },
-    /// A shell-painted window, already cropped and scaled into its preview.
-    Painted { scene: Box<Scene>, size: (u32, u32) },
-}
-
 enum Message {
+    /// A shell-painted window, already cropped and scaled into its preview.
     Render {
         tab: u64,
-        source: Source,
+        scene: Box<Scene>,
+        size: (u32, u32),
     },
     /// No chrome wants previews: drop the GPU target.
     Release,
@@ -78,10 +64,9 @@ enum Message {
 /// A finished preview, on its way back to the compositor thread.
 struct Rendered {
     tab: u64,
-    /// `None` when nothing could be rendered (the window had no frame, or
-    /// the GPU target is unavailable).
+    /// `None` when nothing could be rendered (the GPU target is
+    /// unavailable).
     image: Option<(Arc<[u8]>, u32, u32)>,
-    stamp: Option<u64>,
 }
 
 /// Renders a scene of a preview's size into its top-left corner and reads
@@ -156,8 +141,13 @@ impl Worker {
                 // Ends when the compositor drops its sender.
                 for message in inbox {
                     match message {
-                        Message::Render { tab, source } => {
-                            let rendered = render(backend.as_mut(), tab, source);
+                        Message::Render { tab, scene, size } => {
+                            let rendered = Rendered {
+                                tab,
+                                image: backend
+                                    .render(&scene, size)
+                                    .map(|rgba| (Arc::from(rgba), size.0, size.1)),
+                            };
                             held.store(backend.holds_target(), Ordering::Release);
                             gone.store(backend.unavailable(), Ordering::Release);
                             if outbox.send(rendered).is_err() {
@@ -190,62 +180,13 @@ impl Worker {
     }
 }
 
-/// On the render thread: the preview `source` stands for.
-fn render(backend: &mut dyn PreviewBackend, tab: u64, source: Source) -> Rendered {
-    match source {
-        Source::Client { surface, seq } => {
-            let image = client_scene(surface).and_then(|(scene, size)| {
-                let rgba = backend.render(&scene, size)?;
-                Some((Arc::from(rgba), size.0, size.1))
-            });
-            Rendered {
-                tab,
-                image,
-                stamp: Some(seq),
-            }
-        }
-        Source::Painted { scene, size } => Rendered {
-            tab,
-            image: backend
-                .render(&scene, size)
-                .map(|rgba| (Arc::from(rgba), size.0, size.1)),
-            stamp: None,
-        },
-    }
-}
-
-/// The scene of a client's latest frame scaled into its preview, and that
-/// preview's size. Taken on the render thread: a frame kept on the GPU is
-/// read back here.
-fn client_scene(surface: u64) -> Option<(Scene, (u32, u32))> {
-    let frame = store().snapshot(surface)?;
-    let (width, height) = preview_size(f64::from(frame.width), f64::from(frame.height))?;
-    let image = ui::raster::rgba8_premultiplied(frame.rgba, frame.width, frame.height);
-    let brush = ImageBrush::new(image)
-        .with_extend(Extend::Pad)
-        .with_quality(ImageQuality::High);
-    let mut scene = Scene::new();
-    scene.fill(
-        Fill::NonZero,
-        Affine::scale_non_uniform(
-            f64::from(width) / f64::from(frame.width),
-            f64::from(height) / f64::from(frame.height),
-        ),
-        &brush,
-        None,
-        &Rect::new(0.0, 0.0, f64::from(frame.width), f64::from(frame.height)),
-    );
-    Some((scene, (width, height)))
-}
-
 /// Renders requested window previews on a thread of its own.
 pub struct WindowPreviewRenderer {
     /// Made on first use, with the backend `make` builds.
     worker: Option<Worker>,
     make: Option<Box<dyn FnOnce() -> Box<dyn PreviewBackend>>>,
-    /// Previews handed to the render thread and not yet back, by tab: the
-    /// client frame each is of, `None` for a shell-painted window.
-    in_flight: HashMap<u64, Option<u64>>,
+    /// Previews handed to the render thread and not yet back, by tab.
+    in_flight: HashSet<u64>,
 }
 
 impl Default for WindowPreviewRenderer {
@@ -260,7 +201,7 @@ impl WindowPreviewRenderer {
         Self {
             worker: None,
             make: Some(Box::new(make)),
-            in_flight: HashMap::new(),
+            in_flight: HashSet::new(),
         }
     }
 
@@ -285,14 +226,15 @@ impl WindowPreviewRenderer {
                 break;
             }
             report.visited = report.visited.saturating_add(1);
+            // A client window is drawn live from its buffer; only a
+            // shell-drawn one is rendered here.
             let queued = match &request.source {
-                PreviewSource::Client { surface } => {
-                    self.queue_client(frame_builder, request.tab, *surface)
-                }
                 PreviewSource::Painted { capture_id } => {
                     self.queue_painted(frame_builder, request.tab, capture_id)
                 }
-                PreviewSource::Withheld | PreviewSource::Unavailable => false,
+                PreviewSource::Client { .. }
+                | PreviewSource::Withheld
+                | PreviewSource::Unavailable => false,
             };
             if queued {
                 report.rendered = report.rendered.saturating_add(1);
@@ -326,22 +268,11 @@ impl WindowPreviewRenderer {
                     rgba,
                     width,
                     height,
-                    rendered.stamp,
+                    None,
                 );
             }
         }
         count
-    }
-
-    fn queue_client(&mut self, frame_builder: &FrameBuilder, tab: u64, surface: u64) -> bool {
-        let seq = store().frame_seq(surface);
-        if seq == 0
-            || frame_builder.host().window_preview_stamp(tab) == Some(seq)
-            || self.in_flight.get(&tab) == Some(&Some(seq))
-        {
-            return false;
-        }
-        self.send(tab, Some(seq), Source::Client { surface, seq })
     }
 
     fn queue_painted(
@@ -350,7 +281,7 @@ impl WindowPreviewRenderer {
         tab: u64,
         capture_id: &str,
     ) -> bool {
-        if self.in_flight.contains_key(&tab) {
+        if self.in_flight.contains(&tab) {
             return false;
         }
         // The live repaint needs the shell's widgets, so the scene is built
@@ -372,18 +303,11 @@ impl WindowPreviewRenderer {
         );
         let mut scene = Scene::new();
         crate::compositor::capture::append_clipped(&mut scene, &source, window, transform);
-        self.send(
-            tab,
-            None,
-            Source::Painted {
-                scene: Box::new(scene),
-                size: (width, height),
-            },
-        )
+        self.send(tab, Box::new(scene), (width, height))
     }
 
     /// Hand one render to the render thread, starting it on first use.
-    fn send(&mut self, tab: u64, stamp: Option<u64>, source: Source) -> bool {
+    fn send(&mut self, tab: u64, scene: Box<Scene>, size: (u32, u32)) -> bool {
         if self.worker.is_none() {
             let Some(make) = self.make.take() else {
                 return false;
@@ -398,12 +322,12 @@ impl WindowPreviewRenderer {
         }
         if worker
             .messages
-            .send(Message::Render { tab, source })
+            .send(Message::Render { tab, scene, size })
             .is_err()
         {
             return false;
         }
-        self.in_flight.insert(tab, stamp);
+        self.in_flight.insert(tab);
         true
     }
 

@@ -1100,6 +1100,36 @@ impl Chat {
         Ok(())
     }
 
+    /// File a channel.
+    ///
+    /// Lists it under another category of its workspace, or under none.
+    #[action(item = channels)]
+    pub fn set_channel_category(
+        &mut self,
+        channel: &Id,
+        #[param("The category to list it under; none for uncategorised")] category: Option<Id>,
+    ) -> Result<(), Refusal> {
+        let workspace = self
+            .channels
+            .get(channel)
+            .ok_or_else(|| Refusal::new("there is no such channel"))?
+            .workspace
+            .clone();
+        if let Some(category) = &category {
+            let category = self
+                .categories
+                .get(category)
+                .ok_or_else(|| Refusal::new("there is no such category"))?;
+            if category.workspace != workspace {
+                return Err(Refusal::new("the category belongs to another workspace"));
+            }
+        }
+        if let Some(filed) = self.channels.get_mut(channel) {
+            filed.category = category;
+        }
+        Ok(())
+    }
+
     /// Delete channel.
     ///
     /// With its read marks. Its messages stay in the parts that

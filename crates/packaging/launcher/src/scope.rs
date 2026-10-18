@@ -1,36 +1,42 @@
-//! One systemd user scope per launched app.
+//! Asking the systemd user manager for a scope.
 //!
-//! Every launch — a sandboxed Tilo package or an unconfined host
-//! application — runs in its own transient `app-tilo-<id>-<pid>.scope` of
-//! the systemd user manager, in `app.slice` and part of the graphical
-//! session target. That makes an app one unit for resource accounting
-//! (its memory is charged to its own cgroup, never the compositor's), for
-//! the OOM killer, and for logout or a compositor crash, which stop the
-//! app and everything it forked instead of leaving it running with no
-//! display.
+//! Every launch runs in a cgroup of its own, in `app.slice` and part of the
+//! graphical session target. That makes an app one unit for resource
+//! accounting (its memory is charged to its own cgroup, never the
+//! compositor's), for the OOM killer, and for logout or a compositor crash,
+//! which stop the app and everything it forked instead of leaving it running
+//! with no display.
 //!
-//! The scope's `OOMPolicy` is `continue`. An app is often many processes
-//! the person runs side by side: a terminal and every shell, build and
-//! language server in its tabs, a browser and its renderers, an editor and
-//! its plugins. When memory runs out, the kernel picks one victim, the
-//! process with the worst OOM score, and killing it is what frees the
-//! memory. systemd's default policy (`stop`) would then tear down the whole
-//! unit, so one runaway language server would close the terminal and every
-//! session in it. With `continue` only the victim dies and the app, which
-//! sees its child exit like any other crash, keeps running. A sandboxed
-//! Tilo app gets the same: when the victim is its main process the sandbox
-//! ends with it and the scope empties on its own, and when it is a helper
-//! the app decides how to recover, as it would on any helper crash.
-//! `kill` (the whole unit as one OOM group) would be worse than `stop`.
-//! systemd-oomd never acts on app scopes: `app.slice` is not one of its
-//! targets (see `os/etc/systemd/user/app.slice.d`).
+//! The compositor's launches get that cgroup from the session's app spawner
+//! ([`crate::spawner`]), born inside it, with no round trip: the spawner
+//! asks the manager once per compositor run for a scope that delegates its
+//! subtree ([`join_app_tree_with`], see [`crate::app_cgroup`]). A launcher
+//! started some other way — by a root helper, from a terminal, or while the
+//! spawner is not up yet — still asks for its own transient
+//! `app-tilo-<id>-<pid>.scope` ([`join`]) and moves *itself* into it before
+//! it forks the app, so the app and every process it starts are inside it
+//! rather than chased into it afterwards.
 //!
-//! The launcher moves *itself* into the scope before it forks the app, so
-//! the app and every process it starts are born inside it rather than
-//! chased into it afterwards. A manager that is unreachable (a headless
-//! test host, a session without a user manager) or refuses costs the
-//! scope, never the launch: the caller logs the reason and runs the app
-//! where the launcher already is.
+//! Either way `OOMPolicy` is `continue`. An app is often many processes the
+//! person runs side by side: a terminal and every shell, build and language
+//! server in its tabs, a browser and its renderers, an editor and its
+//! plugins. When memory runs out, the kernel picks one victim, the process
+//! with the worst OOM score, and killing it is what frees the memory.
+//! systemd's default policy (`stop`) would then tear down the whole unit, so
+//! one runaway language server would close the terminal and every session in
+//! it. With `continue` only the victim dies and the app, which sees its child
+//! exit like any other crash, keeps running. A sandboxed Tilo app gets the
+//! same: when the victim is its main process the sandbox ends with it and the
+//! cgroup empties on its own, and when it is a helper the app decides how to
+//! recover, as it would on any helper crash. `kill` (the whole unit as one
+//! OOM group, `memory.oom.group=1`) would be worse than `stop`, so the
+//! delegated app cgroups leave `memory.oom.group` at 0 as well.
+//! systemd-oomd never acts on apps: `app.slice` is not one of its targets
+//! (see `os/etc/systemd/user/app.slice.d`).
+//!
+//! A manager that is unreachable (a headless test host, a session without a
+//! user manager) or refuses costs the scope, never the launch: the caller
+//! logs the reason and runs the app where the launcher already is.
 
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -64,17 +70,51 @@ pub const JOIN_TIMEOUT: Duration = Duration::from_secs(1);
 /// a unit name.
 #[must_use]
 pub fn unit_name(app_id: &str, pid: u32) -> Option<String> {
+    let escaped = escape_name(app_id)?;
+    let unit = format!("app-tilo-{escaped}-{pid}.scope");
+    (unit.len() <= UNIT_NAME_MAX).then_some(unit)
+}
+
+/// `name` escaped as systemd escapes a unit name's field: `-` separates
+/// fields, so it and anything else outside `[A-Za-z0-9:_.]` becomes `\xNN`.
+/// `None` for an empty name. The delegated app cgroups use the same spelling
+/// (`crate::app_cgroup`), so an app reads alike in either.
+#[must_use]
+pub fn escape_name(name: &str) -> Option<String> {
     use std::fmt::Write as _;
-    let mut escaped = String::with_capacity(app_id.len());
-    for byte in app_id.bytes() {
+    let mut escaped = String::with_capacity(name.len());
+    for byte in name.bytes() {
         if byte.is_ascii_alphanumeric() || matches!(byte, b':' | b'_' | b'.') {
             escaped.push(char::from(byte));
         } else {
             let _ = write!(escaped, "\\x{byte:02x}");
         }
     }
-    let unit = format!("app-tilo-{escaped}-{pid}.scope");
-    (!escaped.is_empty() && unit.len() <= UNIT_NAME_MAX).then_some(unit)
+    (!escaped.is_empty()).then_some(escaped)
+}
+
+/// The inverse of [`escape_name`]. Anything that is not a well-formed
+/// `\xNN` stays as it is.
+#[must_use]
+pub fn unescape_name(escaped: &str) -> String {
+    let bytes = escaped.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while let Some(&byte) = bytes.get(at) {
+        let hex = bytes
+            .get(at..at.saturating_add(4))
+            .filter(|run| run.starts_with(b"\\x"))
+            .and_then(|run| std::str::from_utf8(run.get(2..)?).ok())
+            .and_then(|digits| u8::from_str_radix(digits, 16).ok());
+        if let Some(decoded) = hex {
+            out.push(decoded);
+            at = at.saturating_add(4);
+        } else {
+            out.push(byte);
+            at = at.saturating_add(1);
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Move this process into a new scope for `app_id` through the system's
@@ -107,10 +147,26 @@ pub fn join_with(
 ) -> Result<String, String> {
     let pid = std::process::id();
     let unit = unit_name(app_id, pid).ok_or_else(|| "its id cannot name a unit".to_string())?;
+    join_unit(
+        busctl,
+        &unit,
+        &request_args(&unit, pid, description),
+        timeout,
+    )
+}
+
+/// Run one `StartTransientUnit` call of a scope that holds this process and
+/// wait until the move into `unit` is visible in `/proc/self/cgroup`.
+fn join_unit(
+    busctl: &Path,
+    unit: &str,
+    args: &[String],
+    timeout: Duration,
+) -> Result<String, String> {
     // `StartTransientUnit` answers once the start job is queued, before the
     // move, hence the wait on this process's own cgroup below.
     let output = Command::new(busctl)
-        .args(request_args(&unit, pid, description))
+        .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -122,8 +178,8 @@ pub fn join_with(
     let deadline = Instant::now().checked_add(timeout);
     loop {
         let cgroup = std::fs::read_to_string("/proc/self/cgroup").unwrap_or_default();
-        if cgroup_is_unit(&cgroup, &unit) {
-            return Ok(unit);
+        if cgroup_is_unit(&cgroup, unit) {
+            return Ok(unit.to_string());
         }
         if deadline.is_none_or(|deadline| Instant::now() >= deadline) {
             return Err(format!(
@@ -132,6 +188,67 @@ pub fn join_with(
         }
         std::thread::sleep(Duration::from_millis(2));
     }
+}
+
+/// Move this process, the session's app spawner, into a new scope that
+/// delegates its cgroup subtree: `tilo-apps-<pid>.scope` in `app.slice`
+/// (see [`crate::app_cgroup`]). One call per compositor run, made before the
+/// first launch needs it; every app after that gets its cgroup from the
+/// spawner without asking the manager anything. Returns the unit name.
+///
+/// # Errors
+///
+/// As [`join`].
+pub fn join_app_tree_with(busctl: &Path, timeout: Duration) -> Result<String, String> {
+    let pid = std::process::id();
+    let unit = crate::app_cgroup::tree_unit_name(pid);
+    join_unit(busctl, &unit, &tree_request_args(&unit, pid), timeout)
+}
+
+/// `busctl` arguments for `StartTransientUnit` of the delegated app tree
+/// holding the spawner `pid`.
+///
+/// What each app scope was given becomes either the tree's own setting or a
+/// file the spawner writes in the app's cgroup: the slice, the session link
+/// and `OOMPolicy=continue` are the tree's (systemd sees one unit, so with
+/// `stop` one process killed for memory in any app would stop every app);
+/// the tier weights and floor are per app, in its cgroup. The tree itself
+/// carries the foreground weights, as the focused app's scope did, so what
+/// the person looks at still outweighs the rest of `app.slice`, and the
+/// foreground floor, so the focused app's own floor has protection to draw
+/// on (`memory_recursiveprot`).
+#[must_use]
+pub fn tree_request_args(unit: &str, pid: u32) -> Vec<String> {
+    let mut properties: Vec<Vec<String>> = vec![
+        vec!["PIDs".into(), "au".into(), "1".into(), pid.to_string()],
+        vec!["Slice".into(), "s".into(), APP_SLICE.into()],
+        vec![
+            "CollectMode".into(),
+            "s".into(),
+            "inactive-or-failed".into(),
+        ],
+        vec![
+            "PartOf".into(),
+            "as".into(),
+            "1".into(),
+            SESSION_TARGET.into(),
+        ],
+        vec!["OOMPolicy".into(), "s".into(), OOM_POLICY.into()],
+        // The subtree is the spawner's: systemd neither creates nor removes
+        // cgroups below the scope, and hands it every controller the user
+        // manager has (`os/etc/systemd/system/user@.service.d`).
+        vec!["Delegate".into(), "b".into(), "true".into()],
+    ];
+    let tier = crate::priority::tier_properties(
+        crate::priority::Tier::Foreground,
+        crate::priority::mem_total_bytes(),
+    );
+    properties.extend(
+        tier.iter()
+            .map(|p| crate::priority::dbus_property_args(p).to_vec()),
+    );
+    properties.push(vec!["Description".into(), "s".into(), "Tilo apps".into()]);
+    start_args(unit, properties)
 }
 
 /// `busctl` arguments for `StartTransientUnit` of a scope holding `pid`.
@@ -167,6 +284,12 @@ pub fn request_args(unit: &str, pid: u32, description: &str) -> Vec<String> {
     if !description.trim().is_empty() {
         properties.push(vec!["Description".into(), "s".into(), description]);
     }
+    start_args(unit, properties)
+}
+
+/// `busctl --user call … StartTransientUnit` of `unit` with `properties`,
+/// each a `name signature value…` run.
+fn start_args(unit: &str, properties: Vec<Vec<String>>) -> Vec<String> {
     let mut args: Vec<String> = [
         "--user",
         "--timeout=2",

@@ -48,11 +48,14 @@
 //! subject to them.
 //!
 //! And the lifetime. Like every packaged app, each launch runs in its own
-//! transient `app-tilo-<id>-<pid>.scope` of the systemd user manager (see
-//! [`crate::scope`]), so a logout or a compositor crash stops the
-//! application and everything it forked, and resource accounting and OOM
-//! handling see one app as one unit. A manager that is unreachable or
-//! refuses costs the scope, never the launch.
+//! cgroup: the compositor's spawner starts it born in one of the session's
+//! delegated app tree ([`crate::app_cgroup`]), and a launcher started any
+//! other way asks for a transient `app-tilo-<id>-<pid>.scope` of the systemd
+//! user manager (see [`crate::scope`]). A logout or a compositor crash stops
+//! the application and everything it forked, `cgroup.kill` ends it even when
+//! it left its process tree, and resource accounting and OOM handling see one
+//! app as one unit. A manager that is unreachable or refuses costs the
+//! cgroup, never the launch.
 
 use std::os::unix::process::CommandExt as _;
 use std::path::Path;
@@ -125,12 +128,11 @@ pub fn plan_host_file(path: &std::path::Path, env: &LaunchEnv) -> Result<HostLau
 /// Returns [`HostError::Spawn`] if `launch`'s program cannot be spawned or
 /// waited on.
 pub fn spawn(launch: &HostLaunch) -> Result<ExitStatus, HostError> {
+    // Started by the compositor's spawner, it was born in its app cgroup and
+    // asks the manager for nothing.
     let busctl = Path::new(scope::BUSCTL);
-    spawn_with(
-        launch,
-        busctl.is_file().then_some(busctl),
-        scope::JOIN_TIMEOUT,
-    )
+    let ask_manager = busctl.is_file() && !crate::app_cgroup::current_is_app_cgroup();
+    spawn_with(launch, ask_manager.then_some(busctl), scope::JOIN_TIMEOUT)
 }
 
 fn spawn_with(

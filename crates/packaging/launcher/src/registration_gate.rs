@@ -128,6 +128,22 @@ pub fn install(command: &mut Command) -> io::Result<RegistrationGate> {
     Ok(RegistrationGate(release))
 }
 
+/// [`install`] for a host that starts the launcher some other way than
+/// `command.spawn()` (the app spawner, [`crate::spawner`]): `command` gets the
+/// gate's variable, and the child's end comes back to be placed as the
+/// launcher's stdin.
+///
+/// # Errors
+///
+/// When the socket pair cannot be created.
+pub fn install_external(command: &mut Command) -> io::Result<(RegistrationGate, OwnedFd)> {
+    let (release, wait) = UnixStream::pair()?;
+    command
+        .env_remove(LAUNCH_REGISTRATION_FD_ENV)
+        .env(LAUNCH_REGISTRATION_STDIN_ENV, "1");
+    Ok((RegistrationGate(release), OwnedFd::from(wait)))
+}
+
 /// The launcher's side of [`install`]: wait for the release on stdin, then put
 /// `/dev/null` there. Call it first in `main`, while the process has one
 /// thread and nothing has read stdin.

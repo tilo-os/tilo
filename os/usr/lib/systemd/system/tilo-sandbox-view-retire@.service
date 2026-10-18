@@ -1,0 +1,12 @@
+[Unit]
+Description=Retire sandbox system view %i once no sandbox uses it
+# Started by tilo-sandbox-view.service for a superseded view that a running
+# sandbox still holds; waits on that hold (a lock, not a poll), then unmounts.
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/tilo-launcher sandbox-view retire %i
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=yes
+SystemCallArchitectures=native

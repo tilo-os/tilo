@@ -94,6 +94,7 @@ on:
       - "crates/system/tilo-seal/**"
       - "crates/system/tilo-startup-metrics/**"
       - "crates/system/wire-frame/**"
+      - "crates/system/system-stats/**"
       - "crates/workspace-hack/**"
       - "crates/packaging/oci-images/**"
       - "crates/runtime/cli/**"
@@ -123,6 +124,8 @@ on:
       - "vendor/genawaiter-proc-macro/**"
       - "vendor/netwatch/**"
       - "vendor/wayland-backend/**"
+      - "vendor/wgpu/**"
+      - "vendor/wgpu-hal/**"
   pull_request:
     branches: ["main"]
     paths:
@@ -210,6 +213,7 @@ on:
       - "crates/system/tilo-seal/**"
       - "crates/system/tilo-startup-metrics/**"
       - "crates/system/wire-frame/**"
+      - "crates/system/system-stats/**"
       - "crates/workspace-hack/**"
       - "crates/packaging/oci-images/**"
       - "crates/runtime/cli/**"
@@ -239,6 +243,8 @@ on:
       - "vendor/genawaiter-proc-macro/**"
       - "vendor/netwatch/**"
       - "vendor/wayland-backend/**"
+      - "vendor/wgpu/**"
+      - "vendor/wgpu-hal/**"
   workflow_dispatch:
     inputs:
       require_compiler_cache:

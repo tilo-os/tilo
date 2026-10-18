@@ -303,6 +303,9 @@ launcher = { path = "../../packaging/launcher" }
 legacy-agent-protocol = { path = "../../runtime/legacy-agent-protocol" }
 # The wire of the shell's own file choosers, served to apps with no portal.
 tilo-dialogs.workspace = true
+# The system information service the session serves to apps, and the
+# readings its own System monitor widget shows.
+tilo-system-stats = { path = "../../system/system-stats" }
 package-store = { path = "../../packaging/package-store" }
 tilo-installed-apps = { path = "../../packaging/installed-apps" }
 

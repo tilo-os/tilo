@@ -2,8 +2,10 @@
 //!
 //! The kernel has no notion of "the app the person is using", so the desktop
 //! supplies it. Three mechanisms, all expressed as systemd resource-control
-//! properties on units the launcher already creates (see [`crate::scope`]),
-//! never as a second cgroup hierarchy:
+//! properties: on the app's cgroup in the session's delegated app tree,
+//! where they are the cgroup files systemd would write
+//! ([`crate::app_cgroup::property_writes`]), or on the app's own scope when a
+//! launcher had to ask the manager for one (see [`crate::scope`]):
 //!
 //! * **Foreground boost.** Every launch starts in the foreground tier
 //!   ([`Tier::Foreground`]): high CPU and IO weight and a memory-low floor, so
@@ -170,10 +172,17 @@ pub fn set_properties_args(bus: Bus, unit: &str, props: &[Property]) -> Vec<Stri
     args
 }
 
-/// The app scope (`app-….scope` under `app.slice`) a `/proc/<pid>/cgroup`
-/// text places a process in, with the unit name as systemd spells it.
+/// The app a `/proc/<pid>/cgroup` text places a process in: its cgroup in
+/// the delegated app tree, as an absolute path below the cgroupfs root
+/// ([`crate::app_cgroup::app_cgroup_of`]), or else its app scope
+/// (`app-….scope` under `app.slice`), with the unit name as systemd spells
+/// it. [`BusctlControl::set_properties`] tells the two apart by the leading
+/// `/`, which no unit name has.
 #[must_use]
 pub fn app_scope_of(cgroup: &str) -> Option<String> {
+    if let Some(app) = crate::app_cgroup::app_cgroup_of(cgroup) {
+        return Some(app);
+    }
     cgroup.lines().find_map(|line| {
         let path = line.rsplit(':').next()?;
         let mut parts = path.split('/');
@@ -231,6 +240,11 @@ impl UnitControl for BusctlControl {
     }
 
     fn set_properties(&self, unit: &str, props: &[Property]) -> Result<(), String> {
+        if unit.starts_with('/') {
+            // An app cgroup of the session's tree: the files are the person's
+            // own, written directly, with no round trip.
+            return crate::app_cgroup::apply(&crate::app_cgroup::fs_path(unit), props);
+        }
         run_busctl(&set_properties_args(Bus::User, unit, props))
     }
 }
@@ -1053,6 +1067,32 @@ mod tests {
         })
         .join()
         .expect("the process survives the signal and the thread is demoted");
+    }
+
+    #[test]
+    fn an_app_cgroup_of_the_delegated_tree_is_the_unit_focus_acts_on() {
+        let tree = "/user.slice/user-1000.slice/user@1000.service/app.slice/tilo-apps-9.scope";
+        assert_eq!(
+            app_scope_of(&format!("0::{tree}/app-so.tilo.notes-2\n")).as_deref(),
+            Some(format!("{tree}/app-so.tilo.notes-2").as_str())
+        );
+        // The spawner is no app; it is not in app.slice's scopes either.
+        assert_eq!(app_scope_of(&format!("0::{tree}/spawner\n")), None);
+        // Its tier lands in the cgroup's files.
+        let dir = tempfile::tempdir().unwrap();
+        for file in ["cpu.weight", "io.weight", "io.bfq.weight", "memory.low"] {
+            std::fs::write(dir.path().join(file), "").unwrap();
+        }
+        crate::app_cgroup::apply(
+            dir.path(),
+            &tier_properties(Tier::Background, Some(32 * GIB)),
+        )
+        .unwrap();
+        let read = |file: &str| std::fs::read_to_string(dir.path().join(file)).unwrap();
+        assert_eq!(read("cpu.weight"), "50");
+        assert_eq!(read("io.weight"), "default 50");
+        assert_eq!(read("io.bfq.weight"), "50");
+        assert_eq!(read("memory.low"), "0");
     }
 
     #[test]

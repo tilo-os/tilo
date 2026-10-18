@@ -40,7 +40,8 @@ use thiserror::Error;
 use crate::blobs::BlobHash;
 
 const MAGIC: &[u8; 8] = b"TLOPKG\0\0";
-const FORMAT_VERSION: u32 = 1;
+/// The signed root is part of the package format and carries its version.
+const FORMAT_VERSION: u32 = crate::tapp::TAPP_FORMAT_VERSION;
 
 pub const SIGNED_ROOT_LEN: usize = 8 + 4 + 32 + 32 + 1 + 32 + 64;
 pub const SIGNING_PREFIX_LEN: usize = 8 + 4 + 32 + 32 + 1 + 32; // 109 bytes

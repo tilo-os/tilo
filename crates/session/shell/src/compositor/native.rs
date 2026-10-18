@@ -1791,6 +1791,25 @@ fn start_chooser_service(
     }
 }
 
+/// Serve system information to the apps the launcher connects, asking the
+/// person through the portal's permission prompt for what an app was not
+/// granted at launch. Without a portal nobody can be asked: the launcher's
+/// grants are all an app gets.
+fn start_system_stats_service(
+    portal: Option<&PortalBackend>,
+    wake: crate::session_runtime::Wake,
+) -> Option<tilo_system_stats::server::Server> {
+    let prompter: Arc<dyn tilo_system_stats::server::Prompter> = match portal {
+        Some(portal) => Arc::new(crate::compositor::system_stats_service::PortalPrompter {
+            grants: portal.media_grants.clone(),
+            prompts: portal.media_prompts.clone(),
+            wake,
+        }),
+        None => Arc::new(tilo_system_stats::server::NoPrompter),
+    };
+    crate::compositor::system_stats_service::start(prompter)
+}
+
 /// Open the files and links apps asked the chooser service to open, each in
 /// the app that owns its type or claims its scheme, in the asking app's
 /// workspace.
@@ -10055,6 +10074,11 @@ pub fn run() {
     frame_builder
         .host_mut()
         .set_quick_settings_wake(Arc::clone(&session_wake));
+    // The desk's System monitor is woken by each reading the session's
+    // system information service sends it.
+    frame_builder
+        .host_mut()
+        .set_desk_wake(Arc::clone(&session_wake));
     // The network, once the loop installs it, takes the same wake and
     // binds the hosted apps that use it.
     frame_builder.with_chrome(|chrome| {
@@ -10073,6 +10097,9 @@ pub fn run() {
         Arc::clone(&chooser_attended),
         Arc::clone(&session_wake),
     );
+    // Held for the session: apps' system readings, the desk widget's too.
+    let _system_stats_service =
+        start_system_stats_service(portal_backend.as_ref(), Arc::clone(&session_wake));
     // An `app.<id>/close` action, from the broker's thread.
     let app_closes = crate::shell::app_close::install(Arc::clone(&session_wake));
     let mut network_start: Option<

@@ -6,6 +6,9 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+#[cfg(target_os = "linux")]
+#[path = "app_spawner.rs"]
+mod app_spawner;
 #[path = "bus_filters.rs"]
 mod bus_filters;
 #[path = "launcher_smoke.rs"]
@@ -18,6 +21,9 @@ mod room_confinement;
 mod sandbox_environment;
 #[path = "support.rs"]
 mod support;
+#[cfg(target_os = "linux")]
+#[path = "system_view.rs"]
+mod system_view;
 
 #[path = "managed.rs"]
 mod managed;

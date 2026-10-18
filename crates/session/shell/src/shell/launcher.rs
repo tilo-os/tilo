@@ -725,9 +725,10 @@ pub(crate) fn verified_package_for_descendant(pid: u32) -> Option<String> {
 ///
 /// `xdg_toplevel.close` unmaps Wine File's window; `wineserver` and
 /// `tilo-launcher run-host` stay. The launcher child `setsid`s the app, so
-/// a lone SIGTERM of the supervisor leaves the prefix running. Stop the
-/// systemd scope when one exists, then signal the process tree — including
-/// processes that share a session the app created.
+/// a lone SIGTERM of the supervisor leaves the prefix running. Kill the
+/// app's cgroup (or stop its systemd scope, for a launcher that had to ask
+/// for one), then signal the process tree — including processes that share
+/// a session the app created.
 #[cfg(any(test, target_os = "linux"))]
 pub(crate) fn terminate_unconfined_launches(package_id: &str) {
     for pid in live_unconfined_launch_pids(package_id) {
@@ -775,6 +776,17 @@ pub(crate) fn unconfined_launch_is_live(package_id: &str) -> bool {
 
 #[cfg(all(target_os = "linux", not(test)))]
 fn request_stop_host_scope(desktop_id: &str, pid: u32) {
+    // Born in the session's app tree: its cgroup ends it at once, processes
+    // that left its tree included, with no round trip.
+    if let Some(cgroup) = std::fs::read_to_string(format!("/proc/{pid}/cgroup"))
+        .ok()
+        .and_then(|cgroup| launcher::app_cgroup::app_cgroup_of(&cgroup))
+    {
+        if let Err(error) = launcher::app_cgroup::kill(&launcher::app_cgroup::fs_path(&cgroup)) {
+            eprintln!("app-stop: package={desktop_id} cgroup={cgroup}: {error}");
+        }
+        return;
+    }
     let Some(unit) = launcher::scope::unit_name(desktop_id, pid) else {
         return;
     };
@@ -4373,6 +4385,10 @@ enum SupervisedLaunchGate {
 #[cfg(any(test, target_os = "linux"))]
 enum SupervisedLaunchChild {
     Local(std::process::Child),
+    /// Started by the session's app spawner, born in its own cgroup and
+    /// still this process's child.
+    #[cfg(target_os = "linux")]
+    Delegated(launcher::spawner::DelegatedChild),
     #[cfg(target_os = "linux")]
     Retained(launcher::ordinary_child::PreparedOrdinaryChild),
 }
@@ -4382,12 +4398,14 @@ impl SupervisedLaunchChild {
     fn retained(&self) -> io::Result<&launcher::ordinary_child::PreparedOrdinaryChild> {
         match self {
             Self::Retained(child) => Ok(child),
-            Self::Local(_) => Err(io::ErrorKind::PermissionDenied.into()),
+            Self::Local(_) | Self::Delegated(_) => Err(io::ErrorKind::PermissionDenied.into()),
         }
     }
     fn id(&self) -> u32 {
         match self {
             Self::Local(child) => child.id(),
+            #[cfg(target_os = "linux")]
+            Self::Delegated(child) => child.id(),
             #[cfg(target_os = "linux")]
             Self::Retained(child) => child.id(),
         }
@@ -4396,12 +4414,16 @@ impl SupervisedLaunchChild {
         match self {
             Self::Local(child) => child.kill(),
             #[cfg(target_os = "linux")]
+            Self::Delegated(child) => child.kill(),
+            #[cfg(target_os = "linux")]
             Self::Retained(child) => child.kill(),
         }
     }
     fn wait(&mut self) -> io::Result<std::process::ExitStatus> {
         match self {
             Self::Local(child) => child.wait(),
+            #[cfg(target_os = "linux")]
+            Self::Delegated(child) => child.wait(),
             #[cfg(target_os = "linux")]
             Self::Retained(child) => child.wait(),
         }
@@ -4413,6 +4435,8 @@ impl SupervisedLaunchChild {
                 .take()
                 .map(|pipe| std::fs::File::from(std::os::fd::OwnedFd::from(pipe))),
             #[cfg(target_os = "linux")]
+            Self::Delegated(child) => child.take_stdout(),
+            #[cfg(target_os = "linux")]
             Self::Retained(child) => child.take_stdout(),
         }
     }
@@ -4422,6 +4446,8 @@ impl SupervisedLaunchChild {
                 .stderr
                 .take()
                 .map(|pipe| std::fs::File::from(std::os::fd::OwnedFd::from(pipe))),
+            #[cfg(target_os = "linux")]
+            Self::Delegated(child) => child.take_stderr(),
             #[cfg(target_os = "linux")]
             Self::Retained(child) => child.take_stderr(),
         }
@@ -4755,6 +4781,17 @@ fn start_launch(
 
         // Ordinary launches retain main's stdin gate and posix_spawn behavior.
         let mut local = || {
+            // Born in a cgroup of its own through the session's spawner, with
+            // no round trip to the user manager; the plain spawn below when
+            // the spawner is not running (never in tests) or cannot take it.
+            #[cfg(target_os = "linux")]
+            if let Some(spawned) = launcher::spawner::spawn_gated(&mut cmd, &app.package_id) {
+                let (child, gate) = spawned?;
+                return Ok((
+                    SupervisedLaunchChild::Delegated(child),
+                    SupervisedLaunchGate::Local(gate),
+                ));
+            }
             let gate = launcher::registration_gate::install(&mut cmd)?;
             let child = cmd.spawn()?;
             Ok((

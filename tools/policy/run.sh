@@ -35,6 +35,8 @@ run 'Integration tests are compiled by a test target' \
   python3 tools/policy/check_integration_test_modules.py
 run 'Checked-in capnp bindings match their schemas' \
   python3 tools/policy/check_capnp_bindings.py
+run 'Interface schemas match the code and their versions' \
+  python3 tools/policy/check_interfaces.py check
 run 'Workflow timeouts' python3 tools/policy/check_workflow_timeouts.py
 run 'Workflow dependency and supply-chain invariants' \
   bash os/tests/workflow_dependency_invariants.sh

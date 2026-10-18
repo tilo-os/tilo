@@ -60,7 +60,7 @@ pub(crate) struct ResourceRoot {
     /// The live revision bound controls last followed.
     followed: std::cell::Cell<u64>,
     _alive: Rc<()>,
-    dispatch: DispatchCore,
+    pub(crate) dispatch: DispatchCore,
     saved: LocalState<RecordSaveStatus>,
     /// The window's save status over the view: the record's durability and
     /// the app's own saves, silent unless a save stalls or fails.
@@ -986,12 +986,6 @@ impl ResourceRoot {
             }
         }
         resource
-    }
-
-    /// The last action refused here, by the door or by the room.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn refused(&self) -> Option<super::dispatch::Refused> {
-        self.dispatch.last_refused()
     }
 
     /// Show why the record does not read as the resource instead of the

@@ -1869,6 +1869,7 @@ impl ChatApp {
                 body: Some(body),
                 attachment: None,
                 mentions: None,
+                written: None,
             }),
         );
         if let Err(reason) = posted {
@@ -2289,6 +2290,7 @@ impl ChatApp {
             body: None,
             attachment: Some(crate::record::AttachmentUpdate::of(&attachment)),
             mentions: None,
+            written: None,
         }));
         self.scroll = 0.0;
         self.attachment_status = Some("Attachment shared".into());
@@ -3391,40 +3393,41 @@ mod tests {
         assert_eq!(doc.save(), before);
     }
 
+    fn add_channel_asks_then_creates_and_opens_it() {
+        let (mut app, mut doc) = app_with_doc();
+        let before = app.channels.len();
+        app.on_hit(
+            Hit::AddChannel {
+                workspace: "ws_acme".into(),
+                category: "cat_acme_main".into(),
+            },
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        assert_eq!(
+            app.channels.len(),
+            before,
+            "nothing is made before it is named"
+        );
+        assert!(app.channel_sheet.is_some(), "the channel sheet asks");
+        type_str(&mut app, &mut doc, "Launch Plans");
+        feed(&mut app, &mut doc, &named_key(NamedKey::Tab));
+        type_str(&mut app, &mut doc, "Dates");
+        feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
+        assert!(app.channel_sheet.is_none(), "Enter creates and closes it");
+        let made = app
+            .channels
+            .iter()
+            .find(|c| c.name == "launch-plans")
+            .expect("the channel is made under its kept name");
+        assert_eq!(made.category, "cat_acme_main");
+        assert_eq!(made.topic, "Dates");
+        assert_eq!(made.kind, ChannelKind::Text);
+        assert_eq!(app.active_channel, made.id, "a new text channel opens");
+    }
+
     #[test]
     fn channels_and_categories_are_created_renamed_and_reordered_from_the_sidebar() {
-        // Phase: add_channel_asks_then_creates_and_opens_it.
-        {
-            let (mut app, mut doc) = app_with_doc();
-            let before = app.channels.len();
-            app.on_hit(
-                Hit::AddChannel {
-                    workspace: "ws_acme".into(),
-                    category: "cat_acme_main".into(),
-                },
-                &mut ui::widget::Edits::lend(&mut doc),
-            );
-            assert_eq!(
-                app.channels.len(),
-                before,
-                "nothing is made before it is named"
-            );
-            assert!(app.channel_sheet.is_some(), "the channel sheet asks");
-            type_str(&mut app, &mut doc, "Launch Plans");
-            feed(&mut app, &mut doc, &named_key(NamedKey::Tab));
-            type_str(&mut app, &mut doc, "Dates");
-            feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
-            assert!(app.channel_sheet.is_none(), "Enter creates and closes it");
-            let made = app
-                .channels
-                .iter()
-                .find(|c| c.name == "launch-plans")
-                .expect("the channel is made under its kept name");
-            assert_eq!(made.category, "cat_acme_main");
-            assert_eq!(made.topic, "Dates");
-            assert_eq!(made.kind, ChannelKind::Text);
-            assert_eq!(app.active_channel, made.id, "a new text channel opens");
-        }
+        add_channel_asks_then_creates_and_opens_it();
 
         // Phase: inline_rename_writes_through.
         {
@@ -4996,7 +4999,7 @@ mod tests {
         assert!(state.adopt_doc(doc.chat));
         let mut driver = FrameHarness::for_root(state, app, (960, 720), ui::Theme::dark());
         assert!(!driver.root::<ChatApp>().left_overlay());
-        driver.resize((620, 720)).expect("normal narrow layout");
+        driver.resize((540, 720)).expect("normal narrow layout");
         assert!(driver.root::<ChatApp>().left_overlay());
         driver.resize((960, 720)).expect("normal wide layout");
         assert!(!driver.root::<ChatApp>().left_overlay());
@@ -5086,7 +5089,7 @@ mod tests {
                 "composer controls fit beside navigation"
             );
         }
-        render_frame(&mut app, 620.0, 720.0);
+        render_frame(&mut app, 540.0, 720.0);
         assert!(
             app.left_overlay(),
             "navigation becomes a drawer when conversation detail no longer fits"

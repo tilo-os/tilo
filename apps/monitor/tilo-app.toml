@@ -1,9 +1,14 @@
 # System Monitor — Tilo application manifest.
 #
-# Reads the kernel's own reporting interfaces and nothing else — no
-# write anywhere, no exec, no socket. `/proc` is mounted by the sandbox
-# and `/sys` is in the system read profile, so it needs nothing beyond
-# them.
+# The sandbox gives Monitor a process namespace of its own, so its `/proc`
+# shows Monitor and nothing else. It reads the machine through the session's
+# system information service instead: `system-info` opens the connection
+# (processor, memory, pressure, disks, network, graphics, battery,
+# temperature) and `processes` allows the running apps and the process list
+# on it, and ending the person's own. The launcher grants both by default
+# because the image ships Monitor; command lines are a separate grant, and
+# no process's environment is ever sent. No write anywhere, no exec, no
+# socket of its own.
 #
 
 

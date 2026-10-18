@@ -147,6 +147,7 @@ fn mirrored_post(step: &str, extra: &[(&str, Binding)]) -> Vec<Step> {
         ("channel", item("channel")),
         ("text", item("text")),
         ("parent", item("parent")),
+        ("written", item("written")),
     ];
     args.extend(extra.iter().cloned());
     let posted = format!("{step}-post");
@@ -498,6 +499,24 @@ fn pass() -> Vec<Step> {
                     ("discord", item("discord")),
                     ("origin", text("discord")),
                 ],
+            )],
+        ),
+        each(
+            "file_channels",
+            vec![chat(
+                "file-channel",
+                "set-channel-category",
+                &[("channel", item("channel")), ("category", item("category"))],
+                false,
+            )],
+        ),
+        each(
+            "drop_categories",
+            vec![chat(
+                "drop-category",
+                "delete-category",
+                &[("category", item("category"))],
+                false,
             )],
         ),
         each(
