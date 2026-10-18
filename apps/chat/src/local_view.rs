@@ -11,13 +11,10 @@ use ui::{
     reason = "persisted peer-local view schema; each flag is an independent panel toggle"
 )]
 struct LocalView {
-    workspace: String,
     channel: String,
     thread: Option<String>,
-    context_workspace: String,
     scroll: f64,
     focus_thread: bool,
-    inbox: bool,
     left: bool,
     right: bool,
     emoji: bool,
@@ -34,13 +31,10 @@ impl ui::application_view::ApplicationViewState for crate::ChatApp {
             ui::floating_surface::Attachment::Desktop { .. } => [0., 0.],
         };
         let view = LocalView {
-            workspace: self.active_ws.clone(),
             channel: self.active_channel.clone(),
             thread: self.thread_open.clone(),
-            context_workspace: self.context_ws.clone(),
             scroll: self.scroll,
             focus_thread: self.focus == crate::app::Focus::Thread,
-            inbox: self.inbox_open,
             left: self.left_flap_open(),
             right: self.right_flap_open(),
             emoji: self.emoji_open,
@@ -52,7 +46,7 @@ impl ui::application_view::ApplicationViewState for crate::ChatApp {
         };
         Ok(Some(ApplicationLocalView {
             app_id: <crate::resource::ChatShell as ui::framework::ResourceApp>::ID.into(),
-            version: 1,
+            version: 2,
             payload: serde_json::to_vec(&view).map_err(|e| ThawError::State(e.to_string()))?,
         }))
     }
@@ -64,10 +58,10 @@ impl ui::application_view::ApplicationViewState for crate::ChatApp {
         if local.app_id != <crate::resource::ChatShell as ui::framework::ResourceApp>::ID {
             return Err(ThawError::BindingMismatch);
         }
-        if local.version != 1 {
+        if local.version != 2 {
             return Err(ThawError::UnsupportedVersion {
                 found: local.version,
-                supported: 1,
+                supported: 2,
             });
         }
         let view: LocalView =
@@ -78,9 +72,7 @@ impl ui::application_view::ApplicationViewState for crate::ChatApp {
         {
             return Err(ThawError::State("invalid Chat local geometry".into()));
         }
-        self.active_ws = view.workspace;
         self.active_channel = view.channel;
-        self.context_ws = view.context_workspace;
         self.thread_open = view.thread;
         self.reload(doc);
         if self.ensure_selection() {
@@ -99,7 +91,6 @@ impl ui::application_view::ApplicationViewState for crate::ChatApp {
         } else {
             crate::app::Focus::Main
         };
-        self.inbox_open = view.inbox;
         self.left_flap.snap(view.left);
         self.right_flap.snap(view.right);
         self.emoji_open = view.emoji;

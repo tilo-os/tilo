@@ -118,25 +118,12 @@ impl Presence {
     }
 }
 
-/// A top-level workspace. Channels belong to exactly one workspace; the
-/// left rail switches between them.
-#[derive(Clone, Debug)]
-pub struct Workspace {
-    pub id: Id,
-    pub name: String,
-    /// Two-letter monogram shown in the rail.
-    pub glyph: String,
-    pub color_idx: usize,
-    pub order: u32,
-}
-
-/// A collapsible group of channels within a workspace (Discord-style
-/// "category"). Channels carry a `category` id; the special empty id `""`
-/// means "uncategorised" and renders above the first named category.
+/// A collapsible group of the room's channels (Discord-style "category").
+/// Channels carry a `category` id; the special empty id `""` means
+/// "uncategorised" and renders above the first named category.
 #[derive(Clone, Debug)]
 pub struct Category {
     pub id: Id,
-    pub workspace: Id,
     pub name: String,
     pub order: u32,
     /// Collapsed categories hide their channels in the sidebar (the
@@ -149,7 +136,6 @@ pub struct Category {
 #[derive(Clone, Debug)]
 pub struct Channel {
     pub id: Id,
-    pub workspace: Id,
     /// Owning category id, or `""` for uncategorised.
     pub category: Id,
     pub name: String,

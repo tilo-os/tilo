@@ -32,7 +32,7 @@ fn provider_terminal_state_and_accessibility_report_output_not_applied_actions()
             replica
                 .apply(
                     ChatPart::STREAM_OUTPUT.with(chat_part::StreamOutput {
-                        channel: id("c_general"),
+                        channel: id("c_chat"),
                         reply: "terminal_reply".into(),
                         name: None,
                         event: serde_json::to_value(AgentStreamEvent {

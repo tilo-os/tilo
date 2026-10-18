@@ -49,7 +49,7 @@ impl AgentConversationSurface {
             id: format!("chat-conversation:{}", uuid::Uuid::new_v4()),
             conversation: parent.direct_person.as_ref().map_or_else(
                 || crate::composer::ConversationKey::Agent {
-                    workspace: parent.active_ws.clone(),
+                    workspace: crate::app::ROOM_SCOPE.to_owned(),
                     route: parent
                         .agent_draft_route()
                         .unwrap_or_else(|| agent.to_owned()),

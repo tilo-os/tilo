@@ -496,9 +496,10 @@ actions that queued an outside consequence undo through their inverse action.
   it whole over the winning copy. A compared write never stores half an item:
   an item whose entry or value is gone from the document is written whole, and
   a field edit into an item holding no value is refused. An app that creates
-  the same items on every replica (a starter) makes them in its genesis
-  (`ResourceApp::genesis`), one identical change on every device, rather than
-  in each device's seed.
+  the same items on every replica (a starter) makes them under fixed ids with
+  the same values, idempotently, so every replica's copy is the same item; or
+  in its genesis (`ResourceApp::genesis`), one identical change on every
+  device.
 - **Old history keeps rendering.** An entry naming a field or verb that no
   longer exists renders through the framework fallback.
 

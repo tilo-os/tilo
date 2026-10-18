@@ -13,7 +13,7 @@ fn concurrent_full_triage_histories_still_have_a_bounded_public_status_read() {
     let submission = ui::feedback::Submission {
         id: "0123456789abcdef0123456789abcdef".into(),
         destination: ui::feedback::Destination {
-            room: channel.workspace,
+            room: "room".into(),
             provider: "fixture-chat".into(),
             channel: channel.id,
         },

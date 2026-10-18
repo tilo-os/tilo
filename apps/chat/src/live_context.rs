@@ -10,7 +10,6 @@ const MAX_CONTEXT_BYTES: usize = 1024;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Context {
-    workspace: String,
     channel: String,
     thread: Option<String>,
 }
@@ -25,7 +24,6 @@ impl ViewState for crate::ChatApp {
             return None;
         }
         let context = Context {
-            workspace: self.active_ws.clone(),
             channel: self.active_channel.clone(),
             thread: self.thread_open.clone(),
         };
@@ -74,10 +72,7 @@ impl ViewState for crate::ChatApp {
         let Some(channel) = self.channel(&context.channel) else {
             return;
         };
-        if channel.workspace != context.workspace
-            || channel.kind != crate::model::ChannelKind::Text
-            || channel.archived
-        {
+        if channel.kind != crate::model::ChannelKind::Text || channel.archived {
             return;
         }
         if context.thread.as_ref().is_some_and(|thread| {
@@ -89,10 +84,8 @@ impl ViewState for crate::ChatApp {
         }) {
             return;
         }
-        self.active_ws = context.workspace;
         self.active_channel = context.channel;
         self.thread_open = context.thread;
-        self.inbox_open = false;
         self.scroll = *scroll;
         self.timeline_at_end = self.scroll <= 0.5;
         self.thread_scroll
@@ -113,7 +106,6 @@ mod tests {
         let mut app = crate::app::ChatApp::new_ephemeral();
         app.attach_room(&doc);
         app.reload(&doc);
-        app.active_ws = "ws_acme".into();
         app.active_channel = "c_crit".into();
         (doc, app)
     }
@@ -131,7 +123,6 @@ mod tests {
         let mut follower = crate::app::ChatApp::new_ephemeral();
         follower.attach_room(&doc);
         follower.reload(&doc);
-        follower.active_ws = "ws_acme".into();
         follower.active_channel = "c_general".into();
         // Publishing our own view lets the real SDK capture observe the
         // restored navigation. It is independent of choosing to follow.
@@ -221,9 +212,9 @@ mod tests {
         });
         for mode in [
             r#"{"workspace":"other","channel":"c_general","thread":null}"#,
-            r#"{"workspace":"ws_acme","channel":"c_missing","thread":null}"#,
-            r#"{"workspace":"ws_acme","channel":"c_crit","thread":"missing"}"#,
-            r#"{"workspace":"ws_acme","channel":"c_crit","thread":null,"capture":true}"#,
+            r#"{"channel":"c_missing","thread":null}"#,
+            r#"{"channel":"c_crit","thread":"missing"}"#,
+            r#"{"channel":"c_crit","thread":null,"capture":true}"#,
         ] {
             ui::view::capability::restore_view_state(
                 &mut app,
@@ -240,7 +231,7 @@ mod tests {
                 &mut app,
                 &ViewContribution {
                     view_mode: Some(format!(
-                        "{PREFIX}{{\"workspace\":\"ws_acme\",\"channel\":\"c_general\",\"thread\":null}}"
+                        "{PREFIX}{{\"channel\":\"c_general\",\"thread\":null}}"
                     )),
                     scroll: vec![scroll, 0.0],
                 },

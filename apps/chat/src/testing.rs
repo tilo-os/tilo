@@ -10,12 +10,12 @@ use crate::model::{Channel, Message, User};
 use crate::record::chat;
 use crate::resource::Chat;
 
-/// A room holding the demo workspace, read by [`crate::model::ME`].
+/// A room holding the demo room, read by [`crate::model::ME`].
 pub(crate) fn demo_doc() -> Room {
     Room::demo().unwrap()
 }
 
-/// The demo workspace's chat record alone, read by [`crate::model::ME`]:
+/// The demo room's chat record alone, read by [`crate::model::ME`]:
 /// for what reads no messages.
 pub(crate) fn demo_chat() -> AutoCommit {
     let mut doc = AutoCommit::new();
@@ -44,7 +44,7 @@ pub(crate) fn apply_part_as(
     room.apply_part_as(author, invoke)
 }
 
-/// Start the chat in `doc` as `me` would: their starter workspace.
+/// Start the chat in `doc` as `me` would: the room's `#chat` and `#voice`.
 pub(crate) fn starter(doc: &mut AutoCommit, me: &str, name: &str, initials: &str) {
     crate::demo::start(doc, me, name, initials).unwrap();
 }
@@ -189,22 +189,20 @@ pub(crate) fn operation(invoke: &Invoke<Chat>) -> serde_json::Value {
         .expect("an operation encodes")
 }
 
-/// Add the category `id` named `name` to `workspace` of `doc`.
-pub(crate) fn insert_category(doc: &mut AutoCommit, id: &str, workspace: &str, name: &str) {
-    crate::demo::insert_category(doc, crate::model::ME, id, workspace, name).unwrap();
+/// Add the category `id` named `name` to `doc`.
+pub(crate) fn insert_category(doc: &mut AutoCommit, id: &str, name: &str) {
+    crate::demo::insert_category(doc, crate::model::ME, id, name).unwrap();
 }
 
-/// Add the channel `id` named `name` to `category` of `workspace` of `doc`.
+/// Add the channel `id` named `name` under `category` of `doc`.
 pub(crate) fn insert_channel(
     doc: &mut AutoCommit,
     id: &str,
-    workspace: &str,
     category: &str,
     name: &str,
     kind: crate::model::ChannelKind,
 ) {
-    crate::demo::insert_channel(doc, crate::model::ME, id, (workspace, category), name, kind)
-        .unwrap();
+    crate::demo::insert_channel(doc, crate::model::ME, id, category, name, kind).unwrap();
 }
 
 /// The published report `id`, carrying the reads a window offers on it.

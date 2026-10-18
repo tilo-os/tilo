@@ -1,6 +1,7 @@
-//! The chat record: workspaces, their categories and channels, the people
-//! in the room, each person's read marks, reviewed feedback and
-//! moderation. The channels' messages are kept in parts beside it
+//! The chat record: the room's categories and channels, the people in the
+//! room, each person's read marks, reviewed feedback and moderation. Chat
+//! runs in a Tilo workspace (its room) and holds no workspaces of its own:
+//! every channel of the record is the room's. The channels' messages are kept in parts beside it
 //! ([`crate::parts`], [`crate::messages`]), so the record stays small
 //! however long the chat runs. What someone is writing and has not sent
 //! is theirs, not the room's: it is kept in their own record
@@ -34,6 +35,11 @@ pub const MAX_ATTACHMENT_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_ATTACHMENT_NAME_BYTES: usize = 255;
 const MAX_ATTACHMENT_DIMENSION: u32 = 16_384;
 
+/// The id of the room's text channel every chat opens with, `#chat`.
+pub const CHAT_CHANNEL: &str = "c_chat";
+/// The id of the room's voice channel every chat opens with, `#voice`.
+pub const VOICE_CHANNEL: &str = "c_voice";
+
 /// Bring a chat record of version `from` up to this one. Version 1 kept
 /// everyone's unsent drafts in the room, where every member edited one
 /// shared draft per channel; drafts are each writer's own now
@@ -41,7 +47,9 @@ const MAX_ATTACHMENT_DIMENSION: u32 = 16_384;
 /// kept the messages in the record and read marks as counts; the messages
 /// are kept in parts beside it now ([`crate::parts`]) and a read mark is a
 /// position in them, so both are dropped: a record outgrown by its messages
-/// is what parts replace, and nothing carries them over.
+/// is what parts replace, and nothing carries them over. Versions 1 to 3
+/// kept workspaces of the chat's own; Chat runs in its room now, so they
+/// are dropped ([`drop_workspaces`]).
 ///
 /// # Errors
 /// When `from` is not a version this chat was.
@@ -50,32 +58,163 @@ fn migrate(
     from: u32,
 ) -> Result<(), ui::tilo_resource::ModelError> {
     use ui::automerge::{ROOT, ReadDoc as _, transaction::Transactable as _};
-    if !(1..=2).contains(&from) {
+    if !(1..=3).contains(&from) {
         return Err(ui::tilo_resource::ModelError::invalid(format!(
             "no Chat migration from {from}"
         )));
     }
-    for dropped in ["drafts", "messages"] {
-        if doc.get(ROOT, dropped)?.is_some() {
-            doc.delete(ROOT, dropped)?;
+    if from <= 2 {
+        for dropped in ["drafts", "messages"] {
+            if doc.get(ROOT, dropped)?.is_some() {
+                doc.delete(ROOT, dropped)?;
+            }
+        }
+        // Read marks start over as positions in the parts.
+        let read = ui::tilo_resource::Slot::Key(&ROOT, "read");
+        read.remove(doc)?;
+        read.object(doc, ui::automerge::ObjType::Map)?;
+    }
+    drop_workspaces(doc)
+}
+
+/// The starter versions 1 to 3 made in every device's first chat: the
+/// channels `#general` and the voice `Lounge`, filed under the categories
+/// `Channels` and `Voice`, by id with the name it was made with.
+const OLD_STARTER_CHANNELS: [(&str, &str); 2] = [("c_general", "general"), ("c_lounge", "Lounge")];
+const OLD_STARTER_CATEGORIES: [(&str, &str); 2] =
+    [("cat_home_text", "Channels"), ("cat_home_voice", "Voice")];
+
+/// Drop the workspaces a chat of version 3 or older kept: every channel and
+/// category stays, as the room's, without the workspace it named. The
+/// starter every device made on its own goes when nobody used it: its
+/// channels while nobody renamed, described or archived them and nothing
+/// was read or filed in them (their messages are kept in parts this record
+/// does not hold; a channel anyone read a message of, or filed feedback in,
+/// is kept), its categories while they keep their names. A starter channel
+/// that stays is a plain channel of the room, out of the starter's dropped
+/// category. A room left without a channel opens with `#chat` and `#voice`.
+///
+/// Two devices made that starter concurrently, each its own copy under the
+/// same ids, and a category left with one copy's fields only did not read
+/// at all ("categories.cat_home_text.v.workspace: required value is
+/// missing"): such a category is dropped with the rest of the starter.
+///
+/// # Errors
+/// The document's read or write error.
+fn drop_workspaces(doc: &mut ui::tilo_resource::Doc) -> Result<(), ui::tilo_resource::ModelError> {
+    use ui::automerge::{ObjType, ROOT, ReadDoc as _, Value, transaction::Transactable as _};
+    use ui::tilo_resource::{read_key, write_key};
+    if doc.get(ROOT, "workspaces")?.is_some() {
+        doc.delete(ROOT, "workspaces")?;
+    }
+    for collection in ["channels", "categories"] {
+        let Some((Value::Object(ObjType::Map), map)) = doc.get(ROOT, collection)? else {
+            continue;
+        };
+        let entries: Vec<ui::automerge::ObjId> = doc
+            .map_range(&map, ..)
+            .filter(|entry| entry.value == ui::automerge::ValueRef::Object(ObjType::Map))
+            .map(|entry| entry.id())
+            .collect();
+        for entry in entries {
+            let Some((Value::Object(ObjType::Map), value)) = doc.get(&entry, "v")? else {
+                continue;
+            };
+            if doc.get(&value, "workspace")?.is_some() {
+                doc.delete(&value, "workspace")?;
+            }
         }
     }
-    // Read marks start over as positions in the parts.
-    let read = ui::tilo_resource::Slot::Key(&ROOT, "read");
-    read.remove(doc)?;
-    read.object(doc, ui::automerge::ObjType::Map)?;
+    let mut channels: Collection<Channel> = read_key(doc, &ROOT, "channels")?;
+    let mut categories: Collection<Category> = read_key(doc, &ROOT, "categories")?;
+    let mut read: BTreeMap<String, BTreeMap<String, crate::parts::ReadMark>> =
+        read_key(doc, &ROOT, "read")?;
+    let feedback: Collection<FeedbackReport> = read_key(doc, &ROOT, "feedback")?;
+    let used = |channel: &str,
+                read: &BTreeMap<String, BTreeMap<String, crate::parts::ReadMark>>| {
+        read.values().any(|marks| {
+            marks
+                .get(channel)
+                .is_some_and(|mark| mark.part > 0 || mark.seen > 0)
+        }) || feedback.values().any(|report| {
+            report
+                .submission
+                .0
+                .as_ref()
+                .is_some_and(|submission| submission.destination.channel == channel)
+        })
+    };
+    for (id, name) in OLD_STARTER_CHANNELS {
+        let key = Id::from_raw(id);
+        let untouched = channels.get(&key).is_some_and(|channel| {
+            channel.name == name
+                && channel.topic.trim().is_empty()
+                && !channel.archived
+                && channel.conversation_with.is_none()
+        });
+        if untouched && !used(id, &read) {
+            channels.remove(&key);
+            for marks in read.values_mut() {
+                marks.remove(id);
+            }
+        }
+    }
+    for (id, name) in OLD_STARTER_CATEGORIES {
+        let key = Id::from_raw(id);
+        let unreadable = categories.quarantined().iter().any(|held| held.id == key);
+        let untouched = categories
+            .get(&key)
+            .is_some_and(|category| category.name == name);
+        if !untouched && !unreadable {
+            continue;
+        }
+        categories.remove(&key);
+        categories.discard(&key);
+        for (_, channel) in channels.iter_mut() {
+            if channel.category.as_ref() == Some(&key) {
+                channel.category = None;
+            }
+        }
+    }
+    open_room(&mut channels);
+    write_key(doc, &ROOT, "channels", &channels)?;
+    write_key(doc, &ROOT, "categories", &categories)?;
+    write_key(doc, &ROOT, "read", &read)?;
     Ok(())
+}
+
+/// Give a room without channels its first two: `#chat` to talk in and
+/// `#voice` to call in, under fixed ids, so every device that opens the
+/// room first makes the very same two. Whether it made them.
+fn open_room(channels: &mut Collection<Channel>) -> bool {
+    if channels
+        .values()
+        .any(|channel| channel.conversation_with.is_none())
+    {
+        return false;
+    }
+    for (id, name, kind) in [
+        (CHAT_CHANNEL, "chat", ChannelKind::Text),
+        (VOICE_CHANNEL, "voice", ChannelKind::Voice),
+    ] {
+        channels.push(
+            Id::from_raw(id),
+            Channel {
+                name: name.into(),
+                kind,
+                ..Channel::default()
+            },
+        );
+    }
+    true
 }
 
 /// The room's chat. See the module docs.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Chat {
-    /// The workspaces, in the order the rail shows them.
-    pub workspaces: Collection<Workspace>,
-    /// The channel categories of every workspace, in sidebar order.
+    /// The room's channel categories, in sidebar order.
     pub categories: Collection<Category>,
-    /// The channels of every workspace, in sidebar order within their
-    /// category.
+    /// The room's channels, in sidebar order within their category.
     pub channels: Collection<Channel>,
     /// The people and agents in the room, by their participant id.
     pub people: Keyed<Person>,
@@ -92,35 +231,17 @@ pub struct Chat {
     pub moderation: moderation_model::Moderation,
 }
 
-/// A workspace: the left rail's entry.
+/// A collapsible group of the room's channels.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
-pub struct Workspace {
-    /// The workspace's name.
-    #[model(label)]
-    pub name: String,
-    /// The monogram the rail shows.
-    pub glyph: String,
-    /// Its colour in the rail.
-    pub color: u32,
-}
-
-/// A collapsible group of channels within a workspace.
-#[derive(Model, Debug, Clone, PartialEq)]
 pub struct Category {
-    /// The workspace it belongs to.
-    #[model(readonly)]
-    pub workspace: Id,
     /// The category's name.
     #[model(label)]
     pub name: String,
 }
 
-/// A text or voice channel.
-#[derive(Model, Debug, Clone, PartialEq)]
+/// A text or voice channel of the room.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Channel {
-    /// The workspace it belongs to.
-    #[model(readonly)]
-    pub workspace: Id,
     /// The category it is listed under; none for uncategorised.
     pub category: Option<Id>,
     /// The channel's name.
@@ -193,29 +314,6 @@ pub struct Message {
     /// posting an outside person's line); the author stays the bot.
     #[model(readonly)]
     pub appearance: Json<Option<tilo_actions::Appearance>>,
-}
-
-impl Default for Category {
-    fn default() -> Self {
-        Self {
-            workspace: Id::from_raw(""),
-            name: String::new(),
-        }
-    }
-}
-
-impl Default for Channel {
-    fn default() -> Self {
-        Self {
-            workspace: Id::from_raw(""),
-            category: None,
-            name: String::new(),
-            topic: String::new(),
-            kind: ChannelKind::default(),
-            archived: false,
-            conversation_with: None,
-        }
-    }
 }
 
 impl Default for Message {
@@ -671,21 +769,6 @@ pub(crate) fn valid_source_provider(provider: &str) -> bool {
         && !provider.contains('\\')
 }
 
-/// A monogram for a workspace glyph: the initials of its first two words,
-/// as written.
-pub fn monogram(name: &str) -> String {
-    let letters: String = name
-        .split_whitespace()
-        .filter_map(|word| word.chars().next())
-        .take(2)
-        .collect();
-    if letters.is_empty() {
-        "WS".to_owned()
-    } else {
-        letters
-    }
-}
-
 /// The id of `agent`'s reply to the message `summons`: the same on every
 /// replica and for every record of its work, so the agent never needs to be
 /// told the id of what it wrote.
@@ -699,14 +782,14 @@ pub fn reply_id(summons: &Id, agent: &str) -> Id {
     Id::from_raw(format!("m_reply_{:016x}", hash.finish()))
 }
 
-/// Stable hidden conversation shared by every replica for this workspace and
+/// Stable hidden conversation the room's replicas share with an
 /// authenticated Agent. The id is an address only; admission still comes
 /// from the live room roster.
 #[must_use]
-pub fn agent_conversation_channel_id(workspace: &str, agent: &str) -> Id {
+pub fn agent_conversation_channel_id(agent: &str) -> Id {
     use std::hash::Hasher as _;
     let mut hash = fnv::FnvHasher::default();
-    hash.write(workspace.as_bytes());
+    hash.write(b"room");
     hash.write(&[0]);
     hash.write(agent.as_bytes());
     Id::from_raw(format!("c_agent_{:016x}", hash.finish()))
@@ -771,84 +854,20 @@ impl Chat {
             .ok_or_else(|| Refusal::new("there is no such person"))
     }
 
-    /// Start a fresh record: its creator, a workspace and, without one named
-    /// by the host, two channels to start in.
+    /// Start a fresh record: its creator, and the room's first channels
+    /// when it has none yet ([`open_room`]).
     pub(crate) fn begin(
         &mut self,
         creator: &str,
-        workspace: Option<(&str, &str)>,
         (name, initials, color): (&str, &str, u32),
     ) -> Result<(), Refusal> {
-        if let Some((id, _)) = workspace
-            && !self.workspaces.is_empty()
-        {
-            return if self.workspaces.contains(&Id::from_raw(id)) {
-                Ok(())
-            } else {
-                Err(Refusal::new("chat is already set up for another workspace"))
-            };
-        }
-        if !self.workspaces.is_empty() {
-            return Ok(());
-        }
         let person = self.person(creator)?;
         name.clone_into(&mut person.name);
         initials.clone_into(&mut person.initials);
         person.color = color;
         person.status = Presence::Online;
-        match workspace {
-            Some((id, label)) => {
-                let label = if label.trim().is_empty() { id } else { label };
-                self.workspaces.push(
-                    Id::from_raw(id),
-                    Workspace {
-                        name: label.to_owned(),
-                        glyph: monogram(label),
-                        color: 0,
-                    },
-                );
-            }
-            None => self.starter(),
-        }
+        open_room(&mut self.channels);
         Ok(())
-    }
-
-    /// The first workspace of a record no host named one for: `#general` to
-    /// talk in and `Lounge` to call in.
-    fn starter(&mut self) {
-        let home = Id::from_raw("ws_home");
-        self.workspaces.push(
-            home.clone(),
-            Workspace {
-                name: "My Workspace".into(),
-                glyph: "MW".into(),
-                color: 0,
-            },
-        );
-        for (id, name) in [("cat_home_text", "Channels"), ("cat_home_voice", "Voice")] {
-            self.categories.push(
-                Id::from_raw(id),
-                Category {
-                    workspace: home.clone(),
-                    name: name.into(),
-                },
-            );
-        }
-        for (id, category, name, kind) in [
-            ("c_general", "cat_home_text", "general", ChannelKind::Text),
-            ("c_lounge", "cat_home_voice", "Lounge", ChannelKind::Voice),
-        ] {
-            self.open_channel(
-                Id::from_raw(id),
-                Channel {
-                    workspace: home.clone(),
-                    category: Some(Id::from_raw(category)),
-                    name: name.into(),
-                    kind,
-                    ..Channel::default()
-                },
-            );
-        }
     }
 }
 
@@ -860,22 +879,17 @@ impl Chat {
     read_content = Chat::content,
     effects = crate::effects::ChatEffect,
     item_views = crate::effects::item_views,
-    version = 3,
+    version = 4,
     migrate = migrate,
 )]
 impl Chat {
     /// Start the chat.
     ///
-    /// Its creator and their first workspace: the one the host names, or a
-    /// starter workspace with `#general` and a voice lounge.
+    /// Its creator, and the room's first channels when it has none yet.
     #[action(housekeeping)]
     pub fn begin_chat(
         &mut self,
         cx: &mut ActionCx,
-        #[param("The workspace the host admitted; none for a starter workspace")] workspace: Option<
-            String,
-        >,
-        #[param("The workspace's name")] workspace_name: Option<String>,
         #[param("Your name")] name: String,
         #[param("Your initials")] initials: String,
         #[param("Your colour")] color: u32,
@@ -884,12 +898,7 @@ impl Chat {
         if name.len() > 128 || initials.len() > 8 {
             return Err(Refusal::new("the creator's name is too long"));
         }
-        let workspace_name = workspace_name.unwrap_or_default();
-        self.begin(
-            &creator,
-            workspace.as_deref().map(|id| (id, workspace_name.as_str())),
-            (&name, &initials, color),
-        )
+        self.begin(&creator, (&name, &initials, color))
     }
 
     /// Introduce yourself.
@@ -933,65 +942,13 @@ impl Chat {
         Ok(())
     }
 
-    /// Create a workspace.
-    ///
-    /// With `#general` to talk in and `Lounge` to call in.
-    #[action]
-    pub fn create_workspace(
-        &mut self,
-        cx: &mut ActionCx,
-        #[param("Workspace name")] name: String,
-    ) -> Result<(), Refusal> {
-        let name = name.trim();
-        if name.is_empty() {
-            return Err(Refusal::new("a workspace needs a name"));
-        }
-        let workspace = cx.id();
-        self.workspaces.push(
-            workspace.clone(),
-            Workspace {
-                name: name.to_owned(),
-                glyph: monogram(name),
-                color: u32::try_from(self.workspaces.len() % 8).unwrap_or_default(),
-            },
-        );
-        for (category, channel, kind) in [
-            ("Channels", "general", ChannelKind::Text),
-            ("Voice", "Lounge", ChannelKind::Voice),
-        ] {
-            let category_id = cx.id();
-            self.categories.push(
-                category_id.clone(),
-                Category {
-                    workspace: workspace.clone(),
-                    name: category.into(),
-                },
-            );
-            self.open_channel(
-                cx.id(),
-                Channel {
-                    workspace: workspace.clone(),
-                    category: Some(category_id),
-                    name: channel.into(),
-                    kind,
-                    ..Channel::default()
-                },
-            );
-        }
-        Ok(())
-    }
-
     /// New category.
-    #[action(item = workspaces)]
+    #[action]
     pub fn create_category(
         &mut self,
         cx: &mut ActionCx,
-        workspace: &Id,
         #[param("Category name")] name: String,
     ) -> Result<(), Refusal> {
-        if !self.workspaces.contains(workspace) {
-            return Err(Refusal::new("there is no such workspace"));
-        }
         let name = name.trim();
         if name.is_empty() {
             return Err(Refusal::new("a category needs a name"));
@@ -999,7 +956,6 @@ impl Chat {
         self.categories.push(
             cx.id(),
             Category {
-                workspace: workspace.clone(),
                 name: name.to_owned(),
             },
         );
@@ -1007,11 +963,10 @@ impl Chat {
     }
 
     /// New channel.
-    #[action(item = workspaces)]
+    #[action]
     pub fn create_channel(
         &mut self,
         cx: &mut ActionCx,
-        workspace: &Id,
         #[param("Channel name")] name: String,
         #[param("The category to list it under; none for uncategorised")] category: Option<Id>,
         #[param("text for a conversation, voice for a call; text when absent")] kind: Option<
@@ -1019,17 +974,10 @@ impl Chat {
         >,
         #[param("What the channel is about")] topic: Option<String>,
     ) -> Result<(), Refusal> {
-        if !self.workspaces.contains(workspace) {
-            return Err(Refusal::new("there is no such workspace"));
-        }
-        if let Some(category) = &category {
-            let category = self
-                .categories
-                .get(category)
-                .ok_or_else(|| Refusal::new("there is no such category"))?;
-            if category.workspace != *workspace {
-                return Err(Refusal::new("the category belongs to another workspace"));
-            }
+        if let Some(category) = &category
+            && !self.categories.contains(category)
+        {
+            return Err(Refusal::new("there is no such category"));
         }
         let name = name.trim().trim_start_matches('#');
         if name.is_empty() {
@@ -1040,7 +988,6 @@ impl Chat {
         self.open_channel(
             id,
             Channel {
-                workspace: workspace.clone(),
                 category,
                 name: name.to_owned(),
                 topic: topic
@@ -1055,12 +1002,13 @@ impl Chat {
 
     /// Delete category.
     ///
-    /// Its channels stay, uncategorised.
+    /// Its channels stay, uncategorised. A category that no longer reads
+    /// (held out of the chat, [`Collection::quarantined`]) is deleted too.
     #[action(item = categories, destructive)]
     pub fn delete_category(&mut self, category: &Id) -> Result<(), Refusal> {
-        self.categories
-            .remove(category)
-            .ok_or_else(|| Refusal::new("there is no such category"))?;
+        if self.categories.remove(category).is_none() && !self.categories.discard(category) {
+            return Err(Refusal::new("there is no such category"));
+        }
         for (_, channel) in self.channels.iter_mut() {
             if channel.category.as_ref() == Some(category) {
                 channel.category = None;
@@ -1081,9 +1029,7 @@ impl Chat {
         let siblings: Vec<Id> = self
             .channels
             .iter()
-            .filter(|(_, other)| {
-                other.workspace == moving.workspace && other.category == moving.category
-            })
+            .filter(|(_, other)| other.category == moving.category)
             .map(|(id, _)| id.clone())
             .collect();
         let at = siblings
@@ -1105,27 +1051,20 @@ impl Chat {
 
     /// File a channel.
     ///
-    /// Lists it under another category of its workspace, or under none.
+    /// Lists it under another category, or under none.
     #[action(item = channels)]
     pub fn set_channel_category(
         &mut self,
         channel: &Id,
         #[param("The category to list it under; none for uncategorised")] category: Option<Id>,
     ) -> Result<(), Refusal> {
-        let workspace = self
-            .channels
-            .get(channel)
-            .ok_or_else(|| Refusal::new("there is no such channel"))?
-            .workspace
-            .clone();
-        if let Some(category) = &category {
-            let category = self
-                .categories
-                .get(category)
-                .ok_or_else(|| Refusal::new("there is no such category"))?;
-            if category.workspace != workspace {
-                return Err(Refusal::new("the category belongs to another workspace"));
-            }
+        if !self.channels.contains(channel) {
+            return Err(Refusal::new("there is no such channel"));
+        }
+        if let Some(category) = &category
+            && !self.categories.contains(category)
+        {
+            return Err(Refusal::new("there is no such category"));
         }
         if let Some(filed) = self.channels.get_mut(channel) {
             filed.category = category;
@@ -1136,12 +1075,13 @@ impl Chat {
     /// Delete channel.
     ///
     /// With its read marks. Its messages stay in the parts that
-    /// hold them, shown nowhere.
+    /// hold them, shown nowhere. A channel that no longer reads (held out of
+    /// the chat, [`Collection::quarantined`]) is deleted too.
     #[action(item = channels, destructive)]
     pub fn delete_channel(&mut self, channel: &Id) -> Result<(), Refusal> {
-        self.channels
-            .remove(channel)
-            .ok_or_else(|| Refusal::new("there is no such channel"))?;
+        if self.channels.remove(channel).is_none() && !self.channels.discard(channel) {
+            return Err(Refusal::new("there is no such channel"));
+        }
         let key = channel.to_string();
         for marks in self.read.values_mut() {
             marks.remove(&key);

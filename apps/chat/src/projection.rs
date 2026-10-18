@@ -1,4 +1,4 @@
-//! The chat record as the window and the agents read it: workspaces,
+//! The chat record as the window and the agents read it: the room's
 //! channels and messages in the shapes [`crate::model`] draws, and the
 //! composers' drafts, which are rich text in the document.
 
@@ -7,9 +7,7 @@ use std::collections::HashMap;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use ui::tilo_resource::{Id, Identified, Resource};
 
-use crate::model::{
-    AgentStep, AgentWork, Category, Channel, EditRecord, Message, Reaction, User, Workspace,
-};
+use crate::model::{AgentStep, AgentWork, Category, Channel, EditRecord, Message, Reaction, User};
 use crate::record::Chat;
 
 /// The published id of the item `id` of the record's `field`
@@ -19,10 +17,10 @@ pub fn item_id(field: &str, id: &str) -> String {
     ui::tilo_resource::items::item_resource_id::<Chat>(field, &Id::from_raw(id))
 }
 
-/// Whether `doc` holds a started chat: a record with a workspace.
+/// Whether `doc` holds a started chat: a record with a channel or a person.
 #[must_use]
 pub fn is_started(doc: &AutoCommit) -> bool {
-    Chat::read(doc).is_ok_and(|chat| !chat.workspaces.is_empty())
+    Chat::read(doc).is_ok_and(|chat| !chat.channels.is_empty() || !chat.people.is_empty())
 }
 
 /// The chat record in `doc`; an empty one when `doc` holds none.
@@ -32,22 +30,6 @@ pub fn read(doc: &AutoCommit) -> Chat {
 }
 
 impl Chat {
-    /// The workspaces, in rail order.
-    #[must_use]
-    pub fn workspace_rows(&self) -> Vec<Workspace> {
-        self.workspaces
-            .iter()
-            .enumerate()
-            .map(|(order, (id, workspace))| Workspace {
-                id: id.to_string(),
-                name: workspace.name.clone(),
-                glyph: workspace.glyph.clone(),
-                color_idx: usize::try_from(workspace.color).unwrap_or_default(),
-                order: u32::try_from(order).unwrap_or(u32::MAX),
-            })
-            .collect()
-    }
-
     /// The categories, in sidebar order.
     #[must_use]
     pub fn category_rows(&self) -> Vec<Category> {
@@ -56,7 +38,6 @@ impl Chat {
             .enumerate()
             .map(|(order, (id, category))| Category {
                 id: id.to_string(),
-                workspace: category.workspace.to_string(),
                 name: category.name.clone(),
                 order: u32::try_from(order).unwrap_or(u32::MAX),
                 collapsed: false,
@@ -73,7 +54,6 @@ impl Chat {
             .enumerate()
             .map(|(order, (id, channel))| Channel {
                 id: id.to_string(),
-                workspace: channel.workspace.to_string(),
                 category: channel
                     .category
                     .as_ref()

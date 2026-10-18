@@ -1,6 +1,7 @@
 # Chat — user-facing strings.
 
 chat-contacts-section = Contacts
+chat-channels-title = Channels
 chat-person-chat-private = Private conversation
 chat-person-chat-placeholder = Write a private message
 chat-person-chat-unavailable = Private conversation unavailable. Choose someone in this workspace.
@@ -48,7 +49,6 @@ chat-call-issue-session-ended = Call ended
 chat-call-issue-stale = Call session expired
 
 chat-call-title = Call: { $channel }
-chat-call-no-workspace = Open a workspace to call in
 chat-call-open = Open call conversation
 chat-call-join = Join muted
 chat-call-leave-action = Leave call
@@ -209,9 +209,8 @@ chat-person-relative-name = { $name } ({ $tag })
 chat-begin-chat = Started the chat
 chat-introduce = Introduced themselves as { $name }
 chat-name-agent = Named an agent { $name }
-chat-create-workspace = Created the workspace { $name }
-chat-create-category = Created the category { $name } in { $item }
-chat-create-channel = Created the channel #{ $name } in { $item }
+chat-create-category = Created the category { $name }
+chat-create-channel = Created the channel #{ $name }
 chat-delete-category = Deleted the category { $item }
 chat-move-channel = { $up ->
     [true] Moved #{ $item } up
@@ -230,11 +229,6 @@ chat-mark-read = Marked #{ $item } read
 chat-record-work = Recorded what it is doing
 chat-submit-feedback = Filed feedback in #{ $item }
 chat-triage = Triaged feedback
-chat-chat-workspaces = { $op ->
-    [insert] Added a workspace
-    [remove] Removed a workspace
-   *[other] Reordered the workspaces
-}
 chat-chat-categories = { $op ->
     [insert] Added a category
     [remove] Removed a category
@@ -268,9 +262,6 @@ chat-chat-drafts-drafts = { $op ->
     [replace] Cleared a draft
    *[other] Edited a draft
 }
-chat-workspace-name = Renamed the workspace { $item } to { $new }
-chat-workspace-glyph = Changed the monogram of { $item } to { $new }
-chat-workspace-color = Changed the colour of { $item }
 chat-category-name = Renamed the category { $item } to { $new }
 chat-channel-name = Renamed #{ $item } to #{ $new }
 chat-channel-topic = Set the topic of #{ $item } to { $new }
