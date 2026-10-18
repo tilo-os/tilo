@@ -232,8 +232,9 @@ pub struct TypstApp {
     frame: Frame,
     /// The transient bottom-trailing bubble: a compile result, an export.
     status: ui::StatusBubble,
-    /// Whether the document saved: "Saved" once, or a failure to act on.
-    save_status: ui::SaveStatusSurface,
+    /// The window's report of this window's file saves: the framework says
+    /// nothing while they land and offers "Try again" when one fails.
+    saves: ui::framework::Saves,
     /// Where the last save went, so a failed save can be tried again.
     save_path: Option<std::path::PathBuf>,
     /// The next compile result is feedback for an explicit Compile.
@@ -307,7 +308,7 @@ impl TypstApp {
                 0.0,
             ),
             status: ui::StatusBubble::new(),
-            save_status: ui::SaveStatusSurface::new(),
+            saves: ui::framework::Saves::default(),
             save_path: None,
             compile_feedback: false,
             rect: Rect::ZERO,
@@ -337,6 +338,7 @@ impl TypstApp {
     ) {
         self.chrome.attach_actions(&cx.actions());
         self.actions = Some(cx.dispatcher());
+        self.saves = cx.saves();
         self.editor.attach(cx.dispatcher());
         if let Some(file) = cx.fixture::<crate::resource::CaptureFile>() {
             self.current = Some(file.0.clone());
@@ -565,8 +567,9 @@ impl TypstApp {
         self.save_path = Some(path.to_path_buf());
         match save_file(path, file.source.as_bytes()) {
             Ok(()) => {
-                self.save_status.set(ui::SaveState::Saved, ui::time::now());
-                self.set_flash(format!("Saved {}", path.display()));
+                // The file is where the document lives: saving it says
+                // nothing, and the window's save status ends a failure.
+                self.saves.saved();
                 let path = path.to_string_lossy().into_owned();
                 if file.path.as_ref().map(|at| at.0.as_str()) != Some(path.as_str())
                     && let Some(id) = self.current.clone()
@@ -579,8 +582,7 @@ impl TypstApp {
                 Ok(())
             }
             Err(e) => {
-                self.save_status
-                    .set(ui::SaveState::Failed(e.to_string()), ui::time::now());
+                self.saves.failed(e.to_string());
                 Err(e.to_string())
             }
         }
@@ -650,7 +652,7 @@ impl TypstApp {
         // Recovery belongs to the source being replaced, not the newly opened
         // document. Leave it intact when reading the new file fails.
         self.save_path = None;
-        self.save_status = ui::SaveStatusSurface::new();
+        self.saves.report(ui::SaveState::Idle);
         let path = path.to_string_lossy().into_owned();
         // A window edits one document: the file opened replaces the one shown.
         if let Some(id) = self.current_file().and_then(|_| self.current.clone()) {
@@ -1036,6 +1038,16 @@ impl Widget for TypstApp {
         }
         let (doc, _) = ui::doc::document_ref(doc, path);
         self.background_poll_deadline.set(None);
+        // "Try again" on the window's save status: save to where the failed
+        // save went.
+        if self.saves.take_retry()
+            && let Some(path) = self.save_path.clone()
+            && let Some(dispatcher) = &self.actions
+        {
+            dispatcher.effect(&crate::actions::TypstEffect::Save {
+                path: Some(path.to_string_lossy().into_owned()),
+            });
+        }
         if let Some(operation) = self.pending_resource_io.take() {
             let result = match operation {
                 ResourceIo::Open(path) => self.open_typ_from(&path),
@@ -1183,7 +1195,6 @@ impl Widget for TypstApp {
             self.status.pointer_moved(area, self.mouse, tr, theme, now);
         }
         self.status.paint(scene, t, tr, theme, area, now);
-        self.save_status.paint(scene, t, tr, theme, area, now);
 
         // This frame reflects the latest interaction state; clear the move-dirty
         // flag so idle hover doesn't spin the render loop.
@@ -1387,7 +1398,6 @@ impl Widget for TypstApp {
         self.editor.wants_animation()
             || self.compiling()
             || self.status.needs_frame(ui::time::now())
-            || self.save_status.needs_frame(ui::time::now())
             || self
                 .chrome
                 .children()
@@ -1662,7 +1672,7 @@ impl TypstApp {
         self.pointer_seen = true;
         // The bubble pins open while the pointer rests on its corner: repaint
         // only while it shows so idle hover doesn't spin the loop.
-        if self.status.is_visible(ui::time::now()) || self.save_status.pointer_moved(p) {
+        if self.status.is_visible(ui::time::now()) {
             self.dirty = true;
         }
         if self.splitter.is_dragging() {
@@ -1702,20 +1712,6 @@ impl TypstApp {
     /// tracked by the most recent `CursorMoved`.
     fn handle_left_press(&mut self, modifiers: Modifiers, handled: &mut bool) {
         let p = self.mouse;
-        // A failed save's card owns its clicks: try again, or dismiss it.
-        if self.save_status.contains(p) {
-            if self.save_status.click(p) == Some(ui::SaveAction::Retry)
-                && let Some(path) = self.save_path.clone()
-                && let Some(dispatcher) = &self.actions
-            {
-                dispatcher.effect(&crate::actions::TypstEffect::Save {
-                    path: Some(path.to_string_lossy().into_owned()),
-                });
-            }
-            self.dirty = true;
-            *handled = true;
-            return;
-        }
         // The band of controls owns its clicks; the controls themselves took
         // theirs before this point.
         if self.bar_rect.contains(p) {
@@ -1923,7 +1919,7 @@ mod tests {
         // on permissions (which differ when the tests run as root).
         assert!(app.save_typ_to(&path).is_err());
         assert_eq!(app.save_path.as_deref(), Some(path.as_path()));
-        assert!(app.save_status.failure().is_some());
+        assert!(matches!(app.saves.state(), Some(ui::SaveState::Failed(_))));
 
         std::fs::create_dir_all(&dir).unwrap();
         let retry = app.save_path.clone().unwrap();
@@ -1933,7 +1929,7 @@ mod tests {
             app.current_file().unwrap().source
         );
         assert!(
-            app.save_status.failure().is_none(),
+            app.saves.state() == Some(ui::SaveState::Saved),
             "a successful retry dismisses the failure card"
         );
         std::fs::remove_dir_all(dir).unwrap();
@@ -1965,7 +1961,7 @@ mod tests {
         app.settle();
         let retry = app
             .with_surface::<TypstApp, _>(|view| {
-                assert!(view.save_status.failure().is_some());
+                assert!(matches!(view.saves.state(), Some(ui::SaveState::Failed(_))));
                 assert_eq!(view.current_file().unwrap().source, "= Document A");
                 view.save_path.clone().unwrap()
             })
@@ -1996,7 +1992,10 @@ mod tests {
         app.with_surface::<TypstApp, _>(|view| {
             assert_eq!(view.current_file().unwrap().source, "= Document B");
             assert!(view.save_path.is_none(), "B must not retry A's destination");
-            assert!(view.save_status.failure().is_none(), "no stale Retry card");
+            assert!(
+                !matches!(view.saves.state(), Some(ui::SaveState::Failed(_))),
+                "no stale Retry card"
+            );
         })
         .unwrap();
         assert!(!destination.exists());

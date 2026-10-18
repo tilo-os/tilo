@@ -396,7 +396,10 @@ pub struct SaveNotice {
 /// "Saved" once, however quickly it landed. The state itself stays
 /// readable through [`Self::state`] for an app's accessibility status and
 /// automation. An app reports the state and routes clicks; it never pins a
-/// bubble open or paints its own save pill.
+/// bubble open or paints its own save pill. A framework window gets one from
+/// its root, fed and routed with no app code (tilo-app's `framework::Saves`);
+/// only a view that places the status itself, in its header row, holds its
+/// own.
 ///
 /// Given the document's header row ([`SaveStatusSurface::set_header_slot`]),
 /// the save's progress is quiet text there, beside the title, covering none

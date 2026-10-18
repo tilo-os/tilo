@@ -122,6 +122,7 @@ impl<R: Resource> ViewCx<R> {
                 alive: Rc::downgrade(alive),
                 dispatch,
                 saved: LocalState::new(RecordSaveStatus::Saved),
+                saves: super::Saves::default(),
                 run,
                 storage,
                 effects: Effects::inert(),
