@@ -89,6 +89,7 @@ pub const WINDOW_LOST_EXIT_CODE: i32 = 70;
 
 #[cfg(feature = "native")]
 mod input_publication;
+mod local_action_persistence;
 mod local_input_capture;
 #[cfg(feature = "native")]
 mod surface;

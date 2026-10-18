@@ -395,6 +395,7 @@ pub struct DocWriter {
     full_writes: usize,
     appends: usize,
     progress: RefCell<Progress>,
+    private_history: Result<crate::private_history::PrivateHistory, String>,
 }
 
 /// What the writer knows about submitted writes. Interior so status and
@@ -429,6 +430,11 @@ impl DocWriter {
             None => (Vec::new(), 0, None, VecDeque::new()),
         };
         Ok(Self {
+            private_history: crate::private_history::PrivateHistory::open(
+                Rc::clone(&owner.store),
+                &owner.key,
+                owner.actor.to_bytes(),
+            ),
             owner: Some(Rc::clone(owner)),
             sent,
             appended: 0,
@@ -459,6 +465,7 @@ impl DocWriter {
     pub fn disabled(reason: impl Into<String>) -> Self {
         Self {
             owner: None,
+            private_history: Err("writer disabled".into()),
             sent: Vec::new(),
             appended: 0,
             base: 0,
@@ -521,7 +528,66 @@ impl DocWriter {
         }
     }
 
+    /// Stage bounded, device-private evidence. The next ordinary save tick
+    /// checkpoints it without waiting for storage or changing the CRDT.
+    pub fn record_private_action(&mut self, action: crate::PrivateAction) -> Result<(), String> {
+        self.private_history
+            .as_mut()
+            .map_err(|error| error.clone())?
+            .record(action)
+    }
+
+    /// Recover only evidence whose referenced document history survived too.
+    /// This never treats an admission as publication authority.
+    pub fn private_actions(&self, doc: &AutoCommit) -> Result<Vec<crate::PrivateAction>, String> {
+        let history = self
+            .private_history
+            .as_ref()
+            .map_err(|error| error.clone())?;
+        match history.durability() {
+            Durability::Durable => {}
+            Durability::Pending => return Err("private action checkpoint is not durable".into()),
+            Durability::Failed(error) => return Err(error),
+        }
+        let heads = self
+            .durability_snapshot()
+            .durable_heads
+            .ok_or("document checkpoint is not durable")?;
+        // A live document may be ahead of its checkpoint. Exclude references
+        // reachable only through those uncommitted changes, without forking it.
+        let later: std::collections::HashSet<_> = doc
+            .committed_document()
+            .get_changes_meta(&heads)
+            .iter()
+            .map(|change| change.hash.0)
+            .collect();
+        Ok(history
+            .entries()
+            .filter(|entry| {
+                entry.is_present_in(doc) && entry.hashes.iter().all(|hash| !later.contains(hash))
+            })
+            .cloned()
+            .collect())
+    }
+
+    /// Private checkpoint progress is separate from shared document progress.
+    pub fn private_action_durability(&self) -> durable_store::Durability {
+        match &self.private_history {
+            Ok(history) => history.durability(),
+            Err(error) => durable_store::Durability::Failed(error.clone()),
+        }
+    }
+
+    fn checkpoint_private_history(&mut self) {
+        if let Ok(history) = &mut self.private_history
+            && let Err(error) = history.checkpoint()
+        {
+            tracing::warn!(%error, "private action checkpoint was not accepted");
+        }
+    }
+
     fn request_changed(&mut self, doc: &mut AutoCommit) -> Result<(), StoreError> {
+        self.checkpoint_private_history();
         let heads = doc.get_heads();
         if heads == self.sent {
             return Ok(());
@@ -574,6 +640,7 @@ impl DocWriter {
         if let Err(error) = self.send_full(doc, heads) {
             self.refuse(&error);
         }
+        self.checkpoint_private_history();
     }
 
     /// [`Self::request`] normally, [`Self::request_checkpoint`] after a failure.
@@ -735,6 +802,9 @@ impl DocWriter {
         }
         flushed.map_err(|error| error.to_string())?;
         if progress.inflight.is_empty() {
+            if let Ok(history) = &self.private_history {
+                history.flush()?;
+            }
             Ok(())
         } else {
             Err(format!(
