@@ -12344,6 +12344,37 @@ pub fn run() {
             frame_builder.host_mut(),
             Instant::now(),
         );
+        // A clipboard history choice for an app running inside the shell
+        // takes that app's own paste: Ctrl+V into its focused widget, which
+        // reads the clipboard the choice just set.
+        for _ in 0..frame_builder.host_mut().take_in_process_pastes() {
+            let ctrl = winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+            let v = winit::keyboard::Key::Character("v".into());
+            let events = [
+                winit::event::WindowEvent::ModifiersChanged(ctrl),
+                ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+                    v.clone(),
+                    None,
+                    winit::event::ElementState::Pressed,
+                )),
+                ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+                    v,
+                    None,
+                    winit::event::ElementState::Released,
+                )),
+                winit::event::WindowEvent::ModifiersChanged(winit::event::Modifiers::default()),
+            ];
+            for event in &events {
+                frame_builder.dispatch_event(
+                    event,
+                    &ctrl,
+                    &mut ui::widget::Edits::lend(&mut test_control_ctx.doc),
+                    &test_control_ctx.root_obj,
+                    &mut test_control_ctx.focus,
+                );
+            }
+            injected_redraw_pending = true;
+        }
         // An app's idle inhibitor holds the screen on only while its window is visible.
         crate::compositor::idle_inhibit::sync_idle_inhibitors(
             &mut state,
