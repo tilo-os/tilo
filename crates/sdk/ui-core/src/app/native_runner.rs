@@ -1303,6 +1303,38 @@ fn create_window_render_prepared(
     prepared_surface: Option<(WindowId, vello::util::RenderSurface<'static>)>,
     proxy: EventLoopProxy<UserEvent>,
 ) -> Result<RenderThreadHandle, String> {
+    let (render_cx, surface, renderer) =
+        prepare_window_render(window, transparent, prepared, prepared_surface)?;
+    // After this, every GPU call happens on its render worker.
+    let render = crate::render_thread::spawn_render_thread_for_window(
+        render_cx,
+        surface,
+        renderer,
+        render_ready_wake(window.id(), proxy),
+        Some(window.clone()),
+    )?;
+    Ok(render)
+}
+
+/// What wakes `window`'s handler when its render worker has news.
+fn render_ready_wake(
+    window_id: WindowId,
+    proxy: EventLoopProxy<UserEvent>,
+) -> Arc<dyn Fn() + Send + Sync> {
+    Arc::new(move || {
+        // Avoid synchronous macOS main-thread dispatch while the UI waits on submission.
+        let _ = proxy.send_event(UserEvent::RenderReady(window_id));
+    })
+}
+
+/// The device, surface and renderer `window` renders with: what the launch
+/// prepared for it where that fits, made now otherwise.
+fn prepare_window_render(
+    window: &Arc<Window>,
+    transparent: bool,
+    prepared: Option<PreparedRenderer>,
+    prepared_surface: Option<(WindowId, vello::util::RenderSurface<'static>)>,
+) -> Result<(RenderContext, vello::util::RenderSurface<'static>, Renderer), String> {
     tilo_startup_metrics::mark("window-render-context-start");
     let (mut render_cx, prepared_renderer) = match prepared {
         Some(prepared) => (
@@ -1340,20 +1372,7 @@ fn create_window_render_prepared(
         }
         None => create_native_renderer(device_handle)?,
     };
-    // After this, every GPU call happens on its render worker.
-    let window_id = window.id();
-    let render = crate::render_thread::spawn_render_thread_for_window(
-        render_cx,
-        surface,
-        renderer,
-        Arc::new(move || {
-            // Avoid synchronous macOS main-thread dispatch while the UI waits on submission.
-            let _ = proxy.send_event(UserEvent::RenderReady(window_id));
-        }),
-        Some(window.clone()),
-    )?;
-    tilo_startup_metrics::mark("window-render-context-done");
-    Ok(render)
+    Ok((render_cx, surface, renderer))
 }
 
 fn create_native_renderer(device_handle: &crate::gpu::DeviceHandle) -> Result<Renderer, String> {
@@ -1640,6 +1659,45 @@ impl AppHandler {
                     tracing::warn!(%error, "could not render with the renderer kept over suspend");
                 }
             }
+        }
+        // On a Wayland display the preparation already made this window's
+        // device, pipelines and surface off the main thread, so the render
+        // worker starts at once and finishes waiting for them itself: the
+        // first frame's sync, layout and draw run here meanwhile instead of
+        // after the wait.
+        #[cfg(any(windows, target_os = "linux"))]
+        if let Some(preparation) = self
+            .app
+            .startup_renderer
+            .take_if(|preparation| preparation.made_early_window())
+        {
+            let worker_window = window.clone();
+            self.render = Some(crate::render_thread::spawn_render_thread_deferred(
+                move || {
+                    let startup = tilo_startup_metrics::span("native-render-prepare-wait", || {
+                        preparation.wait()
+                    });
+                    match startup {
+                        Ok(Ok(startup)) => prepare_window_render(
+                            &worker_window,
+                            false,
+                            Some(startup.prepared),
+                            startup.surface,
+                        ),
+                        Ok(Err(error)) => {
+                            tracing::warn!(%error, "renderer preparation failed; selecting device for the actual surface");
+                            prepare_window_render(&worker_window, false, None, None)
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "renderer preparation disconnected; selecting device for the actual surface");
+                            prepare_window_render(&worker_window, false, None, None)
+                        }
+                    }
+                },
+                render_ready_wake(window.id(), self.a11y_proxy.clone()),
+                Some(window.clone()),
+            )?);
+            return Ok(());
         }
         #[cfg(any(windows, target_os = "linux"))]
         if let Some(preparation) = self.app.startup_renderer.take() {

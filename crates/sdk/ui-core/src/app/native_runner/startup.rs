@@ -41,9 +41,17 @@ pub(crate) struct StartupRender {
 /// The renderer preparation started at process start.
 pub(crate) struct RendererPreparation {
     result: mpsc::Receiver<Result<StartupRender, String>>,
+    /// The launch made the primary window early (a Wayland display), so the
+    /// preparation also makes its surface off the main thread.
+    early_window: bool,
 }
 
 impl RendererPreparation {
+    /// Whether the launch made the primary window early.
+    pub(crate) fn made_early_window(&self) -> bool {
+        self.early_window
+    }
+
     /// What the preparation made, once it has.
     pub(super) fn wait(self) -> Result<Result<StartupRender, String>, mpsc::RecvError> {
         self.result.recv()
@@ -115,8 +123,11 @@ pub(crate) fn prepare_native_renderer() -> Option<RendererPreparation> {
         Ok(_) => {
             // Consumes the offer: sent with the window, or dropped unsent,
             // which lets the preparation finish without one.
-            open_window_early(window_offer);
-            Some(RendererPreparation { result: receiver })
+            let early_window = open_window_early(window_offer);
+            Some(RendererPreparation {
+                result: receiver,
+                early_window,
+            })
         }
         Err(error) => {
             tracing::warn!(%error, "could not prepare renderer in parallel");
@@ -198,20 +209,21 @@ fn adopt_window_surface(
 /// `take_early_window`). Whatever happens, the preparation stops waiting for
 /// a window here. Without a session to connect to, the event loop is left to
 /// `App::run_with_setup`, which builds it (and fails) as it always did.
-fn open_window_early(offer: mpsc::Sender<Arc<Window>>) {
+fn open_window_early(offer: mpsc::Sender<Arc<Window>>) -> bool {
     if std::env::var_os("WAYLAND_DISPLAY").is_none() && std::env::var_os("WAYLAND_SOCKET").is_none()
     {
-        return;
+        return false;
     }
     tilo_startup_metrics::mark("event-loop-build-start");
     let event_loop = match EventLoop::<UserEvent>::with_user_event().build() {
         Ok(event_loop) => event_loop,
         Err(error) => {
             tracing::debug!(%error, "no early event loop; the app builds it after constructing");
-            return;
+            return false;
         }
     };
     tilo_startup_metrics::mark("event-loop-build-done");
+    let mut made = false;
     if on_wayland(&event_loop) {
         let app_id = primary_window_app_id(None);
         let attributes =
@@ -225,7 +237,7 @@ fn open_window_early(offer: mpsc::Sender<Arc<Window>>) {
             Ok(window) => {
                 tilo_startup_metrics::mark("startup-window-created");
                 let window = Arc::new(window);
-                let _ = offer.send(Arc::clone(&window));
+                made = offer.send(Arc::clone(&window)).is_ok();
                 EARLY_WINDOW.with(|slot| *slot.borrow_mut() = Some((app_id, window)));
             }
             Err(error) => {
@@ -234,6 +246,7 @@ fn open_window_early(offer: mpsc::Sender<Arc<Window>>) {
         }
     }
     EARLY_EVENT_LOOP.with(|slot| *slot.borrow_mut() = Some(event_loop));
+    made
 }
 
 fn on_wayland(event_loop: &EventLoop<UserEvent>) -> bool {
