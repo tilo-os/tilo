@@ -443,7 +443,7 @@ fn touch_pages(address: *mut libc::c_void, len: usize) {
     let mut offset = 0usize;
     while offset < len {
         // SAFETY: `offset < len`, inside the readable mapping of `len` bytes.
-        unsafe { std::ptr::read_volatile(base.add(offset)) };
+        let _ = unsafe { std::ptr::read_volatile(base.add(offset)) };
         offset = offset.saturating_add(page);
     }
 }
