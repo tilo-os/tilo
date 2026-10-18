@@ -306,6 +306,7 @@ struct Fixture {
     state: Arc<CapnpBrokerState>,
     directories: Rc<LocalActionDirectoryRegistry>,
     task: String,
+    _identity_env: tilo_test_env::ScopedEnv,
 }
 impl Fixture {
     fn new() -> Self {
@@ -313,6 +314,17 @@ impl Fixture {
     }
     fn with_launcher(launcher: Option<Arc<dyn crate::services::LauncherServices>>) -> Self {
         let directory = tempfile::tempdir().unwrap();
+        let mut identity_env = tilo_test_env::ScopedEnv::new();
+        identity_env
+            .set("XDG_CONFIG_HOME", directory.path().join("config"))
+            .set("TILO_IDENTITY_ROOT", directory.path().join("identity"))
+            .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
+        tilo_identity_host::provisioning::ensure_collaboration_identity(
+            &directory.path().join("config/tilo/identity"),
+            &tilo_user_identity::IdentityPaths::under(directory.path().join("identity")),
+            tilo_identity_host::provisioning::IdentityStorage::Files,
+        )
+        .expect("provision the host admission and terminal receipt signer");
         let owner = tilo_joined_room::open_file(&directory.path().join("native.json")).unwrap();
         let key = SigningKey::from_bytes(&[92; 32]);
         let mut certificate = tilo_joined_room::testing::certificate(
@@ -409,6 +421,7 @@ impl Fixture {
             state,
             directories: Rc::new(LocalActionDirectoryRegistry::new(rx)),
             task,
+            _identity_env: identity_env,
         }
     }
     /// Attenuate the live connection without changing its signed identity or

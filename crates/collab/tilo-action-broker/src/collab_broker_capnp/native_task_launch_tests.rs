@@ -35,14 +35,14 @@ impl LauncherServices for Launcher {
             return Err("host activation named the wrong workspace, app or record".into());
         }
         let custody = self.custody.lock().unwrap().clone().unwrap();
-        let retained = std::fs::read_to_string(custody).unwrap();
+        let snapshot = super::super::super::invocation_journal::durable_snapshot(&custody);
+        let retained = serde_json::to_string(&snapshot).unwrap();
         if !retained.contains("\"host_activation\":true") {
             return Err("the actual host call requires custody already on disk".into());
         }
         if !retained.contains("AuthenticatedLocal") {
             return Err("custody must retain the real signed caller identity".into());
         }
-        let snapshot: serde_json::Value = serde_json::from_str(&retained).unwrap();
         let activation = snapshot["records"]
             .as_array()
             .unwrap()
@@ -77,7 +77,6 @@ impl LauncherServices for Launcher {
 struct SignedLaunchFixture {
     fixture: Fixture,
     launcher: Arc<Launcher>,
-    _identity_env: tilo_test_env::ScopedEnv,
 }
 impl std::ops::Deref for SignedLaunchFixture {
     type Target = Fixture;
@@ -97,24 +96,12 @@ fn fixture() -> (
         workspaces: Mutex::new(Vec::new()),
     });
     let f = Fixture::with_launcher(Some(launcher.clone()));
-    *launcher.custody.lock().unwrap() = Some(f.directory.path().join("journal/records.json"));
+    *launcher.custody.lock().unwrap() = Some(f.directory.path().join("journal"));
     permission(&f, true);
-    let mut identity_env = tilo_test_env::ScopedEnv::new();
-    identity_env
-        .set("XDG_CONFIG_HOME", f.directory.path().join("config"))
-        .set("TILO_IDENTITY_ROOT", f.directory.path().join("identity"))
-        .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
-    tilo_identity_host::provisioning::ensure_collaboration_identity(
-        &f.directory.path().join("config/tilo/identity"),
-        &tilo_user_identity::IdentityPaths::under(f.directory.path().join("identity")),
-        tilo_identity_host::provisioning::IdentityStorage::Files,
-    )
-    .expect("provision the real host activation receipt signer");
     (
         SignedLaunchFixture {
             fixture: f,
             launcher,
-            _identity_env: identity_env,
         },
         receiver,
     )
@@ -930,16 +917,32 @@ async fn activation_rechecks_original_caller_and_live_policy_after_custody() {
                         digest.as_bytes()[..16].try_into().unwrap(),
                     )),
                 };
-                let journal = super::super::super::invocation_journal::InvocationJournal::open(
-                    &f.directory.path().join("journal"),
-                )
-                .unwrap();
-                let activation = journal.lookup(&key).unwrap().unwrap();
+                let activation = f
+                    .state
+                    .journal
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .lookup(&key)
+                    .unwrap()
+                    .unwrap();
                 assert!(
                     matches!(activation.update, tilo_actions::InvocationUpdate::Failed { error, .. }
                     if error.code == "host_activation_failed")
                 );
                 assert!(!activation.uncertain);
+                let admission = activation
+                    .admission
+                    .expect("signed host activation admission");
+                admission.validate(&admission.receipt.facts).unwrap();
+                crate::action_evidence::verify_terminal(
+                    &activation.terminal.expect("signed host activation failure"),
+                    &admission.receipt,
+                )
+                .unwrap();
             }
         }))
         .await;
