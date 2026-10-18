@@ -14,7 +14,7 @@ name = "mail"
 path = "src/main.rs"
 
 [dependencies]
-mime_guess.workspace = true
+tilo-mime = { path = "../../crates/platform/tilo-mime" }
 fnv.workspace = true
 hex.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }

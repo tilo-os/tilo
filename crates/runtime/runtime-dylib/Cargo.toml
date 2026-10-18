@@ -81,7 +81,8 @@ tilo-doc-codecs = { path = "../../doc/tilo-doc-codecs", default-features = false
 tilo-thumbnail = { path = "../../media/thumbnail" }
 roxmltree.workspace = true
 xattr = "1.6.1"
-mime_guess.workspace = true
+# File types by extension, for the apps that name them (Files, Mail).
+tilo-mime = { path = "../../platform/tilo-mime" }
 registry-types = { path = "../../packaging/registry-types" }
 workspace-hack = { version = "0.1" }
 

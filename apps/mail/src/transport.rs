@@ -300,9 +300,7 @@ fn addr_from_parsed(a: &mail_parser::Addr) -> Addr {
 /// Best-effort MIME type from a filename extension, for the attachment glyph
 /// and the multipart Content-Type.
 pub fn mime_from_filename(name: &str) -> &'static str {
-    mime_guess::from_path(name)
-        .first_raw()
-        .unwrap_or("application/octet-stream")
+    tilo_mime::from_path_or_octet_stream(name)
 }
 
 #[cfg(test)]

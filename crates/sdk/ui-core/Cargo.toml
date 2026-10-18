@@ -114,7 +114,7 @@ registry-types = { version = "0.1.0", path = "../../packaging/registry-types" }
 # never be unified into it.
 browser-continuity-core.workspace = true
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
-mime_guess.workspace = true
+tilo-mime = { version = "0.1.0", path = "../../platform/tilo-mime" }
 fnv.workspace = true
 # Host services: the clock, background work, clipboard, file choosers,
 # notifications, media sessions, location and screen capture, and their

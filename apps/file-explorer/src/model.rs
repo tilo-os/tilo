@@ -1057,9 +1057,7 @@ fn read_dir_inner(path: &Path, in_workspace: bool) -> Result<Vec<Entry>, String>
         let meta = entry.metadata().ok();
         let path = entry.path();
         let is_dir = meta.as_ref().is_some_and(std::fs::Metadata::is_dir);
-        let mime = mime_guess::from_path(&path)
-            .first_or_octet_stream()
-            .to_string();
+        let mime = tilo_mime::from_path_or_octet_stream(&path).to_string();
         // Content hydration state only applies to files — a directory's structure
         // is always fully projected — so we don't query (or badge) folders.
         let sync_state = if in_workspace && !is_dir {
