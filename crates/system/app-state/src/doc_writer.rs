@@ -535,6 +535,10 @@ impl DocWriter {
     /// 128 actions / 4 MiB. Actor changes reuse slots rather than creating
     /// unlimited files. Eight concurrent writers exhaust evidence capacity;
     /// recording then fails rather than evicting a live writer's checkpoint.
+    ///
+    /// # Errors
+    /// Returns an error if private history could not be opened, the action
+    /// exceeds the checkpoint's size budget, or a retry changes its evidence.
     pub fn record_private_action(&mut self, action: crate::PrivateAction) -> Result<(), String> {
         self.private_history
             .as_mut()
@@ -545,11 +549,12 @@ impl DocWriter {
     /// Recover this session's slot evidence whose document history survived too.
     /// Other slots and evidence evicted by bounded replacement are not included.
     /// This never treats an admission as publication authority.
+    ///
+    /// # Errors
+    /// Returns an error if private history could not be opened or either the
+    /// private action checkpoint or document checkpoint is not durable.
     pub fn private_actions(&self, doc: &AutoCommit) -> Result<Vec<crate::PrivateAction>, String> {
-        let history = self
-            .private_history
-            .as_ref()
-            .map_err(|error| error.clone())?;
+        let history = self.private_history.as_ref().map_err(Clone::clone)?;
         match history.durability() {
             Durability::Durable => {}
             Durability::Pending => return Err("private action checkpoint is not durable".into()),
