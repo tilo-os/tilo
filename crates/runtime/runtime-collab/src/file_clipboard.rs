@@ -5,11 +5,11 @@ use serde::{Deserialize, Serialize};
 /// [`Command::Capture`] travels as its own descriptor).
 pub const MAX_ENTRIES: usize = 256;
 pub const MAX_WIRE_BYTES: usize = 128 * 1024;
-/// The most entries one offer carries. A [`Command::CaptureNamed`] hands over
-/// one folder descriptor and names, and the host keeps no descriptor per
-/// name; what bounds an offer is the host's write-ahead receipt for a paste,
-/// which records every entry so an interrupted paste can be recovered.
-pub const MAX_OFFER_ENTRIES: usize = 1024;
+/// The most entries one [`Command::CaptureNamed`] names. It bounds one
+/// message, which [`MAX_WIRE_BYTES`] bounds anyway; a selection of any size
+/// is captured in as many commands as it needs, one folder descriptor each,
+/// and published as one offer.
+pub const MAX_NAMED_PER_COMMAND: usize = 8192;
 /// The longest leaf name a [`Command::CaptureNamed`] carries (`NAME_MAX`).
 pub const MAX_NAME_BYTES: usize = 255;
 
@@ -183,7 +183,7 @@ impl Command {
             Self::CaptureNamed { folder, entries } => {
                 folder.valid()
                     && !entries.is_empty()
-                    && entries.len() <= MAX_OFFER_ENTRIES
+                    && entries.len() <= MAX_NAMED_PER_COMMAND
                     && entries.iter().all(|entry| valid_name(&entry.name))
             }
             Self::Release { tickets } => {
@@ -377,10 +377,10 @@ mod tests {
                 .collect(),
         };
         assert!(
-            named(vec![b"a.txt".to_vec(); MAX_OFFER_ENTRIES]).valid(),
+            named(vec![b"a.txt".to_vec(); MAX_NAMED_PER_COMMAND]).valid(),
             "past 256 entries"
         );
-        assert!(!named(vec![b"a.txt".to_vec(); MAX_OFFER_ENTRIES + 1]).valid());
+        assert!(!named(vec![b"a.txt".to_vec(); MAX_NAMED_PER_COMMAND + 1]).valid());
         for bad in [
             vec![],
             b".".to_vec(),

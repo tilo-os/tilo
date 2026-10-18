@@ -937,9 +937,6 @@ impl NativeFileClipboard {
                 entries.push(source);
             }
         }
-        if entries.len() > runtime_collab::file_clipboard::MAX_OFFER_ENTRIES {
-            return Err("clipboard selection has too many entries".into());
-        }
         let public = Offered {
             id: uuid::Uuid::new_v4().to_string(),
             count: entries.len(),

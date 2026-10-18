@@ -974,9 +974,6 @@ impl FileExplorerWidget {
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
-        if entries.len() > file_clipboard::MAX_OFFER_ENTRIES {
-            return Err(t("files-copy-too-large"));
-        }
         Ok(((selected_folder, folder), entries))
     }
 
