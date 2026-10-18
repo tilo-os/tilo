@@ -19159,13 +19159,43 @@ dependencies = [
 name = "tilo-search"
 version = "0.1.0"
 dependencies = [
+ "tempfile",
+ "tilo-engine-loader",
+ "tilo-lock",
+ "tilo-search-model",
+ "tilo-search-tantivy",
+ "tracing",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-search-engine"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-search",
+ "tilo-search-tantivy",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-search-model"
+version = "0.1.0"
+dependencies = [
  "icu_segmenter",
+ "unicode-normalization",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-search-tantivy"
+version = "0.1.0"
+dependencies = [
  "tantivy",
  "tempfile",
- "tilo-lock",
- "tilo-search",
+ "tilo-search-model",
+ "tilo-search-tantivy",
  "tracing",
- "unicode-normalization",
  "workspace-hack",
 ]
 
@@ -19849,6 +19879,7 @@ dependencies = [
  "tilo-desktop-surface",
  "tilo-lock",
  "tilo-search",
+ "tilo-search-tantivy",
  "tilo-spellcheck",
  "tilo-ui",
  "totp",
