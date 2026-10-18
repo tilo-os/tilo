@@ -61,7 +61,13 @@ const invitation = value => ({
 });
 
 const notice = value => {
-  const {PreAdmitted: admitted} = value;
+  const {PreAdmitted: admitted, Reported: reported} = value;
+  if (reported) {
+    return {
+      kind: 'reported', userPublicKey: hex(reported.user_public_key), reason: reported.reason,
+      atMs: Math.floor(reported.at_ns / 1e6),
+    };
+  }
   if (!admitted) return {kind: 'unknown'};
   return {
     kind: 'pre-admitted', userPublicKey: hex(admitted.user_public_key), name: admitted.name,

@@ -19,6 +19,8 @@
 //!   carries them to browsers, and the input members send back;
 //! - [`web`] — the browser carriers: HTTPS routes and the live grant;
 //! - [`rooms`] — governed rooms over HTTPS: administration and joining;
+//! - [`directory`] — the public workspaces a host lists, and the door that
+//!   lets anyone in with the owner's default role;
 //! - [`room_operator`] — the JSON-lines protocol between the public-room
 //!   service and each `tilo-relay room` child it runs;
 //! - [`mesh`] — device roles, service capabilities, replication intents and
@@ -46,6 +48,7 @@ pub mod auth;
 pub mod certify;
 pub mod compaction;
 pub mod config;
+pub mod directory;
 pub mod environment;
 pub mod home_peer;
 pub mod legacy_window;

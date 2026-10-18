@@ -23,6 +23,9 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader
 use tokio::process::Command;
 use tokio::sync::{Mutex, oneshot};
 
+/// The role every visitor `/join` admits gets: the room's default role, as
+/// its directory entry says.
+pub const GUEST_ROLE: RoomRole = RoomRole::Editor;
 /// How long `/join` and `/spectate` wait for the child's answer.
 const ANSWER_WAIT: Duration = Duration::from_secs(10);
 /// What `/join` and `/spectate` tell a visitor to wait when the room is full.
@@ -641,6 +644,32 @@ impl Persistent {
         Self::counted(&self.shared.seats)
     }
 
+    /// `POST /directory`: the room as the site's directory of public
+    /// workspaces lists it, first as the site's own, its door this
+    /// service's `/join`; `None` while its relay restarts.
+    pub async fn directory(
+        &self,
+        name: String,
+        description: String,
+    ) -> Option<tilo_relay_protocol::directory::DirectoryPage> {
+        let room = self.child.lock().await.as_ref()?.room.clone();
+        Some(tilo_relay_protocol::directory::DirectoryPage {
+            workspaces: vec![tilo_relay_protocol::directory::DirectoryEntry {
+                room,
+                name,
+                description,
+                default_role: GUEST_ROLE,
+                // `/join` beside the directory, on this service's origin.
+                door: "./".into(),
+                here: Vec::new(),
+                here_count: self.online(),
+                members: 0,
+                last_active_ms: None,
+                community: true,
+            }],
+        })
+    }
+
     pub fn watching(&self) -> u32 {
         Self::counted(&self.shared.watching)
     }
@@ -744,7 +773,7 @@ impl Persistent {
                     } else {
                         name
                     },
-                    role: RoomRole::Editor,
+                    role: GUEST_ROLE,
                 },
             )
             .await

@@ -5,6 +5,9 @@
 #   TILO_WEB_HOME_HOST  host name of the home workspace's host (unset: no home)
 #   TILO_WEB_HOME_NAME  its name, required with a host
 #   TILO_WEB_HOME_APP   the app in front, optional (unset: its desktop)
+# Tilo computers list the site's public workspaces from its directory: the
+# home host's own (https://<host>/directory) unless one is named:
+#   TILO_WEB_DIRECTORY  the directory's https:// address (unset: the home's)
 # The desktop's About sheet offers these links; an unset one is not offered:
 #   TILO_WEB_ABOUT_NOTIFY     where to sign up to hear when Tilo comes out
 #   TILO_WEB_ABOUT_SOURCE     the source code
@@ -30,6 +33,17 @@ else
   fields=$(printf '"home":{"name":"%s","host":{"origin":"https://%s"},"admission":"https://%s/"%s}' \
     "$name" "$host" "$host" "$front")
 fi
+directory=${TILO_WEB_DIRECTORY:-}
+if [ -n "$directory" ]; then
+  case "$directory" in
+    https://*) ;;
+    *) echo "TILO_WEB_DIRECTORY must be an https:// address: $directory" >&2; exit 2 ;;
+  esac
+  case "$directory" in *[!A-Za-z0-9._~:/?#@!\$\&\'\(\)*+,\;=%-]*) echo "TILO_WEB_DIRECTORY must be a plain URL: $directory" >&2; exit 2 ;; esac
+elif [ -n "$host" ]; then
+  directory="https://$host/directory"
+fi
+[ -z "$directory" ] || fields="$fields${fields:+,}\"directory\":\"$directory\""
 about=
 for link in notify:${TILO_WEB_ABOUT_NOTIFY:-} source:${TILO_WEB_ABOUT_SOURCE:-} community:${TILO_WEB_ABOUT_COMMUNITY:-}; do
   key=${link%%:*}

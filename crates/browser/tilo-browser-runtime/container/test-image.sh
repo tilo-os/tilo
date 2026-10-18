@@ -124,6 +124,12 @@ done
 start
 [[ $(get /entry.json) == '{}' ]] || fail "without TILO_WEB_HOME_HOST, entry.json must name no home"
 
+# The site's directory of public workspaces: named on its own, or the home host's.
+start TILO_WEB_DIRECTORY=https://rooms.example/peer/v1/directory
+[[ $(get /entry.json) == '{"directory":"https://rooms.example/peer/v1/directory"}' ]] \
+  || fail "entry.json directory: $(get /entry.json)"
+entry TILO_WEB_DIRECTORY=http://rooms.example/directory && fail "a directory that is not https must refuse to start"
+
 # About links: those set are offered, an empty one is not.
 start TILO_WEB_ABOUT_SOURCE=https://example.org/source TILO_WEB_ABOUT_NOTIFY=
 [[ $(get /entry.json) == '{"about":{"source":"https://example.org/source"}}' ]] \
@@ -138,7 +144,7 @@ csp=$(head_of / | grep '^content-security-policy:' || true)
   || fail "entry.json embedder: $(get /entry.json)"
 
 start TILO_WEB_HOME_HOST=rooms.example TILO_WEB_HOME_NAME=Commons TILO_WEB_HOME_APP=so.tilo.chat
-expected='{"home":{"name":"Commons","host":{"origin":"https://rooms.example"},"admission":"https://rooms.example/","app":"so.tilo.chat"}}'
+expected='{"home":{"name":"Commons","host":{"origin":"https://rooms.example"},"admission":"https://rooms.example/","app":"so.tilo.chat"},"directory":"https://rooms.example/directory"}'
 [[ $(get /entry.json) == "$expected" ]] || fail "entry.json: $(get /entry.json)"
 grep -q '^cache-control: no-cache' <(head_of /entry.json) || fail "entry.json must revalidate"
 csp=$(head_of / | grep '^content-security-policy:' || true)

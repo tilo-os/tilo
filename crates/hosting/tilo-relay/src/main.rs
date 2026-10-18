@@ -266,6 +266,8 @@ fn cmd_run(path: &Path, #[cfg(feature = "web")] web: web_cli::WebArgs) -> anyhow
         let relay = tilo_relay::daemon::Relay::start(cfg, identity).await?;
         #[cfg(feature = "web")]
         let _web = web_cli::serve(relay, &web, &state_root).await?;
+        #[cfg(feature = "agents")]
+        let public_moderation = persistent_moderation::follow_published(relay)?;
         let addr = relay.node_addr();
         tracing::info!(?addr, "relay online");
         // Best-effort sd_notify (silently no-ops outside systemd).
@@ -273,6 +275,10 @@ fn cmd_run(path: &Path, #[cfg(feature = "web")] web: web_cli::WebArgs) -> anyhow
         // Park until Ctrl-C / SIGTERM.
         wait_for_shutdown().await?;
         let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Stopping]);
+        #[cfg(feature = "agents")]
+        if let Some(moderation) = public_moderation {
+            moderation.abort();
+        }
         #[cfg(feature = "web")]
         hosted.shutdown().await;
         #[cfg(not(feature = "web"))]

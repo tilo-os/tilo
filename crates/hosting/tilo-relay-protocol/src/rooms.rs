@@ -240,6 +240,16 @@ pub enum RoomNotice {
         /// When.
         at_ns: u64,
     },
+    /// Someone reported the public workspace through its door
+    /// ([`crate::directory::DoorReport`]).
+    Reported {
+        /// Who reported it.
+        user_public_key: [u8; 32],
+        /// What they said is wrong.
+        reason: String,
+        /// When.
+        at_ns: u64,
+    },
 }
 
 /// An invitation still redeemable.
