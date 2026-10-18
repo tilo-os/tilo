@@ -2457,7 +2457,7 @@ fn grid_mirror_stays_linear_aligned_and_reports_changes() {
         // may now skip the full `doc.save()` + broadcast when nothing changed.
         // This proves the signal it keys on — an empty transaction reports no
         // change; a real edit reports one.
-        use automerge::{ROOT, transaction::Transactable};
+        use automerge::ROOT;
         use ui::State;
 
         let mut state = State::new();
@@ -2469,7 +2469,13 @@ fn grid_mirror_stays_linear_aligned_and_reports_changes() {
             !state.commit_action_authored(None, None, None),
             "an empty transaction must report no change (App then skips save)"
         );
-        state.doc.put(&ROOT, "k", "v").unwrap();
+        ui::tilo_resource::write_key(
+            &mut state.doc,
+            &ROOT,
+            "k",
+            &ui::tilo_resource::Atom("v".into()),
+        )
+        .unwrap();
         assert!(
             state.commit_action_authored(None, None, None),
             "a real edit must report a change (App then saves + broadcasts)"

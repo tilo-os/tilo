@@ -2,10 +2,7 @@
 //! channel projection the SDK runs over the committed canonical document.
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
-use tilo_actions::{
-    ActionContract, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource,
-    ResultSpec,
-};
+use tilo_actions::{ActionSpec, Resource};
 use ui::semantic_document_read::{
     ReadPage, RegisteredSemanticReader, SemanticReadError, decode_cursor, decode_request,
     encode_cursor,
@@ -50,47 +47,34 @@ fn validate_request(resource: &Resource, payload: &[u8]) -> Result<(), SemanticR
     Ok(())
 }
 
+/// What `read-messages` is invoked with.
+#[derive(Deserialize, ui::tilo_resource::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct Params {
+    /// Maximum items in this page
+    #[schema(range(min = 1, max = 32))]
+    page_size: u8,
+    /// Opaque nextCursor from the preceding page
+    #[schema(range(max = 1024))]
+    cursor: Option<String>,
+}
+
 pub fn spec(channel: &str) -> ActionSpec {
     let channel = channel.to_owned();
-    ActionSpec::typed_operation(
-        "read-messages",
-        "Read conversation messages",
-        "pageSize and optional cursor",
-        OperationKind::Effect,
+    ui::semantic_document_read::read_action(
+        ui::semantic_document_read::ReadName {
+            id: "read-messages",
+            label: "Read conversation messages",
+            description: "pageSize and optional cursor",
+        },
         OPERATION_TYPE,
-        vec![
-            ActionParam::required("pageSize", ParamType::Integer, "Maximum items in this page")
-                .with_schema(serde_json::json!({"type":"integer","minimum":1,"maximum":32})),
-            ActionParam::optional(
-                "cursor",
-                ParamType::Text,
-                "Opaque nextCursor from the preceding page",
-            )
-            .with_schema(serde_json::json!({"type":"string","maxLength":1024})),
-        ],
-        move |args| {
-            let request = Request {
-                channel: channel.clone(),
-                page_size: args
-                    .integer("pageSize")
-                    .and_then(|n| u8::try_from(n).ok())
-                    .unwrap_or(0),
-                cursor: args.text("cursor").map(str::to_owned),
-            };
-            EncodedAction::encode_operation(OPERATION_TYPE, &request).unwrap_or_else(|_| {
-                EncodedAction {
-                    type_id: OPERATION_TYPE.into(),
-                    payload: Vec::new(),
-                }
-            })
+        result_schema,
+        move |params: Params| Request {
+            channel: channel.clone(),
+            page_size: params.page_size,
+            cursor: params.cursor,
         },
     )
-    .with_contract(ActionContract {
-        result: ResultSpec::Json {
-            schema: result_schema().clone(),
-        },
-        ..ActionContract::view()
-    })
 }
 
 /// One page of the channel's messages at `heads`, for a request

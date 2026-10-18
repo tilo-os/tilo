@@ -2935,8 +2935,6 @@ mod tests {
         }
         // Case `search_query_stays_local_to_each_tube_instance`.
         {
-            use automerge::transaction::Transactable;
-
             let (mut first, doc) = fresh();
             first.search_query.set("rust async".into());
             Widget::sync(&mut first, &doc, &automerge::ROOT);
@@ -2955,9 +2953,13 @@ mod tests {
             // A document holding a search key must not hand its value to a new
             // app merely because a collaborator's client emitted it.
             let mut legacy_doc = AutoCommit::new();
-            legacy_doc
-                .put(&automerge::ROOT, "search_query", "remote query")
-                .expect("legacy search seed");
+            ui::tilo_resource::write_key(
+                &mut legacy_doc,
+                &automerge::ROOT,
+                "search_query",
+                &ui::tilo_resource::Atom("remote query".into()),
+            )
+            .expect("legacy search seed");
             let mut third = TubeApp::new();
             Widget::sync(&mut third, &legacy_doc, &automerge::ROOT);
             assert!(third.search_query.get().is_empty());

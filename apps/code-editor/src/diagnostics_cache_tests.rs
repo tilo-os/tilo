@@ -239,7 +239,7 @@ fn diagnostics_leave_zero_operation_transactions_and_patch_history_untouched() {
     let mut app = CodeApp::new();
     let mut doc = AutoCommit::new();
     doc.set_actor(ActorId::from(vec![0x80]));
-    doc.put(ROOT, "body", "seed").unwrap();
+    write_body(&mut doc, "seed");
     doc.commit();
     let before = doc.get_heads();
     doc.set_actor(ActorId::from(vec![0x10]));
@@ -259,7 +259,7 @@ fn diagnostics_leave_zero_operation_transactions_and_patch_history_untouched() {
     // Match the owner's safe empty-transaction cleanup in tilo_resource::history.
     doc.reset_diff_cursor();
     doc.set_actor(ActorId::from(vec![0x20]));
-    doc.put(ROOT, "body", "edited").unwrap();
+    write_body(&mut doc, "edited");
     doc.commit();
     let after = doc.get_heads();
     let patches = doc.diff(&before, &after);
@@ -324,10 +324,21 @@ fn diagnostics_preserve_active_patch_cursor() {
     assert_eq!(doc.pending_ops(), 0);
     // Keep the transaction's actor: actor migration after rollback is an
     // independent upstream patch-log issue, outside diagnostic observation.
-    doc.put(ROOT, "body", "edited").unwrap();
+    write_body(&mut doc, "edited");
     doc.commit();
     let patches = doc.diff_incremental();
     assert!(matches!(patches.as_slice(), [automerge::Patch {
         action: automerge::PatchAction::PutMap { key, value, .. }, ..
     }] if key == "body" && value.0.as_str() == Some("edited")));
+}
+
+/// Write the scalar `body` a record field holds, as one put.
+fn write_body(doc: &mut AutoCommit, body: &str) {
+    ui::tilo_resource::write_key(
+        doc,
+        &automerge::ROOT,
+        "body",
+        &ui::tilo_resource::Atom(body.into()),
+    )
+    .unwrap();
 }

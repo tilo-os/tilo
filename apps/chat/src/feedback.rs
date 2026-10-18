@@ -225,7 +225,7 @@ mod tests {
     use crate::record::chat;
     use crate::resource::Chat;
     use crate::testing::apply_as;
-    use automerge::{ROOT, transaction::Transactable as _};
+    use automerge::ROOT;
     use tilo_automerge::ApplyIncoming as _;
     use ui::feedback::{ReviewedFeedback, Submission};
     use ui::tilo_resource::Invoke;
@@ -457,7 +457,13 @@ mod tests {
         );
         store
             .with(&checkout.id, |doc| {
-                doc.put(ROOT, "newer_edit", "not yet stored").unwrap();
+                ui::tilo_resource::write_key(
+                    doc,
+                    &ROOT,
+                    "newer_edit",
+                    &ui::tilo_resource::Atom("not yet stored".into()),
+                )
+                .unwrap();
             })
             .unwrap();
         assert!(
@@ -533,7 +539,13 @@ mod tests {
         assert!(receipt_from_record(&store, &primary.id, &submission.id, &elsewhere).is_err());
         store
             .with(&primary.id, |doc| {
-                doc.put(ROOT, "later", "unsaved").unwrap();
+                ui::tilo_resource::write_key(
+                    doc,
+                    &ROOT,
+                    "later",
+                    &ui::tilo_resource::Atom("unsaved".into()),
+                )
+                .unwrap();
             })
             .unwrap();
         assert!(

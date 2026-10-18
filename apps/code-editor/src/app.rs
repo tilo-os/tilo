@@ -2245,12 +2245,10 @@ impl CodeApp {
     /// Ask for a line to go to in the host palette, on the project's
     /// go-to-line effect.
     pub(crate) fn ask_for_line() {
-        ui::host_palette::action(tilo_actions::ActionAddress::new(
-            <crate::project::Project as ui::tilo_resource::Resource>::KIND,
-            ui::tilo_resource::Effect::id(&crate::effects::CodeEditorEffect::GoToLine {
-                value: None,
-            }),
-        ));
+        ui::host_palette::action(
+            crate::effects::CodeEditorEffect::GO_TO_LINE
+                .on(<crate::project::Project as ui::tilo_resource::Resource>::KIND),
+        );
     }
 
     /// Stage the "save changes before closing?" prompt for the active buffer.

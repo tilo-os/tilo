@@ -35,16 +35,15 @@ fn validate(resource: &Resource, payload: &[u8]) -> Result<(), SemanticReadError
 
 pub(crate) fn spec(channel: &str) -> ActionSpec {
     let channel = channel.to_owned();
-    super::receipt_read::read_spec(
-        (
-            ui::feedback::destination::READ_DESTINATION,
-            "Read feedback destination",
-            "Inspect this existing text channel",
-        ),
+    ui::semantic_document_read::read_action(
+        ui::semantic_document_read::ReadName {
+            id: ui::feedback::destination::READ_DESTINATION,
+            label: "Read feedback destination",
+            description: "Inspect this existing text channel",
+        },
         OPERATION,
-        Vec::new(),
         schema,
-        move |_| Request {
+        move |_: ui::semantic_document_read::NoReadParams| Request {
             channel: channel.clone(),
         },
     )

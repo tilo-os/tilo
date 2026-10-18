@@ -225,9 +225,11 @@ pub fn nullable(schema: Value) -> Value {
     }
 }
 
-/// `schema` with its numeric bounds narrowed to `minimum` and `maximum`,
-/// those given: `#[schema(range(min = 1, max = 100))]` on a field. An
-/// optional field's bounds go on its value's alternative.
+/// `schema` with its bounds narrowed to `minimum` and `maximum`, those
+/// given: `#[schema(range(min = 1, max = 100))]` on a field. A number's range
+/// is its value's, a text's its length (`minLength`, `maxLength`) and a
+/// list's its number of items. An optional field's bounds go on its value's
+/// alternative.
 pub fn range(schema: Value, minimum: Option<Value>, maximum: Option<Value>) -> Value {
     let Value::Object(mut object) = schema else {
         return schema;
@@ -240,7 +242,22 @@ pub fn range(schema: Value, minimum: Option<Value>, maximum: Option<Value>) -> V
         }
         return Value::Object(object);
     }
-    for (key, bound) in [("minimum", minimum), ("maximum", maximum)] {
+    // A text's range bounds its length, a list's its items, a number itself.
+    let named = match object.get("type") {
+        Some(Value::String(name)) => Some(name.as_str()),
+        // A nullable value (`["string", "null"]`) is bounded as its value.
+        Some(Value::Array(names)) => names
+            .iter()
+            .filter_map(Value::as_str)
+            .find(|name| *name != "null"),
+        _ => None,
+    };
+    let keys = match named {
+        Some("string") => ("minLength", "maxLength"),
+        Some("array") => ("minItems", "maxItems"),
+        _ => ("minimum", "maximum"),
+    };
+    for (key, bound) in [(keys.0, minimum), (keys.1, maximum)] {
         if let Some(bound) = bound {
             object.insert(key.into(), bound);
         }
