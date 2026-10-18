@@ -37,20 +37,13 @@ use winit::{
     keyboard::{Key, NamedKey},
 };
 
-const OPEN_DURATION: Duration = Duration::from_millis(180);
 const RECORDING_HOLD: Duration = Duration::from_millis(240);
-const RECORDING_SETTLE: Duration = Duration::from_millis(620);
 const RECORDING_SCOPE_CONFIRMATION: Duration = Duration::from_millis(820);
-const RECORDING_STATE_SETTLE: Duration = Duration::from_millis(220);
 const RECORDING_RECEIPT_DURATION: Duration = Duration::from_millis(3_000);
 /// Long enough to acquire either follow-through action after saving a replay,
 /// without permanently replacing the rolling buffer's primary Save action.
 const REPLAY_SAVED_ACTION_DURATION: Duration = Duration::from_millis(3_000);
-const RECORDING_RECEIPT_ENTER: Duration = Duration::from_millis(240);
-const RECORDING_RECEIPT_EXIT: Duration = Duration::from_millis(320);
 const SCREENSHOT_RECEIPT_DURATION: Duration = Duration::from_millis(5_500);
-const SCREENSHOT_RECEIPT_ENTER: Duration = Duration::from_millis(520);
-const SCREENSHOT_RECEIPT_EXIT: Duration = Duration::from_millis(300);
 /// Top-bar selector geometry, shared by the mode and source groups so the
 /// two read as one control family, derived from the tokens because the bar
 /// has no theme when it lays out: each group is inset `s2` all round and
@@ -117,6 +110,8 @@ struct ScreenshotReceipt {
     preview: CapturePreview,
     shown_at: Instant,
     origin: Point,
+    /// Pinned flight progress for deterministic review.
+    progress_override: Option<f64>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -413,6 +408,8 @@ struct RecordingTake {
     /// `state_changed_at`; PNG renders must not advance it merely
     /// because GPU readback is slow.
     state_progress_override: Option<f64>,
+    /// Exact visual-harness phase for the recorder's flight into the bar.
+    flight_progress_override: Option<f64>,
 }
 
 #[allow(
@@ -763,6 +760,7 @@ impl CaptureStudio {
             preview,
             shown_at: crate::time::now(),
             origin,
+            progress_override: None,
         });
         self.screenshot_pin_pending = false;
         self.open = true;
@@ -786,10 +784,7 @@ impl CaptureStudio {
         let Some(receipt) = self.screenshot_receipt.as_mut() else {
             return;
         };
-        let progress = f64::from(permille.min(1_000)) / 1_000.0;
-        receipt.shown_at = crate::time::now()
-            .checked_sub(SCREENSHOT_RECEIPT_ENTER.mul_f64(progress))
-            .unwrap_or_else(crate::time::now);
+        receipt.progress_override = Some(f64::from(permille.min(1_000)) / 1_000.0);
     }
     pub fn is_open(&self) -> bool {
         self.open
@@ -877,9 +872,8 @@ impl CaptureStudio {
         if !self.take.active {
             return;
         }
-        let progress = f64::from(permille.min(1_000)) / 1_000.0;
-        let offset = RECORDING_HOLD + RECORDING_SETTLE.mul_f64(progress);
-        self.take.started_at = crate::time::now().checked_sub(offset);
+        self.take.flight_progress_override = Some(f64::from(permille.min(1_000)) / 1_000.0);
+        self.take.started_at = crate::time::now().checked_sub(RECORDING_HOLD);
     }
 
     /// Keep the compositor's spatial recording affordance alive just long
@@ -1831,18 +1825,19 @@ impl CaptureStudio {
         let Some(started) = self.take.started_at else {
             return 1.0;
         };
-        if started.elapsed() <= RECORDING_HOLD {
+        if let Some(progress) = self.take.flight_progress_override {
+            return progress;
+        }
+        let elapsed = crate::time::now().saturating_duration_since(started);
+        if elapsed <= RECORDING_HOLD {
             return 0.0;
         }
-        let raw = started
-            .elapsed()
-            .saturating_sub(RECORDING_HOLD)
-            .as_secs_f64()
-            / RECORDING_SETTLE.as_secs_f64();
-        let t = raw.clamp(0.0, 1.0);
-        // Quintic smoothstep: zero velocity at both ends keeps the handoff
-        // from reading as a toast that simply teleports into the bar.
-        t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+        // The recorder flies into the bar as one thing becoming another,
+        // starting at rest so it never reads as a toast teleporting there.
+        studio_progress(
+            crate::motion::Zoom::SPEC,
+            elapsed.saturating_sub(RECORDING_HOLD),
+        )
     }
 
     /// Opacity for the short-lived outline that confirms what the encoder
@@ -1853,33 +1848,33 @@ impl CaptureStudio {
         let Some(started_at) = self.take.started_at else {
             return 0.0;
         };
-        let elapsed_t = (started_at.elapsed().as_secs_f64()
-            / RECORDING_SCOPE_CONFIRMATION.as_secs_f64())
-        .clamp(0.0, 1.0);
-        let elapsed_eased = elapsed_t * elapsed_t * (3.0 - 2.0 * elapsed_t);
-
+        // A confirmation: there at once, gone by its time.
+        let shown = crate::motion::Transient::opacity(
+            crate::motion::Transient::CONFIRMATION,
+            (started_at, started_at + RECORDING_SCOPE_CONFIRMATION),
+            crate::time::now(),
+            crate::tokens::EffectiveMotion::default(),
+        );
         // The source outline should be gone before the recorder reaches the
         // clock lane. This makes the two affordances read sequentially:
         // first confirm the source, then leave only the durable shell state.
-        let flight_t = (self.recording_motion() / 0.62).clamp(0.0, 1.0);
-        let flight_eased = flight_t * flight_t * (3.0 - 2.0 * flight_t);
-        ((1.0 - elapsed_eased) * (1.0 - flight_eased)) as f32
+        let flight = crate::motion::stage(self.recording_motion(), 0.0, 0.5);
+        shown * crate::motion::unit_opacity(1.0 - flight)
     }
 
     fn replay_motion(&self) -> f64 {
         let Some(started) = self.replay_started_at else {
             return 1.0;
         };
-        if started.elapsed() <= RECORDING_HOLD {
+        let elapsed = crate::time::now().saturating_duration_since(started);
+        if elapsed <= RECORDING_HOLD {
             return 0.0;
         }
-        let raw = started
-            .elapsed()
-            .saturating_sub(RECORDING_HOLD)
-            .as_secs_f64()
-            / RECORDING_SETTLE.as_secs_f64();
-        let t = raw.clamp(0.0, 1.0);
-        t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+        // The replay buffer flies into the bar as the recorder does.
+        studio_progress(
+            crate::motion::Zoom::SPEC,
+            elapsed.saturating_sub(RECORDING_HOLD),
+        )
     }
 
     fn replay_indicator_rects(&self) -> (Rect, Rect, Rect) {
@@ -1921,11 +1916,15 @@ impl CaptureStudio {
     }
 
     fn screenshot_receipt_motion(receipt: &ScreenshotReceipt) -> f64 {
-        let t = (receipt.shown_at.elapsed().as_secs_f64() / SCREENSHOT_RECEIPT_ENTER.as_secs_f64())
-            .clamp(0.0, 1.0);
-        // A spatial handoff from selected pixels to shell chrome needs zero
-        // velocity at both ends or the thumbnail appears to snap into place.
-        t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+        if let Some(progress) = receipt.progress_override {
+            return progress;
+        }
+        // A spatial handoff from selected pixels to shell chrome: it starts
+        // at rest, so the thumbnail never appears to snap into place.
+        studio_progress(
+            crate::motion::Zoom::SPEC,
+            crate::time::now().saturating_duration_since(receipt.shown_at),
+        )
     }
 
     fn screenshot_receipt_rects(&self) -> (Rect, Rect, Rect, Rect, Rect) {
@@ -2203,9 +2202,10 @@ impl CaptureStudio {
         let Some(started) = self.take.state_changed_at else {
             return 1.0;
         };
-        let raw = started.elapsed().as_secs_f64() / RECORDING_STATE_SETTLE.as_secs_f64();
-        let t = raw.clamp(0.0, 1.0);
-        t * t * (3.0 - 2.0 * t)
+        studio_progress(
+            crate::motion::CROSS_FADE,
+            crate::time::now().saturating_duration_since(started),
+        )
     }
 
     fn recording_label_alphas(progress: f64) -> (f32, f32) {
@@ -3540,7 +3540,11 @@ impl CaptureStudio {
         // A restrained travelling emphasis across three dots communicates
         // genuine setup work without a spinner dominating this short state.
         let phase = self.take.request_started_at.map_or(0.0, |started| {
-            (started.elapsed().as_secs_f64() / 0.72) % 1.0
+            crate::animation::indicator_phase(
+                started,
+                crate::time::now(),
+                Duration::from_millis(720),
+            )
         });
         for (index, x) in [pill.x1 - 35.0, pill.x1 - 27.0, pill.x1 - 19.0]
             .into_iter()
@@ -4058,26 +4062,19 @@ impl CaptureStudio {
             self.open = false;
             return;
         }
-        let enter = if let Some(progress) = self.recording_receipt_progress_override {
+        let shown = if let Some(progress) = self.recording_receipt_progress_override {
             progress
         } else if theme.reduce_motion {
             1.0
         } else {
-            let t = (elapsed.as_secs_f64() / RECORDING_RECEIPT_ENTER.as_secs_f64()).clamp(0.0, 1.0);
-            t * t * (3.0 - 2.0 * t)
+            receipt_opacity(finished_at, RECORDING_RECEIPT_DURATION, crate::time::now())
         };
-        let remaining = RECORDING_RECEIPT_DURATION.saturating_sub(elapsed);
-        let exit = if self.recording_receipt_progress_override.is_some() || theme.reduce_motion {
-            1.0
-        } else {
-            let t =
-                (remaining.as_secs_f64() / RECORDING_RECEIPT_EXIT.as_secs_f64()).clamp(0.0, 1.0);
-            t * t * (3.0 - 2.0 * t)
-        };
-        let alpha = (enter * exit) as f32;
+        // The receipt rises into place with its arrival.
+        let enter = shown;
+        let alpha = crate::motion::unit_opacity(shown);
         let settled = self.recording_receipt_rect();
         let width = (settled.width() - 20.0) + 20.0 * enter;
-        let lift = -4.0 * (1.0 - exit);
+        let lift = -4.0 * (1.0 - enter);
         let pill = Rect::from_center_size(
             Point::new(settled.center().x, settled.center().y + lift),
             (width, settled.height()),
@@ -4230,7 +4227,7 @@ impl CaptureStudio {
         // Choosing a Send target holds the receipt fully shown.
         let choosing = self.send_menu.is_some();
         let elapsed = if choosing {
-            SCREENSHOT_RECEIPT_ENTER
+            studio_motion_time(crate::motion::Zoom::SPEC)
         } else {
             elapsed
         };
@@ -4244,16 +4241,24 @@ impl CaptureStudio {
         } else {
             Self::screenshot_receipt_motion(&receipt)
         };
-        let remaining = SCREENSHOT_RECEIPT_DURATION.saturating_sub(elapsed);
-        let exit = if theme.reduce_motion {
+        let exit = if theme.reduce_motion || choosing {
             1.0
         } else {
-            let t =
-                (remaining.as_secs_f64() / SCREENSHOT_RECEIPT_EXIT.as_secs_f64()).clamp(0.0, 1.0);
-            t * t * (3.0 - 2.0 * t)
+            // Gone when its time is up, on the transient's exit.
+            let now = crate::time::now();
+            let fade_from = crate::motion::Transient::exit_starts(
+                crate::motion::Transient::READOUT,
+                receipt.shown_at + SCREENSHOT_RECEIPT_DURATION,
+                crate::tokens::EffectiveMotion::default(),
+            );
+            if now < fade_from {
+                1.0
+            } else {
+                receipt_opacity(receipt.shown_at, SCREENSHOT_RECEIPT_DURATION, now)
+            }
         };
-        let alpha = exit as f32;
-        let content_alpha = (((p - 0.32) / 0.68).clamp(0.0, 1.0) * exit) as f32;
+        let alpha = crate::motion::unit_opacity(exit);
+        let content_alpha = crate::motion::unit_opacity(crate::motion::stage(p, 0.32, 1.0) * exit);
         let (pill, pin, copy, reveal, dismiss) =
             self.screenshot_receipt_rects_at(p, receipt.origin);
         let colors = &theme.tokens.colors;
@@ -4814,10 +4819,13 @@ impl Widget for CaptureStudio {
             1.0
         } else {
             self.opened_at.map_or(1.0, |at| {
-                (at.elapsed().as_secs_f32() / OPEN_DURATION.as_secs_f32()).clamp(0.0, 1.0)
+                studio_progress(
+                    crate::motion::Appear::SPEC,
+                    crate::time::now().saturating_duration_since(at),
+                )
             })
         };
-        let eased = 1.0 - (1.0 - progress).powi(3);
+        let eased = progress;
         let top_t = t.pre_translate((0.0, -10.0 * f64::from(1.0 - eased)).into());
         let bottom_t = t.pre_translate((0.0, 12.0 * f64::from(1.0 - eased)).into());
         let c = &theme.tokens.colors;
@@ -4827,7 +4835,13 @@ impl Widget for CaptureStudio {
             CaptureMode::Recording => c.semantic.danger.with_alpha_factor(0.28),
             CaptureMode::Pip => c.semantic.info.with_alpha_factor(0.32),
         };
-        s.push_layer(Fill::NonZero, BlendMode::default(), progress, t, &self.rect);
+        s.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            crate::motion::unit_opacity(progress),
+            t,
+            &self.rect,
+        );
         let regions = self.active_regions();
         let mut base_scrim_alpha = match self.mode {
             CaptureMode::Screenshot => 0.62,
@@ -5595,9 +5609,9 @@ impl Widget for CaptureStudio {
             })
             || self.armed_capture.is_some()
             || (self.open
-                && self
-                    .opened_at
-                    .is_some_and(|at| at.elapsed() < OPEN_DURATION))
+                && self.opened_at.is_some_and(|at| {
+                    at.elapsed() < studio_motion_time(crate::motion::Appear::SPEC)
+                }))
     }
     fn test_rects(&self) -> Vec<(String, Rect)> {
         if !self.open {
@@ -7381,4 +7395,39 @@ mod tests {
             Some(ScreenshotCommand::SendLast(ScreenshotSendTarget::Workspace))
         );
     }
+}
+
+/// How far one of the studio's motions has come `elapsed` after it began.
+/// The studio choreographs a few standard motions: its bars appear
+/// (`motion::Appear`), the recorder and the screenshot fly from the selected
+/// pixels into the shell's chrome (`motion::Zoom`), a state change swaps its
+/// label (`motion::CROSS_FADE`), and receipts come and go on their own
+/// (`motion::Transient`).
+fn studio_progress(spec: crate::motion::MotionSpec, elapsed: Duration) -> f64 {
+    spec.progress_after(
+        crate::motion::Direction::Enter,
+        crate::tokens::EffectiveMotion::default(),
+        crate::tokens::MotionSource::Pointer,
+        elapsed,
+    )
+}
+
+/// How long one of the studio's motions runs.
+fn studio_motion_time(spec: crate::motion::MotionSpec) -> Duration {
+    spec.settle_time(
+        crate::motion::Direction::Enter,
+        crate::tokens::EffectiveMotion::default(),
+        crate::tokens::MotionSource::Pointer,
+    )
+}
+
+/// A receipt's opacity: arriving and leaving on the standard transient,
+/// gone when its time is up.
+fn receipt_opacity(shown: Instant, lasts: Duration, now: Instant) -> f64 {
+    f64::from(crate::motion::Transient::opacity(
+        crate::motion::Transient::READOUT,
+        (shown, shown + lasts),
+        now,
+        crate::tokens::EffectiveMotion::default(),
+    ))
 }

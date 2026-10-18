@@ -174,8 +174,10 @@ pub struct TopEdgeReveal {
     suppressed: bool,
     path: Trajectory,
     touch_from: Option<Point>,
-    /// When `shown` last changed, for the fade.
+    /// When `shown` last changed.
     changed_at: Option<Instant>,
+    /// The bar fading in and out with it (`motion::CROSS_FADE`).
+    fade: crate::motion::Presence,
 }
 
 impl TopEdgeReveal {
@@ -191,25 +193,21 @@ impl TopEdgeReveal {
         self.changed_at
     }
 
-    /// How far the bar has faded in at `now` over `fade`, `0..=1`.
+    /// How far the bar has faded in at `now`, `0..=1`: it cross-fades in and
+    /// out with the standard cross-fade, and under reduced motion it is
+    /// there or not.
     #[must_use]
-    pub fn opacity(&self, now: Instant, fade: Duration) -> f64 {
-        let target = if self.shown { 1.0 } else { 0.0 };
-        let Some(at) = self.changed_at else {
-            return target;
-        };
-        if fade.is_zero() {
-            return target;
+    pub fn opacity(&self, now: Instant, motion: crate::tokens::EffectiveMotion) -> f64 {
+        if motion.reduced() || self.changed_at.is_none() {
+            return if self.shown { 1.0 } else { 0.0 };
         }
-        let t = (now.saturating_duration_since(at).as_secs_f64() / fade.as_secs_f64()).min(1.0);
-        if self.shown { t } else { 1.0 - t }
+        self.fade.progress(now)
     }
 
     /// Whether the fade is still running at `now`.
     #[must_use]
-    pub fn fading(&self, now: Instant, fade: Duration) -> bool {
-        self.changed_at
-            .is_some_and(|at| now.saturating_duration_since(at) < fade)
+    pub fn fading(&self, now: Instant, motion: crate::tokens::EffectiveMotion) -> bool {
+        !motion.reduced() && self.changed_at.is_some() && self.fade.is_moving(now)
     }
 
     /// Show or hide; returns whether that changed anything.
@@ -221,6 +219,13 @@ impl TopEdgeReveal {
         }
         self.shown = shown;
         self.changed_at = Some(now);
+        self.fade.show(
+            shown,
+            crate::motion::CROSS_FADE,
+            crate::tokens::EffectiveMotion::default(),
+            crate::tokens::MotionSource::Pointer,
+            now,
+        );
         true
     }
 
@@ -422,6 +427,7 @@ impl TopEdgeReveal {
         self.hold = None;
         self.shown = shown;
         self.changed_at = None;
+        self.fade.snap(shown);
     }
 
     /// Test and shot clock control: settle as if the pending dwell or hold
@@ -435,6 +441,7 @@ impl TopEdgeReveal {
         // clock) has run.
         self.path.clear();
         self.changed_at = None;
+        self.fade.snap(self.shown);
         self.shown
     }
 }
@@ -770,11 +777,13 @@ mod tests {
         let t0 = crate::time::now();
         let mut r = TopEdgeReveal::default();
         r.pin(t0);
-        let fade = Duration::from_millis(100);
-        assert!((r.opacity(ms(t0, 50), fade) - 0.5).abs() < 1e-6);
-        assert!(r.fading(ms(t0, 50), fade));
-        assert!((r.opacity(ms(t0, 200), fade) - 1.0).abs() < 1e-9);
-        assert!(!r.fading(ms(t0, 200), fade));
-        assert!((r.opacity(t0, Duration::ZERO) - 1.0).abs() < 1e-9);
+        let motion = crate::tokens::EffectiveMotion::default();
+        let mid = r.opacity(ms(t0, 40), motion);
+        assert!(mid > 0.0 && mid < 1.0, "{mid}");
+        assert!(r.fading(ms(t0, 40), motion));
+        assert!((r.opacity(ms(t0, 200), motion) - 1.0).abs() < 1e-9);
+        assert!(!r.fading(ms(t0, 200), motion));
+        let reduced = crate::tokens::EffectiveMotion::new(crate::tokens::Motion::default(), true);
+        assert!((r.opacity(t0, reduced) - 1.0).abs() < 1e-9);
     }
 }

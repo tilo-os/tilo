@@ -526,9 +526,7 @@ struct PointerGlide {
 impl PointerGlide {
     /// Where the pointer stored at `target` shows at `now`.
     fn at(&self, target: (f32, f32), now: Instant) -> (f32, f32) {
-        let progress =
-            now.saturating_duration_since(self.since).as_secs_f32() / self.span.as_secs_f32();
-        let rest = 1.0 - smoothstep(progress);
+        let rest = 1.0 - crate::motion::Follow::glide(self.since, self.span, now);
         (
             target.0 + self.offset.0 * rest,
             target.1 + self.offset.1 * rest,
@@ -538,13 +536,6 @@ impl PointerGlide {
     fn easing(&self, now: Instant) -> bool {
         self.offset != (0.0, 0.0) && now.saturating_duration_since(self.since) < self.span
     }
-}
-
-/// Cubic smoothstep over `0..=1`: a glide starts and lands gently rather than
-/// snapping at each sample boundary.
-fn smoothstep(t: f32) -> f32 {
-    let t = t.clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
 }
 
 #[derive(Debug, Default, Clone)]
@@ -1016,10 +1007,7 @@ impl PresenceCtx {
             return 1.0;
         };
         let left = horizon.saturating_sub(now.saturating_duration_since(*seen));
-        if fade.is_zero() || left >= fade {
-            return 1.0;
-        }
-        (left.as_secs_f32() / fade.as_secs_f32()).clamp(0.0, 1.0)
+        crate::motion::Follow::fading(left, fade)
     }
 
     /// Whether any pointer is fading out at `now` (see
@@ -3035,7 +3023,7 @@ mod own_identity_tests {
             .pointer_position_at(&room, &peer, t1 + gap / 4)
             .expect("a pointer");
         assert!(
-            (x - 33.0 * smoothstep(0.25)).abs() < 0.05,
+            (x - 33.0 * (0.25 * 0.25 * (3.0 - 2.0 * 0.25))).abs() < 0.05,
             "eased, not linear: {x}"
         );
         assert!(

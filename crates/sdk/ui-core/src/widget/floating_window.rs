@@ -27,11 +27,13 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
+use crate::motion::{Appear, Direction, Snap, Zoom};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::Metrics;
 use crate::tokens::TextRole;
+use crate::tokens::{EffectiveMotion, MotionSource};
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
@@ -45,11 +47,40 @@ pub const TITLE_BAR_HEIGHT: f64 = Metrics::BASE.bar_height as f64;
 pub const RESIZE_GRIP: f64 = 8.0;
 pub const MIN_WIDTH: f64 = 280.0;
 pub const MIN_HEIGHT: f64 = 200.0;
-const OPEN_MOTION: Duration = Duration::from_millis(210);
-const SOURCE_HANDOFF_MOTION: Duration = Duration::from_millis(360);
-const SQUISH_SETTLE: Duration = Duration::from_millis(150);
 const OVERLAY_CHROME_HOLD: Duration = Duration::from_millis(1_050);
-const OVERLAY_CHROME_FADE: Duration = Duration::from_millis(160);
+
+/// How the floating window moves, from the standard motions: it appears in
+/// place (`motion::Appear`), or out of the pixels it was made from
+/// (`motion::Zoom`); a drag's squish relaxes as a let-go surface settles
+/// (`motion::Snap`); its chrome cross-fades (`motion::CROSS_FADE`).
+fn progress(spec: crate::motion::MotionSpec, direction: Direction, elapsed: Duration) -> f64 {
+    spec.progress_after(
+        direction,
+        EffectiveMotion::default(),
+        MotionSource::Pointer,
+        elapsed,
+    )
+}
+
+fn runs(spec: crate::motion::MotionSpec, direction: Direction) -> Duration {
+    spec.settle_time(direction, EffectiveMotion::default(), MotionSource::Pointer)
+}
+
+fn open_motion() -> Duration {
+    runs(Appear::SPEC, Direction::Enter)
+}
+
+fn source_handoff_motion() -> Duration {
+    runs(Zoom::SPEC, Direction::Enter)
+}
+
+fn squish_settle() -> Duration {
+    runs(Snap::SPEC, Direction::Enter)
+}
+
+fn overlay_chrome_fade() -> Duration {
+    runs(crate::motion::CROSS_FADE, Direction::Exit)
+}
 
 /// No top edge / top corner — the title bar owns the top of the window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -311,10 +342,11 @@ impl<C: Widget> FloatingWindow<C> {
             if reduce_motion {
                 return target;
             }
-            let t = (now.saturating_duration_since(changed_at).as_secs_f64()
-                / OVERLAY_CHROME_FADE.as_secs_f64())
-            .clamp(0.0, 1.0);
-            let eased = t * t * (3.0 - 2.0 * t);
+            let eased = progress(
+                crate::motion::CROSS_FADE,
+                Direction::of(self.overlay_chrome_hovered),
+                now.saturating_duration_since(changed_at),
+            );
             return self.overlay_chrome_from_alpha
                 + (target - self.overlay_chrome_from_alpha) * eased;
         }
@@ -324,12 +356,11 @@ impl<C: Widget> FloatingWindow<C> {
         if reduce_motion {
             return 0.0;
         }
-        let t = (open_elapsed
-            .saturating_sub(OVERLAY_CHROME_HOLD)
-            .as_secs_f64()
-            / OVERLAY_CHROME_FADE.as_secs_f64())
-        .clamp(0.0, 1.0);
-        1.0 - t * t * (3.0 - 2.0 * t)
+        1.0 - progress(
+            crate::motion::CROSS_FADE,
+            Direction::Exit,
+            open_elapsed.saturating_sub(OVERLAY_CHROME_HOLD),
+        )
     }
 
     fn set_overlay_chrome_hovered(&mut self, hovered: bool, now: Instant) {
@@ -567,20 +598,25 @@ impl<C: Widget> FloatingWindow<C> {
         }
         let now = crate::time::now();
         let open_t = self.opened_at.map_or(1.0, |at| {
-            (now.saturating_duration_since(at).as_secs_f64() / OPEN_MOTION.as_secs_f64())
-                .clamp(0.0, 1.0)
+            progress(
+                Appear::SPEC,
+                Direction::Enter,
+                now.saturating_duration_since(at),
+            )
         });
         if let Some(source) = self.spawn_from {
             let handoff_t = self.source_handoff_progress_override.unwrap_or_else(|| {
                 self.opened_at.map_or(1.0, |at| {
-                    (now.saturating_duration_since(at).as_secs_f64()
-                        / SOURCE_HANDOFF_MOTION.as_secs_f64())
-                    .clamp(0.0, 1.0)
+                    progress(
+                        Zoom::SPEC,
+                        Direction::Enter,
+                        now.saturating_duration_since(at),
+                    )
                 })
             });
             if handoff_t < 1.0 {
-                let p = handoff_t * handoff_t * (3.0 - 2.0 * handoff_t);
-                let current = lerp_rect(source, self.rect, p);
+                let p = handoff_t;
+                let current = Zoom::rect_at(source, self.rect, p);
                 let sx = current.width() / self.rect.width().max(1.0);
                 let sy = current.height() / self.rect.height().max(1.0);
                 return (
@@ -592,17 +628,19 @@ impl<C: Widget> FloatingWindow<C> {
                 );
             }
         }
-        // Ease-out-back, limited to a very small overshoot: a soft landing,
-        // not a bouncing dialog.
-        let u = open_t - 1.0;
-        let eased = 1.0 + 1.7 * u * u * u + 0.7 * u * u;
+        // It appears in place (`motion::Appear`): no overshoot, a soft
+        // landing rather than a bouncing dialog.
+        let eased = open_t;
         // The squish relaxes on time since the last drag sample, from the
         // amount that sample set: the same curve at any frame rate.
         let mut squish = self.squish;
         if let Some(last) = self.last_motion_at {
-            let settle =
-                now.saturating_duration_since(last).as_secs_f64() / SQUISH_SETTLE.as_secs_f64();
-            squish *= (1.0 - settle.clamp(0.0, 1.0)).powi(2);
+            let settle = progress(
+                Snap::SPEC,
+                Direction::Enter,
+                now.saturating_duration_since(last),
+            );
+            squish *= 1.0 - settle;
             if settle >= 1.0 {
                 self.squish = 0.0;
                 squish = 0.0;
@@ -615,12 +653,13 @@ impl<C: Widget> FloatingWindow<C> {
         } else {
             (1.0 - squish * 0.008, 1.0 + squish * 0.016)
         };
-        let scale = 0.94 + 0.06 * eased;
+        let appear = Appear::pose(eased, self.rect.center(), EffectiveMotion::default());
         let c = self.rect.center();
         (
-            transform
-                .pre_translate((c.x, c.y + 10.0 * (1.0 - open_t)).into())
-                .pre_scale_non_uniform(scale * sx, scale * sy)
+            appear
+                .applied_to(transform)
+                .pre_translate((c.x, c.y).into())
+                .pre_scale_non_uniform(sx, sy)
                 .pre_translate((-c.x, -c.y).into()),
             1.0,
         )
@@ -887,7 +926,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         // During a selection → PiP handoff, the payload initially occupies
         // the complete source-shaped surface. It yields the title band only
         // as the object approaches its final placement.
-        let expanded_content = lerp_rect(self.rect, inner, spawn_progress);
+        let expanded_content = Zoom::rect_at(self.rect, inner, spawn_progress);
         let side_inset = 2.0 * spawn_progress;
         let content_clip = Rect::new(
             expanded_content.x0 + side_inset,
@@ -927,8 +966,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         // Chrome enters only in the landing half of the motion. The person
         // first sees their selected pixels becoming one object; title,
         // close, grip and resize affordance appear once they are useful.
-        let chrome_raw = ((spawn_progress - 0.42) / 0.58).clamp(0.0, 1.0);
-        let landing_alpha = chrome_raw * chrome_raw * (3.0 - 2.0 * chrome_raw);
+        let landing_alpha = crate::motion::stage(spawn_progress, 0.42, 1.0);
         let presence_alpha = if pinned_handoff {
             // Deterministic handoff frames must show the same discoverable
             // landing chrome regardless of slow software readback time.
@@ -1361,9 +1399,9 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         let now = crate::time::now();
         let moves = self.layout_theme.motion().moves();
         let open_duration = if self.spawn_from.is_some() {
-            SOURCE_HANDOFF_MOTION
+            source_handoff_motion()
         } else {
-            OPEN_MOTION
+            open_motion()
         };
         let own_motion = moves
             && (self.opened_at.is_some_and(|at| {
@@ -1371,17 +1409,17 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                     && now.saturating_duration_since(at) < open_duration
             }) || self
                 .last_motion_at
-                .is_some_and(|at| now.saturating_duration_since(at) < SQUISH_SETTLE));
+                .is_some_and(|at| now.saturating_duration_since(at) < squish_settle()));
         let chrome_motion = self.overlay_chrome
             && moves
             && if let Some(changed_at) = self.overlay_chrome_changed_at {
-                now.saturating_duration_since(changed_at) < OVERLAY_CHROME_FADE
+                now.saturating_duration_since(changed_at) < overlay_chrome_fade()
             } else {
                 !self.overlay_chrome_hovered
                     && self.opened_at.is_some_and(|opened| {
                         let open = now.saturating_duration_since(opened);
                         open >= OVERLAY_CHROME_HOLD
-                            && open < OVERLAY_CHROME_HOLD + OVERLAY_CHROME_FADE
+                            && open < OVERLAY_CHROME_HOLD + overlay_chrome_fade()
                     })
             };
         let chrome_step = self.open
@@ -1410,22 +1448,12 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
     }
 }
 
-fn lerp_rect(from: Rect, to: Rect, t: f64) -> Rect {
-    Rect::new(
-        from.x0 + (to.x0 - from.x0) * t,
-        from.y0 + (to.y0 - from.y0) * t,
-        from.x1 + (to.x1 - from.x1) * t,
-        from.y1 + (to.y1 - from.y1) * t,
-    )
-}
-
 /// The selected pixels must be the complete first frame of a source handoff.
 /// Material grows in only after the object has visibly left its source, so a
 /// multi-region selection does not flash a union-sized slab or shadow behind
 /// otherwise disjoint areas.
 fn handoff_material_alpha(progress: f64) -> f64 {
-    let t = (progress / 0.58).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
+    crate::motion::stage(progress, 0.0, 0.58)
 }
 
 /// Affine that maps one axis-aligned rect onto another. Floating content is
@@ -1454,10 +1482,10 @@ mod tests {
         fn source_handoff_interpolates_exact_endpoints() {
             let source = Rect::new(80.0, 120.0, 680.0, 460.0);
             let destination = Rect::new(900.0, 540.0, 1320.0, 800.0);
-            assert_eq!(lerp_rect(source, destination, 0.0), source);
-            assert_eq!(lerp_rect(source, destination, 1.0), destination);
+            assert_eq!(Zoom::rect_at(source, destination, 0.0), source);
+            assert_eq!(Zoom::rect_at(source, destination, 1.0), destination);
             assert_eq!(
-                lerp_rect(source, destination, 0.5),
+                Zoom::rect_at(source, destination, 0.5),
                 Rect::new(490.0, 330.0, 1000.0, 630.0)
             );
         }
@@ -1617,18 +1645,18 @@ mod tests {
             let (mut w, _e) = laid_out(true);
             w.overlay_chrome = true;
             let now = crate::time::now();
-            w.opened_at = Some(now - OVERLAY_CHROME_HOLD - OVERLAY_CHROME_FADE);
+            w.opened_at = Some(now - OVERLAY_CHROME_HOLD - overlay_chrome_fade());
             assert_eq!(w.overlay_chrome_alpha_at(now, false), 0.0);
 
             w.update_pointer_position(w.window_rect().center());
             assert!(w.overlay_chrome_alpha_at(crate::time::now(), false) < 0.05);
-            w.overlay_chrome_changed_at = Some(crate::time::now() - OVERLAY_CHROME_FADE);
+            w.overlay_chrome_changed_at = Some(crate::time::now() - overlay_chrome_fade());
             assert!(w.overlay_chrome_alpha_at(crate::time::now(), false) > 0.99);
 
             w.update_pointer_position(Point::new(-20.0, -20.0));
-            w.overlay_chrome_changed_at = Some(crate::time::now() - OVERLAY_CHROME_FADE / 2);
+            w.overlay_chrome_changed_at = Some(crate::time::now() - overlay_chrome_fade() / 4);
             let leaving = w.overlay_chrome_alpha_at(crate::time::now(), false);
-            assert!((0.45..=0.55).contains(&leaving));
+            assert!(leaving > 0.05 && leaving < 0.95, "partly faded: {leaving}");
             w.update_pointer_position(w.window_rect().center());
             let interrupted = w.overlay_chrome_alpha_at(crate::time::now(), false);
             assert!(

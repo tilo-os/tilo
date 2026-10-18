@@ -21,8 +21,25 @@ use std::os::fd::{FromRawFd, OwnedFd};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 
-const HANDOFF_SETTLE: crate::time::Duration = crate::time::Duration::from_millis(180);
-const SNAP_SETTLE: crate::time::Duration = crate::time::Duration::from_millis(170);
+/// A surface let go settles on its place (`motion::Snap`); the stretch a
+/// change of owner gives it relaxes on the same motion.
+fn settle_progress(elapsed: crate::time::Duration) -> f64 {
+    crate::motion::Snap::SPEC.progress_after(
+        crate::motion::Direction::Enter,
+        crate::tokens::EffectiveMotion::default(),
+        crate::tokens::MotionSource::Gesture,
+        elapsed,
+    )
+}
+
+/// How long [`settle_progress`] runs.
+fn settle_time() -> crate::time::Duration {
+    crate::motion::Snap::SPEC.settle_time(
+        crate::motion::Direction::Enter,
+        crate::tokens::EffectiveMotion::default(),
+        crate::tokens::MotionSource::Gesture,
+    )
+}
 
 /// Stable identity of content that can survive an app → desktop hand-off.
 #[derive(Clone, Debug, PartialEq)]
@@ -1414,12 +1431,12 @@ impl FloatingPlacement {
         (self.handoff_progress_override.is_none()
             && self
                 .handoff_motion
-                .is_some_and(|motion| motion.started.elapsed() < HANDOFF_SETTLE))
+                .is_some_and(|motion| motion.started.elapsed() < settle_time()))
             || self.settle_motion.as_ref().is_some_and(|motion| {
                 motion
                     .started
                     .get()
-                    .is_none_or(|started| started.elapsed() < SNAP_SETTLE)
+                    .is_none_or(|started| started.elapsed() < settle_time())
             })
     }
 
@@ -1449,7 +1466,7 @@ impl FloatingPlacement {
             return transform;
         }
         let progress = self.handoff_progress_override.unwrap_or_else(|| {
-            (motion.started.elapsed().as_secs_f64() / HANDOFF_SETTLE.as_secs_f64()).clamp(0.0, 1.0)
+            settle_progress(crate::time::now().saturating_duration_since(motion.started))
         });
         let amount = (1.0 - progress).powi(2) * motion.strength;
         if amount <= f64::EPSILON {
@@ -1483,8 +1500,7 @@ impl FloatingPlacement {
                 motion.started.set(Some(crate::time::now()));
                 return motion.from;
             };
-            let t = (started.elapsed().as_secs_f64() / SNAP_SETTLE.as_secs_f64()).clamp(0.0, 1.0);
-            let eased = 1.0 - (1.0 - t).powi(3);
+            let eased = settle_progress(crate::time::now().saturating_duration_since(started));
             Rect::new(
                 motion.from.x0 + (motion.to.x0 - motion.from.x0) * eased,
                 motion.from.y0 + (motion.to.y0 - motion.from.y0) * eased,
@@ -1896,7 +1912,7 @@ mod tests {
                 .unwrap()
                 .started
                 .set(Some(instant_ago(
-                    SNAP_SETTLE.saturating_add(crate::time::Duration::from_millis(1)),
+                    settle_time().saturating_add(crate::time::Duration::from_millis(1)),
                 )));
             assert_eq!(p.rect(app, desk), target);
         }
@@ -1932,7 +1948,7 @@ mod tests {
             let desktop_transform = p.presentation_transform(Affine::IDENTITY, rect, false);
 
             p.handoff_motion.as_mut().unwrap().started =
-                instant_ago(HANDOFF_SETTLE.saturating_add(crate::time::Duration::from_secs(1)));
+                instant_ago(settle_time().saturating_add(crate::time::Duration::from_secs(1)));
             assert_eq!(
                 p.presentation_transform(Affine::IDENTITY, rect, false),
                 desktop_transform,
@@ -2106,7 +2122,7 @@ mod tests {
                 .unwrap()
                 .started
                 .set(Some(instant_ago(
-                    SNAP_SETTLE.saturating_add(crate::time::Duration::from_millis(1)),
+                    settle_time().saturating_add(crate::time::Duration::from_millis(1)),
                 )));
             assert_eq!(p.rect(app, desk), p.attached_home_rect(app));
         }

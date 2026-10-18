@@ -423,7 +423,10 @@ fn under_reduced_motion_a_layout_switch_fades_instead_of_sliding() {
     h.relayout_at((400, 700)).expect("narrow");
     let shell = h.root::<NavShell>();
     assert_eq!(shell.geometry().content_column.x0, 0.0, "no slide");
-    assert!(shell.switch_fade < 1.0, "the page fades in");
+    assert!(
+        shell.switch_fade.progress(crate::time::now()) < 1.0,
+        "the page fades in"
+    );
     assert!(shell.switch_columns[Column::Content.index()]);
     assert!(shell.needs_animation_frame());
 }

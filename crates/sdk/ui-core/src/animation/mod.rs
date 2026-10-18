@@ -15,5 +15,7 @@ pub mod spring;
 
 pub use animated::{Animated, Curve, Lerp, Transition, ease_out};
 pub use idle_fade::{CHROME_FADE, IdleFade};
-pub use indicator::{INDICATOR_STEP, indicator_elapsed, indicator_step, next_indicator_step};
+pub use indicator::{
+    INDICATOR_STEP, indicator_elapsed, indicator_phase, indicator_step, next_indicator_step,
+};
 pub use spring::Spring;

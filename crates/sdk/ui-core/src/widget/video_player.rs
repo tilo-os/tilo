@@ -54,7 +54,6 @@ const MENU_SELECTED_ALPHA: u8 = 56;
 const SCRUB_THUMB_RADIUS: f64 = 7.0;
 const VOLUME_WIDTH: f64 = 78.0;
 const KEY_SEEK_STEP: Duration = Duration::from_secs(5);
-const CONTROLS_FADE: Duration = Duration::from_millis(220);
 
 /// Push mode has no engine to report a real duration, so this stands in.
 const PUSH_MODE_DEFAULT_DURATION_MS: u64 = 60_000;
@@ -934,13 +933,14 @@ impl VideoPlayer {
         if self.motion_reduced {
             return 1.0;
         }
-        let remaining = deadline.saturating_duration_since(now);
-        if remaining >= CONTROLS_FADE {
-            1.0
-        } else {
-            let linear = remaining.as_secs_f32() / CONTROLS_FADE.as_secs_f32();
-            linear * linear * (3.0 - 2.0 * linear)
-        }
+        // Woken at once by the pointer, gone over the standard exit by the
+        // deadline (`motion::Transient`).
+        crate::motion::Transient::opacity(
+            crate::motion::Transient::CONFIRMATION,
+            (now, deadline),
+            now,
+            crate::tokens::EffectiveMotion::default(),
+        )
     }
 
     /// An app that floats its own affordance over the video (e.g. an Open

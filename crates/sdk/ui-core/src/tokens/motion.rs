@@ -244,6 +244,14 @@ pub struct EffectiveMotion {
     reduced: bool,
 }
 
+impl Default for EffectiveMotion {
+    /// The default tokens with motion on: what a surface uses before it has
+    /// been drawn with a theme.
+    fn default() -> Self {
+        Self::new(Motion::default(), false)
+    }
+}
+
 impl EffectiveMotion {
     #[must_use]
     pub const fn new(tokens: Motion, reduced: bool) -> Self {
@@ -397,9 +405,9 @@ mod tests {
         // below and the spring crosses its target, the bouncy reading this
         // preset exists to avoid.
         //
-        // The settle bound is measured by stepping the real integrator rather
-        // than derived from ω, so a change to how `Spring` integrates can't
-        // quietly lengthen it.
+        // The settle bound is measured on the production motion engine
+        // (`crate::motion::MotionValue`), so a change to how motion is
+        // solved can't quietly lengthen it.
         {
             let p = SpringPresets::default();
             let z = zeta(p.heavy);
@@ -409,15 +417,17 @@ mod tests {
                 "heavy must carry more mass than snappy, not just more stiffness"
             );
 
-            // Full-scale step through the production integrator at 120 Hz.
-            let mut s = crate::animation::Spring::new(0.0, p.heavy);
-            s.set_target(1.0);
-            let dt = 1.0 / 120.0;
-            let mut elapsed = 0.0_f32;
-            while !s.is_settled() && elapsed < 2.0 {
-                s.step(dt);
-                elapsed += dt;
-            }
+            // A full-scale move on the production engine.
+            let heavy =
+                crate::motion::Timing::Spring(crate::motion::SpringSpec::from_params(p.heavy));
+            let start = crate::time::now();
+            let mut s = crate::motion::MotionValue::new(0.0_f64);
+            s.set(1.0, heavy, start);
+            let elapsed = s
+                .settles_at()
+                .expect("moving")
+                .duration_since(start)
+                .as_secs_f32();
             assert!(
                 (0.10..=0.30).contains(&elapsed),
                 "heavy must settle within 0.10-0.30 s, took {elapsed:.3} s"
@@ -425,11 +435,9 @@ mod tests {
 
             // Critical damping is a claim about the path, not just the
             // endpoint: it must approach from one side and never cross.
-            let mut s = crate::animation::Spring::new(0.0, p.heavy);
-            s.set_target(1.0);
-            for _ in 0..240 {
-                s.step(dt);
-                assert!(s.value() <= 1.0 + 1e-4, "overshot to {}", s.value());
+            for ms in 0..2000_u64 {
+                let v = s.get(start + Duration::from_millis(ms));
+                assert!(v <= 1.0 + 1e-4, "overshot to {v}");
             }
         }
         // phase: tracking_is_critically_damped_and_stiffer_than_snappy
@@ -513,24 +521,33 @@ mod tests {
             // Far out, the surface has all but stopped moving.
             assert!(rubber_band(1.0e4, limit) > limit * 0.99);
         }
-        // phase: set_params_preserves_value_and_velocity
-        // A spring mid-flight must be able to change its constants without
+        // phase: a_new_spring_preserves_value_and_velocity
+        // A motion mid-flight must be able to change its spring without
         // losing where it is or how fast it is going — that hand-off is
         // what lets a drag's momentum carry into the release settle.
         {
-            use crate::animation::Spring;
+            use crate::motion::{MotionValue, SpringSpec, Timing};
             let presets = SpringPresets::default();
-            let mut s = Spring::new(0.0, presets.tracking);
-            s.set_target(40.0);
-            for _ in 0..10 {
-                s.step(1.0 / 60.0);
-            }
-            let (v, vel) = (s.value(), s.velocity());
-            assert!(vel.abs() > 1.0, "spring should be moving before the swap");
-            s.set_params(presets.heavy);
-            assert_eq!(s.value(), v);
-            assert_eq!(s.velocity(), vel);
-            assert_eq!(s.params().mass, presets.heavy.mass);
+            let start = crate::time::now();
+            let mut s = MotionValue::new(0.0_f64);
+            s.set(
+                40.0,
+                Timing::Spring(SpringSpec::from_params(presets.tracking)),
+                start,
+            );
+            let swap = start + Duration::from_millis(160);
+            let (v, vel) = (s.get(swap), s.velocity(swap));
+            assert!(
+                vel.abs() > 1.0,
+                "the motion should be moving before the swap"
+            );
+            s.set(
+                41.0,
+                Timing::Spring(SpringSpec::from_params(presets.heavy)),
+                swap,
+            );
+            assert!((s.get(swap) - v).abs() < 1e-9);
+            assert!((s.velocity(swap) - vel).abs() < 1e-9);
         }
     }
 }

@@ -106,7 +106,24 @@ pub struct ScreenshotMarkup {
     entrance_progress_override: Option<f64>,
 }
 
-const MARKUP_ENTER: Duration = Duration::from_millis(280);
+/// The editor opening out of the captured shot: one thing becoming another
+/// in place (`motion::Zoom`).
+fn markup_entrance(elapsed: Duration) -> f64 {
+    crate::motion::Zoom::SPEC.progress_after(
+        crate::motion::Direction::Enter,
+        crate::tokens::EffectiveMotion::default(),
+        crate::tokens::MotionSource::Pointer,
+        elapsed,
+    )
+}
+
+fn markup_entrance_time() -> Duration {
+    crate::motion::Zoom::SPEC.settle_time(
+        crate::motion::Direction::Enter,
+        crate::tokens::EffectiveMotion::default(),
+        crate::tokens::MotionSource::Pointer,
+    )
+}
 /// Gutter between the surface edge and the canvas, and the header's left
 /// and right insets — one gutter for the whole editor. Equals `spacing.s6`.
 const CANVAS_INSET: f64 = 24.0;
@@ -200,9 +217,7 @@ impl ScreenshotMarkup {
         if let Some(progress) = self.entrance_progress_override {
             return progress;
         }
-        let t =
-            (self.opened_at.elapsed().as_secs_f64() / MARKUP_ENTER.as_secs_f64()).clamp(0.0, 1.0);
-        t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+        markup_entrance(crate::time::now().saturating_duration_since(self.opened_at))
     }
 
     /// Freeze the entrance for deterministic screenshot review. Production
@@ -1243,7 +1258,8 @@ impl Widget for ScreenshotMarkup {
         true
     }
     fn needs_animation_frame(&self) -> bool {
-        self.entrance_progress_override.is_none() && self.opened_at.elapsed() < MARKUP_ENTER
+        self.entrance_progress_override.is_none()
+            && crate::time::now().saturating_duration_since(self.opened_at) < markup_entrance_time()
     }
     fn test_rects(&self) -> Vec<(String, Rect)> {
         self.controls()

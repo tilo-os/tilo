@@ -1,14 +1,12 @@
-use crate::animation::Spring;
 use crate::icons;
 use crate::num::f32_of_f64;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::{Duration, Instant};
-use crate::tokens::SpringPresets;
 use crate::widget::TaffyTreeExt;
 use crate::widget::edge_resize::{WidthLimits, WindowEdge};
-use crate::widget::tabs::CLOSE_FADE_MS;
+use crate::widget::tabs::close_fade;
 use crate::widget::{AppModel, ModelPath};
 use crate::widget::{
     FloatingSurfaceProvider, TabBar, TabDescriptor, TileContent, TileHost, Widget,
@@ -60,13 +58,9 @@ pub const DEFAULT_STRIP_USABLE_PX: f64 = 1280.0;
 
 pub const RESIZE_HANDLE_PX: f64 = 6.0;
 
-const SPAWN_ANIM_MS: u64 = 420;
 /// Kept inside the row's visible margin during the spawn animation.
 const SPAWN_ANIM_X_OFFSET: f64 = -16.0;
 const SPAWN_ANIM_INITIAL_SCALE: f64 = 0.92;
-/// Matches the tab-pill `CLOSE_FADE_MS` in `tabs.rs` so the group's
-/// shrink chains onto the final pill fade.
-const GROUP_CLOSE_FADE_MS: u64 = 180;
 /// The lifted handle remains readable while exposing the drop target; the app
 /// pixels beneath it recede further so the target never disappears.
 const DRAG_CONTENT_ALPHA: f32 = 0.42;
@@ -75,86 +69,109 @@ const DRAG_SOURCE_CONTENT_ALPHA: f32 = 0.18;
 /// handle instead of turning into a second opaque window under the pointer.
 const DRAG_CONTENT_SCALE_END: f64 = 0.96;
 
-/// [`SPAWN_ANIM_MS`] in seconds, as an `f64` divisor for the eased-progress
-/// calculation.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "SPAWN_ANIM_MS is a small compile-time millisecond constant (420), far below f64's precision limit"
-)]
-fn spawn_anim_secs() -> f64 {
-    SPAWN_ANIM_MS as f64 / 1000.0
+/// How far a window's arrival or departure has come `elapsed` after it
+/// began (`motion::WindowMotion::OPEN`).
+fn window_progress(direction: crate::motion::Direction, elapsed: Duration) -> f64 {
+    crate::motion::WindowMotion::OPEN.progress_after(
+        direction,
+        crate::tokens::EffectiveMotion::default(),
+        crate::tokens::MotionSource::Pointer,
+        elapsed,
+    )
 }
 
-/// Test-only helper: an [`Instant`] `ms` milliseconds in the past, for
-/// backdating a timestamp instead of sleeping. Falls back to `crate::time::now`
-/// on the practically-unreachable case that the subtraction would underflow
-/// the clock's epoch.
-#[cfg(test)]
-fn instant_ago_ms(ms: u64) -> Instant {
-    crate::time::now()
-        .checked_sub(Duration::from_millis(ms))
-        .unwrap_or_else(crate::time::now)
+/// How long a window's arrival takes.
+fn spawn_time() -> Duration {
+    crate::motion::WindowMotion::OPEN.settle_time(
+        crate::motion::Direction::Enter,
+        crate::tokens::EffectiveMotion::default(),
+        crate::tokens::MotionSource::Pointer,
+    )
 }
 
-/// One critically-damped heavy spring per rect edge. A new target mid-flight
-/// keeps value and velocity, so Super+M twice is one motion, not a queue.
-struct RectSprings {
-    x: Spring,
-    y: Spring,
-    w: Spring,
-    h: Spring,
+/// How long a closing window takes to leave.
+fn window_close_time() -> Duration {
+    crate::motion::WindowMotion::OPEN.settle_time(
+        crate::motion::Direction::Exit,
+        crate::tokens::EffectiveMotion::default(),
+        crate::tokens::MotionSource::Pointer,
+    )
 }
 
-impl RectSprings {
-    fn at(rect: Rect) -> Self {
-        let params = SpringPresets::default().heavy;
+/// How long a closed tab's tile takes to leave: as a closed pill does.
+fn group_close_fade() -> Duration {
+    close_fade()
+}
+
+/// One channel of a window's motion on the strip (its rect while it
+/// maximizes or restores, its slot's width while it opens, closes or is
+/// resized by command), on the window move (`motion::WindowMotion::MOVE`:
+/// the heavy, critically damped spring). Sampled once per drawn frame, so
+/// every rebuild of one frame reads the same value. Closed form: a stalled
+/// frame lands where the motion is, and a new target mid-flight keeps the
+/// value and its velocity, so Super+M twice is one motion, not a queue.
+#[derive(Clone, Copy, Debug)]
+struct FrameSpring<T: crate::motion::Animatable> {
+    motion: crate::motion::MotionValue<T>,
+    drawn: T,
+    at: Instant,
+}
+
+impl FrameSpring<f64> {
+    /// A width in pixels arrives within a quarter of one.
+    fn with_tolerance_px(mut self) -> Self {
+        self.motion = self.motion.with_tolerance(0.25);
+        self
+    }
+}
+
+impl<T: crate::motion::Animatable> FrameSpring<T> {
+    fn new(value: T) -> Self {
         Self {
-            x: Spring::new(f32_of_f64(rect.x0), params),
-            y: Spring::new(f32_of_f64(rect.y0), params),
-            w: Spring::new(f32_of_f64(rect.width()), params),
-            h: Spring::new(f32_of_f64(rect.height()), params),
+            motion: crate::motion::MotionValue::new(value),
+            drawn: value,
+            at: crate::time::now(),
         }
     }
 
-    fn set_target(&mut self, rect: Rect) {
-        self.x.set_target(f32_of_f64(rect.x0));
-        self.y.set_target(f32_of_f64(rect.y0));
-        self.w.set_target(f32_of_f64(rect.width().max(0.0)));
-        self.h.set_target(f32_of_f64(rect.height().max(0.0)));
+    /// Go to `target` from where the motion is now, at the speed it has.
+    fn set_target(&mut self, target: T) {
+        let timing = crate::motion::WindowMotion::MOVE.timing(
+            crate::motion::Direction::Enter,
+            crate::tokens::EffectiveMotion::default(),
+            crate::tokens::MotionSource::Pointer,
+        );
+        self.motion.set(target, timing, crate::time::now());
     }
 
-    fn snap(&mut self, rect: Rect) {
-        self.x.snap(f32_of_f64(rect.x0));
-        self.y.snap(f32_of_f64(rect.y0));
-        self.w.snap(f32_of_f64(rect.width().max(0.0)));
-        self.h.snap(f32_of_f64(rect.height().max(0.0)));
+    fn snap(&mut self, value: T) {
+        self.motion.snap(value);
+        self.drawn = value;
     }
 
-    fn step(&mut self, dt: f32) {
-        self.x.step(dt);
-        self.y.step(dt);
-        self.w.step(dt);
-        self.h.step(dt);
+    /// Sample the motion for the frame at `now`.
+    fn step(&mut self, now: Instant) {
+        self.drawn = self.motion.get(now);
+        self.at = now;
     }
 
-    fn is_settled(&self) -> bool {
-        self.x.is_settled() && self.y.is_settled() && self.w.is_settled() && self.h.is_settled()
+    /// The value as of the last frame sampled.
+    fn value(&self) -> T {
+        self.drawn
     }
 
-    fn rect(&self) -> Rect {
-        let x = f64::from(self.x.value());
-        let y = f64::from(self.y.value());
-        Rect::new(
-            x,
-            y,
-            x + f64::from(self.w.value()).max(0.0),
-            y + f64::from(self.h.value()).max(0.0),
-        )
+    fn target(&self) -> T {
+        self.motion.target()
     }
 
     #[cfg(test)]
-    fn velocity_w(&self) -> f32 {
-        self.w.velocity()
+    fn velocity(&self) -> T {
+        self.motion.velocity(self.at)
+    }
+
+    /// Whether the last frame sampled is the motion's rest.
+    fn is_settled(&self) -> bool {
+        !self.motion.is_moving(self.at)
     }
 }
 
@@ -183,7 +200,7 @@ impl WindowGroup {
     pub(crate) fn drawn_rect(&self) -> Rect {
         self.rect_spring
             .as_ref()
-            .map_or(self.rect, RectSprings::rect)
+            .map_or(self.rect, FrameSpring::value)
     }
 
     #[cfg(test)]
@@ -193,7 +210,9 @@ impl WindowGroup {
 
     #[cfg(test)]
     pub(crate) fn rect_spring_width_velocity(&self) -> Option<f32> {
-        self.rect_spring.as_ref().map(RectSprings::velocity_w)
+        self.rect_spring
+            .as_ref()
+            .map(|spring| f32_of_f64(spring.velocity().width()))
     }
 }
 
@@ -260,8 +279,8 @@ pub struct WindowGroup {
     /// offer went to, and the slot its row reported after layout.
     bar_offered_to: Option<u64>,
     bar_slot: Option<crate::widget::WindowBarSlot>,
-    /// The bar's fade, latched from the theme at draw.
-    chrome_fade: Duration,
+    /// The motion the bar's fade plays, latched from the theme at draw.
+    chrome_motion: crate::tokens::EffectiveMotion,
     /// Height of what overlays the window's top edge now (the desktop's top
     /// bar shown over a window under an auto-hiding top bar): the window's
     /// bar stands below it.
@@ -274,15 +293,13 @@ pub struct WindowGroup {
     spawned_at: Option<Instant>,
     /// Drawn rect in flight between the tiled slot and the work area.
     /// Layout jumps to the destination; paint interpolates (no Taffy).
-    rect_spring: Option<RectSprings>,
-    last_rect_step: Option<Instant>,
+    rect_spring: Option<FrameSpring<Rect>>,
     /// [`Self::draw_docked_strip`] stepped the rect spring for the frame
     /// whose `draw` comes next.
     spring_stepped: bool,
     /// Slot width in flight. Layout reads this so an open grows from 0,
     /// a close collapses the slot, and a resize retargets without a jump.
-    width_spring: Option<Spring>,
-    last_width_step: Option<Instant>,
+    width_spring: Option<FrameSpring<f64>>,
     /// Set on any `draw` this group sat out because nothing in it had
     /// presented yet; drained on the first `draw` that does paint, which
     /// latches the arrival fade to the moment the window turns up rather
@@ -505,16 +522,14 @@ impl WindowGroup {
             top_edge: crate::widget::TopEdgeReveal::default(),
             bar_offered_to: None,
             bar_slot: None,
-            chrome_fade: Duration::ZERO,
+            chrome_motion: crate::tokens::EffectiveMotion::default(),
             top_overlay_inset: 0.0,
             fills_display: false,
             last_cursor: Point::ZERO,
             spawned_at: None,
             rect_spring: None,
-            last_rect_step: None,
             spring_stepped: false,
             width_spring: None,
-            last_width_step: None,
             held_back: false,
             closing_hosts: HashMap::new(),
             closing_at: None,
@@ -522,7 +537,7 @@ impl WindowGroup {
             width_stepped: false,
             width_step_skipped: false,
             close_rebuild_taken: false,
-            close_duration: crate::tokens::motion::Durations::default().base(),
+            close_duration: window_close_time(),
             reduce_motion: false,
             motion_source: crate::tokens::MotionSource::default(),
             style_dirty: false,
@@ -597,7 +612,6 @@ impl WindowGroup {
                 self.style_dirty = true;
             }
             if self.rect_spring.take().is_some() {
-                self.last_rect_step = None;
                 self.style_dirty = true;
             }
             if !self.is_closing() {
@@ -625,7 +639,7 @@ impl WindowGroup {
             return drag.live_px;
         }
         if let Some(spring) = &self.width_spring {
-            return f64::from(spring.value()).max(0.0);
+            return spring.value().max(0.0);
         }
         if self.is_closing() {
             return 0.0;
@@ -639,7 +653,7 @@ impl WindowGroup {
     /// the current fraction.
     pub fn dest_width_px(&self) -> f64 {
         if let Some(spring) = &self.width_spring {
-            return f64::from(spring.target()).max(0.0);
+            return spring.target().max(0.0);
         }
         self.layout_width_px()
     }
@@ -649,25 +663,20 @@ impl WindowGroup {
         self.width_spring.is_some() && (self.dest_width_px() - self.resolved_width_px()).abs() > 1.0
     }
 
-    fn width_params() -> crate::tokens::SpringParams {
-        SpringPresets::default().heavy
-    }
-
     fn arm_width_from_zero(&mut self) {
-        let target = f32_of_f64(self.resolved_width_px());
+        let target = self.resolved_width_px();
         if self.lands_at_once() {
             self.width_spring = None;
             return;
         }
-        let mut spring = Spring::new(0.0, Self::width_params());
+        let mut spring = FrameSpring::new(0.0).with_tolerance_px();
         spring.set_target(target);
         self.width_spring = Some(spring);
-        self.last_width_step = Some(crate::time::now());
         self.style_dirty = true;
     }
 
     fn retarget_width(&mut self, from: f64, to: f64) {
-        let to = f32_of_f64(to.max(0.0));
+        let to = to.max(0.0);
         if self.lands_at_once() {
             self.width_spring = None;
             return;
@@ -676,16 +685,15 @@ impl WindowGroup {
             spring.set_target(to);
             return;
         }
-        let from = f32_of_f64(from.max(0.0));
+        let from = from.max(0.0);
         if (from - to).abs() < 0.5 {
             return;
         }
-        let mut spring = Spring::new(from, Self::width_params());
+        let mut spring = FrameSpring::new(from).with_tolerance_px();
+        // The motion starts when the resize was asked for, so its first
+        // frame covers the time since.
         spring.set_target(to);
         self.width_spring = Some(spring);
-        // The spring's clock starts with the motion, so its first step
-        // covers the time since the resize was asked for.
-        self.last_width_step = Some(crate::time::now());
         self.style_dirty = true;
     }
 
@@ -694,7 +702,6 @@ impl WindowGroup {
     pub(crate) fn step_width_spring(&mut self) {
         if self.close_complete() {
             self.width_spring = None;
-            self.last_width_step = None;
             return;
         }
         let Some(spring) = self.width_spring.as_mut() else {
@@ -714,26 +721,10 @@ impl WindowGroup {
             self.width_step_skipped = true;
             return;
         }
-        // Unclamped: `Spring::step` sub-steps a long frame, so after a stall
-        // the width lands where a wall-clock tween started with it would,
-        // instead of crawling in slow motion.
-        let now = crate::time::now();
-        let dt = self
-            .last_width_step
-            .map_or(0.0, |t| now.saturating_duration_since(t).as_secs_f32());
-        let before = spring.value();
-        spring.step(dt);
-        self.last_width_step = Some(now);
-        if (spring.value() - before).abs() <= 0.05 && (spring.value() - spring.target()).abs() < 0.5
-        {
-            // The spring is only stepped while the layout is rebuilt, and a
-            // step this small asks for no rebuild: the rest of the motion,
-            // well under a pixel, would never be taken and the group would
-            // ask for animation frames forever. Finish it now. A small step
-            // far from the target is only a short frame (the first one after
-            // the motion began), not the end of the motion.
-            spring.snap(spring.target());
-        }
+        // The frame's time: after a stall the width lands where the motion
+        // is, rather than crawling in slow motion; it is exactly at rest
+        // once settled, so no sub-pixel remainder keeps asking for frames.
+        spring.step(crate::time::now());
         self.style_dirty = true;
         if spring.is_settled() && !self.is_closing() {
             self.width_spring = None;
@@ -1088,7 +1079,6 @@ impl WindowGroup {
         }
         .round();
         self.width_spring = None;
-        self.last_width_step = None;
         self.edge_drag = Some(GroupEdgeDrag {
             moving,
             before: self.width,
@@ -1199,7 +1189,6 @@ impl WindowGroup {
             return;
         }
         self.width_spring = None;
-        self.last_width_step = None;
         self.style_dirty = true;
     }
 
@@ -1389,7 +1378,6 @@ impl WindowGroup {
     fn begin_rect_spring_from_current(&mut self) {
         if self.lands_at_once() || self.rect.width() <= 1.0 || self.rect.height() <= 1.0 {
             self.rect_spring = None;
-            self.last_rect_step = None;
             return;
         }
         if self.rect_spring.is_some() {
@@ -1397,8 +1385,7 @@ impl WindowGroup {
             // apply_layout retargets to the new destination.
             return;
         }
-        self.rect_spring = Some(RectSprings::at(self.rect));
-        self.last_rect_step = None;
+        self.rect_spring = Some(FrameSpring::new(self.rect));
     }
 
     fn retarget_rect_spring(&mut self) {
@@ -1409,14 +1396,15 @@ impl WindowGroup {
         if self.reduce_motion {
             spring.snap(dest);
             self.rect_spring = None;
-            self.last_rect_step = None;
             return;
         }
         spring.set_target(dest);
     }
 
-    /// Advance the maximize/restore draw spring. The first call after arm
-    /// does not step, so the first animated frame equals the last tiled one.
+    /// Sample the maximize/restore draw motion for this frame. It starts
+    /// at rest where the group was tiled, so the first animated frame
+    /// equals the last tiled one; a stalled frame lands where the motion
+    /// is, never stepped slower than the clock.
     fn step_rect_spring(&mut self) {
         let Some(spring) = self.rect_spring.as_mut() else {
             return;
@@ -1424,20 +1412,9 @@ impl WindowGroup {
         if self.reduce_motion {
             spring.snap(self.rect);
             self.rect_spring = None;
-            self.last_rect_step = None;
             return;
         }
-        let now = crate::time::now();
-        let Some(prev) = self.last_rect_step else {
-            self.last_rect_step = Some(now);
-            return;
-        };
-        let dt = now
-            .saturating_duration_since(prev)
-            .as_secs_f32()
-            .clamp(1.0 / 240.0, 1.0 / 20.0);
-        spring.step(dt);
-        self.last_rect_step = Some(now);
+        spring.step(crate::time::now());
         if spring.is_settled() {
             self.rect_spring = None;
         }
@@ -1448,7 +1425,7 @@ impl WindowGroup {
             return base;
         };
         let src = self.rect;
-        let dst = spring.rect();
+        let dst = spring.value();
         if src.width() < 1.0 || src.height() < 1.0 {
             return base;
         }
@@ -1554,16 +1531,14 @@ impl WindowGroup {
             top_edge: crate::widget::TopEdgeReveal::default(),
             bar_offered_to: None,
             bar_slot: None,
-            chrome_fade: Duration::ZERO,
+            chrome_motion: crate::tokens::EffectiveMotion::default(),
             top_overlay_inset: 0.0,
             fills_display: false,
             last_cursor: Point::ZERO,
             spawned_at: None,
             rect_spring: None,
-            last_rect_step: None,
             spring_stepped: false,
             width_spring: None,
-            last_width_step: None,
             held_back: false,
             closing_hosts: HashMap::new(),
             closing_at: None,
@@ -1571,7 +1546,7 @@ impl WindowGroup {
             width_stepped: false,
             width_step_skipped: false,
             close_rebuild_taken: false,
-            close_duration: crate::tokens::motion::Durations::default().base(),
+            close_duration: window_close_time(),
             reduce_motion: false,
             motion_source: crate::tokens::MotionSource::default(),
             style_dirty: false,
@@ -1839,7 +1814,6 @@ impl WindowGroup {
             self.closing_at = None;
             self.close_requested = true;
             self.width_spring = None;
-            self.last_width_step = None;
             self.style_dirty = true;
         }
         restored
@@ -1954,8 +1928,12 @@ impl WindowGroup {
     #[cfg(test)]
     pub fn force_expire_closing(&mut self, id: u64) {
         if self.closing_hosts.contains_key(&id) {
-            self.closing_hosts
-                .insert(id, instant_ago_ms(GROUP_CLOSE_FADE_MS.saturating_add(50)));
+            self.closing_hosts.insert(
+                id,
+                crate::time::now()
+                    .checked_sub(group_close_fade() + Duration::from_millis(50))
+                    .unwrap_or_else(crate::time::now),
+            );
         }
     }
 
@@ -2147,9 +2125,7 @@ impl WindowGroup {
     /// so the fade plays out with the tile still in place), then starts
     /// closing the whole group once nothing is left in it.
     fn sweep_expired_closing_hosts(&mut self) {
-        // GROUP_CLOSE_FADE_MS mirrors CLOSE_FADE_MS (tabs.rs) as a whole
-        // millisecond u64, avoiding an f32->u64 cast at every use site.
-        let close_window = Duration::from_millis(GROUP_CLOSE_FADE_MS);
+        let close_window = group_close_fade();
         let expired: Vec<u64> = self
             .closing_hosts
             .iter()
@@ -2244,21 +2220,19 @@ impl WindowGroup {
             // No offset: the per-host curve already carries the y-drift.
             // Ratio of two `Duration`s taken via `as_secs_f64` rather than
             // an integer->float `as` cast on the millisecond counts.
-            let raw = f32_of_f64(
-                (started.elapsed().as_secs_f64() / self.close_duration.as_secs_f64())
-                    .clamp(0.0, 1.0),
+            let eased = window_progress(
+                crate::motion::Direction::Exit,
+                crate::time::now().saturating_duration_since(started),
             );
-            let eased = 1.0 - (1.0 - raw).powi(3);
-            let alpha = (1.0 - eased).max(0.0);
-            let scale = f64::from(1.0 - 0.05 * eased);
+            let alpha = f32_of_f64((1.0 - eased).max(0.0));
+            let scale = 1.0 - 0.05 * eased;
             (alpha, 0.0, 0.0, scale)
         } else if let Some(started) = self.spawned_at {
-            let elapsed = started.elapsed();
-            if elapsed >= Duration::from_millis(SPAWN_ANIM_MS) {
+            let elapsed = crate::time::now().saturating_duration_since(started);
+            if elapsed >= spawn_time() {
                 (1.0, 0.0, 0.0, 1.0)
             } else {
-                let raw = (elapsed.as_secs_f64() / spawn_anim_secs()).clamp(0.0, 1.0);
-                let eased = 1.0 - (1.0 - raw).powi(3);
+                let eased = window_progress(crate::motion::Direction::Enter, elapsed);
                 let scale = SPAWN_ANIM_INITIAL_SCALE + (1.0 - SPAWN_ANIM_INITIAL_SCALE) * eased;
                 let x_off = SPAWN_ANIM_X_OFFSET * (1.0 - eased);
                 (f32_of_f64(eased), x_off, 0.0, scale)
@@ -2389,9 +2363,7 @@ impl WindowGroup {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // GROUP_CLOSE_FADE_MS mirrors CLOSE_FADE_MS (tabs.rs) as a whole
-        // millisecond u64, avoiding an f32->u64 cast at every use site.
-        let close_window = Duration::from_millis(GROUP_CLOSE_FADE_MS);
+        let close_window = group_close_fade();
         let closing_ids: Vec<(u64, Instant)> = self
             .closing_hosts
             .iter()
@@ -2399,9 +2371,12 @@ impl WindowGroup {
             .map(|(id, t)| (*id, *t))
             .collect();
         for (id, started) in closing_ids {
-            let elapsed = started.elapsed().as_secs_f64();
-            let raw = (elapsed / (f64::from(CLOSE_FADE_MS) / 1000.0)).clamp(0.0, 1.0);
-            let eased = 1.0 - (1.0 - raw).powi(3);
+            let eased = crate::motion::ListChange::FADE.progress_after(
+                crate::motion::Direction::Exit,
+                crate::tokens::EffectiveMotion::default(),
+                crate::tokens::MotionSource::Pointer,
+                crate::time::now().saturating_duration_since(started),
+            );
             let alpha = f32_of_f64(1.0 - eased);
             let scale = 1.0 + (-0.05) * eased; // 1.0 → 0.95
             let y_offset = -20.0 * eased;
@@ -2517,13 +2492,9 @@ impl WindowGroup {
         if self.top_edge.settle(now) {
             self.top_edge_changed();
         }
-        let fade = if self.reduce_motion {
-            Duration::ZERO
-        } else {
-            theme.tokens.motion.durations.fast()
-        };
-        self.chrome_fade = fade;
-        let alpha = self.top_edge.opacity(now, fade);
+        let motion = crate::tokens::EffectiveMotion::new(theme.tokens.motion, self.reduce_motion);
+        self.chrome_motion = motion;
+        let alpha = self.top_edge.opacity(now, motion);
         if alpha <= 0.0 {
             self.clear_maximized_controls();
             return;
@@ -3271,7 +3242,7 @@ impl Widget for WindowGroup {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.close_duration = theme.tokens.motion.durations.base();
+        self.close_duration = window_close_time();
         self.set_reduce_motion(theme.reduce_motion);
         let bar_node = self
             .navigation_bar_visible()
@@ -3636,10 +3607,7 @@ impl Widget for WindowGroup {
     }
     fn animation_detail(&self) -> Option<String> {
         let mut parts = Vec::new();
-        if self
-            .spawned_at
-            .is_some_and(|t| t.elapsed() < Duration::from_millis(SPAWN_ANIM_MS))
-        {
+        if self.spawned_at.is_some_and(|t| t.elapsed() < spawn_time()) {
             parts.push("spawn".to_string());
         }
         if self.closing_at.is_some() {
@@ -3680,13 +3648,9 @@ impl Widget for WindowGroup {
             return false;
         }
         // Include group and inactive closing-host animations beyond the active presentation.
-        let spawn_in_flight = !self.reduce_motion
-            && self
-                .spawned_at
-                .is_some_and(|t| t.elapsed() < Duration::from_millis(SPAWN_ANIM_MS));
-        // GROUP_CLOSE_FADE_MS mirrors CLOSE_FADE_MS (tabs.rs) as a whole
-        // millisecond u64, avoiding an f32->u64 cast at every use site.
-        let close_window = Duration::from_millis(GROUP_CLOSE_FADE_MS);
+        let spawn_in_flight =
+            !self.reduce_motion && self.spawned_at.is_some_and(|t| t.elapsed() < spawn_time());
+        let close_window = group_close_fade();
         let close_in_flight = !self.reduce_motion
             && self
                 .closing_hosts
@@ -3709,7 +3673,7 @@ impl Widget for WindowGroup {
             .is_some_and(|(_, h)| h.needs_animation_frame());
         let rect_in_flight = !self.reduce_motion && self.rect_spring.is_some();
         let chrome_fade = self.maximized_chrome_live()
-            && self.top_edge.fading(crate::time::now(), self.chrome_fade);
+            && self.top_edge.fading(crate::time::now(), self.chrome_motion);
         spawn_in_flight
             || chrome_fade
             || close_in_flight
@@ -3794,9 +3758,15 @@ impl crate::collaboration::participants::CollaborationTopology for WindowGroup {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use winit::event::MouseButton;
+
+    /// Run `f` on the toolkit's clock at `ms` after `start`: a frame of a
+    /// test's own timeline, however long the machine takes.
+    fn at<T>(start: Instant, ms: u64, f: impl FnOnce() -> T) -> T {
+        crate::time::testing::with_monotonic_time(start + Duration::from_millis(ms), f)
+    }
     use crate::testing::Dispatch;
     use crate::widget::{AppKind, TabDescriptor, TileContent};
+    use winit::event::MouseButton;
 
     #[test]
     fn external_navigation_omits_bar_from_layout_and_semantics_but_retains_tabs() {
@@ -4016,11 +3986,7 @@ mod tests {
         );
         group.set_edge_highlight(Some(WindowEdge::Leading));
         let leading = render(&mut group);
-        assert_eq!(
-            at(&leading, x, y),
-            at(&idle, x, y),
-            "and only on that edge"
-        );
+        assert_eq!(at(&leading, x, y), at(&idle, x, y), "and only on that edge");
         assert_ne!(
             at(&leading, rect.x0 + RESIZE_HANDLE_PX / 2.0 + 2.0, y),
             at(&idle, rect.x0 + RESIZE_HANDLE_PX / 2.0 + 2.0, y),
@@ -5184,7 +5150,10 @@ mod tests {
             assert_eq!(g.edge_drag_origin_px(), Some(1601.0));
             assert_eq!(g.edge_highlight(), Some(WindowEdge::Trailing));
             g.set_live_width(1700.4);
-            assert!(g.take_structure_dirty(), "a live width relays the window out");
+            assert!(
+                g.take_structure_dirty(),
+                "a live width relays the window out"
+            );
             assert_eq!(layout_width(&mut g, &theme), 1700.0, "whole pixels");
             assert_eq!(
                 g.take_pending_width_change(),
@@ -5538,7 +5507,11 @@ mod tests {
         // Case `spawn_fade_window_clears_after_duration`.
         {
             let mut g = make_group();
-            g.spawned_at = Some(instant_ago_ms(SPAWN_ANIM_MS.saturating_add(16)));
+            g.spawned_at = Some(
+                crate::time::now()
+                    .checked_sub(spawn_time() + Duration::from_millis(16))
+                    .unwrap(),
+            );
             assert!(
                 !g.needs_animation_frame(),
                 "after the spawn window elapses, the fade no longer demands frames",
@@ -5563,10 +5536,10 @@ mod tests {
                 "first-frame spawn progress must be near zero, got {t_start}",
             );
 
-            // Roughly midway: cubic-out at raw=0.5 yields 1 - 0.5^3 = 0.875,
-            // so we expect well past 0.5. Backdate the timestamp instead of
+            // A quarter of the way in time, the spring is well past half
+            // way (it leaves quickly and lands softly). Backdate the timestamp instead of
             // sleeping so the test doesn't waste real time.
-            g.spawned_at = Some(instant_ago_ms(SPAWN_ANIM_MS / 2));
+            g.spawned_at = crate::time::now().checked_sub(spawn_time() / 4);
             let t_mid = g.fade_transform_params().0;
             assert!(
                 t_mid > 0.5 && t_mid < 1.0,
@@ -5574,7 +5547,11 @@ mod tests {
             );
 
             // Past the duration: pins to 1.0.
-            g.spawned_at = Some(instant_ago_ms(SPAWN_ANIM_MS.saturating_add(16)));
+            g.spawned_at = Some(
+                crate::time::now()
+                    .checked_sub(spawn_time() + Duration::from_millis(16))
+                    .unwrap(),
+            );
             assert_eq!(
                 g.fade_transform_params().0,
                 1.0,
@@ -5586,9 +5563,10 @@ mod tests {
         // Locked to a 350-450ms band so a future pass can't silently shorten
         // it back to an imperceptible tuning.
         {
+            let spawn = spawn_time();
             assert!(
-                (350..=450).contains(&SPAWN_ANIM_MS),
-                "spawn duration must stay in the 350-450 ms readability band, got {SPAWN_ANIM_MS}",
+                (Duration::from_millis(350)..=Duration::from_millis(450)).contains(&spawn),
+                "spawn duration must stay in the 350-450 ms readability band, got {spawn:?}",
             );
         }
 
@@ -5645,18 +5623,19 @@ mod tests {
             let theme = Theme::dark();
             let mut g = make_group();
             g.set_strip_usable_px(1200.0);
-            let tiled = layout(&mut g, &theme, 1600.0, 900.0);
+            let t0 = crate::time::now();
+            let tiled = at(t0, 0, || layout(&mut g, &theme, 1600.0, 900.0));
             assert!(
                 tiled.width() > 100.0 && tiled.width() < 1600.0,
                 "tiled slot must be narrower than the work area, got {}",
                 tiled.width(),
             );
-            g.toggle_maximized();
+            at(t0, 0, || g.toggle_maximized());
             assert!(
                 g.needs_animation_frame(),
                 "a maximize spring must pump frames",
             );
-            let dest = layout(&mut g, &theme, 1600.0, 900.0);
+            let dest = at(t0, 0, || layout(&mut g, &theme, 1600.0, 900.0));
             assert!(
                 dest.width() > tiled.width() + 50.0,
                 "layout must jump to the work area, tiled {} dest {}",
@@ -5670,13 +5649,12 @@ mod tests {
                 drawn.width(),
                 tiled.width(),
             );
-            g.step_rect_spring_for_tests();
+            at(t0, 0, || g.step_rect_spring_for_tests());
             assert!(
                 (g.drawn_rect().width() - tiled.width()).abs() < 1.0,
-                "the arming frame does not step, so there is no jump at the start",
+                "the arming frame does not move, so there is no jump at the start",
             );
-            g.last_rect_step = Some(instant_ago_ms(16));
-            g.step_rect_spring_for_tests();
+            at(t0, 16, || g.step_rect_spring_for_tests());
             let mid = g.drawn_rect().width();
             assert!(
                 mid > tiled.width() + 1.0,
@@ -5690,12 +5668,12 @@ mod tests {
             let theme = Theme::dark();
             let mut g = make_group();
             g.set_strip_usable_px(1200.0);
-            let _ = layout(&mut g, &theme, 1600.0, 900.0);
-            g.toggle_maximized();
-            let _ = layout(&mut g, &theme, 1600.0, 900.0);
-            g.step_rect_spring_for_tests();
-            g.last_rect_step = Some(instant_ago_ms(48));
-            g.step_rect_spring_for_tests();
+            let t0 = crate::time::now();
+            let _ = at(t0, 0, || layout(&mut g, &theme, 1600.0, 900.0));
+            at(t0, 0, || g.toggle_maximized());
+            let _ = at(t0, 0, || layout(&mut g, &theme, 1600.0, 900.0));
+            at(t0, 0, || g.step_rect_spring_for_tests());
+            at(t0, 48, || g.step_rect_spring_for_tests());
             let vel_before = g
                 .rect_spring_width_velocity()
                 .expect("maximize spring in flight");
@@ -5704,8 +5682,8 @@ mod tests {
                 "opening maximize must grow, vel={vel_before}"
             );
             let mid = g.drawn_rect();
-            g.toggle_maximized();
-            let _ = layout(&mut g, &theme, 1600.0, 900.0);
+            at(t0, 48, || g.toggle_maximized());
+            let _ = at(t0, 48, || layout(&mut g, &theme, 1600.0, 900.0));
             let vel_after = g
                 .rect_spring_width_velocity()
                 .expect("restore retargets the same spring");
@@ -5752,7 +5730,8 @@ mod tests {
             g.set_strip_usable_px(1200.0);
             let target = g.resolved_width_px();
             assert!(target > 100.0, "fixture must have a real slot to grow into");
-            g.start_spawn_animation();
+            let t0 = crate::time::now();
+            at(t0, 0, || g.start_spawn_animation());
             assert!(
                 g.layout_width_px() < 1.0,
                 "an opening group reserves no width until the spring moves, got {}",
@@ -5763,11 +5742,12 @@ mod tests {
                 "an in-flight width spring must pump frames",
             );
             let mut last = g.layout_width_px();
-            for _ in 0..8 {
+            for frame in 1..=8 {
                 // Frames 16 ms apart on the spring's clock.
-                g.last_width_step = g.last_width_step.map(|_| instant_ago_ms(16));
-                g.next_frame();
-                g.step_width_spring();
+                at(t0, 16 * frame, || {
+                    g.next_frame();
+                    g.step_width_spring();
+                });
                 let now = g.layout_width_px();
                 assert!(now >= last, "open must grow the slot, {last} → {now}");
                 last = now;
@@ -5782,27 +5762,29 @@ mod tests {
         {
             let mut g = make_group();
             g.set_strip_usable_px(1200.0);
-            g.start_spawn_animation();
-            for _ in 0..10 {
-                g.last_width_step = g.last_width_step.map(|_| instant_ago_ms(16));
-                g.next_frame();
-                g.step_width_spring();
+            let t0 = crate::time::now();
+            at(t0, 0, || g.start_spawn_animation());
+            for frame in 1..=10 {
+                at(t0, 16 * frame, || {
+                    g.next_frame();
+                    g.step_width_spring();
+                });
             }
             let mid = g.layout_width_px();
             let vel_before = g
                 .width_spring
                 .as_ref()
-                .map(Spring::velocity)
+                .map(FrameSpring::velocity)
                 .expect("open spring still in flight");
             assert!(
                 vel_before > 0.0,
                 "opening must still be moving outward, vel={vel_before}",
             );
-            g.set_width(WindowWidth::Narrow);
+            at(t0, 160, || g.set_width(WindowWidth::Narrow));
             let vel_after = g
                 .width_spring
                 .as_ref()
-                .map(Spring::velocity)
+                .map(FrameSpring::velocity)
                 .expect("resize retargets the same spring");
             assert_eq!(
                 vel_after, vel_before,
@@ -5814,9 +5796,7 @@ mod tests {
                 g.layout_width_px(),
             );
             assert!(
-                g.width_spring
-                    .as_ref()
-                    .is_some_and(|s| s.target() < f32_of_f64(mid)),
+                g.width_spring.as_ref().is_some_and(|s| s.target() < mid),
                 "Narrow on a 1200 px strip is smaller than the mid-open width",
             );
         }
@@ -5829,13 +5809,15 @@ mod tests {
             for frame_ms in [16, 50] {
                 let mut g = group_opening("Files", true, false);
                 g.set_strip_usable_px(1200.0);
-                g.start_spawn_animation();
+                let t0 = crate::time::now();
+                at(t0, 0, || g.start_spawn_animation());
                 let mut rebuilds = 0;
                 while std::mem::take(&mut g.style_dirty) && rebuilds < 200 {
-                    g.last_width_step = g.last_width_step.map(|_| instant_ago_ms(frame_ms));
-                    g.next_frame();
-                    g.step_width_spring();
                     rebuilds += 1;
+                    at(t0, frame_ms * rebuilds, || {
+                        g.next_frame();
+                        g.step_width_spring();
+                    });
                 }
                 assert!(
                     g.width_spring.is_none(),
@@ -5861,16 +5843,18 @@ mod tests {
             // for frames forever.
             let mut g = group_opening("Notes", true, false);
             g.set_strip_usable_px(1200.0);
-            g.start_spawn_animation();
+            let t0 = crate::time::now();
+            at(t0, 0, || g.start_spawn_animation());
             let mut frames = 0;
             while g.width_spring.is_some() && frames < 400 {
-                g.last_width_step = g.last_width_step.map(|_| instant_ago_ms(16));
-                if Widget::take_structure_dirty(&mut g) {
-                    g.step_width_spring();
-                }
-                if frames % 7 != 3 {
-                    g.frame_presented();
-                }
+                at(t0, 16 * (frames + 1), || {
+                    if Widget::take_structure_dirty(&mut g) {
+                        g.step_width_spring();
+                    }
+                    if frames % 7 != 3 {
+                        g.frame_presented();
+                    }
+                });
                 frames += 1;
             }
             assert!(
@@ -5895,7 +5879,8 @@ mod tests {
                 "precondition: an unpresented group with no opening card paints nothing",
             );
             let from = g.layout_width_px();
-            g.start_closing();
+            let t0 = crate::time::now();
+            at(t0, 0, || g.start_closing());
             assert!(
                 (g.layout_width_px() - from).abs() < 0.5,
                 "close must start from the last reserved width, not jump to zero",
@@ -5905,11 +5890,12 @@ mod tests {
                 "a closing group is drawn from its last frame while the slot collapses",
             );
             let mut last = g.layout_width_px();
-            for _ in 0..8 {
+            for frame in 1..=8 {
                 // Frames 16 ms apart on the spring's clock.
-                g.last_width_step = g.last_width_step.map(|_| instant_ago_ms(16));
-                g.next_frame();
-                g.step_width_spring();
+                at(t0, 16 * frame, || {
+                    g.next_frame();
+                    g.step_width_spring();
+                });
                 let now = g.layout_width_px();
                 assert!(now <= last, "close must collapse the slot, {last} → {now}");
                 last = now;
@@ -5960,11 +5946,13 @@ mod tests {
         let mut g = make_group();
         g.set_strip_usable_px(996.0);
         let target = g.resolved_width_px();
-        g.start_spawn_animation();
+        let t0 = crate::time::now();
+        at(t0, 0, || g.start_spawn_animation());
         for frame in 0..40 {
-            g.last_width_step = g.width_spring.as_ref().map(|_| instant_ago_ms(80));
-            g.next_frame();
-            g.step_width_spring();
+            at(t0, 80 * (frame + 1), || {
+                g.next_frame();
+                g.step_width_spring();
+            });
             let width = g.layout_width_px();
             assert!(
                 width <= target * 1.05,
@@ -6739,8 +6727,12 @@ mod tests {
                 g.needs_animation_frame(),
                 "a fresh closing host must pump the run loop",
             );
-            g.closing_hosts
-                .insert(1, instant_ago_ms(GROUP_CLOSE_FADE_MS.saturating_add(20)));
+            g.closing_hosts.insert(
+                1,
+                crate::time::now()
+                    .checked_sub(group_close_fade() + Duration::from_millis(20))
+                    .unwrap(),
+            );
             assert!(
                 !g.needs_animation_frame(),
                 "after the fade window elapses the group goes idle again",

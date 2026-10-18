@@ -1,15 +1,18 @@
 //! The reveal kernel every collapsible panel shares: `NavShell`'s sidebar
 //! and inspector, and the headless [`crate::widget::SidebarDrawer`].
 //!
-//! A flap tracks whether it should be open and eases a `reveal` value in
-//! `0..=1` toward that over the theme's `motion.durations.base`. Whether a
-//! flap is open follows its layout's default until the person says
-//! otherwise; that choice is remembered per layout (per window size class),
-//! so a sidebar hidden in a wide window is still hidden after the window was
-//! narrowed and widened again. A drawer opened over a narrow window is
-//! transient: crossing into another layout closes it.
+//! A flap tracks whether it should be open, and its reveal (`0..=1`) follows
+//! that on the standard panel slide ([`crate::motion::PanelSlide`]):
+//! interruptible, the same both ways, landing at once for a shortcut and
+//! under reduced motion. Whether a flap is open follows its layout's default
+//! until the person says otherwise; that choice is remembered per layout
+//! (per window size class), so a sidebar hidden in a wide window is still
+//! hidden after the window was narrowed and widened again. A drawer opened
+//! over a narrow window is transient: crossing into another layout closes it.
 
-use crate::time::{Duration, Instant};
+use crate::motion::{Direction, MotionValue, PanelSlide};
+use crate::time::Instant;
+use crate::tokens::{EffectiveMotion, MotionSource};
 
 /// How a sidebar resolves at the current width.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,50 +34,50 @@ impl SplitLayout {
     }
 }
 
-/// Settles within this distance of its target.
-const SETTLED: f64 = 0.001;
-
-/// The eased reveal shared by every flap. See the module docs.
+/// The reveal shared by every flap. See the module docs.
 #[derive(Clone, Debug)]
 pub struct FlapState {
     /// The person's choice while docked; kept across layout changes.
     docked_choice: Option<bool>,
     /// The person's choice while an overlay; dropped on a layout change.
     overlay_choice: Option<bool>,
-    /// Linear progress toward the target, `0..=1`; [`Self::reveal`] eases it.
-    progress: f64,
+    /// The reveal on the panel slide.
+    openness: MotionValue<f64>,
+    /// The reveal as of the last [`Self::advance`]: what layout and paint use.
+    drawn: f64,
+    /// The frame time of the last [`Self::advance`].
+    drawn_at: Option<Instant>,
     last_layout: Option<SplitLayout>,
     /// Whether the flap is open by default when docked. Overlay always
     /// defaults closed.
     docked_default_open: bool,
-    /// When the reveal was last advanced, or when its slide began; `None`
-    /// at rest. The first frame of a slide covers the time since the
-    /// person asked for it, never the idle gap before ([`Self::advance`]).
-    clock: Option<Instant>,
+    /// When the last choice not yet followed was made, and by what input:
+    /// the slide starts then, so the first frame after an idle app covers
+    /// the time since the person asked, never the idle gap before.
+    asked: Option<(Instant, MotionSource)>,
 }
 
 impl FlapState {
     /// A flap that is open when docked (the common navigation sidebar).
     pub fn open_when_docked() -> Self {
-        Self {
-            docked_choice: None,
-            overlay_choice: None,
-            progress: 1.0,
-            last_layout: None,
-            docked_default_open: true,
-            clock: None,
-        }
+        Self::starting(1.0, true)
     }
 
     /// A flap that is closed even when docked — summoned on demand.
     pub fn closed_by_default() -> Self {
+        Self::starting(0.0, false)
+    }
+
+    fn starting(reveal: f64, docked_default_open: bool) -> Self {
         Self {
             docked_choice: None,
             overlay_choice: None,
-            progress: 0.0,
+            openness: MotionValue::new(reveal),
+            drawn: reveal,
+            drawn_at: None,
             last_layout: None,
-            docked_default_open: false,
-            clock: None,
+            docked_default_open,
+            asked: None,
         }
     }
 
@@ -90,14 +93,20 @@ impl FlapState {
     }
 
     fn choose_in(&mut self, layout: SplitLayout, open: bool) {
-        // A slide starts now; one already moving keeps its clock.
-        if self.clock.is_none() {
-            self.clock = Some(crate::time::now());
-        }
+        let source = self
+            .asked
+            .map_or(MotionSource::Pointer, |(_, source)| source);
+        self.asked = Some((crate::time::now(), source));
         match layout {
             SplitLayout::Docked => self.docked_choice = Some(open),
             SplitLayout::Overlay => self.overlay_choice = Some(open),
         }
+    }
+
+    /// Say what input the next choice comes from: a shortcut lands at once.
+    pub fn from_input(&mut self, source: MotionSource) {
+        let at = self.asked.map_or_else(crate::time::now, |(at, _)| at);
+        self.asked = Some((at, source));
     }
 
     /// Whether the flap is currently open in `layout`, resolving the
@@ -129,15 +138,19 @@ impl FlapState {
     /// Set the open state with no animation, for deterministic shots.
     pub fn snap(&mut self, open: bool) {
         self.choose(open);
-        self.progress = if open { 1.0 } else { 0.0 };
-        self.clock = None;
+        self.land(if open { 1.0 } else { 0.0 });
     }
 
     /// Jump the reveal to the resolved openness without recording a
     /// choice.
     pub fn settle(&mut self, layout: SplitLayout) {
-        self.progress = if self.is_open(layout) { 1.0 } else { 0.0 };
-        self.clock = None;
+        self.land(if self.is_open(layout) { 1.0 } else { 0.0 });
+    }
+
+    fn land(&mut self, reveal: f64) {
+        self.openness.snap(reveal);
+        self.drawn = reveal;
+        self.asked = None;
     }
 
     /// Start the reveal over from closed, so an open flap that just came
@@ -147,25 +160,32 @@ impl FlapState {
         if !self.is_open(layout) {
             return;
         }
-        self.progress = 0.0;
-        self.clock = Some(crate::time::now());
+        self.land(0.0);
+        self.asked = Some((crate::time::now(), MotionSource::Pointer));
     }
 
-    /// Advance toward the target to `now` (the frame's time), taking
-    /// `duration` for a whole open or close. The step is the time since the
-    /// last frame of this slide, or since it was asked for — never the idle
-    /// gap before, and never clamped: a stalled frame lands where the
-    /// slide's own clock says, as a wall-clock tween does. Returns whether
-    /// it is still moving.
-    pub fn advance(&mut self, layout: SplitLayout, now: Instant, duration: Duration) -> bool {
-        let dt = self.clock.replace(now).map_or(0.0, |last| {
-            now.saturating_duration_since(last).as_secs_f64()
-        });
-        let moving = self.tick(layout, dt, duration);
-        if !moving {
-            self.clock = None;
+    /// Follow the resolved state to `now` (the frame's time) on the panel
+    /// slide `motion` allows. Returns whether it is still moving.
+    pub fn advance(&mut self, layout: SplitLayout, now: Instant, motion: EffectiveMotion) -> bool {
+        let target = if self.is_open(layout) { 1.0 } else { 0.0 };
+        if let Some((asked, source)) = self.asked.take() {
+            let direction = Direction::of(target > self.openness.target());
+            let timing = PanelSlide::SPEC.timing(direction, motion, source);
+            // The slide starts when it was asked for, from where it was
+            // drawn then: never before the last frame drawn, never after
+            // this one.
+            let start = self
+                .drawn_at
+                .map_or(asked, |drawn| asked.max(drawn))
+                .min(now);
+            self.openness.set(target, timing, start);
+        } else if (self.openness.target() - target).abs() > f64::EPSILON {
+            // The resolved state moved without a choice (a layout default).
+            self.openness.snap(target);
         }
-        moving
+        self.drawn = self.openness.get(now).clamp(0.0, 1.0);
+        self.drawn_at = Some(now);
+        self.openness.is_moving(now)
     }
 
     /// Note the layout the flap is laid out in. The first call settles the
@@ -184,39 +204,13 @@ impl FlapState {
         self.settle(layout);
     }
 
-    /// Advance toward the target by `dt`, taking `duration` for a whole
-    /// open or close. Returns whether it is still moving.
-    pub fn tick(&mut self, layout: SplitLayout, dt: f64, duration: Duration) -> bool {
-        let target = if self.is_open(layout) { 1.0 } else { 0.0 };
-        let span = duration.as_secs_f64();
-        if span <= 0.0 {
-            self.progress = target;
-            return false;
-        }
-        let step = dt.max(0.0) / span;
-        self.progress = if target > self.progress {
-            (self.progress + step).min(target)
-        } else {
-            (self.progress - step).max(target)
-        };
-        if (self.progress - target).abs() < SETTLED {
-            // A settled panel must land at its exact endpoint. Leaving the
-            // sub-threshold remainder would stop scheduling frames while
-            // its pointer targets still sit outside the resolved geometry.
-            self.progress = target;
-            false
-        } else {
-            true
-        }
-    }
-
-    /// The eased reveal in `0..=1`: the docked width share, the overlay
-    /// slide and the scrim strength.
+    /// The reveal in `0..=1` as of the last frame: the docked width share,
+    /// the overlay slide and the scrim strength.
     pub fn reveal(&self) -> f64 {
-        crate::ease_out(self.progress.clamp(0.0, 1.0))
+        self.drawn
     }
 
-    /// The reveal as it stands in `layout`: the eased value while the flap
+    /// The reveal as it stands in `layout`: the drawn value while the flap
     /// is laid out there, else where `layout`'s resolved state would put it
     /// (a layout the flap has not been reconciled to yet does not slide).
     pub(crate) fn reveal_in(&self, layout: SplitLayout) -> f64 {
@@ -232,17 +226,21 @@ impl FlapState {
     /// Whether the reveal is still moving toward the resolved state.
     pub fn is_animating(&self, layout: SplitLayout) -> bool {
         let target = if self.is_open(layout) { 1.0 } else { 0.0 };
-        // Keep scheduling until tick has snapped the final fraction. A
-        // threshold here could stop the host before that last tick runs.
-        !self.progress.total_cmp(&target).is_eq()
+        // Keep scheduling until advance has landed exactly: a threshold
+        // here could stop the host before that last frame runs.
+        !self.drawn.total_cmp(&target).is_eq()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::time::Duration;
+    use crate::tokens::Motion;
 
-    const BASE: Duration = Duration::from_millis(210);
+    fn motion() -> EffectiveMotion {
+        EffectiveMotion::new(Motion::default(), false)
+    }
 
     #[test]
     fn a_choice_is_remembered_per_size_class() {
@@ -277,21 +275,65 @@ mod tests {
         let mut flap = FlapState::closed_by_default();
         flap.reconcile(layout);
         let idle_frame = crate::time::now();
-        assert!(!flap.advance(layout, idle_frame, BASE), "at rest");
+        assert!(!flap.advance(layout, idle_frame, motion()), "at rest");
         flap.open();
-        let toggled = flap.clock.expect("a choice starts the slide's clock");
+        let (toggled, _) = flap.asked.expect("a choice starts the slide");
         let first_frame = toggled + Duration::from_millis(11);
-        assert!(flap.advance(layout, first_frame, BASE));
-        let expected = 11.0 / 210.0;
+        assert!(flap.advance(layout, first_frame, motion()));
+        let first = flap.reveal();
         assert!(
-            (flap.progress - expected).abs() < 1e-9,
-            "one frame of progress, got {}",
-            flap.progress
+            first > 0.0 && first < 0.2,
+            "one frame of progress, got {first}"
         );
         // A stall is covered, not slowed: the slide ends on its own clock.
-        assert!(!flap.advance(layout, first_frame + BASE, BASE));
+        assert!(!flap.advance(layout, first_frame + Duration::from_secs(1), motion()));
         assert_eq!(flap.reveal(), 1.0);
-        assert_eq!(flap.clock, None, "a settled flap holds no clock");
+        assert!(!flap.is_animating(layout));
+    }
+
+    /// The panel slide is the same gesture both ways: closing no longer
+    /// starts slowly and slams shut (the old curve was an ease-out played
+    /// backwards, an ease-in).
+    #[test]
+    fn closing_mirrors_opening() {
+        let layout = SplitLayout::Docked;
+        let mut flap = FlapState::closed_by_default();
+        flap.reconcile(layout);
+        flap.open();
+        let (t0, _) = flap.asked.expect("asked");
+        flap.advance(layout, t0 + Duration::from_millis(40), motion());
+        let opened = flap.reveal();
+        let t1 = t0 + Duration::from_secs(1);
+        flap.advance(layout, t1, motion());
+        flap.close();
+        // Asked for on the frame it closed at (the test's clock runs ahead
+        // of the real one).
+        flap.asked = Some((t1, MotionSource::Pointer));
+        flap.advance(layout, t1 + Duration::from_millis(40), motion());
+        let closed = 1.0 - flap.reveal();
+        assert!((opened - closed).abs() < 1e-6, "{opened} vs {closed}");
+        assert!(opened > 0.3, "it gets going at once: {opened}");
+    }
+
+    #[test]
+    fn a_reversal_mid_slide_continues_from_where_it_is() {
+        let layout = SplitLayout::Docked;
+        let mut flap = FlapState::closed_by_default();
+        flap.reconcile(layout);
+        flap.open();
+        let (t0, _) = flap.asked.expect("asked");
+        let mid = t0 + Duration::from_millis(50);
+        flap.advance(layout, mid, motion());
+        let drawn = flap.reveal();
+        flap.close();
+        flap.asked = Some((mid, MotionSource::Pointer));
+        flap.advance(layout, mid, motion());
+        assert!((flap.reveal() - drawn).abs() < 1e-9, "no jump");
+        flap.advance(layout, mid + Duration::from_millis(8), motion());
+        assert!(
+            flap.reveal() >= drawn - 1e-3,
+            "it brakes before turning back"
+        );
     }
 
     #[test]
@@ -300,51 +342,34 @@ mod tests {
             let mut flap = FlapState::closed_by_default();
             flap.reconcile(layout);
             flap.open();
-            let almost_complete = BASE.as_secs_f64() * (1.0 - SETTLED / 2.0);
-            assert!(!flap.tick(layout, almost_complete, BASE));
+            let later = crate::time::now() + Duration::from_secs(2);
+            assert!(
+                flap.is_animating(layout),
+                "asks for the frame that moves it"
+            );
+            assert!(!flap.advance(layout, later, motion()));
             assert!(!flap.is_animating(layout));
             assert_eq!(flap.reveal_in(layout), 1.0);
             flap.close();
-            assert!(!flap.tick(layout, almost_complete, BASE));
+            assert!(!flap.advance(layout, later + Duration::from_secs(2), motion()));
             assert!(!flap.is_animating(layout));
             assert_eq!(flap.reveal_in(layout), 0.0);
         }
     }
 
     #[test]
-    fn a_subthreshold_remainder_still_requests_its_final_settlement_tick() {
-        for layout in [SplitLayout::Docked, SplitLayout::Overlay] {
-            let mut flap = FlapState::closed_by_default();
-            flap.reconcile(layout);
-            flap.open();
-            // The host can observe animation state between ticks, including
-            // a remainder produced before the endpoint snap was introduced.
-            flap.progress = 1.0 - SETTLED / 2.0;
-            assert!(flap.is_animating(layout));
-            assert!(!flap.tick(layout, 0.0, BASE));
-            assert_eq!(flap.reveal_in(layout), 1.0);
-            assert!(!flap.is_animating(layout));
-            flap.close();
-            flap.progress = SETTLED / 2.0;
-            assert!(flap.is_animating(layout));
-            assert!(!flap.tick(layout, 0.0, BASE));
-            assert_eq!(flap.reveal_in(layout), 0.0);
-            assert!(!flap.is_animating(layout));
-        }
-    }
-
-    #[test]
-    fn the_reveal_takes_the_motion_duration() {
+    fn a_shortcut_and_reduced_motion_land_at_once() {
+        let layout = SplitLayout::Docked;
+        let now = crate::time::now();
         let mut flap = FlapState::closed_by_default();
-        flap.reconcile(SplitLayout::Docked);
+        flap.reconcile(layout);
+        flap.from_input(MotionSource::Keyboard);
         flap.open();
-        assert!(flap.tick(SplitLayout::Docked, 0.1, BASE));
-        let mid = flap.reveal();
-        assert!(mid > 0.0 && mid < 1.0);
-        assert!(!flap.tick(SplitLayout::Docked, 0.2, BASE));
+        assert!(!flap.advance(layout, now, motion()));
         assert_eq!(flap.reveal(), 1.0);
         flap.close();
-        assert!(!flap.tick(SplitLayout::Docked, 0.0, Duration::ZERO));
-        assert_eq!(flap.reveal(), 0.0, "no duration is an instant change");
+        let reduced = EffectiveMotion::new(Motion::default(), true);
+        assert!(!flap.advance(layout, now, reduced));
+        assert_eq!(flap.reveal(), 0.0);
     }
 }
