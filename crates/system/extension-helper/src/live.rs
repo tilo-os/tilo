@@ -40,6 +40,10 @@
 //!    its windows reopen). The desktop asks for it only when the person is
 //!    idle or the screen is locked, and at most as often as it asks for
 //!    restarts (`shell::system_update`).
+//!    A newer image staged over one already applied this boot is compared
+//!    with what is live too ([`Plan::settle`]): a component whose files are
+//!    already live as the newer image has them does not restart again, and
+//!    what the desktop already runs stays in the system phase's layer.
 //! 5. A unit that fails after its restart, or a desktop that does not come
 //!    back, rolls the layer back to the one before, restarts the same parts
 //!    again, and records the update as failed: it then applies with the next
@@ -269,11 +273,22 @@ fn apply_from(
     let manifest = fs::read_to_string(&manifest_path).at(&manifest_path)?;
     let components = Components::parse(&manifest)?;
     let changes = diff(base_root, new_root).os()?;
-    let plan = Plan::new(changes, &components);
+    let mut plan = Plan::new(changes, &components);
+    let before = fs::read_link(link(layout)).ok();
+    if let Some(previous) = before.as_deref().filter(|previous| previous.is_dir()) {
+        plan.settle(
+            &components,
+            &LiveTree {
+                layer: Some(previous),
+                base: base_root,
+                live,
+            },
+            new_root,
+        )?;
+    }
     let name = layer_name(staged.image(), phase);
     let layer = layers(layout).join(&name);
     build_layer(host, live, &plan, phase, new_root, &layer, staged.image())?;
-    let before = fs::read_link(link(layout)).ok();
     swap_link(layout, &layer)?;
     let mut state = State {
         image: staged.image().to_owned(),
@@ -659,6 +674,12 @@ pub struct Plan {
     pub system: BTreeMap<String, Restarts>,
     pub session: BTreeMap<String, Restarts>,
     pub apps_changed: bool,
+    /// Changes an earlier live update of this boot already applied: their
+    /// paths are live as the staged image has them ([`Plan::settle`]).
+    pub held: BTreeSet<String>,
+    /// A session component's path an earlier live update changed and this
+    /// one puts back as booted: the desktop restarts for it.
+    pub session_undone: bool,
 }
 
 /// Units a change restarts.
@@ -739,6 +760,91 @@ impl Plan {
         plan
     }
 
+    /// Account for the live update of an earlier image this boot already
+    /// applied (`before`: its layer over the booted tree): a component
+    /// whose every change it already holds does not restart again, a change
+    /// it holds goes into either phase's layer (so the system phase does not
+    /// take back what the desktop already runs), and a component whose path
+    /// it changed but the staged image has as booted restarts.
+    ///
+    /// # Errors
+    /// A tree that cannot be read.
+    pub fn settle(
+        &mut self,
+        components: &Components,
+        before: &LiveTree<'_>,
+        new_root: &Path,
+    ) -> Result<()> {
+        for (change, _) in &self.changes {
+            let relative = change.path.trim_start_matches('/');
+            let staged = match change.kind {
+                ChangeKind::Written => Some(new_root.join(relative)),
+                ChangeKind::Removed => None,
+            };
+            if same_live(before.entry(relative).as_deref(), staged.as_deref()).os()? {
+                self.held.insert(change.path.clone());
+            }
+        }
+        for bucket in [&mut self.system, &mut self.session] {
+            bucket.retain(|name, _| {
+                self.changes.iter().any(|(change, _)| {
+                    !self.held.contains(&change.path)
+                        && components
+                            .owner(&change.path)
+                            .is_some_and(|owner| owner.name == *name)
+                })
+            });
+        }
+        let changed: BTreeSet<&str> = self
+            .changes
+            .iter()
+            .map(|(change, _)| change.path.as_str())
+            .collect();
+        let Some(layer) = before.layer else {
+            return Ok(());
+        };
+        for path in layer_paths(layer).os()? {
+            if changed.contains(path.as_str()) {
+                continue;
+            }
+            let relative = path.trim_start_matches('/');
+            let staged = new_root.join(relative);
+            let staged = fs::symlink_metadata(&staged).is_ok().then_some(staged);
+            if same_live(before.entry(relative).as_deref(), staged.as_deref()).os()? {
+                continue;
+            }
+            let owner = components.owner(&path);
+            let class = classify(&path, owner);
+            if class == Class::Session {
+                self.session_undone = true;
+            }
+            if let Some(component) =
+                owner.filter(|_| matches!(class, Class::System | Class::Session))
+            {
+                let bucket = if class == Class::System {
+                    &mut self.system
+                } else {
+                    &mut self.session
+                };
+                bucket.insert(
+                    component.name.clone(),
+                    Restarts {
+                        units: component.units.clone(),
+                        user_units: component.user_units.clone(),
+                    },
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether `change`, of `class`, goes into `phase`'s layer: what the
+    /// phase takes, and what an earlier live update already made live.
+    pub fn takes(&self, change: &Change, class: Class, phase: Phase) -> bool {
+        self.in_layer(class, phase)
+            || (!matches!(class, Class::Boot | Class::NextBoot) && self.held.contains(&change.path))
+    }
+
     /// Whether a change of `class` goes into `phase`'s layer.
     pub fn in_layer(&self, class: Class, phase: Phase) -> bool {
         match class {
@@ -753,9 +859,11 @@ impl Plan {
 
     /// Whether part of the update waits for a desktop restart.
     pub fn desktop_pending(&self) -> bool {
-        self.changes.iter().any(|(_, class)| {
-            !self.in_layer(*class, Phase::System) && self.in_layer(*class, Phase::Session)
-        })
+        self.session_undone
+            || self.changes.iter().any(|(change, class)| {
+                !self.takes(change, *class, Phase::System)
+                    && self.takes(change, *class, Phase::Session)
+            })
     }
 
     /// What `phase` restarts besides the desktop; `system_applied` when
@@ -898,6 +1006,80 @@ fn same_bytes(a: &Path, b: &Path) -> io::Result<bool> {
     }
 }
 
+/// The live `/usr`: a layer merged over the booted tree.
+pub struct LiveTree<'a> {
+    pub layer: Option<&'a Path>,
+    pub base: &'a Path,
+    pub live: &'a dyn LiveHost,
+}
+
+impl LiveTree<'_> {
+    /// What is live at `relative` (e.g. `usr/bin/fs`): the layer's entry,
+    /// nothing under a whiteout, or else the booted tree's.
+    pub fn entry(&self, relative: &str) -> Option<PathBuf> {
+        if let Some(layer) = self.layer {
+            let parts: Vec<&str> = relative.split('/').collect();
+            let mut at = layer.to_path_buf();
+            for (index, part) in parts.iter().enumerate() {
+                at.push(part);
+                let Ok(meta) = fs::symlink_metadata(&at) else {
+                    break;
+                };
+                if self.live.is_whiteout(&at) {
+                    return None;
+                }
+                if index + 1 == parts.len() {
+                    return Some(at);
+                }
+                if !meta.is_dir() {
+                    break;
+                }
+            }
+        }
+        let base = self.base.join(relative);
+        fs::symlink_metadata(&base).is_ok().then_some(base)
+    }
+}
+
+/// Whether two live entries (`None`: absent) are the same.
+fn same_live(a: Option<&Path>, b: Option<&Path>) -> io::Result<bool> {
+    match (a, b) {
+        (None, None) => Ok(true),
+        (Some(a), Some(b)) => {
+            let (old, new) = (fs::symlink_metadata(a)?, fs::symlink_metadata(b)?);
+            if old.is_dir() || new.is_dir() {
+                return Ok(old.is_dir() && new.is_dir());
+            }
+            same_entry(a, &old, b, &new)
+        }
+        _ => Ok(false),
+    }
+}
+
+/// Every file, link and whiteout `layer` holds, as absolute paths
+/// (`/usr/...`), but its extension-release.
+fn layer_paths(layer: &Path) -> io::Result<Vec<String>> {
+    fn walk(dir: &Path, at: &str, out: &mut Vec<String>) -> io::Result<()> {
+        for (name, meta) in entries(dir)? {
+            let path = format!("{at}/{name}");
+            if meta.is_dir() {
+                walk(&dir.join(&name), &path, out)?;
+            } else {
+                out.push(path);
+            }
+        }
+        Ok(())
+    }
+    let release = format!("/usr/lib/extension-release.d/extension-release.{LIVE_NAME}");
+    let mut out = Vec::new();
+    let usr = layer.join("usr");
+    if usr.is_dir() {
+        walk(&usr, "/usr", &mut out)?;
+    }
+    out.retain(|path| *path != release);
+    Ok(out)
+}
+
 // ---------------------------------------------------------------------------
 // The layer
 // ---------------------------------------------------------------------------
@@ -935,7 +1117,7 @@ pub fn build_layer(
     remove_tree(&staging)?;
     let built = (|| {
         for (change, class) in &plan.changes {
-            if !plan.in_layer(*class, phase) {
+            if !plan.takes(change, *class, phase) {
                 continue;
             }
             let relative = change.path.trim_start_matches('/');
@@ -1147,6 +1329,8 @@ pub trait LiveHost {
     fn close(&self, at: &Path);
     /// A whiteout at `path`: the file below it is gone.
     fn whiteout(&self, path: &Path) -> Result<()>;
+    /// Whether `path` in a layer is a whiteout [`Self::whiteout`] made.
+    fn is_whiteout(&self, path: &Path) -> bool;
     /// Reload the system manager and create new system accounts and paths.
     fn daemon_reload(&self) -> Result<()>;
     /// Reload `user`'s manager.
@@ -1296,6 +1480,12 @@ impl LiveHost for crate::System {
             true,
         )
         .map(drop)
+    }
+
+    fn is_whiteout(&self, path: &Path) -> bool {
+        use std::os::unix::fs::FileTypeExt as _;
+        fs::symlink_metadata(path)
+            .is_ok_and(|meta| meta.file_type().is_char_device() && meta.rdev() == 0)
     }
 
     fn daemon_reload(&self) -> Result<()> {
