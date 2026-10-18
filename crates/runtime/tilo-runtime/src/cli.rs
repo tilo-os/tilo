@@ -123,8 +123,10 @@ fn run<S: RuntimeServices>() -> io::Result<()> {
 }
 
 /// Invoke through the same registered action host, not a privileged backend
-/// shortcut. The profile lock and its sandbox-inaccessible directory are the
-/// owner boundary; same-account unconfined scripts are trusted owner callers.
+/// shortcut. The profile lock and its sandbox-inaccessible directory admit
+/// same-account unconfined scripts to the owner facade. That facade retains
+/// the original certified session and revalidates it before effects; an owner
+/// label alone is not action authority.
 ///
 /// # Errors
 /// Refuses a busy/foreign profile, malformed request or failed admission, and

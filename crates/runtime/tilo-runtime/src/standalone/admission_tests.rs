@@ -11,10 +11,10 @@ use tilo_action_broker::{
 };
 use tilo_user_identity::DeviceCert;
 
-struct FixtureAuthority {
-    room: uuid::Uuid,
-    cert: DeviceCert,
-    time: PolicyTime,
+pub(in crate::standalone) struct FixtureAuthority {
+    pub(in crate::standalone) room: uuid::Uuid,
+    pub(in crate::standalone) cert: DeviceCert,
+    pub(in crate::standalone) time: PolicyTime,
 }
 impl CertificateAuthority for FixtureAuthority {
     fn policy_time(&self) -> Result<Option<PolicyTime>, String> {
@@ -30,6 +30,17 @@ impl CertificateAuthority for FixtureAuthority {
             self.time.now_ns().map_err(|error| error.to_string())?,
         )
         .map_err(|error| error.to_string())
+    }
+    fn authorize_with_policy_time(
+        &self,
+        room: uuid::Uuid,
+        cert: &DeviceCert,
+        time: &PolicyTime,
+    ) -> Result<(), String> {
+        if !time.same_origin(&self.time) {
+            return Err("runtime origin changed".into());
+        }
+        self.authorize(room, cert)
     }
     fn governs(&self, room: uuid::Uuid, _device: Option<&[u8; 32]>) -> bool {
         room == self.room

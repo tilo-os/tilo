@@ -132,11 +132,15 @@ impl CapnpBrokerState {
                 self.checked_policy_time(time.as_ref())
                     .map_err(unavailable)?;
                 let Some(certificate) = current.certificate.as_ref() else {
-                    if self.services.local_person.is_some() {
+                    if self.services.local_person.is_some()
+                        || self.services.native_certificates.is_some()
+                    {
                         return Err(unavailable(
                             "action_evidence_unavailable: original certificate missing",
                         ));
                     }
+                    // Only an explicitly identity-free host retains connection
+                    // compatibility. A missing seat service is not bootstrap.
                     // Retain pre-identity connection compatibility without
                     // upgrading its displayed actor into signed user evidence.
                     let expected = current.broker_actor();
@@ -192,6 +196,7 @@ impl CapnpBrokerState {
                 // A transport key is not retained certificate custody. Do not
                 // silently downgrade a certified caller to actor-only ownership.
                 if self.services.local_person.is_some()
+                    || self.services.native_certificates.is_some()
                     || caller.device_public_key().is_some()
                     || caller.user_public_key().is_some()
                 {

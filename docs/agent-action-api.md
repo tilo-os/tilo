@@ -366,6 +366,13 @@ turns it into a physical click. Neither actor text nor a missing certificate gra
 a fallback user identity. Setup before a user identity exists is a distinct
 bootstrap context, not an exception for ordinary registered actions.
 
+The standalone runtime retains a certified owner session for owner commands and
+opening host-OS search results too; it does not impersonate a native seat. Search
+discovery keeps its ordinary read path, while opening and invocation lifecycle
+access revalidate the retained session. Revoking that device ends the existing
+door, including retries. A configured certificate authority without a seat
+service is still a registered host, never identity-free compatibility.
+
 Admission is not execution. A lost host-service answer is durably signed as an
 uncertain outcome, not proof that no effect occurred; inspect state before retrying.
 An application that never establishes its authenticated launch connection times

@@ -519,7 +519,13 @@ impl CapnpBrokerState {
             Ok(actor)
         })?;
         let started = service.start(&crate::services::WorkspaceGovernanceRequest {
-            local_device: caller.device_public_key().is_none()
+            local_device: (caller.device_public_key().is_none()
+                || matches!(&admitted.owner,
+                    super::InvocationOwner::Certified { device, .. }
+                    | super::InvocationOwner::AuthenticatedLocal { device, agent: None, .. }
+                    if self.services.native_certificates.as_ref().is_some_and(|authority|
+                        uuid::Uuid::parse_str(&room).is_ok_and(|room|
+                            authority.governs(room, Some(device))))))
                 && caller.shortcut().is_none()
                 && caller.acting_for_person().is_none()
                 && request.on_behalf_of.is_none(),

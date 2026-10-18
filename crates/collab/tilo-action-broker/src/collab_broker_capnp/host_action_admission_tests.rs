@@ -97,6 +97,104 @@ fn configured_native_seat_never_admits_an_unsigned_actor_label() {
     assert!(state.completed_invocations.lock().unwrap().is_empty());
 }
 
+struct ClosedCertificates;
+impl crate::peer_actions::CertificateAuthority for ClosedCertificates {
+    fn authorize(&self, _: uuid::Uuid, _: &tilo_user_identity::DeviceCert) -> Result<(), String> {
+        Err("certificate authority closed".into())
+    }
+}
+
+#[test]
+fn configured_certificates_without_a_native_seat_never_admit_unsigned_owners() {
+    let (state, _) = CapnpBrokerState::new_configured(
+        &Arc::new(FanoutState::new()),
+        Arc::new(Mutex::new(BrokerChannels::default())),
+        PeerPublisher::disabled(),
+        None,
+        None,
+        None,
+        crate::services::HostServices {
+            native_certificates: Some(Arc::new(ClosedCertificates)),
+            ..Default::default()
+        },
+    );
+    assert!(state.services.local_person.is_none());
+    let caller = Caller::local_person("owner");
+    assert!(
+        state
+            .host_action_owner(&caller, None, "room", InvocationId::new())
+            .is_err()
+    );
+    let descriptor = descriptor();
+    let request = request(&descriptor);
+    assert!(
+        state
+            .admit_host_action(
+                &caller,
+                None,
+                HostActionAdmission {
+                    room: "room",
+                    app_id: "host-test",
+                    descriptor: &descriptor,
+                    request: &request,
+                }
+            )
+            .is_err()
+    );
+    assert!(state.completed_invocations.lock().unwrap().is_empty());
+}
+
+#[test]
+fn certificate_less_local_origin_is_compatible_only_without_identity_authority() {
+    use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
+    let root = [17; 32];
+    let actor = principal_id_for_root(root);
+    let mut workspace = Workspace::new(WorkspaceId(17), "Owner room");
+    workspace.set_owner(actor.clone());
+    let room = workspace.room.to_string();
+    let route = crate::route::CrdtRoute::cluster(&room);
+    let admitted = super::super::admit_verified_join_at(
+        Some(&workspace),
+        &route,
+        super::super::VerifiedJoinIdentity {
+            user_public_key: root,
+            device_public_key: [18; 32],
+            capped: false,
+        },
+        tilo_clock::unix_now(),
+    )
+    .unwrap();
+    assert!(admitted.certificate.is_none());
+    let mut tree = WorkspaceTree::default();
+    tree.desktop.workspaces.push(workspace);
+    let membership = tree.shared();
+    let original = InvocationCaller::Local {
+        route,
+        admitted: Box::new(admitted),
+        time: None,
+    };
+    let caller = Caller::local_person(actor).in_room(&room);
+    for configured in [false, true] {
+        let mut services = membership.services();
+        if configured {
+            services.native_certificates = Some(Arc::new(ClosedCertificates));
+        }
+        let broker = CapnpBrokerState::test_broker_with_authority(membership.authority(), services);
+        let result =
+            broker
+                .state()
+                .host_action_owner(&caller, Some(&original), &room, InvocationId::new());
+        if configured {
+            assert!(
+                matches!(result, Err(ActionHostError::Unavailable { reason })
+                if reason.contains("original certificate missing"))
+            );
+        } else {
+            assert!(matches!(result, Ok(InvocationOwner::Local { .. })));
+        }
+    }
+}
+
 #[test]
 fn host_uuid_and_terminal_use_the_same_durable_record() {
     let root = tempfile::tempdir().unwrap();
