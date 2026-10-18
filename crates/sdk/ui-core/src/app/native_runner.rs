@@ -4123,13 +4123,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 surface.window.request_redraw();
             }
         }
-        let awaiting_primary_first_present = primary_startup_pump_needed(
-            self.primary_frames_sent,
-            self.last_primary_frame_presented,
-        );
-        if awaiting_primary_first_present {
-            request_primary_redraw();
-        }
+        // No redraw is pumped while the first frame is in flight: drawing
+        // it again every loop turn spun the main thread through ~50 full
+        // draws per launch while the worker rasterized. A first submission
+        // that comes back `Reconfigured` or `Skipped` (racing the
+        // compositor's first configure) wakes this window by itself
+        // (`render_thread::notify_render_completion`).
         // This runs before the ordinary fullscreen reconciliation below. If a
         // real second output appears, the root is notified first and keeps
         // the local window as the presenter dashboard; if it disappears the
@@ -4376,7 +4375,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // autosave and collaboration work above continues on its existing doors.
         let demand = crate::render_thread::retry::WakeDemand {
             typing: typing_active,
-            primary_startup: awaiting_primary_first_present,
             tooltip: tooltip_pending,
             widget_due: widget_still_due,
             animation: needs_frame,
