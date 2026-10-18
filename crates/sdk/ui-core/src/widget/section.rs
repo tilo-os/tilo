@@ -156,6 +156,7 @@ fn paint_count(ctx: &mut PaintCtx<'_>, rect: Rect, label: &str) {
 
 /// A section's header row.
 pub struct SectionHeader {
+    leading: Option<Element>,
     title: String,
     level: Level,
     count: Option<usize>,
@@ -166,6 +167,7 @@ impl SectionHeader {
     /// A section of a page, titled in `Heading`.
     pub fn heading(title: impl Into<String>) -> Self {
         Self {
+            leading: None,
             title: title.into(),
             level: Level::Section,
             count: None,
@@ -197,12 +199,22 @@ impl SectionHeader {
         self
     }
 
+    /// A non-interactive identity element immediately before the title.
+    /// It participates in layout, drawing and the accessibility tree.
+    #[must_use]
+    pub fn leading(mut self, element: Element) -> Self {
+        self.leading = Some(element);
+        self
+    }
+
     fn into_widget(self, disclosure: Option<Disclosure>) -> HeaderRow {
-        let mut children: Vec<Element> = vec![Box::new(
+        let has_leading = self.leading.is_some();
+        let mut children: Vec<Element> = self.leading.into_iter().collect();
+        children.push(Box::new(
             Text::new(&self.title)
                 .with_role(self.level.role())
                 .with_heading_level(self.level.heading_level()),
-        )];
+        ));
         if let Some(count) = self.count {
             children.push(Box::new(CountPill {
                 label: count.to_string(),
@@ -227,6 +239,7 @@ impl SectionHeader {
         }
         HeaderRow {
             parts: Parts::new(children),
+            has_leading,
             title: self.title,
             level: self.level,
             has_action,
@@ -533,6 +546,7 @@ impl Disclosure {
 
 struct HeaderRow {
     parts: Parts,
+    has_leading: bool,
     title: String,
     level: Level,
     has_action: bool,
@@ -651,7 +665,15 @@ impl Widget for HeaderRow {
             map,
         );
         // The title takes what is left and wraps; the action trails.
-        if let Some(&title) = self.parts.nodes.first()
+        if self.has_leading
+            && let Some(&leading) = self.parts.nodes.first()
+            && let Ok(style) = taffy.style(leading)
+        {
+            let mut style = style.clone();
+            style.flex_shrink = 0.0;
+            let _ = taffy.set_style(leading, style);
+        }
+        if let Some(&title) = self.parts.nodes.get(usize::from(self.has_leading))
             && let Ok(style) = taffy.style(title)
         {
             let mut style = style.clone();

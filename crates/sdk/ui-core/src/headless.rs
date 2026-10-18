@@ -8271,6 +8271,20 @@ impl FrameHarness {
         self.full_relayout_override = forced;
     }
 
+    /// Cumulative text measurement-cache hits and misses for this host's
+    /// renderer. Compare around input to distinguish retained scrolling from
+    /// remeasuring a whole page; a cold frame must first warm the counters.
+    pub fn text_cache_stats(&self) -> (u64, u64) {
+        self.text.cache_stats()
+    }
+
+    /// Drain this host renderer's actual shape-cache hits, misses and time
+    /// spent shaping. Like `TextRenderer::take_shape_stats`, this isolates
+    /// input work after a measured warmup without a wall-clock threshold.
+    pub fn take_text_shape_stats(&mut self) -> (u64, u64, u128) {
+        self.text.take_shape_stats()
+    }
+
     /// What the most recent completed relayout did with its layout tree.
     pub fn last_relayout(&self) -> RelayoutStats {
         self.last_relayout

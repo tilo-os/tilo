@@ -1,16 +1,16 @@
-//! General-purpose [`Image`] widget for displaying PNG/JPEG content. Decoded
+//! General-purpose [`Image`] widget for displaying PNG or vector SVG content. Decoded
 //! RGBA pixels are wrapped in a [`peniko::ImageData`] and painted via
 //! `scene.fill(..)`. Three fit modes mirror CSS `object-fit`:
 //! [`ImageFit::Fill`] stretches, [`ImageFit::Contain`] letterboxes,
 //! [`ImageFit::Cover`] crops.
 //!
-//! The `ImageData` is built lazily on first draw and cached (cloning only
-//! bumps the internal `Arc`). A decode failure renders a red border +
+//! The `ImageData` is built once at layout-tree construction or first direct
+//! paint and cached (cloning only bumps the internal `Arc`). A decode failure renders a red border +
 //! "Image failed" text so it surfaces during development instead of
 //! silently painting nothing.
 //!
-//! Only PNG decoding is provided in-tree. The API is decoder-agnostic —
-//! call [`Image::from_rgba`] with bytes decoded elsewhere for other formats.
+//! PNG raster decoding and vector SVG loading are provided in-tree. Call
+//! [`Image::from_rgba`] with bytes decoded elsewhere for other raster formats.
 
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
@@ -69,9 +69,9 @@ impl std::fmt::Display for ImageDecodeError {
 
 impl std::error::Error for ImageDecodeError {}
 
-/// Source of the image bytes. Path-based sources decode lazily on first
-/// draw so widget construction is cheap and a missing file does not
-/// panic the caller.
+/// Source of the image bytes. Path-based sources decode lazily when admitted
+/// to a layout tree or directly painted, never in the measurement callback.
+/// Widget construction is cheap and a missing file does not panic the caller.
 enum Source {
     /// Already decoded RGBA bytes plus dimensions.
     Decoded {
@@ -79,9 +79,11 @@ enum Source {
         width: u32,
         height: u32,
     },
-    /// Filesystem path to a PNG file. Decoded the first time `draw`
-    /// runs; the result (Ok or error) is then latched.
+    /// Explicit host path to a PNG file. The first layout-tree build or
+    /// direct paint latches the decoded result (including an error).
     Path(PathBuf),
+    /// Parsed SVG paths, kept as vectors through rendering.
+    Vector(Box<Scene>),
     /// Decode previously failed — paint the error state every frame.
     Failed,
 }
@@ -101,12 +103,15 @@ pub struct Image {
     /// intrinsic/auto-sized leaf. This is the right mode for previews inside
     /// an explicitly sized viewport or card.
     fill_parent: bool,
+    icon_size: Option<super::IconSize>,
+    layout_scale: f32,
 }
 
 impl Image {
-    /// Construct from a filesystem path. Decoding is deferred to the
-    /// first draw so widget construction never fails. If decoding
-    /// later fails, the widget renders an error state.
+    /// Construct from an explicit host filesystem path. Decoding is deferred
+    /// to layout-tree construction (or first direct paint), so construction
+    /// never fails and the first measured frame knows the image dimensions.
+    /// If decoding fails, the widget renders an error state.
     pub fn from_path(path: impl Into<PathBuf>) -> Self {
         Self {
             source: Source::Path(path.into()),
@@ -116,6 +121,8 @@ impl Image {
             cached: None,
             alt: None,
             fill_parent: false,
+            icon_size: None,
+            layout_scale: 1.0,
         }
     }
 
@@ -135,6 +142,8 @@ impl Image {
             cached: None,
             alt: None,
             fill_parent: false,
+            icon_size: None,
+            layout_scale: 1.0,
         }
     }
 
@@ -149,6 +158,66 @@ impl Image {
     pub fn from_encoded(bytes: &[u8]) -> Result<Self, ImageDecodeError> {
         let (rgba, width, height) = decode_png(bytes)?;
         Ok(Self::from_rgba(Arc::from(rgba), width, height))
+    }
+
+    /// Parse bundled SVG artwork using the shared vector parser, without
+    /// opening a filesystem path or rasterizing it. `width` and `height` are
+    /// the logical display size; artwork is centred and aspect-preserving.
+    ///
+    /// This uses the same SVG subset as web content: gradients use their
+    /// first stop, while unsupported text and raster nodes are skipped.
+    ///
+    /// # Errors
+    /// Returns an error for invalid SVG or artwork without supported paths.
+    pub fn from_svg(bytes: &[u8], width: u32, height: u32) -> Result<Self, ImageDecodeError> {
+        let (bounds, shapes) = tilo_paint_stream::svg::drawing(bytes)
+            .ok_or_else(|| ImageDecodeError::Decode("unsupported SVG artwork".into()))?;
+        let scale =
+            (f64::from(width) / f64::from(bounds.w)).min(f64::from(height) / f64::from(bounds.h));
+        let at = Affine::scale(scale).then_translate(vello::kurbo::Vec2::new(
+            (f64::from(width) - f64::from(bounds.w) * scale) * 0.5,
+            (f64::from(height) - f64::from(bounds.h) * scale) * 0.5,
+        ));
+        let mut scene = Scene::new();
+        for shape in shapes {
+            let path = vello::kurbo::BezPath::from_svg(&shape.path)
+                .map_err(|error| ImageDecodeError::Decode(error.to_string()))?;
+            if let Some(tilo_paint_stream::Color([r, g, b, a])) = shape.fill {
+                let rule = if shape.even_odd {
+                    Fill::EvenOdd
+                } else {
+                    Fill::NonZero
+                };
+                scene.fill(rule, at, Color::from_rgba8(r, g, b, a), None, &path);
+            }
+            if let Some(tilo_paint_stream::Color([r, g, b, a])) = shape.stroke {
+                scene.stroke(
+                    &Stroke::new(f64::from(shape.stroke_width)),
+                    at,
+                    Color::from_rgba8(r, g, b, a),
+                    None,
+                    &path,
+                );
+            }
+        }
+        Ok(Self {
+            source: Source::Vector(Box::new(scene)),
+            intrinsic_size: (width, height),
+            fit: ImageFit::Contain,
+            rect: Rect::ZERO,
+            cached: None,
+            alt: None,
+            fill_parent: false,
+            icon_size: None,
+            layout_scale: 1.0,
+        })
+    }
+
+    /// Size bundled artwork using the same live theme token as an icon glyph.
+    #[must_use]
+    pub fn with_icon_size(mut self, size: super::IconSize) -> Self {
+        self.icon_size = Some(size);
+        self
     }
 
     /// Set the fit mode. See [`ImageFit`].
@@ -182,8 +251,7 @@ impl Image {
     }
 
     /// The image's intrinsic pixel dimensions. Returns `(0, 0)` for
-    /// path-loaded images that have not yet been drawn (and therefore
-    /// not yet decoded).
+    /// path-loaded images not yet admitted to layout or directly painted.
     pub fn intrinsic_size(&self) -> (u32, u32) {
         self.intrinsic_size
     }
@@ -264,7 +332,7 @@ impl Image {
                 self.intrinsic_size = (width, height);
                 self.cached = Some(img);
             }
-            Source::Failed => {}
+            Source::Vector(_) | Source::Failed => {}
         }
     }
 
@@ -281,10 +349,10 @@ impl Image {
     fn paint(&mut self, scene: &mut Scene, transform: Affine, error_ink: Color) {
         self.ensure_cached();
 
-        let Some(img) = self.cached.clone() else {
+        if self.cached.is_none() && !matches!(self.source, Source::Vector(_)) {
             self.paint_error(scene, transform, error_ink);
             return;
-        };
+        }
 
         let (iw, ih) = self.intrinsic_size;
         if iw == 0 || ih == 0 || self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
@@ -346,14 +414,18 @@ impl Image {
             );
         }
 
-        let image_brush = ImageBrush::new(img);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            &image_brush,
-            Some(brush_transform),
-            &fill_rect,
-        );
+        if let Source::Vector(vector) = &self.source {
+            scene.append(vector, Some(transform * brush_transform));
+        } else if let Some(img) = self.cached.clone() {
+            let image_brush = ImageBrush::new(img);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                &image_brush,
+                Some(brush_transform),
+                &fill_rect,
+            );
+        }
 
         if needs_clip {
             scene.pop_layer();
@@ -405,27 +477,80 @@ impl Widget for Image {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // Resolve an explicit host path once during tree construction, never
+        // inside Taffy's repeatedly invoked measurement callback. This also
+        // gives the very first frame its decoded intrinsic dimensions.
+        self.ensure_cached();
+        self.layout_scale = theme.ui_scale;
+        let edge = self.icon_size.map(|size| size.px(theme)).or_else(|| {
+            matches!(self.source, Source::Failed).then(|| super::IconSize::Regular.px(theme))
+        });
         let style = Style {
+            aspect_ratio: (self.intrinsic_size.1 > 0).then(|| {
+                crate::num::f32_of_u32(self.intrinsic_size.0)
+                    / crate::num::f32_of_u32(self.intrinsic_size.1)
+            }),
             size: Size {
                 width: if self.fill_parent {
                     taffy::Dimension::percent(1.0)
+                } else if let Some(edge) = edge {
+                    taffy::Dimension::length(edge)
                 } else {
                     taffy::Dimension::auto()
                 },
                 height: if self.fill_parent {
                     taffy::Dimension::percent(1.0)
+                } else if let Some(edge) = edge {
+                    taffy::Dimension::length(edge)
                 } else {
                     taffy::Dimension::auto()
                 },
             },
+            // Replaced content may shrink inside a bounded flex parent;
+            // its intrinsic size is a preference, not a minimum viewport.
+            min_size: Size::from_lengths(0.0, 0.0),
             flex_shrink: if self.fill_parent { 0.0 } else { 1.0 },
             flex_grow: if self.fill_parent { 1.0 } else { 0.0 },
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
+    }
+
+    fn measure(
+        &mut self,
+        known: Size<Option<f32>>,
+        available: Size<taffy::AvailableSpace>,
+        _text_renderer: &mut TextRenderer,
+    ) -> Size<f32> {
+        let width = crate::num::f32_of_u32(self.intrinsic_size.0) * self.layout_scale;
+        let height = crate::num::f32_of_u32(self.intrinsic_size.1) * self.layout_scale;
+        match (known.width, known.height) {
+            (Some(width), Some(height)) => Size { width, height },
+            (Some(w), None) if width > 0.0 => Size {
+                width: w,
+                height: w * height / width,
+            },
+            (None, Some(h)) if height > 0.0 => Size {
+                width: h * width / height,
+                height: h,
+            },
+            _ => {
+                let limit = |space: taffy::AvailableSpace, intrinsic: f32| match space {
+                    taffy::AvailableSpace::Definite(value) if intrinsic > 0.0 => {
+                        (value / intrinsic).clamp(0.0, 1.0)
+                    }
+                    _ => 1.0,
+                };
+                let scale = limit(available.width, width).min(limit(available.height, height));
+                Size {
+                    width: width * scale,
+                    height: height * scale,
+                }
+            }
+        }
     }
 
     crate::rect_geometry!();
@@ -456,6 +581,103 @@ impl Widget for Image {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn intrinsic_images_receive_real_layout_bounds() {
+        use crate::headless::FrameHarness;
+        use crate::widget::{Container, Row};
+
+        for scale in [1.0, 2.0] {
+            let theme = Theme::dark().with_ui_scale(scale);
+            let svg = Image::from_svg(
+                br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 16"><path fill="#126abc" d="M0 0H32V16H0Z"/></svg>"##,
+                32,
+                16,
+            ).unwrap();
+            let row = Row::new()
+                .push(Box::new(svg))
+                .push(Box::new(Image::from_path(FIXTURE_PATH)))
+                .push(Box::new(Image::from_rgba(
+                    Arc::from(vec![255; 32 * 16 * 4]),
+                    32,
+                    16,
+                )));
+            let harness =
+                FrameHarness::new_with_theme(crate::State::new(), Box::new(row), (400, 120), theme);
+            let children = harness.root_widget().children();
+            for (index, (width, height)) in [(32.0, 16.0), (16.0, 16.0), (32.0, 16.0)]
+                .into_iter()
+                .enumerate()
+            {
+                let rect = children[index].get_rect();
+                assert_eq!(rect.width(), width * f64::from(scale));
+                assert_eq!(rect.height(), height * f64::from(scale));
+            }
+        }
+
+        let image = Image::from_rgba(Arc::from(vec![255; 32 * 16 * 4]), 32, 16);
+        let harness = FrameHarness::new(
+            crate::State::new(),
+            Box::new(Row::new().push(Box::new(image))),
+            (16, 80),
+        );
+        let rect = harness.root_widget().children()[0].get_rect();
+        assert_eq!(rect.width(), 16.0);
+        assert_eq!(
+            rect.height(),
+            8.0,
+            "a bounded auto image keeps its aspect ratio"
+        );
+
+        let harness = FrameHarness::new(
+            crate::State::new(),
+            Box::new(Row::new().push(Box::new(Image::from_path("missing-image.png")))),
+            (200, 100),
+        );
+        let rect = harness.root_widget().children()[0].get_rect();
+        assert!(
+            rect.width() > 0.0 && rect.height() > 0.0,
+            "decode failures remain visible"
+        );
+
+        for fit in [ImageFit::Contain, ImageFit::Cover, ImageFit::Fill] {
+            let image = Image::from_path(FIXTURE_PATH).filling().with_fit(fit);
+            let root = Row::new().push(Box::new(
+                Container::new()
+                    .with_no_padding()
+                    .with_size(80.0, 40.0)
+                    .with_child(Box::new(image)),
+            ));
+            let harness = FrameHarness::new(crate::State::new(), Box::new(root), (200, 100));
+            let container = harness.root_widget().children()[0];
+            let rect = container.children()[0].get_rect();
+            assert_eq!(rect.width(), 80.0);
+            assert_eq!(rect.height(), 40.0);
+        }
+    }
+
+    #[test]
+    fn svg_loads_and_paints_vector_paths_with_image_accessibility() {
+        let mut image = Image::from_svg(
+            br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 12"><path fill="#126abc" d="M0 0H24V12H0Z"/></svg>"##,
+            64,
+            64,
+        )
+        .unwrap()
+        .with_alt("Source application");
+        assert!(matches!(image.source, Source::Vector(_)));
+        assert!(image.cached.is_none());
+        assert_eq!(image.alt(), Some("Source application"));
+        for fit in [ImageFit::Contain, ImageFit::Cover, ImageFit::Fill] {
+            image.fit = fit;
+            let mut scene = Scene::new();
+            image.draw_for_test(&mut scene, Rect::new(0.0, 0.0, 64.0, 64.0));
+            assert!(!scene.encoding().is_empty());
+            assert!(!scene.encoding().path_tags.is_empty());
+            assert!(image.cached.is_none(), "SVG never becomes a raster image");
+        }
+        assert!(Image::from_svg(b"not SVG", 64, 64).is_err());
+    }
 
     /// Original quadrant image decoded from the committed text fixture by the build.
     const FIXTURE_PATH: &str = concat!(env!("OUT_DIR"), "/test_image.png");
