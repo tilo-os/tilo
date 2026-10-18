@@ -126,6 +126,25 @@ impl InstallerPreview {
         }
         match effect {
             ReadPreview => {}
+            InstallerPreviewEffect::ChoosePreview { choice }
+                if self.journey.page == Page::Destination =>
+            {
+                self.journey.destination = Some(match choice.as_str() {
+                    "computer" => Destination::Computer,
+                    "another" => Destination::Another,
+                    _ => return Err("installer-preview-invalid-choice"),
+                });
+            }
+            InstallerPreviewEffect::ContinuePreview
+                if self.journey.page == Page::Destination
+                    && self.journey.destination == Some(Destination::Computer) =>
+            {
+                self.native_full_os_review_pending = true;
+            }
+            InstallerPreviewEffect::BackInPreview => {
+                self.journey.destination = None;
+                self.journey.page = Page::Destination;
+            }
             OpenWindowsSource { source_id } => {
                 if self.windows.opening.is_some() {
                     return Err("installer-windows-open-pending");
@@ -439,8 +458,37 @@ impl InstallerPreview {
         changed
     }
 
+    pub(super) fn windows_destination_view(&self) -> Box<dyn Widget> {
+        let mut content = page::stack()
+            .push(Box::new(
+                Text::new(&t("installer-preview-destination-heading")).with_role(TextRole::Heading),
+            ))
+            .push(Box::new(self.choice(
+                "computer",
+                self.journey.destination == Some(Destination::Computer),
+            )))
+            .push(Box::new(self.choice("another", false)));
+        if let Some(error) = self.error {
+            content = content.push(Box::new(Text::new(&t(error))));
+        }
+        content = content.push(Box::new(
+            self.button(
+                "installer.continue",
+                "installer-preview-continue",
+                InstallerPreviewEffect::ContinuePreview,
+            )
+            .with_enabled(self.journey.destination == Some(Destination::Computer)),
+        ));
+        page::Frame::new(content).build()
+    }
+
     pub(super) fn windows_view(&self) -> Box<dyn Widget> {
         let mut content = page::stack()
+            .push(Box::new(self.button(
+                "installer.back",
+                "installer-preview-back",
+                InstallerPreviewEffect::BackInPreview,
+            )))
             .push(Box::new(
                 Text::new(&t("installer-windows-heading")).with_role(TextRole::Heading),
             ))

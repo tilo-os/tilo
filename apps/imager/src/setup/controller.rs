@@ -96,6 +96,14 @@ impl SetupController {
         self.page = SetupPage::Review;
     }
 
+    /// Record review intent only; the native probe, catalog and release gate
+    /// still decide whether Full Tilo can be installed.
+    pub(crate) fn review_full_os(&mut self) {
+        self.chosen_experience = Some(Experience::FullOs);
+        self.plan.experience = Experience::FullOs;
+        self.page = SetupPage::Review;
+    }
+
     /// Select an experience only when the probed capabilities support it.
     /// Returns whether the choice was accepted.
     pub fn choose_experience(&mut self, experience: Experience) -> bool {
