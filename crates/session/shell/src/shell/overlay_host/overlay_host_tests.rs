@@ -4187,15 +4187,15 @@ fn the_strip_switcher_names_strips_and_switches_strips_and_workspaces() {
     h.host.update(&doc, &automerge::ROOT);
     press(&mut h, Key::Named(NamedKey::ArrowUp));
     press(&mut h, Key::Named(NamedKey::F2));
-    type_text(&mut h, "Lounge");
+    type_text(&mut h, "Studio");
     press(&mut h, Key::Named(NamedKey::Enter));
-    assert_eq!(strips(&h), ["Lounge", "Games"], "strip 1 named Lounge");
+    assert_eq!(strips(&h), ["Studio", "Games"], "strip 1 renamed");
     assert!(
         !h.chrome.borrow().strip_switcher_open(),
         "a keyboard choice closes it"
     );
 
-    // Arrows and Enter switch strips: up from Games to Lounge.
+    // Arrows and Enter switch strips: up from Games to Studio.
     pump(&mut h, &key_press(Key::Character("s".into())), sup);
     press(&mut h, Key::Named(NamedKey::ArrowUp));
     press(&mut h, Key::Named(NamedKey::Enter));

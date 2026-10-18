@@ -137,7 +137,12 @@ impl SwitcherModel {
             .iter()
             .map(|strip| StripEntry {
                 id: strip.id,
-                name: strip.name.clone(),
+                // The Lounge is named in the person's language, not the
+                // model's.
+                name: match strip.kind() {
+                    tilo_desktop_model::StripKind::Lounge => t("strip-lounge"),
+                    tilo_desktop_model::StripKind::Regular => strip.name.clone(),
+                },
                 people: people
                     .iter()
                     .filter(|(on, _)| *on == strip.id)
@@ -1090,13 +1095,7 @@ impl StripSwitcher {
         let Some(naming) = self.naming.as_mut() else {
             return;
         };
-        let placeholder = match naming.target {
-            // The first strip is where a workspace's shared Lounge lives.
-            NameTarget::Rename(id) if self.model.strips.first().is_some_and(|s| s.id == id) => {
-                t("strip-switcher-lounge-placeholder")
-            }
-            _ => t("strip-switcher-name-placeholder"),
-        };
+        let placeholder = t("strip-switcher-name-placeholder");
         let face = FieldFace::new(field, &naming.text)
             .placeholder(&placeholder)
             .text_role(TextRole::Label)

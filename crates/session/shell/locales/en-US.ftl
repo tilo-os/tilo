@@ -2131,7 +2131,7 @@ search-action-strip-create = Create a strip
 search-action-strip-create-subtitle = Add a named strip to this workspace and go to it
 search-action-strip-create-default-name = New strip
 search-action-strip-rename = Rename this strip
-search-action-strip-rename-subtitle = Give the focused strip a name, such as Lounge
+search-action-strip-rename-subtitle = Give the focused strip a name
 search-action-strip-invalid-name = Enter a strip name of 1 to 48 characters without control characters.
 search-action-strip-rename-missing = There is no such strip in this workspace.
 
@@ -2887,7 +2887,7 @@ search-kw-strip-focus-next = down, strip below, row below, next strip, switch st
 search-kw-workspace-previous = previous workspace, switch workspace, back, desktop
 search-kw-workspace-next = next workspace, switch workspace, desktop
 search-kw-strip-create = new strip, add strip, add row, new lane, create strip
-search-kw-strip-rename = rename strip, name strip, strip name, lounge, label row
+search-kw-strip-rename = rename strip, name strip, strip name, label row
 search-kw-tab-previous = previous tab, left tab, back
 search-kw-tab-next = next tab, right tab, forward
 search-kw-group-move-left = move window, arrange, reorder, left
@@ -2983,7 +2983,6 @@ strip-switcher-new-strip = New strip
 strip-switcher-new-workspace = New workspace
 strip-switcher-rename = Rename strip
 strip-switcher-name-placeholder = Strip name
-strip-switcher-lounge-placeholder = Lounge
 strip-switcher-refused = Couldn't change the strip
 
 
@@ -3036,3 +3035,6 @@ desk-monitor-memory = Memory
 desk-monitor-temperature = Temperature
 desk-monitor-cpu-short = CPU
 desk-monitor-memory-short = RAM
+
+# The shared strip every workspace has: chat, tasks and notes.
+strip-lounge = Lounge

@@ -21,6 +21,7 @@ pub mod grants;
 pub mod history;
 pub mod ids;
 pub mod layout;
+pub mod lounge;
 pub mod ownership;
 pub mod partition;
 pub mod projection;
@@ -43,7 +44,7 @@ pub use ids::{
     FileId, GroupId, IdMinter, MintIds, PEER_ID_COUNTER_MASK, PEER_ID_SALT_SHIFT, RoomId, StripId,
     TabId, TabRef, WorkspaceId, compose_id, counter_of, mint_in_namespace, peer_salt_of,
 };
-pub use layout::{MissingApp, Strip, Tab, TileContent, WindowGroup};
+pub use layout::{MissingApp, Strip, StripKind, Tab, TileContent, WindowGroup};
 pub use partition::{Display, OutputPartition};
 pub use shared_surfaces::SharedSurfaces;
 pub use task::{

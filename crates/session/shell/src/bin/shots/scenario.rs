@@ -409,6 +409,8 @@ pub enum Action {
     /// screen, and the default width is the whole display.
     SetWindowWidths(u32),
     SwitchWorkspace(usize),
+    /// Give every workspace its Lounge, as a session start does.
+    EnsureLounges,
     PushQsLevel(QsLevel),
     /// Open the production host-session first-login chrome with an isolated,
     /// nonexistent identity path so screenshot tests cannot mutate user data.
@@ -1479,6 +1481,12 @@ fn apply_window_and_workspace_actions(driver: &mut ShellDriver, action: &Action)
                     None => eprintln!("shots: this host mounts no Notes"),
                 }
             }
+        }
+        Action::EnsureLounges => {
+            driver.with_chrome(|st: &mut ChromeState| {
+                st.tree_mut().desktop.ensure_lounges();
+                st.bump();
+            });
         }
         Action::SwitchWorkspace(idx) => {
             driver.with_chrome(|st: &mut ChromeState| {
@@ -3016,6 +3024,22 @@ fn build_scenarios() -> Vec<Scenario> {
                 },
                 Action::Wait(1),
                 Action::Snapshot("03-ws0-again"),
+            ],
+        },
+        Scenario {
+            name: "lounge",
+            description: "Every workspace's Lounge: first, with the room's chat, tasks and \
+             notes, and the strip switcher listing it above the person's own strips.",
+            actions: vec![
+                Action::EnsureLounges,
+                Action::Relayout,
+                Action::Wait(10),
+                Action::Snapshot("00-lounge"),
+                Action::Modifiers(ModifiersState::SUPER),
+                Action::Key(Key::Character("s".into())),
+                Action::Modifiers(ModifiersState::empty()),
+                Action::Wait(10),
+                Action::Snapshot("01-switcher"),
             ],
         },
         Scenario {

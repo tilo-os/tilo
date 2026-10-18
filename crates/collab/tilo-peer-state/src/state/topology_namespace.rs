@@ -25,6 +25,9 @@ impl PeerGovernanceMut<'_> {
         if salt == 0 {
             return Err("topology namespace must be nonzero".into());
         }
+        if salt == tilo_desktop_model::ids::SHARED_SALT {
+            return Err("the shared topology namespace belongs to no device".into());
+        }
         if self.peer.certificate(&caller.device_public_key, now)? != caller {
             return Err("topology caller is not current admitted evidence".into());
         }

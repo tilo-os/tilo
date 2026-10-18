@@ -1081,6 +1081,15 @@ pub fn mount_in_process(
                 |_| {},
             )
         }
+        // The room's own chat: the record every member's Chat opens first,
+        // so the Lounge's Chat is one conversation for everyone in it.
+        ShellKind::Other(name) if name.eq_ignore_ascii_case("Chat") => apps.borrow_mut().mount(
+            chat::definition(),
+            &room,
+            tab,
+            ui::record::RecordId::package_primary(),
+            |_| {},
+        ),
         // Every Notes tab is a notebook of its own, on the tab's record.
         ShellKind::Other(name) if name.eq_ignore_ascii_case("Notes") => apps.borrow_mut().mount(
             notes::definition(),

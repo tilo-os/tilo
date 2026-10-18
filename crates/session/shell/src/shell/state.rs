@@ -816,6 +816,12 @@ pub struct WorkspaceTree {
     /// counter, not a timestamp, so the line survives a restart.
     #[serde(default)]
     pub room_share_floor: HashMap<RoomId, u64>,
+    /// Strips a person made here, waiting for their room's next projection
+    /// to publish them kept while empty: a made strip reaches the others at
+    /// once, not with its first window. Persisted, so a strip made just
+    /// before a restart still goes out.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub strips_to_retain: BTreeSet<StripId>,
     /// Tabs created from same-identity continuation rather than from this
     /// machine's ordinary layout.  Persisting this marker lets a later
     /// checkpoint remove a remote close without ever deleting a local tab
@@ -905,6 +911,7 @@ impl Default for WorkspaceTree {
             room_peer_names: HashMap::new(),
             room_peer_identities: HashMap::new(),
             room_share_floor: HashMap::new(),
+            strips_to_retain: BTreeSet::new(),
             continuation_tabs: BTreeSet::new(),
             local_person: None,
             authenticated_persons: HashMap::new(),
@@ -1850,6 +1857,16 @@ impl WorkspaceTree {
         if let Err(err) = projection::project_room_records(doc, &held) {
             tracing::error!(?err, "room doc: records map");
         }
+        let mut retained: Vec<StripId> = Vec::new();
+        for (order, strip) in strips.iter().enumerate() {
+            if !self.strips_to_retain.contains(&strip.id) {
+                continue;
+            }
+            match projection::retain_owned_strip(doc, strip, order as u64, local_salt) {
+                Ok(_) => retained.push(strip.id),
+                Err(err) => tracing::error!(?err, "room doc: retained strip"),
+            }
+        }
         if let Err(err) = projection::project_owned_contents(
             doc,
             &strips,
@@ -1879,6 +1896,9 @@ impl WorkspaceTree {
                 .is_err()
             {
                 return false;
+            }
+            for strip in &retained {
+                self.strips_to_retain.remove(strip);
             }
             self.room_docs.insert(room, candidate);
             return true;
@@ -1912,6 +1932,9 @@ impl WorkspaceTree {
             return false;
         }
         doc.reset_diff_cursor();
+        for strip in &retained {
+            self.strips_to_retain.remove(strip);
+        }
         self.room_docs.insert(room, candidate);
         true
     }
@@ -2107,13 +2130,19 @@ impl WorkspaceTree {
         let Some(doc) = self.room_docs.get(&room) else {
             return false;
         };
+        // A room arriving here is a workspace like any other: it has its
+        // Lounge, first windows included, before the windows others put in
+        // it fold in; a Lounge it held is left as it is.
+        let mut changed = self.desktop.ensure_lounge_in(room);
         let replicated = projection::contents_of(doc);
-        let changed = projection::merge_room_contents(
+        changed |= projection::merge_room_contents(
             &mut self.desktop,
             room,
             replicated,
             projection::Reader::Owner(local_salt),
         );
+        // Idempotent on what the merge leaves: the Lounge is already first.
+        changed |= self.desktop.ensure_lounge_in(room);
         if self.requires_native_owner(room) {
             let presets = projection::workspace_presets_of(doc);
             let mut reprofiled = false;
@@ -2731,6 +2760,7 @@ impl WorkspaceTree {
 
     fn rebuild_cache_from_doc(&mut self) {
         tilo_desktop_model::desktop_doc::rebuild(&self.doc, &mut self.desktop);
+        self.desktop.ensure_lounges();
     }
 
     /// Save the tree to [`Self::persist_path`], if one is set, and export
@@ -5142,6 +5172,9 @@ impl WorkspaceTree {
             DesktopCommand::CreateStrip { .. } => None,
             DesktopCommand::RenameStrip { strip, .. } => {
                 let strip = StripId(*strip);
+                if tilo_desktop_model::ids::is_shared(strip.raw()) {
+                    return Err("the Lounge belongs to the room and keeps its name".into());
+                }
                 if !self.may_rename_strip(strip) {
                     return Err("target belongs to another topology owner".into());
                 }
@@ -5170,6 +5203,8 @@ impl WorkspaceTree {
                 .map(|strip| strip.id)
                 .ok_or("the strip was not created")?;
             self.desktop.active_strip.insert(ws_id, made);
+            // Made to put windows in: the others see it now, empty.
+            self.strips_to_retain.insert(made);
             made
         };
         self.sync_room_doc(room);

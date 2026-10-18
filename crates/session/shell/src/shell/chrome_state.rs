@@ -2562,6 +2562,9 @@ impl ChromeState {
         let id = {
             let mut tree = self.tree_mut();
             let id = tree.append_empty_workspace(&name.into());
+            // Every workspace has its Lounge; the person's own strip keeps
+            // focus, so what they open goes there.
+            tree.desktop.ensure_lounges();
             tree.set_active(id);
             // A room with no owner has no administrators, so nobody can
             // grant anything in it, including the person who just made it.
@@ -2784,7 +2787,11 @@ impl ChromeState {
             let free = ws
                 .strips
                 .iter()
-                .find(|s| s.window_groups.is_empty() && !claimed(s.id))
+                .find(|s| {
+                    s.window_groups.is_empty()
+                        && !claimed(s.id)
+                        && s.kind() == tilo_desktop_model::StripKind::Regular
+                })
                 .map(|s| s.id);
             if let Some(free) = free {
                 return Some(free);
@@ -2811,14 +2818,15 @@ impl ChromeState {
             let Some(ws) = tree.desktop.active_workspace_mut() else {
                 return false;
             };
-            let Some(index) = ws
-                .strips
-                .iter()
-                .position(|s| s.id == strip && s.window_groups.is_empty())
-            else {
+            let Some(index) = ws.strips.iter().position(|s| {
+                s.id == strip
+                    && s.window_groups.is_empty()
+                    && s.kind() == tilo_desktop_model::StripKind::Regular
+            }) else {
                 return false;
             };
-            if ws.strips.len() < 2 {
+            // The Lounge aside, a workspace keeps a strip of its own.
+            if ws.regular_strip_count() < 2 {
                 return false;
             }
             let ws_id = ws.id;
