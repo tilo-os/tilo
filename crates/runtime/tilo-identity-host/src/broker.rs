@@ -16,16 +16,17 @@ use collab_types::caps::Principal;
 use collab_types::{Ed25519PublicKey, SignedOp, document_artifact_id, document_attestation_id};
 use ed25519_dalek::Signer;
 use runtime_identity::wire::{FRAMING, HANDSHAKE_FRAMING, Request, Response};
-use tilo_action_policy::{ActionKind, Answer, Party, Subject, TreePath};
+#[cfg(test)]
+use tilo_action_policy::Subject;
+use tilo_action_policy::{ActionKind, Answer, TreePath};
 use tilo_clock::unix_now;
 use wire_frame::FrameError;
 
 use tilo_desktop_model::{RoomId, Workspace};
 use tilo_lock::MutexRecover as _;
 
-/// The resource an app's device-signature request names. A signature is
-/// asked for one of the app's own actions, so a grant letting an app sign
-/// names this resource and that action.
+/// The legacy resource for app device-signature grants. Ordinary app
+/// connections no longer accept generic signing, regardless of grants.
 pub const DEVICE_SIGNATURE_RESOURCE: &str = "identity.device-signature";
 
 /// The committed workspaces the broker authorizes each request against.
@@ -259,9 +260,11 @@ fn serve(
     while let Ok(request) = read_action_frame::<Request>(&mut stream) {
         let response = match request {
             Request::Metadata => metadata_response(&room, negotiated.presentation_version != 0),
-            Request::Sign { action, message } => {
-                sign(tree, &room, &handshake.app_id, &action, &message)
-            }
+            // No policy grant or caller-chosen action can turn the device
+            // key into an arbitrary-message signing oracle.
+            Request::Sign { .. } => Response::Denied(
+                "generic signing is not available to application connections".into(),
+            ),
             Request::CollaborationJoin { workspace_id } => {
                 let bound = Bound {
                     room: &room,
@@ -360,51 +363,8 @@ fn metadata_response(room: &RoomId, presentation: bool) -> Response {
     }
 }
 
-fn sign(
-    tree: &dyn WorkspaceMembership,
-    room: &RoomId,
-    app_id: &str,
-    action: &str,
-    message: &[u8],
-) -> Response {
-    let Some(allowed) = read_workspace(tree, room, |workspace| {
-        let node = device_signature_node(&workspace.node(), app_id, action);
-        // Caller-chosen bytes require an Outside Allow. The open-app
-        // authorship grant covers only Read and Undoable, so it cannot
-        // make the device key a signing oracle. Keep the tree's normal
-        // specificity, lifetime and Ask/Deny decisions for explicit grants.
-        Party::new(
-            vec![Subject::App(app_id.to_owned())],
-            &workspace.policy.grants,
-        )
-        .decide(
-            &node,
-            ActionKind::Outside,
-            &tilo_desktop_model::context_at(unix_now()),
-        )
-        .answer
-            == Answer::Allow
-    }) else {
-        return Response::Denied("workspace is not available".into());
-    };
-    if !allowed {
-        return Response::Denied(format!(
-            "{app_id} is not permitted to sign action {action} in this workspace"
-        ));
-    }
-    let profile = match crate::registry::selected_identity_profile(&room.to_string()) {
-        Ok(Some(profile)) => profile,
-        Ok(None) => return Response::Denied("no identity selected for this workspace".into()),
-        Err(error) => return Response::Error(error.to_string()),
-    };
-    match require_trusted_current_device(&profile) {
-        Ok((device, _)) => Response::Signature(device.sign(message).to_bytes().to_vec()),
-        Err(error) => Response::Denied(error.to_string()),
-    }
-}
-
-/// The node of `app`'s request that the device sign for its `action`: a
-/// grant to the app on this node (or above it) lets it ask.
+/// The legacy node of `app`'s request to sign for `action`. Retained for
+/// existing policy records; grants here do not authorize generic signing.
 #[must_use]
 pub fn device_signature_node(room: &TreePath, app: &str, action: &str) -> TreePath {
     room.clone()
@@ -712,6 +672,23 @@ pub fn trusted_current_device(
     require_trusted_current_device(&profile)
 }
 
+/// Sign an externally approved moderation operation as the workspace's
+/// selected, trusted device. This is a privileged host API, not an app socket
+/// request: callers must authorize the complete typed operation before calling.
+/// The protocol separates moderation credentials from other device signatures.
+///
+/// # Errors
+///
+/// Rejects missing identities, untrusted devices and invalid operations.
+pub fn sign_external_moderation(
+    workspace: &str,
+    operation: &registry_types::ExternalModerationOperation,
+) -> io::Result<registry_types::SignedModerationMutation> {
+    let (device, _) = trusted_current_device(workspace)?;
+    registry_types::sign_external_moderation(operation, &device)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))
+}
+
 /// Root-key operations are available only while this machine is covered by
 /// a valid, non-revoked `identity -> device` certificate. Apps never receive
 /// either key; this check makes revocation effective at the local broker too.
@@ -844,8 +821,7 @@ mod tests {
     }
     use tilo_action_policy::{Grant, KindSet, Role};
 
-    /// The owner's grant letting Notes ask for a signature of its
-    /// `document.save`.
+    /// A legacy signature grant that must no longer authorize signing.
     fn signing_grant(workspace: &Workspace) -> Grant {
         Grant::new(
             "notes-sign-save",
@@ -934,100 +910,67 @@ mod tests {
     }
 
     #[test]
-    fn identity_service_wire_is_pinned_and_signing_requires_the_exact_capability() {
-        // Phase `identity_service_wire_bytes_are_pinned`.
+    fn identity_service_wire_is_pinned() {
         assert_identity_service_wire_bytes_are_pinned();
-        // Phase `signing_requires_the_exact_app_action_capability`.
-        {
-            let temp = tempfile::tempdir().expect("temp");
-            let xdg = temp.path().join("config");
-            let system_root = temp.path().join("system");
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.set("XDG_CONFIG_HOME", &xdg)
-                .set("TILO_IDENTITY_ROOT", &system_root)
-                .set(crate::provisioning::FILE_SECRETS_ENV, "1");
-            let identity_dir = xdg.join("tilo/identity");
-            let paths = tilo_user_identity::IdentityPaths::under(&system_root);
-            ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
+    }
 
-            let room = RoomId::new();
-            let mut workspace = Workspace::new(WorkspaceId(1), "Room");
-            workspace.set_room(room);
-            let mut tree = WorkspaceTree::default();
-            tree.desktop.workspaces.push(workspace);
-            let tree = tree.shared();
-
-            assert!(matches!(
-                sign(&tree, &room, "so.tilo.notes", "document.save", b"payload"),
-                Response::Denied(_)
-            ));
-            // Use the actual open-app grant: it covers the whole room's
-            // content, but not Outside effects such as arbitrary signatures.
-            let grant = tilo_action_policy::roles::app_authorship(
-                &room.to_string(),
-                "so.tilo.notes",
-                Subject::Person("owner".into()),
-            );
-            tree.write().desktop.workspaces[0].grant(grant);
-            assert!(
-                matches!(
-                    sign(&tree, &room, "so.tilo.notes", "document.save", b"payload"),
-                    Response::Denied(_)
-                ),
-                "an open-app authorship grant must not authorise a signature"
-            );
-            let mut grant = signing_grant(&tree.read().desktop.workspaces[0]);
-            grant.answer = Answer::Ask;
-            tree.write().desktop.workspaces[0].grant(grant);
-            assert!(matches!(
-                sign(&tree, &room, "so.tilo.notes", "document.save", b"payload"),
-                Response::Denied(_)
-            ));
-            let grant = signing_grant(&tree.read().desktop.workspaces[0]);
-            tree.write().desktop.workspaces[0].grant(grant);
-            let Response::Signature(signature) =
-                sign(&tree, &room, "so.tilo.notes", "document.save", b"payload")
-            else {
-                panic!("granted action was not signed");
-            };
-            let profile = crate::registry::selected_identity_profile(&room.to_string())
-                .expect("registry")
-                .expect("profile");
-            let cert = tilo_user_identity::persist::read_device_cert(
-                &paths.device_cert_for_user(&profile.user_public_key),
+    #[test]
+    fn privileged_moderation_signing_requires_the_selected_trusted_device() {
+        let temp = tempfile::tempdir().expect("temp");
+        let xdg = temp.path().join("config");
+        let system_root = temp.path().join("system");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", &xdg)
+            .set("TILO_IDENTITY_ROOT", &system_root)
+            .set(crate::provisioning::FILE_SECRETS_ENV, "1");
+        let identity_dir = xdg.join("tilo/identity");
+        let paths = tilo_user_identity::IdentityPaths::under(&system_root);
+        let workspace = RoomId::new().to_string();
+        let operation = registry_types::ExternalModerationOperation {
+            destination: registry_types::ModerationDestination {
+                base_url: "https://registry.example".into(),
+                owner_pubkey_hex: hex::encode([7; 32]),
+            },
+            request_id: "report-1".into(),
+            issued_at_unix: 100,
+            expires_at_unix: 200,
+            mutation: registry_types::ModerationMutation::FileReport {
+                package_id: "so.example.app".into(),
+                category: "security".into(),
+                summary: "Unexpected access to private files".into(),
+                evidence_digest_hex: hex::encode([8; 32]),
+            },
+        };
+        assert!(sign_external_moderation(&workspace, &operation).is_err());
+        ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
+        let signed = sign_external_moderation(&workspace, &operation).expect("host signs");
+        registry_types::verify_moderation_mutation(&signed).expect("valid signature");
+        assert_eq!(signed.destination.as_ref(), Some(&operation.destination));
+        assert_eq!(signed.mutation, operation.mutation);
+        assert_eq!(signed.request_id, operation.request_id);
+        assert_eq!(signed.issued_at_unix, operation.issued_at_unix);
+        assert_eq!(signed.expires_at_unix, operation.expires_at_unix);
+        let (device, _) = trusted_current_device(&workspace).expect("trusted device");
+        assert_eq!(
+            signed.actor_pubkey_hex,
+            hex::encode(device.verifying_key().to_bytes())
+        );
+        let mut invalid = operation.clone();
+        invalid.expires_at_unix = invalid.issued_at_unix;
+        assert!(sign_external_moderation(&workspace, &invalid).is_err());
+        let profile = crate::registry::selected_identity_profile(&workspace)
+            .expect("registry")
+            .expect("profile");
+        crate::device_fleet::DeviceFleetStore::at(&identity_dir, paths)
+            .revoke(
+                &profile.id,
+                device.verifying_key().to_bytes(),
+                tilo_user_identity::RevocationReason::Compromised,
+                1,
             )
-            .expect("device certificate");
-            tilo_user_identity::verify_device_cert(&cert).expect("root-signed certificate");
-            assert_eq!(cert.user_public_key, profile.user_public_key);
-            VerifyingKey::from_bytes(&cert.device_public_key)
-                .expect("key")
-                .verify(
-                    b"payload",
-                    &Signature::from_slice(&signature).expect("signature"),
-                )
-                .expect("valid device signature");
-            assert!(matches!(
-                sign(&tree, &room, "so.tilo.notes", "document.delete", b"payload"),
-                Response::Denied(_)
-            ));
-
-            let device_key = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
-                .expect("device key")
-                .verifying_key()
-                .to_bytes();
-            crate::device_fleet::DeviceFleetStore::at(&identity_dir, paths)
-                .revoke(
-                    &profile.id,
-                    device_key,
-                    tilo_user_identity::RevocationReason::Compromised,
-                    1,
-                )
-                .expect("revoke current device");
-            assert!(matches!(
-                sign(&tree, &room, "so.tilo.notes", "document.save", b"payload"),
-                Response::Denied(reason) if reason.contains("revoked")
-            ));
-        }
+            .expect("revoke device");
+        let error = sign_external_moderation(&workspace, &operation).expect_err("revoked");
+        assert!(error.to_string().contains("revoked"));
     }
 
     #[test]
@@ -1388,7 +1331,7 @@ params = []
         clippy::too_many_lines,
         reason = "one runtime client session checked against each request it may and may not make"
     )]
-    fn runtime_client_gets_metadata_and_only_granted_signing() {
+    fn runtime_client_gets_metadata_but_never_generic_signing() {
         let temp = tempfile::tempdir().expect("temp");
         let xdg = temp.path().join("config");
         let service_var = "TILO_SVC_IDENTITY_FD";
@@ -1409,14 +1352,13 @@ params = []
         let mut workspace = Workspace::new(WorkspaceId(1), "Room");
         workspace.set_room(room);
         workspace.set_owner(profile.principal_id());
-        let grant = signing_grant(&workspace);
-        workspace.grant(grant);
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(workspace);
+        let tree = Arc::new(tree.shared());
         let socket = temp.path().join("identity.sock");
         let _broker = spawn(
             socket.clone(),
-            Arc::new(tree.shared()),
+            tree.clone(),
             Arc::new(()),
             Arc::new(NotesKeepsWatched),
         )
@@ -1448,13 +1390,44 @@ params = []
         // Leave the accepted worker waiting between frames; Darwin must not treat
         // a temporarily empty nonblocking receive as the end of this session.
         std::thread::sleep(Duration::from_millis(50));
-        let signature = identity
-            .sign_for("document.save", b"saved")
-            .expect("granted sign");
-        VerifyingKey::from_bytes(&identity.signing_public_key())
-            .expect("key")
-            .verify(b"saved", &Signature::from_bytes(&signature))
-            .expect("signature");
+        assert!(identity.sign_for("document.save", b"saved").is_err());
+        let grant = tilo_action_policy::roles::app_authorship(
+            &workspace_id,
+            "so.tilo.notes",
+            Subject::Person(profile.principal_id()),
+        );
+        tree.write().desktop.workspaces[0].grant(grant);
+        assert!(identity.sign_for("document.save", b"saved").is_err());
+        let grant = signing_grant(&tree.read().desktop.workspaces[0]);
+        tree.write().desktop.workspaces[0].grant(grant);
+        assert!(
+            identity.sign_for("document.save", b"saved").is_err(),
+            "even an exact legacy signature grant must be denied"
+        );
+        // The ordinary socket must deny even a broad Outside grant and
+        // alternate labels, without dispatching on the app's action string.
+        let node = tree.read().desktop.workspaces[0].node();
+        tree.write().desktop.workspaces[0].grant(Grant::new(
+            "notes-outside",
+            Subject::App("so.tilo.notes".into()),
+            node,
+            KindSet::ALL,
+            Answer::Allow,
+            Subject::Person(profile.principal_id()),
+        ));
+        for action in [
+            "document.save",
+            "document.delete",
+            "sign",
+            "moderation.report",
+            "",
+        ] {
+            assert!(
+                identity.sign_for(action, b"caller-chosen payload").is_err(),
+                "broad Outside grants must not enable generic signing for {action:?}"
+            );
+        }
+        assert!(identity.sign(b"caller-chosen payload").is_err());
         let join_proof = identity
             .sign_collaboration_join(&workspace_id)
             .expect("the launcher-bound workspace may request a join proof");

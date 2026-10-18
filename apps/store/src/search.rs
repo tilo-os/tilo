@@ -24,6 +24,7 @@ struct DirectoryState {
     /// short critical section.
     entries: Arc<Vec<SearchEntry>>,
     apps: BTreeMap<String, StoreItem>,
+    registries: Vec<crate::config::RegistryConfig>,
 }
 
 /// The Store's complete catalogue directory: every app by id, and its search
@@ -77,6 +78,20 @@ impl StoreDirectory {
         state.revision = Some(revision);
         state.entries = Arc::new(entries);
         state.apps = apps;
+    }
+
+    /// Keep host-resolved destinations alongside the catalogue.
+    pub(crate) fn set_registries(&self, registries: Vec<crate::config::RegistryConfig>) {
+        self.state.write_recover().registries = registries;
+    }
+
+    pub(crate) fn registry(&self, name: &str) -> Option<crate::config::RegistryConfig> {
+        self.state
+            .read_recover()
+            .registries
+            .iter()
+            .find(|registry| registry.enabled && registry.name == name)
+            .cloned()
     }
 
     /// Every app of the catalogue as a search entry.

@@ -216,6 +216,7 @@ impl LocalCaller {
         InvocationCaller::Local {
             route: self.route.clone(),
             admitted: Box::new(self.admitted.clone()),
+            time: Some(self.time.clone()),
         }
     }
 }
@@ -606,7 +607,7 @@ fn confirmation(value: &str) -> Result<Option<DirectoryActionConfirmation>, capn
         },
     )
 }
-fn write_observation(
+pub(super) fn write_observation(
     mut out: runtime_collab::collab_capnp::published_invocation_observation::Builder<'_>,
     host: uuid::Uuid,
     invocation: tilo_actions::InvocationId,
@@ -622,12 +623,41 @@ fn write_observation(
                 "invocation observation exceeds byte budget".into(),
             ));
         }
+        // All callers reached this helper through exact-owner lookup and live
+        // authorization; never send this private opening on progress streams.
+        let admission = record
+            .admission
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|_| capnp::Error::failed("admission observation encoding failed".into()))?;
+        let terminal = record
+            .terminal
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|_| capnp::Error::failed("terminal observation encoding failed".into()))?;
+        if admission
+            .as_ref()
+            .is_some_and(|value| value.len() > 32 * 1024)
+            || terminal
+                .as_ref()
+                .is_some_and(|value| value.len() > 32 * 1024)
+        {
+            return Err(capnp::Error::failed(
+                "evidence observation exceeds byte budget".into(),
+            ));
+        }
+        out.set_admission_json(admission.as_deref().unwrap_or_default());
+        out.set_terminal_json(terminal.as_deref().unwrap_or_default());
         out.set_found(true);
         out.set_id(record.wire_id);
         out.set_update_json(&update);
         out.set_uncertain(record.uncertain);
         out.set_cancellation_requested(record.cancellation_requested);
     } else {
+        out.set_admission_json("");
+        out.set_terminal_json("");
         out.set_found(false);
         out.set_id(0);
         out.set_update_json("");
@@ -771,7 +801,7 @@ pub(super) fn invoke(
             .current(state)
             .map_err(capnp::Error::failed)?
             .broker_actor();
-        let offer = state
+        let mut offer = state
             .resolve_invocation_offer(
                 &channel.directories,
                 &actor,
@@ -783,6 +813,46 @@ pub(super) fn invoke(
             )
             .await
             .map_err(capnp::Error::failed)?;
+        let publication = offer.offered(request.binding.peer_id);
+        let store_answer = if super::requires_store_witness(&publication.0.app_id, &request.action)
+        {
+            let mut binding = state.native_witness_binding(
+                actor.id(),
+                &publication,
+                request.argument.as_deref(),
+                request.invocation,
+            );
+            binding.revision = Some(request.revision.clone());
+            // Do not hold a directory execution permit while the person reads
+            // the host sheet. Resolve the original revision again afterwards.
+            drop(offer);
+            let admitted = caller.current(state).map_err(capnp::Error::failed)?;
+            let answer = state
+                .local_store_witness(
+                    &admitted,
+                    &publication,
+                    request.argument.as_deref(),
+                    &binding,
+                )
+                .await
+                .map_err(capnp::Error::failed)?;
+            caller.current(state).map_err(capnp::Error::failed)?;
+            offer = state
+                .resolve_invocation_offer(
+                    &channel.directories,
+                    &actor,
+                    &caller.route.cluster_id,
+                    request.binding.peer_id,
+                    &request.revision,
+                    &request.resource,
+                    &request.action,
+                )
+                .await
+                .map_err(capnp::Error::failed)?;
+            Some(answer)
+        } else {
+            None
+        };
         let admission = state
             .admission_lock
             .lock()
@@ -818,19 +888,42 @@ pub(super) fn invoke(
         }
         let offered = offer.offered(request.binding.peer_id);
         let actor = current.broker_actor();
-        let token = state
-            .directory_confirmation_token(
-                request.binding.peer_id,
-                &request.resource,
-                &request.action,
+        let token = if let Some(answer) = store_answer {
+            let mut binding = state.native_witness_binding(
+                actor.id(),
+                &offered,
                 request.argument.as_deref(),
-                &actor,
-                &offered.1.contract,
-                request.confirmation.clone(),
-            )
-            .map_err(|error| {
-                capnp::Error::failed(format!("directory confirmation refused: {error:?}"))
-            })?;
+                request.invocation,
+            );
+            binding.revision = Some(request.revision.clone());
+            state
+                .confirmation_token(
+                    request.binding.peer_id,
+                    &offered.0.app_id,
+                    &offered.1,
+                    request.argument.as_deref(),
+                    &actor,
+                    Some(&answer),
+                    &binding,
+                )
+                .map_err(|error| {
+                    capnp::Error::failed(format!("host confirmation refused: {error:?}"))
+                })?
+        } else {
+            state
+                .directory_confirmation_token(
+                    request.binding.peer_id,
+                    &request.resource,
+                    &request.action,
+                    request.argument.as_deref(),
+                    &actor,
+                    &offered.1.contract,
+                    request.confirmation.clone(),
+                )
+                .map_err(|error| {
+                    capnp::Error::failed(format!("directory confirmation refused: {error:?}"))
+                })?
+        };
         let context = DurableContext::Local {
             caller: &caller,
             request: &request,

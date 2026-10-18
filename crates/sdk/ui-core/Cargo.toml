@@ -102,6 +102,7 @@ priority-contacts = ["native", "dep:zbus", "zbus?/blocking-api"]
 portal = ["native", "tilo-host/portal"]
 
 [dependencies]
+registry-types = { version = "0.1.0", path = "../../packaging/registry-types" }
 browser-continuity.workspace = true
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 mime_guess.workspace = true

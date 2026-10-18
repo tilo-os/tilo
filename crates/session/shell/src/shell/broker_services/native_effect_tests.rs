@@ -247,6 +247,212 @@ fn desktop_action_session_retains_the_selected_certified_person_and_original_cus
     drop(fixture);
 }
 
+#[test]
+fn native_legacy_facade_retains_certified_job_ownership_across_clones() {
+    use tilo_actions::remote::{
+        ActionHost as _, Caller, CatalogueQuery, InvokeArgument, InvokeRequest, RemoteActionTarget,
+    };
+
+    let fixture = fixture();
+    let broker = fixture.broker.app_action_broker().unwrap();
+    let surface = wait_for_membership_surface(&broker, fixture.room);
+    let person = hex::encode(fixture.certificate.user_public_key);
+    let caller = Caller::local_person(&person)
+        .in_room(fixture.room.to_string())
+        .in_new_execution();
+    let host = crate::shell::remote_actions::BrokerActionHost::new(broker.clone());
+    let page = host
+        .query(
+            &caller,
+            CatalogueQuery {
+                provider: Some(surface.peer_id.to_string()),
+                ..Default::default()
+            },
+        )
+        .wait_timeout(Duration::from_secs(3))
+        .ok()
+        .flatten()
+        .expect("catalogue resolves")
+        .unwrap();
+    assert!(
+        !page.rows.is_empty(),
+        "the native facade lists after checking certified seat custody"
+    );
+    let seat = Caller::local_person(&person).in_room(fixture.room.to_string());
+    assert!(
+        host.query(&seat, CatalogueQuery::default())
+            .wait_timeout(Duration::from_secs(3))
+            .ok()
+            .flatten()
+            .expect("a native seat without a transport lease resolves")
+            .is_ok()
+    );
+    let request = InvokeRequest {
+        invocation: tilo_actions::InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: surface.peer_id.to_string(),
+            address: tilo_actions::ActionAddress::new("desktop:workspace", "add-agent"),
+        },
+        argument: InvokeArgument::Json(
+            serde_json::json!({"agent":"scribe", "preset":"operator"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        ),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        appearance: None,
+        wait_ms: None,
+    };
+    let (job, receipt) = host
+        .invoke_job(&caller, request.clone())
+        .wait_timeout(Duration::from_secs(3))
+        .ok()
+        .flatten()
+        .expect("admission resolves")
+        .unwrap();
+    let cloned = host.clone();
+    let retry = cloned
+        .invoke_job(&caller, request.clone())
+        .wait_timeout(Duration::from_secs(3))
+        .ok()
+        .flatten()
+        .expect("retry resolves")
+        .unwrap();
+    assert_eq!(
+        retry.0, job,
+        "a cloned facade must reuse the original certified execution"
+    );
+    assert_eq!(retry.1.invocation, receipt.invocation);
+    assert!(cloned.observe(&caller, &request.invocation).is_some());
+    let separate = Caller::local_person(&person)
+        .in_room(fixture.room.to_string())
+        .in_new_execution();
+    assert!(cloned.observe(&separate, &request.invocation).is_none());
+    // A separately opened certified owner sees this job. Actor-text admission
+    // would not have produced certificate-owned lifecycle evidence.
+    let lifecycle = ActionSessionSource::new(broker)
+        .open(&fixture.room.to_string(), Some(&person))
+        .unwrap()
+        .lifecycle()
+        .unwrap();
+    assert!(lifecycle.status(job).is_some());
+    caller.retire_execution();
+    assert!(cloned.observe(&caller, &request.invocation).is_none());
+    assert!(
+        cloned
+            .invoke(&caller, request)
+            .wait_timeout(Duration::from_secs(3))
+            .ok()
+            .flatten()
+            .expect("retired execution refusal resolves")
+            .is_err()
+    );
+    let forged =
+        Caller::local_person("display-label-is-not-authority").in_room(fixture.room.to_string());
+    assert!(
+        host.query(&forged, CatalogueQuery::default())
+            .wait_timeout(Duration::from_secs(3))
+            .ok()
+            .flatten()
+            .expect("forged person refusal resolves")
+            .is_err()
+    );
+    let unscoped = Caller::local_person(&person);
+    assert!(
+        host.query(&unscoped, CatalogueQuery::default())
+            .wait_timeout(Duration::from_secs(3))
+            .ok()
+            .flatten()
+            .expect("unscoped person refusal resolves")
+            .is_err()
+    );
+}
+
+#[test]
+fn native_facade_keeps_unsigned_workspace_actions_without_certified_ownership() {
+    use tilo_actions::remote::{
+        ActionHost as _, Caller, CatalogueQuery, InvokeArgument, InvokeRequest, RemoteActionTarget,
+    };
+    let fixture = fixture();
+    let broker = fixture.broker.app_action_broker().unwrap();
+    wait_for_membership_surface(&broker, fixture.room);
+    let person = hex::encode(fixture.certificate.user_public_key);
+    let caller = Caller::local_person(&person)
+        .in_room(fixture.room.to_string())
+        .in_new_execution();
+    let host = crate::shell::remote_actions::BrokerActionHost::new(broker.clone());
+    // Preserve native governance, the shortcut library and keyboard settings
+    // without making their old unsigned dispatch appear certificate-owned.
+    let workspace_query = CatalogueQuery {
+        provider: Some(tilo_actions::remote::workspace_provider(
+            &fixture.room.to_string(),
+        )),
+        max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
+        ..Default::default()
+    };
+    let legacy_page = broker
+        .state()
+        .action_query(&caller, &workspace_query)
+        .wait_timeout(Duration::from_secs(3))
+        .ok()
+        .flatten()
+        .unwrap()
+        .unwrap();
+    assert!(legacy_page.rows.iter().any(|row| {
+        row.action
+            .as_ref()
+            .is_some_and(|action| action.address.action == "grant")
+    }));
+    let projected_page = host
+        .query(&caller, workspace_query)
+        .wait_timeout(Duration::from_secs(3))
+        .ok()
+        .flatten()
+        .unwrap()
+        .unwrap();
+    let addresses = |page: &tilo_actions::remote::CataloguePage| {
+        page.rows
+            .iter()
+            .filter_map(|row| row.action.as_ref().map(|action| action.address.clone()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(addresses(&projected_page), addresses(&legacy_page));
+    let request = InvokeRequest {
+        invocation: tilo_actions::InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: tilo_actions::remote::workspace_provider(&fixture.room.to_string()),
+            address: tilo_actions::ActionAddress::new("shortcuts", "list"),
+        },
+        argument: InvokeArgument::None,
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        appearance: None,
+        wait_ms: None,
+    };
+    let (job, _) = host
+        .invoke_job(&caller, request.clone())
+        .wait_timeout(Duration::from_secs(3))
+        .ok()
+        .flatten()
+        .unwrap()
+        .unwrap();
+    assert!(host.observe(&caller, &request.invocation).is_some());
+    let lifecycle = ActionSessionSource::new(broker)
+        .open(&fixture.room.to_string(), Some(&person))
+        .unwrap()
+        .lifecycle()
+        .unwrap();
+    assert!(
+        lifecycle.status(job).is_none(),
+        "unsigned jobs must not acquire certified Person ownership"
+    );
+}
+
 fn fixture() -> NativeFixture {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let system = home.config().join("test-system");

@@ -1,4 +1,5 @@
 // Uses the real signed authority, private worker, RPC directory and SDK authorizer above.
+include!("native_facade_tests.rs");
 fn local_host_evidence(env: &Environment) -> (tilo_actions::remote::Caller, Vec<u8>) {
     member_device_evidence(env, 93, false)
 }
@@ -97,7 +98,8 @@ async fn certified_local_host_preserves_eager_and_directory_original_custody() {
                     // Existing ordinary-member private registration: no host promotion.
                     env.cert.capabilities = tilo_user_identity::DeviceCapabilities::member();
                     env.cert.capabilities.foreign = true;
-                    tilo_user_identity::sign_device_cert(&mut env.cert, &env.person).unwrap();
+                    let person = env.person.clone();
+                    tilo_user_identity::sign_device_cert(&mut env.cert, &person).unwrap();
                     env.authority = CurrentHost::new(
                         &env.route,
                         &env.cert,
@@ -777,11 +779,16 @@ async fn certified_local_host_verifies_once_per_open_listing_and_invocation() {
             let before = verifications();
             let pending = host.invoke(&caller, request.clone());
             assert_eq!(
-                verifications().saturating_sub(before),
-                1,
-                "an invocation admission and its dispatch verify once"
+                verifications(),
+                before,
+                "UI enqueue retains inert custody without certificate work"
             );
             let receipt = local_host_answer(pending).await.unwrap();
+            assert_eq!(
+                verifications().saturating_sub(before),
+                1,
+                "the queued invocation admission and its dispatch verify once"
+            );
             assert_eq!(receipt.invocation, request.invocation);
             let _lease = local_host_lease(&rig, &caller, request.invocation).await;
 
@@ -820,6 +827,96 @@ async fn certified_local_host_verifies_once_per_open_listing_and_invocation() {
                 "and the very next open"
             );
             no_delivery(&rig).await;
+            rig.stop().await;
+        })
+        .await;
+}
+
+/// The real signer waits for a separate UI thread to perform its ordinary
+/// lookup, cancellation and enqueue calls. A ledger held across signing would
+/// deadlock that thread before it can acknowledge the gate.
+#[tokio::test(flavor = "current_thread")]
+async fn stalled_eager_signing_keeps_ui_enqueue_responsive_and_uuid_reserved() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let env = Environment::new();
+            let rig = Rig::new(&env).await;
+            let row = directory_state("original-r1").borrow().row();
+            rig.worker
+                .handle
+                .publish_actions(&env.route.app_id, &[row.descriptor.unwrap()])
+                .await
+                .unwrap();
+            let (caller, evidence) = local_host_evidence(&env);
+            let facade =
+                crate::collab_broker::AppActionBroker::from_state_for_test(rig.state.clone());
+            let host = facade
+                .certified_local_action_host(&caller, &evidence)
+                .unwrap();
+            let request = local_host_request(false);
+            let mut refused = request.clone();
+            refused.target.address.action = "missing".into();
+            assert!(
+                local_host_answer(host.invoke(&caller, refused))
+                    .await
+                    .is_err(),
+                "failed admission must abandon its UUID reservation"
+            );
+            let fresh = local_host_request(false);
+            let state = rig.state.clone();
+            let ui_caller = caller.clone();
+            let ui_request = request.clone();
+            let ui_fresh = fresh.clone();
+            let (send, receive) = std::sync::mpsc::channel();
+            let (done, completed) = std::sync::mpsc::channel();
+            let ui = std::thread::spawn(move || {
+                let facade =
+                    crate::collab_broker::AppActionBroker::from_state_for_test(state.clone());
+                let host = facade
+                    .certified_local_action_host(&ui_caller, &evidence)
+                    .unwrap();
+                receive.recv().unwrap();
+                assert!(
+                    state
+                        .remote_job(&ui_caller, &ui_request.invocation)
+                        .is_none()
+                );
+                assert!(matches!(
+                    host.cancel(&ui_caller, &ui_request.invocation),
+                    Err(tilo_actions::remote::ActionHostError::UnknownInvocation)
+                ));
+                // Keep both pending answers alive: the duplicate must reuse the
+                // eventual job; the fresh UUID must enqueue without waiting.
+                let retry = host.invoke(&ui_caller, ui_request);
+                let next = host.invoke(&ui_caller, ui_fresh);
+                done.send((retry, next)).unwrap();
+            });
+            let (answers, queued) = std::sync::mpsc::channel();
+            crate::evidence_signer::BEFORE_SIGN.with(|hook| {
+                *hook.borrow_mut() = Some(Box::new(move || {
+                    send.send(()).unwrap();
+                    let pending = completed
+                        .recv_timeout(Duration::from_secs(2))
+                        .expect("UI lookup/cancel/enqueue must finish while signing is stalled");
+                    answers.send(pending).unwrap();
+                }));
+            });
+            let original = local_host_answer(host.invoke(&caller, request.clone()))
+                .await
+                .unwrap();
+            let (retry, next) = queued.recv().unwrap();
+            ui.join().unwrap();
+            let retried = local_host_answer(retry).await.unwrap();
+            assert_eq!(original, retried);
+            assert_eq!(
+                local_host_answer(next).await.unwrap().invocation,
+                fresh.invocation
+            );
+            let _first = local_host_lease(&rig, &caller, request.invocation).await;
+            let _second = local_host_lease(&rig, &caller, fresh.invocation).await;
+            no_delivery(&rig).await;
+            assert!(rig.state.remote_job(&caller, &request.invocation).is_some());
+            assert!(rig.state.remote_job(&caller, &fresh.invocation).is_some());
             rig.stop().await;
         })
         .await;

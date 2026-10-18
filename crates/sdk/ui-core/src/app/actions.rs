@@ -655,6 +655,7 @@ impl App {
     }
 
     fn publish_action_surface_after_refresh(&mut self) {
+        let _background = crate::local_document_action::suspend();
         #[cfg(test)]
         {
             self.actions.action_surface_publication_attempts = self
@@ -1750,6 +1751,16 @@ impl App {
     fn pump_action_directory_requests(&mut self) {
         for request in self.collaboration.manager.take_action_directory_requests() {
             match request {
+                ActionDirectoryRequest::ResolveLocalDocumentAction {
+                    revision,
+                    resource,
+                    action,
+                    reply,
+                } => {
+                    let _ = reply.send(
+                        self.resolve_local_document_action_directory(&revision, &resource, &action),
+                    );
+                }
                 ActionDirectoryRequest::Query { query, reply } => {
                     // A cancelled caller never receives this page. Do not consume
                     // its one-use continuation before admitting a live response.
@@ -2498,6 +2509,18 @@ impl App {
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        let capture = self.begin_local_input_capture();
+        let result = self.invoke_local_resource_action_captured(address, arguments);
+        drop(capture);
+        self.drain_local_input_capture();
+        result
+    }
+
+    fn invoke_local_resource_action_captured(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
         let _entry = self.enter_wake_scope();
         let actor = self.collaboration.local_author.0.clone();
         let argument = format!(
@@ -2838,248 +2861,146 @@ impl App {
                 )?;
             }
         }
+        let _capture = if !broker_admitted && invocation.is_none() {
+            let arguments = typed_arguments
+                .clone()
+                .or_else(|| argument.is_none().then(serde_json::Map::new));
+            arguments.map(|arguments| {
+                crate::local_document_action::with_invocation(
+                    crate::local_document_action::PublishedInvocation {
+                        resource: address.resource.clone(),
+                        action: address.action.clone(),
+                        arguments,
+                    },
+                )
+            })
+        } else {
+            None
+        };
         let encoded =
             Self::encode_resource_action(&resources, address, typed_arguments.as_ref(), argument)?;
-        // A launcher action has already passed the ordinary declaration,
-        // argument-binding, confirmation, and broker-admission door above.
-        // This branch runs only when the broker directs that admitted action
-        // back to its source app, preserving the normal receipt lifecycle.
-        if encoded.type_id == tilo_actions::remote::ApplicationLaunch::TYPE {
-            let launch: tilo_actions::remote::ApplicationLaunch =
-                serde_json::from_slice(&encoded.payload).map_err(|_| {
-                    tilo_actions::DoorError::Failed("invalid application launch payload".into())
-                })?;
-            if !launch.valid() {
-                return Err(tilo_actions::DoorError::Failed(
-                    "application launch payload is out of bounds".into(),
-                ));
-            }
-            if !self.collaboration.manager.is_connected() {
-                return Err(tilo_actions::DoorError::Unavailable {
-                    code: "authoritative_host_unavailable".into(),
-                    reason: "Opening an application requires the workspace action broker".into(),
-                });
-            }
-            let Some(room) = self
-                .collaboration
-                .manager
-                .primary_route()
-                .map(|witness| witness.route.cluster_id.to_string())
-            else {
-                return Err(tilo_actions::DoorError::Unavailable {
-                    code: "authoritative_host_unavailable".into(),
-                    reason: "Opening an application requires an admitted workspace route".into(),
-                });
-            };
-            let request_id = self.take_broker_request_id()?;
-            let Some(invocation) = invocation else {
-                return Err(tilo_actions::DoorError::Failed(
-                    "application launch was not admitted by the broker".into(),
-                ));
-            };
-            self.admit_application_launch(request_id, invocation)?;
-            let request = tilo_actions::remote::InvokeRequest {
-                on_behalf_of: None,
-                invocation: tilo_actions::InvocationId::new(),
-                target: launch.target(&room),
-                argument: launch.argument(),
-                context: None,
-                confirmation: None,
-                revision: None,
-                wait_ms: None,
-                appearance: None,
-            };
-            self.actions
-                .broker_requests
-                .insert(BrokerReply::Receipt(request.invocation), request_id);
-            self.collaboration
-                .manager
-                .send(CollabRequest::RemoteAction {
-                    message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
-                });
-            return Ok(crate::widget::ResourceOperationStart::Accepted);
+        let mut context =
+            resolved.history_context(resource.id.as_str(), &resource.kind, &resource.label);
+        if let Some(ambient) = ambient_context {
+            context = context.enriched_by(ambient);
         }
-        let operation_invocation = invocation.unwrap_or_default();
-        if encoded.type_id == history_actions::OPERATION {
-            let result = self
-                .invoke_history_action(&encoded, actor)
-                .and_then(|output| {
-                    resolved
-                        .contract
-                        .result
-                        .validate(&output)
-                        .map_err(tilo_actions::DoorError::Failed)?;
-                    Ok(output)
-                });
-            if kind == tilo_actions::OperationKind::Effect && invocation.is_none() {
-                let update = match &result {
-                    Ok(output) => tilo_actions::InvocationUpdate::Succeeded {
-                        invocation: operation_invocation,
-                        output: output.clone(),
-                    },
-                    Err(error) => tilo_actions::InvocationUpdate::Failed {
-                        invocation: operation_invocation,
-                        error: tilo_actions::ActionFailure {
-                            code: crate::bound_dispatch::door_error_code(error).to_string(),
-                            message: error.to_string(),
-                            details: error.failure_details(),
-                            retryable: false,
-                        },
-                    },
-                };
-                self.collaboration
-                    .manager
-                    .send(CollabRequest::RecordLocalEffect {
-                        address: address.clone(),
-                        update,
-                    });
-            }
-            self.needs_sync = true;
-            self.layout.layout_dirty = true;
-            self.invalidate_widget_resource_cache();
-            return result.map(crate::widget::ResourceOperationStart::Completed);
-        }
-        if encoded.type_id == crate::a11y_tree::SEMANTIC_OPERATION_TYPE {
-            let semantic_result = self.invoke_semantic_operation_encoded(&encoded);
-            let handled = match semantic_result {
-                Ok(handled) => handled,
-                Err(message) => {
-                    if kind == tilo_actions::OperationKind::Effect && invocation.is_none() {
-                        self.collaboration
-                            .manager
-                            .send(CollabRequest::RecordLocalEffect {
-                                address: address.clone(),
-                                update: tilo_actions::InvocationUpdate::Failed {
-                                    invocation: operation_invocation,
-                                    error: tilo_actions::ActionFailure {
-                                        code: "semantic_action_failed".into(),
-                                        message: message.clone(),
-                                        details: None,
-                                        retryable: false,
-                                    },
-                                },
-                            });
-                    }
-                    return Err(tilo_actions::DoorError::Failed(message));
-                }
-            };
-            if !handled {
-                if kind == tilo_actions::OperationKind::Effect && invocation.is_none() {
-                    self.collaboration
-                        .manager
-                        .send(CollabRequest::RecordLocalEffect {
-                            address: address.clone(),
-                            update: tilo_actions::InvocationUpdate::Failed {
-                                invocation: operation_invocation,
-                                error: tilo_actions::ActionFailure {
-                                    code: "unknown_action".into(),
-                                    message: "the semantic target no longer accepts this action"
-                                        .into(),
-                                    details: None,
-                                    retryable: false,
-                                },
-                            },
-                        });
-                }
-                return Err(tilo_actions::DoorError::Unknown(address.clone()));
-            }
-            // Focus/selection/navigation belong to private view state. A view
-            // command must not finalize an unrelated in-progress document edit.
-            if kind != tilo_actions::OperationKind::View {
-                self.commit_action();
-            }
-            self.needs_sync = true;
-            self.layout.layout_dirty = true;
-            if kind == tilo_actions::OperationKind::Effect && invocation.is_none() {
-                self.collaboration
-                    .manager
-                    .send(CollabRequest::RecordLocalEffect {
-                        address: address.clone(),
-                        update: tilo_actions::InvocationUpdate::Succeeded {
-                            invocation: operation_invocation,
-                            output: tilo_actions::ActionOutput::default(),
-                        },
-                    });
-            }
-            return Ok(crate::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            ));
-        }
-        let operation_result = if let Some(target) = legacy {
-            (|| {
-                crate::bound_dispatch::legacy_document::authorize_legacy_operation(
-                    target,
-                    &self.permission_ctx,
-                    resolved,
-                )?;
-                let started = crate::bound_dispatch::legacy_document::invoke_legacy_effect(
-                    self.root_widget.as_mut(),
-                    target,
-                    operation_invocation,
-                    kind,
-                    &encoded,
-                    &mut self.state.doc,
-                    scope,
-                )?;
-                match &started {
-                    crate::widget::ResourceOperationStart::Accepted
-                        if resolved.contract.execution
-                            == tilo_actions::ExecutionMode::Immediate =>
-                    {
-                        return Err(tilo_actions::DoorError::Failed(
-                            "An immediate operation cannot remain pending".into(),
-                        ));
-                    }
-                    crate::widget::ResourceOperationStart::Completed(output) => resolved
-                        .contract
-                        .result
-                        .validate(output)
-                        .map_err(tilo_actions::DoorError::Failed)?,
-                    crate::widget::ResourceOperationStart::Accepted => {}
-                }
-                Ok(started)
-            })()
+        let context =
+            context.with_source_invocation(broker_admitted.then_some(invocation).flatten());
+        let capture_local = !broker_admitted
+            && invocation.is_none()
+            && crate::local_document_action::input_is_active()
+            && context.source_invocation.is_none()
+            && !matches!(context.change, tilo_actions::ChangeKind::External);
+        let before = if capture_local {
+            self.state.doc.get_heads()
         } else {
-            let route = self.primary_document_route();
-            crate::invocation_scope::with_mounted_document(
-                route.clone(),
-                &mut self.state.doc,
-                |doc| {
-                    crate::bound_dispatch::execute_resource_operation(
-                        self.root_widget.as_mut(),
-                        doc,
-                        &self.state.root,
-                        &self.actions.action_registry,
-                        self.actions.action_transport.as_mut(),
-                        crate::bound_dispatch::ResourceOperation {
-                            target_route: route.clone(),
-                            address,
-                            resource,
-                            spec: resolved,
-                            encoded,
-                            actor,
-                            local_author: &self.collaboration.local_author.0,
-                            broker_admitted,
-                            invocation: operation_invocation,
-                            source_invocation: broker_admitted.then_some(operation_invocation),
-                            ambient: ambient_context,
-                            scope: None,
-                        },
-                    )
-                },
-            )
+            Vec::new()
         };
-        let started = match operation_result {
-            Ok(started) => started,
-            Err(message) => {
+        let observation = if capture_local {
+            crate::local_document_action::reserve(
+                &encoded,
+                Some(&context),
+                &mut self.state.doc,
+                &before,
+            )
+            .map_err(|error| tilo_actions::DoorError::Failed(error.to_string()))?
+        } else {
+            None
+        };
+        let captured_encoded = observation.as_ref().map(|_| encoded.clone());
+        // This checked entry also owns built-in history and semantic handlers.
+        // Nested typed dispatch belongs to this span, not a second admission.
+        let suspension = observation
+            .as_ref()
+            .map(|_| crate::local_document_action::suspend());
+        let result = (|| {
+            // A launcher action has already passed the ordinary declaration,
+            // argument-binding, confirmation, and broker-admission door above.
+            // This branch runs only when the broker directs that admitted action
+            // back to its source app, preserving the normal receipt lifecycle.
+            if encoded.type_id == tilo_actions::remote::ApplicationLaunch::TYPE {
+                let launch: tilo_actions::remote::ApplicationLaunch =
+                    serde_json::from_slice(&encoded.payload).map_err(|_| {
+                        tilo_actions::DoorError::Failed("invalid application launch payload".into())
+                    })?;
+                if !launch.valid() {
+                    return Err(tilo_actions::DoorError::Failed(
+                        "application launch payload is out of bounds".into(),
+                    ));
+                }
+                if !self.collaboration.manager.is_connected() {
+                    return Err(tilo_actions::DoorError::Unavailable {
+                        code: "authoritative_host_unavailable".into(),
+                        reason: "Opening an application requires the workspace action broker"
+                            .into(),
+                    });
+                }
+                let Some(room) = self
+                    .collaboration
+                    .manager
+                    .primary_route()
+                    .map(|witness| witness.route.cluster_id.to_string())
+                else {
+                    return Err(tilo_actions::DoorError::Unavailable {
+                        code: "authoritative_host_unavailable".into(),
+                        reason: "Opening an application requires an admitted workspace route"
+                            .into(),
+                    });
+                };
+                let request_id = self.take_broker_request_id()?;
+                let Some(invocation) = invocation else {
+                    return Err(tilo_actions::DoorError::Failed(
+                        "application launch was not admitted by the broker".into(),
+                    ));
+                };
+                self.admit_application_launch(request_id, invocation)?;
+                let request = tilo_actions::remote::InvokeRequest {
+                    on_behalf_of: None,
+                    invocation: tilo_actions::InvocationId::new(),
+                    target: launch.target(&room),
+                    argument: launch.argument(),
+                    context: None,
+                    confirmation: None,
+                    revision: None,
+                    wait_ms: None,
+                    appearance: None,
+                };
+                self.actions
+                    .broker_requests
+                    .insert(BrokerReply::Receipt(request.invocation), request_id);
+                self.collaboration
+                    .manager
+                    .send(CollabRequest::RemoteAction {
+                        message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
+                    });
+                return Ok(crate::widget::ResourceOperationStart::Accepted);
+            }
+            let operation_invocation = invocation.unwrap_or_default();
+            if encoded.type_id == history_actions::OPERATION {
+                let result = self
+                    .invoke_history_action(&encoded, actor)
+                    .and_then(|output| {
+                        resolved
+                            .contract
+                            .result
+                            .validate(&output)
+                            .map_err(tilo_actions::DoorError::Failed)?;
+                        Ok(output)
+                    });
                 if kind == tilo_actions::OperationKind::Effect && invocation.is_none() {
-                    let update = tilo_actions::InvocationUpdate::Failed {
-                        invocation: operation_invocation,
-                        error: tilo_actions::ActionFailure {
-                            code: "action_failed".into(),
-                            message: message.to_string(),
-                            details: None,
-                            retryable: false,
+                    let update = match &result {
+                        Ok(output) => tilo_actions::InvocationUpdate::Succeeded {
+                            invocation: operation_invocation,
+                            output: output.clone(),
+                        },
+                        Err(error) => tilo_actions::InvocationUpdate::Failed {
+                            invocation: operation_invocation,
+                            error: tilo_actions::ActionFailure {
+                                code: crate::bound_dispatch::door_error_code(error).to_string(),
+                                message: error.to_string(),
+                                details: error.failure_details(),
+                                retryable: false,
+                            },
                         },
                     };
                     self.collaboration
@@ -3089,43 +3010,207 @@ impl App {
                             update,
                         });
                 }
-                return Err(message);
+                self.needs_sync = true;
+                self.layout.layout_dirty = true;
+                self.invalidate_widget_resource_cache();
+                return result.map(crate::widget::ResourceOperationStart::Completed);
             }
-        };
-        if invocation.is_none()
-            && matches!(started, crate::widget::ResourceOperationStart::Accepted)
-        {
-            self.actions
-                .local_invocations
-                .insert(operation_invocation, (address.clone(), kind));
-        }
-        if matches!(started, crate::widget::ResourceOperationStart::Accepted)
-            || kind == tilo_actions::OperationKind::View
-        {
-            // Queued work and completed navigation apply their private
-            // presentation state in `sync`, even when the invocation
-            // changed no document and no input event follows it.
-            self.needs_sync = true;
-        }
-        if let crate::widget::ResourceOperationStart::Completed(output) = &started
-            && kind == tilo_actions::OperationKind::Effect
-            && invocation.is_none()
-        {
-            self.collaboration
-                .manager
-                .send(CollabRequest::RecordLocalEffect {
-                    address: address.clone(),
-                    update: tilo_actions::InvocationUpdate::Succeeded {
-                        invocation: operation_invocation,
-                        output: output.clone(),
+            if encoded.type_id == crate::a11y_tree::SEMANTIC_OPERATION_TYPE {
+                let semantic_result = self.invoke_semantic_operation_encoded(&encoded);
+                let handled = match semantic_result {
+                    Ok(handled) => handled,
+                    Err(message) => {
+                        if kind == tilo_actions::OperationKind::Effect && invocation.is_none() {
+                            self.collaboration
+                                .manager
+                                .send(CollabRequest::RecordLocalEffect {
+                                    address: address.clone(),
+                                    update: tilo_actions::InvocationUpdate::Failed {
+                                        invocation: operation_invocation,
+                                        error: tilo_actions::ActionFailure {
+                                            code: "semantic_action_failed".into(),
+                                            message: message.clone(),
+                                            details: None,
+                                            retryable: false,
+                                        },
+                                    },
+                                });
+                        }
+                        return Err(tilo_actions::DoorError::Failed(message));
+                    }
+                };
+                if !handled {
+                    if kind == tilo_actions::OperationKind::Effect && invocation.is_none() {
+                        self.collaboration
+                            .manager
+                            .send(CollabRequest::RecordLocalEffect {
+                                address: address.clone(),
+                                update: tilo_actions::InvocationUpdate::Failed {
+                                    invocation: operation_invocation,
+                                    error: tilo_actions::ActionFailure {
+                                        code: "unknown_action".into(),
+                                        message:
+                                            "the semantic target no longer accepts this action"
+                                                .into(),
+                                        details: None,
+                                        retryable: false,
+                                    },
+                                },
+                            });
+                    }
+                    return Err(tilo_actions::DoorError::Unknown(address.clone()));
+                }
+                // Focus/selection/navigation belong to private view state. A view
+                // command must not finalize an unrelated in-progress document edit.
+                if kind != tilo_actions::OperationKind::View {
+                    self.commit_action();
+                }
+                self.needs_sync = true;
+                self.layout.layout_dirty = true;
+                if kind == tilo_actions::OperationKind::Effect && invocation.is_none() {
+                    self.collaboration
+                        .manager
+                        .send(CollabRequest::RecordLocalEffect {
+                            address: address.clone(),
+                            update: tilo_actions::InvocationUpdate::Succeeded {
+                                invocation: operation_invocation,
+                                output: tilo_actions::ActionOutput::default(),
+                            },
+                        });
+                }
+                return Ok(crate::widget::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput::default(),
+                ));
+            }
+            let operation_result = if let Some(target) = legacy {
+                (|| {
+                    crate::bound_dispatch::legacy_document::authorize_legacy_operation(
+                        target,
+                        &self.permission_ctx,
+                        resolved,
+                    )?;
+                    let started = crate::bound_dispatch::legacy_document::invoke_legacy_effect(
+                        self.root_widget.as_mut(),
+                        target,
+                        operation_invocation,
+                        kind,
+                        &encoded,
+                        &mut self.state.doc,
+                        scope,
+                    )?;
+                    match &started {
+                        crate::widget::ResourceOperationStart::Accepted
+                            if resolved.contract.execution
+                                == tilo_actions::ExecutionMode::Immediate =>
+                        {
+                            return Err(tilo_actions::DoorError::Failed(
+                                "An immediate operation cannot remain pending".into(),
+                            ));
+                        }
+                        crate::widget::ResourceOperationStart::Completed(output) => resolved
+                            .contract
+                            .result
+                            .validate(output)
+                            .map_err(tilo_actions::DoorError::Failed)?,
+                        crate::widget::ResourceOperationStart::Accepted => {}
+                    }
+                    Ok(started)
+                })()
+            } else {
+                let route = self.primary_document_route();
+                crate::invocation_scope::with_mounted_document(
+                    route.clone(),
+                    &mut self.state.doc,
+                    |doc| {
+                        crate::bound_dispatch::execute_resource_operation(
+                            self.root_widget.as_mut(),
+                            doc,
+                            &self.state.root,
+                            &self.actions.action_registry,
+                            self.actions.action_transport.as_mut(),
+                            crate::bound_dispatch::ResourceOperation {
+                                target_route: route.clone(),
+                                address,
+                                resource,
+                                spec: resolved,
+                                encoded,
+                                actor,
+                                local_author: &self.collaboration.local_author.0,
+                                broker_admitted,
+                                invocation: operation_invocation,
+                                source_invocation: broker_admitted.then_some(operation_invocation),
+                                ambient: ambient_context,
+                                scope: None,
+                            },
+                        )
                     },
-                });
+                )
+            };
+            let started = match operation_result {
+                Ok(started) => started,
+                Err(message) => {
+                    if kind == tilo_actions::OperationKind::Effect && invocation.is_none() {
+                        let update = tilo_actions::InvocationUpdate::Failed {
+                            invocation: operation_invocation,
+                            error: tilo_actions::ActionFailure {
+                                code: "action_failed".into(),
+                                message: message.to_string(),
+                                details: None,
+                                retryable: false,
+                            },
+                        };
+                        self.collaboration
+                            .manager
+                            .send(CollabRequest::RecordLocalEffect {
+                                address: address.clone(),
+                                update,
+                            });
+                    }
+                    return Err(message);
+                }
+            };
+            if invocation.is_none()
+                && matches!(started, crate::widget::ResourceOperationStart::Accepted)
+            {
+                self.actions
+                    .local_invocations
+                    .insert(operation_invocation, (address.clone(), kind));
+            }
+            if matches!(started, crate::widget::ResourceOperationStart::Accepted)
+                || kind == tilo_actions::OperationKind::View
+            {
+                // Queued work and completed navigation apply their private
+                // presentation state in `sync`, even when the invocation
+                // changed no document and no input event follows it.
+                self.needs_sync = true;
+            }
+            if let crate::widget::ResourceOperationStart::Completed(output) = &started
+                && kind == tilo_actions::OperationKind::Effect
+                && invocation.is_none()
+            {
+                self.collaboration
+                    .manager
+                    .send(CollabRequest::RecordLocalEffect {
+                        address: address.clone(),
+                        update: tilo_actions::InvocationUpdate::Succeeded {
+                            invocation: operation_invocation,
+                            output: output.clone(),
+                        },
+                    });
+            }
+            // Effect/view operations are allowed to switch presentation-only
+            // resources without touching Automerge.
+            self.invalidate_widget_resource_cache();
+            self.layout.layout_dirty = true;
+            Ok(started)
+        })();
+        drop(suspension);
+        if let (Some(observation), Some(encoded)) = (observation, captured_encoded) {
+            observation
+                .finish(&mut self.state.doc, &before, encoded, Some(context))
+                .map_err(|error| tilo_actions::DoorError::Failed(error.to_string()))?;
         }
-        // Effect/view operations are allowed to switch presentation-only
-        // resources without touching Automerge.
-        self.invalidate_widget_resource_cache();
-        self.layout.layout_dirty = true;
-        Ok(started)
+        result
     }
 
     fn dispatch_bound_control_invocation(

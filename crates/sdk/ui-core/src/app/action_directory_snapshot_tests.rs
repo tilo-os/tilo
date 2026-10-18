@@ -100,7 +100,11 @@ impl crate::resources::PublishesResources for DeclaredDirectory {
                 let mut resource = Resource::new(
                     format!("declared:{index}"),
                     "declared",
-                    format!("Declared {index}"),
+                    if doc.get(ROOT, "large-label").unwrap().is_some() {
+                        "L".repeat(8192)
+                    } else {
+                        format!("Declared {index}")
+                    },
                 );
                 if doc.get(ROOT, "removed").unwrap().is_none() {
                     resource = resource.with_action(
@@ -240,6 +244,165 @@ fn publish_declared_directory(app: &mut App) {
     let descriptors = tilo_actions::door::survey(&resources);
     app.capture_action_directory_snapshot(&resources, &descriptors);
 }
+#[test]
+fn retained_local_directory_survives_mutation_but_never_resolves_ordinary_stale_input() {
+    let (mut app, calls) = declared_directory(1);
+    publish_declared_directory(&mut app);
+    let revision = app.action_directory_revision();
+    let pin = app.pin_local_document_action_directory(&revision).unwrap();
+    app.state_mut_for_test()
+        .doc
+        .put(ROOT, "removed", true)
+        .unwrap();
+    assert!(matches!(
+        app.resolve_action_directory(&revision, "declared:0", "inspect"),
+        runtime_collab::ActionDirectoryResolution::StaleRevision
+    ));
+    publish_declared_directory(&mut app);
+    assert!(matches!(
+        app.resolve_local_document_action_directory(&revision, "declared:0", "inspect"),
+        runtime_collab::ActionDirectoryResolution::Found { revision: Some(exact), .. }
+            if exact == revision
+    ));
+    for wrong in ["", "not-retained"] {
+        assert!(matches!(
+            app.resolve_local_document_action_directory(wrong, "declared:0", "inspect"),
+            runtime_collab::ActionDirectoryResolution::StaleRevision
+        ));
+    }
+    assert!(matches!(
+        app.resolve_local_document_action_directory(&revision, "declared:0", "other"),
+        runtime_collab::ActionDirectoryResolution::NotFound
+    ));
+    let calls_before = calls.get();
+    drop(pin);
+    assert!(matches!(
+        app.resolve_local_document_action_directory(&revision, "declared:0", "inspect"),
+        runtime_collab::ActionDirectoryResolution::StaleRevision
+    ));
+    assert_eq!(
+        calls.get(),
+        calls_before,
+        "local resolution never rebuilds live resources"
+    );
+}
+
+#[test]
+fn retained_local_directory_pins_are_bounded_without_evicting_pending_reports() {
+    let (mut app, _) = declared_directory(1);
+    publish_declared_directory(&mut app);
+    let revision = app.action_directory_revision();
+    let pins = (0..1024)
+        .map(|_| app.pin_local_document_action_directory(&revision).unwrap())
+        .collect::<Vec<_>>();
+    assert!(pins.iter().all(|pin| std::rc::Rc::ptr_eq(&pins[0], pin)));
+    assert_eq!(app.actions.local_document_directory_pins.len(), 1);
+    assert!(app.pin_local_document_action_directory("wrong").is_none());
+    assert!(matches!(
+        app.resolve_local_document_action_directory(&revision, "declared:0", "inspect"),
+        runtime_collab::ActionDirectoryResolution::Found { .. }
+    ));
+    drop(pins);
+    assert!(matches!(
+        app.resolve_local_document_action_directory(&revision, "declared:0", "inspect"),
+        runtime_collab::ActionDirectoryResolution::StaleRevision
+    ));
+    assert!(app.pin_local_document_action_directory(&revision).is_some());
+}
+
+#[test]
+fn retained_local_directory_rejects_oversized_snapshot() {
+    let (mut app, _) = declared_directory(16);
+    app.state_mut_for_test()
+        .doc
+        .put(ROOT, "large-label", true)
+        .unwrap();
+    publish_declared_directory(&mut app);
+    let revision = app.action_directory_revision();
+    assert!(app.pin_local_document_action_directory(&revision).is_none());
+    assert!(app.actions.local_document_directory_pins.is_empty());
+}
+
+#[test]
+fn retained_local_directory_distinct_revision_limit_preserves_pending_reports() {
+    let (mut app, _) = declared_directory(1);
+    publish_declared_directory(&mut app);
+    let old = app.action_directory_revision();
+    let mut pins = vec![app.pin_local_document_action_directory(&old).unwrap()];
+    // Tiny subsequent snapshots isolate the count limit from the byte limit.
+    app.state_mut_for_test()
+        .doc
+        .put(ROOT, "removed", true)
+        .unwrap();
+    for generation in 1..64 {
+        app.state_mut_for_test()
+            .doc
+            .put(ROOT, "generation", generation)
+            .unwrap();
+        publish_declared_directory(&mut app);
+        let revision = app.action_directory_revision();
+        assert_ne!(revision, old);
+        pins.push(app.pin_local_document_action_directory(&revision).unwrap());
+    }
+    assert_eq!(app.actions.local_document_directory_pins.len(), 64);
+    app.state_mut_for_test()
+        .doc
+        .put(ROOT, "generation", 64)
+        .unwrap();
+    publish_declared_directory(&mut app);
+    let revision = app.action_directory_revision();
+    assert!(app.pin_local_document_action_directory(&revision).is_none());
+    assert!(matches!(
+        app.resolve_local_document_action_directory(&old, "declared:0", "inspect"),
+        runtime_collab::ActionDirectoryResolution::Found { .. }
+    ));
+    pins.pop();
+    assert!(app.pin_local_document_action_directory(&revision).is_some());
+}
+
+#[test]
+fn retained_local_directory_byte_pressure_preserves_old_revision_and_reclaims_dropped_pins() {
+    let (mut app, _) = declared_directory(1);
+    app.state_mut_for_test()
+        .doc
+        .put(ROOT, "large-label", true)
+        .unwrap();
+    publish_declared_directory(&mut app);
+    let old = app.action_directory_revision();
+    let mut pins = vec![app.pin_local_document_action_directory(&old).unwrap()];
+    let mut rejected = None;
+    for generation in 1..64 {
+        app.state_mut_for_test()
+            .doc
+            .put(ROOT, "generation", generation)
+            .unwrap();
+        publish_declared_directory(&mut app);
+        let revision = app.action_directory_revision();
+        if let Some(pin) = app.pin_local_document_action_directory(&revision) {
+            pins.push(pin);
+        } else {
+            rejected = Some(revision);
+            break;
+        }
+    }
+    let rejected = rejected.expect("byte budget must be reached before the revision limit");
+    assert!(pins.len() < 64);
+    assert!(matches!(
+        app.resolve_local_document_action_directory(&old, "declared:0", "inspect"),
+        runtime_collab::ActionDirectoryResolution::Found { .. }
+    ));
+    assert!(matches!(
+        app.resolve_local_document_action_directory(&rejected, "declared:0", "inspect"),
+        runtime_collab::ActionDirectoryResolution::StaleRevision
+    ));
+    pins.clear();
+    assert!(app.pin_local_document_action_directory(&rejected).is_some());
+    assert!(matches!(
+        app.resolve_local_document_action_directory(&old, "declared:0", "inspect"),
+        runtime_collab::ActionDirectoryResolution::StaleRevision
+    ));
+}
+
 #[test]
 fn directory_snapshot_pages_and_resolves_without_redeclaring_resources() {
     // Case `directory_snapshot_resources_only_root_parent_and_exact_without_redeclaration`.

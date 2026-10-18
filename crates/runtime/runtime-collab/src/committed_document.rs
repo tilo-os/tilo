@@ -1,5 +1,33 @@
 //! Original launch binding and disposable reads on the admitted channel; no caller-selected identity.
 use serde::{Deserialize, Serialize};
+/// Inert recovery provenance returned by the authenticated channel, never an
+/// application's claimed invoker or authority to execute/publish.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectionSnapshot {
+    pub root: [u8; 32],
+    pub device: [u8; 32],
+    pub agent: Option<String>,
+    pub app_id: String,
+    pub room: String,
+    pub document: String,
+}
+impl ConnectionSnapshot {
+    pub fn valid(&self) -> bool {
+        self.root != [0; 32]
+            && self.device != [0; 32]
+            && [&self.app_id, &self.room]
+                .into_iter()
+                .all(|s| !s.is_empty() && valid_snapshot_text(s))
+            && valid_snapshot_text(&self.document)
+            && self
+                .agent
+                .as_ref()
+                .is_none_or(|s| !s.is_empty() && valid_snapshot_text(s))
+    }
+}
+fn valid_snapshot_text(text: &str) -> bool {
+    text.len() <= 4096 && !text.chars().any(char::is_control)
+}
 pub const CHUNK_BYTES: usize = 64 * 1024;
 pub const MAX_DOCUMENT_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_WIRE_BYTES: usize = CHUNK_BYTES + 128;
@@ -122,6 +150,8 @@ pub enum Request {
     OpenChanges {
         known_revision: [u8; 32],
     },
+    /// Original authenticated principal and exact channel route; no caller claims.
+    ConnectionSnapshot,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Reply {
@@ -168,6 +198,7 @@ pub enum Reply {
         bytes: Vec<u8>,
         token: [u8; 16],
     },
+    ConnectionSnapshot(ConnectionSnapshot),
 }
 impl Request {
     /// Encode a valid request for the wire.
@@ -200,6 +231,7 @@ impl Request {
     fn valid(&self) -> bool {
         match self {
             Self::Open { .. }
+            | Self::ConnectionSnapshot
             | Self::PrivateWindowBinding
             | Self::Await { .. }
             | Self::OpenChanges { .. } => true,
@@ -255,6 +287,7 @@ impl Reply {
     }
     fn valid(&self) -> bool {
         match self {
+            Self::ConnectionSnapshot(snapshot) => snapshot.valid(),
             Self::PrivateWindowBinding { instance } => {
                 instance.is_none_or(|instance| instance != 0)
             }
@@ -312,6 +345,35 @@ impl Reply {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn connection_snapshot_is_bounded_and_keeps_original_principal_and_route() {
+        assert_eq!(Request::ConnectionSnapshot.encode().unwrap(), [7]);
+        let snapshot = ConnectionSnapshot {
+            root: [1; 32],
+            device: [2; 32],
+            agent: Some("agent".into()),
+            app_id: "notes".into(),
+            room: "room".into(),
+            document: "document".into(),
+        };
+        let reply = Reply::ConnectionSnapshot(snapshot.clone());
+        assert_eq!(Reply::decode(&reply.encode().unwrap()).unwrap(), reply);
+        for field in 0..5 {
+            let mut invalid = snapshot.clone();
+            match field {
+                0 => invalid.root = [0; 32],
+                1 => invalid.device = [0; 32],
+                2 => invalid.agent = Some(String::new()),
+                3 => invalid.document = "x".repeat(4097),
+                _ => invalid.room = "bad\\nroom".into(),
+            }
+            assert!(Reply::ConnectionSnapshot(invalid).encode().is_err());
+        }
+        let mut trailing = reply.encode().unwrap();
+        trailing.push(0);
+        assert!(Reply::decode(&trailing).is_err());
+    }
+
     #[test]
     fn initialization_wire_bounds_and_first_creation_receipt_are_explicit() {
         let workspace = CreationWorkspace {

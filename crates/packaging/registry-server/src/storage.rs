@@ -2245,7 +2245,9 @@ pub struct ServerIdentity {
     pub name: String,
     /// Human-readable registry description.
     pub description: String,
-    /// Public base URL the registry advertises for itself.
+    /// Public base URL the registry advertises for itself. Moderation v2
+    /// destinations must match this exact configured string, including any path
+    /// or trailing slash; proxy headers and the listen address do not override it.
     pub base_url: String,
 }
 

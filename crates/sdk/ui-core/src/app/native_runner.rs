@@ -2640,6 +2640,7 @@ impl AppHandler {
         app.track_pointer_buttons(&event);
         app.refresh_controls_before_input(&event);
         let resources_before = app.resource_input_mark(&event);
+        let capture = app.begin_local_input_event(&event);
         app.root_widget.handle_event(
             &event,
             &mut crate::widget::EventCtx {
@@ -2653,6 +2654,8 @@ impl AppHandler {
                 taffy: &app.layout.taffy,
             },
         );
+        drop(capture);
+        app.drain_local_input_capture();
         // `handle_event` may change presentation-only resource declarations
         // without touching the CRDT (selected tab, open media, local mode);
         // only bare hover that changed nothing keeps the published tree.
@@ -4301,11 +4304,13 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             request_primary_redraw();
         }
 
+        app.drain_local_input_capture();
         let scheduled_deadline = crate::close_admission::wake_deadline(
             app.root_widget
                 .next_wake_deadline()
                 .into_iter()
                 .chain(self.touch_pointer.long_press_deadline())
+                .chain(app.local_input_capture_deadline())
                 .chain(
                     app.presence_ctx
                         .interaction_next_wake_deadline(crate::time::now()),
@@ -4339,6 +4344,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 .next_wake_deadline()
                 .into_iter()
                 .chain(self.touch_pointer.long_press_deadline())
+                .chain(app.local_input_capture_deadline())
                 .chain(
                     app.presence_ctx
                         .interaction_next_wake_deadline(crate::time::now()),

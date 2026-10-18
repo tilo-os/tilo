@@ -34,6 +34,7 @@ libc.workspace = true
 postcard = { workspace = true, features = ["alloc"] }
 rand_core.workspace = true
 runtime-identity = { path = "../runtime-identity" }
+registry-types = { path = "../../packaging/registry-types" }
 sha2.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -97,6 +97,7 @@ impl App {
         let marks = self.accessibility.semantic_tree_marks;
         let pointer_move = matches!(event, WindowEvent::CursorMoved { .. });
         let handled = self.route_surface_input(window, event, synthesized_touch);
+        self.drain_local_input_capture();
         let inert = pointer_move
             && !handled
             && self.accessibility.semantic_tree_marks == marks
@@ -265,6 +266,7 @@ impl App {
             phases.finish(InputPhase::Publication, publication);
         }
 
+        let capture = app.begin_local_input_event(&event);
         let mut handled = false;
         let mut view_only_scroll = false;
         let mut history_handled = matches!(event, WindowEvent::KeyboardInput { .. })
@@ -671,6 +673,9 @@ impl App {
             app.layout.layout_dirty = true;
             window.request_redraw();
         }
+
+        drop(capture);
+        app.drain_local_input_capture();
 
         if let Some(address) = app.root_widget.take_action_palette_request()
             && app.open_action_palette_at(&address)

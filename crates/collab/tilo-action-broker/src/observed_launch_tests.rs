@@ -2,6 +2,29 @@
 // controlled so a receipt can be observed before and after the actual signal.
 type ObservedLaunch = (String, Option<String>, String, Option<String>);
 
+fn observed_launch_request(
+    invocation: tilo_actions::InvocationId,
+    parent: Option<tilo_actions::InvocationId>,
+    app: &str,
+) -> tilo_actions::remote::InvokeRequest {
+    tilo_actions::remote::InvokeRequest {
+        invocation,
+        on_behalf_of: parent,
+        target: tilo_actions::remote::RemoteActionTarget {
+            provider: "host-launch".into(),
+            address: tilo_actions::ActionAddress::new(app, "launch"),
+        },
+        argument: tilo_actions::remote::InvokeArgument::None,
+        context: None,
+        confirmation: None,
+        revision: None,
+        wait_ms: None,
+        appearance: None,
+    }
+}
+
+include!("observed_launch_admission_tests.rs");
+
 #[tokio::test(flavor = "current_thread")]
 async fn observed_person_launch_retains_exact_original_scope_and_cancellation() {
     tokio::task::LocalSet::new()
@@ -64,6 +87,31 @@ async fn observed_person_launch_retains_exact_original_scope_and_cancellation() 
             assert!(!custody.matches("so.tilo.word-processor", None, &workspace));
             assert_eq!(custody.certificate().unwrap(),
                 *env.authority.additional_certificates.lock().unwrap().last().unwrap());
+            let certificate = custody.certificate().unwrap();
+            let statuses = rig.state.invocation_statuses_for_owner(&crate::collab_broker_capnp::invocation_journal::InvocationOwner::Certified {
+                root: certificate.user_public_key,
+                device: certificate.device_public_key,
+            });
+            let (_, child) = statuses.iter().find(|(_, update)| update.invocation() != original)
+                .expect("the original person owns the launch child, not the worker");
+            let guard = rig.state.journal.lock().unwrap();
+            let journal = guard.as_ref().unwrap().as_ref().unwrap();
+            let record = journal.lookup(&crate::collab_broker_capnp::invocation_journal::InvocationKey {
+                room: env.route.cluster_id.clone(),
+                host: journal.host(),
+                owner: crate::collab_broker_capnp::invocation_journal::InvocationOwner::Certified {
+                    root: certificate.user_public_key,
+                    device: certificate.device_public_key,
+                },
+                invocation: child.invocation(),
+            }).unwrap().expect("child retains the original caller's exact certificate ownership");
+            assert!(record.admission.is_some());
+            // Arguments are retained as an exact request digest, not plaintext.
+            let expected = observed_launch_request(
+                child.invocation(), Some(original), "so.tilo.word-processor",
+            );
+            assert!(record.admitted_request_is(&serde_json::to_value(expected).unwrap()));
+            drop(guard);
             assert!(!pending.is_finished(), "custody is not actual adoption");
             let grants = std::mem::take(&mut env.membership.write().workspaces[0].policy.grants);
             assert!(custody.certificate().is_err(), "fresh rights, not the launch snapshot, govern admission");
@@ -252,10 +300,23 @@ async fn installed_launch_rpc_waits_for_adoption_preserves_signed_root_and_reval
                         update,
                         tilo_actions::InvocationUpdate::Succeeded { .. }
                     ));
-                    assert_eq!(
-                        caller.handle.published_invocation_status(id).await.unwrap(),
-                        Some(encoded)
+                    assert!(
+                        caller
+                            .handle
+                            .published_invocation_status(id)
+                            .await
+                            .unwrap()
+                            .is_none()
                     );
+                    let observed = caller
+                        .handle
+                        .published_invocation_observation(
+                            rig.state.invocation_host().unwrap().as_bytes(),
+                            update.invocation().0.as_bytes(),
+                        )
+                        .await
+                        .unwrap();
+                    assert_eq!(observed.result.unwrap().update_json, encoded);
                 } else {
                     assert!(
                         matches!(update, tilo_actions::InvocationUpdate::Failed { .. }),
@@ -400,12 +461,15 @@ async fn installed_launch_continuation_keeps_the_original_agents_authority() {
                     scenario == "ready",
                     "{update:?}"
                 );
-                assert!(
-                    rig.state
-                        .invocation_statuses("agent:scribe")
-                        .iter()
-                        .any(|(id, _)| *id == launch_id)
-                );
+                let owner = crate::collab_broker_capnp::invocation_journal::InvocationOwner::AuthenticatedLocal {
+                    root: env.cert.user_public_key,
+                    device: env.cert.device_public_key,
+                    agent: Some("scribe".into()),
+                };
+                assert!(rig.state.invocation_statuses_for_owner(&owner).iter()
+                    .any(|(id, _)| *id == launch_id));
+                assert!(rig.state.invocation_statuses("agent:scribe").is_empty(),
+                    "signed launches never acquire actor-only observation custody");
             }
         })
         .await;

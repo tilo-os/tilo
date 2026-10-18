@@ -12,6 +12,33 @@ use tilo_actions::remote::{
     workspace_provider_room,
 };
 
+/// Invocation-scoped injection at the actual durable/effect boundary.
+#[cfg(test)]
+pub(super) mod test_barrier {
+    use std::sync::Mutex;
+    use tilo_actions::InvocationId;
+
+    type Hook = Box<dyn FnOnce() + Send>;
+    static HOOKS: Mutex<Vec<(InvocationId, Hook)>> = Mutex::new(Vec::new());
+
+    pub(super) fn run(invocation: InvocationId) {
+        let hook = {
+            let mut hooks = HOOKS.lock().unwrap();
+            hooks
+                .iter()
+                .position(|(id, _)| *id == invocation)
+                .map(|index| hooks.remove(index).1)
+        };
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+
+    pub(crate) fn install(invocation: InvocationId, hook: Hook) {
+        HOOKS.lock().unwrap().push((invocation, hook));
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct NativeLaunch {
     peer: u64,
@@ -31,6 +58,7 @@ pub(super) struct NativeLaunch {
     /// The person confirmed this retained action as asked first; `argument`
     /// is then what they confirmed.
     confirmed: bool,
+    witness: Option<String>,
 }
 
 impl NativeLaunch {
@@ -67,6 +95,12 @@ impl NativeLaunch {
         if state.task_run_cancelled(self.peer, &self.run.agent_id, self.run_id, &self.lease)? {
             return Err("task stopped while waiting for its application".into());
         }
+        self.check_action_policy(state)
+    }
+
+    // Read-only policy checks are safe inside the owner's task admission turn.
+    // Do not use `check` there: cancellation handling can mutate the owner.
+    fn check_action_policy(&self, state: &CapnpBrokerState) -> Result<(), String> {
         if let Some(retained) = &self.retained {
             if !self.confirmed
                 && !matches!(
@@ -176,7 +210,7 @@ impl NativeLaunch {
     pub(super) fn launch(
         &self,
         state: &CapnpBrokerState,
-        destination: &LaunchDestination,
+        _destination: &LaunchDestination,
         place: &LaunchPlace,
     ) -> Result<(), String> {
         let binding = self.binding()?;
@@ -188,13 +222,17 @@ impl NativeLaunch {
                 &binding,
                 &self.requirement()?,
                 &mut || {
-                    let spent = self.caller.authorize_host_action(
+                    self.caller.authorize_host_action(
                         state,
                         &self.run.cluster_id,
                         &self.requirement()?,
                     )?;
                     let key = self.launch_key(state)?;
                     let intent = serde_json::json!({"host_activation":true,"app_id":self.app,
+                    "actor":binding.actor()?.id(),"record_id":self.record.as_deref().unwrap_or(""),
+                    "resource":format!("app.{}", self.app),"resource_kind":"applications.app","action":"open",
+                    "contract":tilo_actions::ActionContract::default(),
+                    "bootstrap":self.bootstrap,"confirmed":self.confirmed,
                     "task":binding.task_id,"epoch":binding.epoch,"revision":binding.revision,
                     "caller":self.caller.owner(),
                     "retained_contract":self.retained.as_ref().map(|action| &action.contract),
@@ -210,35 +248,57 @@ impl NativeLaunch {
                         .map_err(|error| error.clone())?
                         .as_mut()
                         .ok_or("durable launch journal absent")?;
-                    let wire = state.invocation_id.fetch_add(1, Ordering::Relaxed);
-                    if !journal.admit(key.clone(), intent, wire)? {
-                        let retained = journal.lookup(&key)?.ok_or("launch custody disappeared")?;
-                        return if !retained.uncertain
-                            && matches!(
-                                retained.update,
-                                tilo_actions::InvocationUpdate::Succeeded { .. }
-                            ) {
+                    if let Some(retained) = journal.lookup(&key)? {
+                        let original_request = intent.get("request").ok_or("launch request absent")?;
+                        return if retained.admitted_request_is(original_request)
+                            && retained.intent.get("caller") == intent.get("caller")
+                            && !retained.uncertain
+                            && matches!(retained.update, tilo_actions::InvocationUpdate::Succeeded { .. })
+                        {
                             Ok(())
                         } else {
-                            Err("host activation outcome uncertain; review before retrying".into())
+                            Err("host activation changed or its outcome is uncertain; review before retrying".into())
                         };
                     }
+                    let wire = state.invocation_id.fetch_add(1, Ordering::Relaxed);
+                    let evidence = state.native_host_action_evidence(&self.caller, &key, &intent)?;
+                    if !journal.admit_with_evidence(key.clone(), intent, wire, Some(evidence))? {
+                        return Err("native host activation already admitted".into());
+                    }
                     drop(guard);
-                    state.spend_once_grants(&self.run.cluster_id, &spent);
-                    // Custody is on disk before the existing on-system host path runs.
-                    let result = if self.ready(state).is_some() {
-                        Ok(())
-                    } else {
+                    #[cfg(test)]
+                    test_barrier::run(self.invocation);
+                    // The owner still serializes the run, but disk custody is
+                    // not authority: clocks, connection admission and the live
+                    // workspace projection can change during the barrier.
+                    let result = (|| {
+                        state.task_run_for(
+                            self.peer, &self.run.agent_id, self.run_id, &self.lease,
+                        )?;
+                        self.check_action_policy(state)?;
+                        let spent = self.caller.authorize_host_action(
+                            state, &self.run.cluster_id, &self.requirement()?,
+                        )?;
+                        let workspace = state
+                            .membership
+                            .as_ref()
+                            .ok_or("native launch membership absent")?
+                            .decide_in_room(&self.run.cluster_id, |workspace| {
+                                workspace.cloned().ok_or("native launch workspace absent")
+                            })??;
+                        // Recheck before consuming one-use authority, so this
+                        // invocation cannot revoke its own launch permission.
+                        state.spend_once_grants(&self.run.cluster_id, &spent);
+                        if self.ready(state).is_some() {
+                            return Ok(());
+                        }
                         state.launch_retained(
                             &self.app,
-                            &destination.workspace,
-                            destination
-                                .record
-                                .as_deref()
-                                .filter(|record| !record.is_empty()),
+                            &workspace,
+                            self.record.as_deref().filter(|record| !record.is_empty()),
                             place,
                         )
-                    };
+                    })();
                     let update = match &result {
                         Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
                             invocation: key.invocation,
@@ -322,7 +382,7 @@ impl NativeLaunch {
         Ok(())
     }
 
-    pub(super) fn deliver(&self, state: &CapnpBrokerState, peer: u64) -> Result<u64, String> {
+    pub(super) async fn deliver(&self, state: &CapnpBrokerState, peer: u64) -> Result<u64, String> {
         self.check(state)?;
         if self.bootstrap {
             let caller = Caller::local_agent(&self.run.agent_id).in_room(&self.run.cluster_id);
@@ -368,24 +428,73 @@ impl NativeLaunch {
             );
         }
         self.check_retained_contract(state, &offered.1)?;
-        state
-            .admit_task_action(
-                self.run.clone(),
-                &self.lease,
-                runtime_collab::TaskAction {
-                    peer_id: peer,
-                    provider: &self.provider,
-                    resource: &self.resource,
-                    action: &self.action,
-                    argument: self.argument.as_deref(),
-                },
-                (
-                    Some(&(self.caller.clone(), self.invocation)),
-                    self.confirmed,
-                ),
-                offered,
-            )
-            .map(|job| job.id)
+        let mut admitted = self.clone();
+        let mut confirmation = None;
+        // Application-directory providers can name an action that was never
+        // retained. Once published, it needs the same exact disclosure gate.
+        if super::requires_store_witness(&self.app, &self.action) && self.witness.is_none() {
+            if !admitted.confirmed
+                && let super::native_task_confirmation::NativeGate::Confirmed {
+                    argument,
+                    confirmation: id,
+                } = state
+                    .native_confirmation_for(
+                        &self.run,
+                        &self.lease,
+                        (&self.app, &offered.1),
+                        (&self.resource, &self.action),
+                        self.argument.as_deref(),
+                    )
+                    .await?
+            {
+                admitted.argument = Some(argument);
+                admitted.confirmed = true;
+                confirmation = Some(id);
+            }
+            admitted.witness = state
+                .native_store_witness(
+                    (&admitted.run, &admitted.lease, admitted.confirmed),
+                    &offered,
+                    admitted.argument.as_deref(),
+                    &admitted.caller,
+                    admitted.invocation,
+                )
+                .await?;
+            admitted.check(state)?;
+            state.check_native_store_offer(&offered)?;
+        }
+        let job = state.admit_task_action(
+            admitted.run.clone(),
+            &admitted.lease,
+            runtime_collab::TaskAction {
+                peer_id: peer,
+                provider: &self.provider,
+                resource: &self.resource,
+                action: &self.action,
+                argument: admitted.argument.as_deref(),
+            },
+            (
+                Some(&(admitted.caller.clone(), admitted.invocation)),
+                (admitted.confirmed, admitted.witness.as_deref()),
+            ),
+            offered,
+        )?;
+        admitted
+            .settle_started_confirmation(state, confirmation.as_deref())
+            .await;
+        Ok(job.id)
+    }
+
+    async fn settle_started_confirmation(
+        &self,
+        state: &CapnpBrokerState,
+        confirmation: Option<&str>,
+    ) {
+        if let Some(id) = confirmation
+            && let Err(error) = state.settle_native_confirmation(&self.run, id).await
+        {
+            tracing::warn!(%error, "confirmed Store action started but its confirmation stayed");
+        }
     }
 }
 
@@ -540,6 +649,7 @@ impl CapnpBrokerState {
             retained,
             bootstrap,
             confirmed: false,
+            witness: None,
         })
     }
 
@@ -570,6 +680,8 @@ impl CapnpBrokerState {
             native.confirmed = true;
             confirmation = Some(id);
         }
+        // A disclosure witness needs the actual live provider/publication, not
+        // just a retained descriptor. Ask after launch in NativeLaunch::deliver.
         let destination = native.destination(self)?;
         // The ordinary delivery loop uses this label only for actor-view placement.
         // Authority comes from the captured signed LocalCaller and native owner admission.

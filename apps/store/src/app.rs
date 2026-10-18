@@ -1267,9 +1267,6 @@ impl Widget for StoreApp {
     }
 }
 
-/// A control on a moderation case: its key, its label and its effect.
-type CaseControl = (&'static str, &'static str, fn(String) -> StoreEffect);
-
 /// What an effect asks of the Store, once it is admitted.
 pub enum Admitted {
     /// Done already: the window moved, or the worker was asked.
@@ -1483,6 +1480,12 @@ impl StoreApp {
             }
             return Ok(Effected::value(value));
         }
+        if let StoreEffect::PrepareModeration { app, appeal } = &effect {
+            return self
+                .prepare_moderation(app, *appeal)
+                .and_then(|operation| serde_json::to_value(operation).map_err(|e| e.to_string()))
+                .map(Effected::value);
+        }
         if let StoreEffect::InspectCatalogue { app } = &effect {
             return self.inspect_catalogue(app.as_deref()).map(Effected::value);
         }
@@ -1599,7 +1602,7 @@ impl StoreApp {
             StoreEffect::InspectRuntime => {
                 return Err(ui::i18n!("store-runtime-inspect-route"));
             }
-            StoreEffect::InspectCatalogue { .. } => {
+            StoreEffect::PrepareModeration { .. } | StoreEffect::InspectCatalogue { .. } => {
                 return Err("Catalogue inspection must use the resource effect route.".into());
             }
             StoreEffect::Refresh => return Ok(Job::admitted(Request::Refresh, Finish::Status)),
@@ -1819,25 +1822,11 @@ impl StoreApp {
                 self.reserve_job()?;
                 return Ok(Job::admitted(Request::RemoteRemove(name), Finish::Status));
             }
-            StoreEffect::SubmitReport { app } => {
-                let report = self.report(&app)?;
-                if report.is_case() {
-                    return Err("this report was already submitted".into());
-                }
-                let note = report.note.trim().chars().count();
-                if !(8..=crate::reports::MAX_REPORT_NOTE_CHARS).contains(&note) {
-                    return Err("Add a concern of 8–4096 characters before submitting".into());
-                }
-                let (item, registry_name) = self.reported_app(&report)?;
-                let envelope = report_envelope(&report, Some(&item));
+            StoreEffect::SubmitReport { app, operation } => {
+                let operation = self.check_moderation(&app, &operation, false)?;
                 self.reserve_job()?;
-                self.status_line = "Signing report with your workspace identity…".into();
-                self.structure_dirty = true;
                 return Ok(Job::admitted(
-                    Request::SubmitReport {
-                        registry_name,
-                        envelope,
-                    },
+                    Request::ExternalModeration(operation),
                     Finish::Submitted { app_id: app },
                 ));
             }
@@ -1855,22 +1844,11 @@ impl StoreApp {
                     Finish::Case { app_id: app },
                 ));
             }
-            StoreEffect::Appeal { app } => {
-                let report = self.case(&app)?;
-                let reason = report.note.clone();
-                if reason.trim().chars().count() < 8 || reason.chars().count() > 8_192 {
-                    return Err("Add an appeal reason of 8–8192 characters".into());
-                }
-                let (_, registry_name) = self.reported_app(&report)?;
+            StoreEffect::Appeal { app, operation } => {
+                let operation = self.check_moderation(&app, &operation, true)?;
                 self.reserve_job()?;
-                self.status_line = "Contacting the authoritative registry…".into();
-                self.structure_dirty = true;
                 return Ok(Job::admitted(
-                    Request::AppealModeration {
-                        registry_name,
-                        case_id: report.id,
-                        reason,
-                    },
+                    Request::ExternalModeration(operation),
                     Finish::Status,
                 ));
             }
@@ -1925,6 +1903,115 @@ impl StoreApp {
         Ok(())
     }
 
+    /// Freeze destination, evidence, nonce and validity before action admission.
+    pub(crate) fn prepare_moderation(
+        &self,
+        app: &str,
+        appeal: bool,
+    ) -> Result<registry_types::ExternalModerationOperation, String> {
+        use getrandom::rand_core::TryRng as _;
+        use registry_types::{
+            ExternalModerationOperation, ModerationDestination, ModerationMutation,
+        };
+        let report = if appeal {
+            self.case(app)?
+        } else {
+            self.report(app)?
+        };
+        if !appeal && report.is_case() {
+            return Err("this report was already submitted".into());
+        }
+        let (_, registry_name) = self.reported_app(&report)?;
+        let registry = self
+            .directory
+            .registry(&registry_name)
+            .or_else(|| {
+                self.worker
+                    .is_none()
+                    .then(|| crate::config::repositories(None).ok())
+                    .flatten()
+                    .and_then(|r| {
+                        r.registries
+                            .into_iter()
+                            .find(|r| r.enabled && r.name == registry_name)
+                    })
+            })
+            .ok_or("the app's registry is unavailable")?;
+        let mutation = if appeal {
+            ModerationMutation::PublisherAppeal {
+                case_id: report.id.clone(),
+                reason: report.note.clone(),
+                evidence_digest_hex: None,
+            }
+        } else {
+            let evidence_digest_hex =
+                registry_types::report_evidence_digest(app, &report.status, &report.note, None)
+                    .map_err(|error| error.to_string())?;
+            ModerationMutation::FileReport {
+                package_id: app.into(),
+                category: "policy".into(),
+                summary: report.note.trim().into(),
+                evidence_digest_hex,
+            }
+        };
+        let now = ui::time::unix_now();
+        let mut nonce = [0; 16];
+        getrandom::SysRng
+            .try_fill_bytes(&mut nonce)
+            .map_err(|e| e.to_string())?;
+        let operation = ExternalModerationOperation {
+            destination: ModerationDestination {
+                base_url: registry.base_url,
+                owner_pubkey_hex: registry.owner_pubkey_hex,
+            },
+            request_id: crate::moderation_client::report_request_id(app, &report.note, now, &nonce),
+            issued_at_unix: now,
+            expires_at_unix: now.saturating_add(3600),
+            mutation,
+        };
+        operation.validate()?;
+        Ok(operation)
+    }
+
+    pub(crate) fn moderation_effect(&self, app: &str, appeal: bool) -> Option<StoreEffect> {
+        let operation = serde_json::to_string(&self.prepare_moderation(app, appeal).ok()?).ok()?;
+        Some(if appeal {
+            StoreEffect::Appeal {
+                app: app.into(),
+                operation,
+            }
+        } else {
+            StoreEffect::SubmitReport {
+                app: app.into(),
+                operation,
+            }
+        })
+    }
+
+    fn check_moderation(
+        &self,
+        app: &str,
+        payload: &str,
+        appeal: bool,
+    ) -> Result<registry_types::ExternalModerationOperation, String> {
+        let operation: registry_types::ExternalModerationOperation = serde_json::from_str(payload)
+            .map_err(|e| format!("invalid moderation operation: {e}"))?;
+        operation.validate()?;
+        if !appeal && self.report(app)?.is_case() {
+            return Err("this report was already submitted".into());
+        }
+        match &operation.mutation {
+            registry_types::ModerationMutation::FileReport { package_id, .. }
+                if !appeal && package_id == app => {}
+            registry_types::ModerationMutation::PublisherAppeal { case_id, .. }
+                if appeal && self.case(app)?.id == *case_id => {}
+            _ => return Err("moderation operation does not match this action".into()),
+        }
+        // Do not rebuild or compare to the mutable draft: these are the exact
+        // parameters the framework admitted, even if a collaborator edited it.
+        Ok(operation)
+    }
+
     /// The report about `app`.
     fn report(&self, app: &str) -> Result<ReportProjection, String> {
         self.reports
@@ -1959,6 +2046,29 @@ impl StoreApp {
     fn start_job(&mut self, job: Job, cx: &mut EffectCx<Store, Self>) -> EffectAnswer {
         let parent = ui::invocation_scope::current_invoker().and_then(|_| cx.invocation());
         let Job { request, finish } = job;
+        if let Request::ExternalModeration(operation) = request {
+            let appeal = matches!(
+                operation.mutation,
+                registry_types::ModerationMutation::PublisherAppeal { .. }
+            );
+            let work = cx.external_moderation(operation)?;
+            self.pending_jobs += 1;
+            return Ok(cx.spawn(
+                move |_| work,
+                move |app: &mut Self, result, cx| {
+                    let outcome = result.map(|case| crate::worker::Finished {
+                        status: if appeal {
+                            "Appeal submitted. Refresh to verify its status.".into()
+                        } else {
+                            "Report submitted. Refresh to verify its status.".into()
+                        },
+                        case: Some(case),
+                        ..Default::default()
+                    });
+                    app.finish_job(&finish, outcome, parent, cx)
+                },
+            ));
+        }
         let (done, outcome) = std::sync::mpsc::channel();
         let queued = self
             .worker
@@ -2402,11 +2512,14 @@ impl StoreApp {
         .effect(&StoreEffect::ExportEvidence { app: app.clone() });
         if self.reported_app(report).is_ok() {
             if report.is_case() {
-                row = row
-                    .effect(&StoreEffect::RefreshStatus { app: app.clone() })
-                    .effect(&StoreEffect::Appeal { app });
+                row = row.effect(&StoreEffect::RefreshStatus { app: app.clone() });
+                if let Some(effect) = self.moderation_effect(&app, true) {
+                    row = row.effect(&effect);
+                }
             } else {
-                row = row.effect(&StoreEffect::SubmitReport { app });
+                if let Some(effect) = self.moderation_effect(&app, false) {
+                    row = row.effect(&effect);
+                }
             }
         }
         row
@@ -3689,6 +3802,16 @@ mod tests {
             publisher_pubkey_hex: None,
             installed,
         }
+    }
+
+    fn moderation_test_registry() -> crate::config::RegistryConfig {
+        serde_json::from_value(serde_json::json!({
+            "name": "Tilo",
+            "base_url": "https://registry.test",
+            "owner_pubkey_hex": "ab".repeat(32),
+            "enabled": true
+        }))
+        .unwrap()
     }
 
     fn seeded_app() -> StoreApp {
@@ -5310,31 +5433,42 @@ mod tests {
         // Case `a_draft_is_submitted_with_its_note_to_its_registry`.
         {
             let mut app = seeded_app();
+            app.directory
+                .set_registries(vec![moderation_test_registry()]);
             draft(&mut app, "short");
             assert!(
                 app.admit(StoreEffect::SubmitReport {
-                    app: "id.notes".into()
+                    app: "id.notes".into(),
+                    operation: String::new(),
                 })
                 .is_err(),
                 "a concern of fewer than 8 characters is not submitted"
             );
             let note = "The app connected to a remote host while offline mode was active.";
             draft(&mut app, note);
-            let job = admitted_job(
+            let effect = app.moderation_effect("id.notes", false).unwrap();
+            let frozen = app.prepare_moderation("id.notes", false).unwrap();
+            let StoreEffect::SubmitReport { operation, .. } = &effect else {
+                panic!("report")
+            };
+            let expected: registry_types::ExternalModerationOperation =
+                serde_json::from_str(operation).unwrap();
+            draft(
                 &mut app,
-                StoreEffect::SubmitReport {
-                    app: "id.notes".into(),
-                },
+                "A collaborator replaced the note after preparation.",
             );
-            let Request::SubmitReport {
-                registry_name,
-                envelope,
-            } = job.request
-            else {
+            let job = admitted_job(&mut app, effect);
+            let Request::ExternalModeration(operation) = job.request else {
                 panic!("a submission");
             };
-            assert_eq!(registry_name, "Tilo");
-            assert_eq!(envelope.evidence_note, note);
+            assert_eq!(operation, expected);
+            assert_eq!(operation.destination, frozen.destination);
+            let registry_types::ModerationMutation::FileReport { summary, .. } =
+                &operation.mutation
+            else {
+                panic!("report mutation")
+            };
+            assert_eq!(summary, note);
             assert_eq!(
                 job.finish,
                 Finish::Submitted {
@@ -5350,7 +5484,8 @@ mod tests {
             );
             assert!(
                 app.admit(StoreEffect::SubmitReport {
-                    app: "id.chess".into()
+                    app: "id.chess".into(),
+                    operation: serde_json::to_string(&operation).unwrap(),
                 })
                 .is_err(),
                 "there is no report about Chess"
@@ -5360,6 +5495,8 @@ mod tests {
         // Case `a_case_is_refreshed_and_appealed_at_its_registry`.
         {
             let mut app = seeded_app();
+            app.directory
+                .set_registries(vec![moderation_test_registry()]);
             app.present_reports(&[ReportProjection {
                 id: "case-authoritative".into(),
                 app_id: "id.notes".into(),
@@ -5376,15 +5513,21 @@ mod tests {
                 job.request,
                 Request::RefreshModeration { ref case_id, .. } if case_id == "case-authoritative"
             ));
-            let job = admitted_job(
-                &mut app,
-                StoreEffect::Appeal {
-                    app: "id.notes".into(),
-                },
-            );
+            let effect = app.moderation_effect("id.notes", true).unwrap();
+            let StoreEffect::Appeal { operation, .. } = &effect else {
+                panic!("appeal")
+            };
+            let expected: registry_types::ExternalModerationOperation =
+                serde_json::from_str(operation).unwrap();
+            app.reports[0].note = "A changed reason after approval.".into();
+            let job = admitted_job(&mut app, effect);
+            let Request::ExternalModeration(actual) = job.request else {
+                panic!("appeal operation")
+            };
+            assert_eq!(actual, expected);
             assert!(matches!(
-                job.request,
-                Request::AppealModeration { ref reason, .. } if reason.contains("network dependency")
+                actual.mutation,
+                registry_types::ModerationMutation::PublisherAppeal { ref reason, .. } if reason.contains("network dependency")
             ));
             let row = app.live_row("case-authoritative").unwrap().into_resource();
             let offered: Vec<&str> = row

@@ -580,6 +580,29 @@ impl CapnpChannelHandle {
         request: &Request,
         prepared: Option<PreparedElsewhere>,
     ) -> Result<Reply, String> {
+        if matches!(request, Request::ConnectionSnapshot) {
+            let route = self.route();
+            let current = self
+                .state
+                .revalidate_admission(&route, &self.verified_identity)
+                .map_err(|error| error.to_string())?;
+            let certificate = current
+                .certificate
+                .as_ref()
+                .ok_or("connection snapshot requires a certified principal")?;
+            let snapshot = runtime_collab::committed_document::ConnectionSnapshot {
+                root: certificate.user_public_key,
+                device: certificate.device_public_key,
+                agent: current.agent_id,
+                app_id: route.app_id,
+                room: route.cluster_id,
+                document: route.record_id,
+            };
+            if !snapshot.valid() {
+                return Err("invalid authenticated connection snapshot".into());
+            }
+            return Ok(Reply::ConnectionSnapshot(snapshot));
+        }
         let required = self
             .state
             .services
@@ -593,6 +616,7 @@ impl CapnpChannelHandle {
         slot.expire()?;
         slot.supersede_wait();
         match request {
+            Request::ConnectionSnapshot => Err("connection snapshot was not handled".into()),
             Request::Await { .. } => Err("a committed read wait is answered asynchronously".into()),
             Request::PrivateWindowBinding => Ok(Reply::PrivateWindowBinding {
                 instance: self.native_private_window_instance()?,

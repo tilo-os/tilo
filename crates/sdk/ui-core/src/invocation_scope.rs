@@ -4,6 +4,49 @@ pub use runtime_collab::approved_checks::{
     Receipt as ApprovedCheckReceipt, ReportObservation as ApprovedCheckReportObservation,
 };
 
+/// A host moderation receipt, suitable for an existing action worker.
+pub type ExternalModerationFuture = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<registry_types::ModerationCase, String>> + Send>,
+>;
+
+#[cfg(feature = "broker-transport")]
+type ExternalModerationSender =
+    tokio::sync::oneshot::Sender<Result<registry_types::ModerationCase, String>>;
+
+/// Cloneable one-shot response custody for the collaboration request queue.
+#[cfg(feature = "broker-transport")]
+#[derive(Clone, Debug)]
+pub struct ExternalModerationReply(
+    std::sync::Arc<std::sync::Mutex<Option<ExternalModerationSender>>>,
+);
+#[cfg(feature = "broker-transport")]
+impl ExternalModerationReply {
+    pub(crate) fn is_closed(&self) -> bool {
+        self.0.lock().map_or(true, |reply| {
+            reply
+                .as_ref()
+                .is_none_or(tokio::sync::oneshot::Sender::is_closed)
+        })
+    }
+    pub(crate) fn send(&self, result: Result<registry_types::ModerationCase, String>) {
+        if let Ok(mut reply) = self.0.lock()
+            && let Some(reply) = reply.take()
+        {
+            let _ = reply.send(result);
+        }
+    }
+    pub(crate) fn new() -> (
+        Self,
+        tokio::sync::oneshot::Receiver<Result<registry_types::ModerationCase, String>>,
+    ) {
+        let (send, receive) = tokio::sync::oneshot::channel();
+        (
+            Self(std::sync::Arc::new(std::sync::Mutex::new(Some(send)))),
+            receive,
+        )
+    }
+}
+
 /// A typed host check response, suitable for an existing effect worker.
 pub type ApprovedCheckFuture = std::pin::Pin<
     Box<
@@ -678,6 +721,49 @@ impl ResourceInvocationScope {
 
     pub fn invocation(&self) -> tilo_actions::InvocationId {
         self.lease.request.invocation
+    }
+
+    /// Submit only the exact operation retained by this original invocation.
+    ///
+    /// # Errors
+    /// Refuses changed action parameters, retired custody or unavailable transport.
+    pub fn external_moderation(
+        &self,
+        operation: registry_types::ExternalModerationOperation,
+    ) -> Result<ExternalModerationFuture, String> {
+        self.check()?;
+        let request = &self.lease.request;
+        let argument = request
+            .argument
+            .as_deref()
+            .ok_or("external moderation requires admitted action arguments")?;
+        let argument = argument
+            .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
+            .unwrap_or(argument);
+        runtime_collab::external_moderation::validate_action(
+            &request.address.action,
+            argument,
+            &operation,
+        )?;
+        #[cfg(feature = "broker-transport")]
+        {
+            let scope = self.effect_scope()?;
+            let receive = crate::collaboration::external_moderation::enqueue(
+                &self.route().channel_id(),
+                self.invocation(),
+                operation,
+            )?;
+            Ok(Box::pin(async move {
+                let case = receive
+                    .await
+                    .map_err(|_| "external moderation transport retired")??;
+                scope.with_effect(|| Ok(case))
+            }))
+        }
+        #[cfg(not(feature = "broker-transport"))]
+        {
+            Err("external moderation requires the admitted native broker transport".into())
+        }
     }
 
     /// Queue only a check ID under this exact admitted effect's record route.

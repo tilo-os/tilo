@@ -62,12 +62,19 @@ pub mod catalogue;
 pub mod change;
 pub mod compact;
 pub mod entry;
+mod external_moderation;
 pub mod handshake;
 pub mod interfaces;
 pub mod moderation;
+pub use external_moderation::{
+    ExternalModerationOperation, ModerationCredential, ModerationDestination,
+    sign_external_moderation,
+};
 pub mod namespace;
 pub mod pending;
+mod report_evidence;
 pub mod retention;
+pub use report_evidence::report_evidence_digest;
 pub mod snapshot;
 pub mod target;
 pub mod upload;
@@ -97,9 +104,10 @@ pub use interfaces::{
 pub use moderation::{
     MODERATION_DOMAIN, ModerationActorRole, ModerationCase, ModerationCaseStatus,
     ModerationDecision, ModerationEvent, ModerationEventKind, ModerationMutation,
-    SignedModerationMutation, TransparencyPage, derive_verified_case, moderation_case_id,
-    moderation_signing_message, sign_moderation_mutation, transparency_event_hash,
-    verify_moderation_authorization, verify_moderation_mutation, verify_transparency_chain,
+    ModerationWireError, SignedModerationMutation, TransparencyPage, derive_verified_case,
+    moderation_case_id, moderation_signing_message, sign_moderation_mutation,
+    transparency_event_hash, verify_moderation_authorization, verify_moderation_mutation,
+    verify_transparency_chain,
 };
 pub use snapshot::{
     CHANNEL_AUTHORIZATION_PROTOCOL, ChannelAuthorization, DELEGATED_SNAPSHOT_PROTOCOL,

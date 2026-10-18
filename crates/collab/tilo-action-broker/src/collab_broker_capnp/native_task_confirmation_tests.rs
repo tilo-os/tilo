@@ -106,7 +106,7 @@ async fn append_as(
     ))
 }
 
-fn held(f: &Fixture) -> Option<tilo_desktop_model::WorkspaceTaskConfirmation> {
+pub(super) fn held(f: &Fixture) -> Option<tilo_desktop_model::WorkspaceTaskConfirmation> {
     f.native
         .owner
         .workspace_task_snapshot(room())
@@ -116,7 +116,7 @@ fn held(f: &Fixture) -> Option<tilo_desktop_model::WorkspaceTaskConfirmation> {
         .and_then(|control| control.confirmation.clone())
 }
 
-fn answer(f: &Fixture, id: &str, answer: WorkspaceTaskConfirmationAnswer) {
+pub(super) fn answer(f: &Fixture, id: &str, answer: WorkspaceTaskConfirmationAnswer) {
     f.person_command(WorkspaceTaskCommand::AnswerConfirmation {
         task_id: f.task.clone(),
         run_epoch: 1,
@@ -126,7 +126,7 @@ fn answer(f: &Fixture, id: &str, answer: WorkspaceTaskConfirmationAnswer) {
     .unwrap();
 }
 
-async fn nothing_delivered(stream: &invocation_stream::Client) -> bool {
+pub(super) async fn nothing_delivered(stream: &invocation_stream::Client) -> bool {
     tokio::time::timeout(
         Duration::from_millis(30),
         stream.read_request().send().promise,

@@ -234,9 +234,22 @@ impl super::CapnpBrokerState {
             .as_object_mut()
             .ok_or("checkpoint intent invalid")?
             .insert("remote_request".into(), remote_request(request)?);
-        let owner = super::InvocationOwner::Local {
-            actor: super::principal_id_for_root(certificate.user_public_key),
-        };
+        let owners = [
+            super::InvocationOwner::AuthenticatedLocal {
+                root: certificate.user_public_key,
+                device: certificate.device_public_key,
+                agent: None,
+            },
+            super::InvocationOwner::Certified {
+                root: certificate.user_public_key,
+                device: certificate.device_public_key,
+            },
+            // Historical rows remain historical: observing one does not mint
+            // an actor attestation or upgrade it to certified evidence.
+            super::InvocationOwner::Local {
+                actor: super::principal_id_for_root(certificate.user_public_key),
+            },
+        ];
         let record = {
             let guard = self
                 .journal
@@ -245,13 +258,19 @@ impl super::CapnpBrokerState {
             let Some(journal) = guard.as_ref().map_err(Clone::clone)?.as_ref() else {
                 return Ok(None);
             };
-            let key = super::InvocationKey {
-                room: room.into(),
-                host: journal.host(),
-                owner: owner.clone(),
-                invocation: request.invocation,
-            };
-            let record = journal.lookup(&key)?;
+            let mut record = None;
+            for owner in owners {
+                let key = super::InvocationKey {
+                    room: room.into(),
+                    host: journal.host(),
+                    owner,
+                    invocation: request.invocation,
+                };
+                record = journal.lookup(&key)?;
+                if record.is_some() {
+                    break;
+                }
+            }
             drop(guard);
             record
         };
@@ -269,7 +288,11 @@ impl super::CapnpBrokerState {
         ledger.reserve(caller, request).map_err(|e| e.to_string())?;
         ledger.complete(&request.invocation, record.wire_id);
         drop(ledger);
-        self.record_completion(record.wire_id, owner, record.update.clone());
+        self.record_completion(
+            record.wire_id,
+            record.key.owner.clone(),
+            record.update.clone(),
+        );
         Ok(Some(
             tilo_actions::remote::InvocationState::new(request.invocation, record.update).receipt(),
         ))

@@ -6,7 +6,7 @@ use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// Domain separator for every moderation mutation signature.
+/// Historic v1 identity-signature domain; retained for public log verification.
 pub const MODERATION_DOMAIN: &[u8] = b"tilo-registry-moderation-v1\0";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,7 +61,7 @@ pub enum ModerationCaseStatus {
 /// A bounded mutation. Servers enforce the documented string limits before
 /// verifying authorization or touching durable state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ModerationMutation {
     FileReport {
         package_id: String,
@@ -88,6 +88,7 @@ pub enum ModerationMutation {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SignedModerationMutation {
     pub protocol: u16,
     /// Caller-generated idempotency key. It is signed and accepted only once.
@@ -98,6 +99,34 @@ pub struct SignedModerationMutation {
     pub actor_pubkey_hex: String,
     pub mutation: ModerationMutation,
     pub signature_hex: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination: Option<crate::ModerationDestination>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<crate::ModerationCredential>,
+}
+
+impl SignedModerationMutation {
+    /// Recover the exact approved JSON action payload from a v2 request.
+    ///
+    /// # Errors
+    /// Returns an error for historic or destination-less requests.
+    pub fn external_operation(
+        &self,
+    ) -> Result<crate::ExternalModerationOperation, ModerationWireError> {
+        if self.protocol != 2 {
+            return Err(ModerationWireError::UnsupportedProtocol);
+        }
+        Ok(crate::ExternalModerationOperation {
+            destination: self
+                .destination
+                .clone()
+                .ok_or(ModerationWireError::InvalidSignature)?,
+            request_id: self.request_id.clone(),
+            issued_at_unix: self.issued_at_unix,
+            expires_at_unix: self.expires_at_unix,
+            mutation: self.mutation.clone(),
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -196,6 +225,10 @@ pub struct TransparencyPage {
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ModerationWireError {
+    #[error("invalid moderation operation: {0}")]
+    InvalidOperation(String),
+    #[error("unsupported moderation protocol")]
+    UnsupportedProtocol,
     #[error("invalid public key")]
     InvalidPublicKey,
     #[error("invalid signature")]
@@ -230,6 +263,25 @@ struct SigningPayload<'a> {
 pub fn moderation_signing_message(
     request: &SignedModerationMutation,
 ) -> Result<[u8; 32], ModerationWireError> {
+    if request.protocol == 2 {
+        let operation = request.external_operation()?;
+        let bytes = serde_json::to_vec(&(
+            request.protocol,
+            operation.action(),
+            &operation,
+            request.actor_role,
+            &request.actor_pubkey_hex,
+            &request.credential,
+        ))
+        .map_err(|_| ModerationWireError::Encoding)?;
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(crate::external_moderation::MUTATION_DOMAIN);
+        hasher.update(&bytes);
+        return Ok(*hasher.finalize().as_bytes());
+    }
+    if request.protocol != 1 || request.destination.is_some() || request.credential.is_some() {
+        return Err(ModerationWireError::UnsupportedProtocol);
+    }
     let payload = SigningPayload {
         protocol: request.protocol,
         request_id: &request.request_id,
@@ -267,6 +319,8 @@ pub fn sign_moderation_mutation(
         actor_pubkey_hex: hex::encode(key.verifying_key().to_bytes()),
         mutation,
         signature_hex: String::new(),
+        destination: None,
+        credential: None,
     };
     request.signature_hex =
         hex::encode(key.sign(&moderation_signing_message(&request)?).to_bytes());
@@ -290,7 +344,39 @@ pub fn verify_moderation_mutation(
     .map_err(|_| ModerationWireError::InvalidSignature)?;
     let key =
         VerifyingKey::from_bytes(&key_bytes).map_err(|_| ModerationWireError::InvalidPublicKey)?;
-    key.verify(&moderation_signing_message(request)?, &signature)
+    let message = moderation_signing_message(request)?;
+    if request.protocol == 2 {
+        let operation = request.external_operation()?;
+        operation
+            .validate()
+            .map_err(ModerationWireError::InvalidOperation)?;
+        if operation.role() != request.actor_role {
+            return Err(ModerationWireError::InvalidSignature);
+        }
+        let credential = request
+            .credential
+            .as_ref()
+            .ok_or(ModerationWireError::InvalidSignature)?;
+        let binding = Signature::from_slice(
+            &hex::decode(&credential.binding_signature_hex)
+                .map_err(|_| ModerationWireError::InvalidSignature)?,
+        )
+        .map_err(|_| ModerationWireError::InvalidSignature)?;
+        key.verify_strict(
+            &crate::external_moderation::binding_message(request)?,
+            &binding,
+        )
+        .map_err(|_| ModerationWireError::InvalidSignature)?;
+        let bytes: [u8; 32] = hex::decode(&credential.public_key_hex)
+            .ok()
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or(ModerationWireError::InvalidPublicKey)?;
+        return VerifyingKey::from_bytes(&bytes)
+            .map_err(|_| ModerationWireError::InvalidPublicKey)?
+            .verify_strict(&message, &signature)
+            .map_err(|_| ModerationWireError::InvalidSignature);
+    }
+    key.verify(&message, &signature)
         .map_err(|_| ModerationWireError::InvalidSignature)
 }
 
@@ -409,6 +495,19 @@ pub fn verify_moderation_authorization(
 ) -> Result<(), ModerationWireError> {
     let mut cases: HashMap<&str, (&str, &str)> = HashMap::new();
     for event in events {
+        if event.signed_mutation.protocol == 2
+            && !event
+                .signed_mutation
+                .destination
+                .as_ref()
+                .is_some_and(|destination| {
+                    destination
+                        .owner_pubkey_hex
+                        .eq_ignore_ascii_case(owner_pubkey_hex)
+                })
+        {
+            return Err(ModerationWireError::UnauthorizedActor(event.sequence));
+        }
         if let Some((package, publisher)) = cases.get(event.case_id.as_str())
             && (*package != event.package_id.as_str()
                 || !publisher.eq_ignore_ascii_case(&event.publisher_pubkey_hex))

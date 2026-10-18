@@ -265,6 +265,59 @@ fn job_rows_keep_progress_across_bounded_pages_and_account_for_utf8_bytes() {
 }
 
 #[test]
+fn uncertified_job_rows_remain_available_without_a_certified_session() {
+    let chrome = chrome();
+    let actor = chrome.borrow().active_local_user();
+    let broker =
+        crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(
+        );
+    let provider = LiveAppActionsProvider::new(broker.clone());
+    broker.record_completion_for_test(17, &actor, progress(17, "Routing", None, None));
+    let doc = AutoCommit::new();
+    let state = chrome.borrow();
+    let row = provider
+        .resolve(&job_status_id(17), context(&state, &doc))
+        .unwrap();
+    assert_eq!(row.id, job_status_id(17));
+    assert_eq!(row.subtitle.as_deref(), Some("Reported: Routing"));
+}
+
+#[test]
+fn job_rows_remain_unique_with_multiple_workspace_sessions() {
+    let chrome = chrome();
+    chrome
+        .borrow()
+        .tree_mut()
+        .desktop
+        .workspaces
+        .push(Workspace::new(WorkspaceId(2), "Another job workspace"));
+    let actor = chrome.borrow().active_local_user();
+    let broker =
+        crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(
+        );
+    let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
+    for id in [17, 16] {
+        broker.record_completion_for_test(id, &actor, progress(id, "Routing", None, None));
+    }
+    let doc = AutoCommit::new();
+    let state = chrome.borrow();
+    let expected = vec![job_status_id(16), job_status_id(17)];
+    let queried = provider.query(context(&state, &doc));
+    assert_eq!(
+        queried.into_iter().map(|row| row.id).collect::<Vec<_>>(),
+        expected
+    );
+    let page = provider.query_page(context(&state, &doc), None, SearchBudget::PALETTE);
+    assert_eq!(
+        page.results
+            .into_iter()
+            .map(|row| row.id)
+            .collect::<Vec<_>>(),
+        expected
+    );
+}
+
+#[test]
 fn job_rows_refresh_reported_progress_when_the_desktop_language_changes() {
     let chrome = chrome();
     let actor = chrome.borrow().active_local_user();

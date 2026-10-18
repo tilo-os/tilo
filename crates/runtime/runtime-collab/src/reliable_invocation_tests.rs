@@ -93,6 +93,15 @@ fn observation(mut o: collab_capnp::published_invocation_observation::Builder<'_
         19 => o.set_update_json(r#"{"invocation":"01010101010101010101010101010101"}"#),
         20 => o.set_update_json(format!(r#"{{"state":"accepted","invocation":"01010101-0101-0101-0101-010101010101","padding":"{}"}}"#,"x".repeat(240*1024))),
         21 => o.set_id(0),
+        22 => o.set_admission_json("x".repeat(256 * 1024 + 1)),
+        23 => o.set_terminal_json("x".repeat(256 * 1024 + 1)),
+        24 => {o.set_found(false);o.set_id(0);o.set_update_json("");o.set_admission_json("{}");},
+        25 => {o.set_found(false);o.set_id(0);o.set_update_json("");o.set_terminal_json("{}");},
+        26 => o.init_admission_json(1).as_bytes_mut()[0] = 0xff,
+        27 => o.init_terminal_json(1).as_bytes_mut()[0] = 0xff,
+        28 => o.set_admission_json("bad\0text"),
+        29 => o.set_terminal_json("bad\0text"),
+        30 => {o.set_admission_json(r#"{"admission":"private"}"#);o.set_terminal_json(r#"{"terminal":"private"}"#);},
         _ => {}
     }
 }
@@ -253,6 +262,8 @@ async fn reliable_invocation_round_trip_preserves_business_identity_and_optional
             let r = o.result.unwrap();
             assert_eq!(r.id, 99);
             assert_eq!(r.update_json, UPDATE);
+            assert_eq!(r.admission_json, None);
+            assert_eq!(r.terminal_json, None);
             assert!(!r.uncertain);
         }
         assert_eq!(
@@ -312,7 +323,7 @@ async fn reliable_invocation_rejects_malformed_or_replaced_binding_and_resolutio
 }
 #[tokio::test(flavor = "current_thread")]
 async fn reliable_invocation_rejects_uncorrelated_or_inconsistent_observation() {
-    for mode in (1..=13).chain(16..=19) {
+    for mode in (1..=13).chain(16..=19).chain(21..=29) {
         let (s, calls, _) = server(mode);
         over_wire(s, move |c| async move {
             assert!(
@@ -345,6 +356,28 @@ async fn reliable_invocation_rejects_uncorrelated_or_inconsistent_observation() 
         .await;
         assert_eq!(calls.get(), 3);
     }
+}
+#[tokio::test(flavor = "current_thread")]
+async fn reliable_invocation_preserves_owner_private_evidence() {
+    let (s, _, _) = server(30);
+    over_wire(s, |c| async move {
+        let result = c
+            .published_invocation_observation(&HOST, &ID)
+            .await
+            .unwrap()
+            .result
+            .unwrap();
+        assert_eq!(
+            result.admission_json.as_deref(),
+            Some(r#"{"admission":"private"}"#)
+        );
+        assert_eq!(
+            result.terminal_json.as_deref(),
+            Some(r#"{"terminal":"private"}"#)
+        );
+        assert_eq!(result.update_json, UPDATE);
+    })
+    .await;
 }
 #[tokio::test(flavor = "current_thread")]
 async fn reliable_invocation_retains_absence_and_uncertainty_without_inventing_outcome() {
@@ -641,4 +674,36 @@ fn reliable_invocation_old_35_and_47_parameter_words_stay_exact() {
         }
         assert_eq!(capnp::serialize::write_message_to_words(&out), bytes);
     }
+}
+
+#[test]
+fn reliable_invocation_evidence_preserves_existing_outcome_budget_and_redacts_debug() {
+    let mut message = capnp::message::Builder::new_default();
+    let mut outcome = UPDATE.to_owned();
+    outcome.push_str(&" ".repeat(256 * 1024 - outcome.len()));
+    {
+        let mut out =
+            message.init_root::<collab_capnp::published_invocation_observation::Builder<'_>>();
+        out.set_host(&HOST);
+        out.set_invocation(&ID);
+        out.set_found(true);
+        out.set_id(1);
+        out.set_update_json(&outcome);
+        out.set_admission_json(&"n".repeat(32 * 1024));
+        out.set_terminal_json(&"t".repeat(32 * 1024));
+    }
+    let observation =
+        reliable_decode_observation(message.get_root_as_reader().unwrap(), &HOST, &ID).unwrap();
+    let result = observation.result.unwrap();
+    assert_eq!(result.update_json.len(), 256 * 1024);
+    assert_eq!(result.admission_json.as_ref().unwrap().len(), 32 * 1024);
+    assert!(!format!("{result:?}").contains("nnnn"));
+    assert!(!format!("{result:?}").contains("tttt"));
+    message
+        .get_root::<collab_capnp::published_invocation_observation::Builder<'_>>()
+        .unwrap()
+        .set_admission_json(&"n".repeat(32 * 1024 + 1));
+    assert!(
+        reliable_decode_observation(message.get_root_as_reader().unwrap(), &HOST, &ID).is_err()
+    );
 }

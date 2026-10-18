@@ -127,12 +127,8 @@ fn invoke(
     caller: &Caller,
     request: &InvokeRequest,
 ) -> Result<(), ActionHostError> {
-    // Each attempt is a new invocation: ledger replay must not conceal reuse
-    // of a witness that has already been consumed by another invocation.
-    let mut request = request.clone();
-    request.invocation = tilo_actions::InvocationId::new();
     state
-        .action_invoke(caller, None, None, &request)
+        .action_invoke(caller, None, None, request)
         .wait_timeout(tilo_test_env::hang_bound())
         .ok()
         .flatten()
@@ -143,16 +139,56 @@ fn invoke(
 fn witness(state: &CapnpBrokerState, actor: &str, request: &InvokeRequest) -> Confirmation {
     Confirmation::Witnessed(
         state
-            .witness_confirmation(
+            .witness_confirmation(&state.witness_binding(
                 actor,
-                (
-                    &request.target.address.resource,
-                    &request.target.address.action,
-                ),
-                request.argument.to_slot().as_deref(),
-            )
+                tilo_actions::remote::workspace_provider_room(&request.target.provider).unwrap(),
+                request,
+            ))
             .unwrap(),
     )
+}
+
+#[test]
+fn owner_governance_rejects_witness_from_other_original_contexts() {
+    for changed in ["provider", "room", "revision", "invocation", "publication"] {
+        let (state, service, owner, mut request) = broker(true);
+        let mut binding = state.witness_binding("owner", owner.room().unwrap(), &request);
+        match changed {
+            "provider" => binding.provider = "another-provider".into(),
+            "room" => binding.room = "another-workspace".into(),
+            "revision" => binding.revision = Some("previous-publication".into()),
+            "invocation" => binding.invocation = tilo_actions::InvocationId::new(),
+            "publication" => binding.publication.0 = binding.publication.0.wrapping_add(1),
+            _ => unreachable!(),
+        }
+        request.confirmation = Some(Confirmation::Witnessed(
+            state.witness_confirmation(&binding).unwrap(),
+        ));
+        assert_eq!(
+            invoke(&state, &owner, &request),
+            Err(ActionHostError::ConfirmationRequired),
+            "a witness for another {changed} never confirms this invocation",
+        );
+        assert!(service.calls.lock().unwrap().is_empty());
+        request.confirmation = Some(witness(&state, "owner", &request));
+        invoke(&state, &owner, &request).expect("the exact answer remains usable");
+        assert_eq!(service.calls.lock().unwrap().len(), 1);
+    }
+}
+
+#[test]
+fn unrelated_publication_changes_preserve_host_governance_witness() {
+    let (state, service, owner, mut request) = broker(true);
+    request.confirmation = Some(witness(&state, "owner", &request));
+    state.surfaces_changed();
+    state.replace_action_directory_roots_for_test(vec![ActionDirectoryRoot {
+        peer_id: 123,
+        app_id: "org.example.unrelated".into(),
+        cluster_id: uuid::Uuid::new_v4().to_string(),
+        record_id: "main".into(),
+    }]);
+    invoke(&state, &owner, &request).expect("unrelated discovery does not revoke consent");
+    assert_eq!(service.calls.lock().unwrap().len(), 1);
 }
 
 #[test]
@@ -176,6 +212,15 @@ fn owner_governance_consumes_exact_witness_once() {
         *service.calls.lock().unwrap(),
         vec![serde_json::json!({"confirm": true})]
     );
+    invoke(&state, &owner, &request).expect("an exact retry returns its original receipt");
+    assert_eq!(service.calls.lock().unwrap().len(), 1);
+    assert_eq!(
+        invoke(&state, &owner, &changed),
+        Err(ActionHostError::InvocationConflict),
+        "an admitted invocation cannot be retried with different arguments",
+    );
+    assert_eq!(service.calls.lock().unwrap().len(), 1);
+    request.invocation = tilo_actions::InvocationId::new();
     assert_eq!(
         invoke(&state, &owner, &request),
         Err(ActionHostError::ConfirmationRequired)
@@ -244,6 +289,7 @@ fn canonical_governance_rechecks_ask_and_deny_after_witness_issuance() {
         request.confirmation = Some(Confirmation::Confirmed);
         invoke(&state, &person, &request).unwrap();
         service.calls.lock().unwrap().clear();
+        request.invocation = tilo_actions::InvocationId::new();
         let issued_before_change = witness(&state, "guest", &request);
         tree.write().workspaces[0].answer(Subject::person("guest"), &path, KindSet::ALL, answer);
         request.confirmation = None;
@@ -256,6 +302,9 @@ fn canonical_governance_rechecks_ask_and_deny_after_witness_issuance() {
 
         // An earlier witness can answer Ask, but cannot override a new Deny.
         for confirmation in [issued_before_change, Confirmation::Confirmed] {
+            if matches!(confirmation, Confirmation::Confirmed) {
+                request.invocation = tilo_actions::InvocationId::new();
+            }
             request.confirmation = Some(confirmation);
             if answer == Answer::Deny {
                 assert_eq!(
@@ -308,6 +357,28 @@ fn legacy_governance_retains_service_owned_admission() {
     let (state, service, owner, mut request) = broker(false);
     request.target.address.resource = "legacy-service-validates-this".into();
     request.confirmation = Some(witness(&state, "owner", &request));
+    let Some(Confirmation::Witnessed(token)) = request.confirmation.as_ref() else {
+        unreachable!()
+    };
     invoke(&state, &owner, &request).unwrap();
     assert_eq!(*service.calls.lock().unwrap(), vec![serde_json::json!({})]);
+    assert!(
+        state
+            .witnessed_confirmations
+            .lock()
+            .unwrap()
+            .contains_key(token),
+        "service-owned admission does not consume a broker owner witness"
+    );
+}
+
+#[test]
+fn legacy_governance_preserves_service_confirmation_phrases() {
+    let (state, service, owner, mut request) = broker(false);
+    request.confirmation = Some(Confirmation::Phrase("import the selected media".into()));
+    invoke(&state, &owner, &request).unwrap();
+    assert_eq!(
+        *service.calls.lock().unwrap(),
+        vec![serde_json::json!({"confirmation_phrase": "import the selected media"})]
+    );
 }

@@ -1,5 +1,6 @@
 //! Actual runtime session factory and broker policy, with synthetic held identity
-//! and a recording launcher. No installed app, user store or process launch.
+//! and a recording launcher. Receipt signing uses an isolated identity store;
+//! no installed app or application process launch is involved.
 use super::*;
 use crate::standalone::RuntimeActionHost;
 use serde_json::json;
@@ -11,10 +12,10 @@ use tilo_action_broker::{
 };
 use tilo_user_identity::DeviceCert;
 
-struct FixtureAuthority {
-    room: uuid::Uuid,
-    cert: DeviceCert,
-    time: PolicyTime,
+pub(in crate::standalone) struct FixtureAuthority {
+    pub(in crate::standalone) room: uuid::Uuid,
+    pub(in crate::standalone) cert: DeviceCert,
+    pub(in crate::standalone) time: PolicyTime,
 }
 impl CertificateAuthority for FixtureAuthority {
     fn policy_time(&self) -> Result<Option<PolicyTime>, String> {
@@ -30,6 +31,17 @@ impl CertificateAuthority for FixtureAuthority {
             self.time.now_ns().map_err(|error| error.to_string())?,
         )
         .map_err(|error| error.to_string())
+    }
+    fn authorize_with_policy_time(
+        &self,
+        room: uuid::Uuid,
+        cert: &DeviceCert,
+        time: &PolicyTime,
+    ) -> Result<(), String> {
+        if !time.same_origin(&self.time) {
+            return Err("runtime origin changed".into());
+        }
+        self.authorize(room, cert)
     }
     fn governs(&self, room: uuid::Uuid, _device: Option<&[u8; 32]>) -> bool {
         room == self.room
@@ -67,6 +79,9 @@ impl LauncherServices for RecordingLauncher {
 
 #[tokio::test]
 async fn admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retired_run() {
+    if crate::standalone::tests::isolated_signing_identity("standalone::joined::admission_tests::admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retired_run").is_none() {
+        return;
+    }
     let (joined, _directory) = Joined::test_empty().await;
     let certificate = joined.custody.device_cert.clone();
     let actor =
@@ -75,6 +90,7 @@ async fn admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retir
     workspace.set_owner(actor.clone());
     let room = workspace.room.to_string();
     let mut tree = WorkspaceTree::default();
+    tree.persist_path = Some(_directory.path().join("workspace.json"));
     tree.desktop.workspaces.push(workspace);
     let membership = tree.shared();
     let origin = OwnerPolicyClock::new().unwrap().new_origin();
@@ -86,9 +102,13 @@ async fn admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retir
         time: origin.capture().unwrap(),
     }));
     services.launcher = Some(launcher.clone());
+    let (broker, turn) = CapnpBrokerState::test_broker_with_authority_and_invoke_turn(
+        membership.authority(),
+        services,
+    );
     // This is the exact factory used by Standalone::mcp_session_factory.
     let factory = RuntimeActionHost {
-        broker: CapnpBrokerState::test_broker_with_authority(membership.authority(), services),
+        broker,
         room: room.clone(),
         joined,
         session: None,
@@ -113,7 +133,9 @@ async fn admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retir
         "{offered}"
     );
     let invoke = json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tilo_invoke","arguments":{"workspace":true,"resource":"app.host:fixture","action":"open"}}});
+    let worker = std::thread::spawn(turn);
     let opened = server.handle(invoke.clone()).await.unwrap();
+    worker.join().unwrap();
     assert_eq!(opened["result"]["isError"], false, "{opened}");
     assert_eq!(
         launcher.0.lock().unwrap().as_slice(),

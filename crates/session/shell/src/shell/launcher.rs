@@ -3408,8 +3408,14 @@ fn execute_installed(
 
 fn stage_launch_capabilities(
     app_id: &str,
-    grants: &LaunchGrants,
+    grants: &mut LaunchGrants,
 ) -> Option<tempfile::NamedTempFile> {
+    // Exclude authority already expired before staging from both the child's
+    // input and its supervisor's snapshot. Otherwise reopening after expiry
+    // would be refused rather than launch with the remaining permissions.
+    // Expiry after this point still refuses a pending launch or interrupts it.
+    let now = Some(tilo_clock::unix_now_ms() / 1000);
+    grants.sandbox.retain(|cap| cap.is_live_at(now));
     match write_capabilities_file(app_id, grants) {
         Ok(path) => path,
         Err(error) => {
@@ -3480,11 +3486,11 @@ fn execute_installed_inner(
 
     // A failure to write the capability file is not a launch failure —
     // the app starts with manifest-only permissions, the safe direction.
-    let capabilities = capability_snapshot.map_or_else(
+    let mut capabilities = capability_snapshot.map_or_else(
         || capabilities_for_app(&app.package_id),
         |grants| grants.for_app(&app.package_id),
     );
-    let capabilities_file = stage_launch_capabilities(&app.package_id, &capabilities);
+    let capabilities_file = stage_launch_capabilities(&app.package_id, &mut capabilities);
     let identity_path = crate::identity_registry::selected_identity_path(&room.to_string())
         .map_err(|error| LaunchError::IdentityUnavailable {
             detail: error.to_string(),
