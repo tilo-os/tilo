@@ -322,7 +322,31 @@ fn exit_code(code: i32) -> ExitCode {
     ExitCode::from(u8::try_from(code).unwrap_or(1))
 }
 
+/// How many descriptors this process's table holds from the start.
+const DESCRIPTOR_TABLE_SIZE: libc::c_int = 256;
+
+/// Grow the descriptor table to its working size while this process still
+/// has one thread. A launch opens service sockets, pipes and staged files
+/// beyond the 64 slots a fresh process starts with, and Linux makes a
+/// process whose table is shared by several threads wait for an RCU grace
+/// period (`expand_fdtable` -> `synchronize_rcu`, milliseconds) every time
+/// that table grows; growing it now, single-threaded, costs nothing. A
+/// launcher used to start with a large table only because the compositor
+/// leaked descriptors into it; one the app spawner starts has just its
+/// three standard streams.
+fn presize_descriptor_table() {
+    // SAFETY: duplicates stderr to the lowest free descriptor at or above the
+    // table's last slot, close-on-exec, and closes that copy at once.
+    unsafe {
+        let copy = libc::fcntl(2, libc::F_DUPFD_CLOEXEC, DESCRIPTOR_TABLE_SIZE - 1);
+        if copy >= 0 {
+            libc::close(copy);
+        }
+    }
+}
+
 fn main() -> ExitCode {
+    presize_descriptor_table();
     tilo_startup_metrics::handoff_mark("launcher-start");
     let retained_endpoint = match wait_for_shell_registration() {
         Ok(endpoint) => endpoint,
