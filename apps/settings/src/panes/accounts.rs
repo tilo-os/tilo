@@ -2048,7 +2048,7 @@ impl AccountsPane {
                                         &t("accounts-linked-copy"),
                                     )
                                     .with_icon(ui::icons::Icon::Copy)
-                                    .on_click(move || ui::text_selection::clipboard_copy(&copy)),
+                                    .on_effect(move || ui::text_selection::clipboard_copy(&copy)),
                                 )),
                         ),
                     )

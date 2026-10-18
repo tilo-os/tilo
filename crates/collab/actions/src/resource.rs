@@ -66,6 +66,21 @@ pub struct ControlInvocation {
     pub arguments: serde_json::Map<String, serde_json::Value>,
 }
 
+impl ControlInvocation {
+    /// An invocation of `action` on `resource`, with its arguments.
+    #[must_use]
+    pub fn from_parts(
+        resource: impl Into<String>,
+        action: impl Into<String>,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Self {
+        Self {
+            address: ActionAddress::new(resource, action),
+            arguments,
+        }
+    }
+}
+
 /// Failure to construct or emit a control binding.
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ActionBindingError {

@@ -94,7 +94,7 @@ mod cli {
             }
             Ok(args)
         }
-        fn get(&self, key: &str) -> Result<&str> {
+        fn value(&self, key: &str) -> Result<&str> {
             self.values
                 .get(key)
                 .and_then(|v| v.first())
@@ -112,7 +112,7 @@ mod cli {
                 return Err(invalid());
             }
             for key in required {
-                self.get(key)?;
+                self.value(key)?;
             }
             Ok(())
         }
@@ -167,7 +167,7 @@ mod cli {
     fn capacity(args: &Args) -> Result<u128> {
         const UNENCRYPTED_RESERVED: u64 = 4 * 1024u64.pow(3) + 2 * 1024 * 1024;
         const MINIMUM_ROOT: u128 = 32 * 1024u128.pow(3);
-        let required = total_required(args.get("--source-dir")?)?;
+        let required = total_required(args.value("--source-dir")?)?;
         if required == 0 {
             return Ok(0);
         }
@@ -176,7 +176,7 @@ mod cli {
         if root == disk {
             return Err(invalid());
         }
-        let raw = number(args.get(if root { "--root-bytes" } else { "--disk-bytes" })?)?;
+        let raw = number(args.value(if root { "--root-bytes" } else { "--disk-bytes" })?)?;
         if raw == 0 || raw >= 1 << 63 {
             return Err(invalid());
         }
@@ -246,9 +246,9 @@ mod cli {
         };
         let roots = grants.as_ref().map_or(explicit, |g| g.roots.clone());
         let result = (|| {
-            if let Some(receipt) = setup::extract(&roots, args.get("--out-dir")?)? {
+            if let Some(receipt) = setup::extract(&roots, args.value("--out-dir")?)? {
                 for kind in payload::KINDS {
-                    payload::stage(&roots, args.get("--out-dir")?, &receipt, &devices, kind)?;
+                    payload::stage(&roots, args.value("--out-dir")?, &receipt, &devices, kind)?;
                 }
             }
             Ok(())
@@ -257,7 +257,7 @@ mod cli {
         result.and(cleanup)
     }
     fn deliver(args: &Args, op: &str) -> Result<()> {
-        let account = setup::account(args.get("--username")?)?;
+        let account = setup::account(args.value("--username")?)?;
         if op == "deliver-user" {
             let digest = setup::carry(
                 "/var/lib/tilo/prepared-setup",
@@ -294,12 +294,12 @@ mod cli {
             &["--source-dir", "--receipt"],
             false,
         )?;
-        let text = args.get("--receipt")?;
+        let text = args.value("--receipt")?;
         if text.len() > 1024 {
             return Err(invalid());
         }
         let value = serde_json::from_str(text).map_err(|_| invalid())?;
-        setup::preflight(args.get("--source-dir")?, &value)?;
+        setup::preflight(args.value("--source-dir")?, &value)?;
         Ok(())
     }
     pub fn run() -> Result<()> {
@@ -317,7 +317,7 @@ mod cli {
             }
             "preflight-profile" => {
                 args.only(&["--source-dir"], &["--source-dir"], false)?;
-                setup::profile(args.get("--source-dir")?)?;
+                setup::profile(args.value("--source-dir")?)?;
             }
             "preflight-authenticated" | "retain-authenticated-binding" => {
                 let retain = op == "retain-authenticated-binding";
@@ -330,12 +330,12 @@ mod cli {
                 let (bytes, value) = stdin()?;
                 if retain {
                     setup::retain_binding(
-                        args.get("--source-dir")?,
-                        args.get("--target-var")?,
+                        args.value("--source-dir")?,
+                        args.value("--target-var")?,
                         &value,
                     )?;
                 } else {
-                    setup::authenticated(args.get("--source-dir")?, &value)?;
+                    setup::authenticated(args.value("--source-dir")?, &value)?;
                     std::io::stdout().write_all(&bytes)?;
                 }
             }
@@ -346,8 +346,8 @@ mod cli {
                     false,
                 )?;
                 setup::carry(
-                    args.get("--source-dir")?,
-                    args.get("--target-var")?,
+                    args.value("--source-dir")?,
+                    args.value("--target-var")?,
                     &["lib", "tilo", "prepared-setup"],
                     fs::uid(),
                     fs::gid(),
@@ -371,18 +371,19 @@ mod cli {
                 for kind in payload::KINDS {
                     if retain {
                         payload::retain(
-                            args.get("--source-dir")?,
-                            args.get("--target-var")?,
+                            args.value("--source-dir")?,
+                            args.value("--target-var")?,
                             kind,
                         )?;
-                    } else if let Some(value) = payload::staged(args.get("--source-dir")?, kind)? {
-                        payload::input(args.get("--source-dir")?, &value, kind, None)?;
+                    } else if let Some(value) = payload::staged(args.value("--source-dir")?, kind)?
+                    {
+                        payload::input(args.value("--source-dir")?, &value, kind, None)?;
                     }
                 }
             }
             "home-required-bytes" => {
                 args.only(&["--source-dir"], &["--source-dir"], false)?;
-                println!("{}", total_required(args.get("--source-dir")?)?);
+                println!("{}", total_required(args.value("--source-dir")?)?);
             }
             "check-home-capacity" => {
                 args.only(

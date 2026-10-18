@@ -82,7 +82,7 @@ impl Pairing {
         if self.busy() {
             body = body.push(Box::new(
                 Button::new("installer.pairing.cancel", &t("installer-pairing-cancel"))
-                    .on_click(move || cancel()),
+                    .on_effect(move || cancel()),
             ));
         } else {
             if self.actor.state() == "failed" || self.actor.state() == "cancelled" {
@@ -101,7 +101,7 @@ impl Pairing {
             }
             body = body.push(Box::new(
                 Button::new("installer.pairing.start", &t("installer-pairing-start"))
-                    .on_click(move || start()),
+                    .on_effect(move || start()),
             ));
         }
         Box::new(body)
