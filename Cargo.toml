@@ -68,6 +68,7 @@ members = [
     "crates/browser/tilo-web-desktop",
     # Core product surfaces
     "crates/session/shell",
+    "crates/session/render-service",
     "crates/sdk/ui-core",
 
     # Applications
@@ -290,6 +291,7 @@ members = [
     "crates/platform/tilo-pdf",
     "crates/platform/tilo-process",
     "crates/platform/tilo-presentation",
+    "crates/platform/tilo-render-protocol",
     "crates/platform/tilo-rt",
     "crates/platform/tilo-secrets",
     "crates/platform/tilo-subject",

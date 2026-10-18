@@ -29,6 +29,8 @@ pub(crate) mod capture_io;
 #[cfg(target_os = "linux")]
 pub mod chooser_service;
 #[cfg(target_os = "linux")]
+pub mod render_broker;
+#[cfg(target_os = "linux")]
 pub mod client_cursor;
 #[cfg(target_os = "linux")]
 pub mod client_input;

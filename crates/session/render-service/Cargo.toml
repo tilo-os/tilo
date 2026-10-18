@@ -1,0 +1,34 @@
+[package]
+name = "tilo-render-service"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "A room's render service: the one process that draws toolkit apps on the GPU. Validates each app's scenes, rasterizes them with vello into dma-bufs the compositor imports like any client buffer, and keeps every app's memory and pixels apart."
+
+[dependencies]
+tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["dmabuf-import"] }
+vello.workspace = true
+vello_encoding.workspace = true
+pollster.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tilo-rt.workspace = true
+skrifa = { version = "0.44.0", default-features = false, features = ["std"] }
+workspace-hack = "0.1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gbm = { version = "0.18", default-features = false, features = ["drm-support"] }
+rustix = { workspace = true, features = ["event", "fs", "mm", "net", "process", "std"] }
+libc.workspace = true
+tilo-sandbox-core = { path = "../../system/sandbox-core" }
+
+[dev-dependencies]
+rustix = { workspace = true, features = ["fs"] }
+tilo-font-catalog = { version = "0.1.0", path = "../../sdk/font-catalog" }
+
+[lints]
+workspace = true

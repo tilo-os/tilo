@@ -113,6 +113,8 @@ tilo-reference = { path = "../../collab/reference" }
 tilo-lockdown-policy = { path = "../tilo-lockdown-policy" }
 tokio = { workspace = true, features = ["full"] }
 tilo-rt.workspace = true
+tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
+tilo-render-service = { path = "../render-service" }
 
 serde.workspace = true
 # `raw_value`: the control socket splices a tree serialised once into its reply.
