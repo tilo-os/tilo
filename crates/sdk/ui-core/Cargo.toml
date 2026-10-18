@@ -22,12 +22,18 @@ ignored = ["wgpu-hal", "getrandom02", "serde_bytes"]
 [features]
 default = ["native", "broker-transport"]
 # The native desktop runner and host services: the winit event loop with its
-# AccessKit adapter, the Wayland/X11 clipboard, the OS URI handler, startup
+# AccessKit adapter, the Wayland clipboard, the OS URI handler, startup
 # warmup, the desktop appearance a standalone app follows, and the
 # `ui::native` backends. Without it the crate is the portable
 # toolkit — widgets, state, layout, rendering and the headless host — and a
 # host supplies its own `ui::host::HostServices`.
 native = ["local-daemons", "tilo-host/native", "dep:tilo-appearance", "dep:accesskit_winit", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:tilo-host-search", "dep:windows", "dep:accesskit_android", "dep:tilo-content", "dep:jni", "dep:ndk-context", "syntax-definitions", "tokio/full", "settings-store/watch"]
+# X11 windows (winit's X11 backend) and the X11 clipboard, for development
+# builds on an X11 host: `cargo run -p <app> --features ui/x11` (through
+# `tilo-app`'s `x11`). Every Tilo app runs as a Wayland client in its
+# sandbox, so the shared runtime leaves X11 (x11rb, x11-dl and the X11
+# clipboard) out.
+x11 = ["winit/x11", "tilo-host/x11"]
 # two-face's grammars for the code editor's highlighting (about 0.9 MB of
 # data). Without it every language highlights as plain text; the browser
 # toolkit core leaves it out.

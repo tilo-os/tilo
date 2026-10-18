@@ -127,7 +127,15 @@ workspace-members = [
 # Rust symbols only. A thin app that monomorphises its safe wrapper (Imager's
 # zstd Reader) then references C symbols no library provides and fails to link.
 # Keep such crates out of the hack so each user links its own copy.
+#
+# winit stays out too, with the keyboard loader whose `x11` feature it turns
+# on: the shell's hosted backend builds it with X11, apps without (the
+# toolkit's `x11` feature), and a union in the hack would put winit's X11
+# backend, x11rb and x11-dl into the shared runtime every sandboxed app maps,
+# where no X server is reachable.
 third-party = [
+    { name = "tilo-winit", path = "vendor/winit" },
+    { name = "xkbcommon-dl" },
     { name = "zstd" },
     { name = "zstd-safe" },
     { name = "zstd-sys" },
