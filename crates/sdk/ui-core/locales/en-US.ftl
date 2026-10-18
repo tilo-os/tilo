@@ -186,6 +186,9 @@ history-sync-queue-full = Remote document queue is full. Synchronization needs a
 history-sync-owner-changed = Document connection or owner changed while remote updates were pending. Reconnect and synchronize before continuing.
 history-sync-offline = Working offline. Changes will sync when you're back.
 history-local-action-unconfirmed = Sharing this edit was not confirmed.
+history-local-action-unsigned = This edit has no authenticated sharing history.
+history-local-action-pending = Action history is waiting for confirmation.
+
 history-sync-refused = Syncing stopped: this workspace didn't accept a change. Your edits stay on this device.
 history-sync-remote-waiting = Remote updates will apply when the current edit finishes.
 history-sync-owner-closed = Document owner closed or changed. Reconnect before synchronizing its replacement.

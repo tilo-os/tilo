@@ -24,6 +24,7 @@ impl crate::services::AppActionGrants for LocalReportGrants {
 
 struct LocalDocumentDirectory {
     kind: tilo_actions::OperationKind,
+    read: bool,
     pin_dropped: Rc<std::cell::Cell<bool>>,
     resolutions: Rc<std::cell::Cell<usize>>,
 }
@@ -59,7 +60,11 @@ impl action_directory::Server for LocalDocumentDirectory {
         let mut row = directory_state("original-r1").borrow().row();
         let descriptor = row.descriptor.as_mut().unwrap();
         descriptor.operation_kind = self.kind;
-        descriptor.contract = tilo_actions::ActionContract::default();
+        descriptor.contract = if self.read {
+            tilo_actions::ActionContract::view()
+        } else {
+            tilo_actions::ActionContract::default()
+        };
         let visibility = row.visibility.as_mut().unwrap();
         visibility.governing_kind = Some(self.kind);
         visibility.contract = descriptor.contract.clone();
@@ -70,7 +75,11 @@ impl action_directory::Server for LocalDocumentDirectory {
     }
 }
 
-async fn local_report_admission(kind: tilo_actions::OperationKind, mutation_hashes: Vec<[u8; 32]>) {
+async fn local_report_admission(
+    kind: tilo_actions::OperationKind,
+    mutation_hashes: Vec<[u8; 32]>,
+    read: bool,
+) {
     tokio::task::LocalSet::new()
         .run_until(async {
             let env = Environment::new();
@@ -85,6 +94,7 @@ async fn local_report_admission(kind: tilo_actions::OperationKind, mutation_hash
                     &env.route.app_id,
                     capnp_rpc::new_client(LocalDocumentDirectory {
                         kind,
+                        read,
                         pin_dropped: pin_dropped.clone(),
                         resolutions: resolutions.clone(),
                     }),
@@ -200,8 +210,8 @@ async fn local_report_admission(kind: tilo_actions::OperationKind, mutation_hash
             let mut rpc = raw.admit_local_document_action_request();
             rpc.get().set_request(&bytes);
             let reply = rpc.send().promise.await;
-            if kind == tilo_actions::OperationKind::Effect
-                || (kind == tilo_actions::OperationKind::View
+            if (kind == tilo_actions::OperationKind::Effect && !read)
+                || ((kind == tilo_actions::OperationKind::View || read)
                     && !request.mutation_hashes.is_empty())
             {
                 assert!(reply.is_err());
@@ -469,25 +479,35 @@ async fn local_report_admission(kind: tilo_actions::OperationKind, mutation_hash
 
 #[tokio::test(flavor = "current_thread")]
 async fn local_document_report_admits_original_owner_without_delivery_or_execution() {
-    local_report_admission(tilo_actions::OperationKind::Document, vec![[1; 32]]).await;
+    local_report_admission(tilo_actions::OperationKind::Document, vec![[1; 32]], false).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn local_document_noop_has_admission_but_never_execution_evidence() {
-    local_report_admission(tilo_actions::OperationKind::Document, vec![]).await;
+    local_report_admission(tilo_actions::OperationKind::Document, vec![], false).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn local_document_read_only_view_has_admission_but_never_execution_evidence() {
-    local_report_admission(tilo_actions::OperationKind::View, vec![]).await;
+    local_report_admission(tilo_actions::OperationKind::View, vec![], false).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn local_document_view_cannot_report_document_mutations() {
-    local_report_admission(tilo_actions::OperationKind::View, vec![[1; 32]]).await;
+    local_report_admission(tilo_actions::OperationKind::View, vec![[1; 32]], false).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn local_document_effect_cannot_use_read_only_report_admission() {
-    local_report_admission(tilo_actions::OperationKind::Effect, vec![]).await;
+    local_report_admission(tilo_actions::OperationKind::Effect, vec![], false).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn local_document_read_has_signed_admission_but_never_execution_evidence() {
+    local_report_admission(tilo_actions::OperationKind::Effect, vec![], true).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn local_document_read_cannot_report_document_mutations() {
+    local_report_admission(tilo_actions::OperationKind::Effect, vec![[1; 32]], true).await;
 }

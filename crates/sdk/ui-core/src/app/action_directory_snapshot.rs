@@ -94,6 +94,7 @@ const MAX_PINNED_BYTES: usize = 4 * 1024 * 1024;
 
 /// A pre-event inert directory retained only for local mutation admission.
 /// Dropping the last owner makes the revision unavailable to the local RPC.
+#[derive(Clone)]
 pub(super) struct LocalDocumentDirectoryPin {
     revision: String,
     snapshot: std::rc::Rc<ActionDirectorySnapshot>,
@@ -101,11 +102,86 @@ pub(super) struct LocalDocumentDirectoryPin {
 }
 
 impl App {
+    pub(super) fn checkpoint_local_directory_row(
+        &self,
+        revision: &str,
+        resource: &str,
+        action: &str,
+    ) -> Option<ActionDirectoryRow> {
+        self.actions
+            .local_document_directory_pins
+            .iter()
+            .filter_map(std::rc::Weak::upgrade)
+            .filter(|pin| pin.revision == revision)
+            .find_map(|pin| {
+                pin.snapshot
+                    .actions
+                    .get(&ActionAddress::new(resource, action))
+                    .cloned()
+            })
+    }
+
+    pub(super) fn restore_local_directory_row(
+        &mut self,
+        revision: String,
+        resource: String,
+        action: String,
+        row: ActionDirectoryRow,
+    ) -> Option<std::rc::Rc<LocalDocumentDirectoryPin>> {
+        if row.resource != resource
+            || row.action.as_deref() != Some(action.as_str())
+            || row.descriptor.is_none()
+        {
+            return None;
+        }
+        let mut snapshot = ActionDirectorySnapshot::default();
+        snapshot
+            .actions
+            .insert(ActionAddress::new(resource, action), row);
+        snapshot.retained_bytes = snapshot.estimate_retained_bytes();
+        let pins = &mut self.actions.local_document_directory_pins;
+        pins.retain(|pin| pin.strong_count() > 0);
+        let bytes = snapshot
+            .retained_bytes
+            .saturating_add(revision.len())
+            .saturating_add(128);
+        let retained: usize = pins
+            .iter()
+            .filter_map(std::rc::Weak::upgrade)
+            .map(|pin| pin.retained_bytes)
+            .sum();
+        if pins.len() >= MAX_PINNED_REVISIONS || retained.saturating_add(bytes) > MAX_PINNED_BYTES {
+            return None;
+        }
+        let pin = std::rc::Rc::new(LocalDocumentDirectoryPin {
+            revision,
+            snapshot: std::rc::Rc::new(snapshot),
+            retained_bytes: bytes,
+        });
+        pins.push(std::rc::Rc::downgrade(&pin));
+        Some(pin)
+    }
+
     pub(super) fn pin_local_document_action_directory(
         &mut self,
         revision: &str,
     ) -> Option<std::rc::Rc<LocalDocumentDirectoryPin>> {
-        if revision.is_empty() || self.try_action_directory_revision().ok()? != revision {
+        if revision.is_empty() {
+            return None;
+        }
+        if self.collaboration.manager.is_connected() {
+            if self.try_action_directory_revision().ok()? != revision {
+                return None;
+            }
+        } else if self
+            .actions
+            .action_directory_stamp
+            .as_ref()
+            .map(|(_, stamp)| stamp.as_str())
+            != Some(revision)
+        {
+            // Disconnection must not recompute a revision against a now-absent
+            // primary witness. Only the previously frozen surface is usable.
             return None;
         }
         let snapshot = self.actions.action_directory_snapshot.as_ref()?.clone();
@@ -144,14 +220,27 @@ impl App {
         resource: &str,
         action: &str,
     ) -> runtime_collab::ActionDirectoryResolution {
+        let mut revision_found = false;
         let Some(pin) = self
             .actions
             .local_document_directory_pins
             .iter()
             .filter_map(std::rc::Weak::upgrade)
-            .find(|pin| pin.revision == revision)
+            .find(|pin| {
+                if pin.revision != revision {
+                    return false;
+                }
+                revision_found = true;
+                pin.snapshot
+                    .actions
+                    .contains_key(&ActionAddress::new(resource, action))
+            })
         else {
-            return runtime_collab::ActionDirectoryResolution::StaleRevision;
+            return if revision_found {
+                runtime_collab::ActionDirectoryResolution::NotFound
+            } else {
+                runtime_collab::ActionDirectoryResolution::StaleRevision
+            };
         };
         // No live provider fallback: only rows actually frozen before input
         // may explain an already-applied mutation.

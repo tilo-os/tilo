@@ -206,6 +206,39 @@ impl Queue {
         actions
     }
 
+    /// Recovered reports consume the same capacity as fresh speculative work.
+    pub(crate) fn restore_lease(
+        &self,
+        capture: &CapturedAction,
+        pin: Option<Rc<dyn std::any::Any>>,
+    ) -> Result<Lease, String> {
+        let heads: Vec<_> = capture
+            .original_heads
+            .iter()
+            .copied()
+            .map(ChangeHash)
+            .collect();
+        let bytes = report_budget(
+            &capture.revision,
+            capture.published.as_ref(),
+            &capture.encoded,
+            capture.context.as_ref(),
+            &heads,
+        )?;
+        let mut pending = self.0.borrow_mut();
+        if pending.reserved >= CAPACITY || bytes > BYTE_BUDGET.saturating_sub(pending.bytes) {
+            return Err("local action recovery queue is full".into());
+        }
+        pending.reserved += 1;
+        pending.bytes += bytes;
+        Ok(Lease {
+            queue: Rc::downgrade(&self.0),
+            keepalive: Some(self.clone()),
+            bytes,
+            _pin: pin,
+        })
+    }
+
     pub(crate) fn has_outstanding(&self) -> bool {
         self.0.borrow().reserved != 0
     }

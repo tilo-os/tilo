@@ -58,7 +58,8 @@ terminal mechanism.
 ## Speculative SDK-local framework actions
 
 The framework captures local typed executions at `ActionHost` and retained
-resource dispatch, including immediate, queued and grouped edits. A route-local,
+resource dispatch, including immediate, queued and grouped edits, registered
+View callbacks and registered semantic Read projections. A route-local,
 bounded queue preserves the original published invocation, canonical encoded
 input, original heads, exact resulting change hashes and context. Invocation
 identity is separate from undo coalescing. Reads and no-ops retain empty change
@@ -72,6 +73,13 @@ rejects stale revisions. Snapshot leases and queue capacity survive asynchronous
 report submission, including uncertain responses. Oversized reports and queue
 saturation refuse visibly rather than blocking on the broker. There is no
 synchronous signing, key loading, RPC or journal barrier in input dispatch.
+
+Losing the signing transport retains the last authenticated published snapshot,
+not a new identity. Exact pending reports and their retained directory rows use
+existing private checkpoint metadata for reconnect and restart; retries never
+execute callbacks again. Pending, refused and unsigned history are visible.
+A device without internet can still use its connected local broker. A fresh
+unmanaged development session can edit, but has explicitly unsigned history.
 
 `admitLocalDocumentAction` authenticates the existing SDK channel, revalidates
 its original worker and route, resolves the exact published action/revision,
@@ -99,7 +107,7 @@ rather than guessing an action identity.
 
 ## Coverage and remaining entrypoints
 
-Covered by central admission when they reach the published application dispatcher:
+Covered by published application admission or the native host admission barrier:
 
 - Authenticated eager and resolved local RPCs, including ordinary non-durable
   invocations. Status and cancellation on the local RPC retain exact certificate
@@ -111,6 +119,13 @@ Covered by central admission when they reach the published application dispatche
   sessions, and native-person origins retaining the original certificate.
 - Eager application actions through those authenticated hosts; their admission
   runs on the broker bridge.
+- Native host operations, including shortcut runs, host steps, own-device
+  actions, application launch/close and workspace-open operations. These use
+  `admit_host_action` (or its retained-start variant) before invoking services;
+  observed-launch completions retain the original certified owner and lifecycle.
+  Native workspace services and task launches use the same admission foundation.
+  This coverage depends on original certificate custody, not a displayed actor
+  label.
 - The shell Jobs projection opens the maintained certified session and retains
   its owner-aware lifecycle handle for listing, status and cancellation. Every
   operation revalidates the original certificate and execution. A row must
@@ -127,14 +142,18 @@ The following are **not** claimed to have this coverage:
   remain explicitly uncertified. `action_invoke` without original custody,
   `start_invocation_confirmed_for`, `start_invocation_from_offered`, and legacy
   bridge starts cannot manufacture a certified user from an actor label.
-- Host operations handled before the published application dispatcher:
-  `invoke_shortcut_run`, `invoke_host_step`, `invoke_own_device`, direct
-  `launch_application`/`close_application`, workspace-open operations and their
-  observed-launch completions. Their own admission/lifecycle needs original
-  certificate custody before it can use this evidence foundation.
-- UI widget edits that never invoke a published resource action, direct shell
-  commands, and installer/greeter console actions. They need migration through
-  their semantic admission doors; input-event logging is not a substitute.
+- Explicitly identity-free, pre-identity connections may retain an uncertified
+  local owner when neither the native-person service nor certificate authority
+  is configured. A missing or revoked certificate on an identity-bearing host
+  fails closed; it does not become a bootstrap exception.
+- Portable web hosts do not provide the native broker's signing and durable
+  admission journal. Without a certified Tilo session, typed web execution cannot
+  claim a Tilo user; it must not mint a substitute web key. Local execution there
+  is not native host admission evidence.
+- UI edits without a retained published invocation, direct shell commands, and
+  installer/greeter console actions. They need their semantic admission doors;
+  input-event logging is not a substitute. Typed framework actions with retained
+  publication are covered by the speculative local-report path above.
 - The legacy shell `BrokerActionHost::invoke` facade and compatibility native
   hosts without a local-person service, when they supply only a `Caller` label.
   Maintained certified action sessions are distinct from this compatibility path.

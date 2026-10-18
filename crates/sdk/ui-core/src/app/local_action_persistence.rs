@@ -1,6 +1,49 @@
 //! Private local action checkpoints follow the exact document owner, not UI aliases.
 use super::*;
 
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(super) struct LocalActionCheckpoint {
+    pub report: runtime_collab::LocalDocumentActionReport,
+    #[serde(with = "checkpoint_row")]
+    pub directory_row: Option<runtime_collab::ActionDirectoryRow>,
+}
+
+// Serialize the inert row without introducing a second wire protocol or
+// changing the collaboration transport's public types.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(remote = "runtime_collab::ActionDirectoryRow")]
+struct CheckpointRow {
+    parent_resource: String,
+    resource: String,
+    resource_kind: String,
+    resource_label: String,
+    presentation: Option<tilo_actions::ResourcePresentation>,
+    action: Option<String>,
+    descriptor: Option<runtime_collab::ExportedAction>,
+    has_children: bool,
+    visibility: Option<tilo_actions::remote::RowVisibility>,
+}
+
+mod checkpoint_row {
+    use super::*;
+    use serde::{Deserialize, Serialize};
+    #[derive(Serialize)]
+    struct Borrowed<'a>(#[serde(with = "CheckpointRow")] &'a runtime_collab::ActionDirectoryRow);
+    #[derive(Deserialize)]
+    struct Owned(#[serde(with = "CheckpointRow")] runtime_collab::ActionDirectoryRow);
+    pub fn serialize<S: serde::Serializer>(
+        row: &Option<runtime_collab::ActionDirectoryRow>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        row.as_ref().map(Borrowed).serialize(serializer)
+    }
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<runtime_collab::ActionDirectoryRow>, D::Error> {
+        Ok(Option::<Owned>::deserialize(deserializer)?.map(|row| row.0))
+    }
+}
+
 impl App {
     pub(super) fn stage_local_action_evidence(
         &mut self,
@@ -8,7 +51,35 @@ impl App {
         capture: &crate::local_document_action::CapturedAction,
         receipt: Option<&str>,
     ) -> Result<(), String> {
+        self.stage_local_action_checkpoint(route, capture, receipt, false)
+    }
+
+    pub(super) fn stage_local_action_checkpoint(
+        &mut self,
+        route: &crate::collaboration::RouteSpec,
+        capture: &crate::local_document_action::CapturedAction,
+        receipt: Option<&str>,
+        rejected: bool,
+    ) -> Result<(), String> {
         let report = capture.clone().into_report()?;
+        let directory_row = self
+            .checkpoint_local_directory_row(&report.revision, &report.resource, &report.action)
+            .or_else(|| {
+                self.local_action_checkpoint_entries(route)
+                    .ok()?
+                    .into_iter()
+                    .find(|(checkpoint, _)| checkpoint.report.invocation == report.invocation)
+                    .and_then(|(checkpoint, _)| checkpoint.directory_row)
+            });
+        let receipt = if rejected {
+            Some("{\"local_capture_rejected\":true}")
+        } else {
+            receipt
+        };
+        let checkpoint = LocalActionCheckpoint {
+            report,
+            directory_row,
+        };
         let action = app_state::PrivateAction {
             id: *capture.invocation.as_bytes(),
             hashes: capture
@@ -17,7 +88,13 @@ impl App {
                 .chain(&capture.mutation_hashes)
                 .copied()
                 .collect(),
-            intent: serde_json::to_vec(&report).map_err(|error| error.to_string())?,
+            intent: if checkpoint.directory_row.is_some() {
+                serde_json::to_vec(&checkpoint)
+            } else {
+                // Preserve the original intent bytes of older checkpoints.
+                serde_json::to_vec(&checkpoint.report)
+            }
+            .map_err(|error| error.to_string())?,
             receipt: receipt.map(|receipt| receipt.as_bytes().to_vec()),
         };
         if let Some(entry) = self
@@ -60,6 +137,18 @@ impl App {
         &self,
         route: &crate::collaboration::RouteSpec,
     ) -> Result<Vec<(runtime_collab::LocalDocumentActionReport, Option<String>)>, String> {
+        Ok(self
+            .local_action_checkpoint_entries(route)?
+            .into_iter()
+            .filter(|(_, receipt)| receipt.as_deref() != Some("{\"local_capture_rejected\":true}"))
+            .map(|(checkpoint, receipt)| (checkpoint.report, receipt))
+            .collect())
+    }
+
+    pub(super) fn local_action_checkpoint_entries(
+        &self,
+        route: &crate::collaboration::RouteSpec,
+    ) -> Result<Vec<(LocalActionCheckpoint, Option<String>)>, String> {
         let entries = if let Some(entry) = self
             .document_routes
             .owners
@@ -93,8 +182,15 @@ impl App {
         entries
             .into_iter()
             .map(|entry| {
-                let report: runtime_collab::LocalDocumentActionReport =
-                    serde_json::from_slice(&entry.intent).map_err(|e| e.to_string())?;
+                let checkpoint: LocalActionCheckpoint = serde_json::from_slice(&entry.intent)
+                    .or_else(|_| {
+                        serde_json::from_slice(&entry.intent).map(|report| LocalActionCheckpoint {
+                            report,
+                            directory_row: None,
+                        })
+                    })
+                    .map_err(|e| e.to_string())?;
+                let report = &checkpoint.report;
                 let hashes: Vec<_> = report
                     .original_heads
                     .iter()
@@ -112,7 +208,7 @@ impl App {
                     .map(String::from_utf8)
                     .transpose()
                     .map_err(|e| e.to_string())?;
-                Ok((report, receipt))
+                Ok((checkpoint, receipt))
             })
             .collect()
     }

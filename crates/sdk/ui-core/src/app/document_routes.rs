@@ -156,9 +156,8 @@ impl App {
 
     /// Local queue state, not an acknowledgement of remote delivery/durability.
     ///
-    /// Silent for a document that was never meant to sync (local, outside
-    /// any room): only a document that had a collaboration service and lost
-    /// it is working offline.
+    /// Distinguishes pending or unsigned action history from remote document
+    /// synchronization; lack of internet alone does not mean signing is offline.
     pub fn document_sync_status(&self) -> Option<std::borrow::Cow<'_, str>> {
         use std::borrow::Cow;
         let reported = self
@@ -187,7 +186,9 @@ impl App {
         if let Some(reported) = reported {
             return Some(Cow::Borrowed(reported));
         }
-        let key = if self.document_routes.witness.is_none() {
+        let key = if self.local_input_capture.has_pending() {
+            Some("history-local-action-pending")
+        } else if self.document_routes.witness.is_none() {
             let manager = &self.collaboration.manager;
             // A change the workspace refused stops sync just as a lost
             // connection does, but reconnecting will not resume it, and the
