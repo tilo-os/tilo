@@ -19,8 +19,6 @@
 use std::io;
 use std::path::Path;
 
-use image::{ExtendedColorType, ImageEncoder};
-
 use crate::frame::{self, FrameBuf};
 
 /// Frames per second written into the container timing. A clip records at
@@ -125,10 +123,7 @@ impl Recorder {
 
 /// JPEG-encode a tightly-packed RGB8 buffer.
 fn encode_jpeg(rgb: &[u8], w: u32, h: u32) -> Option<Vec<u8>> {
-    let mut out = Vec::new();
-    let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, QUALITY);
-    enc.write_image(rgb, w, h, ExtendedColorType::Rgb8).ok()?;
-    Some(out)
+    ui::jpeg::encode_rgb8(w, h, rgb, QUALITY).ok()
 }
 
 // ---- RIFF / AVI muxer ------------------------------------------------

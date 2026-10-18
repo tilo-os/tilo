@@ -39,10 +39,7 @@ pub fn seed(directory: &Path) -> Result<serde_json::Value, Box<dyn std::error::E
                         255,
                     ])
                 });
-                let mut bytes = std::io::Cursor::new(Vec::new());
-                image::DynamicImage::ImageRgba8(image)
-                    .write_to(&mut bytes, image::ImageFormat::Png)?;
-                ("png", bytes.into_inner())
+                ("png", ui::png::encode_rgba8(64, 48, image.as_raw())?)
             }
             1 => (
                 "md",

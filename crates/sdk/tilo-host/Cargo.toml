@@ -43,7 +43,10 @@ tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", default-featur
 # Bounded reads of the host-selected read-only policy projection.
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", optional = true }
 hex.workspace = true
-image = { workspace = true, features = ["png"] }
+# PNG and JPEG encoding for every app (`png`, `jpeg`): written here, in the
+# shared runtime, so an app that encodes an image does not instantiate the
+# encoders' generic code into its own binary.
+image = { workspace = true, features = ["png", "jpeg"] }
 tilo-rt.workspace = true
 # Only the native backends run futures on tokio.
 tokio = { workspace = true, optional = true, features = ["full"] }

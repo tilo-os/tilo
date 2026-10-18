@@ -319,11 +319,8 @@ fn matte_picture(matte: &tilo_subject::Matte) -> Result<Vec<u8>, String> {
     let width = u32::try_from(matte.width).map_err(|_| "the matte is too wide")?;
     let height = u32::try_from(matte.height).map_err(|_| "the matte is too tall")?;
     let image = image::RgbaImage::from_raw(width, height, rgba).ok_or("the matte is malformed")?;
-    let mut out = std::io::Cursor::new(Vec::new());
-    image
-        .write_to(&mut out, image::ImageFormat::Png)
-        .map_err(|error| format!("the matte could not be kept: {error}"))?;
-    Ok(out.into_inner())
+    ui::png::encode_rgba8(width, height, image.as_raw())
+        .map_err(|error| format!("the matte could not be kept: {error}"))
 }
 
 /// The first characters of a revision, enough to tell it.
@@ -505,22 +502,13 @@ fn store_picture(content: &tilo_content::ContentStore, bytes: &[u8]) -> Result<S
 /// costs about what the original did to keep and sync, rather than a PNG
 /// several times its size; anything else is kept losslessly as PNG.
 fn encode_like(picture: &image::RgbaImage, source: &[u8]) -> Result<Vec<u8>, String> {
-    use image::ImageEncoder as _;
-    let mut out = std::io::Cursor::new(Vec::new());
+    let (width, height) = picture.dimensions();
     let kept = if image::guess_format(source).ok() == Some(image::ImageFormat::Jpeg) {
-        let rgb = image::DynamicImage::ImageRgba8(picture.clone()).to_rgb8();
-        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, CLEANED_JPEG_QUALITY)
-            .write_image(
-                rgb.as_raw(),
-                rgb.width(),
-                rgb.height(),
-                image::ExtendedColorType::Rgb8,
-            )
+        ui::jpeg::encode_rgba8_opaque(width, height, picture.as_raw(), CLEANED_JPEG_QUALITY)
     } else {
-        picture.write_to(&mut out, image::ImageFormat::Png)
+        ui::png::encode_rgba8(width, height, picture.as_raw())
     };
-    kept.map_err(|error| format!("the cleaned picture could not be kept: {error}"))?;
-    Ok(out.into_inner())
+    kept.map_err(|error| format!("the cleaned picture could not be kept: {error}"))
 }
 
 /// The quality a cleaned JPEG photograph is kept at.

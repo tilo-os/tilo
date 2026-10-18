@@ -181,12 +181,7 @@ fn within_decode_limits(w: u32, h: u32) -> bool {
 /// Encode RGBA8 as a PNG. This is what reaches the clipboard consumer that
 /// wants a file rather than a raw buffer, and what `Save` writes.
 pub fn encode_png(img: &Rgba) -> Option<Vec<u8>> {
-    use image::{ExtendedColorType, ImageEncoder};
-    let mut out = Vec::new();
-    image::codecs::png::PngEncoder::new(&mut out)
-        .write_image(&img.bytes, img.w, img.h, ExtendedColorType::Rgba8)
-        .ok()?;
-    Some(out)
+    ui::png::encode_rgba8(img.w, img.h, &img.bytes).ok()
 }
 
 /// Crop to `rect`, expressed in normalized `0..1` coordinates of `src`.

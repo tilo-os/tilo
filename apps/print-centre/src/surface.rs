@@ -118,14 +118,12 @@ impl ScannedPage {
         let source = image::RgbaImage::from_raw(self.width, self.height, self.rgba.to_vec())
             .ok_or_else(|| "scanned page pixels were incomplete".to_string())?;
         let rotated = image::imageops::rotate90(&source);
+        let png = ui::png::encode_rgba8(rotated.width(), rotated.height(), rotated.as_raw())
+            .map_err(|error| format!("could not update the scanned page: {error}"))?;
         self.width = rotated.width();
         self.height = rotated.height();
-        self.rgba = Arc::from(rotated.clone().into_raw());
-        let mut png = std::io::Cursor::new(Vec::new());
-        image::DynamicImage::ImageRgba8(rotated)
-            .write_to(&mut png, image::ImageFormat::Png)
-            .map_err(|error| format!("could not update the scanned page: {error}"))?;
-        self.png = Arc::from(png.into_inner());
+        self.rgba = Arc::from(rotated.into_raw());
+        self.png = Arc::from(png);
         self.recognized_text = None;
         self.ocr_note = "Text recognition needs updating after rotation.".into();
         self.ocr_needs_refresh = true;
@@ -168,14 +166,12 @@ impl ScannedPage {
             .max(1)
             .min(self.height.saturating_sub(y));
         let cropped = image::imageops::crop_imm(&source, x, y, crop_width, crop_height).to_image();
+        let png = ui::png::encode_rgba8(cropped.width(), cropped.height(), cropped.as_raw())
+            .map_err(|error| format!("could not update the scanned page: {error}"))?;
         self.width = cropped.width();
         self.height = cropped.height();
-        self.rgba = Arc::from(cropped.clone().into_raw());
-        let mut png = std::io::Cursor::new(Vec::new());
-        image::DynamicImage::ImageRgba8(cropped)
-            .write_to(&mut png, image::ImageFormat::Png)
-            .map_err(|error| format!("could not update the scanned page: {error}"))?;
-        self.png = Arc::from(png.into_inner());
+        self.rgba = Arc::from(cropped.into_raw());
+        self.png = Arc::from(png);
         self.recognized_text = None;
         self.ocr_note = "Text recognition needs updating after cropping.".into();
         self.ocr_needs_refresh = true;
