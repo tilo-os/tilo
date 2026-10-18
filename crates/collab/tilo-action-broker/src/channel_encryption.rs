@@ -972,23 +972,22 @@ impl ChannelEncryption {
             return;
         };
         entry.retry.fired(now, REQUEST_LONGEST);
-        // The plain request for a steward that predates routes; the routed
-        // one lets a current steward decide Read on the record.
-        if let Some(route) = entry.route.clone() {
-            self.delivery = self.delivery.wrapping_add(1);
-            let _ = transport.publish(NeighbourMsg::MlsRoutedAccessRequest {
+        // Routed when the record is known, so the steward decides Read on it.
+        self.delivery = self.delivery.wrapping_add(1);
+        let message = match entry.route.clone() {
+            Some(route) => NeighbourMsg::MlsRoutedAccessRequest {
                 room: entry.room.to_string(),
-                request: Box::new(request.clone()),
+                request: Box::new(request),
                 route: Box::new(route),
                 delivery: self.delivery,
-            });
-        }
-        self.delivery = self.delivery.wrapping_add(1);
-        let _ = transport.publish(NeighbourMsg::MlsAccessRequest {
-            room: entry.room.to_string(),
-            request: Box::new(request),
-            delivery: self.delivery,
-        });
+            },
+            None => NeighbourMsg::MlsAccessRequest {
+                room: entry.room.to_string(),
+                request: Box::new(request),
+                delivery: self.delivery,
+            },
+        };
+        let _ = transport.publish(message);
     }
 
     fn open_steward(&mut self, room: RoomId, channel: ChannelId) -> channel_crypto::Result<()> {

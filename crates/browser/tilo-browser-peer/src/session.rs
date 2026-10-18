@@ -2820,9 +2820,8 @@ impl SavedPeerChannels {
 }
 
 /// Sign a governance message with the device key and wrap it for the host,
-/// which retains it for the steward. An access request goes twice: routed,
-/// so the steward decides Read on the record, and plain, for a steward that
-/// predates routes.
+/// which retains it for the steward. An access request goes routed, so the
+/// steward decides Read on the record.
 async fn sign_governance(
     signer: &dyn DeviceSigner,
     device: [u8; 32],
@@ -2853,17 +2852,12 @@ async fn signed_governance(
                 let signature = signer.sign(request.signing_bytes().ok()?).await.ok()?;
                 request.signature = collab_types::Signature::from_bytes(signature);
                 let routed = neighbour_wire::NeighbourMsg::MlsRoutedAccessRequest {
-                    room: room.clone(),
-                    request: Box::new(request.clone()),
+                    room,
+                    request: Box::new(request),
                     route: Box::new(route),
                     delivery: rand::random(),
                 };
-                let plain = neighbour_wire::NeighbourMsg::MlsAccessRequest {
-                    room,
-                    request: Box::new(request),
-                    delivery: rand::random(),
-                };
-                return Some(vec![(workspace_id, routed), (workspace_id, plain)]);
+                return Some(vec![(workspace_id, routed)]);
             }
             crate::channels::Outgoing::Ack {
                 workspace_id,

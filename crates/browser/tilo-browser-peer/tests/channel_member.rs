@@ -211,7 +211,7 @@ async fn a_browser_joins_a_native_stewarded_channel_and_edits_its_sealed_record(
             continue;
         };
         match postcard::from_bytes::<NeighbourMsg>(&data) {
-            Ok(NeighbourMsg::MlsAccessRequest { request, .. }) => {
+            Ok(NeighbourMsg::MlsRoutedAccessRequest { request, .. }) => {
                 assert_eq!(author, *browser_device.as_bytes());
                 request
                     .verify()
@@ -457,7 +457,7 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
             continue;
         };
         match postcard::from_bytes::<NeighbourMsg>(&data) {
-            Ok(NeighbourMsg::MlsAccessRequest { request, .. }) => {
+            Ok(NeighbourMsg::MlsRoutedAccessRequest { request, .. }) => {
                 requests.insert(request.device, *request);
                 steward.reconcile(&allowed, &requests, &vault).unwrap();
                 for outgoing in steward.outbox() {
@@ -592,7 +592,7 @@ async fn a_page_that_joined_first_holds_its_edit_until_the_genesis_admits_it() {
             continue;
         };
         match postcard::from_bytes::<NeighbourMsg>(&data) {
-            Ok(NeighbourMsg::MlsAccessRequest { request, .. }) => {
+            Ok(NeighbourMsg::MlsRoutedAccessRequest { request, .. }) => {
                 assert_eq!(author, *browser_device.as_bytes());
                 assert_eq!(request.channel, channel);
                 requests.insert(request.device, *request);

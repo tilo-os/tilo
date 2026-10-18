@@ -484,9 +484,9 @@ pub enum NeighbourMsg {
     /// carries, so a steward can decide Read on that record, a Deny over its
     /// app or any pattern covering it included. The route proves itself: the
     /// steward refuses it unless it hashes, with `room`, to the request's
-    /// channel ([`collab_types::ChannelRoute::proves`]). A device sends both
-    /// forms while a steward may predate this one. Appended to preserve every
-    /// existing Postcard discriminant.
+    /// channel ([`collab_types::ChannelRoute::proves`]). A device that knows
+    /// the route sends this form only. Appended to preserve every existing
+    /// Postcard discriminant.
     MlsRoutedAccessRequest {
         room: String,
         request: Box<collab_types::MlsAccessRequestV1>,
