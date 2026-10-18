@@ -773,6 +773,8 @@ mod tests {
             reason = "viewport size and sampled colour channels read best as w/h and r/g/b/e"
         )]
         fn notification_stack_review_fixtures_are_written() {
+            // Motion reads at its end: this test checks the resting frame.
+            let _settled = ui::motion::testing::settled();
             let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../target/ui-review/s2-r2/notifications");
             let (w, h) = (640_u32, 400_u32);
