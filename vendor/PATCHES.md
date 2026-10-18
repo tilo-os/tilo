@@ -61,6 +61,16 @@ upstream `cdylib` dropped the hash from the library filenames, so two builds
 in one Cargo run overwrote each other's outputs (E0460/E0463).
 Remove a copy once its upstream release carries the change.
 
+## Tables without relocations
+
+`pulldown-cmark` 0.12.2 is the checksum-verified MIT registry release with one
+change: its HTML5 entity table is offsets into two string literals rather
+than 2125 pairs of pointers, so the shared app runtime (which carries it
+through the Markdown codec) no longer relocates 68 KB of it in every app
+process before `main`. Same entities, same order, same lookup; see its
+`TILO-PATCH.md` and `PROVENANCE.md`. Remove the copy once upstream generates
+the same layout.
+
 ## Exportable histories
 
 The fork changes also live in two standalone histories, disconnected from the
