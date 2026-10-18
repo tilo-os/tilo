@@ -119,24 +119,6 @@ fn paste_conflict(
     })
 }
 
-/// Whether `path` and `dir` are on one filesystem, so a move is a rename.
-/// When either can't be read, assume so: the move itself then says why.
-fn same_filesystem(path: &Path, dir: &Path) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt as _;
-        match (std::fs::symlink_metadata(path), std::fs::metadata(dir)) {
-            (Ok(a), Ok(b)) => a.dev() == b.dev(),
-            _ => true,
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (path, dir);
-        true
-    }
-}
-
 /// The keys that run `command` in the listing, shown beside it in menus so
 /// the menu teaches the keyboard. Only commands with a key of their own.
 fn command_shortcut(command: &FileCommand) -> Option<ui::platform::Shortcut> {
@@ -6581,7 +6563,7 @@ impl FileExplorerWidget {
     /// subtree, or into the folder it already lives in — are skipped rather
     /// than erroring.
     fn drop_paths_into(&mut self, paths: &[PathBuf], dir: &std::path::Path, copy: bool) {
-        let copy = copy || paths.iter().any(|src| !same_filesystem(src, dir));
+        let copy = copy || paths.iter().any(|src| !host_fs::same_filesystem(src, dir));
         let entries: Vec<PathBuf> = paths
             .iter()
             .filter(|src| {
