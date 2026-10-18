@@ -90,6 +90,10 @@ pub struct Metrics {
     /// Narrowest the detail column beside an overview may become before the
     /// two become push screens.
     pub detail_min_width: f32,
+    /// Narrowest a Tilo app's window becomes: its compact layout, one screen
+    /// at a time, at phone width. Resizing a window stops its edge here
+    /// (`widget::edge_resize`), so every app's compact layout must fit it.
+    pub window_min_width: f32,
     /// The widest a form, a settings page or a page of facts grows
     /// (`FormPage`, `Page`, `PropertyList`, `Container::readable`). Wider
     /// windows leave the extra room beside it.
@@ -141,6 +145,7 @@ impl Metrics {
         sidebar_max_width: 420.0,
         content_min_width: 560.0,
         detail_min_width: 360.0,
+        window_min_width: 320.0,
         readable_width: 720.0,
         reading_measure: 640.0,
         chooser_width: 224.0,
@@ -224,6 +229,7 @@ impl Metrics {
             sidebar_max_width: self.sidebar_max_width * factor,
             content_min_width: self.content_min_width * factor,
             detail_min_width: self.detail_min_width * factor,
+            window_min_width: self.window_min_width * factor,
             readable_width: self.readable_width * factor,
             reading_measure: self.reading_measure * factor,
             chooser_width: self.chooser_width * factor,

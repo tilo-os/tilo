@@ -808,6 +808,10 @@ struct ForeignEntry {
     /// The client's `xdg_toplevel.set_min_size`/`set_max_size`, logical pixels; `0` on an axis leaves it unconstrained.
     min_size: (i32, i32),
     max_size: (i32, i32),
+    /// The edge of the tile that holds still while a person drags the
+    /// other one ([`ResizeAnchor`]). Until the client answers the new size,
+    /// its last frame is drawn against it, unscaled.
+    resize_anchor: Option<ResizeAnchor>,
     /// What the client declared its window to be with `xdg_surface.set_window_geometry` — everything outside it is shadow or resize border, which a tile never shows.
     geometry: Option<WindowGeometry>,
     /// How the client's buffer lies on the surface, as its last commit said.
@@ -953,6 +957,7 @@ impl ForeignEntry {
             configured_extent: None,
             min_size: (0, 0),
             max_size: (0, 0),
+            resize_anchor: None,
             geometry: None,
             scale: SurfaceScale::default(),
             first_seen: Instant::now(),
@@ -1059,6 +1064,51 @@ impl ForeignEntry {
         let y = tile.y0 + ((tile.height() - h) / 2.0).round();
         Rect::new(x, y, x + w, y + h)
     }
+
+    /// Where an `img_w`×`img_h` frame of this window is drawn in `tile`.
+    ///
+    /// Normally scaled to fit [`Self::target_box`] ([`fit_into`]). While an
+    /// edge drag holds one edge of the tile still and the frame has not
+    /// caught up with the tile's size, the frame is drawn at the size the
+    /// client drew it, against that edge, and clipped by the tile: never
+    /// stretched, never slid. A released anchor lets go once a frame fills
+    /// the tile again, which is when the client has answered.
+    fn frame_rect(&mut self, tile: Rect, img_w: u32, img_h: u32) -> Option<Rect> {
+        let target = self.target_box(tile);
+        let anchor = self.resize_anchor?;
+        let Some((logical_w, logical_h)) = self.window_size() else {
+            return fit_into(target, img_w, img_h);
+        };
+        let answered =
+            (logical_w - target.width()).abs() <= 1.0 && (logical_h - target.height()).abs() <= 1.0;
+        if answered {
+            if anchor.released {
+                self.resize_anchor = None;
+            }
+            return fit_into(target, img_w, img_h);
+        }
+        if img_w == 0 || img_h == 0 || logical_w <= 0.0 || logical_h <= 0.0 {
+            return None;
+        }
+        let x0 = match anchor.fixed {
+            ui::widget::WindowEdge::Leading => target.x0,
+            ui::widget::WindowEdge::Trailing => target.x1 - logical_w,
+        };
+        Some(Rect::new(
+            x0,
+            target.y0,
+            x0 + logical_w,
+            target.y0 + logical_h,
+        ))
+    }
+}
+
+/// The edge of a window's tile an edge drag holds still, and whether the
+/// drag has ended (the anchor then lasts until the client catches up).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ResizeAnchor {
+    fixed: ui::widget::WindowEdge,
+    released: bool,
 }
 
 /// Copy the `(x, y, w, h)` region out of a row-major RGBA frame.
@@ -3654,6 +3704,48 @@ impl ForeignFrameStore {
         });
     }
 
+    /// The client's minimum and maximum width, logical pixels, when it set
+    /// them: what a person resizing its window is stopped at.
+    pub fn width_limits(&self, id: SurfaceId) -> (Option<f64>, Option<f64>) {
+        let guard = self.entries.lock_recover();
+        guard.get(&id).map_or((None, None), |e| {
+            let stated = |px: i32| (px > 0).then_some(f64::from(px));
+            (stated(e.min_size.0), stated(e.max_size.0))
+        })
+    }
+
+    /// A person is dragging an edge of `id`'s window and `fixed` holds still
+    /// (`None`: nothing holds). See [`ForeignEntry::frame_rect`].
+    pub fn set_resize_anchor(&self, id: SurfaceId, fixed: Option<ui::widget::WindowEdge>) {
+        self.with_entry(id, |e| {
+            e.resize_anchor = fixed.map(|fixed| ResizeAnchor {
+                fixed,
+                released: false,
+            });
+        });
+    }
+
+    /// The edge drag on `id`'s window ended: keep drawing its frame against
+    /// the fixed edge only until the client has answered the final size.
+    pub fn release_resize_anchor(&self, id: SurfaceId) {
+        self.with_entry(id, |e| {
+            if let Some(anchor) = e.resize_anchor.as_mut() {
+                anchor.released = true;
+            }
+        });
+    }
+
+    /// Where an `img_w`×`img_h` frame of `id` is drawn when it is shown in
+    /// `tile`: what the painter draws and what input inverts.
+    pub fn frame_rect(&self, id: SurfaceId, tile: Rect, img_w: u32, img_h: u32) -> Option<Rect> {
+        let mut guard = self.entries.lock_recover();
+        match guard.get_mut(&id) {
+            Some(entry) if entry.resize_anchor.is_some() => entry.frame_rect(tile, img_w, img_h),
+            Some(entry) => fit_into(entry.target_box(tile), img_w, img_h),
+            None => fit_into(tile, img_w, img_h),
+        }
+    }
+
     /// The box inside `tile` that `id`'s window is drawn into: the whole tile,
     /// or a centred box when the client's maximum size keeps it smaller.
     pub fn target_box(&self, id: SurfaceId, tile: Rect) -> Rect {
@@ -3665,7 +3757,7 @@ impl ForeignFrameStore {
     /// native foreign-surface painter. No frame means no painted geometry.
     pub(crate) fn painted_frame_rect(&self, id: SurfaceId, tile: Rect) -> Option<Rect> {
         let (width, height) = self.frame_size(id)?;
-        fit_into(self.target_box(id, tile), width, height)
+        self.frame_rect(id, tile, width, height)
     }
 
     /// Where desktop point `at` falls on `id`'s surface, in surface-local
@@ -3680,7 +3772,7 @@ impl ForeignFrameStore {
             return (x - target.x0, y - target.y0);
         };
         let (_, _, width, height) = layout.content;
-        let Some(drawn) = fit_into(target, width, height) else {
+        let Some(drawn) = self.frame_rect(id, tile, width, height) else {
             return (x - target.x0, y - target.y0);
         };
         let scale_x = drawn.width() / f64::from(width);
@@ -4393,8 +4485,9 @@ impl ForeignSurfaceWidget {
             return None;
         }
         // A window whose maximum size keeps it smaller than the tab is fitted
-        // into its centred box instead; `surface_point` maps input the same way.
-        fit_into(store().target_box(self.surface_id, self.rect), img_w, img_h)
+        // into its centred box instead, and one a person is resizing is held
+        // against the fixed edge; `surface_point` maps input the same way.
+        store().frame_rect(self.surface_id, self.rect, img_w, img_h)
     }
 }
 
@@ -4579,11 +4672,24 @@ impl Widget for ForeignSurfaceWidget {
             self.record_foreign_damage(&image, brush_transform, transform, dst);
             let brush = ImageBrush::new(image.clone()).with_extend(Extend::Pad);
             self.record_hdr_layer(&image, brush_transform, transform, dst);
+            // A frame held against the fixed edge of a window being resized
+            // can be wider than the tile until the client answers: the tile
+            // clips it, so it never draws over the window beside it.
+            let overflows = !self.rect.inflate(0.5, 0.5).contains_rect(dst);
             if self.preserve_transparency {
                 // The app buffer already carries the shared floating chrome's
                 // soft silhouette. Drawing it directly preserves transparent
                 // corners and prevents a second radius/backdrop from making
                 // the native handoff look wider than the in-app surface.
+                if overflows {
+                    scene.push_layer(
+                        Fill::NonZero,
+                        vello::peniko::BlendMode::default(),
+                        1.0,
+                        transform,
+                        &self.rect,
+                    );
+                }
                 scene.fill(
                     Fill::NonZero,
                     brush_transform,
@@ -4591,6 +4697,9 @@ impl Widget for ForeignSurfaceWidget {
                     None,
                     &Rect::new(0.0, 0.0, f64::from(image.width), f64::from(image.height)),
                 );
+                if overflows {
+                    scene.pop_layer();
+                }
                 self.draw_collaboration_overlay(scene, transform, text_renderer, theme, presence);
                 return;
             }
@@ -4602,7 +4711,7 @@ impl Widget for ForeignSurfaceWidget {
                 None,
                 &clip,
             );
-            if self.full_bleed && self.sheet_images.is_empty() {
+            if self.full_bleed && self.sheet_images.is_empty() && !overflows {
                 // Square: the image lands inside the tile (`fit_rect`), so
                 // no clip is needed, and the frame stays one plain image
                 // fill a display can scan out in place of the composite.
@@ -4742,6 +4851,26 @@ impl AppWidget for ForeignSurfaceWidget {
     }
     fn app_icon(&self) -> IconDescriptor {
         IconDescriptor::Glyph("󰖯")
+    }
+
+    /// The client's `xdg_toplevel` min-size hint.
+    fn min_window_width(&self) -> Option<f64> {
+        store().width_limits(self.surface_id).0
+    }
+
+    /// The client's `xdg_toplevel` max-size hint.
+    fn max_window_width(&self) -> Option<f64> {
+        store().width_limits(self.surface_id).1
+    }
+
+    fn set_live_resize_anchor(&mut self, fixed: Option<ui::widget::WindowEdge>) {
+        store().set_resize_anchor(self.surface_id, fixed);
+        self.placement_dirty = true;
+    }
+
+    fn release_live_resize_anchor(&mut self) {
+        store().release_resize_anchor(self.surface_id);
+        self.placement_dirty = true;
     }
 }
 
@@ -6079,6 +6208,72 @@ mod tests {
             "a minimum above the tab is honoured too"
         );
         assert_eq!(store().target_box(id, tile), tile);
+        store().forget(id);
+    }
+
+    /// While a person drags one edge of a client's window, its last frame
+    /// is drawn at the size it was drawn, against the edge that holds still,
+    /// until the client answers the new size: never stretched or slid.
+    /// Input maps through the same rect, and the hold ends once a frame
+    /// fills the tile after the drag.
+    #[test]
+    fn a_window_being_resized_is_drawn_against_its_fixed_edge_until_it_answers() {
+        use ui::widget::WindowEdge;
+        let id = sid(63);
+        store().forget(id);
+        store().publish_rgba(id, &vec![0; 600 * 800 * 4], 600, 800);
+        let mut widget = ForeignSurfaceWidget::new(id, "x".into());
+        // Grown 100 px leftwards by its left edge: the right edge holds.
+        let grown = Rect::new(100.0, 0.0, 800.0, 800.0);
+        widget.rect = grown;
+        AppWidget::set_live_resize_anchor(&mut widget, Some(WindowEdge::Trailing));
+        assert_eq!(
+            widget.fit_rect(600, 800),
+            Some(Rect::new(200.0, 0.0, 800.0, 800.0)),
+            "drawn 1:1 against the right edge, the new strip on the left left empty"
+        );
+        assert_eq!(
+            store().surface_point(id, grown, (200.0, 10.0)),
+            (0.0, 10.0),
+            "input lands where the frame is drawn"
+        );
+        // Narrowed by its right edge: the left edge holds and the tile clips.
+        let narrowed = Rect::new(0.0, 0.0, 500.0, 800.0);
+        widget.rect = narrowed;
+        AppWidget::set_live_resize_anchor(&mut widget, Some(WindowEdge::Leading));
+        assert_eq!(
+            widget.fit_rect(600, 800),
+            Some(Rect::new(0.0, 0.0, 600.0, 800.0)),
+            "not shrunk to fit: the tile clips what does not fit yet"
+        );
+        // The drag ends; the frame still has the old size, so it stays held.
+        AppWidget::release_live_resize_anchor(&mut widget);
+        assert_eq!(
+            widget.fit_rect(600, 800),
+            Some(Rect::new(0.0, 0.0, 600.0, 800.0))
+        );
+        // The client answers: drawn into the tile, and the hold is gone.
+        store().publish_rgba(id, &vec![0; 500 * 800 * 4], 500, 800);
+        assert_eq!(widget.fit_rect(500, 800), Some(narrowed));
+        store().publish_rgba(id, &vec![0; 600 * 800 * 4], 600, 800);
+        assert_eq!(
+            widget.fit_rect(600, 800),
+            Some(Rect::new(0.0, 0.0, 500.0, 800.0 * 500.0 / 600.0)),
+            "with no drag in flight a stray frame is fitted as before"
+        );
+        store().forget(id);
+    }
+
+    /// A client's size hints are the limits a person resizing it meets.
+    #[test]
+    fn a_clients_size_hints_are_its_windows_resize_limits() {
+        let id = sid(64);
+        store().forget(id);
+        let widget = ForeignSurfaceWidget::new(id, "x".into());
+        assert_eq!(AppWidget::min_window_width(&widget), None, "stated nothing");
+        store().note_size_limits(id, (420, 300), (1600, 0));
+        assert_eq!(AppWidget::min_window_width(&widget), Some(420.0));
+        assert_eq!(AppWidget::max_window_width(&widget), Some(1600.0));
         store().forget(id);
     }
 

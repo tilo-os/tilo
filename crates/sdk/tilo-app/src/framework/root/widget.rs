@@ -300,6 +300,12 @@ impl AppWidget for RootWidget {
         self.0.take_save_retry()
     }
 
+    /// Every Tilo app has a compact layout that works at phone width, and a
+    /// person resizing its window is stopped there rather than squeezing it.
+    fn min_window_width(&self) -> Option<f64> {
+        Some(f64::from(ui_core::tokens::Metrics::BASE.window_min_width))
+    }
+
     fn record_save_status(&mut self, status: RecordSaveStatus) {
         self.0.record_save_status(status);
     }

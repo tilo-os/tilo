@@ -322,6 +322,33 @@ pub trait AppWidget: Widget {
         None
     }
 
+    /// The narrowest window this app is still usable in, in logical px: a
+    /// Tilo app's compact layout, a client's `xdg_toplevel` min-size hint.
+    /// Resizing a window stops its edge here rather than squeezing the app
+    /// (`widget::edge_resize`). `None` says nothing, and the strip's floor
+    /// applies.
+    fn min_window_width(&self) -> Option<f64> {
+        None
+    }
+
+    /// The widest window this app can fill, in logical px: a client's
+    /// `xdg_toplevel` max-size hint. `None`: no maximum.
+    fn max_window_width(&self) -> Option<f64> {
+        None
+    }
+
+    /// A person is dragging one edge of this app's window; `fixed` is the
+    /// edge that holds still on screen (`None` once nothing holds). An app
+    /// that draws a frame of another size than its window until it catches
+    /// up, a Wayland client answering a configure, draws that frame against
+    /// the fixed edge, at its own scale, rather than stretched or slid.
+    fn set_live_resize_anchor(&mut self, _fixed: Option<crate::widget::WindowEdge>) {}
+
+    /// The edge drag ended. An app holding a frame against the fixed edge
+    /// keeps doing so until its content has the window's size again, then
+    /// lets go of it.
+    fn release_live_resize_anchor(&mut self) {}
+
     /// What a private window offers its own device: the resources and
     /// actions its door publishes, for the host to list and invoke for this
     /// device's person without publishing them to any room. `None` for a

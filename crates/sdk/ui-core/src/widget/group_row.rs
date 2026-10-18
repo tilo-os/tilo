@@ -25,9 +25,13 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::TileContent;
 use crate::widget::{
-    DEFAULT_STRIP_USABLE_PX, FloatingSurfaceProvider, HANDLE_SLOT_PX, ResizeHandle, TabDescriptor,
-    TileHost, Widget, WindowGroup, WindowWidth,
+    DEFAULT_STRIP_USABLE_PX, EdgeGrab, FloatingSurfaceProvider, HANDLE_SLOT_PX, ResizeHandle,
+    TabDescriptor, TileHost, Widget, WindowGroup, WindowWidth,
 };
+
+#[path = "group_row_edges.rs"]
+mod edges;
+use edges::RowEdgeDrag;
 
 /// Idle time before the strip snaps to the nearest group's left edge.
 const SNAP_IDLE_MS: u32 = 200;
@@ -464,8 +468,13 @@ pub struct GroupRow {
     /// row with no lanes spans every display and collapses whole.
     covered_output: Option<u32>,
     /// In-flight whole-group reorder drag (distinct from a tab-detach
-    /// drag inside a child `TabBar`, and from an inter-group resize drag).
+    /// drag inside a child `TabBar`, and from an edge resize).
     group_drag: Option<GroupDrag>,
+    /// The window edge under the pointer, which a press would resize, and
+    /// whether Shift was held when it was found (see [`super::edge_resize`]).
+    edge_hover: Option<(EdgeGrab, bool)>,
+    /// An edge resize in flight.
+    edge_drag: Option<RowEdgeDrag>,
     /// A held group a drag let go of, springing back: its id, how far it
     /// was pulled, and when it was let go.
     group_resist_back: Option<(u64, vello::kurbo::Vec2, Instant)>,
@@ -1436,6 +1445,8 @@ impl GroupRow {
             hidden: false,
             covered_output: None,
             group_drag: None,
+            edge_hover: None,
+            edge_drag: None,
             group_resist_back: None,
             touch_pan: None,
             pointer_pan: None,
@@ -1744,15 +1755,9 @@ impl GroupRow {
             .collect()
     }
 
-    /// Whether `p` lies on any visible window's edge grip.
+    /// Whether `p` lies on a window edge a press would resize.
     pub fn resize_grab_hit_at(&self, p: Point) -> bool {
-        !self.hidden
-            && self.rect.contains(p)
-            && self.groups.iter().enumerate().any(|(i, group)| {
-                !self.layout_hides_group(i)
-                    && self.fullscreen_group != Some(group.id)
-                    && group.resize_grab_hit(p)
-            })
+        self.edge_grab_at(p).is_some()
     }
 
     /// Whether the group promoted by [`Self::set_fullscreen`] stops at its
@@ -3611,18 +3616,12 @@ impl GroupRow {
         // Don't start a group drag while a tab-detach or resize drag is
         // already in flight, or one is already tracked.
         if self.group_drag.is_some()
-            || self
-                .groups
-                .iter()
-                .any(|g| g.resize_grab_hit(self.last_cursor))
+            || self.edge_drag.is_some()
+            || self.edge_grab_at(self.last_cursor).is_some()
             || self
                 .groups
                 .iter()
                 .any(super::window_group::WindowGroup::drag_in_flight)
-            || self
-                .handles
-                .iter()
-                .any(super::resize_handle::ResizeHandle::is_dragging)
         {
             return;
         }
@@ -3801,7 +3800,7 @@ impl GroupRow {
     /// Whether `p` is canvas no window, tab bar or resize seam covers.
     fn over_background(&self, p: Point) -> bool {
         self.rect.contains(p)
-            && !self.handles.iter().any(|h| h.cursor_shape(p).is_some())
+            && self.edge_grab_at(p).is_none()
             && !self
                 .groups
                 .iter()
@@ -4320,6 +4319,7 @@ impl Widget for GroupRow {
             let now = self.snap_clock(crate::time::now());
             self.tick_snap_at(now);
             self.advance_drag_reach(crate::time::now());
+            self.advance_edge_autoscroll(crate::time::now());
         }
         let mut any = false;
         for g in &mut self.groups {
@@ -4364,9 +4364,6 @@ impl Widget for GroupRow {
             group.set_reduce_motion(theme.reduce_motion);
             group.set_motion_source(self.motion_source);
             let lane = lane_of.get(i).copied().unwrap_or(0);
-            // No seam handle sits left of a lane's first group.
-            let prev_lane = i.checked_sub(1).and_then(|p| lane_of.get(p).copied());
-            group.set_leads_lane(prev_lane != Some(lane));
             let dest_fits = snap_lane.get(lane).copied().unwrap_or(false);
             if group.is_closing() && !theme.reduce_motion {
                 // A closing slot owns its width spring even when its destination
@@ -4441,9 +4438,8 @@ impl Widget for GroupRow {
                 *slot = Some(i);
             }
         }
-        // Grow/truncate the handle pool to `max(0, N-1)`; truncating from
-        // the tail is fine since an active drag's handle would have had
-        // its neighbours change structurally anyway.
+        // Grow/truncate the seam pool to `max(0, N-1)`. A seam holds no
+        // drag state (the row's `edge_drag` does), so its index may change.
         let desired_handles = if self.external_navigation {
             0
         } else {
@@ -4454,13 +4450,6 @@ impl Widget for GroupRow {
                 .extend((self.handles.len()..desired_handles).map(|_| ResizeHandle::new()));
         } else if self.handles.len() > desired_handles {
             self.handles.truncate(desired_handles);
-        }
-        // Handle `i` sits in the gap after group `i`, so it takes group
-        // `i`'s basis for its drag clamp.
-        for (i, h) in self.handles.iter_mut().enumerate() {
-            if let Some(&usable) = usable_per_group.get(i) {
-                h.set_strip_usable_px(usable);
-            }
         }
         // `flex_shrink: 0.0` on every group: Niri-style, placing a new
         // tile never resizes siblings; `content_width` grows past the
@@ -4695,13 +4684,10 @@ impl Widget for GroupRow {
                 *w = right;
             }
         }
-        let edge_resizing = self.groups.iter().any(WindowGroup::edge_resize_in_flight);
-        let steady = !edge_resizing
-            && !self.group_drag_active()
-            && !self
-                .handles
-                .iter()
-                .any(super::resize_handle::ResizeHandle::is_dragging);
+        // An edge resize holds the pan itself (`group_row_edges`): no clamp
+        // or re-frame may move the strip under the pointer.
+        let edge_resizing = self.edge_drag.is_some();
+        let steady = !edge_resizing && !self.group_drag_active();
         let mut moved = false;
         let ease_reframe = self.shift_armed && !self.reduce_motion;
         let reframe = self.motion.context(
@@ -5041,10 +5027,9 @@ impl Widget for GroupRow {
             self.dispatch_to_groups(event, ctx);
         }
         if !*ctx.handled {
-            self.dispatch_to_handles(event, ctx);
+            self.handle_edge_resize(event, ctx);
         }
-        self.apply_pending_handle_resizes();
-        if !new_tab_owned {
+        if !new_tab_owned && !*ctx.handled {
             self.dispatch_to_groups(event, ctx);
         }
         self.prune_closed_groups();
@@ -5077,23 +5062,17 @@ impl Widget for GroupRow {
 
     fn wants_pointer_capture(&self) -> bool {
         self.pointer_pan.is_some_and(|pan| pan.engaged)
+            || self.edge_drag.is_some()
             || self.groups.iter().any(super::Widget::wants_pointer_capture)
-            || self
-                .handles
-                .iter()
-                .any(super::Widget::wants_pointer_capture)
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        // Resize seams win where their generous hit band overlaps a group's
-        // edge. Empty tab-bar space then advertises whole-group dragging,
-        // instead of making that useful mouse path discoverable by accident.
-        if let Some(cursor) = self
-            .handles
-            .iter()
-            .find_map(|handle| handle.cursor_shape(point))
-        {
-            return Some(cursor);
+        // A window edge wins over what is under it (`edge_grab_at` is the
+        // same test a press makes). Empty tab-bar space then advertises
+        // whole-group dragging, instead of making that useful mouse path
+        // discoverable by accident.
+        if self.edge_drag.is_some() || self.edge_grab_at(point).is_some() {
+            return Some(winit::window::CursorIcon::EwResize);
         }
         if self.group_drag.is_some() || self.pointer_pan.is_some_and(|pan| pan.engaged) {
             return Some(winit::window::CursorIcon::Grabbing);
@@ -5238,6 +5217,7 @@ impl Widget for GroupRow {
         self.snap_in_flight()
             || self.shift_in_flight()
             || self.drag_reach_pending()
+            || self.edge_autoscroll_pending()
             || self.group_drag.is_some_and(|drag| drag.moved && !drag.held)
             || self
                 .group_resist_back
@@ -5926,52 +5906,6 @@ impl GroupRow {
         );
     }
 
-    /// Resize handles dispatch FIRST so a press in the gap claims the
-    /// event before adjacent groups see it. Skipped during any child's
-    /// tab-drag, which owns the gap itself.
-    fn dispatch_to_handles(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        let any_drag_inflight = self
-            .groups
-            .iter()
-            .any(super::window_group::WindowGroup::drag_in_flight);
-        if any_drag_inflight {
-            return;
-        }
-        for (i, h) in self.handles.iter_mut().enumerate() {
-            let Some(&node_id) = self.handle_node_ids.get(i) else {
-                break;
-            };
-            h.handle_event(event, &mut ctx.reborrow(ctx.path, node_id));
-            if *ctx.handled {
-                break;
-            }
-        }
-    }
-
-    /// Applied before the group dispatch loop so a mid-drag `CursorMoved`
-    /// sees the updated widths this same frame.
-    fn apply_pending_handle_resizes(&mut self) {
-        for (i, h) in self.handles.iter_mut().enumerate() {
-            if let Some((new_left, new_right)) = h.take_pending() {
-                if let Some(g) = self.groups.get_mut(i) {
-                    g.set_width_px(new_left);
-                }
-                if let Some(g) = self.groups.get_mut(i.saturating_add(1)) {
-                    g.set_width_px(new_right);
-                }
-            }
-            if h.take_pending_commit() {
-                // End-of-drag: mirrors `WindowGroup::end_resize`.
-                if let Some(g) = self.groups.get_mut(i) {
-                    g.stamp_pending_width_change();
-                }
-                if let Some(g) = self.groups.get_mut(i.saturating_add(1)) {
-                    g.stamp_pending_width_change();
-                }
-            }
-        }
-    }
-
     /// Stop dispatch once a child claims the event, but the detach sweep
     /// after this still runs regardless — that claim is for
     /// pointer-capture/focus, a separate concern. `groups` can grow
@@ -6267,7 +6201,9 @@ fn collect_named_rects(w: &dyn Widget, out: &mut Vec<(String, Rect)>) {
 mod tests {
     use super::*;
     use crate::testing::Dispatch;
-    use crate::widget::{TabDescriptor, TileContent, WindowWidth, min_group_px};
+    use crate::widget::{
+        EdgeGrab, TabDescriptor, TileContent, WindowEdge, WindowWidth, min_group_px,
+    };
 
     /// `t` minus `ms` milliseconds, saturating rather than panicking in
     /// the astronomically unlikely case the subtraction would underflow
@@ -9578,387 +9514,565 @@ mod tests {
     }
 
     // ==================================================================
-    // Inter-group `ResizeHandle` integration
+    // Seams, and resizing windows from their edges (`edge_resize`)
     // ==================================================================
 
     #[test]
-    fn resize_handles_track_gaps_and_resize_only_the_dragged_group() {
-        /// Pins the `build_layout` resize policy so a refactor can't
-        /// silently leak or under-allocate handles.
+    fn the_seam_pool_tracks_the_gaps() {
+        /// Pins the `build_layout` seam policy so a refactor can't
+        /// silently leak or under-allocate them.
         fn handle_pool_matches_inter_group_gap_count() {
             let row = make_row_with_groups(&[&[1]]);
-            assert_eq!(row.handle_count(), 0, "single-group row needs no handle");
-
+            assert_eq!(row.handle_count(), 0, "single-group row needs no seam");
             let row = make_row_with_groups(&[&[1], &[2]]);
-            assert_eq!(
-                row.handle_count(),
-                1,
-                "two-group row has exactly one handle"
-            );
-
+            assert_eq!(row.handle_count(), 1, "two-group row has exactly one");
             let row = make_row_with_groups(&[&[1], &[2], &[3]]);
-            assert_eq!(
-                row.handle_count(),
-                2,
-                "three-group row has exactly two handles"
-            );
-        }
-
-        fn lone_group_resize_grip_is_not_armed_as_a_group_reorder() {
-            use winit::dpi::PhysicalPosition;
-            use winit::event::WindowEvent;
-
-            let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1]]);
-            let group_rect = row.groups[0].get_rect();
-            let grab = Point::new(group_rect.x1 - 2.0, group_rect.center().y);
-            let dev = winit::event::DeviceId::dummy();
-
-            dispatch_at(
-                &mut row,
-                &taffy,
-                root,
-                &WindowEvent::CursorMoved {
-                    device_id: dev,
-                    position: PhysicalPosition::new(grab.x, grab.y),
-                },
-            );
-            assert!(dispatch_at(
-                &mut row,
-                &taffy,
-                root,
-                &WindowEvent::MouseInput {
-                    device_id: dev,
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                }
-            ));
-            assert!(
-                row.groups[0].wants_pointer_capture(),
-                "the lone group's resize gesture must own pointer capture",
-            );
-
-            assert!(dispatch_at(
-                &mut row,
-                &taffy,
-                root,
-                &WindowEvent::CursorMoved {
-                    device_id: dev,
-                    position: PhysicalPosition::new(grab.x - 80.0, grab.y),
-                }
-            ));
-            assert!(
-                row.groups[0].resolved_width_px() < group_rect.width(),
-                "dragging the lone trailing edge must resize rather than reorder the group",
-            );
-            assert!(!row.group_drag_active());
+            assert_eq!(row.handle_count(), 2, "three-group row has exactly two");
         }
 
         fn handle_pool_grows_on_split_into_new_group() {
-            use std::collections::HashMap;
-            use taffy::{AvailableSpace, Size as TSize};
-
             let mut row = make_row_with_groups(&[&[1, 2]]);
-            assert_eq!(
-                row.handle_count(),
-                0,
-                "precondition: one-group row has no handle"
-            );
-
+            assert_eq!(row.handle_count(), 0, "precondition: one group, no seam");
             assert!(row.split_tab_into_new_group(0, 2, 1));
             assert_eq!(row.groups.len(), 2);
             assert!(
                 row.take_structure_dirty(),
                 "split must flag structure_dirty"
             );
-
-            let theme = Theme::dark();
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let root = row.build_layout(&mut taffy, &theme, &mut node_map);
-            let viewport = taffy.parent_node(
-                Style {
-                    size: Size {
-                        width: Dimension::length(2000.0),
-                        height: Dimension::length(600.0),
-                    },
-                    ..Default::default()
-                },
-                &[root],
-            );
-            taffy
-                .compute_layout_with_measure(
-                    viewport,
-                    TSize {
-                        width: AvailableSpace::Definite(2000.0),
-                        height: AvailableSpace::Definite(600.0),
-                    },
-                    |_, _, _, _, _| taffy::Size::ZERO,
-                )
-                .unwrap();
-            row.apply_layout(&taffy, root, Point::ORIGIN);
-            assert_eq!(
-                row.handle_count(),
-                1,
-                "after split: pool must grow to groups.len() - 1",
-            );
-            let handle = row.handle_at(0).expect("handle 0 must exist");
-            let r = handle.get_rect();
-            assert!(
-                r.width() > 0.0,
-                "handle rect width must be positive after apply_layout"
-            );
-            assert!(
-                r.height() > 0.0,
-                "handle rect height must be positive after apply_layout"
-            );
-        }
-
-        /// End-to-end press-drag-release exercising the actual production
-        /// path the user's mouse drives, through to the shell-persisted
-        /// width-change stamp.
-        fn drag_handle_expands_strip_without_resizing_the_neighbour() {
-            use winit::dpi::PhysicalPosition;
-            use winit::event::WindowEvent;
-
-            let (mut row, taffy, root, cx, cy, dev) = start_handle_drag();
-
-            // CursorMoved +50 px right grows the left group and the infinite
-            // strip; the right group keeps its own width.
-            dispatch_at(
-                &mut row,
-                &taffy,
-                root,
-                &WindowEvent::CursorMoved {
-                    device_id: dev,
-                    position: PhysicalPosition::new(cx + 50.0, cy),
-                },
-            );
-            assert_eq!(
-                row.groups[0].resolved_width_px(),
-                850.0,
-                "left neighbour grew by exactly dx",
-            );
-            assert_eq!(
-                row.groups[1].resolved_width_px(),
-                800.0,
-                "ordinary resize must leave the right neighbour unchanged",
-            );
-
-            assert_eq!(
-                row.groups[0].take_pending_width_change(),
-                None,
-                "mid-drag does NOT pulse pending_width_change",
-            );
-            assert_eq!(row.groups[1].take_pending_width_change(), None);
-
-            let handled = dispatch_at(
-                &mut row,
-                &taffy,
-                root,
-                &WindowEvent::MouseInput {
-                    device_id: dev,
-                    state: ElementState::Released,
-                    button: MouseButton::Left,
-                },
-            );
-            assert!(handled, "release on handle must claim the event");
-            assert!(
-                !row.handle_at(0).unwrap().is_dragging(),
-                "release ends drag"
-            );
-            assert_eq!(
-                row.groups[0].take_pending_width_change(),
-                Some(708),
-                "release stamps left neighbour's persisted width as a fraction \
-             of its display (850/1200)",
-            );
-            assert_eq!(
-                row.groups[1].take_pending_width_change(),
-                Some(667),
-                "release preserves the right neighbour's persisted width",
-            );
-        }
-
-        /// Equivalent to `compute_widths_clamps_left_at_min` but driven
-        /// through the row's full event dispatch path.
-        fn drag_clamps_left_neighbour_at_minimum_width() {
-            use winit::dpi::PhysicalPosition;
-            use winit::event::WindowEvent;
-
-            let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
-            // `Narrow` = a third of the 1200px display = 400px each; from two
-            // `Normal`s the left neighbour couldn't reach the minimum at all,
-            // since the right would have to grow past the display.
-            row.groups[0].set_width(WindowWidth::Narrow);
-            row.groups[0].snap_width_spring();
-            row.groups[1].set_width(WindowWidth::Narrow);
-            row.groups[1].snap_width_spring();
-            drop((taffy, root));
-            let (mut row, taffy, root) = relayout_row_owned(row, 2000.0);
-
-            let handle_rect = row.handle_at(0).unwrap().get_rect();
-            let cx = f64::midpoint(handle_rect.x0, handle_rect.x1);
-            let cy = f64::midpoint(handle_rect.y0, handle_rect.y1);
-
-            let dev = winit::event::DeviceId::dummy();
-
-            dispatch_at(
-                &mut row,
-                &taffy,
-                root,
-                &WindowEvent::CursorMoved {
-                    device_id: dev,
-                    position: PhysicalPosition::new(cx, cy),
-                },
-            );
-            assert!(
-                row.handle_at(0).unwrap().is_hovered(),
-                "cursor over handle must engage hover before the press",
-            );
-            let handled = dispatch_at(
-                &mut row,
-                &taffy,
-                root,
-                &WindowEvent::MouseInput {
-                    device_id: dev,
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                },
-            );
-            assert!(handled, "press on handle must claim its own event");
-            assert!(
-                row.handle_at(0).unwrap().is_dragging(),
-                "press must start the resize before clamp behavior is exercised",
-            );
-            // Drag 500px left: 400 - 500 = -100, below `min_group_px(1200) =
-            // 240`. Clamp pins left at 240; ordinary infinite-strip resize
-            // leaves the right neighbour at 400.
-            let handled = dispatch_at(
-                &mut row,
-                &taffy,
-                root,
-                &WindowEvent::CursorMoved {
-                    device_id: dev,
-                    position: PhysicalPosition::new(cx - 500.0, cy),
-                },
-            );
-            assert!(handled, "active resize must claim drag motion");
-            let min = min_group_px(FIXTURE_USABLE_PX);
-            assert_eq!(
-                row.groups[0].resolved_width_px(),
-                min,
-                "left neighbour must clamp at the display's minimum group width \
-             ({min}), not shrink past it",
-            );
-            assert_eq!(
-                row.groups[1].resolved_width_px(),
-                400.0,
-                "ordinary resize does not redistribute into the right neighbour",
-            );
-        }
-
-        /// Otherwise a fast drag past the gap centre could accidentally
-        /// start a resize on the same frame.
-        fn handle_does_not_engage_during_tab_drag_in_flight() {
-            use winit::dpi::PhysicalPosition;
-            use winit::event::WindowEvent;
-
-            let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
-            start_drag(&mut row, 0, 1);
-            assert!(row.groups[0].drag_in_flight());
-
-            let handle_rect = row.handle_at(0).unwrap().get_rect();
-            let cx = f64::midpoint(handle_rect.x0, handle_rect.x1);
-            let cy = f64::midpoint(handle_rect.y0, handle_rect.y1);
-
-            let dev = winit::event::DeviceId::dummy();
-
-            dispatch_at(
-                &mut row,
-                &taffy,
-                root,
-                &WindowEvent::CursorMoved {
-                    device_id: dev,
-                    position: PhysicalPosition::new(cx, cy),
-                },
-            );
-            assert!(
-                !row.handle_at(0).unwrap().is_hovered(),
-                "tab drag in flight must inhibit handle hover (cross-group drop owns the gap)",
-            );
+            let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
+            assert_eq!(row.handle_count(), 1, "after split: groups.len() - 1");
+            let r = row.handle_at(0).expect("seam 0").get_rect();
+            assert!(r.width() > 0.0 && r.height() > 0.0, "laid out: {r:?}");
         }
 
         handle_pool_matches_inter_group_gap_count();
-        lone_group_resize_grip_is_not_armed_as_a_group_reorder();
         handle_pool_grows_on_split_into_new_group();
-        drag_handle_expands_strip_without_resizing_the_neighbour();
-        drag_clamps_left_neighbour_at_minimum_width();
-        handle_does_not_engage_during_tab_drag_in_flight();
     }
 
-    /// Build a two-group row fixture, hover its resize handle open, and
-    /// press to start a drag — the shared prologue for
-    /// the resize-handle integration tests below. Split out to
-    /// keep that under the line cap.
-    #[allow(
-        clippy::type_complexity,
-        reason = "test fixture bundling everything the drag-continuation needs; a named struct would only move the same fields, not reduce them"
-    )]
-    fn start_handle_drag() -> (
-        GroupRow,
-        TaffyTree<()>,
-        NodeId,
-        f64,
-        f64,
-        winit::event::DeviceId,
-    ) {
-        use winit::dpi::PhysicalPosition;
-        use winit::event::WindowEvent;
-
-        let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
-        assert_eq!(row.handle_count(), 1);
-
-        // `WindowWidth::Normal` is two thirds of the fixture's 1200px
-        // display, i.e. 800px.
-        assert_eq!(row.groups[0].resolved_width_px(), 800.0);
-        assert_eq!(row.groups[1].resolved_width_px(), 800.0);
-
-        let handle_rect = row.handle_at(0).unwrap().get_rect();
-        let cx = f64::midpoint(handle_rect.x0, handle_rect.x1);
-        let cy = f64::midpoint(handle_rect.y0, handle_rect.y1);
-
-        let dev = winit::event::DeviceId::dummy();
-
-        // CursorMoved over the handle → hover engages.
-        dispatch_at(
+    #[test]
+    fn a_lone_windows_edge_resizes_it_rather_than_moving_it() {
+        let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1]]);
+        let group_rect = row.groups[0].get_rect();
+        let grab = Point::new(group_rect.x1 - 2.0, group_rect.center().y);
+        let _ = edge_event(&mut row, &taffy, root, false, &move_to(grab));
+        assert!(edge_event(
             &mut row,
             &taffy,
             root,
-            &WindowEvent::CursorMoved {
-                device_id: dev,
-                position: PhysicalPosition::new(cx, cy),
-            },
+            false,
+            &button(ElementState::Pressed)
+        ));
+        assert!(
+            row.wants_pointer_capture(),
+            "the lone window's resize must own pointer capture",
+        );
+        assert!(edge_event(
+            &mut row,
+            &taffy,
+            root,
+            false,
+            &move_to(Point::new(grab.x - 80.0, grab.y))
+        ));
+        assert_eq!(
+            row.groups[0].layout_width_px(),
+            group_rect.width() - 80.0,
+            "dragging the lone trailing edge resizes rather than reorders the window",
+        );
+        assert!(!row.group_drag_active());
+    }
+
+    /// An app with a real minimum width, recording the edge it is told
+    /// holds still while its window is resized.
+    struct MinWidthApp {
+        min: f64,
+        anchor: std::rc::Rc<std::cell::Cell<(Option<WindowEdge>, bool)>>,
+        rect: Rect,
+    }
+
+    impl Widget for MinWidthApp {
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            taffy.fill_leaf(node_map, self)
+        }
+        crate::rect_geometry!();
+        fn draw(
+            &mut self,
+            _: &mut Scene,
+            _: Affine,
+            _: &mut TextRenderer,
+            _: &Theme,
+            _: &PresenceCtx,
+        ) {
+        }
+        fn name(&self) -> &'static str {
+            "MinWidthApp"
+        }
+    }
+
+    impl crate::widget::AppWidget for MinWidthApp {
+        fn uses_host_record(&self) -> bool {
+            false
+        }
+        fn app_kind(&self) -> crate::widget::AppKind {
+            crate::widget::AppKind::Files
+        }
+        fn app_title(&self) -> &'static str {
+            "Files"
+        }
+        fn app_icon(&self) -> crate::widget::IconDescriptor {
+            crate::widget::IconDescriptor::Glyph("F")
+        }
+        fn min_window_width(&self) -> Option<f64> {
+            Some(self.min)
+        }
+        fn set_live_resize_anchor(&mut self, fixed: Option<WindowEdge>) {
+            self.anchor.set((fixed, false));
+        }
+        fn release_live_resize_anchor(&mut self) {
+            let (fixed, _) = self.anchor.get();
+            self.anchor.set((fixed, true));
+        }
+    }
+
+    /// A strip of three 400 px windows (a third of the 1200 px display
+    /// each) on a 2000 px viewport, with window `focused` the one in use.
+    /// `middle`, when given, stands in for the middle window.
+    fn edge_strip(
+        focused: Option<usize>,
+        middle: Option<WindowGroup>,
+    ) -> (GroupRow, TaffyTree<()>, NodeId) {
+        let mut groups = vec![
+            make_group(100, &[1]),
+            make_group(200, &[2]),
+            make_group(300, &[3]),
+        ];
+        if let Some(middle) = middle {
+            groups[1] = middle;
+        }
+        for g in &mut groups {
+            g.set_width(WindowWidth::Narrow);
+        }
+        let mut row = GroupRow::new(groups);
+        row.set_output_spans(&one_display(FIXTURE_USABLE_PX));
+        if let Some(i) = focused {
+            let _ = row.groups[i].set_focused(true);
+        }
+        let (row, _, _) = relayout_row_owned(row, 2000.0);
+        relayout_row_owned(row, 2000.0)
+    }
+
+    fn files_window(
+        min: f64,
+    ) -> (
+        WindowGroup,
+        std::rc::Rc<std::cell::Cell<(Option<WindowEdge>, bool)>>,
+    ) {
+        let anchor = std::rc::Rc::new(std::cell::Cell::new((None, false)));
+        let group = WindowGroup::new(
+            200,
+            vec![(
+                TabDescriptor::new(2, "Files"),
+                TileContent::App(Box::new(MinWidthApp {
+                    min,
+                    anchor: std::rc::Rc::clone(&anchor),
+                    rect: Rect::ZERO,
+                })),
+            )],
+            2,
+            WindowWidth::Narrow,
+        );
+        (group, anchor)
+    }
+
+    fn edge_event(
+        row: &mut GroupRow,
+        taffy: &TaffyTree<()>,
+        root: NodeId,
+        shift: bool,
+        event: &WindowEvent,
+    ) -> bool {
+        let modifiers = if shift {
+            winit::event::Modifiers::from(winit::keyboard::ModifiersState::SHIFT)
+        } else {
+            winit::event::Modifiers::default()
+        };
+        Dispatch::new()
+            .modifiers(modifiers)
+            .layout(taffy, root)
+            .send(row, event)
+            .handled
+    }
+
+    fn move_to(p: Point) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
+        }
+    }
+
+    fn button(state: ElementState) -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state,
+            button: MouseButton::Left,
+        }
+    }
+
+    fn rects(row: &GroupRow) -> Vec<Rect> {
+        row.groups.iter().map(WindowGroup::get_rect).collect()
+    }
+
+    /// Press at `from`, carry the pointer through `steps` (each relative to
+    /// `from`), laying the strip out after every move as the frame loop
+    /// does, and return the row (still pressed) and the rects after each
+    /// step, the press's own frame first.
+    fn drag_edge(
+        row: GroupRow,
+        taffy: &TaffyTree<()>,
+        root: NodeId,
+        from: Point,
+        steps: &[f64],
+        shift: bool,
+    ) -> (GroupRow, TaffyTree<()>, NodeId, Vec<Vec<Rect>>) {
+        let mut row = row;
+        let _ = edge_event(&mut row, taffy, root, shift, &move_to(from));
+        assert!(
+            edge_event(&mut row, taffy, root, shift, &button(ElementState::Pressed)),
+            "a press on an edge is the resize's, not the app's"
+        );
+        assert!(row.edge_resize_in_flight());
+        let (mut row, mut taffy, mut root) = relayout_row_owned(row, 2000.0);
+        let mut frames = vec![rects(&row)];
+        for dx in steps {
+            let at = Point::new(from.x + dx, from.y);
+            assert!(edge_event(&mut row, &taffy, root, shift, &move_to(at)));
+            (row, taffy, root) = relayout_row_owned(row, 2000.0);
+            frames.push(rects(&row));
+        }
+        (row, taffy, root, frames)
+    }
+
+    fn widths(frame: &[Rect]) -> Vec<f64> {
+        frame.iter().map(|r| r.width()).collect()
+    }
+
+    // USER REQUIREMENT (2026-10-18): "if i increase the width of the thing i
+    // currently have open, it just pushes the apps next to it further away, it
+    // does not need to resize them. i can resize as i want, it doesnt change
+    // the actual size of any other app."
+    #[test]
+    fn the_seam_belongs_to_the_focused_window_and_hovering_shows_whose_edge_it_is() {
+        // Phase `with_no_window_in_use_each_half_is_its_windows_edge`.
+        {
+            let (mut row, taffy, root) = edge_strip(None, None);
+            let r = rects(&row);
+            let y = r[0].center().y;
+            let _ = edge_event(
+                &mut row,
+                &taffy,
+                root,
+                false,
+                &move_to(Point::new(r[0].x1 - 2.0, y)),
+            );
+            assert_eq!(
+                row.edge_hover(),
+                Some((
+                    EdgeGrab {
+                        group: 0,
+                        edge: WindowEdge::Trailing
+                    },
+                    false
+                ))
+            );
+            assert_eq!(row.groups[0].edge_highlight(), Some(WindowEdge::Trailing));
+            assert_eq!(row.groups[1].edge_highlight(), None);
+            assert_eq!(
+                row.cursor_shape(Point::new(r[0].x1 - 2.0, y)),
+                Some(winit::window::CursorIcon::EwResize)
+            );
+            let _ = edge_event(
+                &mut row,
+                &taffy,
+                root,
+                false,
+                &move_to(Point::new(r[1].x0 + 2.0, y)),
+            );
+            assert_eq!(
+                row.edge_hover(),
+                Some((
+                    EdgeGrab {
+                        group: 1,
+                        edge: WindowEdge::Leading
+                    },
+                    false
+                ))
+            );
+            assert_eq!(row.groups[0].edge_highlight(), None, "the highlight moves");
+            assert_eq!(row.groups[1].edge_highlight(), Some(WindowEdge::Leading));
+        }
+        // Phase `the_window_in_use_owns_the_whole_seam`: the pointer in the
+        // terminal's half of the seam still names Files' left edge, because
+        // Files is the window the person is in.
+        {
+            let (mut row, taffy, root) = edge_strip(Some(1), None);
+            let r = rects(&row);
+            let y = r[0].center().y;
+            for x in [
+                r[0].x1 - 5.0,
+                r[0].x1 - 1.0,
+                f64::midpoint(r[0].x1, r[1].x0),
+                r[1].x0 + 2.0,
+            ] {
+                let _ = edge_event(&mut row, &taffy, root, false, &move_to(Point::new(x, y)));
+                assert_eq!(
+                    row.edge_hover(),
+                    Some((
+                        EdgeGrab {
+                            group: 1,
+                            edge: WindowEdge::Leading
+                        },
+                        false
+                    )),
+                    "x = {x}"
+                );
+                assert_eq!(row.groups[0].edge_highlight(), None, "x = {x}");
+                assert_eq!(row.groups[1].edge_highlight(), Some(WindowEdge::Leading));
+            }
+            // With Shift held both windows at the seam are shown changing.
+            let _ = edge_event(
+                &mut row,
+                &taffy,
+                root,
+                true,
+                &move_to(Point::new(r[0].x1 - 2.0, y)),
+            );
+            assert_eq!(row.groups[0].edge_highlight(), Some(WindowEdge::Trailing));
+            assert_eq!(row.groups[1].edge_highlight(), Some(WindowEdge::Leading));
+            assert_eq!(row.groups[2].edge_highlight(), None);
+            // Off every edge nothing is shown.
+            let _ = edge_event(&mut row, &taffy, root, false, &move_to(r[1].center()));
+            assert_eq!(row.edge_hover(), None);
+            assert!(row.groups.iter().all(|g| g.edge_highlight().is_none()));
+        }
+    }
+
+    // USER REQUIREMENT (2026-10-18): "if i increase the width of the thing i
+    // currently have open, it just pushes the apps next to it further away, it
+    // does not need to resize them. i can resize as i want, it doesnt change
+    // the actual size of any other app."
+    #[test]
+    fn a_plain_drag_resizes_only_the_grabbed_window_and_holds_its_opposite_edge() {
+        // Phase `left_edge_grows_left_and_pushes_the_window_before_it`:
+        // Files (the middle window, in use) grabbed on its left edge, in
+        // the terminal's half of the seam, and dragged left.
+        {
+            let (row, taffy, root) = edge_strip(Some(1), None);
+            let before = rects(&row);
+            let from = Point::new(before[0].x1 - 2.0, before[0].center().y);
+            let (mut row, taffy, root, frames) =
+                drag_edge(row, &taffy, root, from, &[-20.0, -40.0, 40.0], false);
+            assert_eq!(frames[0], before, "no jump at the press");
+            for (frame, dx) in frames[1..].iter().zip([-20.0, -40.0, 40.0]) {
+                assert_eq!(
+                    widths(frame),
+                    vec![400.0, 400.0 - dx, 400.0],
+                    "only the grabbed window changes width (dx {dx})"
+                );
+                assert!(
+                    (frame[1].x1 - before[1].x1).abs() < 1e-6,
+                    "its right edge holds still on screen (dx {dx}): {frame:?}"
+                );
+                assert!(
+                    (frame[1].x0 - (before[1].x0 + dx)).abs() < 1e-6,
+                    "its left edge stays under the pointer (dx {dx})"
+                );
+                assert!(
+                    (frame[0].x1 - (before[0].x1 + dx)).abs() < 1e-6,
+                    "the window before it slides with the edge at its own width"
+                );
+                assert_eq!(frame[2], before[2], "the window after it does not move");
+            }
+            assert!(edge_event(
+                &mut row,
+                &taffy,
+                root,
+                false,
+                &button(ElementState::Released)
+            ));
+            assert!(!row.edge_resize_in_flight());
+            assert_eq!(
+                row.groups[1].take_pending_width_change(),
+                Some(crate::widget::permille_for_px(360.0, FIXTURE_USABLE_PX))
+            );
+            assert_eq!(row.groups[0].take_pending_width_change(), None);
+            assert_eq!(row.groups[2].take_pending_width_change(), None);
+        }
+        // Phase `right_edge_grows_right_and_pushes_the_window_after_it`.
+        {
+            let (row, taffy, root) = edge_strip(Some(1), None);
+            let before = rects(&row);
+            let from = Point::new(before[2].x0 + 2.0, before[1].center().y);
+            let (_row, _taffy, _root, frames) =
+                drag_edge(row, &taffy, root, from, &[30.0, -50.0], false);
+            for (frame, dx) in frames[1..].iter().zip([30.0, -50.0]) {
+                assert_eq!(widths(frame), vec![400.0, 400.0 + dx, 400.0], "dx {dx}");
+                assert!((frame[1].x0 - before[1].x0).abs() < 1e-6, "left edge holds");
+                assert!((frame[2].x0 - (before[2].x0 + dx)).abs() < 1e-6, "pushed");
+                assert_eq!(frame[0], before[0]);
+            }
+        }
+        // Phase `an_unfocused_windows_own_half_resizes_that_window`.
+        {
+            let (row, taffy, root) = edge_strip(None, None);
+            let before = rects(&row);
+            let from = Point::new(before[0].x1 - 2.0, before[0].center().y);
+            let (_row, _taffy, _root, frames) = drag_edge(row, &taffy, root, from, &[25.0], false);
+            assert_eq!(widths(&frames[1]), vec![425.0, 400.0, 400.0]);
+            assert_eq!(frames[1][0].x0, before[0].x0);
+        }
+    }
+
+    // USER REQUIREMENT (2026-10-18): Shift+drag is zero-sum between the two
+    // windows at the seam; without it "i can resize as i want, it doesnt
+    // change the actual size of any other app."
+    #[test]
+    fn shift_drag_trades_width_between_the_two_windows_at_the_seam_only() {
+        let (row, taffy, root) = edge_strip(Some(1), None);
+        let before = rects(&row);
+        let from = Point::new(before[1].x0 + 2.0, before[1].center().y);
+        let (mut row, taffy, root, frames) = drag_edge(row, &taffy, root, from, &[-60.0], true);
+        assert_eq!(widths(&frames[1]), vec![340.0, 460.0, 400.0]);
+        assert_eq!(frames[1][0].x0, before[0].x0, "the outer edges stay put");
+        assert!((frames[1][1].x1 - before[1].x1).abs() < 1e-6);
+        assert_eq!(frames[1][2], before[2]);
+        assert!(edge_event(
+            &mut row,
+            &taffy,
+            root,
+            false,
+            &button(ElementState::Released)
+        ));
+        assert!(row.groups[0].take_pending_width_change().is_some());
+        assert!(row.groups[1].take_pending_width_change().is_some());
+        assert_eq!(row.groups[2].take_pending_width_change(), None);
+    }
+
+    #[test]
+    fn a_limit_stops_the_edge_and_resizes_nothing_else() {
+        // Phase `the_apps_own_minimum_stops_the_edge`.
+        {
+            let (files, anchor) = files_window(320.0);
+            let (row, taffy, root) = edge_strip(Some(1), Some(files));
+            let before = rects(&row);
+            let from = Point::new(before[1].x0 + 2.0, before[1].center().y);
+            let (mut row, taffy, root, frames) =
+                drag_edge(row, &taffy, root, from, &[150.0, 600.0], false);
+            assert_eq!(
+                anchor.get(),
+                (Some(WindowEdge::Trailing), false),
+                "the app hears that its right edge holds while its left one moves"
+            );
+            assert_eq!(
+                widths(&frames[1]),
+                vec![400.0, 320.0, 400.0],
+                "stops at 320"
+            );
+            assert_eq!(
+                widths(&frames[2]),
+                vec![400.0, 320.0, 400.0],
+                "and stays there"
+            );
+            assert!(
+                (frames[2][1].x1 - before[1].x1).abs() < 1e-6,
+                "right edge holds"
+            );
+            assert!(edge_event(
+                &mut row,
+                &taffy,
+                root,
+                false,
+                &button(ElementState::Released)
+            ));
+            assert!(anchor.get().1, "and that the drag ended");
+        }
+        // Phase `an_app_that_says_nothing_stops_at_the_strips_floor`.
+        {
+            let (row, taffy, root) = edge_strip(Some(1), None);
+            let before = rects(&row);
+            let from = Point::new(before[1].x1 - 2.0, before[1].center().y);
+            let (_row, _taffy, _root, frames) =
+                drag_edge(row, &taffy, root, from, &[-900.0], false);
+            assert_eq!(
+                widths(&frames[1]),
+                vec![400.0, min_group_px(FIXTURE_USABLE_PX), 400.0]
+            );
+        }
+        // Phase `shift_stops_when_either_window_reaches_its_minimum`.
+        {
+            let (files, _anchor) = files_window(320.0);
+            let (row, taffy, root) = edge_strip(Some(1), Some(files));
+            let before = rects(&row);
+            let from = Point::new(before[1].x0 + 2.0, before[1].center().y);
+            let (_row, _taffy, _root, frames) = drag_edge(row, &taffy, root, from, &[200.0], true);
+            assert_eq!(widths(&frames[1]), vec![480.0, 320.0, 400.0]);
+        }
+    }
+
+    #[test]
+    fn escape_puts_the_windows_and_the_strip_back() {
+        let (row, taffy, root) = edge_strip(Some(1), None);
+        let before = rects(&row);
+        let scroll = row.scroll_x();
+        let from = Point::new(before[1].x0 + 2.0, before[1].center().y);
+        let (mut row, taffy, root, _) = drag_edge(row, &taffy, root, from, &[-80.0], false);
+        let escape = crate::synthetic_input::named_key(winit::keyboard::NamedKey::Escape);
+        assert!(edge_event(&mut row, &taffy, root, false, &escape));
+        assert!(!row.edge_resize_in_flight());
+        assert_eq!(row.scroll_x(), scroll);
+        let (mut row, _, _) = relayout_row_owned(row, 2000.0);
+        assert_eq!(rects(&row), before);
+        assert!(
+            row.groups
+                .iter_mut()
+                .all(|g| g.take_pending_width_change().is_none())
+        );
+    }
+
+    #[test]
+    fn resting_at_the_display_edge_auto_scrolls_and_the_edge_stays_under_the_pointer() {
+        let (row, taffy, root) = edge_strip(Some(2), None);
+        let before = rects(&row);
+        let viewport = row.get_rect();
+        let from = Point::new(before[2].x1 - 2.0, before[2].center().y);
+        // Into the edge band, 4 px from the display's right edge.
+        let to = viewport.x1 - 4.0 - from.x;
+        let (mut row, _taffy, _root, frames) = drag_edge(row, &taffy, root, from, &[to], false);
+        let width = frames[1][2].width();
+        let t0 = crate::time::now();
+        assert!(
+            !row.advance_edge_autoscroll(t0),
+            "the first tick only starts the clock"
+        );
+        assert!(row.advance_edge_autoscroll(t0 + Duration::from_millis(50)));
+        let (row, _, _) = relayout_row_owned(row, 2000.0);
+        let after = rects(&row);
+        assert!(
+            after[2].width() > width + 20.0,
+            "it grew past the screen: {after:?}"
         );
         assert!(
-            row.handle_at(0).unwrap().is_hovered(),
-            "cursor over handle hit area must engage hover",
+            (after[2].x1 - (viewport.x1 - 4.0 + 2.0)).abs() < 1.0,
+            "its right edge is still under the pointer: {after:?}"
         );
-
-        // MouseInput::Pressed → drag starts.
-        let handled = dispatch_at(
-            &mut row,
-            &taffy,
-            root,
-            &WindowEvent::MouseInput {
-                device_id: dev,
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
+        assert_eq!(
+            widths(&after)[..2],
+            widths(&before)[..2],
+            "no one else changed"
         );
-        assert!(handled, "press on handle must claim the event");
-        assert!(row.handle_at(0).unwrap().is_dragging(), "press starts drag");
-
-        (row, taffy, root, cx, cy, dev)
     }
 
     #[test]
