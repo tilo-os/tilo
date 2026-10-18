@@ -120,7 +120,7 @@ pub fn fs_capability_export_path() -> PathBuf {
 }
 
 /// Native file envelope; the portable desktop schema remains independently versioned.
-pub const NATIVE_STATE_SCHEMA_VERSION: u32 = 3;
+pub const NATIVE_STATE_SCHEMA_VERSION: u32 = 4;
 
 /// `state.json` as a versioned format: a file of an older version comes up
 /// to [`NATIVE_STATE_SCHEMA_VERSION`] when it is loaded, after a snapshot of
@@ -132,13 +132,150 @@ pub(crate) const STATE_FORMAT: tilo_files::native::migration::Format =
         name: "desktop state",
         version: NATIVE_STATE_SCHEMA_VERSION,
         oldest: 3,
-        steps: &[],
+        steps: &[drop_untouched_lounges],
     };
 
-/// A file the previous version of [`STATE_FORMAT`] wrote, which its step
-/// is tested against; `None` while the format has only its first version.
+/// Version 3 to 4: workspaces no longer get a Lounge. Version 3 gave every
+/// workspace one, a strip and its first windows (chat, activity, notes)
+/// under ids in the [`RESERVED_SALT`] namespace, which nobody but that code
+/// minted in. A Lounge the person never put a window or tab of their own
+/// into (every window and tab id of it in that namespace) goes; one they
+/// used stays as it is, and so does one that is a workspace's only strip.
+/// Focus on a dropped strip moves to the workspace's first strip.
+///
+/// [`RESERVED_SALT`]: tilo_desktop_model::ids::RESERVED_SALT
+fn drop_untouched_lounges(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    use serde_json::Value;
+    use tilo_desktop_model::ids::{RESERVED_SALT, peer_salt_of};
+    fn reserved(id: Option<&Value>) -> bool {
+        id.and_then(Value::as_u64)
+            .is_some_and(|id| peer_salt_of(id) == RESERVED_SALT)
+    }
+    fn untouched(strip: &Value) -> bool {
+        reserved(strip.get("id"))
+            && strip
+                .get("window_groups")
+                .and_then(Value::as_array)
+                .is_none_or(|groups| {
+                    groups.iter().all(|group| {
+                        reserved(group.get("id"))
+                            && group
+                                .get("tabs")
+                                .and_then(Value::as_array)
+                                .is_none_or(|tabs| tabs.iter().all(|tab| reserved(tab.get("id"))))
+                    })
+                })
+    }
+    let mut file: Value = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    let mut dropped: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
+    // Workspace id, as the focus maps key it, to its first strip left.
+    let mut first_left: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+    for workspace in file
+        .get_mut("workspaces")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+    {
+        let key = workspace
+            .get("id")
+            .and_then(Value::as_u64)
+            .map(|id| id.to_string());
+        let Some(strips) = workspace.get_mut("strips").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        if strips.iter().all(untouched) {
+            continue;
+        }
+        strips.retain(|strip| {
+            if !untouched(strip) {
+                return true;
+            }
+            if let Some(id) = strip.get("id").and_then(Value::as_u64) {
+                dropped.insert(id);
+            }
+            false
+        });
+        if let (Some(key), Some(first)) = (
+            key,
+            strips
+                .first()
+                .and_then(|strip| strip.get("id"))
+                .and_then(Value::as_u64),
+        ) {
+            first_left.insert(key, first);
+        }
+    }
+    if let Some(active) = file.get_mut("active_strip").and_then(Value::as_object_mut) {
+        for (workspace, strip) in active.iter_mut() {
+            if strip.as_u64().is_some_and(|id| dropped.contains(&id))
+                && let Some(first) = first_left.get(workspace)
+            {
+                *strip = Value::from(*first);
+            }
+        }
+    }
+    if let Some(groups) = file.get_mut("active_group").and_then(Value::as_object_mut) {
+        groups.retain(|strip, _| !strip.parse::<u64>().is_ok_and(|id| dropped.contains(&id)));
+    }
+    if let Some(retained) = file
+        .get_mut("strips_to_retain")
+        .and_then(Value::as_array_mut)
+    {
+        retained.retain(|strip| strip.as_u64().is_none_or(|id| !dropped.contains(&id)));
+    }
+    let Some(fields) = file.as_object_mut() else {
+        return Err("a state file is a JSON object".into());
+    };
+    fields.insert("schema_version".into(), Value::from(4_u32));
+    serde_json::to_vec(&file).map_err(|error| error.to_string())
+}
+
+/// A Lounge as version 3 made it: a strip and three windows under ids in
+/// the reserved namespace, derived from `seed`; with `touched_by`, a window
+/// under that device's salt that the person put into it.
 #[cfg(test)]
-const PREVIOUS_STATE_FILE: Option<&[u8]> = None;
+fn v3_lounge(seed: u64, touched_by: Option<u16>) -> tilo_desktop_model::Strip {
+    use tilo_desktop_model::ids::RESERVED_SALT;
+    use tilo_desktop_model::{Strip, StripId, Tab, TileContent, WindowGroup, compose_id};
+    let base = (seed % 1_000_000) * 8;
+    let group = |id: u64, title: &str| WindowGroup {
+        id,
+        tabs: vec![Tab {
+            id,
+            title: title.into(),
+            tile: TileContent::WorkspaceActivity,
+        }],
+        active_tab: id,
+        width: tilo_desktop_model::WindowWidth::Normal,
+        maximized: false,
+        focus_history: Vec::new(),
+    };
+    let mut lounge = Strip::new(StripId(compose_id(RESERVED_SALT, base + 1)), "Lounge");
+    for (counter, title) in [(2, "Chat"), (3, "Activity"), (4, "Notes")] {
+        lounge
+            .window_groups
+            .push(group(compose_id(RESERVED_SALT, base + counter), title));
+    }
+    if let Some(salt) = touched_by {
+        lounge
+            .window_groups
+            .push(group(compose_id(salt, base + 7), "Sketch"));
+    }
+    lounge
+}
+
+/// A file the previous version of [`STATE_FORMAT`] wrote, which its step
+/// is tested against: version 3, whose every workspace had a Lounge first.
+#[cfg(test)]
+fn previous_state_file() -> Option<Vec<u8>> {
+    let mut tree = WorkspaceTree::bootstrap_default();
+    let workspace = &mut tree.desktop.workspaces[0];
+    workspace.strips.insert(0, v3_lounge(workspace.id.0, None));
+    let bytes = encode_tree(&tree).expect("encoded").bytes;
+    let mut file: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    file["schema_version"] = serde_json::Value::from(3_u32);
+    Some(serde_json::to_vec(&file).expect("json"))
+}
 
 /// The version a state file says it is, read before anything else of it.
 #[derive(serde::Deserialize)]
@@ -806,13 +943,14 @@ mod tests {
     #[test]
     fn the_previous_state_file_comes_up_to_date_and_a_newer_one_is_left_alone() {
         assert!(STATE_FORMAT.is_whole());
-        match PREVIOUS_STATE_FILE {
+        match previous_state_file() {
             Some(previous) => {
+                let previous = previous.as_slice();
                 let stored: StoredVersion = serde_json::from_slice(previous).unwrap();
                 assert_eq!(
                     stored.schema_version,
                     STATE_FORMAT.version - 1,
-                    "PREVIOUS_STATE_FILE is a file the previous version wrote"
+                    "previous_state_file is a file the previous version wrote"
                 );
                 tilo_files::native::migration::assert_step_reads_previous(
                     &STATE_FORMAT,
@@ -826,7 +964,7 @@ mod tests {
             None => assert_eq!(
                 STATE_FORMAT.version, STATE_FORMAT.oldest,
                 "a state format past its first version keeps a file its previous version wrote \
-                 in PREVIOUS_STATE_FILE"
+                 in previous_state_file"
             ),
         }
         let dir = tempfile::tempdir().unwrap();
@@ -835,6 +973,97 @@ mod tests {
         std::fs::write(&path, &newer).unwrap();
         assert!(load_tree_from(&path).is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), newer);
+    }
+
+    // USER REQUIREMENT (2026-10-19): "if i create a workspace I want it to be empty, remove this crap"
+    /// A state file from when every workspace got a Lounge comes up without
+    /// the Lounges nobody used: a workspace keeps only the strips its person
+    /// made or used, and focus on a dropped Lounge goes to the first strip
+    /// left. A Lounge someone put a window into, or a workspace's only strip,
+    /// stays. The file as it was is kept beside it.
+    #[test]
+    fn a_v3_state_file_loses_the_lounges_nobody_used() {
+        use tilo_desktop_model::ids::{RESERVED_SALT, peer_salt_of};
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let home = tree.desktop.workspaces[0].id;
+        let home_main = tree.desktop.workspaces[0].strips[0].id;
+        let used = tree.append_empty_workspace("Used");
+        let alone = tree.append_empty_workspace("Alone");
+        let salt = 0x1234;
+        let (home_lounge, used_lounge) = {
+            let ws = |tree: &mut WorkspaceTree, id| {
+                tree.desktop
+                    .workspaces
+                    .iter()
+                    .position(|w| w.id == id)
+                    .unwrap()
+            };
+            let h = ws(&mut tree, home);
+            let lounge = v3_lounge(home.0, None);
+            let home_lounge = lounge.id;
+            tree.desktop.workspaces[h].strips.insert(0, lounge);
+            let u = ws(&mut tree, used);
+            let lounge = v3_lounge(used.0, Some(salt));
+            let used_lounge = lounge.id;
+            tree.desktop.workspaces[u].strips.insert(0, lounge);
+            let a = ws(&mut tree, alone);
+            tree.desktop.workspaces[a].strips = vec![v3_lounge(alone.0, None)];
+            (home_lounge, used_lounge)
+        };
+        tree.desktop.active_strip.insert(home, home_lounge);
+        tree.desktop.active_group.insert(
+            home_lounge,
+            tree.desktop.workspaces[0].strips[0].window_groups[0].id,
+        );
+        let bytes = encode_tree(&tree).expect("encoded").bytes;
+        let mut file: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        file["schema_version"] = serde_json::Value::from(3_u32);
+        let v3 = serde_json::to_vec(&file).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        std::fs::write(&path, &v3).unwrap();
+
+        let loaded = load_tree_from(&path).expect("a v3 file comes up to date");
+        let strips_of = |id| {
+            loaded
+                .desktop
+                .workspaces
+                .iter()
+                .find(|w| w.id == id)
+                .unwrap()
+                .strips
+                .iter()
+                .map(|s| s.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(strips_of(home), [home_main], "the unused Lounge is gone");
+        assert!(
+            !loaded.desktop.workspaces.iter().any(|w| w.id == home
+                && w.strips
+                    .iter()
+                    .any(|s| peer_salt_of(s.id.raw()) == RESERVED_SALT)),
+            "and nothing of it is left"
+        );
+        assert_eq!(loaded.desktop.active_strip.get(&home), Some(&home_main));
+        assert!(!loaded.desktop.active_group.contains_key(&home_lounge));
+        assert_eq!(
+            strips_of(used)[0],
+            used_lounge,
+            "a Lounge someone put a window into stays"
+        );
+        assert_eq!(strips_of(used).len(), 2);
+        assert_eq!(strips_of(alone).len(), 1, "a workspace keeps a strip");
+        assert_eq!(
+            std::fs::read(tilo_files::native::migration::Format::snapshot_path(
+                &path, 3
+            ))
+            .unwrap(),
+            v3,
+            "the v3 file is kept as it was"
+        );
+        let now: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(now["schema_version"], NATIVE_STATE_SCHEMA_VERSION);
     }
 
     /// Preparing for sleep makes the settings and the queued saves durable

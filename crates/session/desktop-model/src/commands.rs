@@ -885,27 +885,20 @@ pub fn apply_command(
     Ok(())
 }
 
-/// Name `strip`; the Lounge keeps its name.
+/// Name `strip`.
 fn rename_strip(workspace: &mut Workspace, strip: u64, label: &str) -> Result<(), String> {
-    if crate::ids::is_shared(strip) {
-        return Err("the Lounge belongs to the room and keeps its name".into());
-    }
     let strip = strip_index(workspace, strip)?;
     strip_at_mut(workspace, strip)?.name = name(label)?;
     Ok(())
 }
 
-/// Remove an empty `strip`; the Lounge and a workspace's last strip of its
-/// own (the Lounge aside) stay.
+/// Remove an empty `strip`; a workspace's last strip stays.
 fn remove_strip(workspace: &mut Workspace, strip: u64) -> Result<(), String> {
-    if crate::ids::is_shared(strip) {
-        return Err("the Lounge stays in every workspace".into());
-    }
     let strip = strip_index(workspace, strip)?;
     if !strip_at(workspace, strip)?.window_groups.is_empty() {
         return Err("strip must be empty before removal".into());
     }
-    if workspace.regular_strip_count() <= 1 {
+    if workspace.strips.len() <= 1 {
         return Err("cannot remove the last strip".into());
     }
     workspace.strips.remove(strip);

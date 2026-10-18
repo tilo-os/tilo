@@ -2898,7 +2898,7 @@ search-kw-group-wider = breiter, vergrößern, größe ändern
 search-kw-tab-move-to-group-previous = tab verschieben, zusammenführen, tab nach links
 search-kw-tab-move-to-group-next = tab verschieben, zusammenführen, tab nach rechts
 search-kw-window-focus-nth = fenster nummer, gehe zu fenster, zu fenster springen
-search-kw-strip-focus-nth = leiste nummer, gehe zu leiste, zu leiste springen, leiste wechseln, lounge
+search-kw-strip-focus-nth = leiste nummer, gehe zu leiste, zu leiste springen, leiste wechseln
 search-kw-group-restore = wiederherstellen, verkleinern, normale größe, maximierung aufheben
 search-kw-tab-move-to-new-group = neue gruppe, lösen, abtrennen, tab abtrennen
 search-kw-notifications-dnd-toggle = nicht stören, bitte nicht stören, ruhemodus, benachrichtigungen aus, benachrichtigungen stumm, fokus, ruhig
@@ -3030,6 +3030,3 @@ desk-monitor-memory = Arbeitsspeicher
 desk-monitor-temperature = Temperatur
 desk-monitor-cpu-short = CPU
 desk-monitor-memory-short = RAM
-
-# The shared strip every workspace has: chat, tasks and notes.
-strip-lounge = Lounge

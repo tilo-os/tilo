@@ -217,7 +217,8 @@ fn native_owner_commits_exact_chat_and_reopens() {
         .unwrap();
     let disk: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert_eq!(
-        disk["schema_version"], 3,
+        disk["schema_version"],
+        persist::NATIVE_STATE_SCHEMA_VERSION,
         "old shell must refuse before dropping durable authority"
     );
 }

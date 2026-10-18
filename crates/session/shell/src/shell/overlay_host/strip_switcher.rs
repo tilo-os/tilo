@@ -135,12 +135,7 @@ impl SwitcherModel {
             .iter()
             .map(|strip| StripEntry {
                 id: strip.id,
-                // The Lounge is named in the person's language, not the
-                // model's.
-                name: match strip.kind() {
-                    tilo_desktop_model::StripKind::Lounge => t("strip-lounge"),
-                    tilo_desktop_model::StripKind::Regular => strip.name.clone(),
-                },
+                name: strip.name.clone(),
                 people: people
                     .iter()
                     .filter(|(on, _)| *on == strip.id)

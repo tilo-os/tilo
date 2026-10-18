@@ -2939,7 +2939,7 @@ search-kw-group-wider = wider, grow, bigger, larger, resize
 search-kw-tab-move-to-group-previous = merge tab, move tab, tab left
 search-kw-tab-move-to-group-next = merge tab, move tab, tab right
 search-kw-window-focus-nth = focus window number, go to window, jump to window
-search-kw-strip-focus-nth = strip number, go to strip, jump to strip, switch strip, lounge
+search-kw-strip-focus-nth = strip number, go to strip, jump to strip, switch strip
 search-kw-group-restore = restore, unmaximize, un-maximize, normal size, shrink window
 search-kw-tab-move-to-new-group = new group, detach, pop out, separate tab
 search-kw-notifications-dnd-toggle = do not disturb, dnd, silence, mute notifications, focus mode, quiet, notifications off
@@ -3071,6 +3071,3 @@ desk-monitor-memory = Memory
 desk-monitor-temperature = Temperature
 desk-monitor-cpu-short = CPU
 desk-monitor-memory-short = RAM
-
-# The shared strip every workspace has: chat, tasks and notes.
-strip-lounge = Lounge
