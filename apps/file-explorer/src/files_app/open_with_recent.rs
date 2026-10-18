@@ -30,10 +30,7 @@ pub(super) const SUBMENU_APPS: usize = 6;
 /// The cache key for a file's candidates: its MIME guess and extension, the
 /// two things the desktop resolves a type by.
 fn type_key(path: &Path) -> String {
-    let mime = mime_guess::from_path(path)
-        .first_raw()
-        .unwrap_or_default()
-        .to_string();
+    let mime = tilo_mime::from_path(path).unwrap_or_default().to_string();
     let ext = path
         .extension()
         .and_then(|ext| ext.to_str())
@@ -648,9 +645,7 @@ impl FileExplorerWidget {
                     mime: if is_dir {
                         "inode/directory".into()
                     } else {
-                        mime_guess::from_path(&item.path)
-                            .first_or_octet_stream()
-                            .to_string()
+                        tilo_mime::from_path_or_octet_stream(&item.path).to_string()
                     },
                     sync_state: None,
                     content_hash: None,

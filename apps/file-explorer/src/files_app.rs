@@ -3583,8 +3583,7 @@ impl FileExplorerWidget {
                                 mime: if entry.is_dir {
                                     "inode/directory".into()
                                 } else {
-                                    mime_guess::from_path(&synthetic_path)
-                                        .first_or_octet_stream()
+                                    tilo_mime::from_path_or_octet_stream(&synthetic_path)
                                         .to_string()
                                 },
                                 sync_state: None,

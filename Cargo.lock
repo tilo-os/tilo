@@ -2293,7 +2293,6 @@ dependencies = [
  "chrono",
  "cloud-source",
  "cloud-source-icloud",
- "mime_guess",
  "reqwest 0.13.4",
  "serde",
  "serde_json",
@@ -2301,6 +2300,7 @@ dependencies = [
  "test-http",
  "thiserror 2.0.21",
  "tilo-crypto",
+ "tilo-mime",
  "tilo-net",
  "unicode-normalization",
  "url",
@@ -4503,7 +4503,6 @@ dependencies = [
  "host-fs",
  "image",
  "iroh",
- "mime_guess",
  "runtime-dylib",
  "runtime-portal",
  "serde",
@@ -4522,6 +4521,7 @@ dependencies = [
  "tilo-files",
  "tilo-fs",
  "tilo-history",
+ "tilo-mime",
  "tilo-paths",
  "tilo-pdf",
  "tilo-pdf-engine",
@@ -8988,7 +8988,6 @@ dependencies = [
  "lettre",
  "mail-builder",
  "mail-parser",
- "mime_guess",
  "pim-lines",
  "rcgen",
  "reqwest 0.13.4",
@@ -9010,6 +9009,7 @@ dependencies = [
  "tilo-content",
  "tilo-doc-codecs",
  "tilo-document",
+ "tilo-mime",
  "tilo-net",
  "tilo-oauth",
  "tilo-rich-text",
@@ -13287,7 +13287,6 @@ dependencies = [
  "agent-provider-config",
  "collab-types",
  "desktop-policy",
- "mime_guess",
  "os-actions",
  "registry-types",
  "roxmltree 0.21.1",
@@ -13303,6 +13302,7 @@ dependencies = [
  "tilo-document",
  "tilo-files",
  "tilo-media",
+ "tilo-mime",
  "tilo-model-gateway",
  "tilo-relay-protocol",
  "tilo-rich-text",
@@ -17972,6 +17972,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-mime"
+version = "0.1.0"
+dependencies = [
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-model-gateway"
 version = "0.1.0"
 dependencies = [
@@ -19439,7 +19446,6 @@ dependencies = [
  "image",
  "jni 0.21.1",
  "libc",
- "mime_guess",
  "ndk",
  "ndk-context",
  "objc2 0.6.3",
@@ -19490,6 +19496,7 @@ dependencies = [
  "tilo-image-codec",
  "tilo-lock",
  "tilo-media",
+ "tilo-mime",
  "tilo-paint-stream",
  "tilo-paths",
  "tilo-presentation",

@@ -270,6 +270,7 @@ members = [
     "crates/platform/tilo-platform-caps",
     "crates/platform/tilo-clock",
     "crates/platform/tilo-lock",
+    "crates/platform/tilo-mime",
     "crates/platform/tilo-wake",
     "crates/platform/tilo-contact-directory",
     "crates/platform/tilo-dialogs",
