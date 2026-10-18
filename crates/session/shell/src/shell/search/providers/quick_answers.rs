@@ -1,5 +1,5 @@
-//! Answers to queries that are not names: arithmetic, an address, and, when
-//! nothing else matches, a web search.
+//! Answers to queries that are not names: arithmetic, unit conversions, an
+//! address, and, when nothing else matches, a web search.
 //!
 //! "2+2", `https://example.com` and "weather" are among the commonest things
 //! typed into a launcher, and each used to end in "No results". The sum is
@@ -17,7 +17,10 @@ use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchRe
 
 pub const PROVIDER_ID: &str = "quick-answers";
 
+mod units;
+
 const SUM_ID: &str = "sum";
+const UNIT_ID: &str = "unit";
 const ADDRESS_ID: &str = "address";
 const WEB_ID: &str = "web";
 
@@ -144,6 +147,24 @@ impl QuickAnswersProvider {
                 format!("{SUM_ID}:{typed}"),
                 answer,
                 Some(t_args("search-answer-sum", &[("expression", typed.into())])),
+                self.max_score(),
+                move |chrome| {
+                    ui::text_selection::clipboard_copy(&copied);
+                    chrome.borrow_mut().acknowledge(t("search-answer-copied"));
+                    Ok(())
+                },
+            ));
+        }
+        if let Some(conversion) = units::convert(typed) {
+            let copied = conversion.to.clone();
+            out.push(row(
+                self.kind(),
+                format!("{UNIT_ID}:{typed}"),
+                conversion.to,
+                Some(t_args(
+                    "search-answer-sum",
+                    &[("expression", conversion.from.into())],
+                )),
                 self.max_score(),
                 move |chrome| {
                     ui::text_selection::clipboard_copy(&copied);
