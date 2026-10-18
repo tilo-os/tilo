@@ -590,6 +590,9 @@ pub(super) struct InvocationJournal {
     poisoned: bool,
     #[cfg(test)]
     pub fail_at: Option<BarrierFailure>,
+    /// One-shot pause after durable admission, while the writer is still held.
+    #[cfg(test)]
+    pub after_admission: Option<Box<dyn FnOnce() + Send>>,
     #[cfg(test)]
     pub barriers: Barriers,
 }
@@ -722,6 +725,8 @@ impl InvocationJournal {
             poisoned: false,
             #[cfg(test)]
             fail_at: None,
+            #[cfg(test)]
+            after_admission: None,
             #[cfg(test)]
             barriers: Barriers::default(),
         };
@@ -904,6 +909,10 @@ impl InvocationJournal {
             },
         )?;
         self.commit(at)?;
+        #[cfg(test)]
+        if let Some(hook) = self.after_admission.take() {
+            hook();
+        }
         #[cfg(test)]
         if self.fail_at.take() == Some(BarrierFailure::AfterAdmission) {
             self.poisoned = true;
