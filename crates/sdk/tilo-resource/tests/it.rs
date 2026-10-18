@@ -8,6 +8,8 @@ pub mod apply_cache;
 #[cfg(feature = "chrono")]
 #[path = "dates.rs"]
 pub mod dates;
+#[path = "data_enum.rs"]
+pub mod data_enum;
 #[path = "evolution.rs"]
 pub mod evolution;
 #[path = "fields.rs"]

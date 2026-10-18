@@ -154,8 +154,8 @@ pub use keyed::{ById, Identified, ItemStorage, Items, Keyed};
 pub use kind::{Kinds, ResourceKind};
 pub use map::Map;
 pub use model::{
-    Atom, Doc, Fields, Json, LocatedAt, MapSlot, Model, ModelError, Slot, edit_whole, load_slot,
-    read_key, read_slots, refresh_key, take_slot, write_key, write_key_changed,
+    Atom, Doc, Fields, Json, LocatedAt, MapSlot, Model, ModelError, Slot, VARIANT_KEY, edit_whole,
+    load_slot, read_key, read_slots, refresh_key, take_slot, write_key, write_key_changed,
 };
 pub use ordered::{Arranged, Ordered};
 pub use path::{Edit, EditOp, Operations, Path, Segment, Settable, outbox_settle_arguments};
