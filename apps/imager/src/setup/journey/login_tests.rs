@@ -427,7 +427,7 @@ fn website_signins_row_routes_to_source_groups_not_flatpak_details() {
     assert_eq!(heading, "Website sign-ins");
     assert_eq!(
         inspection
-            .matches("Some services may ask you to sign in again.")
+            .matches(&super::super::t("installer-logins-source-body"))
             .count(),
         1
     );
@@ -624,26 +624,36 @@ fn source_group_actions_reject_disabled_unknown_and_replaced_sources() {
     )
     .unwrap();
     std::fs::create_dir(home.path().join(".mozilla/firefox/profile")).unwrap();
-    assert!(
-        app.effect(&InstallerPreviewEffect::SetPreviewServiceSessionGroup {
-            source_id: browser,
-            included: false
+    // Both children belong to this now-stale source. Neither inclusion nor
+    // exclusion may partially update the batch or its recorded decisions.
+    for included in [false, true] {
+        assert!(
+            app.effect(&InstallerPreviewEffect::SetPreviewServiceSessionGroup {
+                source_id: browser.clone(),
+                included,
+            })
+            .is_err()
+        );
+        app.with_widget::<InstallerPreview, _>(|preview| {
+            assert_eq!(preview.belongings.sessions.included, before.0);
+            assert_eq!(preview.belongings.sessions.decided, before.1);
         })
-        .is_err()
-    );
-    app.with_widget::<InstallerPreview, _>(|preview| {
-        assert_eq!(preview.belongings.sessions.included, before.0);
-        assert_eq!(preview.belongings.sessions.decided, before.1);
-    })
-    .unwrap();
+        .unwrap();
+    }
 }
 
 #[test]
 fn unselectable_login_group_is_disabled_and_does_not_dispatch() {
     let home = tempfile::tempdir().unwrap();
     let (_path, _database) = super::tests::native_slack_database(home.path(), false, true, true);
+    let inventory =
+        crate::setup::account_transfer::discover(&crate::setup::account_transfer::SourceRoots {
+            home: home.path().into(),
+            config: home.path().join(".config"),
+        });
     let mut selection = Selection::from_discovery(
-        service_profiles::discover_without_slack_package(home.path(), &[]).unwrap(),
+        service_profiles::discover_without_slack_package(home.path(), &inventory.candidates)
+            .unwrap(),
     )
     .unwrap();
     assert_eq!(selection.detected.len(), 1);

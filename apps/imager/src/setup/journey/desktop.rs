@@ -69,6 +69,7 @@ impl InstallerPreview {
         ));
         self.direct.navigation = navigation;
         self.direct.active = true;
+        self.composition_replaced = true;
         self.dirty = false;
         Ok(())
     }

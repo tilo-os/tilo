@@ -478,6 +478,9 @@ fn wait_for_preview(
 fn wait_for_fresh_preparation(app: &mut TestApp<GuidedInstallerShell>) {
     wait_for_preview(app, |preview| {
         preview.restart.projection()["state"] == "missing"
+            && !preview.restart.busy()
+            && !preview.personal_busy()
+            && !preview.direct.active
     });
     let state = app
         .effect(&InstallerPreviewEffect::ReadPreview)
@@ -496,7 +499,9 @@ fn pairing_name_app(viewport: (u32, u32), theme: Theme) -> TestApp<GuidedInstall
     app.harness().set_theme(theme.with_reduce_motion(true));
     app.harness().resize(viewport).unwrap();
     wait_for_fresh_preparation(&mut app);
-    for choice in ["computer", "fresh", "existing"] {
+    // This route prepares another computer without opening the current host's
+    // disk compatibility check, which owns navigation until explicitly reviewed.
+    for choice in ["another", "fresh", "existing"] {
         app.effect(&InstallerPreviewEffect::ChoosePreview {
             choice: choice.into(),
         })
@@ -582,7 +587,8 @@ fn account_overview_and_explicit_provider_choice_paint_with_matching_navigation(
             env.set("XDG_STATE_HOME", root.join(format!("{tag}-{}", viewport.0)));
             let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
             wait_for_fresh_preparation(&mut app);
-            for choice in ["computer", "fresh", "new"] {
+            // Identity/account rendering does not require a writable host disk.
+            for choice in ["another", "fresh", "new"] {
                 app.effect(&InstallerPreviewEffect::ChoosePreview {
                     choice: choice.into(),
                 })
@@ -607,9 +613,12 @@ fn account_overview_and_explicit_provider_choice_paint_with_matching_navigation(
             ] {
                 app.effect(&effect).unwrap();
             }
-            wait_for_preview(&mut app, |preview| preview.journey.page == Page::Devices);
+            wait_for_preview(&mut app, |preview| {
+                preview.journey.page == Page::Devices
+                    && !preview.personal_busy()
+                    && !preview.restart.busy()
+            });
             app.with_widget::<InstallerPreview, _>(|preview| {
-                preview.restart = restart_controller::Restart::default();
                 preview.journey.page = Page::Accounts;
                 preview.dirty = true;
             })
@@ -1556,9 +1565,9 @@ fn belongings_entry_discovers_real_metadata_after_profile_and_review_edit() {
     env.set("XDG_CONFIG_HOME", &config);
     for edit in [false, true] {
         let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+        wait_for_fresh_preparation(&mut app);
         app.with_widget::<InstallerPreview, _>(|preview| {
             preview.stage(Some("installer-purpose"));
-            preview.restart = restart_controller::Restart::default();
             preview.live = true;
             preview.capabilities.prepared_installation = true;
             preview.journey.destination = Some(Destination::Another);
@@ -1582,24 +1591,24 @@ fn belongings_entry_discovers_real_metadata_after_profile_and_review_edit() {
             .unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| {
             assert_eq!(preview.journey.page, Page::Belongings);
-            assert!(preview.belongings_worker.is_some());
+            // A fast discovery may already have been polled by the effect's
+            // frame. The granted roots and discovered provider below prove the
+            // production operation, not the lifetime of its receiver.
         })
         .unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        loop {
-            app.settle();
-            let checking = app
-                .with_widget::<InstallerPreview, _>(|preview| preview.belongings_worker.is_some())
-                .unwrap();
-            if !checking {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "metadata discovery did not finish"
-            );
-            std::thread::yield_now();
-        }
+        wait_for_preview(&mut app, |preview| {
+            preview.belongings_worker.is_none()
+                && preview.belongings.home.as_ref() == Some(&home)
+                && preview.belongings.roots.is_some()
+                && preview
+                    .belongings
+                    .accounts
+                    .candidates
+                    .iter()
+                    .any(|account| {
+                        account.provider == super::super::account_transfer::Provider::Nextcloud
+                    })
+        });
         app.with_widget::<InstallerPreview, _>(|preview| {
             assert_eq!(preview.belongings.home.as_ref(), Some(&home));
             assert!(preview.belongings.roots.is_some());
@@ -1735,13 +1744,13 @@ fn unavailable_guided_host_paints_honest_state_and_refuses_semantic_navigation()
         ("high-contrast", Theme::high_contrast()),
     ] {
         let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+        wait_for_fresh_preparation(&mut app);
         app.with_widget::<InstallerPreview, _>(|preview| {
             // Explicit unavailable-host fixture through the production capability
             // gate, not an installation receipt or a synthetic success route.
             preview.live = true;
             preview.capture = false;
             preview.capabilities.prepared_installation = false;
-            preview.restart = restart_controller::Restart::default();
             preview.journey = Journey::new(String::new());
             preview.dirty = true;
         })
