@@ -23,6 +23,13 @@ class SdkServiceStagingTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return manifest
 
+    def test_the_identity_requirement_is_the_runtime_version_the_image_serves(self):
+        served = tomllib.loads((ROOT / "os/usr/share/tilo/system-interfaces.toml").read_text())
+        source = (ROOT / "tools/apps/stage_sdk_services.py").read_text()
+        self.assertIn(
+            f'IDENTITY_REQUIREMENT = "optional@{served["interfaces"]["runtime"]}"', source
+        )
+
     def test_actual_app_staging_adds_only_negotiated_identity_requirement(self):
         original = (ROOT / "apps/file-explorer/tilo-app.toml").read_text()
         expected = tomllib.loads(original)

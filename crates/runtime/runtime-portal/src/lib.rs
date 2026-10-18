@@ -40,7 +40,7 @@ pub mod tools;
 /// this version (docs/architecture/compatibility.md); `interface.toml`
 /// holds the schema, and the repository policy fails a change to it that
 /// keeps the number.
-pub const RUNTIME_INTERFACE_VERSION: u32 = 1;
+pub const RUNTIME_INTERFACE_VERSION: u32 = 2;
 
 use std::env;
 use std::io;
