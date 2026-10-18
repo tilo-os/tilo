@@ -80,6 +80,7 @@ run 'Dev-override features stay out of production images' \
   python3 tools/policy/check_dev_overrides_contract.py
 run 'UI host-inputs contract' python3 tools/policy/check_ui_host_inputs_contract.py
 run 'UI clock contract' python3 tools/policy/check_ui_clock_contract.py
+run 'Animations are composed from the motion library' python3 tools/policy/check_motion_library.py
 run 'Settings are written through typed keys' python3 tools/policy/check_settings_writes.py
 run 'Widgets never write the document' python3 tools/policy/check_widget_document_writes.py
 run 'App content store contract' python3 tools/policy/check_app_content_store.py
