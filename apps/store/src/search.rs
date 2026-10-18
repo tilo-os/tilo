@@ -180,6 +180,7 @@ mod tests {
     fn item(index: usize) -> StoreItem {
         StoreItem {
             bot: None,
+            awaiting_developer: false,
             id: format!("dev.example.app{index}"),
             name: format!("Example App {index}"),
             description: "A durable Store test row".into(),

@@ -3776,6 +3776,7 @@ mod tests {
         };
         StoreItem {
             bot: None,
+            awaiting_developer: false,
             id: format!("id.{}", name.to_ascii_lowercase()),
             name: name.into(),
             description: format!("{name} description"),

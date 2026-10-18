@@ -73,6 +73,7 @@ pub fn tilo_to_store_item_on_channel(
     let localized_images = entry.images.resolve(&locale);
     StoreItem {
         bot: None,
+        awaiting_developer: app_cli::awaiting_developer(entry, channel),
         id: entry.package_id.clone(),
         name: entry
             .name
@@ -142,6 +143,7 @@ pub fn tilo_bot_to_store_item(bot: &app_cli::bots::CatalogueBot) -> StoreItem {
         versions: Vec::new(),
         publisher_pubkey_hex: Some(bot.publisher_pubkey_hex.clone()),
         installed: InstalledState::Not,
+        awaiting_developer: false,
         bot: Some(BotListing {
             version: bot.version.clone(),
             triggers: requires.triggers.clone(),
@@ -185,6 +187,7 @@ pub fn installed_tilo_to_store_item(
     let locale = preferred_locale();
     StoreItem {
         bot: None,
+        awaiting_developer: false,
         id: entry.id.clone(),
         name: about.map_or_else(
             || package_store::display_name_for_package_id(&entry.id),
@@ -251,6 +254,7 @@ fn tilo_version_to_store(v: &RegistryVersion, tapp: &TappArtifact) -> StoreItemV
 pub fn installed_flatpak_to_item(app_id: &str, version: &str) -> StoreItem {
     StoreItem {
         bot: None,
+        awaiting_developer: false,
         id: app_id.to_string(),
         name: app_id.to_string(),
         description: "Installed Flatpak. Catalogue details are unavailable.".into(),
@@ -388,6 +392,7 @@ pub fn flathub_record_to_item(
         .or_else(|| r.urls.as_ref().and_then(|u| u.homepage.clone()));
     StoreItem {
         bot: None,
+        awaiting_developer: false,
         id: r.app_id.clone(),
         name: if r.name.is_empty() {
             r.app_id.clone()

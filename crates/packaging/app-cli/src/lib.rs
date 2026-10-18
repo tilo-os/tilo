@@ -110,6 +110,53 @@ fn installable_versions_on<'a>(
     })
 }
 
+/// Whether `entry` is waiting for an update from its developer on `channel`:
+/// it publishes builds for this machine, none of them fits the interface
+/// versions this OS serves, and the newest is behind them (built against
+/// older versions), so only a new build from its developer can fit
+/// (docs/architecture/compatibility.md).
+pub fn awaiting_developer(
+    entry: &registry_types::RegistryEntry,
+    channel: tilo_app_package::version::ReleaseChannel,
+) -> bool {
+    awaiting_developer_on(entry, channel, os_interfaces())
+}
+
+/// [`awaiting_developer`] on an OS serving `provided`. A host that declares
+/// no interfaces (a development machine) judges nothing, so nothing waits.
+fn awaiting_developer_on(
+    entry: &registry_types::RegistryEntry,
+    channel: tilo_app_package::version::ReleaseChannel,
+    provided: Option<&registry_types::ProvidedInterfaces>,
+) -> bool {
+    let Some(provided) = provided else {
+        return false;
+    };
+    if installable_versions_on(entry, channel, Some(provided))
+        .next()
+        .is_some()
+    {
+        return false;
+    }
+    let runtime_package = registry_types::is_runtime_package_id(&entry.package_id);
+    entry
+        .versions
+        .iter()
+        .filter(|version| channel.accepts(&version.version))
+        .filter_map(|version| version.tapp().map(|tapp| (version, tapp)))
+        .filter(|(_, tapp)| {
+            !tapp.tapp_url.trim().is_empty()
+                && target_supported(tapp)
+                && (runtime_package || runtime_named(tapp))
+        })
+        .max_by(|(a, _), (b, _)| tilo_app_package::version::compare(&a.version, &b.version))
+        .is_some_and(|(_, tapp)| {
+            registry_types::interfaces::package_is_behind(
+                &provided.unmet_wire(&tapp.target.interfaces),
+            )
+        })
+}
+
 /// Whether an app version says which runtime build it needs, when it needs
 /// one. A thin app links the runtime's Rust dylibs, which have no stable
 /// ABI, so a version that names only a release (`tilo-runtime/2026.07`)
@@ -717,6 +764,33 @@ mod tests {
         assert!(offered(Some(&elsewhere)).is_empty());
         // A host that declares no interfaces judges none.
         assert_eq!(offered(None), ["2.0.0", "3.0.0"]);
+    }
+
+    // USER REQUIREMENT (2026-10-18): "it's fine if we break compat with old versions every few days, people just need to update"
+    #[test]
+    fn an_app_whose_newest_build_is_behind_waits_for_its_developer() {
+        let mut e = entry("so.tilo.settings", "Settings", vec!["System"]);
+        e.versions[0].tapp_mut().unwrap().target.interfaces = vec!["system@1".into()];
+        let stable = tilo_app_package::version::ReleaseChannel::Stable;
+        let old_os = registry_types::ProvidedInterfaces::new([("system", 1)], []);
+        let new_os = registry_types::ProvidedInterfaces::new([("system", 2)], []);
+        let newer_os = registry_types::ProvidedInterfaces::new([("system", 0)], []);
+        assert!(
+            !awaiting_developer_on(&e, stable, Some(&old_os)),
+            "a build that fits is offered"
+        );
+        assert!(
+            awaiting_developer_on(&e, stable, Some(&new_os)),
+            "only the developer's next build can fit a newer system"
+        );
+        assert!(
+            !awaiting_developer_on(&e, stable, Some(&newer_os)),
+            "a build ahead of this system waits for the system, not the developer"
+        );
+        assert!(
+            !awaiting_developer_on(&e, stable, None),
+            "a host that declares no interfaces judges none"
+        );
     }
 
     #[test]

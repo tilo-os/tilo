@@ -89,6 +89,7 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
                 version: &str,
                 digest: &str| StoreItem {
         bot: None,
+        awaiting_developer: false,
         id: format!("so.tilo.{}", name.to_ascii_lowercase()),
         name: name.into(),
         description: description.into(),
@@ -133,6 +134,7 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
                    installed: InstalledState,
                    homepage: &str| StoreItem {
         bot: None,
+        awaiting_developer: false,
         id: id.into(),
         name: name.into(),
         description: description.into(),

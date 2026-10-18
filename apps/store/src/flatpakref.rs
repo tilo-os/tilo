@@ -98,6 +98,7 @@ impl FlatpakRef {
             });
         StoreItem {
             bot: None,
+            awaiting_developer: false,
             id: self.app_id,
             name: self.title,
             description: self.comment,
