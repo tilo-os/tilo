@@ -19,7 +19,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use ui::charts::{BarGauge, Chart, ChartStyle, Series, nice_step};
-use ui::format::bytes as format_bytes;
+use ui::format::memory as format_bytes;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextKind, TextRenderer};
 use ui::theme::Theme;

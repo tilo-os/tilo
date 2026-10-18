@@ -81,9 +81,9 @@ impl TaskProgress {
     }
     fn byte_label(&self) -> Option<String> {
         let progress = self.snapshot()?;
-        let size = ui::format::bytes_si(progress.completed?);
+        let size = ui::format::size(progress.completed?);
         if let Some(total) = progress.total {
-            let total = ui::format::bytes_si(total);
+            let total = ui::format::size(total);
             Some(super::super::strings::t_args(
                 "installer-media-progress-bytes-total",
                 &[("size", (&size).into()), ("total", (&total).into())],

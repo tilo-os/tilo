@@ -190,8 +190,8 @@ impl OpeningCard {
                         copy.of,
                         &[
                             app(),
-                            ("received", ui::format::bytes_si(received).into()),
-                            ("total", ui::format::bytes_si(total).into()),
+                            ("received", ui::format::size(received).into()),
+                            ("total", ui::format::size(total).into()),
                         ],
                     ),
                     Indicator::Bar(Some(done)),
@@ -200,7 +200,7 @@ impl OpeningCard {
             Some(InstallProgress::Downloading { received, .. }) => (
                 t_args(
                     copy.received,
-                    &[app(), ("received", ui::format::bytes_si(received).into())],
+                    &[app(), ("received", ui::format::size(received).into())],
                 ),
                 Indicator::Bar(None),
             ),

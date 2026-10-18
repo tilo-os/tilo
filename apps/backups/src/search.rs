@@ -38,7 +38,7 @@ pub fn snapshot_entries(backups: &Catalog) -> Vec<SearchEntry> {
                 "{} backup, retained {} ({}).",
                 snapshot.kind.label(),
                 snapshot.retention.label(),
-                ui::format::bytes(snapshot.size_bytes)
+                ui::format::memory(snapshot.size_bytes)
             ))
             .with_icon("history")
         })

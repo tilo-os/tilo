@@ -18,6 +18,9 @@
 
 use serde::{Deserialize, Serialize};
 use ui::clock::TimeStyle;
+/// The formats every app shows dates and numbers in are the toolkit's
+/// ([`ui::format::region`]), so the formatter and this section share them.
+pub use ui::format::{DateStyle, FirstDayOfWeek, NumberStyle};
 use ui::tilo_resource;
 
 /// World currency, by ISO-4217 code. Each carries its own symbol,
@@ -130,57 +133,6 @@ impl Currency {
     ];
 }
 
-/// How dates render. The serde names are the exact strings the settings
-/// file uses (`ISO`/`US`/`EU`/`Long`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model)]
-pub enum DateStyle {
-    /// `2023-03-15`
-    #[serde(rename = "ISO")]
-    #[model(rename = "ISO")]
-    Iso,
-    /// `03/15/2023`
-    #[serde(rename = "US")]
-    #[model(rename = "US")]
-    Us,
-    /// `15/03/2023`
-    #[serde(rename = "EU")]
-    #[model(rename = "EU")]
-    Eu,
-    /// `15 Mar 2023`
-    #[serde(rename = "Long")]
-    #[model(rename = "Long")]
-    Long,
-}
-
-impl DateStyle {
-    pub const ALL: [DateStyle; 4] = [
-        DateStyle::Iso,
-        DateStyle::Us,
-        DateStyle::Eu,
-        DateStyle::Long,
-    ];
-
-    /// A worked example so the picker shows what each style produces.
-    pub fn example(self) -> &'static str {
-        match self {
-            DateStyle::Iso => "2023-03-15",
-            DateStyle::Us => "03/15/2023",
-            DateStyle::Eu => "15/03/2023",
-            DateStyle::Long => "15 Mar 2023",
-        }
-    }
-
-    /// User-facing name for the dropdown.
-    pub fn label(self) -> &'static str {
-        match self {
-            DateStyle::Iso => "ISO (2023-03-15)",
-            DateStyle::Us => "US (03/15/2023)",
-            DateStyle::Eu => "European (15/03/2023)",
-            DateStyle::Long => "Long (15 Mar 2023)",
-        }
-    }
-}
-
 /// Measurement system.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default, ui::tilo_resource::Model,
@@ -198,55 +150,6 @@ impl Measurement {
         match self {
             Measurement::Metric => "Metric (\u{00B0}C, km, kg)",
             Measurement::Imperial => "Imperial (\u{00B0}F, mi, lb)",
-        }
-    }
-}
-
-/// Decimal/grouping convention used by locale-aware consumers. Keeping this
-/// separate from currency lets someone use EUR with either continental or
-/// English-language formatting.
-#[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model,
-)]
-pub enum NumberStyle {
-    #[default]
-    DecimalPoint,
-    DecimalComma,
-}
-
-impl NumberStyle {
-    pub const ALL: [Self; 2] = [Self::DecimalPoint, Self::DecimalComma];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::DecimalPoint => "1,234,567.89",
-            Self::DecimalComma => "1.234.567,89",
-        }
-    }
-
-    pub fn amount(self, symbol: &str) -> String {
-        format!("{symbol}{}", self.label())
-    }
-}
-
-#[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model,
-)]
-pub enum FirstDayOfWeek {
-    #[default]
-    Monday,
-    Sunday,
-    Saturday,
-}
-
-impl FirstDayOfWeek {
-    pub const ALL: [Self; 3] = [Self::Monday, Self::Sunday, Self::Saturday];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Monday => "Monday",
-            Self::Sunday => "Sunday",
-            Self::Saturday => "Saturday",
         }
     }
 }

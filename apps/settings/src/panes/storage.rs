@@ -685,7 +685,7 @@ impl StorageModel {
                 t_args(
                     "settings-storage-cache-freed",
                     &[
-                        ("size", ui::format::bytes_si(freed.freed_bytes).into()),
+                        ("size", ui::format::size(freed.freed_bytes).into()),
                         ("files", ArgValue::Number(freed.files as f64)),
                     ],
                 )
@@ -793,7 +793,7 @@ impl StorageModel {
                             t_args(
                                 "settings-storage-freed-queued",
                                 &[
-                                    ("size", ui::format::bytes_si(report.freed_bytes).into()),
+                                    ("size", ui::format::size(report.freed_bytes).into()),
                                     ("evicted", ArgValue::Number(report.evicted_files as f64)),
                                     ("queued", ArgValue::Number(report.queued_files as f64)),
                                 ],
@@ -807,7 +807,7 @@ impl StorageModel {
                             t_args(
                                 "settings-storage-freed",
                                 &[
-                                    ("size", ui::format::bytes_si(report.freed_bytes).into()),
+                                    ("size", ui::format::size(report.freed_bytes).into()),
                                     ("evicted", ArgValue::Number(report.evicted_files as f64)),
                                 ],
                             )
@@ -897,7 +897,7 @@ impl StorageModel {
                         self.sync_snapshot.as_ref().map_or_else(
                             || t("settings-storage-unavailable"),
                             |snapshot| {
-                                ui::format::bytes_si(
+                                ui::format::size(
                                     snapshot.workspaces.iter().map(|w| w.logical_bytes).sum(),
                                 )
                             },
@@ -909,7 +909,7 @@ impl StorageModel {
                     } else if snapshot.is_none() {
                         t("settings-pane-reading")
                     } else {
-                        ui::format::bytes_si(*totals.get(&category).unwrap_or(&0))
+                        ui::format::size(*totals.get(&category).unwrap_or(&0))
                     };
                     value_row(&category_label(category), &value)
                 })
@@ -934,15 +934,15 @@ impl StorageModel {
             let mut sync_rows = vec![
                 value_row(
                     &t("settings-storage-on-device"),
-                    &ui::format::bytes_si(local),
+                    &ui::format::size(local),
                 ),
                 value_row(
                     &t("settings-storage-remote-only"),
-                    &ui::format::bytes_si(remote),
+                    &ui::format::size(remote),
                 ),
                 value_row(
                     &t("settings-storage-safe-to-free"),
-                    &ui::format::bytes_si(reclaimable),
+                    &ui::format::size(reclaimable),
                 ),
             ];
             if let Some(message) = &self.sync_message {
@@ -955,13 +955,13 @@ impl StorageModel {
                     .filter(|f| f.reclaimable_bytes > 0)
                     .take(8)
                     .map(|f| {
-                        value_row(&f.logical_path, &ui::format::bytes_si(f.reclaimable_bytes))
+                        value_row(&f.logical_path, &ui::format::size(f.reclaimable_bytes))
                     }),
             );
             if reclaimable > 0 && self.sync_result.is_none() {
                 let free = t_args(
                     "settings-storage-free",
-                    &[("size", ui::format::bytes_si(reclaimable).into())],
+                    &[("size", ui::format::size(reclaimable).into())],
                 );
                 card_with_action(
                     &t("settings-storage-synced-card"),
@@ -1010,7 +1010,7 @@ impl StorageModel {
                     &t_args(
                         "settings-storage-item-meta",
                         &[
-                            ("size", ui::format::bytes_si(e.bytes).into()),
+                            ("size", ui::format::size(e.bytes).into()),
                             ("category", category_label(e.category).into()),
                         ],
                     ),
@@ -1040,7 +1040,7 @@ impl StorageModel {
                 rows(vec![
                     value_row(
                         &t("settings-storage-cat-cache"),
-                        &ui::format::bytes_si(preview.total_bytes),
+                        &ui::format::size(preview.total_bytes),
                     ),
                     note(&t("settings-storage-cleaning")),
                 ]),
@@ -1048,7 +1048,7 @@ impl StorageModel {
             Some(preview) if !preview.items.is_empty() => {
                 let remove = t_args(
                     "settings-storage-remove",
-                    &[("size", ui::format::bytes_si(preview.total_bytes).into())],
+                    &[("size", ui::format::size(preview.total_bytes).into())],
                 );
                 let action = Box::new(self.cx.bind_invocation(
                     Button::new("storage.clean", &remove),
@@ -1062,7 +1062,7 @@ impl StorageModel {
                             .file_name()
                             .and_then(|n| n.to_str())
                             .unwrap_or(cache_item.as_str()),
-                        &ui::format::bytes_si(i.bytes),
+                        &ui::format::size(i.bytes),
                     )
                 }));
                 card_with_action(
@@ -1106,7 +1106,7 @@ impl StorageModel {
             // A size set some other way is shown, not rounded to a choice.
             None => value_row(
                 &size_label,
-                &ui::format::bytes_si(policy.budget_bytes.unwrap_or_default()),
+                &ui::format::size(policy.budget_bytes.unwrap_or_default()),
             ),
         };
         card(
@@ -1305,7 +1305,7 @@ mod tests {
         let says = |needle: &str| text.iter().any(|line| line.contains(needle));
         let at_risk = t_args(
             "settings-storage-only-here-mark",
-            &[("size", ui::format::bytes_si(48_000_000).into())],
+            &[("size", ui::format::size(48_000_000).into())],
         );
         assert!(
             says(&t_args(
@@ -1323,7 +1323,7 @@ mod tests {
         );
         let free = t_args(
             "settings-storage-free-cache",
-            &[("size", ui::format::bytes_si(1_260_000_000).into())],
+            &[("size", ui::format::size(1_260_000_000).into())],
         );
         assert!(says(&free), "{text:#?}");
         assert_eq!(

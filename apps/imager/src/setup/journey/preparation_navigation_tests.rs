@@ -88,8 +88,8 @@ fn cancel_on_each_preparation_page_waits_for_worker_cleanup_and_keeps_choices() 
                 super::super::strings::t_args(
                     "installer-media-progress-bytes-total",
                     &[
-                        ("size", ui::format::bytes_si(4096).into()),
-                        ("total", ui::format::bytes_si(8192).into()),
+                        ("size", ui::format::size(4096).into()),
+                        ("total", ui::format::size(8192).into()),
                     ]
                 )
             );

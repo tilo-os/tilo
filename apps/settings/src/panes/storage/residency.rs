@@ -108,7 +108,7 @@ fn workspace_row(
     workspace: &WorkspaceResidency,
 ) -> crate::widgets::Item {
     let split = &workspace.split;
-    let size = |bytes| ui::format::bytes_si(bytes);
+    let size = |bytes| ui::format::size(bytes);
     let mut marks = Vec::new();
     if split.only_here_bytes > 0 {
         marks.push(status_pill(

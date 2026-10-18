@@ -805,9 +805,9 @@ impl InstallerPreview {
                     Text::new(&t_args(
                         "installer-storage-btrfs-resize",
                         &[
-                            ("before", ui::format::bytes(shrink.from_bytes).into()),
-                            ("after", ui::format::bytes(shrink.to_bytes).into()),
-                            ("reserve", ui::format::bytes(volume.reserve_bytes).into()),
+                            ("before", ui::format::memory(shrink.from_bytes).into()),
+                            ("after", ui::format::memory(shrink.to_bytes).into()),
+                            ("reserve", ui::format::memory(volume.reserve_bytes).into()),
                         ],
                     ))
                     .with_id("installer.storage.retained-resize"),
@@ -817,7 +817,7 @@ impl InstallerPreview {
             if let Some(estimate) = self.storage.application_estimate() {
                 content = content.push(Box::new(Text::new(&t_args(
                     "installer-preview-storage-app-estimate",
-                    &[("size", ui::format::bytes(estimate).into())],
+                    &[("size", ui::format::memory(estimate).into())],
                 ))));
             }
             if let Some((min, max)) = self.storage.bounds {
@@ -861,7 +861,7 @@ impl InstallerPreview {
                         "installer-preview-storage-capacity",
                         &[(
                             "capacity",
-                            ui::format::bytes(plan.basis.disk.size_bytes).into(),
+                            ui::format::memory(plan.basis.disk.size_bytes).into(),
                         )],
                     ))
                     .with_id("installer.storage.capacity"),
@@ -883,7 +883,7 @@ impl InstallerPreview {
                             "installer.storage.existing",
                             t("installer-preview-storage-existing"),
                         )
-                        .secondary(ui::format::bytes(existing_bytes))
+                        .secondary(ui::format::memory(existing_bytes))
                         .icon(Icon::Monitor),
                     ))
                     .push(Box::new(
@@ -891,7 +891,7 @@ impl InstallerPreview {
                             "installer.storage.tilo",
                             t("installer-preview-storage-tilo"),
                         )
-                        .secondary(ui::format::bytes(self.storage.selected() << 30))
+                        .secondary(ui::format::memory(self.storage.selected() << 30))
                         .icon(Icon::MonitorSmartphone),
                     ))
                     .push(Box::new(
@@ -899,7 +899,7 @@ impl InstallerPreview {
                             "installer.storage.temporary",
                             t("installer-preview-storage-temporary"),
                         )
-                        .secondary(ui::format::bytes(
+                        .secondary(ui::format::memory(
                             (plan.staging_esp.extent().lbas() + plan.staging_root.extent().lbas())
                                 * plan.basis.disk.sector_bytes,
                         ))
@@ -918,8 +918,8 @@ impl InstallerPreview {
             content = content.push(Box::new(Text::new(&t_args(
                 "installer-preview-storage-shortfall",
                 &[
-                    ("needed", ui::format::bytes(*needed_bytes).into()),
-                    ("available", ui::format::bytes(*available_bytes).into()),
+                    ("needed", ui::format::memory(*needed_bytes).into()),
+                    ("available", ui::format::memory(*available_bytes).into()),
                 ],
             ))));
         } else {

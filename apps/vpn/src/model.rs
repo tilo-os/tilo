@@ -329,7 +329,7 @@ mod tests {
         // Case `byte_and_rate_formatting`.
         {
             // Transfer counters are base-1024, so they wear IEC binary units.
-            assert_eq!(ui::format::bytes(512), "512 B");
+            assert_eq!(ui::format::memory(512), "512 B");
             assert_eq!(ui::format::rate(6_710_886.0), "6.4 MiB/s");
             assert_eq!(human_ago(34), "34s ago");
             assert_eq!(human_ago(240), "4m ago");

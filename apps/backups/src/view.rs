@@ -162,7 +162,7 @@ pub struct Model<'a> {
 
 /// A stored size in the platform's unit for stored data (SI).
 pub fn size(bytes: u64) -> String {
-    ui::format::bytes_si(bytes)
+    ui::format::size(bytes)
 }
 
 /// `12:05` or `12:05 PM`.

@@ -339,10 +339,10 @@ fn download_status_text(entry: &crate::downloads::DownloadEntry) -> String {
         DownloadStatus::Downloading => match entry.total_bytes {
             Some(total) => format!(
                 "{} of {}",
-                ui::format::bytes_si(entry.received_bytes),
-                ui::format::bytes_si(total)
+                ui::format::size(entry.received_bytes),
+                ui::format::size(total)
             ),
-            None => format!("{} downloaded", ui::format::bytes_si(entry.received_bytes)),
+            None => format!("{} downloaded", ui::format::size(entry.received_bytes)),
         },
         DownloadStatus::Completed => entry.destination.as_deref().map_or_else(
             || "Download complete".into(),

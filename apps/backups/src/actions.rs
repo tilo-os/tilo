@@ -220,7 +220,7 @@ fn snapshot_row(snapshot: &Snapshot, blocked: Option<&Blocked>) -> LiveRow {
             "{} {} snapshot containing {}.",
             taken_label(snapshot),
             snapshot.kind.label(),
-            ui::format::bytes(snapshot.size_bytes)
+            ui::format::memory(snapshot.size_bytes)
         ),
     )
     .operation(offer(

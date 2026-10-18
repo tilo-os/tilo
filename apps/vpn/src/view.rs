@@ -574,8 +574,8 @@ fn rate_tiles(rates: &Rates) -> Vec<Element> {
         tile("Upload", &rate(&rates.up)),
     ];
     if let Some(total) = rates.latest {
-        tiles.push(tile("Received", &ui::format::bytes(total.rx)));
-        tiles.push(tile("Sent", &ui::format::bytes(total.tx)));
+        tiles.push(tile("Received", &ui::format::memory(total.rx)));
+        tiles.push(tile("Sent", &ui::format::memory(total.tx)));
     }
     tiles
 }

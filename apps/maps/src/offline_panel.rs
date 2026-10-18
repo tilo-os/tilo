@@ -616,7 +616,7 @@ impl OfflinePanel {
         );
         self.targets.push((clear, OfflineAction::ClearCache));
         let mut ctx = PaintCtx::new(scene, transform, text, &ink);
-        let stored = format!("{} on this device", ui::format::bytes_si(self.cache_bytes));
+        let stored = format!("{} on this device", ui::format::size(self.cache_bytes));
         let stored_top = draw::vmid(ctx.text, y, line_h, &numeric);
         draw::text_clip(
             &mut ctx,
@@ -647,7 +647,7 @@ impl OfflinePanel {
                     right,
                     y + (row_h + side) / 2.0,
                 );
-                let footprint = ui::format::bytes_si(u64::from(region.tiles) * TILE_BYTES);
+                let footprint = ui::format::size(u64::from(region.tiles) * TILE_BYTES);
                 let rect = Rect::new(left - f64::from(sp.s3), y, trash.x0 - s1, y + row_h);
                 let mut ctx = PaintCtx::new(scene, transform, text, &ink);
                 ListRowFace::new(&region.name)
@@ -776,7 +776,7 @@ impl OfflinePanel {
         } else {
             format!(
                 "About {} to download",
-                ui::format::bytes_si(u64::from(estimate) * TILE_BYTES)
+                ui::format::size(u64::from(estimate) * TILE_BYTES)
             )
         };
         let mut ctx = PaintCtx::new(scene, transform, text, ink);

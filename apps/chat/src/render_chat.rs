@@ -21,7 +21,7 @@ use ui::chrome::{
     self, NavCount, NavRowFace, NavSectionFace, SelectionState, nav_item_height, nav_row_height,
     nav_row_layout, nav_section_height, nav_section_layout,
 };
-use ui::format::bytes as format_bytes;
+use ui::format::memory as format_bytes;
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
@@ -4832,7 +4832,7 @@ mod tests {
             size: 18_944,
         };
         assert!(media_meta(&file).is_empty());
-        assert_eq!(ui::format::bytes(18_944), "18.5 KiB");
+        assert_eq!(ui::format::memory(18_944), "18.5 KiB");
     }
 
     #[test]
