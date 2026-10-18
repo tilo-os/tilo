@@ -4451,6 +4451,45 @@ impl CapnpBrokerState {
         crate::collab_broker::AppActionBroker::from_state_for_test(state)
     }
 
+    /// A transport-free fixture with an explicit admission turn. Certified
+    /// invocations enqueue inert custody, just as they do on the live broker.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test_broker_with_authority_and_invoke_turn(
+        membership: WorkspaceTreeHandle,
+        services: HostServices,
+    ) -> (crate::collab_broker::AppActionBroker, impl Fn()) {
+        let (state, bridge_rx) = Self::new_configured(
+            &Arc::new(FanoutState::new()),
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(membership),
+            None,
+            None,
+            services,
+        );
+        let broker = crate::collab_broker::AppActionBroker::from_state_for_test(Arc::clone(&state));
+        let turn = move || {
+            let first = bridge_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("the certified invocation must reach the broker turn");
+            for request in std::iter::once(first).chain(bridge_rx.try_iter()) {
+                let ActionDirectoryBridgeRequest::InvokeEager(invoke) = request else {
+                    panic!("the transport-free fixture only services eager invocations");
+                };
+                if !invoke.reply.is_abandoned() {
+                    invoke.reply.complete(state.invoke_eager(
+                        &invoke.caller,
+                        invoke.own_peer,
+                        invoke.launch.as_ref(),
+                        Some(&invoke.origin),
+                        &invoke.request,
+                    ));
+                }
+            }
+        };
+        (broker, turn)
+    }
+
     /// Retain a terminal receipt as if an application had reported it.
     #[cfg(any(test, feature = "test-support"))]
     pub fn record_completion_for_test(

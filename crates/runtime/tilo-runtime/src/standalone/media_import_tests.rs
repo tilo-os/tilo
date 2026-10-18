@@ -1,5 +1,6 @@
 use super::*;
 use runtime_fs::blobs::{BlobClient, ReadOutcome};
+use std::collections::BTreeMap;
 use tilo_actions::remote::{Confirmation, InvokeArgument, PendingPoll, RemoteActionTarget};
 
 const TEST: &str = "standalone::media_import_tests::owner_import_through_the_canonical_door_grants_only_the_selected_room";
@@ -92,15 +93,13 @@ fn finish(
 ) -> Result<InvocationState, ActionHostError> {
     let runtime = tilo_rt::try_app().unwrap();
     let _entered = runtime.handle().enter();
-    immediate(host.invoke(caller, request.clone()).poll_ready())?;
+    host.invoke(caller, request.clone())
+        .wait_timeout(
+            tilo_test_env::hang_deadline().saturating_duration_since(std::time::Instant::now()),
+        )
+        .unwrap_or_else(|_| panic!("workspace admission must finish"))
+        .expect("workspace admission must not be abandoned")?;
     Ok(wait_for_terminal(host, caller, request.invocation))
-}
-
-fn immediate<T: std::fmt::Debug>(poll: PendingPoll<T>) -> T {
-    match poll {
-        PendingPoll::Ready(result) => result,
-        result => panic!("workspace admission must be immediate: {result:?}"),
-    }
 }
 
 fn wait_for_terminal(
@@ -323,19 +322,48 @@ fn owner_import_through_the_canonical_door_grants_only_the_selected_room() {
     check_owner_cli(&profile, &cli_request, &untouched.to_hex());
 }
 
+// Opening the journal may compact its append log. Compare durable records,
+// not bytes, so compaction cannot hide a second admission or transition.
+fn journal_records(path: &Path) -> BTreeMap<String, serde_json::Value> {
+    let mut records = BTreeMap::new();
+    for line in std::fs::read_to_string(path).unwrap().lines() {
+        let entry: serde_json::Value = serde_json::from_str(line).unwrap();
+        let rows = entry.get("records").map_or_else(
+            || vec![entry.get("record").expect("journal entry record").clone()],
+            |rows| rows.as_array().expect("journal snapshot records").clone(),
+        );
+        for record in rows {
+            let key =
+                serde_json::to_string(record.get("key").expect("journal record key")).unwrap();
+            records.insert(key, record);
+        }
+    }
+    assert!(
+        !records.is_empty(),
+        "the original admission must be durable"
+    );
+    records
+}
+
 fn check_owner_cli(profile: &Path, cli_request: &str, hash: &str) {
     let receipt = crate::cli::owner_action::<Standalone>(profile, cli_request).unwrap();
     assert!(matches!(
         receipt.status,
         tilo_actions::remote::ReceiptStatus::Completed { .. }
     ));
+    let journal = profile
+        .join(workspace::INVOCATION_JOURNAL)
+        .join("records.json");
+    let admitted = journal_records(&journal);
     let replay = crate::cli::owner_action::<Standalone>(profile, cli_request).unwrap();
-    assert!(
-        matches!(
-            replay.status,
-            tilo_actions::remote::ReceiptStatus::Failed { .. }
-        ),
-        "a spent original owner invocation must not run again after restart"
+    assert_eq!(
+        replay, receipt,
+        "certified restart replay keeps the original outcome"
+    );
+    assert_eq!(
+        journal_records(&journal),
+        admitted,
+        "a spent original owner invocation must not be admitted or run again after restart"
     );
     let reopened = Standalone::start_reporting(profile, &mut |_| {}).unwrap();
     let client = BlobClient::connect_session(&profile.join(BLOB_SOCKET)).unwrap();
