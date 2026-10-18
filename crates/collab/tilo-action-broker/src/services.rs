@@ -359,6 +359,36 @@ pub struct LaunchAdoption {
     pub room: String,
 }
 
+/// Distinguishes a reported startup failure from a lost startup observation.
+/// Losing observation does not establish that the launched process stopped.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LaunchReadinessError {
+    Failed(String),
+    ObserverStopped,
+    AdoptionObserverStopped,
+    TimedOut,
+}
+
+impl LaunchReadinessError {
+    #[must_use]
+    pub fn is_uncertain(&self) -> bool {
+        !matches!(self, Self::Failed(_))
+    }
+}
+
+impl std::fmt::Display for LaunchReadinessError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Failed(message) => f.write_str(message),
+            Self::ObserverStopped => f.write_str("the application startup observer stopped"),
+            Self::AdoptionObserverStopped => f.write_str("the adopted window observer stopped"),
+            Self::TimedOut => f.write_str("the application did not open a window in time"),
+        }
+    }
+}
+
+impl std::error::Error for LaunchReadinessError {}
+
 impl LaunchReadiness {
     pub fn new(
         receiver: tokio::sync::oneshot::Receiver<Result<(), String>>,
@@ -385,23 +415,62 @@ impl LaunchReadiness {
     /// # Errors
     /// Returns the launcher failure, or that its observer disappeared.
     pub async fn wait(self) -> Result<(), String> {
-        self.wait_with_adoption().await.map(|_| ())
+        self.wait_with_adoption()
+            .await
+            .map(|_| ())
+            .map_err(|error| error.to_string())
     }
 
     /// Observe the adopted window association when the native host supplies custody.
     /// Legacy hosts still settle readiness without inventing an association.
     ///
     /// # Errors
-    /// Returns the actual startup failure or a disconnected observation.
-    pub async fn wait_with_adoption(mut self) -> Result<Option<LaunchAdoption>, String> {
+    /// Returns a typed startup failure or lost observation; only the former
+    /// establishes a certain failure.
+    pub async fn wait_with_adoption(
+        mut self,
+    ) -> Result<Option<LaunchAdoption>, LaunchReadinessError> {
         (&mut self.receiver)
             .await
-            .map_err(|_| "the application startup observer stopped".to_string())??;
+            .map_err(|_| LaunchReadinessError::ObserverStopped)?
+            .map_err(LaunchReadinessError::Failed)?;
         match self.adoption.take() {
             Some(receiver) => receiver
                 .await
-                .map_err(|_| "the adopted window observer stopped".into()),
+                .map_err(|_| LaunchReadinessError::AdoptionObserverStopped),
             None => Ok(None),
+        }
+    }
+}
+
+#[cfg(test)]
+mod launch_readiness_tests {
+    use super::{LaunchReadiness, LaunchReadinessError};
+
+    #[tokio::test]
+    async fn lost_observers_are_uncertain_but_reported_failures_are_not() {
+        for scenario in ["startup_lost", "adoption_lost", "reported_failure"] {
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            let (adopt, adopted) = tokio::sync::oneshot::channel();
+            let ready = LaunchReadiness::new(receiver, || {}).with_adoption(adopted);
+            match scenario {
+                "startup_lost" => drop(sender),
+                "adoption_lost" => sender.send(Ok(())).unwrap(),
+                _ => sender
+                    .send(Err("the application startup observer stopped".into()))
+                    .unwrap(),
+            }
+            drop(adopt);
+            let error = ready.wait_with_adoption().await.unwrap_err();
+            let expected = match scenario {
+                "startup_lost" => LaunchReadinessError::ObserverStopped,
+                "adoption_lost" => LaunchReadinessError::AdoptionObserverStopped,
+                _ => {
+                    LaunchReadinessError::Failed("the application startup observer stopped".into())
+                }
+            };
+            assert_eq!(error, expected);
+            assert_eq!(error.is_uncertain(), scenario != "reported_failure");
         }
     }
 }
