@@ -449,6 +449,16 @@ fn uncertain_and_enqueue_failed_captures_recover_exact_uuid_without_redispatch()
         fixture.app.poll_and_apply_collab_events();
         reject_enqueue.set(false);
         connected.set(true);
+        if enqueue_failure {
+            // A refused enqueue closes the transport. A reconnect installs a
+            // new transport rather than reviving the closed adapter.
+            fixture.app.collaboration.manager =
+                CollaborationManager::with_peer_transport(RecoveringCapturePeer {
+                    sent: sent.clone(),
+                    connected: connected.clone(),
+                    reject_enqueue: reject_enqueue.clone(),
+                });
+        }
         fixture.app.poll_and_apply_collab_events();
         let reports = capture_reports(&sent);
         assert_eq!(reports.len(), 2);
@@ -494,11 +504,32 @@ fn uncertain_local_capture_backpressure_is_bounded_and_releases_on_reconciliatio
     fixture.app.collaboration.manager =
         CollaborationManager::with_peer_transport(CapturePeer(sent.clone()));
     let address = capture_address(&mut fixture);
-    for _ in 0..64 {
-        fixture
-            .app
-            .invoke_local_resource_action(&address, &serde_json::Map::new())
+    let mut admitted = 0;
+    for _ in 0..65 {
+        let before = fixture
+            .records
+            .read(&fixture.bindings[0].checkout.id, |doc| {
+                doc.clone().get_heads()
+            })
             .unwrap();
+        let result = fixture
+            .app
+            .invoke_local_resource_action(&address, &serde_json::Map::new());
+        let after = fixture
+            .records
+            .read(&fixture.bindings[0].checkout.id, |doc| {
+                doc.clone().get_heads()
+            })
+            .unwrap();
+        if result.is_err() {
+            assert_eq!(after, before, "budget refusal must precede mutation");
+            break;
+        }
+        assert_ne!(
+            after, before,
+            "uncertain earlier reports do not block edits"
+        );
+        admitted += 1;
         let (request_id, _) = capture_reports(&sent).pop().unwrap();
         fixture
             .app
@@ -509,7 +540,10 @@ fn uncertain_local_capture_backpressure_is_bounded_and_releases_on_reconciliatio
                 )),
             });
     }
-    assert_eq!(fixture.app.local_input_capture.pending_count(), 64);
+    // Distinct snapshots also have a byte budget, which may fill before
+    // the 64-revision limit. Neither bound may evict uncertain custody.
+    assert!((2..=64).contains(&admitted));
+    assert_eq!(fixture.app.local_input_capture.pending_count(), admitted);
     assert!(fixture.app.local_input_capture.custody_size() < 4 * 1024 * 1024);
     let heads = fixture
         .records
@@ -520,7 +554,7 @@ fn uncertain_local_capture_backpressure_is_bounded_and_releases_on_reconciliatio
     let _ = fixture
         .app
         .invoke_local_resource_action(&address, &serde_json::Map::new());
-    assert_eq!(capture_reports(&sent).len(), 64);
+    assert_eq!(capture_reports(&sent).len(), admitted);
     assert_eq!(
         fixture
             .records
@@ -538,7 +572,7 @@ fn uncertain_local_capture_backpressure_is_bounded_and_releases_on_reconciliatio
             .iter()
             .filter(|pin| pin.strong_count() > 0)
             .count(),
-        64
+        admitted
     );
     for (request_id, _) in capture_reports(&sent) {
         fixture
@@ -554,6 +588,6 @@ fn uncertain_local_capture_backpressure_is_bounded_and_releases_on_reconciliatio
         .app
         .invoke_local_resource_action(&address, &serde_json::Map::new())
         .unwrap();
-    assert_eq!(capture_reports(&sent).len(), 65);
+    assert_eq!(capture_reports(&sent).len(), admitted + 1);
     assert_eq!(fixture.app.local_input_capture.pending_count(), 1);
 }
