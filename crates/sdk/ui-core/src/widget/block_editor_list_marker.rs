@@ -41,6 +41,69 @@ pub(crate) fn ordinal_label(ordinal: u32, depth: u8) -> String {
     }
 }
 
+/// How much room, in logical pixels at 1× text, each block of a list needs
+/// left of its marker column so the widest top-level ordinal of its list
+/// fits beside the text rather than hanging past the content edge into the
+/// handle gutter: `12.` and `100.` move their whole list in by what they
+/// need. Deeper ordinals hang into the indent to their left, which is
+/// empty. A list here is a run of items and the indented lines continuing
+/// them; every block of it moves together so its text stays in one column.
+pub(crate) fn marker_room(blocks: &[super::Block]) -> Vec<f32> {
+    use super::BlockKind;
+    let ordinals = super::numbered_ordinals(blocks);
+    let mut room = vec![0.0_f32; blocks.len()];
+    let in_list = |block: &super::Block| {
+        block.kind.supports_indent()
+            || (matches!(block.kind, BlockKind::Paragraph) && block.indent() > 0)
+    };
+    let mut start = 0;
+    while start < blocks.len() {
+        if !blocks
+            .get(start)
+            .is_some_and(|block| block.kind.supports_indent())
+        {
+            start = start.saturating_add(1);
+            continue;
+        }
+        let mut end = start;
+        while blocks.get(end).is_some_and(in_list) {
+            end = end.saturating_add(1);
+        }
+        let widest = (start..end)
+            .filter_map(|index| {
+                let block = blocks.get(index)?;
+                let BlockKind::Numbered { indent: 0 } = block.kind else {
+                    return None;
+                };
+                let label = ordinal_label(ordinals.get(index).copied().unwrap_or(1), 0);
+                Some(estimated_label_em(&label) * block.kind.font_size())
+            })
+            .fold(0.0_f32, f32::max);
+        let extra = (widest - crate::num::f32_of_f64(super::CHECKBOX_SIZE_PX))
+            .max(0.0)
+            .ceil();
+        for slot in room.iter_mut().take(end).skip(start) {
+            *slot = extra;
+        }
+        start = end.max(start.saturating_add(1));
+    }
+    room
+}
+
+/// A top-level ordinal's width in ems, from its characters' typical
+/// advances in the UI face: what layout can know before any text is shaped.
+fn estimated_label_em(label: &str) -> f32 {
+    label
+        .chars()
+        .map(|c| match c {
+            '0'..='9' => 0.62,
+            '.' | ',' => 0.3,
+            '(' | ')' => 0.36,
+            _ => 0.6,
+        })
+        .sum()
+}
+
 /// Bijective base 26: 1 is `a`, 26 `z`, 27 `aa`.
 fn alphabetic(mut n: u32, first: u8) -> String {
     let mut letters = Vec::new();
@@ -199,5 +262,29 @@ mod tests {
         assert_eq!(ordinal_label(3, 3), "C.");
         assert_eq!(ordinal_label(2, 4), "2.");
         assert_eq!(ordinal_label(0, 0), "1.");
+    }
+
+    #[test]
+    fn a_list_of_ten_moves_in_so_its_two_digit_ordinals_fit_and_short_lists_stay() {
+        use super::super::Block;
+        let short: Vec<Block> = (0..9).map(|i| Block::numbered(0, &i.to_string())).collect();
+        assert!(marker_room(&short).iter().all(|room| *room == 0.0));
+        let mut long: Vec<Block> = (0..12)
+            .map(|i| Block::numbered(0, &i.to_string()))
+            .collect();
+        long.insert(3, {
+            let mut line = Block::paragraph("more about item three");
+            line.set_indent(1);
+            line
+        });
+        long.push(Block::paragraph("after the list"));
+        let room = marker_room(&long);
+        let list = room.get(..13).unwrap();
+        assert!(list.iter().all(|r| *r > 0.0), "{room:?}");
+        assert!(
+            list.windows(2).all(|pair| pair[0] == pair[1]),
+            "the whole list moves together, its continuation line too"
+        );
+        assert_eq!(room.last(), Some(&0.0), "the paragraph after it does not");
     }
 }

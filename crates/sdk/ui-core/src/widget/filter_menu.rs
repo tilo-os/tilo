@@ -47,8 +47,6 @@ const PADDING_Y: f64 = 6.0;
 const PADDING_X: f64 = 10.0;
 const FILTER_HEIGHT: f64 = 32.0;
 const FILTER_GAP: f64 = 4.0;
-/// Room between the caret line and the popover.
-const CARET_GAP: f64 = 2.0;
 
 /// What distinguishes one filter menu from another.
 pub(super) struct MenuSpec {
@@ -189,7 +187,8 @@ impl<T: Clone> FilterMenu<T> {
         self.placement = Placement::At(anchor);
     }
 
-    /// Attach the popover to the caret's rect: below it, or above it when
+    /// Attach the popover to the caret's rect (the caller leaves the gap it
+    /// wants around the caret in it): below it, or above it when
     /// `bounds` (the visible area) has no room below but has some above,
     /// and moved left as far as it must to stay inside `bounds`.
     pub fn set_caret(&mut self, caret: Rect, bounds: Option<Rect>) {
@@ -283,13 +282,13 @@ impl<T: Clone> FilterMenu<T> {
         let origin = match self.placement {
             Placement::At(anchor) => anchor,
             Placement::Caret { caret, bounds } => {
-                let below = caret.y1 + CARET_GAP;
-                let above = caret.y0 - CARET_GAP - height;
+                let below = caret.y1;
+                let above = caret.y0 - height;
                 let Some(bounds) = bounds else {
                     return Rect::new(caret.x0, below, caret.x0 + width, below + height);
                 };
                 let room_below = bounds.y1 - below;
-                let room_above = caret.y0 - CARET_GAP - bounds.y0;
+                let room_above = caret.y0 - bounds.y0;
                 let y = if room_below >= height || room_below >= room_above {
                     below
                 } else {

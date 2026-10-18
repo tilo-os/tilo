@@ -89,6 +89,9 @@ pub(super) enum ImagePreview {
         /// The tallest the preview may be, in logical pixels: a share of the
         /// host's visible height, so a tall picture never fills the editor.
         max_height: Option<u32>,
+        /// The width the person sized the picture to, in logical pixels at
+        /// 1× text; `None` fills the column.
+        width: Option<u32>,
     },
 }
 
@@ -1027,6 +1030,118 @@ impl RichTextLine {
         self.stack_measure = Some(StackMeasure { width, height });
         height
     }
+
+    /// The line's size for `known` / `available`, shaped with the
+    /// measurement theme; [`Widget::measure`] acknowledges it.
+    fn measure_content(
+        &mut self,
+        known: Size<Option<f32>>,
+        available: Size<taffy::AvailableSpace>,
+        text_renderer: &mut TextRenderer,
+    ) -> Size<f32> {
+        let theme = Arc::clone(&self.measurement_theme);
+        self.sync_wrapped_spans(&theme);
+        if let Some(visual) = self.table_preview {
+            let width = known
+                .width
+                .unwrap_or(match available.width {
+                    taffy::AvailableSpace::Definite(width) => width,
+                    _ => 400.0,
+                })
+                .max(1.0);
+            self.table_source_height = if visual {
+                0.0
+            } else {
+                self.inner
+                    .measure_wrapped_content(width, text_renderer, &self.measurement_theme)
+            };
+            let preview_height = super::block_editor::measure_table_preview_height(
+                self.value(),
+                width,
+                text_renderer,
+                &self.measurement_theme,
+            );
+            return Size {
+                width,
+                height: self.table_source_height
+                    + preview_height
+                    + super::block_editor::table_toolbar_height(
+                        width,
+                        self.measurement_theme.text_scale,
+                    ),
+            };
+        }
+        if let ImagePreview::Present {
+            dimensions,
+            editing,
+            max_height,
+            width: sized,
+        } = self.image_preview
+        {
+            let width = known
+                .width
+                .unwrap_or(match available.width {
+                    taffy::AvailableSpace::Definite(width) => width,
+                    _ => 400.0,
+                })
+                .max(1.0);
+            self.image_source_height = if editing {
+                self.inner.measure_wrapped_content(
+                    (width - self.layout_inset).max(1.0),
+                    text_renderer,
+                    &self.measurement_theme,
+                )
+            } else {
+                0.0
+            };
+            // The image stands on the editor's content edge, inside the
+            // line's text inset on both sides, at its native aspect, and
+            // never taller than its share of the visible height: a capped
+            // picture is painted narrower, its aspect kept.
+            let pad = self.text_inset(&self.measurement_theme) as f32;
+            let image_width =
+                (width - 2.0 * pad)
+                    .max(1.0)
+                    .min(sized.map_or(f32::INFINITY, |sized| {
+                        crate::num::f32_of_u32(sized) * self.measurement_theme.text_scale
+                    }));
+            let preview_height = dimensions
+                .map_or(
+                    220.0 * self.measurement_theme.text_scale,
+                    |(image_w, image_h)| {
+                        image_width * image_h.max(1) as f32 / image_w.max(1) as f32
+                    },
+                )
+                .min(max_height.map_or(f32::INFINITY, |max| crate::num::f32_of_u32(max.max(1))));
+            return Size {
+                width,
+                height: self.image_source_height
+                    + if editing {
+                        6.0 * self.measurement_theme.text_scale
+                    } else {
+                        0.0
+                    }
+                    + preview_height,
+            };
+        }
+        if !self.wrap {
+            self.prepare_attributes(&self.measurement_theme.clone());
+            return self.inner.measure(known, available, text_renderer);
+        }
+        let width = known.width.unwrap_or(match available.width {
+            taffy::AvailableSpace::Definite(width) => width,
+            _ => 400.0,
+        });
+        let height = self.inner.measure_wrapped_content(
+            (width - self.layout_inset).max(1.0),
+            text_renderer,
+            &self.measurement_theme,
+        );
+        Size {
+            width,
+            height: height + self.layout_header_height,
+        }
+    }
 }
 
 impl Default for RichTextLine {
@@ -1098,104 +1213,13 @@ impl Widget for RichTextLine {
         available: Size<taffy::AvailableSpace>,
         text_renderer: &mut TextRenderer,
     ) -> Size<f32> {
-        let theme = Arc::clone(&self.measurement_theme);
-        self.sync_wrapped_spans(&theme);
+        let size = self.measure_content(known, available, text_renderer);
+        // Acknowledged once the measurement is done: measuring adopts the
+        // theme's field geometry, which marks the input's layout dirty the
+        // first time, yet the size just measured already reflects it.
         self.dirty.styled_layout = false;
         self.inner.acknowledge_layout_measure();
-        if let Some(visual) = self.table_preview {
-            let width = known
-                .width
-                .unwrap_or(match available.width {
-                    taffy::AvailableSpace::Definite(width) => width,
-                    _ => 400.0,
-                })
-                .max(1.0);
-            self.table_source_height = if visual {
-                0.0
-            } else {
-                self.inner
-                    .measure_wrapped_content(width, text_renderer, &self.measurement_theme)
-            };
-            let preview_height = super::block_editor::measure_table_preview_height(
-                self.value(),
-                width,
-                text_renderer,
-                &self.measurement_theme,
-            );
-            return Size {
-                width,
-                height: self.table_source_height
-                    + preview_height
-                    + super::block_editor::table_toolbar_height(
-                        width,
-                        self.measurement_theme.text_scale,
-                    ),
-            };
-        }
-        if let ImagePreview::Present {
-            dimensions,
-            editing,
-            max_height,
-        } = self.image_preview
-        {
-            let width = known
-                .width
-                .unwrap_or(match available.width {
-                    taffy::AvailableSpace::Definite(width) => width,
-                    _ => 400.0,
-                })
-                .max(1.0);
-            self.image_source_height = if editing {
-                self.inner.measure_wrapped_content(
-                    (width - self.layout_inset).max(1.0),
-                    text_renderer,
-                    &self.measurement_theme,
-                )
-            } else {
-                0.0
-            };
-            // The image stands on the editor's content edge, inside the
-            // line's text inset on both sides, at its native aspect, and
-            // never taller than its share of the visible height: a capped
-            // picture is painted narrower, its aspect kept.
-            let pad = self.text_inset(&self.measurement_theme) as f32;
-            let image_width = (width - 2.0 * pad).max(1.0);
-            let preview_height = dimensions
-                .map_or(
-                    220.0 * self.measurement_theme.text_scale,
-                    |(image_w, image_h)| {
-                        image_width * image_h.max(1) as f32 / image_w.max(1) as f32
-                    },
-                )
-                .min(max_height.map_or(f32::INFINITY, |max| crate::num::f32_of_u32(max.max(1))));
-            return Size {
-                width,
-                height: self.image_source_height
-                    + if editing {
-                        6.0 * self.measurement_theme.text_scale
-                    } else {
-                        0.0
-                    }
-                    + preview_height,
-            };
-        }
-        if !self.wrap {
-            self.prepare_attributes(&self.measurement_theme.clone());
-            return self.inner.measure(known, available, text_renderer);
-        }
-        let width = known.width.unwrap_or(match available.width {
-            taffy::AvailableSpace::Definite(width) => width,
-            _ => 400.0,
-        });
-        let height = self.inner.measure_wrapped_content(
-            (width - self.layout_inset).max(1.0),
-            text_renderer,
-            &self.measurement_theme,
-        );
-        Size {
-            width,
-            height: height + self.layout_header_height,
-        }
+        size
     }
 
     fn draw(

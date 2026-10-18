@@ -528,8 +528,36 @@ fn enter_on_empty_list_outdents_then_exits_and_numbered_lists_continue() {
         assert_eq!(numbered_ordinals(e.blocks()), vec![1, 2]);
     }
 
+    fn enter_on_an_empty_item_continues_the_item_above_then_leaves_the_list() {
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![Block::numbered(0, "first"), Block::numbered(0, "")]);
+        editor.focus_block(1, CursorPlacement::Start);
+        editor.apply_signal(1, &LineSignal::Enter { split_at: 0 });
+        assert!(matches!(editor.blocks()[1].kind, BlockKind::Paragraph));
+        assert_eq!(editor.blocks()[1].indent(), 1, "a line inside item 1");
+        // Written, it continues the item; the next item still counts on.
+        editor.blocks_mut()[1].line.set_text("more about first");
+        editor.blocks_mut().push(Block::numbered(0, "second"));
+        assert_eq!(numbered_ordinals(editor.blocks()), vec![1, 0, 2]);
+
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![Block::bullet(1, "inner"), Block::bullet(1, "")]);
+        editor.apply_signal(1, &LineSignal::Enter { split_at: 0 });
+        assert_eq!(
+            (editor.blocks()[1].kind.clone(), editor.blocks()[1].indent()),
+            (BlockKind::Paragraph, 2)
+        );
+        editor.apply_signal(1, &LineSignal::Enter { split_at: 0 });
+        assert_eq!(
+            (editor.blocks()[1].kind.clone(), editor.blocks()[1].indent()),
+            (BlockKind::Paragraph, 0),
+            "a second Enter leaves the list"
+        );
+    }
+
     enter_on_empty_top_level_list_exits_to_paragraph();
     enter_on_empty_nested_list_outdents_before_exiting();
+    enter_on_an_empty_item_continues_the_item_above_then_leaves_the_list();
     enter_continues_a_numbered_list();
 }
 
@@ -2864,4 +2892,78 @@ fn host_slash_commands_hand_the_block_to_the_host() {
     assert!(editor.link_popover().is_visible());
     dispatch(&mut editor, &named_key(NamedKey::Enter));
     assert_eq!(editor.blocks()[0].text(), "See Trip ideas");
+}
+
+#[test]
+fn a_picture_is_sized_by_its_handle_and_keeps_the_width_in_its_markdown() {
+    use crate::synthetic_input::{cursor_moved, mouse_input};
+    use winit::event::{ElementState, MouseButton};
+    assert_eq!(
+        markdown_image_parts("![Scan|240](a.png)"),
+        Some(("Scan", "a.png", Some(240)))
+    );
+    assert_eq!(
+        markdown_image_parts("![A|B](a.png)"),
+        Some(("A|B", "a.png", None)),
+        "a pipe in a description is text"
+    );
+    assert_eq!(
+        with_markdown_image_width("![Scan](a.png)", 300).as_deref(),
+        Some("![Scan|300](a.png)")
+    );
+
+    let bytes = crate::png::encode_rgba8(160, 100, &vec![255; 160 * 100 * 4]).unwrap();
+    let fetch: crate::image_store::Fetcher = std::sync::Arc::new(move |_| Some(bytes.clone()));
+    let mut editor = BlockEditor::new();
+    editor.set_blocks(vec![
+        Block::paragraph("![Scan|320](assets/scan.png)"),
+        Block::paragraph("Below"),
+    ]);
+    editor.set_image_store(Some(crate::ImageStore::new(&fetch)));
+    assert!(editor.prewarm_images_for_shots());
+    let mut renderer = TextRenderer::new();
+    layout_image_editor(&mut editor, 1000.0, &mut renderer);
+    let plate = editor.image_plate(0).expect("the picture is laid out");
+    assert!(
+        (plate.width() - 320.0).abs() <= 0.5,
+        "the sized width is honoured: {plate:?}"
+    );
+    assert!((plate.height() - 200.0).abs() <= 0.5, "at its aspect");
+
+    // Point at it, take the handle and drag it 80 px narrower.
+    let send = |editor: &mut BlockEditor, event: WindowEvent| dispatch(editor, &event);
+    send(
+        &mut editor,
+        cursor_moved(plate.center().x, plate.center().y),
+    );
+    let handle = editor
+        .image_resize_handle(0)
+        .expect("pointing shows the handle");
+    send(
+        &mut editor,
+        cursor_moved(handle.center().x, handle.center().y),
+    );
+    assert_eq!(
+        editor.cursor_shape(handle.center()),
+        Some(winit::window::CursorIcon::EwResize)
+    );
+    assert!(send(
+        &mut editor,
+        mouse_input(ElementState::Pressed, MouseButton::Left)
+    ));
+    send(
+        &mut editor,
+        cursor_moved(handle.center().x - 80.0, handle.center().y),
+    );
+    layout_image_editor(&mut editor, 1000.0, &mut renderer);
+    let live = editor.image_plate(0).unwrap();
+    assert!(
+        (live.width() - 240.0).abs() <= 0.5,
+        "it resizes live: {live:?}"
+    );
+    send(
+        &mut editor,
+        mouse_input(ElementState::Released, MouseButton::Left),
+    );
+    assert_eq!(editor.blocks()[0].text(), "![Scan|240](assets/scan.png)");
 }

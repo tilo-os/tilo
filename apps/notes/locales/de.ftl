@@ -116,3 +116,67 @@ notes-help-code-select = Code auswählen
 notes-help-shortcuts = Tastenkürzel
 notes-help-close = Schließen
 notes-help-soft-break = Neue Zeile im selben Eintrag
+
+## Window copy
+notes-image-too-big = Das Bild ist größer als 1 MiB
+notes-image-kind = Wähle ein PNG-, JPEG- oder WebP-Bild
+notes-image-unfit = Das Bild ist zu groß für eine Notiz
+notes-empty-excerpt = Leere Notiz
+notes-image-paste-failed = Bild nicht eingefügt: { $error }
+notes-image-import-failed = Bild nicht hinzugefügt: { $error }
+notes-image-default-alt = Bild
+notes-copy-link-failed = Link nicht kopiert: Die Zwischenablage ist nicht verfügbar
+notes-window-description = Notizen und die geöffnete Notiz
+notes-menu-cut = Ausschneiden
+notes-menu-copy = Kopieren
+notes-menu-paste = Einfügen
+notes-menu-select-all = Alles auswählen
+notes-imported-untitled = Importierte Notiz
+notes-no-previous = Keine frühere Notiz
+notes-no-next = Keine spätere Notiz
+notes-link-copied = Link zu { $title } kopiert
+notes-link-unsafe = Dieser Link lässt sich nicht sicher öffnen
+notes-link-open-failed = Der Link wurde nicht geöffnet
+notes-import-title = Markdown importieren
+notes-import-accept = Importieren
+notes-markdown-files = Markdown
+notes-import-not-utf8 = Die Datei ist kein UTF-8-Text
+notes-imported = { $title } importiert
+notes-import-failed = Nicht importiert: { $error }
+notes-export-title = Markdown exportieren
+notes-export-accept = Exportieren
+notes-insert-image-title = Bild einfügen
+notes-insert-image-accept = Einfügen
+notes-image-files = Bilder
+notes-image-inserted = Bild hinzugefügt
+notes-empty-title = Beginne deine erste Notiz
+notes-empty-action = Neue Notiz
+notes-a11y-page-title = Seitentitel
+notes-a11y-note-title = Notiztitel
+notes-a11y-first-note = Legt die erste Notiz in diesem Arbeitsbereich an
+notes-a11y-header = Notizkopf
+notes-a11y-header-description = Notiztitel und Scrollposition
+notes-a11y-tag = Schlagwort: { $tag }
+notes-a11y-backlink = Verlinkt von { $title }
+notes-search-notes = Notizen
+notes-search-blocks = Notizblöcke
+notes-import-too-big = Das Markdown ist größer als 1 MiB
+notes-import-too-many-blocks = Das Markdown hat mehr als 10.000 Blöcke
+notes-status-saved = Gespeichert
+notes-status-saving = Wird gespeichert…
+notes-status-failed = Speichern fehlgeschlagen
+notes-status-not-saved = Nicht gespeichert
+notes-status-failed-because = Speichern fehlgeschlagen: { $reason }. Kopiere die Notiz an einen sicheren Ort und öffne Notizen erneut
+notes-status-failed-detail = Speichern fehlgeschlagen. Kopiere die Notiz an einen sicheren Ort und öffne Notizen erneut
+notes-status-no-storage = Nicht gespeichert: Diese Notiz hat auf diesem Gerät keinen Speicher. Kopiere sie an einen sicheren Ort und öffne Notizen erneut
+notes-status-note-count = { $notes ->
+    [one] 1 Notiz
+   *[other] { $notes } Notizen
+}
+notes-status-counts = { $notes ->
+    [one] 1 Notiz
+   *[other] { $notes } Notizen
+}, { $words ->
+    [one] 1 Wort
+   *[other] { $words } Wörter
+}

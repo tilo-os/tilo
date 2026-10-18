@@ -529,9 +529,10 @@ impl Notebook {
         for bytes in images {
             self.store_image(cx, &bytes)?;
         }
+        let fallback = ui::i18n!("notes-imported-untitled");
         let page = Page::titled(
             if title.trim().is_empty() {
-                "Imported note"
+                &fallback
             } else {
                 &title
             },
@@ -929,10 +930,10 @@ pub const MAX_MARKDOWN_IMPORT_BLOCKS: usize = 10_000;
 /// Says which limit it exceeds.
 pub fn check_markdown_import(markdown: &str) -> Result<(), String> {
     if markdown.len() > MAX_MARKDOWN_IMPORT_BYTES {
-        return Err("Markdown content is larger than 1 MiB".into());
+        return Err(ui::i18n!("notes-import-too-big"));
     }
     if crate::markdown::parse(markdown).len() > MAX_MARKDOWN_IMPORT_BLOCKS {
-        return Err("Markdown content contains more than 10,000 blocks".into());
+        return Err(ui::i18n!("notes-import-too-many-blocks"));
     }
     Ok(())
 }

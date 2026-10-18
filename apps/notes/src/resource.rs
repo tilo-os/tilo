@@ -67,7 +67,7 @@ impl ResourceApp for NotesShell {
             .file_stem()
             .and_then(|stem| stem.to_str())
             .filter(|stem| !stem.trim().is_empty())
-            .unwrap_or("Imported note");
+            .map_or_else(|| ui::i18n!("notes-imported-untitled"), str::to_owned);
         // Images next to a file named on the command line come with it.
         let (markdown, assets) = input.argument().map_or_else(
             || (markdown.to_owned(), Vec::new()),
@@ -77,7 +77,7 @@ impl ResourceApp for NotesShell {
         );
         vec![
             Notebook::IMPORT_MARKDOWN.with(crate::notebook::notebook::ImportMarkdown {
-                title: title.to_owned(),
+                title,
                 markdown,
                 images: assets.into_iter().map(|(_, bytes)| bytes).collect(),
                 note: Some(crate::notebook::page_id(page)),
