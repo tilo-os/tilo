@@ -452,10 +452,10 @@ export function createLiveLayer(peer, runtime, room, {
       renewTimer = setTimer(() => connect(), delay);
     }
   }
-  /** Tell the host what this page decodes; a host that predates codec
-   * adverts, or one that is unreachable now, counts the page as H.264 only. */
+  /** Tell the host what this page decodes; while it is unreachable it
+   * counts the page as H.264 only. */
   function advertiseCodecs() {
-    if (agent !== undefined || typeof peer.legacyCodecs !== 'function') return;
+    if (agent !== undefined) return;
     Promise.resolve().then(decodable)
       .then(codecs => stopped ? false : peer.legacyCodecs(room, JSON.stringify(codecs)))
       .catch(() => {});

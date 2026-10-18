@@ -163,8 +163,6 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
             route.extend_from_slice(request.device.as_bytes());
             return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
         }
-        // Kept apart from the plain request it travels with, so a steward
-        // that predates the routed form still finds the plain one retained.
         NeighbourMsg::MlsRoutedAccessRequest { request, .. } => {
             let mut route = b"mls-routed-access\0".to_vec();
             route.extend_from_slice(request.channel.0.as_bytes());

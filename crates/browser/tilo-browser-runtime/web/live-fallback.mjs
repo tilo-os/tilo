@@ -99,7 +99,7 @@ export function createFallbackTransport({fetch: fetcher = (...args) => globalThi
       if (signal?.aborted) throw signal.reason ?? error;
       throw failure(`live fallback unreachable: ${error?.message ?? error}`);
     }
-    if (response.status === 404 || response.status === 426) throw failure(`live fallback HTTP ${response.status}`, response.status === 426 ? 'unsupported' : 'gone');
+    if (response.status === 404) throw failure('live fallback HTTP 404', 'gone');
     if (!response.ok || !response.body?.getReader) throw failure(`live fallback HTTP ${response.status}`);
     return response.body.getReader();
   }
@@ -125,7 +125,6 @@ export function createFallbackTransport({fetch: fetcher = (...args) => globalThi
       }, streamAbort.signal);
     } catch (error) {
       signal?.removeEventListener?.('abort', abortOnParent);
-      if (error?.code === 'gone') error.code = 'unsupported';
       throw error;
     }
     let frames = createFrameReader();
@@ -310,7 +309,7 @@ export function createFallbackTransport({fetch: fetcher = (...args) => globalThi
           stats.resumes++;
           frames = createFrameReader();
         } catch (error) {
-          if (error?.code === 'gone' || error?.code === 'unsupported') { close(error); return; }
+          if (error?.code === 'gone') { close(error); return; }
           report({type: 'live-fallback-resume-error', error});
           reader = {read: async () => ({done: true}), cancel: async () => {}};
         }
@@ -427,7 +426,6 @@ export function createLiveCarriers({
   const setTimer = clock.setTimeout ?? ((callback, delay) => globalThis.setTimeout(callback, delay));
   const clearTimer = clock.clearTimeout ?? (handle => globalThis.clearTimeout(handle));
   let preferFallbackUntil = -Infinity;
-  let fallbackUnsupported = false;
   const state = {last: undefined, webtransportFailures: 0, fallbacks: 0};
 
   async function viaWebTransport(options) {
@@ -455,31 +453,22 @@ export function createLiveCarriers({
   async function connect(options) {
     options.signal?.throwIfAborted?.();
     const useFallback = !hasWebTransport() || now() < preferFallbackUntil;
-    if (!useFallback || fallbackUnsupported) {
+    if (!useFallback) {
       try {
         const session = await viaWebTransport(options);
         state.last = 'webtransport';
         return session;
       } catch (error) {
-        if (options.signal?.aborted || fallbackUnsupported) throw error;
+        if (options.signal?.aborted) throw error;
         state.webtransportFailures++;
         preferFallbackUntil = now() + PREFER_FALLBACK_MS;
         try { onReport({type: 'live-webtransport-unavailable', error}); } catch {}
       }
     }
-    try {
-      const session = await fallback.connect(options);
-      state.last = 'https-stream';
-      state.fallbacks++;
-      return session;
-    } catch (error) {
-      if (error?.code === 'unsupported') {
-        // An older host without the fallback routes: WebTransport only.
-        fallbackUnsupported = true;
-        preferFallbackUntil = -Infinity;
-      }
-      throw error;
-    }
+    const session = await fallback.connect(options);
+    state.last = 'https-stream';
+    state.fallbacks++;
+    return session;
   }
-  return {connect, state: () => ({...state, preferFallback: now() < preferFallbackUntil, fallbackUnsupported})};
+  return {connect, state: () => ({...state, preferFallback: now() < preferFallbackUntil})};
 }
