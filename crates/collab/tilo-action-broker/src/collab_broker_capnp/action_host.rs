@@ -2900,7 +2900,6 @@ impl CapnpBrokerState {
     /// policy for `actor` with `argument`: the person's own word when they
     /// act themselves, else the answer they gave on their device.
     pub(super) fn confirmed_as_asked(
-        &self,
         actor: &BrokerActor,
         descriptor: &ActionDescriptor,
         argument: Option<&str>,

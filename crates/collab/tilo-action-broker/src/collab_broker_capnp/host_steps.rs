@@ -277,7 +277,7 @@ impl CapnpBrokerState {
             witnessed,
         )
         .map_err(abandon)?;
-        if !self.confirmed_as_asked(
+        if !Self::confirmed_as_asked(
             &policy,
             &descriptor,
             argument.as_deref(),
