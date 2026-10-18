@@ -768,6 +768,9 @@ pub struct ChatApp {
     pub(crate) room_colors: HashMap<Id, (u8, u8, u8)>,
     /// Exact bare Agent ids from the authenticated room roster.
     pub(crate) room_agents: Vec<Id>,
+    /// The direct conversation the record holds with each agent, by the
+    /// agent: under whatever id it was made with, which never changes.
+    pub(crate) agent_channels: HashMap<Id, Id>,
     /// Explicit shot fixture; never set on the live launch path.
     capture_agent_presence: Option<PresenceCtx>,
     /// Agent navigation entry; the task client pins the conversation's exact run.
@@ -1103,6 +1106,7 @@ impl ChatApp {
             own_label: None,
             room_colors: HashMap::new(),
             room_agents: Vec::new(),
+            agent_channels: HashMap::new(),
             capture_agent_presence: None,
             direct_agent: None,
             direct_person: None,
@@ -2097,7 +2101,13 @@ impl ChatApp {
         }
         self.close_person_conversation();
         self.direct_agent = Some(agent.to_owned());
-        self.active_channel = crate::record::agent_conversation_channel_id(agent).to_string();
+        // The conversation the record already holds keeps its id; only a
+        // new one is addressed by the room and the agent.
+        self.active_channel = self
+            .agent_channels
+            .get(agent)
+            .cloned()
+            .unwrap_or_else(|| crate::record::agent_conversation_channel_id(agent).to_string());
         self.thread_open = None;
         self.focus = Focus::Main;
         self.agent_tasks.observe(crate::app::ROOM_SCOPE, agent);
@@ -2125,6 +2135,7 @@ impl ChatApp {
         view.own_label.clone_from(&parent.own_label);
         view.room_colors.clone_from(&parent.room_colors);
         view.room_agents.clone_from(&parent.room_agents);
+        view.agent_channels.clone_from(&parent.agent_channels);
         view.capture_agent_presence
             .clone_from(&parent.capture_agent_presence);
         view.agent_authors.clone_from(&parent.agent_authors);
@@ -2919,6 +2930,14 @@ impl ChatApp {
         let held = self.held_messages();
         self.chain_seen = self.chain.as_ref().map(ui::framework::Chain::revision);
         self.channels = chat.channel_rows();
+        self.agent_channels.clear();
+        for (id, channel) in chat.channels.iter() {
+            if let Some(agent) = &channel.conversation_with {
+                self.agent_channels
+                    .entry(agent.0.clone())
+                    .or_insert_with(|| id.to_string());
+            }
+        }
         self.categories = chat.category_rows();
         for category in &mut self.categories {
             category.collapsed = self.collapsed.contains(&category.id);

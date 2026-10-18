@@ -1130,11 +1130,19 @@ fn a_chat_with_a_malformed_channel_opens_shows_the_rest_and_deletes_it() {
     assert_eq!(room_channels(&chat).len(), 1);
 }
 
+/// The agent conversation the user's chat holds, under the id version 3
+/// derived from its workspace and the agent.
+const OLD_AGENT_CHANNEL: &str = "c_agent_9b1d2c3e4f5a6b7c";
+
 /// A chat as version 3 stored it: the starter every device made, its
-/// workspace and its categories and channels naming it. `workspace` is
-/// left out of the category `cat_home_text`, as two devices' concurrent
-/// starters left the user's chat.
-fn version_3_starter(with_workspace_on_text_category: bool) -> automerge::AutoCommit {
+/// workspace and its categories and channels naming it, and a direct
+/// conversation with the agent `scribe`. `workspace` is left out of the
+/// category `cat_home_text`, as two devices' concurrent starters left the
+/// user's chat. `voice_name` is what the `Voice` category's name holds.
+fn version_3_starter(
+    with_workspace_on_text_category: bool,
+    voice_name: automerge::ScalarValue,
+) -> automerge::AutoCommit {
     use automerge::transaction::Transactable as _;
     use ui::tilo_resource::write_key;
     let mut doc = Replica::<Chat>::new().doc().clone();
@@ -1162,130 +1170,251 @@ fn version_3_starter(with_workspace_on_text_category: bool) -> automerge::AutoCo
         doc.put_object(&entry, "v", automerge::ObjType::Map)
             .unwrap()
     };
-    for (id, name, key) in [
-        ("cat_home_text", "Channels", "a0"),
-        ("cat_home_voice", "Voice", "a1"),
-    ] {
-        let value = entry(&mut doc, "categories", id, key);
-        if with_workspace_on_text_category || id != "cat_home_text" {
-            write_key(&mut doc, &value, "workspace", &Id::from_raw("ws_home")).unwrap();
-        }
-        write_key(&mut doc, &value, "name", &name.to_owned()).unwrap();
+    let text = entry(&mut doc, "categories", "cat_home_text", "a0");
+    if with_workspace_on_text_category {
+        write_key(&mut doc, &text, "workspace", &Id::from_raw("ws_home")).unwrap();
     }
+    write_key(&mut doc, &text, "name", &"Channels".to_owned()).unwrap();
+    let voice = entry(&mut doc, "categories", "cat_home_voice", "a1");
+    write_key(&mut doc, &voice, "workspace", &Id::from_raw("ws_home")).unwrap();
+    doc.put(&voice, "name", voice_name).unwrap();
     for (id, category, name, kind, key) in [
         (
             "c_general",
-            "cat_home_text",
+            Some("cat_home_text"),
             "general",
             ChannelKind::Text,
             "a0",
         ),
         (
             "c_lounge",
-            "cat_home_voice",
+            Some("cat_home_voice"),
             "Lounge",
             ChannelKind::Voice,
             "a1",
         ),
+        (OLD_AGENT_CHANNEL, None, "Scribe", ChannelKind::Text, "a2"),
     ] {
         let value = entry(&mut doc, "channels", id, key);
         write_key(&mut doc, &value, "workspace", &Id::from_raw("ws_home")).unwrap();
-        write_key(&mut doc, &value, "category", &Some(Id::from_raw(category))).unwrap();
+        write_key(&mut doc, &value, "category", &category.map(Id::from_raw)).unwrap();
         write_key(&mut doc, &value, "name", &name.to_owned()).unwrap();
         write_key(&mut doc, &value, "topic", &String::new()).unwrap();
         write_key(&mut doc, &value, "kind", &kind).unwrap();
         write_key(&mut doc, &value, "archived", &false).unwrap();
+        if id == OLD_AGENT_CHANNEL {
+            write_key(
+                &mut doc,
+                &value,
+                "conversation_with",
+                &Some(Atom("scribe".into())),
+            )
+            .unwrap();
+        }
     }
     doc.commit();
     doc
 }
 
+/// The user's chat as version 3 left it: `Voice` named as it should be.
+fn users_chat(with_workspace_on_text_category: bool) -> automerge::AutoCommit {
+    version_3_starter(
+        with_workspace_on_text_category,
+        automerge::ScalarValue::Str("Voice".into()),
+    )
+}
+
+/// Every key of the collection `field` in `doc`: its items' ids.
+fn stored_ids(doc: &automerge::AutoCommit, field: &str) -> Vec<String> {
+    use automerge::ReadDoc as _;
+    let (_, map) = doc.get(automerge::ROOT, field).unwrap().unwrap();
+    doc.keys(&map).collect()
+}
+
+/// The room's channels, each with its category's name, as the record
+/// lists them.
+fn channels_with_categories(chat: &Chat) -> Vec<(String, String, Option<String>)> {
+    chat.channels
+        .iter()
+        .map(|(id, channel)| {
+            (
+                id.to_string(),
+                channel.name.clone(),
+                channel
+                    .category
+                    .as_ref()
+                    .and_then(|category| chat.categories.get(category))
+                    .map(|category| category.name.clone()),
+            )
+        })
+        .collect()
+}
+
 // USER REQUIREMENT (2026-10-19): "Chat runs *in a workspace*, not the other way around."
 // The user's chat did not open: "this cannot be opened",
-// "categories.cat_home_text.v.workspace: required value is missing".
+// "categories.cat_home_text.v.workspace: required value is missing". And:
+// "why are you *deleting* existing stuff?" — the migration deletes nothing
+// the person has and adds nothing to a room that has channels.
 #[test]
-fn the_migration_opens_the_users_chat_and_drops_the_unused_starter() {
+fn the_migration_opens_the_users_chat_with_everything_in_it() {
     use ui::tilo_resource::evolution;
     for whole in [false, true] {
-        let mut doc = version_3_starter(whole);
+        let mut doc = users_chat(whole);
         assert!(
             evolution::migrate::<Chat>(&mut doc).unwrap(),
             "migrated once"
         );
         assert_eq!(evolution::stored_version(&doc), 4);
         let chat = evolution::read_checked::<Chat>(&doc).expect("the user's chat opens");
-        assert!(chat.categories.is_empty() && chat.categories.quarantined().is_empty());
+        assert!(chat.categories.quarantined().is_empty());
         assert!(chat.channels.quarantined().is_empty());
         assert_eq!(
-            room_channels(&chat),
+            channels_with_categories(&chat),
             [
                 (
-                    CHAT_CHANNEL.to_owned(),
-                    "chat".to_owned(),
-                    ChannelKind::Text
+                    "c_general".to_owned(),
+                    "general".to_owned(),
+                    Some("Channels".to_owned())
                 ),
                 (
-                    VOICE_CHANNEL.to_owned(),
-                    "voice".to_owned(),
-                    ChannelKind::Voice
+                    "c_lounge".to_owned(),
+                    "Lounge".to_owned(),
+                    Some("Voice".to_owned())
                 ),
+                (OLD_AGENT_CHANNEL.to_owned(), "Scribe".to_owned(), None),
             ],
-            "nothing used the starter: the room opens with #chat and #voice"
+            "every channel stays, in the category it was in"
+        );
+        assert_eq!(
+            chat.categories
+                .iter()
+                .map(|(id, category)| (id.to_string(), category.name.clone()))
+                .collect::<Vec<_>>(),
+            [
+                ("cat_home_text".to_owned(), "Channels".to_owned()),
+                ("cat_home_voice".to_owned(), "Voice".to_owned()),
+            ],
+            "every category stays, the one that did not read among them"
+        );
+        assert!(
+            !chat.channels.contains(&id(CHAT_CHANNEL))
+                && !chat.channels.contains(&id(VOICE_CHANNEL)),
+            "a room that has channels gets no #chat or #voice"
         );
         assert!(
             automerge::ReadDoc::get(&doc, automerge::ROOT, "workspaces")
                 .unwrap()
                 .is_none(),
-            "no workspaces of Chat's own"
+            "only the workspace structure goes"
         );
     }
 }
 
+// USER REQUIREMENT (2026-10-19): "not at all what IDs are for" — ids are
+// stable identity: removing the workspace layer rewrites none of them.
 #[test]
-fn the_migration_keeps_a_used_starter_as_plain_channels() {
-    use automerge::transaction::Transactable as _;
+fn every_id_in_the_users_chat_survives_the_migration_and_its_messages_still_show() {
     use ui::tilo_resource::evolution;
-    let mut doc = version_3_starter(false);
-    // Someone read a message in #general and renamed the voice lounge.
-    let (_, read) = automerge::ReadDoc::get(&doc, automerge::ROOT, "read")
-        .unwrap()
-        .unwrap();
-    let marks = doc.put_object(&read, ADA, automerge::ObjType::Map).unwrap();
-    ui::tilo_resource::write_key(
-        &mut doc,
-        &marks,
-        "c_general",
-        &crate::parts::ReadMark { part: 0, seen: 1 },
-    )
-    .unwrap();
-    let lounge = stored_value(&doc, "channels", "c_lounge");
-    ui::tilo_resource::write_key(&mut doc, &lounge, "name", &"Hangout".to_owned()).unwrap();
-    doc.commit();
-
+    let mut doc = users_chat(false);
+    let before: Vec<Vec<String>> = ["channels", "categories"]
+        .iter()
+        .map(|field| stored_ids(&doc, field))
+        .collect();
     evolution::migrate::<Chat>(&mut doc).unwrap();
+    let after: Vec<Vec<String>> = ["channels", "categories"]
+        .iter()
+        .map(|field| stored_ids(&doc, field))
+        .collect();
+    assert_eq!(after, before, "no channel or category is re-keyed");
+
+    // Messages live in parts the migration never opens; under their old
+    // channel ids they show where they were written.
     let chat = evolution::read_checked::<Chat>(&doc).unwrap();
+    let mut part = ChatPart::default();
+    for (message, channel, text) in [
+        ("m_general", "c_general", "said in general"),
+        ("m_scribe", OLD_AGENT_CHANNEL, "said to the agent"),
+    ] {
+        part.messages.push(
+            id(message),
+            crate::record::Message {
+                channel: id(channel),
+                author: Atom(ADA.into()),
+                text: text.into(),
+                ..crate::record::Message::default()
+            },
+        );
+    }
+    let held = Messages::single(part);
+    for (channel, text, message) in [
+        ("c_general", "said in general", "m_general"),
+        (OLD_AGENT_CHANNEL, "said to the agent", "m_scribe"),
+    ] {
+        let rows = chat.message_rows(&held, channel);
+        assert_eq!(
+            rows.iter()
+                .map(|row| (row.id.as_str(), row.text.as_str()))
+                .collect::<Vec<_>>(),
+            [(message, text)]
+        );
+    }
+}
+
+/// The agent conversation the user had keeps its id: opening it again
+/// shows what was said there.
+#[test]
+fn an_agent_conversation_reopens_under_its_existing_id_with_its_history() {
+    use ui::tilo_resource::evolution;
+    let mut doc = users_chat(false);
+    evolution::migrate::<Chat>(&mut doc).unwrap();
+    let mut room = crate::demo::Room::of(doc);
+    room.say(ADA, OLD_AGENT_CHANNEL, "said to the agent")
+        .unwrap();
+    let mut app = crate::app::ChatApp::new_ephemeral();
+    app.attach_room(&room);
+    app.room_agents = vec!["scribe".into()];
+    app.reload(&room);
+    assert!(app.open_agent_conversation("scribe"));
     assert_eq!(
-        room_channels(&chat),
-        [
-            (
-                "c_general".to_owned(),
-                "general".to_owned(),
-                ChannelKind::Text
-            ),
-            (
-                "c_lounge".to_owned(),
-                "Hangout".to_owned(),
-                ChannelKind::Voice
-            ),
-        ],
-        "every used channel stays, and no starter is added beside them"
+        app.active_channel, OLD_AGENT_CHANNEL,
+        "the conversation the chat holds, not a new id"
     );
+    app.reload(&room);
     assert!(
-        chat.channels
-            .values()
-            .all(|channel| channel.category.is_none()),
-        "out of the dropped starter categories"
+        app.messages
+            .iter()
+            .any(|message| message.text == "said to the agent"),
+        "its history shows"
     );
-    assert!(chat.categories.is_empty());
-    assert_eq!(chat.read_mark("c_general", ADA).seen, 1);
+}
+
+/// A category that does not read at all is kept as it is, held out of the
+/// chat for its repair, through the migration and every later write.
+#[test]
+fn an_unreadable_category_is_kept_through_the_migration() {
+    use ui::tilo_resource::evolution;
+    let mut doc = version_3_starter(false, automerge::ScalarValue::Int(5));
+    evolution::migrate::<Chat>(&mut doc).unwrap();
+    let chat = evolution::read_checked::<Chat>(&doc).expect("the chat opens");
+    assert_eq!(
+        chat.categories
+            .quarantined()
+            .iter()
+            .map(|held| held.id.as_str())
+            .collect::<Vec<_>>(),
+        ["cat_home_voice"]
+    );
+    assert_eq!(chat.channels.len(), 3, "every channel stays");
+    let mut ada = Replica::<Chat>::from_doc(doc).as_author(ADA);
+    ada.apply(Chat::INTRODUCE.with(chat::Introduce {
+        name: "Ada".into(),
+        initials: "AD".into(),
+        color: 1,
+    }))
+    .unwrap();
+    assert!(
+        stored_ids(ada.doc(), "categories").contains(&"cat_home_voice".to_owned()),
+        "a later write keeps it"
+    );
+    assert_eq!(ada.state().unwrap().categories.quarantined().len(), 1);
 }

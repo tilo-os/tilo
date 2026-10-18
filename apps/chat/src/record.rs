@@ -48,8 +48,9 @@ pub const VOICE_CHANNEL: &str = "c_voice";
 /// are kept in parts beside it now ([`crate::parts`]) and a read mark is a
 /// position in them, so both are dropped: a record outgrown by its messages
 /// is what parts replace, and nothing carries them over. Versions 1 to 3
-/// kept workspaces of the chat's own; Chat runs in its room now, so they
-/// are dropped ([`drop_workspaces`]).
+/// kept workspaces of the chat's own; Chat runs in its room now, so that
+/// structure is dropped and every channel and category stays
+/// ([`drop_workspaces`]).
 ///
 /// # Errors
 /// When `from` is not a version this chat was.
@@ -77,33 +78,18 @@ fn migrate(
     drop_workspaces(doc)
 }
 
-/// The starter versions 1 to 3 made in every device's first chat: the
-/// channels `#general` and the voice `Lounge`, filed under the categories
-/// `Channels` and `Voice`, by id with the name it was made with.
-const OLD_STARTER_CHANNELS: [(&str, &str); 2] = [("c_general", "general"), ("c_lounge", "Lounge")];
-const OLD_STARTER_CATEGORIES: [(&str, &str); 2] =
-    [("cat_home_text", "Channels"), ("cat_home_voice", "Voice")];
-
-/// Drop the workspaces a chat of version 3 or older kept: every channel and
-/// category stays, as the room's, without the workspace it named. The
-/// starter every device made on its own goes when nobody used it: its
-/// channels while nobody renamed, described or archived them and nothing
-/// was read or filed in them (their messages are kept in parts this record
-/// does not hold; a channel anyone read a message of, or filed feedback in,
-/// is kept), its categories while they keep their names. A starter channel
-/// that stays is a plain channel of the room, out of the starter's dropped
-/// category. A room left without a channel opens with `#chat` and `#voice`.
-///
-/// Two devices made that starter concurrently, each its own copy under the
-/// same ids, and a category left with one copy's fields only did not read
-/// at all (`categories.cat_home_text.v.workspace: required value is
-/// missing`): such a category is dropped with the rest of the starter.
+/// Drop the workspaces a chat of version 3 or older kept: they were the
+/// chat's own structure, not anything a person wrote. Every channel and
+/// every category stays, as the room's, without the workspace it named;
+/// nothing else is added or removed. A category that two devices' starters
+/// left without its workspace (the field whose absence made the user's chat
+/// unopenable, `categories.cat_home_text.v.workspace: required value is
+/// missing`) reads again once the field is no longer the model's.
 ///
 /// # Errors
 /// The document's read or write error.
 fn drop_workspaces(doc: &mut ui::tilo_resource::Doc) -> Result<(), ui::tilo_resource::ModelError> {
     use ui::automerge::{ObjType, ROOT, ReadDoc as _, Value, transaction::Transactable as _};
-    use ui::tilo_resource::{read_key, write_key};
     if doc.get(ROOT, "workspaces")?.is_some() {
         doc.delete(ROOT, "workspaces")?;
     }
@@ -117,81 +103,31 @@ fn drop_workspaces(doc: &mut ui::tilo_resource::Doc) -> Result<(), ui::tilo_reso
             .map(|entry| entry.id())
             .collect();
         for entry in entries {
-            let Some((Value::Object(ObjType::Map), value)) = doc.get(&entry, "v")? else {
-                continue;
-            };
-            if doc.get(&value, "workspace")?.is_some() {
-                doc.delete(&value, "workspace")?;
+            // Every copy of the entry's value: two devices that made the
+            // same item each made one, and the document keeps both.
+            let values: Vec<ui::automerge::ObjId> = doc
+                .get_all(&entry, "v")?
+                .into_iter()
+                .filter(|(value, _)| matches!(value, Value::Object(ObjType::Map)))
+                .map(|(_, id)| id)
+                .collect();
+            for value in values {
+                if doc.get(&value, "workspace")?.is_some() {
+                    doc.delete(&value, "workspace")?;
+                }
             }
         }
     }
-    let mut channels: Collection<Channel> = read_key(doc, &ROOT, "channels")?;
-    let mut categories: Collection<Category> = read_key(doc, &ROOT, "categories")?;
-    let mut read: BTreeMap<String, BTreeMap<String, crate::parts::ReadMark>> =
-        read_key(doc, &ROOT, "read")?;
-    let feedback: Collection<FeedbackReport> = read_key(doc, &ROOT, "feedback")?;
-    let used = |channel: &str,
-                read: &BTreeMap<String, BTreeMap<String, crate::parts::ReadMark>>| {
-        read.values().any(|marks| {
-            marks
-                .get(channel)
-                .is_some_and(|mark| mark.part > 0 || mark.seen > 0)
-        }) || feedback.values().any(|report| {
-            report
-                .submission
-                .0
-                .as_ref()
-                .is_some_and(|submission| submission.destination.channel == channel)
-        })
-    };
-    for (id, name) in OLD_STARTER_CHANNELS {
-        let key = Id::from_raw(id);
-        let untouched = channels.get(&key).is_some_and(|channel| {
-            channel.name == name
-                && channel.topic.trim().is_empty()
-                && !channel.archived
-                && channel.conversation_with.is_none()
-        });
-        if untouched && !used(id, &read) {
-            channels.remove(&key);
-            for marks in read.values_mut() {
-                marks.remove(id);
-            }
-        }
-    }
-    for (id, name) in OLD_STARTER_CATEGORIES {
-        let key = Id::from_raw(id);
-        let unreadable = categories.quarantined().iter().any(|held| held.id == key);
-        let untouched = categories
-            .get(&key)
-            .is_some_and(|category| category.name == name);
-        if !untouched && !unreadable {
-            continue;
-        }
-        categories.remove(&key);
-        categories.discard(&key);
-        for (_, channel) in channels.iter_mut() {
-            if channel.category.as_ref() == Some(&key) {
-                channel.category = None;
-            }
-        }
-    }
-    open_room(&mut channels);
-    write_key(doc, &ROOT, "channels", &channels)?;
-    write_key(doc, &ROOT, "categories", &categories)?;
-    write_key(doc, &ROOT, "read", &read)?;
     Ok(())
 }
 
-/// Give a room without channels its first two: `#chat` to talk in and
-/// `#voice` to call in, under fixed ids and with the same values, so every
-/// device that opens the room first makes the very same two, and their
-/// copies are one item each.
+/// Give a room opened for the first time, with no channels at all, its
+/// first two: `#chat` to talk in and `#voice` to call in, under fixed ids
+/// and with the same values, so every device that opens the room first
+/// makes the very same two, and their copies are one item each. A room
+/// with any channel, even one that does not read, gets nothing.
 fn open_room(channels: &mut Collection<Channel>) {
-    if channels
-        .values()
-        .any(|channel| channel.conversation_with.is_none())
-    {
+    if !channels.is_empty() || !channels.quarantined().is_empty() {
         return;
     }
     for (id, name, kind) in [
