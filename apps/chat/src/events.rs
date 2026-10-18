@@ -3474,9 +3474,13 @@ mod tests {
             app.reconcile_flaps();
             assert!(!app.left_overlay(), "a wide window docks the sidebar");
             // Resize narrow on the SAME instance.
-            app.rect = vello::kurbo::Rect::new(0.0, 0.0, 560.0, 720.0);
+            app.rect = vello::kurbo::Rect::new(0.0, 0.0, 540.0, 720.0);
             app.reconcile_flaps();
-            assert!(app.left_overlay(), "narrowing reflows to a drawer");
+            assert!(
+                app.left_overlay(),
+                "narrowing reflows to one column at a time"
+            );
+            assert!(app.left_flap.is_push());
             // And widen again.
             app.rect = vello::kurbo::Rect::new(0.0, 0.0, 1280.0, 720.0);
             app.reconcile_flaps();

@@ -204,6 +204,7 @@ impl ResourceApp for ChipDesignShell {
         let search = Box::new(cx.search_button(ui::search::SearchRequest::this_app()));
         Box::new(
             NavShell::new()
+                .content_kind(ui::widget::ContentKind::Document)
                 .content(Box::new(Column::new().push(notice).push(content)))
                 .content_header(tr("chip-title"), vec![search, graph, all, import]),
         )

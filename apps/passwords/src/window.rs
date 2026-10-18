@@ -140,6 +140,7 @@ impl PasswordsSurface {
         let title = core.borrow().filter.label().to_owned();
         // Maximized, the header lives in the window's bar.
         let shell = NavShell::new()
+            .content_kind(ui::widget::ContentKind::Page)
             .with_id("passwords.shell")
             .with_header_in_window_bar()
             .sidebar(Box::new(sidebar(&core, &requests)))

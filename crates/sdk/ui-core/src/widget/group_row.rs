@@ -9961,6 +9961,80 @@ mod tests {
         assert_eq!(row.groups[2].take_pending_width_change(), None);
     }
 
+    /// An app that states its minimum only through its widget tree, as a
+    /// `NavShell` does ([`Widget::minimum_window_width`]), and nothing on
+    /// `AppWidget`: an app running in the shell's own process.
+    struct TreeMinimumApp {
+        min: f64,
+        rect: Rect,
+    }
+
+    impl Widget for TreeMinimumApp {
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            taffy.fill_leaf(node_map, self)
+        }
+        crate::rect_geometry!();
+        fn draw(
+            &mut self,
+            _: &mut Scene,
+            _: Affine,
+            _: &mut TextRenderer,
+            _: &Theme,
+            _: &PresenceCtx,
+        ) {
+        }
+        fn name(&self) -> &'static str {
+            "TreeMinimumApp"
+        }
+        fn minimum_window_width(&self) -> Option<f64> {
+            Some(self.min)
+        }
+    }
+
+    impl crate::widget::AppWidget for TreeMinimumApp {
+        fn uses_host_record(&self) -> bool {
+            false
+        }
+        fn app_kind(&self) -> crate::widget::AppKind {
+            crate::widget::AppKind::Files
+        }
+        fn app_title(&self) -> &'static str {
+            "Files"
+        }
+        fn app_icon(&self) -> crate::widget::IconDescriptor {
+            crate::widget::IconDescriptor::Glyph("F")
+        }
+    }
+
+    /// The strip's resize stops at the minimum an in-process app's layout
+    /// states (its compact layout), with no `AppWidget` override.
+    #[test]
+    fn an_in_process_apps_layout_minimum_stops_the_edge() {
+        let group = WindowGroup::new(
+            200,
+            vec![(
+                TabDescriptor::new(2, "Files"),
+                TileContent::App(Box::new(TreeMinimumApp {
+                    min: 340.0,
+                    rect: Rect::ZERO,
+                })),
+            )],
+            2,
+            WindowWidth::Narrow,
+        );
+        let (row, taffy, root) = edge_strip(Some(1), Some(group));
+        assert_eq!(row.groups[1].width_limits().min, 340.0);
+        let before = rects(&row);
+        let from = Point::new(before[1].x0 + 2.0, before[1].center().y);
+        let (_row, _taffy, _root, frames) = drag_edge(row, &taffy, root, from, &[150.0], false);
+        assert_eq!(widths(&frames[1])[1], 340.0, "stops at the app's minimum");
+    }
+
     #[test]
     fn a_limit_stops_the_edge_and_resizes_nothing_else() {
         // Phase `the_apps_own_minimum_stops_the_edge`.

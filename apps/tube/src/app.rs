@@ -30,9 +30,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::toast::ToastKind;
-use ui::widget::{
-    FullscreenProvider, NavItem, NavList, NavMode, NavSection, NavShell, VideoPlayer, Widget,
-};
+use ui::widget::{FullscreenProvider, NavItem, NavList, NavSection, NavShell, VideoPlayer, Widget};
 
 use crate::action::{self, Action, ActionBus};
 use crate::actions::TubeEffect;
@@ -275,8 +273,8 @@ impl TubeApp {
         let can = Rc::clone(can_go_back);
         let bus = Rc::clone(bus);
         NavShell::new()
+            .content_kind(ui::widget::ContentKind::Grid)
             .with_id("tube_shell")
-            .mode(NavMode::Overlay)
             .on_back(move || can.get(), move || action::push(&bus, Action::Back))
     }
 

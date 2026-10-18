@@ -270,6 +270,7 @@ impl ResourceApp for DiffmergeShell {
         // comparison's controls.
         Box::new(
             NavShell::new()
+                .content_kind(ui::widget::ContentKind::Document)
                 .content(cx.surface(comparison))
                 .content_header("", chrome.actions()),
         )

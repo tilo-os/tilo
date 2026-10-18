@@ -809,6 +809,7 @@ impl SnippetsApp {
             )
         };
         let mut shell = NavShell::new()
+            .content_kind(ui::widget::ContentKind::Document)
             .with_id("snippets.shell")
             .sidebar(Box::new(sidebar(&core, &requests)))
             .content(detail_pane::build(&core, &requests))

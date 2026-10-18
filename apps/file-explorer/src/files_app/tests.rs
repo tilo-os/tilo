@@ -5180,13 +5180,13 @@ mod responsive_body_tests {
     /// Wide/narrow body modes and the narrow places drawer, each phase on its
     /// own temp dir and harness.
     #[test]
-    fn places_list_docks_wide_and_overlays_as_a_drawer_when_narrow() {
+    fn places_list_docks_wide_and_takes_turns_with_the_files_when_narrow() {
         body_docks_wide_and_reflows_to_push_when_narrowed();
         wide_docks_the_places_list_beside_the_files();
         narrow_shows_the_files_not_the_places_list();
-        narrow_places_drawer_overlays_the_files_without_displacing_them();
-        narrow_places_drawer_scrim_is_a_modal_dismiss_backdrop_not_file_input();
-        narrow_navigation_dismisses_the_drawer_and_leaves_the_files_showing();
+        narrow_places_are_a_screen_of_their_own();
+        narrow_places_screen_takes_input_the_files_do_not();
+        narrow_navigation_returns_to_the_files();
         floating_status_bubble_reserves_a_noninteractive_bottom_lane();
     }
 
@@ -5199,11 +5199,11 @@ mod responsive_body_tests {
         );
         // Resize DOWN on the same instance (a real window resize re-runs
         // apply_layout) — the body must reflow to a single pane, not freeze.
-        h.lay_out(520.0, 720.0);
+        h.lay_out(480.0, 720.0);
         assert_eq!(
             h.w.debug_body_mode(),
-            SidebarPlacement::Drawer,
-            "a narrow window collapses the body to a single pane"
+            SidebarPlacement::Screen,
+            "a narrow window shows one pane at a time"
         );
         // ...and back up again proves it isn't one-way.
         h.lay_out(1200.0, 720.0);
@@ -5234,8 +5234,11 @@ mod responsive_body_tests {
             "compact overflow retains history navigation rather than removing it"
         );
 
-        h.lay_out(560.0, 760.0);
-        h.lay_out(560.0, 760.0);
+        // Beside the docked places list the folder still gets a 560 px
+        // column, which fits the direct controls; only a phone width moves
+        // them into the overflow.
+        h.lay_out(900.0, 760.0);
+        h.lay_out(900.0, 760.0);
         assert!(
             !h.w.toolbar.is_compact(),
             "a 560 px content column still fits the direct controls; only a phone width moves them into the overflow"
@@ -5457,12 +5460,12 @@ mod responsive_body_tests {
         for i in 0..5 {
             std::fs::write(dir.path().join(format!("f{i}.txt")), b"x").unwrap();
         }
-        let h = H::new(Some(dir.path()), 600.0, 720.0);
-        assert_eq!(h.w.debug_body_mode(), SidebarPlacement::Drawer);
+        let h = H::new(Some(dir.path()), 480.0, 720.0);
+        assert_eq!(h.w.debug_body_mode(), SidebarPlacement::Screen);
 
         assert!(
             !h.w.debug_places_open(),
-            "the places drawer starts closed, so the files are what you see",
+            "a narrow window opens on the folder, so the files are what you see",
         );
         // The file view's OWN rect, not "whichever pane is full-width": under
         // the original bug the places list was the full-width pane and the file
@@ -5475,11 +5478,11 @@ mod responsive_body_tests {
             "the file view must be laid out at a real size; got {files:?}",
         );
         assert!(
-            files.x0 >= 0.0 && files.x1 <= 600.0,
+            files.x0 >= 0.0 && files.x1 <= 480.0,
             "and inside the window rather than pushed off it: {files:?}",
         );
         assert!(
-            (h.w.debug_content_rect().width() - 600.0).abs() <= f64::EPSILON,
+            (h.w.debug_content_rect().width() - 480.0).abs() <= f64::EPSILON,
             "the content pane spans the whole narrow window",
         );
     }
@@ -5537,79 +5540,63 @@ mod responsive_body_tests {
         assert!(h.w.renaming.is_some(), "keyboard menu executes Rename");
     }
 
-    /// The drawer draws *over* the files rather than displacing them, and the
-    /// files stay full-width behind it (HIG §1a).
-    fn narrow_places_drawer_overlays_the_files_without_displacing_them() {
+    /// Narrow, the places are a screen of their own: the whole window, the
+    /// files one Back away, nothing darkened (HIG §1a).
+    fn narrow_places_are_a_screen_of_their_own() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), b"x").unwrap();
-        let mut h = H::new(Some(dir.path()), 600.0, 720.0);
-        let before = h.w.debug_content_rect();
-
-        h.w.debug_open_places_drawer();
-        h.lay_out(600.0, 720.0);
-        h.w.debug_open_places_drawer();
-        assert!(h.w.debug_places_open(), "the drawer is revealed");
-        assert_eq!(
-            h.w.debug_content_rect(),
-            before,
-            "the file view must not move or shrink when the drawer opens",
-        );
+        let mut h = H::new(Some(dir.path()), 480.0, 720.0);
+        h.w.debug_show_places();
+        h.lay_out(480.0, 720.0);
+        assert!(h.w.debug_places_open(), "the places screen is in front");
+        assert_eq!(h.w.debug_sidebar_rect().width(), 480.0);
         assert!(
-            h.w.status_bubble_is_occluded_by_places_drawer(),
-            "the item/status bubble belongs behind the modal drawer scrim"
+            h.rect_of("FileView").is_none(),
+            "one column at a time: the files are not under the places"
         );
+        assert!(h.w.nav.back(), "Back returns to the files");
+        h.w.nav.snap();
+        h.lay_out(480.0, 720.0);
+        assert!(!h.w.debug_places_open());
+        assert!(h.rect_of("FileView").is_some());
     }
 
-    fn narrow_places_drawer_scrim_is_a_modal_dismiss_backdrop_not_file_input() {
+    fn narrow_places_screen_takes_input_the_files_do_not() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("behind-the-drawer.txt"), b"x").unwrap();
-        let mut h = H::new(Some(dir.path()), 600.0, 720.0);
-        h.w.debug_open_places_drawer();
-        h.lay_out(600.0, 720.0);
-        h.w.debug_open_places_drawer();
-        let sidebar = h.w.debug_sidebar_rect();
-        let scrim_x = sidebar.x1 + 24.0;
-        let scrim_y = h.w.debug_content_rect().y0 + 180.0;
-
-        // Right-clicks over the uncovered strip used to be able to create a
-        // file-view context menu. They now remain in the modal backdrop.
-        h.cursor(scrim_x, scrim_y);
+        std::fs::write(dir.path().join("behind-the-places.txt"), b"x").unwrap();
+        let mut h = H::new(Some(dir.path()), 480.0, 720.0);
+        h.w.debug_show_places();
+        h.lay_out(480.0, 720.0);
+        let places = h.w.debug_sidebar_rect();
+        h.cursor(places.center().x, places.y0 + 300.0);
         h.right_press();
-        assert!(h.w.debug_places_open());
         assert!(
             !h.w.context_menu.is_open() && h.w.selected_indices().is_empty(),
-            "the backdrop cannot select or open a menu for the file behind it"
+            "a press on the places screen cannot select or open a menu for a file"
         );
-
-        // A primary press is the intentional dismissal affordance, and still
-        // must not reach the underlying list/scrollbar on that same event.
-        h.left_press();
-        assert!(!h.w.debug_places_open());
-        assert!(h.w.selected_indices().is_empty());
-
-        h.w.debug_open_places_drawer();
         let semantic_children = h.w.nav.children();
         assert!(
             semantic_children
                 .iter()
                 .any(|child| child.name() == "NavList"),
-            "the open drawer exposes the places list"
+            "the places screen exposes the places list"
         );
     }
 
-    /// Picking a destination in the narrow drawer dismisses it, leaving the
-    /// user on the files they navigated to.
-    fn narrow_navigation_dismisses_the_drawer_and_leaves_the_files_showing() {
+    /// Picking a destination on the narrow places screen moves on to the
+    /// files there.
+    fn narrow_navigation_returns_to_the_files() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("sub")).unwrap();
-        let mut h = H::new(Some(dir.path()), 520.0, 720.0);
-        assert_eq!(h.w.debug_body_mode(), SidebarPlacement::Drawer);
-        h.w.debug_open_places_drawer();
+        let mut h = H::new(Some(dir.path()), 480.0, 720.0);
+        assert_eq!(h.w.debug_body_mode(), SidebarPlacement::Screen);
+        h.w.debug_show_places();
+        h.lay_out(480.0, 720.0);
         assert!(h.w.debug_places_open());
 
         // A place-navigation (what tapping a place in the list emits). Inject
         // the command the places list pushes, then pump an event so
-        // `handle_event` drains it and applies the dismissal wiring.
+        // `handle_event` drains it and moves on.
         crate::command::push(&h.w.cmds, FileCommand::Navigate(dir.path().join("sub")));
         h.cursor(10.0, 10.0);
         assert_eq!(
@@ -5619,11 +5606,13 @@ mod responsive_body_tests {
         );
         assert!(
             !h.w.debug_places_open(),
-            "navigating dismisses the drawer so the files are what remains",
+            "navigating leaves the places for the files",
         );
+        h.w.nav.snap();
+        h.lay_out(480.0, 720.0);
         assert!(
-            (h.w.debug_content_rect().width() - 520.0).abs() <= f64::EPSILON,
-            "and the file view still owns the whole window",
+            (h.w.debug_content_rect().width() - 480.0).abs() <= f64::EPSILON,
+            "and the file view owns the whole window",
         );
     }
 
@@ -5895,20 +5884,22 @@ mod responsive_body_tests {
         );
     }
 
-    /// With the places list not beside the files, the shell's toggle sits at
-    /// the leading edge of the content header; the toolbar starts after it
-    /// instead of drawing over it.
+    /// With the places list not beside the files (hidden), the shell's toggle
+    /// sits at the leading edge of the content header; the toolbar starts
+    /// after it instead of drawing over it.
     #[test]
     fn the_toolbar_starts_after_the_shells_toggle_when_the_places_list_is_away() {
-        let mut h = H::new(None, 520.0, 720.0);
+        let mut h = H::new(None, 1200.0, 720.0);
+        h.w.nav.close_sidebar();
         for _ in 0..2 {
             // The inset is discovered by a layout and applied by the rebuild
             // it asks for, as the live frame loop does.
+            h.w.nav.snap();
             h.w.take_structure_dirty();
-            h.lay_out(520.0, 720.0);
+            h.lay_out(1200.0, 720.0);
         }
         let toggle = h.w.nav.geometry().toggle;
-        assert!(toggle.width() > 0.0, "the narrow shell shows its toggle");
+        assert!(toggle.width() > 0.0, "the shell shows its toggle");
         let up =
             h.w.toolbar
                 .up_button_rect()
@@ -5920,6 +5911,8 @@ mod responsive_body_tests {
 
         // Beside the files the toggle belongs to the sidebar's own header, so
         // the toolbar needs no room for it.
+        h.w.nav.open_sidebar();
+        h.w.nav.snap();
         h.lay_out(1200.0, 720.0);
         h.w.take_structure_dirty();
         h.lay_out(1200.0, 720.0);

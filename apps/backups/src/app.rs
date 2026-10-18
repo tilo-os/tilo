@@ -157,6 +157,7 @@ impl BackupsApp {
         let policy = RetentionPolicy::default();
         Self {
             shell: NavShell::new()
+                .content_kind(ui::widget::ContentKind::List)
                 .content_header("", Vec::new())
                 .inspector_header("Snapshot", Vec::new())
                 .with_id("backups-shell"),

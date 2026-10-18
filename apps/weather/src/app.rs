@@ -271,6 +271,7 @@ impl WeatherApp {
         let title = Self::content_title(&core.borrow());
         let rail = core.borrow().rail_places();
         NavShell::new()
+            .content_kind(ui::widget::ContentKind::Reading)
             .with_id("weather-shell")
             .overview(Box::new(OverviewPane::new(Rc::clone(core))))
             .overview_rail(Self::place_rail(core, &rail))

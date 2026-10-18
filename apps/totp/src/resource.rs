@@ -230,6 +230,7 @@ impl ResourceApp for TotpShell {
         });
         Box::new(CountedShell {
             shell: NavShell::new()
+                .content_kind(ui::widget::ContentKind::List)
                 .content(content)
                 .content_header("Accounts", vec![search, add]),
             count,

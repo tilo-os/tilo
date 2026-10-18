@@ -1788,6 +1788,7 @@ impl FileExplorerWidget {
         // stays for the window's lifetime.
         let (path_widget, actions_widget, toolbar) = crate::toolbar::FileToolbar::new(cmds.clone());
         let nav = NavShell::new()
+            .content_kind(ui::widget::ContentKind::List)
             .with_id("files.shell")
             .content_header("", vec![Box::new(actions_widget)])
             .content_header_leading(Box::new(path_widget));
@@ -3417,14 +3418,10 @@ impl FileExplorerWidget {
         self.toolbar.set_content_width(column.width());
     }
 
-    /// Whether `point` is over the places list (docked or drawn as a drawer).
+    /// Whether `point` is over the places list (docked, or the places
+    /// screen of a narrow window).
     fn in_places_list(&self, point: Point) -> bool {
         self.nav.is_sidebar_open() && self.nav.geometry().sidebar_column.contains(point)
-    }
-
-    /// Whether the places list is open as a drawer over the file view.
-    fn places_drawer_open(&self) -> bool {
-        self.nav.geometry().sidebar == SidebarPlacement::Drawer && self.nav.is_sidebar_open()
     }
 
     /// The content column below the shell's header row: where the file view
@@ -3438,14 +3435,6 @@ impl FileExplorerWidget {
             column.x1,
             column.y1,
         )
-    }
-
-    /// A narrow places drawer is a modal flap: the file view and every one of
-    /// its transient affordances live behind its scrim. The bubble is drawn by
-    /// this app (rather than by `NavShell`), so make that ownership boundary
-    /// explicit instead of accidentally painting it over the flap.
-    fn status_bubble_is_occluded_by_places_drawer(&self) -> bool {
-        self.places_drawer_open()
     }
 
     pub fn current_path(&self) -> PathBuf {
@@ -5744,11 +5733,11 @@ impl FileExplorerWidget {
         self.open_templates_submenu(anchor);
     }
 
-    /// Open the places drawer over the file view (the narrow layout's
-    /// hamburger action), settled deterministically for a headless
-    /// screenshot. In the wide layout the places list is already docked.
+    /// Bring the places list in front (a narrow window's places screen),
+    /// settled deterministically for a headless screenshot. In the wide
+    /// layout the places list is already docked.
     #[doc(hidden)]
-    pub fn debug_open_places_drawer(&mut self) {
+    pub fn debug_show_places(&mut self) {
         self.nav.open_sidebar();
         self.nav.snap();
     }
@@ -5945,7 +5934,7 @@ impl FileExplorerWidget {
                 self.debug_select(&[11]);
                 self.begin_rename();
             }
-            Some("places") => self.debug_open_places_drawer(),
+            Some("places") => self.debug_show_places(),
             Some("remote-account") => {
                 // A made-up account that needs signing in again: no real
                 // account store or vault is read.
@@ -6438,7 +6427,6 @@ impl FileExplorerWidget {
             || on_item
             || self.pin_drag.is_some()
             || !self.content_body_rect().contains(at)
-            || self.places_drawer_open()
         {
             return;
         }
@@ -9166,40 +9154,6 @@ impl FileExplorerWidget {
         }
     }
 
-    /// Route an open compact Places drawer as a modal surface. The uncovered
-    /// strip is deliberately a dismiss backdrop, never a transparent route to
-    /// the file view: right-clicks, wheel input, and selection gestures must
-    /// not reach the list behind the scrim.
-    fn handle_places_drawer_modal_event(
-        &mut self,
-        event: &winit::event::WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-    ) -> bool {
-        if !self.places_drawer_open() {
-            return false;
-        }
-        let Ok(children) = ctx.taffy.children(ctx.node_id) else {
-            return false;
-        };
-        let Some(&nav_node) = children.first() else {
-            return false;
-        };
-        let path_before = self.current_path.clone();
-        self.nav
-            .handle_event(event, &mut ctx.reborrow(ctx.path, nav_node));
-        if self.drain_commands() | self.drain_opened() {
-            self.structure_dirty = true;
-        }
-        if self.current_path != path_before {
-            self.nav.close_sidebar();
-        }
-        // NavShell handles a left scrim press by closing; other events such as
-        // a right-click over the scrim are still swallowed here so they cannot
-        // construct a file-view context menu through the modal backdrop.
-        *ctx.handled = true;
-        true
-    }
-
     /// The open context menu (or its flyout) gets first dibs on clicks +
     /// Escape. Returns whether the event was consumed.
     fn handle_open_menu_event(
@@ -9429,9 +9383,13 @@ impl FileExplorerWidget {
         if self.drain_commands() {
             self.structure_dirty = true;
         }
-        // Going somewhere leaves the drawer that was open over the files.
-        if self.current_path != path_before && self.places_drawer_open() {
-            self.nav.close_sidebar();
+        // Going somewhere from the places screen of a narrow window shows
+        // the folder.
+        if self.current_path != path_before
+            && self.nav.front_pane() == ui::widget::NavPane::Sidebar
+            && !self.nav.geometry().stack.is_empty()
+        {
+            self.nav.show(ui::widget::NavPane::Content);
         }
     }
 }
@@ -10114,8 +10072,9 @@ impl Widget for FileExplorerWidget {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.adopt_preferences();
         // A control a caller invoked through the door (a toolbar button)
-        // queued its command; apply it before this frame is laid out.
-        if self.drain_commands() {
+        // queued its command, and a search hit or an agent's `open` queued
+        // the row it names; apply them before this frame is laid out.
+        if self.drain_commands() | self.drain_opened() {
             self.structure_dirty = true;
         }
         self.poll_cloud();
@@ -10305,11 +10264,11 @@ impl Widget for FileExplorerWidget {
         self.nav
             .draw_overlay(scene, transform, text_renderer, theme, presence);
         // Floating status bubble (item count / status + selection), above the
-        // content but below any open menus / drag ghost. A narrow drawer is a
-        // modal flap and its scrim must occlude every content affordance.
-        // A notice takes the bubble's place while it is up: one message at
-        // a time at the bottom of the file view.
-        if !self.status_bubble_is_occluded_by_places_drawer() {
+        // content but below any open menus / drag ghost, and only while the
+        // file view is on screen (not while a narrow window shows the places
+        // screen). A notice takes the bubble's place while it is up: one
+        // message at a time at the bottom of the file view.
+        if self.nav.geometry().content_column.width() > 0.0 {
             if self.notice.is_shown() {
                 let area = self.content_body_rect();
                 self.notice
@@ -10401,7 +10360,7 @@ impl Widget for FileExplorerWidget {
             *ctx.handled = true;
             return;
         }
-        if self.notice.is_shown() && !self.places_drawer_open() && self.route_notice_event(event) {
+        if self.notice.is_shown() && self.route_notice_event(event) {
             *ctx.handled = true;
             return;
         }
@@ -10500,7 +10459,6 @@ impl Widget for FileExplorerWidget {
         // and an in-place rename all get first dibs on the event, in that
         // priority order; the first that consumes it stops routing.
         if self.handle_live_drag_event(event, ctx)
-            || self.handle_places_drawer_modal_event(event, ctx)
             || self.handle_open_menu_event(event, ctx)
             || self.handle_right_click_open_menu(event, ctx)
             || self.handle_zoom_wheel(event, ctx)

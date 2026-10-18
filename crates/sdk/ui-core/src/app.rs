@@ -1889,6 +1889,7 @@ impl App {
 
         let actual = window.fullscreen().is_some();
         changed |= self.note_actual_fullscreen(actual);
+        self.reconcile_minimum_size(window);
 
         changed
     }
@@ -2561,6 +2562,31 @@ impl App {
             };
         }
         self.invalidate_widget_resource_cache();
+        // What the window's layout needs follows the tree and the theme it
+        // was built with; asked once per build, not per frame.
+        self.window.minimum_width = crate::widget::minimum_window_width(self.root_widget.as_ref());
+    }
+
+    /// The narrowest the window's layout works at, in logical pixels, as of
+    /// the last build of its tree ([`crate::widget::Widget::minimum_window_width`]).
+    pub fn minimum_window_width(&self) -> Option<f64> {
+        self.window.minimum_width
+    }
+
+    /// Tell the window system the narrowest the layout works at, when it
+    /// changed: Wayland's `xdg_toplevel.set_min_size`, so the desktop stops
+    /// a resize at the app's compact layout instead of squeezing it.
+    #[cfg(feature = "native")]
+    fn reconcile_minimum_size(&mut self, window: &Window) {
+        let wanted = self.window.minimum_width;
+        if wanted == self.window.minimum_width_stated {
+            return;
+        }
+        self.window.minimum_width_stated = wanted;
+        // Height stays unconstrained (winit's own floor of one pixel).
+        window.set_min_inner_size(
+            wanted.map(|width| winit::dpi::LogicalSize::new(width.ceil(), 1.0)),
+        );
     }
 
     /// Takes effect when the window is created, so set before [`App::run`].

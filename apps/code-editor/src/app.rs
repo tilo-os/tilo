@@ -3199,8 +3199,7 @@ impl Widget for CodeApp {
         }
         self.draw_content(scene, transform, text_renderer, theme, presence);
         if layout == SplitLayout::Overlay && self.sidebar_visible() {
-            // The scrim dims the content, then the drawer floats over it.
-            self.drawer.draw_scrim(scene, transform, theme);
+            // The drawer floats over the content.
             self.draw_sidebar(scene, transform, text_renderer, theme, presence);
         }
         if self.toggle_in_tab_strip() {

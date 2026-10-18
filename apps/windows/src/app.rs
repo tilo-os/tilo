@@ -432,6 +432,7 @@ impl WindowsApp {
         )
         .on_effect(intents.sender(Intent::Install));
         let shell = NavShell::new()
+            .content_kind(ui::widget::ContentKind::Page)
             .with_id("windows-shell")
             .overview_header(strings::t("windows-apps-title"), vec![Box::new(install)])
             .content_header(strings::t("windows-app-title"), Vec::new());

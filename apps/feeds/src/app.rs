@@ -1679,6 +1679,7 @@ impl FeedsApp {
             requests: &requests,
         };
         let shell = NavShell::new()
+            .content_kind(ui::widget::ContentKind::Reading)
             .with_id("feeds.shell")
             .sidebar(Box::new(SidebarNav::new(&core, &requests)))
             .overview(Box::new(ListPane::new(&core)))

@@ -166,7 +166,9 @@ fn shell_for(
     enabled: &LocalState<bool>,
     panic: &LocalState<bool>,
 ) -> NavShell {
-    let shell = NavShell::new().with_id("firewall-shell");
+    let shell = NavShell::new()
+        .content_kind(ui::widget::ContentKind::List)
+        .with_id("firewall-shell");
     if available {
         shell
             .sidebar_header("Zones", Vec::new())

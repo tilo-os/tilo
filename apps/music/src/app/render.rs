@@ -2764,11 +2764,9 @@ impl MusicApp {
         self.draw_nowplaying(ctx, &look, bar);
         self.open_staged_player_menu();
 
-        // A floating drawer dims what is behind it, and a tap on that scrim
-        // dismisses it.
+        // A tap on the content beside a floating drawer dismisses it.
         let scrim = self.drawer.scrim_rect();
         if scrim.width() > 0.5 {
-            self.drawer.draw_scrim(ctx.scene, ctx.transform, ctx.theme);
             self.push_hit(scrim, Action::CloseSidebar);
         }
         // The sidebar (docked beside the content, or floating over it). Skip

@@ -9,8 +9,8 @@ use settings::SettingsShell;
 use ui::accesskit::{Action as AkAction, Role as AkRole};
 use ui::framework::testing::TestApp;
 
-/// A typical tiled desktop window, narrower than the shell's breakpoint.
-const NARROW: (u32, u32) = (640, 480);
+/// A phone-width window: one column at a time.
+const NARROW: (u32, u32) = (360, 640);
 
 fn clickable(app: &mut TestApp<SettingsShell>, name: &str, role: AkRole) -> bool {
     app.harness().a11y_nodes().iter().any(|(_, node)| {

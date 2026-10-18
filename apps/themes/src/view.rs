@@ -103,8 +103,8 @@ pub(crate) fn root(cx: &ViewCx<Studio>) -> Element {
     };
     Box::new(
         NavShell::new()
+            .content_kind(ui::widget::ContentKind::Grid)
             .with_id("themes-shell")
-            .mode(NavMode::Overlay)
             .with_pane_state(&ui.pane)
             .sidebar(nav)
             .content(content),

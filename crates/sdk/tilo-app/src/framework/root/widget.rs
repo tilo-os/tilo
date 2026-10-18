@@ -301,9 +301,13 @@ impl AppWidget for RootWidget {
     }
 
     /// Every Tilo app has a compact layout that works at phone width, and a
-    /// person resizing its window is stopped there rather than squeezing it.
+    /// person resizing its window is stopped there rather than squeezing it:
+    /// at what the app's layout states it needs
+    /// ([`ui_core::widget::minimum_window_width`], a `NavShell`'s compact
+    /// layout), never below phone width.
     fn min_window_width(&self) -> Option<f64> {
-        Some(f64::from(ui_core::tokens::Metrics::BASE.window_min_width))
+        let phone = f64::from(ui_core::tokens::Metrics::BASE.window_min_width);
+        Some(ui_core::widget::minimum_window_width(self).map_or(phone, |width| width.max(phone)))
     }
 
     fn record_save_status(&mut self, status: RecordSaveStatus) {
