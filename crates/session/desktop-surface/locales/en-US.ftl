@@ -21,6 +21,16 @@ topbar-show-clock = Show clock
 topbar-show-system-monitor = Show system monitor
 topbar-show-calendar = Show calendar
 topbar-open-quick-settings = Open quick settings
+topbar-bell = { $unread ->
+    [0] Notifications
+    [one] Notifications, 1 unread
+   *[other] Notifications, { $unread } unread
+}
+topbar-bell-silenced = { $unread ->
+    [0] Notifications silenced
+    [one] Notifications silenced, 1 unread
+   *[other] Notifications silenced, { $unread } unread
+}
 topbar-show-collaborators = Show collaborators
 topbar-viewer-can-control = can control { $targets }
 topbar-viewer-view-only = view only { $targets }
