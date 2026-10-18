@@ -93,12 +93,17 @@ pub const SYSTEM_READ_PATHS: &[&str] = &[
 /// decision, derived from the egress decision already made.
 pub const NETWORK_READ_PATHS: &[&str] = &["/etc/resolv.conf", "/etc/hosts"];
 
-/// Device nodes every GUI app gets, bound with `--dev-bind-try`.
+/// GPU device nodes, bound with `--dev-bind-try` for an app granted the
+/// `gpu` capability ([`crate::gpu::granted`]) and for no other.
 ///
-/// `--dev /dev` mounts a fresh, near-empty devtmpfs, so a GPU node has
-/// to be bound back explicitly — this is what `push_gpu_selection`'s
-/// narrowing lands on top of, so the app never sees more than one GPU.
-pub const SYSTEM_DEVICE_PATHS: &[&str] = &[
+/// A toolkit app does not open the GPU: its room's render service draws its
+/// frames (`tilo-render-service`). The GPU kernel driver is among the most
+/// exploited kernel surfaces, so an app reaches it only when it declares it
+/// needs to (a web engine, video, games, 3D, ML). `--dev /dev` mounts a
+/// fresh, near-empty devtmpfs, so these nodes exist in a sandbox only when
+/// [`push_gpu_devices`] binds them; `push_gpu_selection`'s narrowing lands
+/// on top, so such an app never sees more than one GPU.
+pub const GPU_DEVICE_PATHS: &[&str] = &[
     "/dev/dri",
     "/dev/nvidia0",
     "/dev/nvidiactl",
@@ -138,7 +143,11 @@ pub fn push_system_profile(argv: &mut Vec<String>, shares_host_network: bool) {
             push(argv, "--ro-bind-try", path, path);
         }
     }
-    for path in SYSTEM_DEVICE_PATHS {
+}
+
+/// Bind the GPU device nodes, for an app granted `gpu` only.
+pub fn push_gpu_devices(argv: &mut Vec<String>) {
+    for path in GPU_DEVICE_PATHS {
         push(argv, "--dev-bind-try", path, path);
     }
 }
@@ -162,11 +171,11 @@ pub fn landlock_ro_paths(shares_host_network: bool) -> Vec<PathBuf> {
         .collect()
 }
 
-/// The device nodes as Landlock read-write rules. A GPU context is
-/// opened `O_RDWR`; a read-only rule surfaces at device-open time and
-/// looks exactly like "no GPU present".
+/// The GPU device nodes as Landlock read-write rules, for an app granted
+/// `gpu`. A GPU context is opened `O_RDWR`; a read-only rule surfaces at
+/// device-open time and looks exactly like "no GPU present".
 pub fn landlock_rw_device_paths() -> Vec<PathBuf> {
-    SYSTEM_DEVICE_PATHS.iter().map(PathBuf::from).collect()
+    GPU_DEVICE_PATHS.iter().map(PathBuf::from).collect()
 }
 
 /// Landlock read-write rules for an engine that builds its own sandbox
@@ -192,7 +201,6 @@ pub fn covers(path: &Path) -> bool {
     SYSTEM_READ_PATHS
         .iter()
         .chain(NETWORK_READ_PATHS.iter())
-        .chain(SYSTEM_DEVICE_PATHS.iter())
         .any(|p| path == Path::new(p) || path.starts_with(p))
 }
 
@@ -216,7 +224,7 @@ mod tests {
             for p in SYSTEM_READ_PATHS
                 .iter()
                 .chain(NETWORK_READ_PATHS.iter())
-                .chain(SYSTEM_DEVICE_PATHS.iter())
+                .chain(GPU_DEVICE_PATHS.iter())
             {
                 assert!(
                     p.starts_with('/'),
@@ -246,7 +254,7 @@ mod tests {
             for p in SYSTEM_READ_PATHS
                 .iter()
                 .chain(NETWORK_READ_PATHS.iter())
-                .chain(SYSTEM_DEVICE_PATHS.iter())
+                .chain(GPU_DEVICE_PATHS.iter())
             {
                 assert_ne!(*p, "/", "the root filesystem is not a profile entry");
                 assert!(
@@ -289,10 +297,20 @@ mod tests {
                     "{dictionaries} must be readable under Landlock"
                 );
             }
+            // The GPU is not part of what every app gets: an app draws
+            // through its room's render service unless it declares `gpu`.
             assert!(
-                argv.windows(3)
+                !argv
+                    .iter()
+                    .any(|a| a.starts_with("/dev/dri") || a.starts_with("/dev/nvidia")),
+                "no GPU node in the default profile: {argv:?}"
+            );
+            let mut gpu = Vec::new();
+            push_gpu_devices(&mut gpu);
+            assert!(
+                gpu.windows(3)
                     .any(|w| w[0] == "--dev-bind-try" && w[1] == "/dev/dri"),
-                "the GPU node needs a device bind: {argv:?}"
+                "a `gpu` app's GPU node needs a device bind: {gpu:?}"
             );
             // The cgroup hierarchy is covered, after `/sys` is bound, by an
             // empty tree no app can write either.

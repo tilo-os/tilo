@@ -148,6 +148,7 @@ capabilities! {
     SystemInfo = "system-info": "Read hardware and operating-system details.",
     WebView = "webview": "Embed web content.",
     IoUring = "io-uring": "Use the kernel's fast asynchronous I/O interface.",
+    Gpu = "gpu": "Use the GPU directly: a web engine, video, games, 3D or ML.",
 }
 
 /// Where a capability's row comes from.
@@ -248,6 +249,10 @@ impl Capability {
                 Unsupported(LINUX_ONLY_IO_URING),
                 Unsupported(LINUX_ONLY_IO_URING),
             ],
+            // Linux: the device node in the sandbox; without it the room's
+            // render service draws the app. macOS and the web give every app
+            // its Metal or WebGPU device.
+            Self::Gpu => [Available, Available, Available],
         };
         row.get(target.column()).copied().unwrap_or(Planned)
     }

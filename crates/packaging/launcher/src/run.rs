@@ -2375,16 +2375,22 @@ fn splice_gpu(
     argv: &mut Vec<String>,
     manifest: &ManifestView,
     opts: &RunOptions,
-    capabilities: &CapabilityPlan,
+    gpu_granted: bool,
 ) -> Result<(Option<crate::gpu::GpuSelection>, Option<PathBuf>), RunError> {
+    // An app without `gpu` draws through its room's render service: no
+    // device node, no loader pin, no shader-cache seed, and none of the ICD
+    // probing they cost.
+    if !gpu_granted {
+        return Ok((None, None));
+    }
+    let entry = pop_entry(argv)?;
+    crate::profile::push_gpu_devices(argv);
+    argv.push(entry);
     let gpu = resolve_gpu_selection(manifest, opts);
     if let Some(sel) = &gpu {
         let entry = pop_entry(argv)?;
-        crate::sandbox::push_gpu_selection(
-            argv,
-            sel,
-            crate::sandbox::grants_drm(manifest, capabilities),
-        );
+        // The device nodes were just bound: narrow them to the node.
+        crate::sandbox::push_gpu_selection(argv, sel, true);
         argv.push(entry);
     } else if opts.render_node.is_none()
         && let Some(pin) = crate::gpu::inherited_software_pin()
@@ -2455,6 +2461,8 @@ struct ShimSpliceCtx<'a> {
     system_authority: &'a Option<crate::system_authority::SystemAuthorityPlan>,
     wayland_bind: &'a Option<crate::sandbox::WaylandBind>,
     gpu: &'a Option<crate::gpu::GpuSelection>,
+    /// The app was granted `gpu`: its device nodes are bound.
+    gpu_devices: bool,
     pipeline_seed: &'a Option<PathBuf>,
     keep_fds: &'a [RawFd],
 }
@@ -2565,11 +2573,13 @@ fn splice_sandbox_shim(
     // And the person's records of it, bound the same way.
     argv.push("--rw".to_string());
     argv.push(crate::appdir::SANDBOX_PERSON_DIR.to_string());
-    // The GPU device nodes the profile bound — same O_RDWR reasoning
+    // The GPU device nodes a `gpu` app was bound — same O_RDWR reasoning
     // as above.
-    for path in crate::profile::landlock_rw_device_paths() {
-        argv.push("--rw".to_string());
-        argv.push(path.display().to_string());
+    if ctx.gpu_devices {
+        for path in crate::profile::landlock_rw_device_paths() {
+            argv.push("--rw".to_string());
+            argv.push(path.display().to_string());
+        }
     }
     push_scratch_and_engine_rules(argv, ctx.manifest);
     // Service sockets need no Landlock rule: they arrive as already-connected
@@ -3521,6 +3531,13 @@ pub(crate) fn run_with_context(
             crate::system_stats::image_shipped(payload_root),
         ),
     )?;
+    // Whether the app opens the GPU itself, or its room's render service
+    // draws it.
+    let gpu_granted = crate::gpu::granted(
+        manifest,
+        &capabilities,
+        crate::system_stats::image_shipped(payload_root),
+    );
     tilo_startup_metrics::handoff_mark("seccomp-staged");
 
     // D-Bus proxy decision. Failure leaves the bus unavailable; there is
@@ -3624,6 +3641,17 @@ pub(crate) fn run_with_context(
             resolve_chooser_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
         {
             resolved.push(chooser);
+        }
+        #[cfg(target_os = "linux")]
+        if matches!(opts.mode, LaunchMode::Gui)
+            && !gpu_granted
+            && let Some(render) = crate::services::resolve_render_bind(
+                package_id,
+                opts.workspace_id.as_deref(),
+                opts.no_services,
+            )?
+        {
+            resolved.push(render);
         }
         if let Some(stats) = crate::system_stats::resolve_bind(
             manifest,
@@ -3741,7 +3769,7 @@ pub(crate) fn run_with_context(
     let (gpu, pipeline_seed) = if retained_io.is_some() || target_projection.is_some() {
         (None, None)
     } else {
-        splice_gpu(&mut argv, manifest, opts, &capabilities)?
+        splice_gpu(&mut argv, manifest, opts, gpu_granted)?
     };
     splice_startup_marks(&mut argv)?;
     splice_sandbox_shim(
@@ -3758,6 +3786,7 @@ pub(crate) fn run_with_context(
             system_authority: &system_authority,
             wayland_bind: &wayland_bind,
             gpu: &gpu,
+            gpu_devices: gpu_granted,
             pipeline_seed: &pipeline_seed,
             keep_fds: &keep_fds,
         },
@@ -4328,6 +4357,13 @@ fn run_with_capture_spawn<T>(
             crate::system_stats::image_shipped(payload_root),
         ),
     )?;
+    // Whether the app opens the GPU itself, or its room's render service
+    // draws it.
+    let gpu_granted = crate::gpu::granted(
+        manifest,
+        &capabilities,
+        crate::system_stats::image_shipped(payload_root),
+    );
 
     // As in `run_with_context`: held from before the lookup until the
     // sandbox has exited.
@@ -4374,6 +4410,17 @@ fn run_with_capture_spawn<T>(
         resolve_chooser_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
     {
         resolved.push(chooser);
+    }
+    #[cfg(target_os = "linux")]
+    if matches!(opts.mode, LaunchMode::Gui)
+        && !gpu_granted
+        && let Some(render) = crate::services::resolve_render_bind(
+            package_id,
+            opts.workspace_id.as_deref(),
+            opts.no_services,
+        )?
+    {
+        resolved.push(render);
     }
     if let Some(stats) = crate::system_stats::resolve_bind(
         manifest,
@@ -4436,7 +4483,7 @@ fn run_with_capture_spawn<T>(
     let _browser_projection = crate::browser_projection::splice(&mut argv, manifest, opts)?;
     splice_action_authority(&mut argv, manifest, opts)?;
     let wayland_bind = splice_wayland(&mut argv, opts)?;
-    let (gpu, pipeline_seed) = splice_gpu(&mut argv, manifest, opts, &capabilities)?;
+    let (gpu, pipeline_seed) = splice_gpu(&mut argv, manifest, opts, gpu_granted)?;
     splice_sandbox_shim(
         &mut argv,
         opts,
@@ -4451,6 +4498,7 @@ fn run_with_capture_spawn<T>(
             system_authority: &system_authority,
             wayland_bind: &wayland_bind,
             gpu: &gpu,
+            gpu_devices: gpu_granted,
             pipeline_seed: &pipeline_seed,
             keep_fds: &keep_fds,
         },
@@ -5819,11 +5867,17 @@ mod mesa_seed_software_tests {
             .remove(crate::gpu::EGL_VENDOR_ENV);
         let manifest: ManifestView = crate::manifest::test_manifest(
             "id = \"io.tilo.software-pin\"\nversion = \"0.1.0\"\nkind = \"app\"",
-            "[entrypoint]\nbin = \"bin/probe\"\n",
+            "[entrypoint]\nbin = \"bin/probe\"\n\n[capabilities]\noptional = [\"gpu\"]\n",
         );
         let opts = RunOptions::default();
         let mut argv = vec!["/app/probe".to_owned()];
-        let (gpu, _) = splice_gpu(&mut argv, &manifest, &opts, &CapabilityPlan::empty()).unwrap();
+        let (gpu, _) = splice_gpu(
+            &mut argv,
+            &manifest,
+            &opts,
+            crate::gpu::granted(&manifest, &CapabilityPlan::empty(), true),
+        )
+        .unwrap();
         assert!(gpu.is_none(), "no render node, no device pin");
         let path = lavapipe.to_str().unwrap();
         assert!(
@@ -5836,13 +5890,22 @@ mod mesa_seed_software_tests {
         ] {
             assert!(argv.windows(3).any(|args| args == ["--setenv", key, path]));
         }
-        assert!(!argv.iter().any(|arg| arg == "--dev-bind-try"));
+        assert!(
+            !argv.iter().any(|arg| arg.starts_with("/dev/dri/renderD")),
+            "no render node, no node pin: {argv:?}"
+        );
         assert_eq!(argv.last().map(String::as_str), Some("/app/probe"));
 
         // A GPU's driver in the environment is not the software pin.
         home.env().set(crate::gpu::VK_DRIVER_FILES_ENV, &radeon);
         let mut argv = vec!["/app/probe".to_owned()];
-        splice_gpu(&mut argv, &manifest, &opts, &CapabilityPlan::empty()).unwrap();
+        splice_gpu(
+            &mut argv,
+            &manifest,
+            &opts,
+            crate::gpu::granted(&manifest, &CapabilityPlan::empty(), true),
+        )
+        .unwrap();
         assert!(
             !argv
                 .iter()
@@ -5863,12 +5926,17 @@ mod mesa_seed_software_tests {
         std::fs::create_dir_all(&source).unwrap();
         let manifest: ManifestView = crate::manifest::test_manifest(
             "id = \"io.tilo.seed-test\"\nversion = \"0.1.0\"\nkind = \"app\"",
-            "[entrypoint]\nbin = \"bin/probe\"\n",
+            "[entrypoint]\nbin = \"bin/probe\"\n\n[capabilities]\noptional = [\"gpu\"]\n",
         );
         let opts = RunOptions::default();
         let mut argv = vec!["/app/probe".to_owned()];
-        let (gpu, seed) =
-            splice_gpu(&mut argv, &manifest, &opts, &CapabilityPlan::empty()).unwrap();
+        let (gpu, seed) = splice_gpu(
+            &mut argv,
+            &manifest,
+            &opts,
+            crate::gpu::granted(&manifest, &CapabilityPlan::empty(), true),
+        )
+        .unwrap();
         assert!(gpu.is_none());
         assert_eq!(seed.as_deref(), Some(source.as_path()));
         assert!(argv.windows(3).any(|args| args
@@ -5877,11 +5945,9 @@ mod mesa_seed_software_tests {
                 source.to_str().unwrap(),
                 crate::gpu::SANDBOX_PIPELINE_SEED_DIR
             ]));
-        assert!(
-            !argv
-                .iter()
-                .any(|arg| arg == "--dev-bind-try" || arg == crate::gpu::VK_DRIVER_FILES_ENV)
-        );
+        assert!(!argv.iter().any(
+            |arg| arg.starts_with("/dev/dri/renderD") || arg == crate::gpu::VK_DRIVER_FILES_ENV
+        ));
         assert!(
             argv.windows(3)
                 .any(|args| args == ["--setenv", crate::mesa_seed::CONSUME_ENV, "1"])
@@ -5900,7 +5966,13 @@ mod mesa_seed_software_tests {
                 ..RunOptions::default()
             };
             let mut helper = vec!["/app/helper".to_owned()];
-            splice_gpu(&mut helper, &manifest, &opts, &CapabilityPlan::empty()).unwrap();
+            splice_gpu(
+                &mut helper,
+                &manifest,
+                &opts,
+                crate::gpu::granted(&manifest, &CapabilityPlan::empty(), true),
+            )
+            .unwrap();
             assert!(
                 !helper
                     .iter()
@@ -5909,6 +5981,72 @@ mod mesa_seed_software_tests {
             );
         }
         assert_eq!(argv.last().map(String::as_str), Some("/app/probe"));
+    }
+}
+
+#[cfg(test)]
+mod render_service_launch_tests {
+    use super::*;
+
+    /// An app that draws through its room's render service: no GPU node, no
+    /// loader pin, no shader-cache seed, and none of the probing they cost,
+    /// even with a render node and a session seed to hand out.
+    #[test]
+    fn an_app_without_gpu_gets_no_device_and_no_graphics_setup() {
+        let mut home = tilo_test_env::TestHome::new().unwrap();
+        home.env()
+            .set(
+                crate::gpu::VK_DRIVER_FILES_ENV,
+                "/usr/share/vulkan/icd.d/x.json",
+            )
+            .remove(crate::gpu::EGL_VENDOR_ENV);
+        std::fs::create_dir_all(home.runtime().join("tilo/pipeline-seed")).unwrap();
+        let manifest: ManifestView = crate::manifest::test_manifest(
+            "id = \"so.tilo.calculator\"\nversion = \"0.1.0\"\nkind = \"app\"",
+            "[entrypoint]\nbin = \"bin/calculator\"\n",
+        );
+        assert!(!crate::gpu::granted(
+            &manifest,
+            &CapabilityPlan::empty(),
+            true
+        ));
+        let opts = RunOptions {
+            render_node: Some(PathBuf::from("/dev/dri/renderD128")),
+            ..RunOptions::default()
+        };
+        let mut argv = vec!["/app/calculator".to_owned()];
+        let (gpu, seed) = splice_gpu(
+            &mut argv,
+            &manifest,
+            &opts,
+            crate::gpu::granted(&manifest, &CapabilityPlan::empty(), true),
+        )
+        .unwrap();
+        assert!(gpu.is_none() && seed.is_none());
+        assert_eq!(argv, vec!["/app/calculator".to_owned()], "nothing spliced");
+    }
+
+    /// An app that declares `gpu` keeps what every app had before: the
+    /// device nodes, narrowed to the compositor's render node.
+    #[test]
+    fn an_app_declaring_gpu_gets_its_device() {
+        let manifest: ManifestView = crate::manifest::test_manifest(
+            "id = \"so.tilo.browser\"\nversion = \"0.1.0\"\nkind = \"app\"",
+            "[entrypoint]\nbin = \"bin/browser\"\n\n[capabilities]\noptional = [\"gpu\"]\n",
+        );
+        assert!(crate::gpu::granted(
+            &manifest,
+            &CapabilityPlan::empty(),
+            true
+        ));
+        let mut argv = vec!["/app/browser".to_owned()];
+        splice_gpu(&mut argv, &manifest, &RunOptions::default(), true).unwrap();
+        assert!(
+            argv.windows(3)
+                .any(|args| args == ["--dev-bind-try", "/dev/dri", "/dev/dri"]),
+            "{argv:?}"
+        );
+        assert_eq!(argv.last().map(String::as_str), Some("/app/browser"));
     }
 }
 
@@ -6024,6 +6162,7 @@ mod retained_files_tests {
                 system_authority: &None,
                 wayland_bind: &None,
                 gpu: &None,
+                gpu_devices: false,
                 pipeline_seed: &None,
                 keep_fds: &[],
             },

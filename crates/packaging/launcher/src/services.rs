@@ -110,6 +110,9 @@ const BLOB_CHILD_FD: i32 = 30;
 const IDENTITY_CHILD_FD: i32 = 31;
 /// Slot of the automatic chooser service.
 const CHOOSER_CHILD_FD: i32 = 32;
+/// Slot of the automatic render broker connection
+/// (`tilo_render_protocol::broker`).
+const RENDER_CHILD_FD: i32 = 34;
 /// Slots bwrap reads its two seccomp programs from (`--add-seccomp-fd`).
 /// They sit above bwrap's own descriptors and outside the numbers declared
 /// services are handed on, so no service can replace a filter.
@@ -127,6 +130,7 @@ pub(crate) const RESERVED_CHILD_FDS: &[i32] = &[
     BLOB_CHILD_FD,
     IDENTITY_CHILD_FD,
     CHOOSER_CHILD_FD,
+    RENDER_CHILD_FD,
     CLONE3_COMPAT_SECCOMP_CHILD_FD,
     BASELINE_SECCOMP_CHILD_FD,
     ACCOUNT_CHILD_FD,
@@ -514,6 +518,63 @@ fn resolve_chooser_bind_at(
         name: CHOOSER_SERVICE.to_string(),
         host: OwnedFd::from(stream),
         child_fd: CHOOSER_CHILD_FD,
+    }))
+}
+
+/// Connect the compositor's render broker on the app's behalf and name the
+/// app and its room before the sandboxed app can write to it: the broker
+/// picks the render service that draws the app from this, never from the
+/// app (`tilo_render_protocol::broker`). The app finds the connection in
+/// `TILO_SVC_RENDER_FD`.
+///
+/// Only for an app that draws through a render service — one without the
+/// `gpu` capability. A session whose compositor serves no broker degrades to
+/// `Ok(None)`, and the app draws on its own device as before.
+///
+/// # Errors
+///
+/// Returns [`ServiceError::OpenFailed`] if the handshake cannot be written.
+#[cfg(target_os = "linux")]
+pub fn resolve_render_bind(
+    app_id: &str,
+    workspace_id: Option<&str>,
+    no_services: bool,
+) -> Result<Option<ResolvedService>, ServiceError> {
+    resolve_render_bind_at(
+        &socket_for(tilo_render_protocol::broker::SERVICE),
+        app_id,
+        workspace_id,
+        no_services,
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn resolve_render_bind_at(
+    path: &Path,
+    app_id: &str,
+    workspace_id: Option<&str>,
+    no_services: bool,
+) -> Result<Option<ResolvedService>, ServiceError> {
+    if no_services || !path.exists() {
+        return Ok(None);
+    }
+    let mut stream = match UnixStream::connect(path) {
+        Ok(stream) => stream,
+        Err(error) => {
+            tracing::warn!(%error, path = %path.display(), "render broker refused connection");
+            return Ok(None);
+        }
+    };
+    tilo_render_protocol::broker::write_handshake(&mut stream, app_id, workspace_id).map_err(
+        |source| ServiceError::OpenFailed {
+            path: path.to_path_buf(),
+            source,
+        },
+    )?;
+    Ok(Some(ResolvedService {
+        name: tilo_render_protocol::broker::SERVICE.to_string(),
+        host: OwnedFd::from(stream),
+        child_fd: RENDER_CHILD_FD,
     }))
 }
 
