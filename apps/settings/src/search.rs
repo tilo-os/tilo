@@ -12,7 +12,7 @@ use ui::tilo_resource::SearchEntry;
 
 use crate::categories::Category;
 
-pub const SETTINGS_KIND: &str = "Personal Settings";
+pub const SETTINGS_KIND: &str = "Settings";
 
 /// Every Settings pane as a search entry: found by its name, its summary and
 /// the words people use for it ("night light" finds Displays), each opening
