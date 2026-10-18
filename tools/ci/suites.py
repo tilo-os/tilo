@@ -50,6 +50,8 @@ class Group:
     name: str
     inputs: tuple[str, ...]
     suites: tuple[str, ...]
+    # The cores and memory its t check must be able to pass with (`cores`, `memory`), if it says.
+    requirement: tuple[int, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -115,8 +117,9 @@ def parse(text: str) -> Manifest:
     names: set[str] = set()
     for index, entry in enumerate(data.get("group", [])):
         where = f"group {index + 1}"
-        if not isinstance(entry, dict) or set(entry) != {"name", "inputs", "suites"}:
-            raise ValueError(f"{where} must have exactly name, inputs and suites")
+        if not isinstance(entry, dict) or not {"name", "inputs", "suites"} <= set(entry) <= {
+                "name", "inputs", "suites", "requirement"}:
+            raise ValueError(f"{where} must have exactly name, inputs and suites, and may have a requirement")
         name = entry["name"]
         if not isinstance(name, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name) or name in names:
             raise ValueError(f"{where} has an invalid or duplicate name: {name!r}")
@@ -127,7 +130,15 @@ def parse(text: str) -> Manifest:
             if not suite.endswith((".py", ".sh", ".test.mjs")):
                 raise ValueError(f"{suite}: suites must be .py, .sh or .test.mjs files")
             claim(suite, f"group {name}")
-        groups.append(Group(name, inputs, suites))
+        requirement = None
+        if "requirement" in entry:
+            value = entry["requirement"]
+            if (not isinstance(value, dict) or set(value) != {"cores", "memory"}
+                    or not isinstance(value["cores"], int) or isinstance(value["cores"], bool) or value["cores"] < 1
+                    or not isinstance(value["memory"], str) or not re.fullmatch(r"\d+(\.\d+)?[KMGT]iB", value["memory"])):
+                raise ValueError(f"{where} requirement must be {{ cores = N, memory = \"8GiB\" }}")
+            requirement = (value["cores"], value["memory"])
+        groups.append(Group(name, inputs, suites, requirement))
     covered: dict[str, str] = {}
     for entry in data.get("covered", []):
         if not isinstance(entry, dict) or set(entry) != {"suite", "by"}:

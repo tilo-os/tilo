@@ -184,7 +184,7 @@ class GeneratorTests(unittest.TestCase):
                     "build": {"containerfile": "x/Containerfile", "test": ["test {out}/image.oci.tar"]},
                     "release_build": {"name": "carry-web", "run": "carry {out} {dir}/release",
                                       "inputs": ["carry.sh"], "outputs": ["{dir}/release/extra.json"],
-                                      "cache": False, "cpus": 4}})
+                                      "cache": False, "requirement": {"cores": 4, "memory": "8GiB"}}})
         self.assertEqual(sorted(c), ["carry-web", "image-web", "publish-web", "sign-web"])
         carry = c["carry-web"]
         self.assertEqual(carry["run"], "carry /target/publish/web /target/publish/web/release")
@@ -194,8 +194,8 @@ class GeneratorTests(unittest.TestCase):
                                             "/target/publish/web/release/digest",
                                             "/target/publish/web/release/extra.json"])
         self.assertIn("carry.sh", carry["inputs"])
-        self.assertEqual((carry["isolation"], carry["cache"], carry["cpus"], carry["default"]),
-                         ("vm", False, 4, False))
+        self.assertEqual((carry["isolation"], carry["cache"], carry["requirement"], carry["default"]),
+                         ("vm", False, {"cores": 4, "memory": "8GiB"}, False))
         self.assertNotIn("id_token", carry)
         sign = c["sign-web"]
         self.assertEqual(sign["needs"], ["carry-web"])
