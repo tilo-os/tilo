@@ -527,16 +527,13 @@ impl CertifiedLocalActionHost {
         {
             return Err(ActionHostError::NotPermitted);
         }
-        if let Some(projection) = &self.native_projection {
-            let certificate = self
-                .state
-                .native_local_person_certificate(projection)
-                .map_err(|_| ActionHostError::NotPermitted)?;
-            if certificate.is_none()
-                || certificate.as_ref() != self.admission.admitted.certificate.as_ref()
-            {
-                return Err(ActionHostError::NotPermitted);
-            }
+        // Native custody was acquired at admission. Lifecycle reads must not
+        // resolve the seat's identity files again; `check` below validates the
+        // retained admission against current revocation and membership state.
+        if self.native_projection.as_ref().is_some_and(|projection| {
+            projection.execution_id().is_some() && !projection.execution_is_live()
+        }) {
+            return Err(ActionHostError::NotPermitted);
         }
         Ok(())
     }
