@@ -113,24 +113,23 @@ pub(crate) struct DeskState {
     persist_prefs: bool,
     slots: Vec<Slot>,
     edges: BTreeMap<WidgetId, DockEdge>,
-    shown: BTreeMap<WidgetId, ui::Transition>,
-    opened: BTreeMap<WidgetId, ui::Transition>,
+    /// How much of each widget shows, and how open its card is
+    /// (`ui::motion::Ambient`).
+    shown: BTreeMap<WidgetId, ui::motion::Presence>,
+    opened: BTreeMap<WidgetId, ui::motion::Presence>,
     super_surface: Option<SuperSurface>,
     /// Where the time card was last painted.
     super_header_rect: std::cell::Cell<Option<Rect>>,
     /// The time card's own arrival, so it shows in the quiet stage before
     /// the search field does.
-    super_header: ui::Transition,
+    super_header: ui::motion::Presence,
     system_activities: Vec<Rect>,
     music_card: NowPlayingCard,
     press: Option<Press>,
     team_count: usize,
     now_playing_revision: u64,
-    /// The theme's reduced-motion choice, as last painted: fades then
-    /// complete at once.
-    reduce_motion: bool,
-    /// The theme's motion durations, as last painted.
-    durations: ui::tokens::Durations,
+    /// The motion the person allows, as last painted.
+    motion: ui::tokens::EffectiveMotion,
     /// The system monitor's readings, sent only while it shows.
     monitor: system_monitor::Monitor,
     monitor_source: Box<dyn system_monitor::Source>,
@@ -150,14 +149,13 @@ impl Default for DeskState {
             opened: BTreeMap::new(),
             super_surface: None,
             super_header_rect: std::cell::Cell::new(None),
-            super_header: ui::Transition::closed(),
+            super_header: ui::motion::Presence::closed(),
             system_activities: Vec::new(),
             music_card: NowPlayingCard::new(),
             press: None,
             team_count: 0,
             now_playing_revision: 0,
-            reduce_motion: false,
-            durations: ui::tokens::Durations::default(),
+            motion: ui::tokens::EffectiveMotion::new(ui::tokens::Motion::default(), false),
             monitor: system_monitor::Monitor::default(),
             monitor_source: Box::new(system_monitor::Service::default()),
             monitor_wake: None,
@@ -249,14 +247,13 @@ impl ShellOverlayHost {
     }
 
     fn open_super_header(&mut self) {
-        let fade = if self.desk.reduce_motion {
-            Duration::ZERO
-        } else {
-            self.desk.durations.fast()
-        };
-        self.desk
-            .super_header
-            .set_open_at(true, fade, ui::Curve::EaseOut, Instant::now());
+        self.desk.super_header.show(
+            true,
+            ui::motion::Ambient::ASKED,
+            self.desk.motion,
+            ui::tokens::MotionSource::Pointer,
+            ui::time::now(),
+        );
     }
 
     /// Close the Super surface (and the search it holds).
@@ -272,12 +269,12 @@ impl ShellOverlayHost {
     fn cancel_super_surface(&mut self) {
         self.close_super_surface();
         self.palette_was_visible = false;
-        self.palette_transition = ui::Transition::closed();
+        self.palette_transition = ui::motion::Presence::closed();
     }
 
     fn end_super_surface(&mut self) {
         self.desk.super_surface = None;
-        self.desk.super_header = ui::Transition::closed();
+        self.desk.super_header = ui::motion::Presence::closed();
         self.palette.set_field_only_while_empty(false);
         self.palette_layout_dirty = true;
     }
@@ -559,8 +556,7 @@ impl ShellOverlayHost {
             slots: &self.desk.slots,
         };
         changed |= self.desk.board.update(&ctx);
-        let reduce_motion = self.desk.reduce_motion;
-        let durations = self.desk.durations;
+        let motion = self.desk.motion;
         let super_asked = self.desk.super_surface.is_some();
         for slot in &self.desk.slots {
             let form = self.desk.board.form(slot.id);
@@ -569,24 +565,19 @@ impl ShellOverlayHost {
             let asked = super_asked
                 || self.desk.board.reached() == Some(slot.id)
                 || self.desk.board.opened() == Some(slot.id);
-            let fade = |arriving: bool| {
-                if reduce_motion {
-                    Duration::ZERO
-                } else {
-                    crate::shell::desk_widgets::fade(arriving, asked, durations)
-                }
-            };
+            let spec = ui::motion::Ambient::spec(asked);
+            let source = ui::tokens::MotionSource::Pointer;
             self.desk
                 .shown
                 .entry(slot.id)
-                .or_insert_with(ui::Transition::closed)
-                .set_open_at(shown, fade(shown), ui::Curve::EaseOut, now);
+                .or_insert_with(ui::motion::Presence::closed)
+                .show(shown, spec, motion, source, now);
             // A card only ever opens on purpose: asked for.
             self.desk
                 .opened
                 .entry(slot.id)
-                .or_insert_with(ui::Transition::closed)
-                .set_open_at(open, fade(open), ui::Curve::EaseOut, now);
+                .or_insert_with(ui::motion::Presence::closed)
+                .show(open, spec, motion, source, now);
         }
         // The system monitor is sent readings only while it shows; each one
         // wakes the loop, so nothing here waits on a deadline.
@@ -641,7 +632,7 @@ impl ShellOverlayHost {
             .values()
             .chain(self.desk.opened.values())
             .chain(std::iter::once(&self.desk.super_header))
-            .any(|transition| transition.is_animating(now))
+            .any(|presence| presence.is_moving(now))
     }
 
     /// A pointer sample at `p`, in desktop coordinates.
@@ -823,8 +814,7 @@ impl ShellOverlayHost {
         presence: &PresenceCtx,
     ) -> Vec<Rect> {
         let now = Instant::now();
-        self.desk.reduce_motion = theme.reduce_motion;
-        self.desk.durations = theme.tokens.motion.durations;
+        self.desk.motion = theme.motion();
         let mut painted = Vec::new();
         let team_showing = self.desk.board.form(WidgetId::Team) != Form::Away
             || self
@@ -853,12 +843,20 @@ impl ShellOverlayHost {
             .is_open()
             .then(|| self.strip_switcher.layout().card);
         for slot in self.desk.slots.clone() {
-            let shown = self.desk.shown.get(&slot.id).map_or(0.0, |t| t.value(now));
+            let shown = self
+                .desk
+                .shown
+                .get(&slot.id)
+                .map_or(0.0, |t| ui::motion::unit_opacity(t.progress(now)));
             if shown <= f32::EPSILON || switcher_card.is_some_and(|card| card.overlaps(slot.glance))
             {
                 continue;
             }
-            let open = self.desk.opened.get(&slot.id).map_or(0.0, |t| t.value(now));
+            let open = self
+                .desk
+                .opened
+                .get(&slot.id)
+                .map_or(0.0, |t| ui::motion::unit_opacity(t.progress(now)));
             let edge = self
                 .desk
                 .edges
@@ -991,13 +989,14 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let palette_now = Instant::now();
+        let palette_now = ui::time::now();
         let palette_shown = self.palette_transition.is_visible(palette_now);
         let desktop = transform.transform_rect_bbox(self.rect);
         let super_up = self.super_surface().is_some();
         super::overlay_part(scene, "shell.palette-scrim", desktop, |scene| {
             if palette_shown {
-                let openness = self.palette_transition.value(palette_now);
+                let openness =
+                    ui::motion::unit_opacity(self.palette_transition.progress(palette_now));
                 // The person is looking at their desk, not away from it.
                 let strength = if super_up {
                     openness * SUPER_SCRIM
@@ -1015,9 +1014,11 @@ impl ShellOverlayHost {
             // Typing lists results where the card stands: it steps away.
             // It arrives with the quiet stage, before the field does.
             let openness = if super_up && self.palette.shows_field_only() {
-                self.palette_transition
-                    .value(palette_now)
-                    .max(self.desk.super_header.value(palette_now))
+                ui::motion::unit_opacity(
+                    self.palette_transition
+                        .progress(palette_now)
+                        .max(self.desk.super_header.progress(palette_now)),
+                )
             } else {
                 0.0
             };

@@ -15,7 +15,7 @@ use ui::a11y::AccessNode;
 use ui::num::f32_of_f64;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::time::{Duration, Instant};
+use ui::time::Instant;
 use ui::widget::PaintedTargets;
 use ui::widget::toast::ToastCard;
 use ui::widget::top_edge_reveal::AIM_HOLD;
@@ -29,8 +29,8 @@ use super::model::{Addressed, Notification, NotificationSeverity, lock_suppresse
 use crate::i18n::{t, t_args};
 use ui::TextRole;
 
-/// In/out animation duration; matches the desktop's modal entry timing.
-const ANIM_MS: u64 = 220;
+/// How a banner arrives and leaves: from its edge, on the panel slide.
+const BANNER: ui::motion::MotionSpec = ui::motion::PanelSlide::SPEC;
 
 pub(super) const TOAST_WIDTH: f64 = 360.0;
 pub(super) const TOAST_HEIGHT: f64 = 64.0;
@@ -443,9 +443,10 @@ impl NotificationStack {
         n.dwell.first_shown().unwrap_or(now)
     }
 
-    /// Enter/exit alpha + horizontal slide: slides in from the right and
-    /// fades over [`ANIM_MS`] when it first comes on screen, fades out
-    /// near expiry over the same window. A held banner does not fade.
+    /// Enter/exit alpha + horizontal slide: a banner comes in from its
+    /// edge (`ui::motion::PanelSlide::sheet_pose`) when it first comes on
+    /// screen, and fades out in place so that it is gone at expiry. A held
+    /// banner does not fade; under reduced motion a banner simply stands.
     fn animation_state(
         n: &Notification,
         now: Instant,
@@ -455,26 +456,26 @@ impl NotificationStack {
         if reduce_motion {
             return (1.0, 0.0);
         }
-        let anim_window = Duration::from_millis(ANIM_MS);
+        let motion = ui::tokens::EffectiveMotion::default();
+        let source = ui::tokens::MotionSource::Pointer;
         let age = now.saturating_duration_since(Self::shown_at(n, now));
-        let enter = if age < anim_window {
-            let p = age.as_secs_f32() / anim_window.as_secs_f32();
-            // ease-out cubic
-            1.0 - (1.0 - p).powi(3)
-        } else {
-            1.0
-        };
+        let enter = BANNER.progress_after(ui::motion::Direction::Enter, motion, source, age);
+        let pose = ui::motion::PanelSlide::sheet_pose(enter, travel_width, true, motion);
         // Exit fades only: the card drops in place rather than retracting.
         let remaining = n.time_left(now);
-        let exit = if !held && remaining < anim_window {
-            let p = remaining.as_secs_f32() / anim_window.as_secs_f32();
-            p.clamp(0.0, 1.0)
+        let leaving = BANNER.settle_time(ui::motion::Direction::Exit, motion, source);
+        let exit = if !held && remaining < leaving {
+            1.0 - BANNER.progress_after(
+                ui::motion::Direction::Exit,
+                motion,
+                source,
+                leaving.saturating_sub(remaining),
+            )
         } else {
             1.0
         };
-        let alpha = (enter * exit).clamp(0.0, 1.0);
-        let slide_dx = (1.0 - f64::from(enter)) * travel_width;
-        (alpha, slide_dx)
+        let alpha = pose.opacity * ui::motion::unit_opacity(exit);
+        (alpha.clamp(0.0, 1.0), pose.to_drawn(Point::ZERO).x)
     }
 
     /// Cards keep their designed width on ordinary displays and shrink on
@@ -921,7 +922,10 @@ impl NotificationStack {
             return false;
         }
         let now = ui::time::now();
-        let window = Duration::from_millis(ANIM_MS);
+        let motion = ui::tokens::EffectiveMotion::default();
+        let source = ui::tokens::MotionSource::Pointer;
+        let entry = BANNER.settle_time(ui::motion::Direction::Enter, motion, source);
+        let window = BANNER.settle_time(ui::motion::Direction::Exit, motion, source);
         let held = self.held();
         host.log()
             .active()
@@ -931,7 +935,7 @@ impl NotificationStack {
                 let entering = n
                     .dwell
                     .first_shown()
-                    .is_none_or(|shown| now.saturating_duration_since(shown) < window);
+                    .is_none_or(|shown| now.saturating_duration_since(shown) < entry);
                 let remaining = n.time_left(now);
                 let leaving =
                     !held && n.dwell.is_running() && !remaining.is_zero() && remaining <= window;
@@ -943,7 +947,11 @@ impl NotificationStack {
     /// Nothing wakes for a held banner or one off screen: their time stands
     /// still.
     pub fn next_wake_deadline(&self, host: &dyn NotificationHost) -> Option<Instant> {
-        let window = Duration::from_millis(ANIM_MS);
+        let window = BANNER.settle_time(
+            ui::motion::Direction::Exit,
+            ui::tokens::EffectiveMotion::default(),
+            ui::tokens::MotionSource::Pointer,
+        );
         let now = ui::time::now();
         // The pointer's hold changes with no further input: a pointer that
         // stops on the stack comes to rest, an aim lapses.
@@ -1043,6 +1051,7 @@ pub(super) mod tests {
     use super::super::{HistoryActivation, NotificationLog};
     use super::*;
     use std::cell::{Cell, RefCell};
+    use ui::time::Duration;
 
     /// A host with no senders: dismissing retains, activating retains.
     #[derive(Default)]

@@ -48,7 +48,6 @@ use crate::shell::shared_display_actions::{self, SharedDisplayView};
 use ui::TextRole;
 use ui::widget::ButtonRole;
 
-const OPEN_ANIM_MS: u64 = 220;
 const SCRIM_ALPHA: f32 = 0.45;
 /// How often an open sheet asks whether the settings document holding the
 /// committed layout and the staged change moved on. It parses the document
@@ -538,7 +537,8 @@ pub struct ProjectionOverlay {
     authority: Option<crate::shell::chrome_state::Chrome>,
     displays: DisplayLayouts,
     focus: SheetFocus,
-    transition: ui::Transition,
+    /// The sheet sliding in from its edge (`ui::motion::PanelSlide`).
+    transition: ui::motion::Presence,
     was_open: bool,
     /// Whether the open-time state (display snapshot, initial focus) was
     /// taken for the current opening. Events can arrive before the first
@@ -579,7 +579,7 @@ impl ProjectionOverlay {
             authority: None,
             displays: DisplayLayouts::default(),
             focus: SheetFocus::Layout(DisplayLayoutMode::Extend),
-            transition: ui::Transition::closed(),
+            transition: ui::motion::Presence::closed(),
             was_open: false,
             session_open: false,
             host_rect: Rect::ZERO,
@@ -710,7 +710,7 @@ impl ProjectionOverlay {
     }
 
     pub fn needs_animation_frame(&self, now: Instant) -> bool {
-        self.transition.is_animating(now)
+        self.transition.is_moving(now)
             || matches!(
                 self.controller.status,
                 ProjectionStatus::Scanning | ProjectionStatus::Connecting { .. }
@@ -1441,32 +1441,37 @@ impl ProjectionOverlay {
         self.host_rect = host_rect;
         self.was_open = open;
         let now = Instant::now();
-        self.transition.set_open(
+        self.transition.show(
             open,
-            if theme.reduce_motion {
-                Duration::ZERO
-            } else {
-                Duration::from_millis(OPEN_ANIM_MS)
-            },
-            ui::Curve::EaseOut,
+            ui::motion::PanelSlide::SPEC,
+            theme.motion(),
+            ui::tokens::MotionSource::Pointer,
+            now,
         );
         if self.transition.is_visible(now) {
-            let openness = self.transition.value(now);
-            draw_scrim(scene, transform, host_rect, openness, theme);
+            let progress = self.transition.progress(now);
+            draw_scrim(
+                scene,
+                transform,
+                host_rect,
+                ui::motion::unit_opacity(progress),
+                theme,
+            );
             let sheet = self.sheet_rect();
-            let slide = (1.0 - f64::from(openness)) * (sheet.width() * 0.22);
-            let sheet_transform = transform.pre_translate((slide, 0.0).into());
-            if openness < 1.0 {
+            let pose =
+                ui::motion::PanelSlide::sheet_pose(progress, sheet.width(), true, theme.motion());
+            let sheet_transform = pose.applied_to(transform);
+            if pose.opacity < 1.0 {
                 scene.push_layer(
                     Fill::NonZero,
                     BlendMode::default(),
-                    openness,
+                    pose.opacity,
                     transform,
                     &host_rect,
                 );
             }
             self.draw_content(scene, sheet_transform, text_renderer, theme, presence);
-            if openness < 1.0 {
+            if pose.opacity < 1.0 {
                 scene.pop_layer();
             }
         } else {
@@ -2581,7 +2586,7 @@ mod tests {
             overlay.credential_rect = Rect::new(900.0, 300.0, 1200.0, 342.0);
             let now = Instant::now();
             assert_eq!(overlay.secret_prompt_rect(now), None, "the sheet is closed");
-            overlay.transition = ui::Transition::open();
+            overlay.transition = ui::motion::Presence::opened();
             let rect = overlay
                 .secret_prompt_rect(now)
                 .expect("an open sheet asking for the AirPlay credential");

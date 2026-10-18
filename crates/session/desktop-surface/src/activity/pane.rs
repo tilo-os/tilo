@@ -72,8 +72,6 @@ use ui::widget::ButtonRole;
 /// How long a device must be away from a workspace before its return is
 /// greeted with a recap of what changed.
 const AWAY_RECAP_AFTER: Duration = Duration::from_secs(45 * 60);
-/// How long an expanding catch-up card takes to open.
-const BRIEF_EXPANSION_DURATION: Duration = Duration::from_millis(180);
 
 fn away_recap_is_due(departed_at_secs: u64, now: SystemTime) -> bool {
     let departed_at = SystemTime::UNIX_EPOCH
@@ -1344,7 +1342,7 @@ impl RoomActivityPane {
         self.review_pending.is_some()
             || (self.view == ActivityView::Tasks && self.task_review.is_none())
             || self.brief_expansion_started.is_some_and(|(_, started)| {
-                now.saturating_duration_since(started) < BRIEF_EXPANSION_DURATION
+                now.saturating_duration_since(started) < brief_disclosure_time()
             })
     }
 
@@ -4464,12 +4462,12 @@ impl RoomActivityPane {
                 self.brief_expansion_started
                     .filter(|(animated, _)| *animated == index)
                     .map_or(1.0, |(_, started)| {
-                        let linear = Instant::now()
-                            .saturating_duration_since(started)
-                            .as_secs_f64()
-                            / BRIEF_EXPANSION_DURATION.as_secs_f64();
-                        let linear = linear.clamp(0.0, 1.0);
-                        1.0 - (1.0 - linear).powi(3)
+                        ui::motion::Disclose::SPEC.progress_after(
+                            ui::motion::Direction::Enter,
+                            ui::tokens::EffectiveMotion::default(),
+                            ui::tokens::MotionSource::Pointer,
+                            ui::time::now().saturating_duration_since(started),
+                        )
                     })
             } else {
                 0.0
@@ -6753,7 +6751,8 @@ impl RoomActivityPane {
             self.open_brief_in_explorer(index);
         } else {
             self.expanded_brief = Some(index);
-            self.brief_expansion_started = (!self.reduce_motion).then(|| (index, Instant::now()));
+            // A key's result lands at once (motion follows the input).
+            self.brief_expansion_started = None;
         }
     }
 
@@ -9756,3 +9755,12 @@ include!("workspace_activity_tests.rs");
 #[cfg(test)]
 #[path = "pane_tests.rs"]
 mod pane_tests;
+
+/// How long a brief takes to disclose (`ui::motion::Disclose`).
+fn brief_disclosure_time() -> Duration {
+    ui::motion::Disclose::SPEC.settle_time(
+        ui::motion::Direction::Enter,
+        ui::tokens::EffectiveMotion::default(),
+        ui::tokens::MotionSource::Pointer,
+    )
+}

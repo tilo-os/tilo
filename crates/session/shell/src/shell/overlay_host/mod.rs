@@ -16,6 +16,7 @@ mod ask_agent;
 mod axis_navigation;
 mod bar_popovers;
 mod person_markers;
+mod qs_motion;
 pub(crate) use agent_markers::AccessibleAgentMarker;
 
 use crate::shell::state::WorkspaceAuthority as _;
@@ -710,12 +711,11 @@ pub struct ShellOverlayHost {
     /// layout pass, so the guide's hit-testing and paint share one answer.
     shortcut_navigation_step: f64,
     overview_layout_viewport: Rect,
-    /// Interruptible open/close driver for quick-settings, so it fades +
-    /// slides out on close instead of vanishing.
-    qs_transition: ui::Transition,
-    /// One-shot driver so a workspace switch requests a run of frames
-    /// instead of painting once and idling (W16). Settles with the curve.
-    workspace_switch: ui::Transition,
+    /// Quick Settings' appear, drill and height motion (`ui::motion`).
+    qs_motion: qs_motion::QsMotion,
+    /// The input the person last used, which the next surface that opens
+    /// or closes follows: a shortcut lands at once, a click animates.
+    input_source: ui::tokens::MotionSource,
     /// What started the running workspace switch.
     workspace_switch_source: ui::tokens::MotionSource,
     /// Wall-clock end of that frame run. Draw must not clear it: snapping
@@ -806,7 +806,7 @@ pub struct ShellOverlayHost {
     workspace_rename_submit_held: bool,
     palette_was_visible: bool,
     /// Interruptible open/close driver for the command palette.
-    palette_transition: ui::Transition,
+    palette_transition: ui::motion::Presence,
     /// Per-strip raw pointers to the [`GroupRow`] widgets inside
     /// `content`, so the per-frame reconcilers reach them without
     /// downcasting `&dyn Widget`. Empty until
@@ -1028,7 +1028,7 @@ pub struct ShellOverlayHost {
     followed_room: Option<crate::shell::state::RoomId>,
     /// Keeps the local follow dock and its tether visible long enough to
     /// arrive and release gracefully instead of snapping between states.
-    follow_transition: ui::Transition,
+    follow_transition: ui::motion::Presence,
     /// Last resolved identity, retained only for the short exit animation.
     follow_visual: Option<RosterRow>,
     /// Persistent follow-mode banner painted while following.
@@ -1428,15 +1428,6 @@ const STRIP_TRAILING_GUTTER_PX: f64 = STRIP_EDGE_GUTTER_PX;
 /// desktop.
 pub use crate::shell::output_scene::OutputGeometry;
 
-/// Duration of the quick-settings popover entry animation: short enough
-/// to feel snappy, long enough to register as motion.
-const QS_OPEN_ANIM_MS: u64 = 180;
-
-/// Duration of the modal-style entry animation for workspace-settings
-/// and global-search. Slightly longer than the dropdown variant since
-/// the travel distance is larger.
-pub(crate) const MODAL_OPEN_ANIM_MS: u64 = 220;
-
 fn should_reveal_activity_on_entry(
     entering_workspace: bool,
     away_changes: usize,
@@ -1789,13 +1780,12 @@ impl ShellOverlayHost {
                 capture_studio: self.capture_studio.needs_animation_frame(),
                 root_transition: self.transition_started.is_some(),
                 workspace_switch: self.workspace_switch_holding_at(now),
-                quick_settings: self.qs_transition.is_animating(now)
-                    || self.qs_root_scroll_fading(),
+                quick_settings: self.qs_motion.is_animating(now) || self.qs_root_scroll_fading(),
                 workspace_settings: self.workspace_settings_overlay.is_animating(now),
-                palette: self.palette_transition.is_animating(now),
+                palette: self.palette_transition.is_moving(now),
                 power_menu: self.layers.power_menu.is_animating(now),
                 room_activity: self.room_activity.needs_animation_frame(now),
-                follow: self.follow_transition.is_animating(now),
+                follow: self.follow_transition.is_moving(now),
                 room_replay: self.room_activity.replay_is_playing(),
                 projection: self.projection_overlay.needs_animation_frame(now),
                 content: self.content.needs_animation_frame(),
@@ -1971,7 +1961,7 @@ impl ShellOverlayHost {
         self.prepare_quick_settings_transition(theme, flags);
         self.prepare_strip_indicators(Instant::now());
         self.sync_top_bar_presence(Instant::now());
-        let quick_settings_transition_visible = self.qs_transition.is_visible(Instant::now());
+        let quick_settings_transition_visible = self.qs_motion.is_visible(ui::time::now());
         // The panel, the ribbon and the rail are each a damage part of the
         // section: a change to one repaints that one.
         let mut quick_settings_bounds = None;
@@ -2525,8 +2515,8 @@ impl ShellOverlayHost {
             overview_layout_viewport: Rect::ZERO,
             transition_started: None,
             transition_from: 0.0,
-            qs_transition: ui::Transition::closed(),
-            workspace_switch: ui::Transition::closed(),
+            qs_motion: qs_motion::QsMotion::closed(),
+            input_source: ui::tokens::MotionSource::default(),
             workspace_switch_source: ui::tokens::MotionSource::default(),
             workspace_switch_until: None,
             workspace_switch_latency: crate::compositor::switch_latency::SwitchLatency::default(),
@@ -2554,7 +2544,7 @@ impl ShellOverlayHost {
             workspace_settings_overlay: WorkspaceSettingsOverlay::default(),
             workspace_rename_submit_held: false,
             palette_was_visible: false,
-            palette_transition: ui::Transition::closed(),
+            palette_transition: ui::motion::Presence::closed(),
             group_row_ptrs: HashMap::new(),
             strip_pan_quantum: None,
             content_built_for_ws: None,
@@ -2649,7 +2639,7 @@ impl ShellOverlayHost {
             followed_tab: None,
             followed_session: None,
             followed_room: None,
-            follow_transition: ui::Transition::closed(),
+            follow_transition: ui::motion::Presence::closed(),
             follow_visual: None,
             follow_chip_rect: Rect::ZERO,
             follow_stop_rect: Rect::ZERO,
@@ -3991,7 +3981,6 @@ impl ShellOverlayHost {
 
     fn workspace_switch_holding_at(&self, now: Instant) -> bool {
         self.workspace_switch_until.is_some_and(|until| now < until)
-            || self.workspace_switch.is_animating(now)
     }
 
     /// Keyboard overview navigation lands in the requested state before the
@@ -4016,9 +4005,6 @@ impl ShellOverlayHost {
         let duration = motion.context(source, motion.durations.slow());
         self.workspace_switch_source = source;
         let now = Instant::now();
-        self.workspace_switch = ui::Transition::closed();
-        self.workspace_switch
-            .set_open(true, duration, ui::Curve::EaseOut);
         self.workspace_switch_until = now.checked_add(duration);
         self.workspace_switch_latency.chord(now);
         self.request_compositor_transition_paints();
@@ -4050,7 +4036,6 @@ impl ShellOverlayHost {
         if let Some(until) = self.workspace_switch_until.as_mut() {
             *until = until.checked_add(by).unwrap_or(*until);
         }
-        self.workspace_switch.defer(by);
     }
 
     fn request_compositor_transition_paints(&self) {
@@ -5219,7 +5204,7 @@ impl ShellOverlayHost {
             .chrome
             .as_ref()
             .is_some_and(|chrome| chrome.borrow().quick_settings.wifi_password.is_some());
-        if asks_passphrase && self.qs_transition.is_visible(now) {
+        if asks_passphrase && self.qs_motion.is_visible(now) {
             // The dropdown's own paint clip: it covers the pane at every
             // point of its open/close scale.
             rects.push(self.quick_settings_rect().inflate(8.0, 16.0));
@@ -8515,16 +8500,20 @@ impl ShellOverlayHost {
         self.followed_session = None;
         if self.followed_peer.is_some() {
             self.follow_visual = self.followed_roster_row();
-            self.follow_transition.set_open(
+            self.follow_transition.show(
                 true,
-                self.motion.get().movement(Duration::from_millis(180)),
-                ui::Curve::EaseOut,
+                ui::motion::Appear::SPEC,
+                self.motion.get(),
+                self.input_source,
+                ui::time::now(),
             );
         } else {
-            self.follow_transition.set_open(
+            self.follow_transition.show(
                 false,
-                self.motion.get().movement(Duration::from_millis(140)),
-                ui::Curve::EaseOut,
+                ui::motion::Appear::SPEC,
+                self.motion.get(),
+                self.input_source,
+                ui::time::now(),
             );
         }
         let active_command = match (self.followed_peer.as_deref(), self.chrome.as_ref()) {
@@ -11188,11 +11177,7 @@ impl ShellOverlayHost {
     /// indistinguishable from no overlay at all. Test-only.
     pub fn force_palette_settled(&mut self) {
         self.palette_was_visible = self.palette_visible;
-        self.palette_transition = if self.palette_visible {
-            ui::Transition::open()
-        } else {
-            ui::Transition::closed()
-        };
+        self.palette_transition.snap(self.palette_visible);
     }
 
     /// See [`Self::force_palette_settled`].
@@ -11208,7 +11193,7 @@ impl ShellOverlayHost {
             self.refresh_quick_settings_summaries();
         }
         self.qs_was_open = true;
-        self.qs_transition = ui::Transition::open();
+        self.qs_motion = qs_motion::QsMotion::opened();
     }
 
     /// Fixes the quick-settings visual to an in-flight opening pose for a
@@ -11219,7 +11204,7 @@ impl ShellOverlayHost {
             return;
         }
         self.qs_was_open = true;
-        self.qs_transition = ui::Transition::capture_open_at(permille);
+        self.qs_motion = qs_motion::QsMotion::held_at(permille);
     }
 
     /// Screenshot-driver hook for the Quick Settings edit surface.
@@ -11714,37 +11699,40 @@ impl ShellOverlayHost {
     }
 
     /// Convert a pointer in painted coordinates back into Quick Settings'
-    /// stable layout coordinates. The popover's entrance animation scales
-    /// around its top-centre and translates upward; hit-testing the resting
-    /// rectangles made controls visibly move out from under the pointer.
+    /// stable layout coordinates. The popover appears from the tray, scaled
+    /// about that origin; hit-testing the resting rectangles made controls
+    /// visibly move out from under the pointer.
     fn untransform_quick_settings_pointer(&self, point: Point, now: Instant) -> Point {
-        let openness = self.qs_transition.value(now);
-        let dy = -10.0 * f64::from(1.0 - openness);
-        let scale = 0.95 + 0.05 * f64::from(openness);
-        if !scale.is_finite() || scale <= f64::EPSILON {
-            return point;
-        }
-        let rect = self.quick_settings_rect();
-        let cx = rect.center().x;
-        let cy = rect.y0;
-        Point::new(
-            cx + (point.x - cx) / scale,
-            cy + (point.y - cy - dy) / scale,
-        )
+        self.quick_settings_pose(now).to_local(point)
     }
 
     #[cfg(test)]
     fn transform_quick_settings_point_for_test(&self, point: Point, now: Instant) -> Point {
-        let openness = self.qs_transition.value(now);
-        let dy = -10.0 * f64::from(1.0 - openness);
-        let scale = 0.95 + 0.05 * f64::from(openness);
+        self.quick_settings_pose(now).to_drawn(point)
+    }
+
+    /// Quick Settings' pose at `now`, appearing from the tray. Painting and
+    /// hit testing both go through it, so a control is hit where it is
+    /// drawn. A page drilling in is hit at its resting place: its shift is
+    /// small and short, and input acts on the new page at once.
+    fn quick_settings_pose(&self, now: Instant) -> ui::motion::Pose {
         let rect = self.quick_settings_rect();
-        let cx = rect.center().x;
-        let cy = rect.y0;
-        Point::new(
-            cx + (point.x - cx) * scale,
-            cy + (point.y - cy) * scale + dy,
+        self.qs_motion.pose(
+            now,
+            qs_motion::QsMotion::origin(rect, self.quick_settings_at_caret()),
+            self.motion.get(),
         )
+    }
+
+    /// Whether Quick Settings stands at a caret (clipboard history opened to
+    /// paste) rather than under the tray.
+    fn quick_settings_at_caret(&self) -> bool {
+        self.chrome.as_ref().is_some_and(|chrome| {
+            let state = chrome.borrow();
+            state.quick_settings.current_level()
+                == &crate::shell::quick_settings::QsLevel::Clipboard
+                && state.quick_settings.paste_origin.is_some()
+        })
     }
 
     /// A drill-in is a compact continuation of Quick Settings, not a blank
@@ -21165,6 +21153,11 @@ impl Widget for ShellOverlayHost {
         reason = "event routing stays linear so modal gates retain their security-sensitive order"
     )]
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        // Motion follows the input: what this event asks to open or close
+        // lands at once from a key, and animates from a click.
+        if let Some(source) = ui::motion::source_of(event) {
+            self.input_source = source;
+        }
         // MouseInput carries no coordinates. Keep the host's pointer cache
         // current before any modal can return early, because onboarding and
         // the other compositor-owned gates hit-test the following button edge
@@ -22824,12 +22817,12 @@ impl ShellOverlayHost {
         // widget's animation is in flight. `tick_*` clear their own flags once
         // the duration has elapsed, so at rest this returns false and the
         // event loop can go idle.
-        let qs_in_flight = self.qs_transition.is_animating(now) || self.qs_root_scroll_fading();
+        let qs_in_flight = self.qs_motion.is_animating(now) || self.qs_root_scroll_fading();
         let ws_settings_in_flight = self.workspace_settings_overlay.is_animating(now);
-        let palette_in_flight = self.palette_transition.is_animating(now);
+        let palette_in_flight = self.palette_transition.is_moving(now);
         let layers_in_flight = self.layers.is_animating(now);
         let room_activity_in_flight = self.room_activity.needs_animation_frame(now);
-        let follow_in_flight = self.follow_transition.is_animating(now);
+        let follow_in_flight = self.follow_transition.is_moving(now);
         let room_replay_in_flight = self.room_activity.replay_is_playing();
         let capture_in_flight = self.capture_studio.needs_animation_frame();
         let projection_needs_frame = self.projection_overlay.needs_animation_frame(now)
@@ -22886,11 +22879,16 @@ impl ShellOverlayHost {
 }
 
 /// `(alpha, dy, scale)` for the rooms panel at linear progress `t`. Rises
-/// the last 20px and settles from 0.97 on an ease-out; since `t` runs
+/// the last 20px and settles from 0.97 on the zoom's curve; since `t` runs
 /// both ways, the exit is the same curve in reverse. The desktop stays
 /// on screen, dimmed by the scrim, for the whole gesture.
 fn overview_panel_curve(t: f32) -> (f32, f64, f64) {
-    let o = ui::ease_out(f64::from(t.clamp(0.0, 1.0)));
+    // The overview is one thing becoming another (`ui::motion::Zoom`); its
+    // own linear clock drives the zoom's curve.
+    let o = ui::motion::Zoom::SPEC.eased(
+        ui::tokens::EffectiveMotion::default(),
+        f64::from(t.clamp(0.0, 1.0)),
+    );
     let alpha = f32_of_f64(o);
     let dy = OVERVIEW_PANEL_RISE_PX * (1.0 - o);
     let scale = OVERVIEW_PANEL_START_SCALE + (1.0 - OVERVIEW_PANEL_START_SCALE) * o;
@@ -23771,7 +23769,7 @@ impl ShellOverlayHost {
             // The window strip shares the panel's visual edge and looked
             // like an inexplicable scrollbar beneath Quick Settings. Hide it
             // throughout the close transition as well as while open.
-            if !flags.quick_settings && !self.qs_transition.is_visible(now) {
+            if !flags.quick_settings && !self.qs_motion.is_visible(now) {
                 self.settle_strip_switcher(now);
                 self.draw_strip_switcher_card(scene, transform, text_renderer, theme, now);
                 let ribbon = self.strip_ribbon();
@@ -24179,15 +24177,20 @@ impl ShellOverlayHost {
         self.reconcile_quick_settings_open_edge(flags.quick_settings);
         self.apply_quick_settings_readings();
         self.refresh_now_playing();
-        self.qs_transition.set_open(
-            flags.quick_settings,
-            if theme.reduce_motion {
-                Duration::ZERO
-            } else {
-                Duration::from_millis(QS_OPEN_ANIM_MS)
-            },
-            ui::Curve::EaseOut,
-        );
+        let stack = self
+            .chrome
+            .as_ref()
+            .map(|chrome| chrome.borrow().quick_settings.nav_stack.clone())
+            .unwrap_or_default();
+        let height = self.quick_settings_rect().height();
+        self.qs_motion.follow(&qs_motion::QsFrame {
+            open: flags.quick_settings,
+            stack: &stack,
+            height,
+            motion: theme.motion(),
+            source: self.input_source,
+            now: ui::time::now(),
+        });
     }
 
     /// Reconcile Quick Settings' retained widget with the authoritative
@@ -24239,16 +24242,13 @@ impl ShellOverlayHost {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) -> Option<Rect> {
-        let now = Instant::now();
-        if self.qs_transition.is_visible(now) {
-            // `openness` runs 0→1 opening and 1→0 closing; the same
-            // alpha/dy/scale expression covers both directions.
-            let openness = self.qs_transition.value(now);
-            let alpha = openness;
-            let dy = -10.0 * f64::from(1.0 - openness);
-            let scale = 0.95 + 0.05 * f64::from(openness);
-            let in_flight = alpha < 1.0;
-            let qs_rect = self.quick_settings_rect();
+        let now = ui::time::now();
+        if self.qs_motion.is_visible(now) {
+            // The panel appears from the tray and goes back to it
+            // (`ui::motion::Appear`); the same pose covers both directions.
+            let pose = self.quick_settings_pose(now);
+            let in_flight = !pose.is_rest();
+            let qs_rect = self.qs_motion.drawn_rect(self.quick_settings_rect(), now);
             let card_rect = self
                 .now_playing_view()
                 .and_then(|view| self.now_playing_rect(&view));
@@ -24259,43 +24259,22 @@ impl ShellOverlayHost {
                 qs_rect.y1 + 8.0,
             );
             let clip = card_rect.map_or(clip, |card| clip.union(card.inflate(8.0, 8.0)));
-            if in_flight {
-                scene.push_layer(
-                    vello::peniko::Fill::NonZero,
-                    BlendMode::default(),
-                    alpha,
-                    transform,
-                    &clip,
+            let mut card_rect = None;
+            pose.paint(scene, transform, clip, |scene, qs_xform| {
+                // A Panel casts `e4` (HIG §9.1) along the card's own outline
+                // (`ChromeRole::Panel.radius`, the radius
+                // `draw_quick_settings_card_background` paints); the pose's
+                // opacity fades it with the panel.
+                ui::surface::shadow(
+                    scene,
+                    qs_xform,
+                    qs_rect,
+                    ui::chrome::ChromeRole::Panel.radius(theme, qs_rect.height()),
+                    &theme.tokens.elevation.floating,
                 );
-            }
-            let qs_xform = if dy.abs() > f64::EPSILON || (scale - 1.0).abs() > f64::EPSILON {
-                let cx = qs_rect.center().x;
-                let cy = qs_rect.y0;
-                transform
-                    .pre_translate((cx, cy + dy).into())
-                    .pre_scale(scale)
-                    .pre_translate((-cx, -cy).into())
-            } else {
-                transform
-            };
-            // A Panel casts `e4` (HIG §9.1) along the card's own outline
-            // (`ChromeRole::Panel.radius`, the radius
-            // `draw_quick_settings_card_background` paints), fading in
-            // with the panel.
-            let mut qs_shadow = theme.tokens.elevation.floating;
-            qs_shadow.color = qs_shadow.color.with_alpha_factor(openness);
-            ui::surface::shadow(
-                scene,
-                qs_xform,
-                qs_rect,
-                ui::chrome::ChromeRole::Panel.radius(theme, qs_rect.height()),
-                &qs_shadow,
-            );
-            self.draw_quick_settings(scene, qs_xform, text_renderer, theme);
-            let card_rect = self.draw_now_playing(scene, qs_xform, text_renderer, theme);
-            if in_flight {
-                scene.pop_layer();
-            }
+                self.draw_quick_settings(scene, qs_xform, text_renderer, theme);
+                card_rect = self.draw_now_playing(scene, qs_xform, text_renderer, theme);
+            });
             // The in-flight layer clips every QS command to `clip`. Once
             // settled, the damage bounds cover the `e4` shadow's reach.
             return Some(if in_flight {
@@ -24489,8 +24468,8 @@ impl ShellOverlayHost {
             || flags.projection
             || flags.capture
             || self.palette_visible
-            || self.palette_transition.is_visible(Instant::now())
-            || self.qs_transition.is_visible(Instant::now())
+            || self.palette_transition.is_visible(ui::time::now())
+            || self.qs_motion.is_visible(ui::time::now())
             || self.layers.power_menu.is_open()
             || self.workspace_settings_overlay.member_sheet_is_open()
             || self.file_picker_overlay.widget().is_some()
@@ -25236,14 +25215,12 @@ impl ShellOverlayHost {
         presence: &PresenceCtx,
     ) {
         self.palette_was_visible = self.palette_visible;
-        self.palette_transition.set_open(
+        self.palette_transition.show(
             self.palette_visible,
-            if theme.reduce_motion {
-                Duration::ZERO
-            } else {
-                Duration::from_millis(MODAL_OPEN_ANIM_MS)
-            },
-            ui::Curve::EaseOut,
+            ui::motion::Appear::SPEC,
+            theme.motion(),
+            self.input_source,
+            ui::time::now(),
         );
         let desktop = transform.transform_rect_bbox(self.rect);
         self.draw_search_and_desk(scene, transform, text_renderer, theme, presence);
@@ -25342,36 +25319,31 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) -> Option<Vec<Rect>> {
-        let palette_now = Instant::now();
-        let (alpha, dy, scale) = self.palette_transition.modal_curve(palette_now, 0.96);
-        let in_flight = alpha < 1.0;
         let palette_rect = self.palette.get_rect();
+        // Summoned from no control, the palette appears in place, from its
+        // own centre (`ui::motion::Appear`).
+        let pose = ui::motion::Appear::pose(
+            self.palette_transition.progress(ui::time::now()),
+            palette_rect.center(),
+            self.motion.get(),
+        );
+        let in_flight = pose.opacity < 1.0;
         if in_flight {
             scene.push_layer(
                 vello::peniko::Fill::NonZero,
                 BlendMode::default(),
-                alpha,
+                pose.opacity,
                 transform,
                 &self.rect,
             );
         }
-        let palette_xform = if dy.abs() > f64::EPSILON || (scale - 1.0).abs() > f64::EPSILON {
-            let cx = palette_rect.center().x;
-            let cy = palette_rect.center().y;
-            transform
-                .pre_translate((cx, cy + dy).into())
-                .pre_scale(scale)
-                .pre_translate((-cx, -cy).into())
-        } else {
-            transform
-        };
-        // The one floating card's shadow; while the palette is still
-        // arriving it fades in with it.
+        let palette_xform = pose.applied_to(transform);
+        // The one floating card's shadow, faded with the card by the layer.
         ui::widget::floating_surface::paint_card_shadow(
             scene,
             palette_xform,
             palette_rect,
-            alpha,
+            1.0,
             theme,
         );
         let shadow = ui::widget::floating_surface::card_shadow(theme);
@@ -26766,7 +26738,7 @@ impl ShellOverlayHost {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let now = Instant::now();
+        let now = ui::time::now();
         if !self.follow_transition.is_visible(now) {
             self.follow_chip_rect = Rect::ZERO;
             self.follow_stop_rect = Rect::ZERO;
@@ -26781,9 +26753,6 @@ impl ShellOverlayHost {
             return;
         };
         self.follow_visual = Some(row.clone());
-        let openness = self.follow_transition.value(now);
-        let openness_f64 = f64::from(openness);
-        let transform = transform.pre_translate((0.0, (1.0 - openness_f64) * -10.0).into());
         let label = t_args("follow-label", &[("person", row.label.as_str().into())]);
         // The viewport/control is local; the lightweight relationship cue is
         // intentionally visible to this room, so people understand why the
@@ -26812,6 +26781,14 @@ impl ShellOverlayHost {
         } else {
             Rect::ZERO
         };
+        // The banner appears from the top edge it hangs under.
+        let pose = ui::motion::Appear::pose(
+            self.follow_transition.progress(now),
+            Point::new(self.follow_chip_rect.center().x, self.follow_chip_rect.y0),
+            self.motion.get(),
+        );
+        let transform = pose.applied_to(transform);
+        let openness = pose.opacity;
         scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
@@ -27008,14 +26985,14 @@ impl ShellOverlayHost {
             // The follower's own cursor is softly tethered to the target.
             // This stays meaningful even when the compact banner is out of
             // peripheral vision, while avoiding a modal or textual lock.
-            let openness = self.follow_transition.value(Instant::now());
+            let openness = self.follow_transition.progress(ui::time::now());
             painted.extend(draw_follow_tether(
                 scene,
                 transform,
                 local,
                 *target,
-                color.multiply_alpha(0.22 + 0.3 * openness),
-                1.0 + f64::from(openness) * 0.8,
+                color.multiply_alpha(0.22 + 0.3 * ui::motion::unit_opacity(openness)),
+                1.0 + openness * 0.8,
             ));
         }
         for (id, point, color) in anchors {
@@ -27304,13 +27281,11 @@ impl ShellOverlayHost {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let qs = self
-            .chrome
-            .as_ref()
-            .map(|c| c.borrow().quick_settings.clone())
-            .unwrap_or_default();
-
-        let rect = self.quick_settings_rect();
+        let now = ui::time::now();
+        let rest = self.quick_settings_rect();
+        // The card's height follows the page on the expand/collapse motion;
+        // each page is laid out at its own height and clipped by the card.
+        let rect = self.qs_motion.drawn_rect(rest, now);
         Self::draw_quick_settings_card_background(scene, transform, theme, rect);
 
         // Every page paints inside the Panel: a discovery list taller than
@@ -27326,6 +27301,40 @@ impl ShellOverlayHost {
                 ui::chrome::ChromeRole::Panel.radius(theme, rect.height()),
             ),
         );
+        let motion = self.motion.get();
+        // A drill in or back: the page being left is drawn first, at its
+        // own depth (`ui::motion::Drill`); the page on top is drawn last, so
+        // the hit targets it records are the ones input reaches.
+        if let Some((leaving, pose)) = self.qs_motion.leaving(now, rest.width(), motion) {
+            let leaving = leaving.to_vec();
+            let shown = self.swap_quick_settings_stack(leaving);
+            let leaving_rect = self.quick_settings_rect();
+            pose.paint(scene, transform, leaving_rect, |scene, xform| {
+                self.draw_quick_settings_page(scene, xform, text_renderer, theme, leaving_rect);
+            });
+            self.swap_quick_settings_stack(shown);
+        }
+        let pose = self.qs_motion.current(now, rest.width(), motion);
+        pose.paint(scene, transform, rest, |scene, xform| {
+            self.draw_quick_settings_page(scene, xform, text_renderer, theme, rest);
+        });
+        scene.pop_layer();
+    }
+
+    /// One Quick Settings page: the one on top of the chrome state's stack.
+    fn draw_quick_settings_page(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+    ) {
+        let qs = self
+            .chrome
+            .as_ref()
+            .map(|c| c.borrow().quick_settings.clone())
+            .unwrap_or_default();
         // Root level renders the action row + sliders + toggles; Wifi/
         // Bluetooth levels replace the body with a header + list.
         if !self.draw_quick_settings_drill_in(scene, transform, text_renderer, theme, &qs) {
@@ -27339,7 +27348,18 @@ impl ShellOverlayHost {
                 &qs,
             );
         }
-        scene.pop_layer();
+    }
+
+    /// Put `stack` on the chrome state for drawing the page being left, and
+    /// return the stack it replaced. Input never sees the swap: it happens
+    /// and is undone within one draw.
+    fn swap_quick_settings_stack(
+        &mut self,
+        stack: Vec<crate::shell::quick_settings::QsLevel>,
+    ) -> Vec<crate::shell::quick_settings::QsLevel> {
+        self.chrome.as_ref().map_or_else(Vec::new, |chrome| {
+            std::mem::replace(&mut chrome.borrow_mut().quick_settings.nav_stack, stack)
+        })
     }
 
     /// The quick-settings popover's elevated card: shadow, fill and
