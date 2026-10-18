@@ -259,6 +259,9 @@ containerfile="$repo/os/Containerfile"
 # which names the site a computer is in by default, is a deliberate addition.
 # The sandbox system view's three units (tilo-sandbox-view.service, .path and
 # the retire@ template) are deliberate additions.
+# The network-answers helper, search's one door to the network for exchange
+# rates, is installed by its net-answers component at
+# /usr/libexec/tilo-net-answers: one payload row.
 expected_contract=754de836470eed5c600848c9f85105e60c274253b3230d0d140cd63250d48283
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
