@@ -96,7 +96,7 @@ pub(crate) struct AgentTaskStatusLines {
 
 pub(crate) fn agent_task_status_lines(view: &AgentTaskView) -> AgentTaskStatusLines {
     let primary = if let Some(task) = view.current() {
-        let state = crate::i18n::t(match task.status.as_str() {
+        let state_key = match task.status.as_str() {
             "done" => "chat-agent-task-complete",
             "cancelled" => "chat-agent-task-cancelled",
             "ended" => "chat-agent-task-ended",
@@ -107,7 +107,8 @@ pub(crate) fn agent_task_status_lines(view: &AgentTaskView) -> AgentTaskStatusLi
                 Some("executing") => "chat-agent-task-executing",
                 _ => "chat-agent-task-phase-unknown",
             },
-        });
+        };
+        let state = crate::i18n::t(state_key);
         if task.run_epoch.is_none_or(|epoch| epoch == 0) {
             return AgentTaskStatusLines {
                 primary: state,
@@ -141,34 +142,28 @@ pub(crate) fn agent_task_status_lines(view: &AgentTaskView) -> AgentTaskStatusLi
             )],
         )
     };
-    let receipt =
-        view.start_error.clone().or_else(|| match &view.receipt {
-            // Storing the direction is the system's job; only what the agent
-            // does with it is news. A start refusal still takes precedence.
-            AgentTaskReceipt::None | AgentTaskReceipt::Saving => None,
-            AgentTaskReceipt::Saved { .. } => Some(crate::i18n::t(
-                if view.current().is_some_and(|task| {
-                    matches!(task.status.as_str(), "done" | "cancelled" | "ended")
-                }) {
-                    "chat-agent-direction-unapplied-ended"
-                } else {
-                    "chat-agent-direction-waiting"
-                },
-            )),
-            AgentTaskReceipt::Applied => Some(crate::i18n::t(
-                if view.current().is_some_and(|task| {
-                    matches!(task.status.as_str(), "done" | "cancelled" | "ended")
-                }) {
-                    "chat-agent-direction-applied-ended"
-                } else {
-                    "chat-agent-direction-applied"
-                },
-            )),
-            AgentTaskReceipt::Started => Some(crate::i18n::t("chat-agent-task-started")),
-            AgentTaskReceipt::StopRequested => Some(crate::i18n::t("chat-agent-task-stopped")),
-            AgentTaskReceipt::Queued => Some(crate::i18n::t("chat-agent-task-saved")),
-            AgentTaskReceipt::Refused => Some(crate::i18n::t("chat-agent-direction-refused")),
-        });
+    let ended = view
+        .current()
+        .is_some_and(|task| matches!(task.status.as_str(), "done" | "cancelled" | "ended"));
+    let receipt = view.start_error.clone().or_else(|| match &view.receipt {
+        // Storing the direction is the system's job; only what the agent
+        // does with it is news. A start refusal still takes precedence.
+        AgentTaskReceipt::None | AgentTaskReceipt::Saving => None,
+        AgentTaskReceipt::Saved { .. } => Some(crate::i18n::t(if ended {
+            "chat-agent-direction-unapplied-ended"
+        } else {
+            "chat-agent-direction-waiting"
+        })),
+        AgentTaskReceipt::Applied => Some(crate::i18n::t(if ended {
+            "chat-agent-direction-applied-ended"
+        } else {
+            "chat-agent-direction-applied"
+        })),
+        AgentTaskReceipt::Started => Some(crate::i18n::t("chat-agent-task-started")),
+        AgentTaskReceipt::StopRequested => Some(crate::i18n::t("chat-agent-task-stopped")),
+        AgentTaskReceipt::Queued => Some(crate::i18n::t("chat-agent-task-saved")),
+        AgentTaskReceipt::Refused => Some(crate::i18n::t("chat-agent-direction-refused")),
+    });
     AgentTaskStatusLines { primary, receipt }
 }
 

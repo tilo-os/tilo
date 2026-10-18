@@ -199,6 +199,7 @@ suites = [
   "os/tests/test_oci_image_diff.py",
   "os/tests/test_oci_rechunk.py",
   "os/tests/test_pack_apps_cleanup.py",
+  "os/tests/test_managed_agent_package_pin.py",
   "os/tests/test_shipped_runtimes.py",
   "os/tests/test_dev_tools_sysext.py",
   "os/tests/test_image_build_script_copies.py",
@@ -935,11 +936,15 @@ inputs = [
   "crates/collab/collab-types/tests/net_host_vectors.txt",
   # The session script that starts the compositor without huge pages.
   "os/usr/libexec/tilo-session",
+  # The sandbox view's rebuild triggers and the extension merge that replaces /usr.
+  "os/usr/lib/systemd/system/tilo-sandbox-view.path",
+  "os/usr/lib/systemd/system/tilo-extension-activate.service",
 ]
 readers = [
   "crates/packaging/launcher/src/hardening.rs",
   "crates/packaging/launcher/src/manifest.rs",
   "crates/packaging/launcher/src/netgate.rs",
+  "crates/packaging/launcher/src/sandbox_view.rs",
   "crates/packaging/launcher/src/seccomp.rs",
   "crates/packaging/launcher/src/services.rs",
   "crates/packaging/launcher/examples/startup_frame_timeline.rs",
