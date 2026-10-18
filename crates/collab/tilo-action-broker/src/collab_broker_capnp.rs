@@ -2215,6 +2215,7 @@ mod host_action_admission;
 mod host_steps;
 mod launchable;
 mod local_action_host;
+mod remaining_workspace_actions;
 mod witness;
 use witness::requires_store_witness;
 mod workspace_open;

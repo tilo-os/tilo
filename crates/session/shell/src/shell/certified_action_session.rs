@@ -18,6 +18,8 @@ use super::collab_broker::AppActionBroker;
 pub(crate) struct CertifiedActionSession {
     broker: AppActionBroker,
     caller: Caller,
+    /// Native physical projection used by the host's existing invocation ledger.
+    job_caller: Caller,
     host: Arc<dyn ActionHost + Send + Sync>,
     presentation: Vec<u8>,
     certificate: tilo_user_identity::DeviceCert,
@@ -354,10 +356,18 @@ impl CertifiedActionSession {
             Some(lease) => caller.in_execution(lease),
             None => caller,
         };
-        let host = broker.certified_local_action_host(&caller, &presentation)?;
+        let host = broker
+            .state()
+            .certified_native_action_host(&caller, &presentation)?;
+        let job_caller = Caller::local_person(&person).in_room(room).in_execution(
+            caller
+                .execution_lease()
+                .ok_or("native execution unavailable")?,
+        );
         Ok(Self {
             broker,
             caller,
+            job_caller,
             host,
             presentation,
             certificate: certificate.clone(),
@@ -421,7 +431,7 @@ impl CertifiedActionSession {
         request: InvokeRequest,
     ) -> Pending<Result<(u64, InvocationReceipt), ActionHostError>> {
         let broker = self.broker.clone();
-        let caller = self.caller.clone();
+        let caller = self.job_caller.clone();
         let invocation = request.invocation;
         self.host.invoke(&self.caller, request).map(move |result| {
             let receipt = result?;

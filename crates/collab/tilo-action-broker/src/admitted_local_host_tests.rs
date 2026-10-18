@@ -1,4 +1,5 @@
 // Uses the real signed authority, private worker, RPC directory and SDK authorizer above.
+include!("native_facade_tests.rs");
 fn local_host_evidence(env: &Environment) -> (tilo_actions::remote::Caller, Vec<u8>) {
     member_device_evidence(env, 93, false)
 }
