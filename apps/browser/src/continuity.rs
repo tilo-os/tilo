@@ -1,7 +1,6 @@
 //! Bounded migration values applied to Browser's real library and private person record.
 //! Parsing grants and authenticated installer delivery are separate from these actions.
-use automerge::{ROOT, ReadDoc};
-use tilo_actions::{ActionError, Doc};
+use tilo_actions::ActionError;
 
 pub use browser_continuity::imports::{
     BookmarkImport, HistoryImport, ImportBatch, ImportBundle, MAX_BUNDLE_BYTES, MAX_BUNDLE_ENTRIES,
@@ -10,8 +9,12 @@ pub use browser_continuity::imports::{
 
 /// App-specific action projections for reviewed import values.
 pub trait ImportActions {
-    /// Produce a bookmark action without private visit data.
-    fn bookmark_action(&self) -> crate::continuity_bookmarks::PersonalLibraryEdit;
+    /// Produce the personal library's import, without private visit data.
+    /// # Errors
+    /// Refuses invalid or oversized import payloads.
+    fn bookmark_action(
+        &self,
+    ) -> Result<ui::tilo_resource::Invoke<crate::personal_bookmarks::PersonalBookmarks>, ActionError>;
     /// Produce an action for the current person's private history record.
     /// # Errors
     /// Refuses invalid or oversized import payloads.
@@ -22,9 +25,14 @@ pub trait ImportActions {
 
 impl ImportActions for ImportBundle {
     /// The bookmark-only projection for the private personal library.
-    fn bookmark_action(&self) -> crate::continuity_bookmarks::PersonalLibraryEdit {
-        let bundle = self.bookmark_bundle();
-        crate::continuity_bookmarks::PersonalLibraryEdit::ImportBookmarkBundle { bundle }
+    fn bookmark_action(
+        &self,
+    ) -> Result<ui::tilo_resource::Invoke<crate::personal_bookmarks::PersonalBookmarks>, ActionError>
+    {
+        let selected = self.bookmark_bundle();
+        selected.validate()?;
+        let encoded = serde_json::to_string(&selected).map_err(|_| refused())?;
+        Ok(crate::personal_bookmarks::PersonalBookmarks::IMPORT_BOOKMARKS.with(encoded))
     }
     fn history_action(
         &self,
@@ -36,15 +44,18 @@ impl ImportActions for ImportBundle {
     }
 }
 impl ImportActions for ImportBatch {
-    /// Produce the shared-library action without including private visit data.
-    fn bookmark_action(&self) -> crate::continuity_bookmarks::PersonalLibraryEdit {
-        crate::continuity_bookmarks::PersonalLibraryEdit::ImportBookmarks {
-            batch: Self {
-                source: self.source,
-                bookmarks: self.bookmarks.clone(),
-                history: Vec::new(),
-            },
-        }
+    /// The personal library's import of the batch's bookmarks, without
+    /// private visit data.
+    fn bookmark_action(
+        &self,
+    ) -> Result<ui::tilo_resource::Invoke<crate::personal_bookmarks::PersonalBookmarks>, ActionError>
+    {
+        ImportBundle::from_batch(Self {
+            source: self.source,
+            bookmarks: self.bookmarks.clone(),
+            history: Vec::new(),
+        })?
+        .bookmark_action()
     }
     /// Produce the action that belongs only to the current person’s history record.
     fn history_action(
@@ -54,43 +65,6 @@ impl ImportActions for ImportBatch {
         selected.bookmarks.clear();
         ImportBundle::from_batch(selected)?.history_action()
     }
-}
-/// Validate every chunk conflict and aggregate capacity before any record write.
-pub(crate) fn preflight_bundle(
-    doc: &Doc,
-    namespace: &str,
-    bundle: &ImportBundle,
-    current: usize,
-) -> Result<(), ActionError> {
-    bundle.validate()?;
-    if namespace == "history" && bundle.imported_tree.is_some() {
-        return Err(refused());
-    }
-    let mut additions = 0usize;
-    let mut receipts = 0usize;
-    for chunk in &bundle.chunks {
-        if (namespace == "history" && !chunk.bookmarks.is_empty())
-            || (namespace == "bookmarks" && !chunk.history.is_empty())
-        {
-            return Err(refused());
-        }
-        if receipt(doc, namespace, chunk)?.is_some() {
-            receipts = receipts.saturating_add(1);
-            additions = additions.saturating_add(if namespace == "history" {
-                chunk.history.len()
-            } else {
-                chunk.bookmarks.len()
-            });
-        }
-    }
-    let prefix = format!("browser.import.{namespace}:");
-    let existing = doc.keys(ROOT).filter(|k| k.starts_with(&prefix)).count();
-    if current.saturating_add(additions) > MAX_BUNDLE_ENTRIES
-        || existing.saturating_add(receipts) > 1024
-    {
-        return Err(refused());
-    }
-    Ok(())
 }
 fn refused() -> ActionError {
     ActionError::Refused("Browser import is invalid or exceeds its limit".into())
@@ -103,48 +77,10 @@ pub(crate) fn tag(source: &[u8; 32], url: &str) -> String {
     format!("import:{}", digest.finalize().to_hex())
 }
 
-/// Check a source receipt before any writes. Existing identical receipts are retries.
-pub(crate) fn receipt(
-    doc: &Doc,
-    namespace: &str,
-    batch: &ImportBatch,
-) -> Result<Option<(String, String)>, ActionError> {
-    batch.validate()?;
-    let key = format!(
-        "browser.import.{namespace}:{}",
-        blake3::Hash::from(batch.source).to_hex()
-    );
-    let namespace_prefix = format!("browser.import.{namespace}:");
-    if doc.get(ROOT, &key)?.is_none()
-        && doc
-            .keys(ROOT)
-            .filter(|k| k.starts_with(&namespace_prefix))
-            .count()
-            >= 1024
-    {
-        return Err(refused());
-    }
-    let encoded = serde_json::to_vec(batch).map_err(|_| refused())?;
-    if encoded.len() > MAX_IMPORT_BYTES {
-        return Err(refused());
-    }
-    let digest = blake3::hash(&encoded).to_hex().to_string();
-    if let Some((value, _)) = doc.get(ROOT, &key)? {
-        if value.as_str() == Some(digest.as_str()) {
-            return Ok(None);
-        }
-        return Err(ActionError::Refused(
-            "Browser source receipt conflicts with this import".into(),
-        ));
-    }
-    Ok(Some((key, digest)))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::history::{BrowsingHistory, History, browsing_history};
-    use tilo_actions::Action;
     use ui::tilo_resource::Replica;
 
     fn batch() -> ImportBatch {
@@ -165,25 +101,18 @@ mod tests {
 
     #[test]
     fn continuity_actions_preserve_existing_library_and_retry_without_resurrection() {
-        let mut library = Replica::<crate::personal_bookmarks::PersonalBookmarks>::new();
+        use crate::personal_bookmarks::PersonalBookmarks;
+        let mut library = Replica::<PersonalBookmarks>::new();
         library
-            .apply_action(&crate::personal_bookmarks::PersonalBookmarkAction::Add {
-                url: "https://existing.test/".into(),
-                title: "My bookmark".into(),
-                tag: "native".into(),
-            })
+            .apply(PersonalBookmarks::ADD_BOOKMARK.with((
+                "https://existing.test/".to_owned(),
+                "My bookmark".to_owned(),
+            )))
             .unwrap();
-        let crate::continuity_bookmarks::PersonalLibraryEdit::ImportBookmarks { batch } =
-            batch().bookmark_action()
-        else {
-            panic!("bookmarks");
-        };
-        let imported = crate::personal_bookmarks::PersonalBookmarkAction::Import {
-            bundle: ImportBundle::from_batch(batch).unwrap(),
-        };
-        library.apply_action(&imported).unwrap();
-        library.apply_action(&imported).unwrap();
-        let state = library.state().unwrap();
+        let imported = batch().bookmark_action().unwrap();
+        library.apply(imported.clone()).unwrap();
+        library.apply(imported.clone()).unwrap();
+        let state = library.state().unwrap().projected();
         assert_eq!(state.bookmarks.entries().len(), 2);
         assert!(
             state
@@ -200,13 +129,10 @@ mod tests {
             .unwrap();
         assert_eq!(entry.tags.len(), 1);
         library
-            .apply_action(&crate::personal_bookmarks::PersonalBookmarkAction::Remove {
-                url: entry.url.clone(),
-                observed_tags: entry.tags.clone(),
-            })
+            .apply(PersonalBookmarks::REMOVE_BOOKMARK.with((entry.url.clone(), entry.tags.clone())))
             .unwrap();
-        library.apply_action(&imported).unwrap();
-        assert_eq!(library.state().unwrap().bookmarks.entries().len(), 1);
+        library.apply(imported).unwrap();
+        assert_eq!(library.state().unwrap().bookmarks().entries().len(), 1);
     }
 
     #[test]
@@ -258,16 +184,20 @@ mod tests {
 
     #[test]
     fn continuity_preflight_refuses_cross_record_or_changed_source_before_any_write() {
-        let mut doc = Doc::new();
+        use crate::personal_bookmarks::PersonalBookmarks;
+        let mut library = Replica::<PersonalBookmarks>::new();
         let batch = batch();
+        // Visits never enter the personal library.
+        let with_history = ImportBundle::from_batch(batch.clone()).unwrap();
         assert!(
-            crate::continuity_bookmarks::PersonalLibraryEdit::ImportBookmarks {
-                batch: batch.clone()
-            }
-            .apply(&mut doc)
-            .is_err()
+            library
+                .apply(
+                    PersonalBookmarks::IMPORT_BOOKMARKS
+                        .with(serde_json::to_string(&with_history).unwrap())
+                )
+                .is_err()
         );
-        assert!(doc.keys(ROOT).next().is_none());
+        assert_eq!(library.state().unwrap(), PersonalBookmarks::default());
         let mut history = Replica::<BrowsingHistory>::new();
         let mixed = ImportBundle::from_batch(batch.clone()).unwrap();
         assert!(
@@ -290,9 +220,13 @@ mod tests {
             url: "file:///secret".into(),
             title: "Private".into(),
         });
-        let before = doc.save();
-        assert!(invalid.bookmark_action().apply(&mut doc).is_err());
-        assert_eq!(doc.save(), before);
+        let before = library.doc_mut().save();
+        assert!(
+            invalid
+                .bookmark_action()
+                .map_or(true, |action| library.apply(action).is_err())
+        );
+        assert_eq!(library.doc_mut().save(), before);
         assert_eq!(history.state().unwrap(), saved);
     }
 
@@ -440,20 +374,15 @@ mod tests {
 
     #[test]
     fn selected_bookmark_projection_excludes_history_before_private_import() {
-        let crate::continuity_bookmarks::PersonalLibraryEdit::ImportBookmarks { batch: selected } =
-            batch().bookmark_action()
-        else {
-            panic!("bookmark projection");
-        };
-        assert!(selected.history.is_empty());
-        let mut library = Replica::<crate::personal_bookmarks::PersonalBookmarks>::new();
-        library
-            .apply_action(&crate::personal_bookmarks::PersonalBookmarkAction::Import {
-                bundle: ImportBundle::from_batch(selected).unwrap(),
-            })
-            .unwrap();
+        use crate::personal_bookmarks::PersonalBookmarks;
+        let import = batch().bookmark_action().unwrap();
+        let bundle: ImportBundle =
+            serde_json::from_str(import.arguments["bundle"].as_str().unwrap()).unwrap();
+        assert!(bundle.chunks.iter().all(|chunk| chunk.history.is_empty()));
+        let mut library = Replica::<PersonalBookmarks>::new();
+        library.apply(import).unwrap();
         assert_eq!(
-            library.state().unwrap().bookmarks.entries()[0].url,
+            library.state().unwrap().bookmarks().entries()[0].url,
             "https://old.test/"
         );
     }

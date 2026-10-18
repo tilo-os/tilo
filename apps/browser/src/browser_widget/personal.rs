@@ -1,7 +1,7 @@
 //! Current-person bookmark operations and projection; never shared document mutations.
 use super::*;
 use crate::personal_bookmark_view::{self as view, ViewRequest};
-use crate::personal_bookmarks::{PersonalBookmarkAction as A, PersonalBookmarkState};
+use crate::personal_bookmarks::{PersonalBookmarkState, PersonalBookmarks};
 use std::rc::Rc;
 use ui::tilo_resource::Effect as _;
 use ui::widget::Element;
@@ -26,39 +26,31 @@ impl BrowserWidget {
             .ok_or("The current personal bookmark library is unavailable")?;
         match operation {
             BrowserOperation::BookmarkPersonalPage { url, title } => {
-                if !record.with(|state| state.bookmarks.contains(&url)) {
+                if !record.with(|state| state.bookmarks().contains(&url)) {
                     record
-                        .apply(&A::Add {
-                            url,
-                            title,
-                            tag: format!("bookmark:{}", uuid::Uuid::new_v4().simple()),
-                        })
+                        .invoke(&PersonalBookmarks::ADD_BOOKMARK.with((url, title)))
                         .map_err(|_| "Personal bookmark could not be saved")?;
                 }
             }
             BrowserOperation::ImportPersonalBookmarks { bundle } => {
-                let bundle = crate::continuity::ImportBundle::decode(&bundle)
+                let decoded = crate::continuity::ImportBundle::decode(&bundle)
                     .map_err(|_| "Invalid personal bookmark import")?;
-                if bundle.chunks.iter().any(|chunk| !chunk.history.is_empty()) {
+                if decoded.chunks.iter().any(|chunk| !chunk.history.is_empty()) {
                     return Err("History belongs to its own private record".into());
                 }
                 record
-                    .apply(&A::Import { bundle })
+                    .invoke(&PersonalBookmarks::IMPORT_BOOKMARKS.with(bundle))
                     .map_err(|_| "Personal bookmark import could not be saved")?;
             }
             BrowserOperation::RemovePersonalBookmark { url } => {
-                let state = record.get();
-                let entry = state
-                    .bookmarks
+                let bookmarks = record.with(PersonalBookmarks::bookmarks);
+                let entry = bookmarks
                     .entries()
                     .iter()
                     .find(|entry| entry.url == url)
                     .ok_or("Personal bookmark no longer exists")?;
                 record
-                    .apply(&A::Remove {
-                        url,
-                        observed_tags: entry.tags.clone(),
-                    })
+                    .invoke(&PersonalBookmarks::REMOVE_BOOKMARK.with((url, entry.tags.clone())))
                     .map_err(|_| "Personal bookmark could not be removed")?;
             }
             BrowserOperation::RemovePersonalImportedNode {
@@ -67,14 +59,14 @@ impl BrowserWidget {
             } => {
                 let source = source(&encoded)?;
                 if !record.with(|state| {
-                    state.imported_trees.iter().any(|tree| {
+                    state.imported_trees().iter().any(|tree| {
                         tree.source == source && tree.nodes.iter().any(|node| node.id == id)
                     })
                 }) {
                     return Err("Personal bookmark item no longer exists".into());
                 }
                 record
-                    .apply(&A::RemoveNode { source, id })
+                    .invoke(&PersonalBookmarks::REMOVE_IMPORTED_NODE.with((encoded, id)))
                     .map_err(|_| "Personal bookmark item could not be removed")?;
             }
             BrowserOperation::ShowPersonalBookmarkFolder {
@@ -91,7 +83,7 @@ impl BrowserWidget {
                     || id.is_none(),
                     |source| {
                         record.with(|state| {
-                            state.imported_trees.iter().any(|tree| {
+                            state.imported_trees().iter().any(|tree| {
                                 tree.source == source
                                     && id.as_ref().is_none_or(|id| {
                                         tree.nodes.iter().any(|node| {

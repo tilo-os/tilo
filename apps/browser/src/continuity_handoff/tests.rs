@@ -119,11 +119,10 @@ fn authenticated_subset_commits_actual_personal_bookmarks_and_full_history_and_r
         let history = app
             .person::<BrowsingHistory>()
             .ok_or("personal record is missing")?;
-        bookmarks.apply(&PersonalBookmarkAction::Add {
-            url: "https://existing.test/".into(),
-            title: "Already mine".into(),
-            tag: "native-existing".into(),
-        })?;
+        bookmarks.invoke(&PersonalBookmarks::ADD_BOOKMARK.with((
+            "https://existing.test/".to_owned(),
+            "Already mine".to_owned(),
+        )))?;
         history.invoke(
             &BrowsingHistory::VISIT.with(crate::history::browsing_history::Visit {
                 url: "https://existing.test/".into(),
@@ -134,17 +133,22 @@ fn authenticated_subset_commits_actual_personal_bookmarks_and_full_history_and_r
         let prepared = fixture.prepared(&fixture.plan.identity_public_key)?;
         assert!(!prepared.complete);
         prepared.capture.apply(&bookmarks, &history)?;
-        assert!(bookmarks.get().bookmarks.contains("https://existing.test/"));
         assert!(
             bookmarks
                 .get()
-                .bookmarks
+                .bookmarks()
+                .contains("https://existing.test/")
+        );
+        assert!(
+            bookmarks
+                .get()
+                .bookmarks()
                 .contains("https://migration.test/bookmark")
         );
         assert_eq!(
             bookmarks
                 .get()
-                .imported_trees
+                .imported_trees()
                 .first()
                 .ok_or("imported bookmark tree is missing")?
                 .nodes
@@ -228,7 +232,7 @@ fn history_off_does_not_parse_or_import_history_and_wrong_person_writes_nothing(
         assert!(
             bookmarks
                 .get()
-                .bookmarks
+                .bookmarks()
                 .contains("https://migration.test/bookmark")
         );
         let bytes = prepared.capture.encode()?;
@@ -289,7 +293,7 @@ fn actual_browser_worker_and_semantic_status_finish_without_touching_shared_reco
             app.person::<PersonalBookmarks>()
                 .ok_or("personal record is missing")?
                 .get()
-                .bookmarks
+                .bookmarks()
                 .contains("https://migration.test/bookmark")
         );
         assert_eq!(
@@ -374,7 +378,7 @@ fn failed_browser_import_is_visible_in_empty_personal_library_and_bound_retry_fi
             app.person::<PersonalBookmarks>()
                 .ok_or("personal record is missing")?
                 .get()
-                .bookmarks
+                .bookmarks()
                 .entries()
                 .is_empty()
         );
@@ -449,7 +453,7 @@ fn failed_browser_import_is_visible_in_empty_personal_library_and_bound_retry_fi
             app.person::<PersonalBookmarks>()
                 .ok_or("personal record is missing")?
                 .get()
-                .bookmarks
+                .bookmarks()
                 .contains("https://migration.test/bookmark")
         );
         assert_eq!(
@@ -536,7 +540,7 @@ fn unadmitted_service_effect_refuses_before_changing_the_existing_page() {
             app.person::<PersonalBookmarks>()
                 .ok_or("personal record is missing")?
                 .get()
-                .bookmarks
+                .bookmarks()
                 .entries()
                 .is_empty()
         );

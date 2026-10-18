@@ -1,7 +1,7 @@
 //! Application controller: native work is delegated; personal edits stay on the view.
 use super::Status;
 use crate::history::BrowsingHistory;
-use crate::personal_bookmarks::{PersonalBookmarkAction, PersonalBookmarks};
+use crate::personal_bookmarks::PersonalBookmarks;
 use browser_continuity::handoff::{self as backend, Captured, Completion, Prepared, Source};
 #[cfg(all(test, target_os = "linux"))]
 use browser_continuity::{Plan, handoff::prepare_given};
@@ -34,9 +34,10 @@ impl ApplyCaptured for Captured {
         for capture in &self.profiles {
             if let Some(bundle) = &capture.bookmarks {
                 bookmarks
-                    .apply(&PersonalBookmarkAction::Import {
-                        bundle: bundle.clone(),
-                    })
+                    .invoke(
+                        &PersonalBookmarks::IMPORT_BOOKMARKS
+                            .with(serde_json::to_string(bundle).map_err(|_| failed())?),
+                    )
                     .map_err(|_| failed())?;
             }
             if let Some(bundle) = &capture.history {

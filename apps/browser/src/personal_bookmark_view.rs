@@ -381,9 +381,7 @@ pub fn view(
 mod tests {
     use super::*;
     use crate::continuity::{BookmarkImport, ImportBatch, ImportBundle};
-    use crate::personal_bookmarks::{PersonalBookmarkAction, PersonalBookmarks};
-    use tilo_actions::{Action, Doc};
-    use ui::tilo_resource::Resource as _;
+    use crate::personal_bookmarks::PersonalBookmarks;
     use ui::widget::{ControlBindingKind, Widget};
 
     fn labels() -> LocalizedLabels {
@@ -460,20 +458,21 @@ mod tests {
                 },
             ],
         });
-        let mut personal = Doc::new();
+        let mut personal = ui::tilo_resource::Replica::<PersonalBookmarks>::new();
         if with_native_bookmark {
-            PersonalBookmarkAction::Add {
-                url: url.into(),
-                title: "My own bookmark".into(),
-                tag: "native:keep".into(),
-            }
-            .apply(&mut personal)
-            .unwrap();
+            personal
+                .apply(
+                    PersonalBookmarks::ADD_BOOKMARK
+                        .with((url.to_owned(), "My own bookmark".to_owned())),
+                )
+                .unwrap();
         }
-        PersonalBookmarkAction::Import { bundle }
-            .apply(&mut personal)
+        personal
+            .apply(
+                PersonalBookmarks::IMPORT_BOOKMARKS.with(serde_json::to_string(&bundle).unwrap()),
+            )
             .unwrap();
-        PersonalBookmarks::read(&personal).unwrap()
+        personal.state().unwrap().projected()
     }
 
     #[test]

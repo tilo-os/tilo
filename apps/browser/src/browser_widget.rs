@@ -1139,7 +1139,7 @@ impl BrowserWidget {
         let revision = record.revision();
         if self.personal_bookmarks_revision != Some(revision) {
             self.personal_bookmarks_revision = Some(revision);
-            self.personal_bookmarks = record.get();
+            self.personal_bookmarks = Rc::new(record.get().projected());
             let mut opened = std::collections::BTreeMap::new();
             for entry in self.personal_bookmarks.bookmarks.entries() {
                 opened.insert(

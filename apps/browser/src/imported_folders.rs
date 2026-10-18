@@ -5,11 +5,8 @@ pub use browser_continuity::imported_folders::*;
 mod tests {
     use super::*;
     use crate::continuity::ImportActions;
-    use automerge::ROOT;
-    use automerge::transaction::Transactable;
-    use tilo_actions::Action;
-    use tilo_actions::Doc;
-    use ui::tilo_resource::Resource as _;
+    use crate::personal_bookmarks::PersonalBookmarks;
+    use ui::tilo_resource::{Replica, Resource as _};
 
     fn find<'a>(
         rows: &'a [tilo_actions::Resource],
@@ -82,17 +79,18 @@ mod tests {
             })
             .unwrap();
         bundle.imported_tree = Some(tree.clone());
-        let action = bundle.bookmark_action();
-        let mut doc = Doc::new();
-        action.apply(&mut doc).unwrap();
-        let state = crate::personal_bookmarks::PersonalBookmarks::read(&doc).unwrap();
-        assert_eq!(state.imported_trees, vec![tree]);
+        let action = bundle.bookmark_action().unwrap();
+        let mut library = Replica::<PersonalBookmarks>::new();
+        library.apply(action.clone()).unwrap();
+        let state = library.state().unwrap();
+        assert_eq!(state.imported_trees(), vec![tree]);
         assert_eq!(
-            state.bookmarks.entries().len(),
+            state.bookmarks().entries().len(),
             1,
             "legacy flat URL identity remains compatible"
         );
-        let captured = &state.imported_trees[0];
+        let trees = state.imported_trees();
+        let captured = &trees[0];
         let children: Vec<_> = captured
             .nodes
             .iter()
@@ -119,18 +117,19 @@ mod tests {
                 .iter()
                 .any(|action| action.id == "remove-personal-imported-node")
         );
-        crate::continuity_bookmarks::PersonalLibraryEdit::RemoveImportedNode {
-            source,
-            id: "one".into(),
-        }
-        .apply(&mut doc)
-        .unwrap();
-        doc.commit();
-        let mut reopened = Doc::load(&doc.save()).unwrap();
-        action.apply(&mut reopened).unwrap();
-        let restored = crate::personal_bookmarks::PersonalBookmarks::read(&reopened).unwrap();
+        library
+            .apply(
+                PersonalBookmarks::REMOVE_IMPORTED_NODE
+                    .with((source_id(&source), "one".to_owned())),
+            )
+            .unwrap();
+        let mut reopened = Replica::<PersonalBookmarks>::from_doc(
+            ui::tilo_resource::Doc::load(&library.doc_mut().save()).unwrap(),
+        );
+        reopened.apply(action).unwrap();
+        let restored = reopened.state().unwrap().imported_trees();
         assert_eq!(
-            restored.imported_trees[0]
+            restored[0]
                 .nodes
                 .iter()
                 .map(|n| n.id.as_str())
@@ -139,13 +138,12 @@ mod tests {
         );
         let mut conflicting = bundle;
         conflicting.imported_tree.as_mut().unwrap().nodes[0].title = "changed source".into();
-        assert!(conflicting.bookmark_action().apply(&mut reopened).is_err());
-        assert_eq!(
-            crate::personal_bookmarks::PersonalBookmarks::read(&reopened)
-                .unwrap()
-                .imported_trees,
-            restored.imported_trees
+        assert!(
+            reopened
+                .apply(conflicting.bookmark_action().unwrap())
+                .is_err()
         );
+        assert_eq!(reopened.state().unwrap().imported_trees(), restored);
     }
 
     #[test]
@@ -198,8 +196,8 @@ mod tests {
         let record = app
             .person::<crate::personal_bookmarks::PersonalBookmarks>()
             .unwrap();
-        let state = record.get();
-        let tree = &state.imported_trees[0];
+        let trees = record.get().imported_trees();
+        let tree = &trees[0];
         let leaf = crate::personal_bookmarks::node_resource(
             tree,
             tree.nodes
@@ -246,9 +244,9 @@ mod tests {
         app.call_on(&id, "remove-personal-imported-node", serde_json::json!({}))
             .unwrap();
         app.settle();
-        assert_eq!(record.get().imported_trees[0].nodes.len(), 1);
+        assert_eq!(record.get().imported_trees()[0].nodes.len(), 1);
         assert_eq!(
-            record.get().bookmarks.entries().len(),
+            record.get().bookmarks().entries().len(),
             1,
             "removing one placement must not erase independent flat URL bookmark"
         );
@@ -259,7 +257,7 @@ mod tests {
         )
         .unwrap();
         app.settle();
-        assert_eq!(record.get().imported_trees[0].nodes.len(), 1);
+        assert_eq!(record.get().imported_trees()[0].nodes.len(), 1);
     }
 
     #[test]
@@ -285,14 +283,17 @@ mod tests {
         duplicate.id = "other".into();
         invalid.nodes.push(duplicate);
         assert!(invalid.validate().is_err());
-        let mut doc = Doc::new();
-        doc.put(
-            ROOT,
-            format!(
-                "browser.imported-tree:{}",
-                blake3::Hash::from(valid.source).to_hex()
-            ),
-            "{}",
+        // A kept tree that is not one reads as no library at all, never as
+        // an empty one.
+        let mut doc = ui::tilo_resource::Doc::new();
+        let trees = ui::tilo_resource::Slot::Key(&automerge::ROOT, "trees")
+            .object(&mut doc, automerge::ObjType::Map)
+            .unwrap();
+        ui::tilo_resource::write_key(
+            &mut doc,
+            &trees,
+            &source_id(&valid.source),
+            &ui::tilo_resource::Atom("{}".into()),
         )
         .unwrap();
         assert!(crate::personal_bookmarks::PersonalBookmarks::read(&doc).is_err());

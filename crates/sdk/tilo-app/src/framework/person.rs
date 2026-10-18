@@ -430,6 +430,16 @@ impl PersonState {
         record: StoredRecord,
         owner: Option<&'static str>,
     ) -> Option<Rc<Shared<P>>> {
+        // An older record is brought up to the resource's storage version
+        // before it is read, as the app's record is when it opens: once, as
+        // the same housekeeping change on every device, nobody's undo step.
+        if record.read(tilo_resource::evolution::stored_version)? < P::VERSION
+            && let Err(error) = record.edit(false, |doc| {
+                tilo_resource::evolution::migrate::<P>(doc).map_err(|error| error.to_string())
+            })
+        {
+            tracing::warn!(kind = P::KIND, %error, "person record not migrated");
+        }
         let reader = record
             .read(tilo_resource::Reader::<P>::read)?
             .map_err(|error| tracing::warn!(kind = P::KIND, %error, "person record unreadable"))
