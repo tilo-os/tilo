@@ -510,6 +510,25 @@ fn channels_and_categories_are_made_moved_and_deleted() {
     }))
     .unwrap();
     assert_eq!(names(&ada), ["beta", "alpha"]);
+    ada.apply(Chat::SET_CHANNEL_CATEGORY.with(chat::SetChannelCategory {
+        channel: id(&beta),
+        category: None,
+    }))
+    .unwrap();
+    assert_eq!(names(&ada), ["alpha"], "filed under no category");
+    ada.apply(Chat::SET_CHANNEL_CATEGORY.with(chat::SetChannelCategory {
+        channel: id(&beta),
+        category: Some(id(&projects)),
+    }))
+    .unwrap();
+    assert_eq!(names(&ada), ["beta", "alpha"], "back where it was listed");
+    assert!(
+        ada.apply(Chat::SET_CHANNEL_CATEGORY.with(chat::SetChannelCategory {
+            channel: id(&beta),
+            category: Some(id("cat_gone")),
+        }))
+        .is_err()
+    );
     ada.apply_confirmed(Chat::DELETE_CATEGORY.with(chat::DeleteCategory {
         category: id(&projects),
     }))

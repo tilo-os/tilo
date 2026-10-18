@@ -135,6 +135,14 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "set-channel-category"
+kind = "undoable"
+params = [
+  { name = "channel", required = true, schema = { type = "string" } },
+  { name = "category", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
 id = "delete-channel"
 destructive = true
 kind = "undoable"

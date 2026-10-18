@@ -501,6 +501,24 @@ fn pass() -> Vec<Step> {
             )],
         ),
         each(
+            "file_channels",
+            vec![chat(
+                "file-channel",
+                "set-channel-category",
+                &[("channel", item("channel")), ("category", item("category"))],
+                false,
+            )],
+        ),
+        each(
+            "drop_categories",
+            vec![chat(
+                "drop-category",
+                "delete-category",
+                &[("category", item("category"))],
+                false,
+            )],
+        ),
+        each(
             "finish",
             vec![guild(
                 "finish-import",
