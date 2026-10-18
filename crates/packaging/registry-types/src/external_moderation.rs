@@ -170,7 +170,7 @@ pub(crate) fn binding_message(
     let mut bytes = BINDING_DOMAIN.to_vec();
     bytes.extend(
         serde_json::to_vec(&(
-            2u16,
+            crate::MODERATION_PROTOCOL,
             &request.actor_pubkey_hex,
             destination,
             &credential.public_key_hex,
@@ -201,7 +201,7 @@ pub fn sign_external_moderation(
     );
     let key = SigningKey::from_bytes(blake3::keyed_hash(&secret, &destination).as_bytes());
     let mut request = SignedModerationMutation {
-        protocol: 2,
+        protocol: crate::MODERATION_PROTOCOL,
         request_id: operation.request_id.clone(),
         issued_at_unix: operation.issued_at_unix,
         expires_at_unix: operation.expires_at_unix,
@@ -229,7 +229,7 @@ pub fn sign_external_moderation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{sign_moderation_mutation, verify_moderation_mutation};
+    use crate::verify_moderation_mutation;
     use ed25519_dalek::{Signature, VerifyingKey};
 
     fn operation() -> ExternalModerationOperation {
@@ -253,11 +253,11 @@ mod tests {
     }
 
     #[test]
-    fn moderation_v2_binds_identity_destination_and_exact_operation() {
+    fn moderation_binds_identity_destination_and_exact_operation() {
         let identity = SigningKey::from_bytes(&[7; 32]);
         let operation = operation();
         let signed = sign_external_moderation(&operation, &identity).unwrap();
-        assert_eq!(signed.protocol, 2);
+        assert_eq!(signed.protocol, crate::MODERATION_PROTOCOL);
         assert_eq!(signed.external_operation().unwrap(), operation);
         assert_eq!(
             signed.actor_pubkey_hex,
@@ -373,7 +373,7 @@ mod tests {
     }
 
     #[test]
-    fn moderation_v2_canonical_json_and_transparency_survive_reencoding() {
+    fn moderation_canonical_json_and_transparency_survive_reencoding() {
         let signed =
             sign_external_moderation(&operation(), &SigningKey::from_bytes(&[7; 32])).unwrap();
         // Value's sorted object keys differ from the wire structs' declaration order.
@@ -431,89 +431,6 @@ mod tests {
         invalid.expires_at_unix = invalid.issued_at_unix;
         assert!(invalid.validate().is_err());
         assert!(sign_external_moderation(&invalid, &SigningKey::from_bytes(&[7; 32])).is_err());
-    }
-
-    #[test]
-    fn moderation_v1_remains_verifiable_without_v2_fields() {
-        let operation = operation();
-        let signed = sign_moderation_mutation(
-            operation.request_id,
-            100,
-            200,
-            ModerationActorRole::Reporter,
-            operation.mutation,
-            &SigningKey::from_bytes(&[7; 32]),
-        )
-        .unwrap();
-        let json = serde_json::to_value(&signed).unwrap();
-        assert!(json.get("credential").is_none());
-        assert!(json.get("destination").is_none());
-        let decoded: SignedModerationMutation = serde_json::from_value(json).unwrap();
-        verify_moderation_mutation(&decoded).unwrap();
-        let legacy_payload = postcard::to_stdvec(&(
-            1u16,
-            &signed.request_id,
-            signed.issued_at_unix,
-            signed.expires_at_unix,
-            signed.actor_role,
-            &signed.actor_pubkey_hex,
-            &signed.mutation,
-        ))
-        .unwrap();
-        let mut legacy_digest = blake3::Hasher::new();
-        legacy_digest.update(crate::MODERATION_DOMAIN);
-        legacy_digest.update(&legacy_payload);
-        SigningKey::from_bytes(&[7; 32])
-            .verifying_key()
-            .verify_strict(
-                legacy_digest.finalize().as_bytes(),
-                &Signature::from_slice(&hex::decode(&signed.signature_hex).unwrap()).unwrap(),
-            )
-            .unwrap();
-        // Postcard structs are positional: omitted v2 fields must leave the
-        // historic event preimage byte-for-byte unchanged.
-        let mut event = report_event(&signed);
-        let legacy_request = (
-            signed.protocol,
-            &signed.request_id,
-            signed.issued_at_unix,
-            signed.expires_at_unix,
-            signed.actor_role,
-            &signed.actor_pubkey_hex,
-            &signed.mutation,
-            &signed.signature_hex,
-        );
-        let legacy_event = (
-            event.sequence,
-            &event.case_id,
-            &event.package_id,
-            &event.publisher_pubkey_hex,
-            event.recorded_at_unix,
-            event.actor_role,
-            &event.actor_pubkey_hex,
-            &event.request_id,
-            &event.event,
-            &event.actor_signature_hex,
-            legacy_request,
-            &event.previous_hash_hex,
-            &event.record_hash_hex,
-        );
-        let bytes = postcard::to_stdvec(&legacy_event).unwrap();
-        event.record_hash_hex = blake3::hash(&bytes).to_hex().to_string();
-        assert_eq!(
-            crate::transparency_event_hash(&event).unwrap(),
-            event.record_hash_hex
-        );
-        crate::derive_verified_case(
-            &[event.clone()],
-            &event.case_id,
-            &hex::encode(SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes()),
-            &event.record_hash_hex,
-        )
-        .unwrap();
-        let mut unknown = signed;
-        unknown.protocol = 99;
-        assert!(verify_moderation_mutation(&unknown).is_err());
     }
 
     fn report_event(signed: &SignedModerationMutation) -> crate::ModerationEvent {

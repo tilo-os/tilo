@@ -422,7 +422,7 @@ fn validate_request(
     request: &SignedModerationMutation,
     now: u64,
 ) -> Result<(), ModerationApiError> {
-    if request.protocol != 2 {
+    if request.protocol != registry_types::MODERATION_PROTOCOL {
         return Err(ModerationApiError::Invalid("unsupported protocol"));
     }
     validate_id(&request.request_id)?;
@@ -678,22 +678,14 @@ mod tests {
     }
 
     #[test]
-    fn moderation_rejects_legacy_and_other_destinations_before_writing() {
+    fn moderation_rejects_other_protocols_and_destinations_before_writing() {
         let (_directory, service, _publisher, _reviewer, allowlist) = setup();
         let actor = SigningKey::from_bytes(&[7; 32]);
         let request = report(&actor, "destination-test");
-        let legacy = registry_types::sign_moderation_mutation(
-            request.request_id.clone(),
-            100,
-            200,
-            request.actor_role,
-            request.mutation.clone(),
-            &actor,
-        )
-        .unwrap();
-        registry_types::verify_moderation_mutation(&legacy).unwrap();
+        let mut other_protocol = request.clone();
+        other_protocol.protocol = registry_types::MODERATION_PROTOCOL + 1;
         assert!(matches!(
-            service.apply(&legacy, 110, &allowlist),
+            service.apply(&other_protocol, 110, &allowlist),
             Err(ModerationApiError::Invalid("unsupported protocol"))
         ));
         for change_owner in [false, true] {

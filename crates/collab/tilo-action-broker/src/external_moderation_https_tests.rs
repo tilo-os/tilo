@@ -591,7 +591,7 @@ mod https_completion {
                     case_id = Some(receipt.case_id.clone());
                     let events = server.service().transparency(1, 10).unwrap().events;
                     let signed = &events.last().unwrap().signed_mutation;
-                    assert_eq!(signed.protocol, 2);
+                    assert_eq!(signed.protocol, registry_types::MODERATION_PROTOCOL);
                     assert_eq!(signed.external_operation().unwrap(), operation);
                     assert_eq!(
                         signed.actor_pubkey_hex,

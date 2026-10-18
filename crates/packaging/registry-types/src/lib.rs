@@ -102,12 +102,11 @@ pub use interfaces::{
     RuntimeServices, SYSTEM_INTERFACE, Unmet, describe_unmet, valid_interface_name,
 };
 pub use moderation::{
-    MODERATION_DOMAIN, ModerationActorRole, ModerationCase, ModerationCaseStatus,
+    MODERATION_PROTOCOL, ModerationActorRole, ModerationCase, ModerationCaseStatus,
     ModerationDecision, ModerationEvent, ModerationEventKind, ModerationMutation,
     ModerationWireError, SignedModerationMutation, TransparencyPage, derive_verified_case,
-    moderation_case_id, moderation_signing_message, sign_moderation_mutation,
-    transparency_event_hash, verify_moderation_authorization, verify_moderation_mutation,
-    verify_transparency_chain,
+    moderation_case_id, moderation_signing_message, transparency_event_hash,
+    verify_moderation_authorization, verify_moderation_mutation, verify_transparency_chain,
 };
 pub use snapshot::{
     ChannelAuthorization, MAX_SNAPSHOT_ENCODED_BYTES, MAX_SNAPSHOT_ENTRIES,
