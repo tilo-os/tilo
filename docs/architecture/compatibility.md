@@ -97,9 +97,13 @@ mounted image.
 
 ## A mismatch is a state
 
-The launcher refuses a build that speaks another version than the system
-serves; the shell decides first what the person sees
-(`shell::app_versions`):
+The launcher never runs a build that speaks another version than the system
+serves. The shell decides first what the person sees
+(`shell::app_versions`); a launch from a terminal (`tilo-launcher
+run-installed`, the PATH shims, `exec-installed`) does the same, saying so on
+stderr: it updates a build that is behind (or recorded at an older package
+format) and runs the new one, starts the system update for one that is
+ahead, and exits 75 when the update is not there yet:
 
 - **The app is behind** (built for older versions): its place says "Updating
   Mail…" while its update downloads, and it opens there once it fits. After a
