@@ -7,12 +7,15 @@ use serde::{Deserialize, Serialize};
 pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
 const MAX_HASHES: usize = 256;
 
-/// The authenticated channel supplies the original actor, app and record.
+/// The authenticated channel verifies the original actor, app and record custody.
 /// Encoded input, context, hashes and grouping are the application's report,
 /// not verified execution. Context never supplies the authenticated actor.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
+    /// Original authenticated channel provenance, compared with live custody at admission.
+    #[serde(default)]
+    pub custody: Option<runtime_collab::committed_document::ConnectionSnapshot>,
     pub version: u8,
     pub invocation: uuid::Uuid,
     /// Random identity of this capture, before content binding. Keeps identical
@@ -144,7 +147,8 @@ mod tests {
             "argument": "text", "original_heads": vec![[0u8; 32]],
             "mutation_hashes": vec![[1u8; 32]], "group": null,
             "encoded": {"type_id": "test.edit", "payload": b"{}".to_vec()},
-            "context": null
+            "context": null,
+            "custody": null
         })
     }
 
@@ -165,6 +169,10 @@ mod tests {
                 "encoded" => {
                     serde_json::json!({"type_id": "test.edit", "payload": b"null".to_vec()})
                 }
+                "custody" => serde_json::json!({
+                    "root": vec![1; 32], "device": vec![2; 32], "agent": null,
+                    "app_id": "app", "room": "room", "document": "document"
+                }),
                 "context" => serde_json::json!(tilo_actions::ActionContext::default()),
                 "group" => serde_json::json!({"id": "g", "label": "g", "kind": "edit"}),
                 _ => serde_json::json!("different"),
@@ -199,6 +207,10 @@ mod tests {
                         .with_purpose("private purpose")
                         .with_group("gesture", "Edit", "edit")
                 ),
+                "custody" => serde_json::json!({
+                    "root": vec![1; 32], "device": vec![2; 32], "agent": null,
+                    "app_id": "app", "room": "room", "document": "document"
+                }),
                 "group" => serde_json::json!({"kind": "edit", "label": "Edit", "id": "g"}),
                 _ => serde_json::json!("different"),
             };

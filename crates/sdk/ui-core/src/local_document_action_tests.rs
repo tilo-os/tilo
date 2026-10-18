@@ -50,6 +50,7 @@ fn legacy_local_action_keeps_behavior_without_fabricating_admission() {
 fn capture_debug_does_not_disclose_private_intent() {
     let private = "private note body";
     let capture = CapturedAction {
+        custody: None,
         invocation: uuid::Uuid::new_v4(),
         capture_id: uuid::Uuid::new_v4(),
         revision: private.into(),
@@ -280,6 +281,18 @@ fn reservation_counts_transport_bytes_with_bounded_hash_allowance() {
         });
         let mut doc = AutoCommit::new();
         let mut host = crate::action_host::ActionHost::new();
+        // Include authenticated provenance in both capture identity and budget.
+        let custody = runtime_collab::committed_document::ConnectionSnapshot {
+            root: [1; 32],
+            device: [2; 32],
+            agent: Some("agent".into()),
+            app_id: "app".into(),
+            room: "room".into(),
+            document: "document".into(),
+        };
+        ACTIVE.with_borrow_mut(|active| {
+            active.as_mut().unwrap().custody = Some(custody.clone());
+        });
         // Include an existing head and context (including a duplicated group).
         doc.put(ROOT, "existing", true).unwrap();
         let context = ActionContext::default()
@@ -290,7 +303,13 @@ fn reservation_counts_transport_bytes_with_bounded_hash_allowance() {
         let bytes = queue.0.borrow().bytes;
         let actions = queue.drain_leased();
         let action = &actions[0].0;
+        assert_eq!(action.custody, Some(custody));
+        assert_eq!(
+            action.clone().into_report().unwrap().custody,
+            action.custody
+        );
         let mut report = runtime_collab::LocalDocumentActionReport {
+            custody: action.custody.clone(),
             version: 1,
             invocation: action.invocation,
             capture_id: action.capture_id,

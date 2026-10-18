@@ -4,7 +4,7 @@
 //! Scope: replacement evidence, not full application history. Each owner has
 //! eight reusable slots (at most 1,024 actions / 32 MiB plus format headers).
 //! A session exclusively leases one slot, retaining that slot's recent evidence
-//! across actor changes. Reusing it evicts obsolete evidence through the normal
+//! only for the exact actor that wrote it. Reusing it evicts obsolete evidence through the normal
 //! bounded replacement checkpoint; no actor-named files accumulate. Other live
 //! slots are never reclaimed. If all eight are busy, evidence is unavailable
 //! rather than overwriting an active writer. Nothing scans or deletes user data.
@@ -15,7 +15,8 @@ use std::{collections::VecDeque, rc::Rc};
 const SLOTS: u64 = 8;
 const LIMIT: usize = 128;
 const BUDGET: usize = 4 * 1024 * 1024;
-const MAGIC: &[u8] = b"tilo-private-actions-v1\0";
+const MAGIC: &[u8] = b"tilo-private-actions-v2\0";
+const ACTOR_BYTES: usize = 32;
 
 /// Private evidence for an already executed action, not permission to publish it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,6 +46,7 @@ pub(crate) struct PrivateHistory {
     store: Rc<dyn DurableStore>,
     key: StorageKey,
     entries: VecDeque<PrivateAction>,
+    actor: [u8; ACTOR_BYTES],
     dirty: bool,
     revision: Option<Revision>,
     error: Option<String>,
@@ -83,9 +85,18 @@ impl PrivateHistory {
             }
         }
         let (key, lease) = acquired.ok_or("all private history slots are in use")?;
+        let actor = *blake3::hash(actor).as_bytes();
         let entries = match store.read(&key).map_err(|e| e.to_string())? {
-            Some(stored) => decode(&stored.bytes)?,
-            None => VecDeque::new(),
+            Some(stored)
+                if stored.bytes.starts_with(MAGIC)
+                    && stored.bytes.get(MAGIC.len()..MAGIC.len() + ACTOR_BYTES)
+                        == Some(actor.as_slice()) =>
+            {
+                decode(&stored.bytes)?
+            }
+            // An obsolete slot (including the unbound legacy format) may be
+            // replaced, but its private contents never cross actor custody.
+            _ => VecDeque::new(),
         };
         // Reads may include another live session's accepted writes. Ask the
         // existing worker to settle recovered bytes without awaiting its host.
@@ -101,6 +112,7 @@ impl PrivateHistory {
             store,
             key,
             entries,
+            actor,
             dirty: false,
             revision: None,
             error,
@@ -147,7 +159,7 @@ impl PrivateHistory {
         if !self.dirty && !failed && self.error.is_none() {
             return Ok(());
         }
-        let bytes = encode(&self.entries)?;
+        let bytes = encode(&self.entries, &self.actor)?;
         self.revision = Some(
             match self.store.write(&self.key, WriteOp::Replace(bytes), None) {
                 Ok(revision) => revision,
@@ -202,8 +214,9 @@ fn put(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), String> {
     out.extend_from_slice(bytes);
     Ok(())
 }
-fn encode(entries: &VecDeque<PrivateAction>) -> Result<Vec<u8>, String> {
+fn encode(entries: &VecDeque<PrivateAction>, actor: &[u8; ACTOR_BYTES]) -> Result<Vec<u8>, String> {
     let mut out = MAGIC.to_vec();
+    out.extend_from_slice(actor);
     for entry in entries {
         out.extend_from_slice(&entry.id);
         let hashes: Vec<u8> = entry.hashes.iter().flatten().copied().collect();
@@ -232,9 +245,12 @@ fn field<'a>(bytes: &mut &'a [u8]) -> Result<&'a [u8], String> {
     take(bytes, len)
 }
 fn decode(mut bytes: &[u8]) -> Result<VecDeque<PrivateAction>, String> {
-    if bytes.len() > BUDGET.saturating_add(MAGIC.len()) || take(&mut bytes, MAGIC.len())? != MAGIC {
+    if bytes.len() > BUDGET.saturating_add(MAGIC.len() + ACTOR_BYTES)
+        || take(&mut bytes, MAGIC.len())? != MAGIC
+    {
         return Err("invalid private action checkpoint".into());
     }
+    take(&mut bytes, ACTOR_BYTES)?;
     let mut entries = VecDeque::new();
     while !bytes.is_empty() {
         let id = fixed(&mut bytes)?;
@@ -277,6 +293,39 @@ mod tests {
     use super::*;
     use automerge::transaction::Transactable;
     use durable_store::MemoryStore;
+
+    #[test]
+    fn colliding_actors_never_recover_each_others_intents_or_receipts() {
+        let store: Rc<dyn DurableStore> = Rc::new(MemoryStore::new());
+        let owner = StorageKey::package("so.tilo.test");
+        let first = b"original actor";
+        let bucket = blake3::hash(first).as_bytes()[0] % SLOTS as u8;
+        let second = (0_u64..)
+            .map(|n| n.to_le_bytes())
+            .find(|actor| blake3::hash(actor).as_bytes()[0] % SLOTS as u8 == bucket)
+            .unwrap();
+        let evidence = PrivateAction {
+            id: [1; 16],
+            hashes: vec![],
+            intent: b"private pending intent".to_vec(),
+            receipt: Some(b"private receipt".to_vec()),
+        };
+        let mut history = PrivateHistory::open(store.clone(), &owner, first).unwrap();
+        let key = history.key.clone();
+        history.record(evidence.clone()).unwrap();
+        history.checkpoint().unwrap();
+        history.flush().unwrap();
+        drop(history);
+        let recovered = PrivateHistory::open(store.clone(), &owner, first).unwrap();
+        assert_eq!(
+            recovered.entries().cloned().collect::<Vec<_>>(),
+            vec![evidence]
+        );
+        drop(recovered);
+        let collision = PrivateHistory::open(store.clone(), &owner, &second).unwrap();
+        assert_eq!(collision.key, key);
+        assert_eq!(collision.entries().count(), 0);
+    }
 
     #[test]
     fn successive_actors_reuse_bounded_owner_slots_without_touching_live_writers() {
@@ -352,7 +401,9 @@ mod tests {
                 }
             }
             assert!(count <= usize::try_from(SLOTS).unwrap() * LIMIT);
-            assert!(bytes <= usize::try_from(SLOTS).unwrap() * (BUDGET + MAGIC.len()));
+            assert!(
+                bytes <= usize::try_from(SLOTS).unwrap() * (BUDGET + MAGIC.len() + ACTOR_BYTES)
+            );
             assert_eq!(store.read(&live.key).unwrap().unwrap().bytes, live_bytes);
             assert_eq!(
                 store.read(&other_history.key).unwrap().unwrap().bytes,

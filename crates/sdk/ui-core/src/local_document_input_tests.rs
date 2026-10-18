@@ -20,6 +20,7 @@ fn route_snapshot_aliases_are_frozen_before_typed_execution_and_suspend_restores
     let pin = Rc::new(String::from("inert snapshot ownership"));
     let weak_pin = Rc::downgrade(&pin);
     let input = enter_input(vec![InputRoute {
+        custody: None,
         owner: None,
         queue: queue.clone(),
         revision: "published-before-input".into(),

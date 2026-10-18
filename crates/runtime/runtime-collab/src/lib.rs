@@ -3620,6 +3620,9 @@ impl std::fmt::Debug for PublishedInvocationResult {
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LocalDocumentActionReport {
+    /// Original authenticated channel provenance, compared with live custody at admission.
+    #[serde(default)]
+    pub custody: Option<committed_document::ConnectionSnapshot>,
     pub version: u8,
     pub invocation: uuid::Uuid,
     /// Random capture identity, preserved unchanged across retries.
@@ -3872,7 +3875,7 @@ impl LocalDocumentActionReport {
     }
 
     /// Closed, bounded encoding shared with the authenticated local endpoint.
-    /// No actor, app, record or target identity may be supplied by the caller.
+    /// Custody is recovery provenance, never caller-selected authority.
     /// # Errors
     /// Refuses invalid addresses, noncanonical hash sets and oversized reports.
     pub fn encode(&self) -> Result<Vec<u8>, String> {
@@ -4170,6 +4173,7 @@ mod local_document_action_transport_tests {
 
     fn report() -> LocalDocumentActionReport {
         LocalDocumentActionReport {
+            custody: None,
             version: 1,
             invocation: uuid::Uuid::from_bytes([1; 16]),
             capture_id: uuid::Uuid::from_bytes([4; 16]),
@@ -4212,6 +4216,7 @@ mod local_document_action_transport_tests {
                 "argument",
                 "capture_id",
                 "context",
+                "custody",
                 "encoded",
                 "group",
                 "invocation",
@@ -4227,6 +4232,10 @@ mod local_document_action_transport_tests {
         }
         assert_eq!(json["invocation"], value.invocation.to_string());
         assert_eq!(json["capture_id"], value.capture_id.to_string());
+        let mut missing_custody = json.clone();
+        missing_custody.as_object_mut().unwrap().remove("custody");
+        let legacy: LocalDocumentActionReport = serde_json::from_value(missing_custody).unwrap();
+        assert!(legacy.custody.is_none());
         let mut missing_capture = json.clone();
         missing_capture
             .as_object_mut()

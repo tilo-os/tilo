@@ -149,6 +149,15 @@ pub trait CollabTransport: Send {
     /// The remote end's decision about the latest primary `Hello`, once.
     fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>>;
 
+    /// Inert authenticated recovery provenance; unsupported transports supply none.
+    fn connection_snapshot(
+        &self,
+        route: &RouteSpec,
+    ) -> Option<runtime_collab::committed_document::ConnectionSnapshot> {
+        let _ = route;
+        None
+    }
+
     /// Native private window identity acknowledged by the original broker.
     /// Unsupported transports and ordinary document/identity markers grant none.
     fn private_window_binding(&self, route: &RouteSpec) -> Option<u64> {

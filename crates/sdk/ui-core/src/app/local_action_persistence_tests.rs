@@ -106,6 +106,49 @@ fn private_checkpoints_follow_the_executed_child_owner_not_the_primary_document(
     sent.borrow_mut().clear();
     fixture.app.restore_local_input_checkpoint(&route).unwrap();
     assert_eq!(fixture.app.local_input_capture.pending_count(), 1);
+    let checkpoint = fixture
+        .app
+        .local_action_checkpoint_entries(&route)
+        .unwrap()
+        .remove(0)
+        .0;
+    let original_custody = checkpoint
+        .custody
+        .expect("authenticated custody must survive restart");
+    assert_eq!(original_custody, capture_custody(&route));
+    // A new live connection cannot relabel old work, even when it owns the
+    // same document and reports the same app-controlled action context.
+    let mut mismatches = vec![None];
+    for field in 0..6 {
+        let mut changed = original_custody.clone();
+        match field {
+            0 => changed.root = [3; 32],
+            1 => changed.device = [4; 32],
+            2 => changed.agent = Some("different-agent".into()),
+            3 => changed.app_id = "other-app".into(),
+            4 => changed.room = uuid::Uuid::new_v4().to_string(),
+            _ => changed.document = "other-document".into(),
+        }
+        mismatches.push(Some(changed));
+    }
+    for custody in mismatches {
+        fixture.app.collaboration.manager =
+            CollaborationManager::with_peer_transport(CustodyCapturePeer {
+                inner: CapturePeer(sent.clone()),
+                custody,
+            });
+        fixture.app.local_input_capture.retry_now();
+        fixture.app.drain_local_input_capture();
+        assert!(
+            capture_reports(&sent).is_empty(),
+            "mismatched custody must never report"
+        );
+        assert_eq!(fixture.app.local_input_capture.pending_count(), 1);
+        assert!(fixture.app.local_input_capture.failure.is_some());
+    }
+    fixture.app.collaboration.manager =
+        CollaborationManager::with_peer_transport(CapturePeer(sent.clone()));
+    fixture.app.local_input_capture.retry_now();
     fixture.app.drain_local_input_capture();
     let retried = capture_reports(&sent);
     assert_eq!(retried.len(), 1);

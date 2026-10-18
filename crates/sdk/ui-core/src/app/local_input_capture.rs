@@ -63,6 +63,7 @@ fn retained_size(capture: &crate::local_document_action::CapturedAction, admissi
         + capture.encoded.type_id.len()
         + capture.revision.len()
         + serde_json::to_vec(&capture.context).map_or(0, |bytes| bytes.len())
+        + serde_json::to_vec(&capture.custody).map_or(0, |bytes| bytes.len())
         + capture.published.as_ref().map_or(0, |published| {
             published.resource.len()
                 + published.action.len()
@@ -219,10 +220,11 @@ impl App {
                 let queue = self
                     .local_input_capture
                     .queues
-                    .entry(route)
+                    .entry(route.clone())
                     .or_default()
                     .clone();
                 routes.push(InputRoute {
+                    custody: self.collaboration.manager.connection_snapshot(&route),
                     owner,
                     queue,
                     revision: if pin.is_some() {
@@ -340,6 +342,22 @@ impl App {
                 .filter(|(_, pending)| pending.retry_at <= now)
                 .take(4)
             {
+                // Missing legacy provenance is private evidence only. Never
+                // relabel it with the principal of a new connection.
+                if pending.capture.custody.is_none()
+                    || pending.capture.custody
+                        != self
+                            .collaboration
+                            .manager
+                            .connection_snapshot(&pending.route)
+                {
+                    pending.retry_at = now + crate::time::Duration::from_secs(30);
+                    failures.push(
+                        "local action recovery requires its original authenticated connection"
+                            .into(),
+                    );
+                    continue;
+                }
                 let result = self
                     .collaboration
                     .manager
@@ -398,6 +416,16 @@ impl App {
     ) -> Result<(), String> {
         let entries = self.local_action_checkpoint_entries(route)?;
         for (checkpoint, receipt) in entries {
+            // Neither private receipts nor pending intents may enter the new
+            // session until its authenticated destination and principal match.
+            // Missing legacy/offline custody stays on disk for explicit resolution.
+            if checkpoint.custody.is_none()
+                || checkpoint.custody != self.collaboration.manager.connection_snapshot(route)
+            {
+                return Err(
+                    "private action recovery requires original authenticated connection".into(),
+                );
+            }
             if receipt.as_deref() == Some("{\"local_capture_rejected\":true}") {
                 continue;
             }
@@ -425,6 +453,7 @@ impl App {
                 .map_err(|error| error.to_string())?,
             };
             let capture = crate::local_document_action::CapturedAction {
+                custody: checkpoint.custody,
                 invocation: report.invocation,
                 capture_id: report.capture_id,
                 revision: report.revision.clone(),
@@ -626,6 +655,12 @@ mod tests {
 
     struct Peer(Rc<RefCell<Vec<CollabRequest>>>);
     impl PeerTransport for Peer {
+        fn connection_snapshot(
+            &self,
+            route: &RouteSpec,
+        ) -> Option<runtime_collab::committed_document::ConnectionSnapshot> {
+            Some(custody(route))
+        }
         fn is_connected(&self) -> bool {
             true
         }
@@ -640,6 +675,26 @@ mod tests {
             Ok(())
         }
     }
+    fn custody(route: &RouteSpec) -> runtime_collab::committed_document::ConnectionSnapshot {
+        runtime_collab::committed_document::ConnectionSnapshot {
+            root: [1; 32],
+            device: [2; 32],
+            agent: None,
+            app_id: route.app_id.clone(),
+            room: route.cluster_id.to_string(),
+            document: route.record.clone().unwrap_or_default(),
+        }
+    }
+    fn input(queue: &Queue, route: &RouteSpec) -> crate::local_document_action::Scope {
+        crate::local_document_action::enter_input(vec![InputRoute {
+            custody: Some(custody(route)),
+            owner: None,
+            queue: queue.clone(),
+            revision: "snapshot".into(),
+            aliases: Rc::new([("body".into(), "body".into())].into()),
+            pin: None,
+        }])
+    }
     #[derive(Debug, serde::Serialize)]
     struct Noop;
     impl tilo_actions::Action for Noop {
@@ -652,20 +707,51 @@ mod tests {
     }
 
     #[test]
+    fn legacy_capture_without_custody_is_not_relabelled_by_a_live_connection() {
+        let mut app = App::new(crate::State::new(), Box::new(crate::widget::Text::new("")));
+        let requests = Rc::new(RefCell::new(Vec::new()));
+        app.collaboration.manager =
+            crate::collaboration::CollaborationManager::with_peer_transport(Peer(requests.clone()));
+        let route = RouteSpec::app("notes", uuid::Uuid::new_v4());
+        let queue = Queue::new();
+        app.local_input_capture.queues.insert(route, queue.clone());
+        let mut doc = automerge::AutoCommit::new();
+        {
+            // The compatibility queue has no authenticated host provenance.
+            let _scope = queue.enter("snapshot".into());
+            let _invocation = crate::local_document_action::with_invocation(
+                crate::local_document_action::PublishedInvocation {
+                    resource: "body".into(),
+                    action: "read".into(),
+                    arguments: serde_json::Map::new(),
+                },
+            );
+            crate::action_host::ActionHost::new()
+                .try_dispatch(&mut doc, "noop", &Noop)
+                .unwrap();
+        }
+        app.drain_local_input_capture();
+        assert!(requests.borrow().is_empty());
+        assert_eq!(app.local_input_capture.pending_count(), 1);
+        assert!(queue.has_outstanding());
+        assert!(app.local_input_capture.failure.is_some());
+    }
+
+    #[test]
     fn retired_route_is_released_after_uncertain_capture_is_reconciled() {
         let mut app = App::new(crate::State::new(), Box::new(crate::widget::Text::new("")));
         let requests = Rc::new(RefCell::new(Vec::new()));
         app.collaboration.manager =
             crate::collaboration::CollaborationManager::with_peer_transport(Peer(requests.clone()));
         let queue = Queue::new();
-        app.local_input_capture.queues.insert(
-            RouteSpec::app("retired", uuid::Uuid::new_v4()),
-            queue.clone(),
-        );
+        let route = RouteSpec::app("retired", uuid::Uuid::new_v4());
+        app.local_input_capture
+            .queues
+            .insert(route.clone(), queue.clone());
         let mut doc = automerge::AutoCommit::new();
         let mut host = crate::action_host::ActionHost::new();
         {
-            let _scope = queue.enter("snapshot".into());
+            let _scope = input(&queue, &route);
             let _invocation = crate::local_document_action::with_invocation(
                 crate::local_document_action::PublishedInvocation {
                     resource: "body".into(),
@@ -713,13 +799,15 @@ mod tests {
             crate::collaboration::CollaborationManager::with_peer_transport(Peer(requests.clone()));
         let route = RouteSpec::app("test", uuid::Uuid::new_v4());
         let queue = Queue::new();
-        app.local_input_capture.queues.insert(route, queue.clone());
+        app.local_input_capture
+            .queues
+            .insert(route.clone(), queue.clone());
         let mut doc = automerge::AutoCommit::new();
         let mut host = crate::action_host::ActionHost::new();
         let mut first = None;
         for _ in 0..130 {
             {
-                let _scope = queue.enter("snapshot".into());
+                let _scope = input(&queue, &route);
                 let _invocation = crate::local_document_action::with_invocation(
                     crate::local_document_action::PublishedInvocation {
                         resource: "body".into(),
