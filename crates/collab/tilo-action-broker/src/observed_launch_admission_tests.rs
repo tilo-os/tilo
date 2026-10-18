@@ -135,10 +135,9 @@ async fn installed_launch_requires_signed_admission_and_durable_terminal() {
                     );
                     assert!(record.terminal.is_none());
                     assert_eq!(record.intent["host_start"]["package_root"], root);
-                    assert_eq!(
-                        record.intent["request"]["on_behalf_of"],
-                        serde_json::Value::Null
-                    );
+                    let request =
+                        observed_launch_request(key.invocation, None, "so.tilo.word-processor");
+                    assert!(record.admitted_request_is(&serde_json::to_value(request).unwrap()));
                     key
                 };
                 if matches!(scenario, "terminal" | "timeout_terminal") {
@@ -196,10 +195,23 @@ async fn installed_launch_requires_signed_admission_and_durable_terminal() {
                             tilo_actions::InvocationUpdate::Failed { .. }
                         ));
                     }
-                    assert_eq!(
-                        caller.handle.published_invocation_status(id).await.unwrap(),
-                        Some(json)
+                    assert!(
+                        caller
+                            .handle
+                            .published_invocation_status(id)
+                            .await
+                            .unwrap()
+                            .is_none()
                     );
+                    let observed = caller
+                        .handle
+                        .published_invocation_observation(
+                            key.host.as_bytes(),
+                            key.invocation.0.as_bytes(),
+                        )
+                        .await
+                        .unwrap();
+                    assert_eq!(observed.result.unwrap().update_json, json);
                     let guard = rig.state.journal.lock().unwrap();
                     let record = guard
                         .as_ref()
