@@ -107,6 +107,18 @@ pub(crate) fn classify(text: &str) -> Result<JoinText, SiteError> {
     })
 }
 
+/// Whether `text` is an invitation's text itself (not a word that merely
+/// could be one).
+pub(crate) fn is_invitation(text: &str) -> bool {
+    tilo_peer_state::join::decode_and_verify_invitation_text(
+        text.trim(),
+        None,
+        &tilo_user_identity::RevocationList::new(),
+        tilo_clock::unix_now_ns(),
+    )
+    .is_ok()
+}
+
 /// What the field will do with `text`, in the person's words; `None` while
 /// it is nothing the field takes yet.
 pub(crate) fn describe(text: &str) -> Option<String> {

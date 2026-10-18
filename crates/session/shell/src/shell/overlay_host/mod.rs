@@ -16940,6 +16940,9 @@ impl ShellOverlayHost {
     /// `false` when no such field is open.
     fn commit_into_chrome_field(&mut self, text: &str) -> bool {
         use tilo_desktop::text_entry::{Edit, commit};
+        if self.directory_sheet.commit_text(text) {
+            return true;
+        }
         if !self.palette_visible
             && let Some(chrome) = self.chrome.clone()
         {

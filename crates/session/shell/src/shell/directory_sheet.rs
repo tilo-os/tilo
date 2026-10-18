@@ -16,18 +16,21 @@
 //! [`DirectorySheet::joined`], [`DirectorySheet::failed`]). It comes and
 //! goes on the standard [`ui::motion::Appear`] motion.
 
+use tilo_desktop::text_entry::{self, Mods};
 use ui::TextRole;
 use ui::a11y::{AccessNode, AccessState, Action, Role};
 use ui::num::{f32_of_f64, f64_of_usize};
 use ui::paint::PaintCtx;
+use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_selection::Selection;
 use ui::theme::Theme;
-use ui::widget::ButtonRole;
+use ui::widget::{ButtonRole, FieldFace, TextInput, Widget as _};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseScrollDelta, WindowEvent};
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use crate::shell::i18n::{t, t_args};
 use crate::shell::network::DirectoryListing;
@@ -118,6 +121,10 @@ pub struct DirectorySheet {
     open: bool,
     appearing: ui::motion::Appearing,
     query: String,
+    /// The search field's caret and selection, byte indices into `query`.
+    query_selection: Selection,
+    /// The shared text input that paints the search while it holds text.
+    input: Option<TextInput>,
     listings: Vec<DirectoryListing>,
     status: Status,
     /// The listing being joined, by its key, and why the last join failed.
@@ -183,24 +190,27 @@ fn joins_as(listing: &DirectoryListing) -> String {
 }
 
 /// What Enter does with what was typed into the search field, when no row
-/// is chosen: a link or a code goes to the join field, a site is looked up.
+/// is chosen: a link or an invitation goes to the join field, a site is
+/// looked up; a word is a search.
 fn typed_request(query: &str) -> Option<DirectoryRequest> {
     let query = query.trim();
     if query.is_empty() {
         return None;
     }
-    match join_field::classify(query) {
-        Ok(JoinText::Invitation(_) | JoinText::InvitationLink { .. })
-        | Ok(JoinText::Site { room: Some(_), .. }) => {
-            Some(DirectoryRequest::LinkOrCode(query.to_owned()))
-        }
-        Ok(JoinText::Site { room: None, .. }) if query.contains('.') => {
-            Some(DirectoryRequest::Fetch {
-                site: Some(query.to_owned()),
-            })
-        }
-        _ => None,
+    let parsed = join_field::classify(query).ok();
+    let link_or_code = matches!(
+        parsed,
+        Some(JoinText::InvitationLink { .. } | JoinText::Site { room: Some(_), .. })
+    ) || (matches!(parsed, Some(JoinText::Invitation(_)))
+        && join_field::is_invitation(query));
+    if link_or_code {
+        return Some(DirectoryRequest::LinkOrCode(query.to_owned()));
     }
+    (matches!(parsed, Some(JoinText::Site { room: None, .. })) && query.contains('.')).then(|| {
+        DirectoryRequest::Fetch {
+            site: Some(query.to_owned()),
+        }
+    })
 }
 
 impl DirectorySheet {
@@ -208,7 +218,7 @@ impl DirectorySheet {
     pub fn open(&mut self) -> DirectoryRequest {
         self.open = true;
         self.appearing.show(true);
-        self.query.clear();
+        self.set_query(String::new());
         self.status = Status::Loading;
         self.note = None;
         self.joining = None;
@@ -314,7 +324,6 @@ impl DirectorySheet {
             return DirectoryOutcome::ignored();
         }
         let mods = modifiers.state();
-        let chord = mods.control_key() || mods.super_key();
         match event {
             WindowEvent::KeyboardInput {
                 event:
@@ -324,7 +333,7 @@ impl DirectorySheet {
                         ..
                     },
                 ..
-            } => self.handle_key(logical_key, chord),
+            } => self.handle_key(logical_key, mods),
             WindowEvent::KeyboardInput { .. } => DirectoryOutcome::consumed(),
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -370,7 +379,7 @@ impl DirectorySheet {
         }
     }
 
-    fn handle_key(&mut self, key: &Key, chord: bool) -> DirectoryOutcome {
+    fn handle_key(&mut self, key: &Key, mods: ModifiersState) -> DirectoryOutcome {
         match key {
             Key::Named(NamedKey::Escape) => {
                 if self.query.is_empty() {
@@ -409,35 +418,37 @@ impl DirectorySheet {
                     None => DirectoryOutcome::consumed(),
                 },
             },
-            Key::Named(NamedKey::Backspace) => {
-                let mut query = std::mem::take(&mut self.query);
-                ui::delete_last_grapheme(&mut query);
-                self.set_query(query);
-                DirectoryOutcome::consumed()
-            }
-            Key::Character(s) if chord && s.eq_ignore_ascii_case("v") => {
-                if let Some(pasted) = ui::text_selection::clipboard_paste() {
-                    let pasted: String = pasted.chars().filter(|c| !c.is_control()).collect();
-                    let query = format!("{}{}", self.query, pasted.trim());
-                    self.set_query(query);
+            // Everything else edits the search, as in every field.
+            _ => {
+                let before = self.query.clone();
+                let _ = text_entry::apply(
+                    key,
+                    Mods::from_state(mods),
+                    &mut self.query,
+                    &mut self.query_selection,
+                );
+                if self.query != before {
+                    self.selected = None;
+                    self.scroll = 0;
                 }
                 DirectoryOutcome::consumed()
             }
-            Key::Named(NamedKey::Space) if !chord => {
-                let query = format!("{} ", self.query);
-                self.set_query(query);
-                DirectoryOutcome::consumed()
-            }
-            Key::Character(s) if !chord => {
-                let query = format!("{}{}", self.query, s.as_str());
-                self.set_query(query);
-                DirectoryOutcome::consumed()
-            }
-            _ => DirectoryOutcome::consumed(),
         }
     }
 
+    /// Text an input method committed into the search.
+    pub fn commit_text(&mut self, text: &str) -> bool {
+        if !self.open {
+            return false;
+        }
+        text_entry::commit(text, &mut self.query, &mut self.query_selection);
+        self.selected = None;
+        self.scroll = 0;
+        true
+    }
+
     fn set_query(&mut self, query: String) {
+        self.query_selection = Selection::collapsed(query.len());
         self.query = query;
         self.selected = None;
         self.scroll = 0;
@@ -483,10 +494,13 @@ impl DirectorySheet {
             }
             Target::Search => DirectoryOutcome::consumed(),
             Target::LinkOrCode => {
+                // What was typed goes along when it is a link, a code or a
+                // site; a search word does not.
                 let typed = self.query.trim().to_owned();
-                let text = match join_field::classify(&typed) {
-                    Ok(_) => typed,
-                    Err(_) => String::new(),
+                let text = if typed_request(&typed).is_some() {
+                    typed
+                } else {
+                    String::new()
                 };
                 DirectoryOutcome::request(DirectoryRequest::LinkOrCode(text))
             }
@@ -570,33 +584,10 @@ impl DirectorySheet {
         );
         y += f64::from(heading.line_height_px()) + gap;
 
-        // The search field.
+        // The search field: the shared field face and text input, so caret,
+        // selection and input methods behave as in every other field.
         let field = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + control_h);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            rest_floor(theme),
-            None,
-            &RoundedRect::from_rect(field, f64::from(tokens.radii.control)),
-        );
-        let body = theme.text(TextRole::Body);
-        let (shown_text, ink) = if self.query.is_empty() {
-            (t("directory-search"), colors.text_dim)
-        } else {
-            (format!("{}|", self.query), colors.text_primary)
-        };
-        let line = text.elide_to_width_style(&shown_text, f32_of_f64(field.width() - 24.0), &body);
-        let (_, line_h) = text.measure_style(&line, None, &body);
-        text.draw_style(
-            scene,
-            &line,
-            ink,
-            transform.pre_translate(
-                (field.x0 + 12.0, field.center().y - f64::from(line_h) / 2.0).into(),
-            ),
-            None,
-            &body,
-        );
+        self.paint_search(scene, transform, text, theme, field);
         self.targets.push((Target::Search, field));
         y = field.y1 + gap;
 
@@ -799,6 +790,47 @@ impl DirectorySheet {
         }
     }
 
+    fn paint_search(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        field: Rect,
+    ) {
+        let placeholder = t("directory-search");
+        let face = FieldFace::new(field, &self.query)
+            .placeholder(&placeholder)
+            .text_role(TextRole::Body)
+            .focused(self.open);
+        if self.query.is_empty() {
+            face.paint(scene, transform, text, theme);
+            return;
+        }
+        face.paint_chrome(scene, transform, theme);
+        let input = self.input.get_or_insert_with(|| {
+            TextInput::new(Vec::new())
+                .with_plain_chrome()
+                .with_spellcheck(false)
+                .with_autocorrect(false)
+                .with_text_role(TextRole::Body)
+        });
+        input.set_text(&self.query);
+        input.set_selection(self.query_selection.anchor, self.query_selection.cursor);
+        input.set_focus(self.open);
+        input.apply_layout_external(face.text_rect(theme));
+        let input_theme = theme
+            .clone()
+            .with_text_scale(theme.text_scale * theme.ui_scale);
+        input.draw(
+            scene,
+            transform,
+            text,
+            &input_theme,
+            &PresenceCtx::default(),
+        );
+    }
+
     /// The sheet for assistive technology: the search field, each listing
     /// as a button that joins (or opens) it, and the footer.
     #[must_use]
@@ -915,14 +947,6 @@ impl DirectorySheet {
             .iter()
             .map(|(target, rect)| (format!("directory.{}", self.slug(target)), *rect))
             .collect()
-    }
-
-    /// Show `listings` as loaded, for tests and shots.
-    #[cfg(test)]
-    pub fn set_for_tests(&mut self, listings: Vec<DirectoryListing>) {
-        let _ = self.open();
-        self.appearing.snap(true);
-        self.show(listings);
     }
 }
 
@@ -1102,8 +1126,9 @@ mod tests {
             Some(DirectoryRequest::LinkOrCode(link.clone()))
         );
         assert_eq!(
-            typed_request("dGhpcy1pcy1hLXRva2Vu"),
-            Some(DirectoryRequest::LinkOrCode("dGhpcy1pcy1hLXRva2Vu".into()))
+            typed_request("rust"),
+            None,
+            "a word that is no invitation searches"
         );
         assert_eq!(typed_request("   "), None);
 
