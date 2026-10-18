@@ -2018,6 +2018,9 @@ impl State {
         let viewporter = ViewporterState::new::<Self>(&display_handle);
         let idle_inhibit_manager = IdleInhibitManagerState::new::<Self>(&display_handle);
         let toplevel_icon_manager = crate::compositor::toplevel_icon::manager(&display_handle);
+        // Advertise `zxdg_exporter_v2`: the handle a portal request names
+        // its window by (`parent_window`).
+        crate::compositor::window_handles::exporter(&display_handle);
         let (session_lock_state, output_management) = Self::privileged_globals(&display_handle);
         // Advertise touchpad gestures for a bare-TTY session with no host compositor; constructed before the struct literal moves `display_handle`.
         let pointer_gestures_state = PointerGesturesState::new::<Self>(&display_handle);
@@ -7012,6 +7015,7 @@ impl XdgShellHandler for State {
         self.release_sheets_of_destroyed(surface_id);
         self.system_modals.retain(|id| *id != surface_id);
         crate::compositor::toplevel_icon::forget(surface_id);
+        crate::compositor::window_handles::forget(surface_id);
         if self.osk_surface == Some(surface_id) {
             self.osk_surface = None;
         }

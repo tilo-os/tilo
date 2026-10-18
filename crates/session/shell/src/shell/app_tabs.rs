@@ -177,13 +177,16 @@ pub fn is_focused_app_tab(tree: &WorkspaceTree, app_id: &str, instance: Option<u
 }
 
 /// The window a dialog `app_id` asks for in `workspace` belongs to: the
-/// focused tab when it shows the app, else the app's tab in front of its
-/// window group, else any tab of the app there. Only that app's own tabs
-/// are candidates, so a request can never hang a dialog on another app.
+/// window the app named (`named`, the surface its `parent_window` handle
+/// was exported for), else the focused tab when it shows the app, else the
+/// app's tab in front of its window group, else any tab of the app there.
+/// Only that app's own tabs are candidates, so a request can never hang a
+/// dialog on another app, whatever window it names.
 pub fn asking_tab(
     tree: &WorkspaceTree,
     workspace: crate::shell::state::WorkspaceId,
     app_id: &str,
+    named: Option<u64>,
 ) -> Option<TabId> {
     let shows_app = |tile: &TileContent| {
         tile_app_id(tile).is_some_and(|tile_app| launcher::app_id_matches_package(tile_app, app_id))
@@ -196,6 +199,15 @@ pub fn asking_tab(
     let focused = focused_tab(tree).filter(|_| tree.desktop.active == workspace);
     let mut fallback = None;
     let mut in_front = None;
+    for group in space.strips.iter().flat_map(|strip| &strip.window_groups) {
+        for tab in group.tabs.iter().filter(|tab| shows_app(&tab.tile)) {
+            if let (TileContent::Foreign { surface_id, .. }, Some(named)) = (&tab.tile, named)
+                && *surface_id == named
+            {
+                return Some(tab.id);
+            }
+        }
+    }
     for group in space.strips.iter().flat_map(|strip| &strip.window_groups) {
         for tab in group.tabs.iter().filter(|tab| shows_app(&tab.tile)) {
             if Some(tab.id) == focused {

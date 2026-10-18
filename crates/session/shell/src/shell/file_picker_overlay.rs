@@ -153,11 +153,13 @@ impl FilePickerOverlay {
                 .scope
                 .clone()
                 .unwrap_or_else(|| picker_scope_for(chrome, &request.caller));
+            let named = named_window(request.parent_window.as_deref());
             let asking = chrome.and_then(|chrome| {
                 crate::shell::app_tabs::asking_tab(
                     &chrome.borrow().tree(),
                     request.caller.workspace_id,
                     &request.caller.app_id,
+                    named,
                 )
             });
             let active = ActiveFilePicker::mount(request, scope, asking);
@@ -297,6 +299,22 @@ impl FilePickerOverlay {
         );
         *ctx.handled = true;
         true
+    }
+}
+
+/// The window a portal's `parent_window` handle names, while its export
+/// lives.
+fn named_window(parent_window: Option<&str>) -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        parent_window
+            .and_then(crate::compositor::window_handles::WindowHandle::parse)
+            .and_then(|handle| handle.surface())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = parent_window;
+        None
     }
 }
 
