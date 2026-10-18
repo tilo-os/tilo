@@ -437,6 +437,9 @@ pub struct TextInput {
     /// Where the last painted suggestion chip sits, for click-to-accept.
     suggestion_chip: Option<Rect>,
     last_autocorrection: Option<Autocorrection>,
+    /// A correction taken back with Backspace: where the word starts and
+    /// the word as typed. It is not corrected again there.
+    declined_autocorrection: Option<(usize, String)>,
     /// Set by a host that records the correction a word boundary makes as
     /// an edit of its own ([`Self::apply_pending_autocorrection`]), after
     /// the boundary itself: undoing it then gives back the word as typed.
@@ -738,6 +741,7 @@ impl TextInput {
             caret_word: CaretWord::default(),
             suggestion_chip: None,
             last_autocorrection: None,
+            declined_autocorrection: None,
             defer_autocorrection: false,
             pending_autocorrection: None,
             text_actions: Vec::new(),
@@ -4615,12 +4619,19 @@ impl TextInput {
         let dictionary = self
             .spell_dictionary
             .get_or_insert_with(spellcheck::Dictionary::default);
-        let pronoun = spellcheck::pronoun_correction(&self.spell_language, &original);
-        if pronoun.is_none() && (dictionary.contains(&original) || self.personal_word(&original)) {
+        if self
+            .declined_autocorrection
+            .as_ref()
+            .is_some_and(|(at, word)| *at == start && *word == original)
+        {
             return None;
         }
-        let replacement = match pronoun {
-            Some(pronoun) => pronoun,
+        let sure = spellcheck::sure_correction(&self.spell_language, &original);
+        if sure.is_none() && (dictionary.contains(&original) || self.personal_word(&original)) {
+            return None;
+        }
+        let replacement = match sure {
+            Some(sure) => sure,
             None => spellcheck::probable_correction(&self.spell_language, &original)?,
         };
         (replacement != original).then(|| AutocorrectionPreview {
@@ -4667,6 +4678,8 @@ impl TextInput {
         };
         self.core.set_selection(correction.start, replace_end);
         self.insert_str(&correction.original);
+        self.last_autocorrection = None;
+        self.declined_autocorrection = Some((correction.start, correction.original));
         true
     }
 

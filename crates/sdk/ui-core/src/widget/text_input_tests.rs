@@ -5162,3 +5162,31 @@ fn a_lowercase_pronoun_is_corrected_at_the_next_word_boundary() {
         assert_eq!(ti.value(), corrected);
     }
 }
+
+/// "cant" and "wont" become "can't" and "won't" at the next space, as a
+/// phone keyboard does; Backspace right after takes the correction back,
+/// and the word taken back stays as typed when the space comes again.
+#[test]
+fn cant_and_wont_are_corrected_and_backspace_takes_a_correction_back_for_good() {
+    for (typed, corrected) in [("I cant", "I can't "), ("it wont", "it won't ")] {
+        let mut ti = TextInput::local()
+            .with_spellcheck(true)
+            .with_autocorrect(true)
+            .with_spell_language("en_US")
+            .with_initial_value(typed);
+        ti.core.set_caret(ti.text.len());
+        ti.insert_word_boundary(" ");
+        assert_eq!(ti.value(), corrected);
+
+        let mut handled = false;
+        ti.handle_backspace_key(false, &mut handled);
+        assert!(handled);
+        assert_eq!(ti.value(), typed, "Backspace restores the word as typed");
+        ti.insert_word_boundary(" ");
+        assert_eq!(
+            ti.value(),
+            format!("{typed} "),
+            "a correction taken back is not made again"
+        );
+    }
+}
