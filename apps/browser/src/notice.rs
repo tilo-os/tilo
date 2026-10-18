@@ -43,12 +43,6 @@ impl Notice {
         self
     }
 
-    #[must_use]
-    pub fn with_id(mut self, id: &'static str) -> Self {
-        self.id = Some(id);
-        self
-    }
-
     /// The notice as a banner. `inset` frames it with the window's standard
     /// padding, for a row of its own under the toolbar; without it the banner
     /// takes the width of the page it is a part of.
