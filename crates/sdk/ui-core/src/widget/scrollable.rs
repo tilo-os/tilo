@@ -1579,14 +1579,15 @@ impl Widget for Scrollable {
         self.rect = crate::widget::placed(&l, origin);
         self.viewport_w = l.size.width;
         self.viewport_h = l.size.height;
-        // Clamp a seeded or restored offset against the solved content
-        // before anything is placed with it.
+        // Measure the solved content, including descendant overflow, before
+        // clamping. Clamping against only taffy's estimate can repeatedly lose
+        // the last pixel when rounded child edges extend beyond that estimate.
         if let Some(child_node) = self.child_node {
             let cl = taffy.layout(child_node).copied().unwrap_or_default();
             self.content_w = cl.content_size.width.max(cl.size.width);
             self.content_h = cl.content_size.height.max(cl.size.height);
-            self.clamp();
         }
+        let previous_offset = (self.offset_x, self.offset_y);
         // Content placed below knows what this view shows of it
         // (`widget::layout_clip`), so a long collection lays out only that.
         let clip = self.content_viewport_rect();
@@ -1619,7 +1620,20 @@ impl Widget for Scrollable {
                     self.content_h = walked_h;
                 }
             }
-            self.clamp();
+        }
+        self.clamp();
+        if previous_offset != (self.offset_x, self.offset_y)
+            && let (Some(c), Some(child_node)) = (&mut self.child, self.child_node)
+        {
+            // A restored offset or a resize may need clamping. Publish
+            // geometry at the final offset in this same layout pass.
+            let origin = Point::new(
+                self.rect.x0 - f64::from(self.offset_x),
+                self.rect.y0 - f64::from(self.offset_y),
+            );
+            crate::widget::with_layout_clip(clip, || {
+                c.apply_layout(taffy, child_node, origin);
+            });
         }
         // Flash the overlay bar the first frame content overflows.
         if self.reveal_focus {
@@ -3338,6 +3352,32 @@ mod tests {
             ((overflows.rect.x1 - track.x1) - (track.x0 - child.x1)).abs() < 0.5,
             "the thumb is centred in its lane"
         );
+    }
+
+    #[test]
+    fn descendant_bottom_remains_reachable_after_repeated_layout() {
+        for gap in [0.25, 0.5, 0.75, 1.25] {
+            let mut content = Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_gap(gap);
+            for index in 0..31 {
+                content = content.push(Box::new(Text::new(&format!("Row {index}"))));
+            }
+            let mut scroll = Scrollable::new_vertical()
+                .with_height(257.0)
+                .with_child(Box::new(content));
+            host_solve(&mut scroll, 311.0, 257.0);
+            scroll.set_offset_y(scroll.max_offset_y());
+            for _ in 0..3 {
+                host_solve(&mut scroll, 311.0, 257.0);
+                let bottom = max_bottom_edge(scroll.children()[0]);
+                assert!(
+                    bottom <= scroll.content_viewport_rect().y1,
+                    "layout must not pull the last descendant below the viewport: {bottom}"
+                );
+            }
+        }
     }
 
     #[test]

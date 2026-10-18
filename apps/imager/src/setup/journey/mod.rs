@@ -586,6 +586,8 @@ pub struct InstallerPreview {
     capabilities: capabilities::GuidedCapabilities,
     commands: Commands,
     composed: Option<Box<dyn Widget>>,
+    // Native handoffs replace the tree before layout, independently of page composition.
+    composition_replaced: bool,
     dirty: bool,
     rect: Rect,
     error: Option<&'static str>,
@@ -721,6 +723,7 @@ impl Default for InstallerPreview {
             linux: cfg!(target_os = "linux"),
             commands: Rc::default(),
             composed: None,
+            composition_replaced: false,
             dirty: true,
             rect: Rect::ZERO,
             error: None,
@@ -4151,13 +4154,15 @@ impl InstallerPreview {
         match j.page {
             Page::Migration if !self.guided_host_available() => {}
             Page::Destination => {
-                body =
-                    body.push(Box::new(
-                        self.choice("computer", j.destination == Some(Destination::Computer)),
-                    ))
-                    .push(Box::new(
-                        self.choice("another", j.destination == Some(Destination::Another)),
-                    ));
+                if self.guided_host_available() {
+                    body =
+                        body.push(Box::new(
+                            self.choice("computer", j.destination == Some(Destination::Computer)),
+                        ))
+                        .push(Box::new(
+                            self.choice("another", j.destination == Some(Destination::Another)),
+                        ));
+                }
                 if self.linux {
                     body = body.push(Box::new(
                         self.choice("desktop", j.destination == Some(Destination::Desktop)),
@@ -5957,9 +5962,19 @@ impl Widget for InstallerPreview {
         self.windows.choosing() || self.avatar_picker.is_some() || self.migration_choosing()
     }
     fn take_structure_dirty(&mut self) -> bool {
-        self.dirty
+        // Poll every child even when this page already needs rebuilding: a
+        // retained native surface can replace controls during sync or polling.
+        let child = self
+            .composed
+            .as_mut()
+            .is_some_and(|child| child.take_structure_dirty());
+        let replaced = std::mem::take(&mut self.composition_replaced);
+        self.dirty || replaced || child
     }
 }
+
+#[cfg(test)]
+mod structure_tests;
 
 /// Discovery labels are public product/profile metadata, never source paths or credentials.
 /// Keep review copy bounded even when upstream profile metadata is unusual.
