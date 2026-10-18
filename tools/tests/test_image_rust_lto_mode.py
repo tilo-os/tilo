@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Published OS images keep thin LTO; every other build links without it.
 
-os/Containerfile takes TILO_RUST_LTO (default thin). CI and os/dev/build-image.sh
+os/image/compile.sh links with TILO_RUST_LTO (default thin) and os/Containerfile
+labels the image with it (default thin). CI and os/dev/build-image.sh
 choose it from whether the build publishes, and a publication refuses an image
 whose org.tilo.rust-lto label says otherwise.
 """
@@ -18,6 +19,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO / ".forgejo/workflows/build-image.yml"
 CONTAINERFILE = REPO / "os/Containerfile"
+COMPILE = REPO / "os/image/compile.sh"
 BUILD_IMAGE = REPO / "os/dev/build-image.sh"
 COMMON = REPO / "os/dev/_common.sh"
 
@@ -46,11 +48,16 @@ class RustLtoModeTests(unittest.TestCase):
         self.assertIn("echo 'TILO_RUST_LTO=off' >> \"$GITHUB_ENV\"", other.split("          fi\n", 1)[0])
 
     def test_the_containerfile_defaults_to_thin_and_labels_the_image(self) -> None:
+        # The image labels the mode; the binaries compile outside its build, in
+        # os/image/compile.sh, which links with the same mode, thin unless told.
         text = CONTAINERFILE.read_text()
-        self.assertEqual(re.findall(r"^ARG TILO_RUST_LTO=(\S+)$", text, re.M), ["thin", "thin"])
+        self.assertEqual(re.findall(r"^ARG TILO_RUST_LTO=(\S+)$", text, re.M), ["thin"])
         self.assertIn('LABEL org.tilo.rust-lto="${TILO_RUST_LTO}"', text)
-        self.assertIn('CARGO_PROFILE_RELEASE_LTO="$TILO_RUST_LTO"', text)
-        self.assertNotIn("CARGO_PROFILE_RELEASE_LTO=thin", text)
+        compile_script = COMPILE.read_text()
+        self.assertEqual(re.findall(r'^: "\$\{TILO_RUST_LTO:=(\S+)\}"$', compile_script, re.M), ["thin"])
+        self.assertIn('CARGO_PROFILE_RELEASE_LTO="$TILO_RUST_LTO"', compile_script)
+        for built in (text, compile_script):
+            self.assertNotIn("CARGO_PROFILE_RELEASE_LTO=thin", built)
 
     def mode(self, **env: str) -> str:
         """The mode build-image.sh resolves, from its own resolution block."""
