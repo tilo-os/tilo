@@ -104,35 +104,98 @@ async fn posts(rooms: &Rooms, room: &str) -> Vec<chat::record::Message> {
         .unwrap_or_default()
 }
 
-/// Post `text` in `channel` of `room` as `author`, into the chat's first
-/// part of messages.
+/// The message ids `page` holds in the parts beside its chat record.
+fn message_ids(page: &Replica) -> Vec<String> {
+    page.records_beside()
+        .iter()
+        .filter_map(|record| page.read_record(record, chat::messages::read_part))
+        .flat_map(|part| {
+            part.messages
+                .ids()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// Post `text` in `channel` of `room` as `author`, as their page does: a
+/// view of the chat record and the parts of its messages, posting through
+/// the chain into the head (starting the first part), its change carried
+/// to the room on the part's own route. The new message's id.
 async fn post_in(
     rooms: &Rooms,
     room: &str,
     cert: &DeviceCert,
     (author, channel, text): (&str, &str, &str),
 ) -> String {
-    let chat = chat_of(
-        &rooms
-            .record_document(room, CHAT, "")
-            .await
-            .unwrap()
-            .unwrap(),
-    );
-    rooms
-        .author_application(
-            room,
-            cert,
-            &AppCatalogue::native(),
-            CHAT,
-            &first_part(),
-            |part| {
-                chat::demo::say_in_part(part, &chat, author, channel, text)
-                    .map_err(|error| error.to_string())
-            },
-        )
+    let catalogue = AppCatalogue::native();
+    let chat = rooms
+        .record_document(room, CHAT, "")
         .await
         .unwrap()
+        .unwrap();
+    let mut page = Replica::open(
+        &catalogue,
+        CHAT,
+        room,
+        author,
+        ReplicaActor::Owner,
+        Seed::Existing {
+            record: ui::record::RecordId::package_primary(),
+            changes: vec![chat],
+        },
+    )
+    .unwrap();
+    for (app, record) in rooms.record_routes(room).await.unwrap() {
+        let Some(part) = ui::record::RecordId::parse(&record)
+            .filter(|part| app == CHAT && chat::parts::part_index(part).is_some())
+        else {
+            continue;
+        };
+        let bytes = rooms
+            .record_document(room, CHAT, &record)
+            .await
+            .unwrap()
+            .unwrap();
+        page.apply_record(&part, &DocumentMutation::Snapshot(bytes))
+            .unwrap();
+    }
+    let before = message_ids(&page);
+    let arguments = serde_json::json!({ "channel": channel, "text": text });
+    page.invoke(
+        &tilo_actions::door::ActionAddress::new(
+            ui::record::chain_resource_id(&chat::parts::chain()),
+            "post",
+        ),
+        arguments.as_object().unwrap(),
+        false,
+    )
+    .unwrap();
+    let id = message_ids(&page)
+        .into_iter()
+        .find(|id| !before.contains(id))
+        .expect("the post is in a part");
+    for (record, mutation) in page.take_record_mutations() {
+        match mutation {
+            DocumentMutation::Snapshot(bytes) => rooms
+                .author_room_record(room, cert, (CHAT, record.as_str()), |doc| {
+                    tilo_automerge::ApplyIncoming::load_incoming(doc, &bytes)
+                        .map(drop)
+                        .map_err(|error| error.to_string())
+                })
+                .await
+                .unwrap(),
+            DocumentMutation::Incremental(bytes) => rooms
+                .author_application(room, cert, &catalogue, CHAT, record.as_str(), |doc| {
+                    tilo_automerge::ApplyIncoming::load_incoming(doc, &bytes)
+                        .map(drop)
+                        .map_err(|error| error.to_string())
+                })
+                .await
+                .unwrap(),
+        }
+    }
+    id
 }
 
 /// Ada and Mallory in `#general`, Mallory's three identical posts and
@@ -186,7 +249,6 @@ async fn flood_posts(rooms: &Rooms, room: &str, cert: &DeviceCert, general: &str
         .unwrap();
 }
 
-#[ignore = "needs the room's bots to read and write the chat's message parts"]
 #[tokio::test(flavor = "multi_thread")]
 #[expect(
     clippy::significant_drop_tightening,
@@ -257,7 +319,7 @@ async fn a_report_filed_in_the_room_restricts_and_undoes_the_flood_as_the_bot() 
 fn greeter(channel: &str) -> installed::InstalledBot {
     use tilo_automation::{ActorFilter, Binding, Selector, Shortcut, Step, StepKind, TriggerSpec};
     let trigger = TriggerSpec::RecordChanged {
-        kind: "chat.workspace".into(),
+        kind: "chat.messages".into(),
         actions: vec!["post".into()],
         fields: Vec::new(),
         by: ActorFilter::People,
@@ -269,8 +331,8 @@ fn greeter(channel: &str) -> installed::InstalledBot {
         steps: vec![Step::new(
             "answer",
             StepKind::Invoke {
-                action: tilo_actions::ActionKey::new(CHAT, "chat.workspace", "post"),
-                resource: Selector::FirstOfKind("chat.workspace".into()),
+                action: tilo_actions::ActionKey::new(CHAT, "chat.messages", "post"),
+                resource: Selector::FirstOfKind("chat.messages".into()),
                 args: [
                     ("channel".to_owned(), Binding::Literal(channel.into())),
                     ("text".to_owned(), Binding::Literal("welcome!".into())),
@@ -304,7 +366,6 @@ fn greeter(channel: &str) -> installed::InstalledBot {
     }
 }
 
-#[ignore = "needs the room's bots to read and write the chat's message parts"]
 #[tokio::test(flavor = "multi_thread")]
 #[expect(
     clippy::significant_drop_tightening,
@@ -359,7 +420,12 @@ async fn an_installed_bot_answers_a_post_in_the_room_once() {
     );
     post_in(&rooms, &room, &cert, (&ada, &general, "hello")).await;
     let reports = runner.step().await.unwrap();
-    assert_eq!(reports.len(), 1, "{reports:?}");
+    assert_eq!(
+        reports.len(),
+        1,
+        "{reports:?}, not run: {:?}",
+        runner.dead_letters().collect::<Vec<_>>()
+    );
     assert_eq!(
         reports[0].outcome,
         tilo_automation::RunOutcome::Completed,
@@ -414,7 +480,6 @@ async fn ada_says(rooms: &Rooms, room: &str, cert: &DeviceCert, channel: &str, t
     post_in(rooms, room, cert, (&ada, channel, text)).await;
 }
 
-#[ignore = "needs the room's bots to read and write the chat's message parts"]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_restarted_runner_answers_what_was_posted_while_it_was_down() {
     let scratch = tempfile::tempdir().unwrap();
@@ -452,7 +517,6 @@ async fn a_restarted_runner_answers_what_was_posted_while_it_was_down() {
     assert!(start().await.step().await.unwrap().is_empty());
 }
 
-#[ignore = "needs the room's bots to read and write the chat's message parts"]
 #[tokio::test(flavor = "multi_thread")]
 #[expect(
     clippy::significant_drop_tightening,
@@ -545,7 +609,6 @@ async fn the_host_installs_a_bot_as_a_member_and_renews_it_as_it_runs_out() {
     );
 }
 
-#[ignore = "needs the room's bots to read and write the chat's message parts"]
 #[tokio::test(flavor = "multi_thread")]
 #[expect(
     clippy::significant_drop_tightening,
@@ -567,7 +630,7 @@ async fn a_bot_step_reads_through_a_records_registered_read() {
         .workspace
         .clone();
     let trigger = TriggerSpec::RecordChanged {
-        kind: "chat.workspace".into(),
+        kind: "chat.messages".into(),
         actions: vec!["post".into()],
         fields: Vec::new(),
         by: ActorFilter::People,
@@ -625,7 +688,6 @@ async fn a_bot_step_reads_through_a_records_registered_read() {
     );
 }
 
-#[ignore = "needs the room's bots to read and write the chat's message parts"]
 #[tokio::test(flavor = "multi_thread")]
 #[expect(
     clippy::significant_drop_tightening,
@@ -662,7 +724,7 @@ async fn a_bridge_posts_under_another_name_signed_by_its_own_device() {
         "the room admits the bridge's post: {reports:?}"
     );
     let bytes = rooms
-        .record_document(&room, CHAT, "")
+        .record_document(&room, CHAT, &first_part())
         .await
         .unwrap()
         .unwrap();
@@ -689,7 +751,6 @@ async fn a_bridge_posts_under_another_name_signed_by_its_own_device() {
     assert_eq!(shown, ["Grace (Discord)"], "the post shows the other name");
 }
 
-#[ignore = "needs the room's bots to read and write the chat's message parts"]
 #[tokio::test(flavor = "multi_thread")]
 #[expect(
     clippy::significant_drop_tightening,
@@ -854,7 +915,6 @@ fn membership_changes_fire_a_bots_room_triggers_as_governance_verbs() {
 /// (the Discord bridge, say) still answers in that chat: the room decides
 /// its post as the bot's own, it reaches the chat sealed, and a guest
 /// opens it.
-#[ignore = "needs the room's bots to read and write the chat's message parts"]
 #[tokio::test(flavor = "multi_thread")]
 #[expect(
     clippy::significant_drop_tightening,
@@ -869,8 +929,10 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
     let relay = bot_host(scratch.path(), &key, &cert).await;
     let rooms = relay.rooms().unwrap().clone();
     let (room, general) = chat_room(&rooms, &cert).await;
-    let (guest, _) = member_device(&rooms, &room, (&key, &cert), 3).await;
+    let (guest, guest_cert) = member_device(&rooms, &room, (&key, &cert), 3).await;
     let guest = SealingMember::join(&rooms, &room, (CHAT, ""), guest).await;
+    // The chat's messages start in a part the guest's page starts sealed.
+    let part = guest.part(&rooms, &room, &first_part()).await;
     let mut runner = member_runner(
         &rooms,
         &room,
@@ -881,9 +943,45 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
     .await;
     assert!(runner.step().await.unwrap().is_empty());
 
-    // Ada's post leaves the guest's page sealed: the chat is sealed now.
-    let ada = hex::encode(ADA);
-    post_in(&rooms, &room, &cert, (&ada, &general, "hello")).await;
+    // The guest's post leaves its page sealed, in the first part of the
+    // chat's messages: those are sealed now.
+    let started = {
+        let chat = rooms
+            .record_document(&room, CHAT, "")
+            .await
+            .unwrap()
+            .unwrap();
+        let mut page = Replica::open(
+            &AppCatalogue::native(),
+            CHAT,
+            &room,
+            &hex::encode(guest_cert.user_public_key),
+            ReplicaActor::Owner,
+            Seed::Existing {
+                record: ui::record::RecordId::package_primary(),
+                changes: vec![chat],
+            },
+        )
+        .unwrap();
+        let arguments = serde_json::json!({ "channel": general, "text": "hello" });
+        page.invoke(
+            &tilo_actions::door::ActionAddress::new(
+                ui::record::chain_resource_id(&chat::parts::chain()),
+                "post",
+            ),
+            arguments.as_object().unwrap(),
+            false,
+        )
+        .unwrap();
+        match page.take_record_mutations().pop() {
+            Some((_, DocumentMutation::Snapshot(bytes))) => bytes,
+            other => panic!("the page started the first part: {other:?}"),
+        }
+    };
+    part.writes(&rooms, &room, |doc| {
+        doc.load_incremental(&started).unwrap();
+    })
+    .await;
     let reports = runner.step().await.unwrap();
     assert!(
         matches!(reports[..], [ref report] if report.outcome == tilo_automation::RunOutcome::Completed),
@@ -891,12 +989,12 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
     );
 
     // The guest opens what the room published, as its page does.
-    let post = governor_published(&rooms, &room, "", &cert)
+    let post = governor_published(&rooms, &room, &first_part(), &cert)
         .await
         .expect("the bot's post was published");
     assert!(post.encryption.is_some(), "never in the clear");
-    guest.take_in(&post);
-    let _ = guest.document();
+    part.take_in(&post);
+    let _ = part.document();
     let posted = posts(&rooms, &room).await;
     let answers: Vec<_> = posted
         .iter()

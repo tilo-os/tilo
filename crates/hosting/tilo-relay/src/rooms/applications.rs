@@ -268,7 +268,9 @@ impl Rooms {
     /// the primary), signed by the bot's own device `bot`, which this
     /// governor holds for a bot it installed. Every member admits them as
     /// the bot's: within its grants, and showing another name only when
-    /// the room lets the bot.
+    /// the room lets the bot. A part of a chain the room has not got yet
+    /// (the next part of a chat's messages) is started by the host, its genesis the
+    /// same everywhere, and what the bot wrote in it published as the bot's.
     ///
     /// # Errors
     /// Refuses another governor's certificate, stale custody, undeclared
@@ -315,24 +317,74 @@ impl Rooms {
             .record_keys(app, record)
             .await
             .map_err(CollaborationError::new)?;
-        let bytes = governed
+        let existing = governed
             .readable_document(app_id, record)
             .await
-            .map_err(CollaborationError::new)?
-            .ok_or_else(|| CollaborationError::new("native record is not prepared"))?;
-        let mut document = automerge::AutoCommit::load(&bytes)
-            .map_err(|error| CollaborationError::new(error.to_string()))?;
-        let heads = match &keys {
-            Some(_) => document.get_heads(),
-            None => governed
-                .peer()
-                .plaintext_complete_heads(app, record)
-                .ok_or_else(|| {
-                    CollaborationError::new("native record is not complete plaintext")
-                })?,
+            .map_err(CollaborationError::new)?;
+        // A part of a chain the room has not got yet (the next part of a
+        // chat's messages) is one the bot starts. Its genesis holds nothing
+        // and is the same on every device (it meets anyone else's start of
+        // it), so the room's host starts the part, as it prepares any record,
+        // and what the bot wrote in it is the bot's.
+        let starts_part = existing.is_none()
+            && ui::record::RecordId::parse(record).is_some_and(|id| id.chain_part().is_some());
+        let (mut document, heads) = match existing {
+            Some(bytes) => {
+                let mut document = automerge::AutoCommit::load(&bytes)
+                    .map_err(|error| CollaborationError::new(error.to_string()))?;
+                let heads = match &keys {
+                    Some(_) => document.get_heads(),
+                    None => governed
+                        .peer()
+                        .plaintext_complete_heads(app, record)
+                        .ok_or_else(|| {
+                            CollaborationError::new("native record is not complete plaintext")
+                        })?,
+                };
+                (document, heads)
+            }
+            None if starts_part => (automerge::AutoCommit::new(), Vec::new()),
+            None => return Err(CollaborationError::new("native record is not prepared")),
         };
         tilo_automerge::ApplyIncoming::load_incoming(&mut document, changes)
             .map_err(|error| CollaborationError::new(error.to_string()))?;
+        let mut candidate = governed.peer().clone();
+        let heads = if starts_part {
+            let genesis = document
+                .get_changes(&[])
+                .into_iter()
+                .find(|change| change.deps().is_empty())
+                .map(|change| (change.hash(), change.raw_bytes().to_vec()))
+                .ok_or_else(|| CollaborationError::new("the new part has no genesis"))?;
+            match &keys {
+                Some(keys) => {
+                    super::sealed_records::publish_changes(
+                        &mut candidate,
+                        Some(keys),
+                        (app, record),
+                        genesis.1,
+                        &self.inner.host.key,
+                        system_time(now),
+                    )?;
+                }
+                None => {
+                    let mut started = automerge::AutoCommit::new();
+                    started
+                        .load_incremental(&genesis.1)
+                        .map_err(|error| CollaborationError::new(error.to_string()))?;
+                    candidate.publish_document(
+                        app,
+                        record,
+                        started.save(),
+                        &self.inner.host.key,
+                        system_time(now),
+                    )?;
+                }
+            }
+            vec![genesis.0]
+        } else {
+            heads
+        };
         // Only what the room lacks: a run's replica also holds the record's
         // history it started from.
         let fresh = document.save_after(&heads);
@@ -344,7 +396,6 @@ impl Rooms {
                 "bot publication exceeds publication limit",
             ));
         }
-        let mut candidate = governed.peer().clone();
         match &keys {
             Some(keys) => {
                 super::sealed_records::publish_changes_for(

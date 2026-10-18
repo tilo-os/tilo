@@ -1,5 +1,7 @@
 //! Cold discovery of a remote person's actual encrypted native primary.
-use super::resource_support::{admit_person, open_admitted_peer};
+use super::resource_support::{
+    admit_person, on_messages, open_admitted_peer, part_route, published_message,
+};
 use super::{
     CatalogueQuery, DeviceCapabilities, DocumentRoute, Replica, Seed, common, enrol,
     record_provider, start,
@@ -7,7 +9,6 @@ use super::{
 use tilo_actions::remote::ViewResourceQuery;
 use tilo_peer_state::join::MemberRole;
 
-#[ignore = "needs agents' replicas to carry the chat's message parts"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
     let (owner, _) = tilo_user_identity::UserIdentity::generate("Host fixture", 1);
@@ -78,12 +79,17 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
             channel.workspace == workspace && channel.kind == chat::model::ChannelKind::Text
         })
         .unwrap();
-    let message = chat::demo::Room::of(doc.clone())
-        .say(&writer, &channel.id, "Retained encrypted é")
-        .unwrap();
     source
         .apply(&collab_types::DocumentMutation::Snapshot(doc.save()))
         .unwrap();
+    // The message is kept in the first part of the chat's messages.
+    let message = on_messages(
+        &mut source,
+        "post",
+        &serde_json::json!({"channel": channel.id, "text": "Retained encrypted é"}),
+    );
+    let (id, kind) = published_message(&source, &message);
+    let part = chat::parts::part(0);
     let route = DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: room.room.clone(),
@@ -97,6 +103,13 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
         .peer
         .publish(route.clone(), &source.take_mutation().unwrap())
         .unwrap();
+    let part_route = part_route(&room.room, &part);
+    for (_, mutation) in source.take_record_mutations() {
+        publisher
+            .peer
+            .publish(part_route.clone(), &mutation)
+            .unwrap();
+    }
     publisher.peer.barrier().unwrap().recv().unwrap().unwrap();
     let retained = hosted
         .relay
@@ -113,12 +126,12 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
             if app_id == route.app_id && record_id == route.record &&
                 envelope.encryption.as_ref().is_some_and(|metadata| metadata.channel == expected_channel))
     }), "the real remote writer's retained primary must be encrypted on its exact channel");
-    let id = chat::projection::item_id("messages", &message);
+    // The message's own record, the part, is read cold the same way.
     let query = CatalogueQuery {
-        provider: Some(record_provider(&route)),
+        provider: Some(record_provider(&part_route)),
         view_resource: Some(ViewResourceQuery {
             id: id.clone(),
-            kind: "chat.workspace.messages".into(),
+            kind,
         }),
         ..CatalogueQuery::default()
     };

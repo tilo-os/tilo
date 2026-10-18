@@ -136,14 +136,15 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
             return Ok(());
         }
         let root = hex::encode(self.host.user_public_key);
+        let parts = self.parts().await?;
         let (rooms, governed, host) = (self.rooms.clone(), self.room.clone(), self.host.clone());
         let agent = std::sync::Arc::clone(&self.agent);
         let handle = tokio::runtime::Handle::current();
         // The replica runs app code in a confined worker and is driven
         // synchronously from one thread, so the whole look is held on a
         // blocking thread; the room's locks are only taken per call.
-        let mutation = tokio::task::spawn_blocking(move || {
-            let mut replica = bot_replica(&governed, &root, bytes)?;
+        let (mutation, beside) = tokio::task::spawn_blocking(move || {
+            let mut replica = bot_replica(&governed, &root, bytes, parts)?;
             let mut govern =
                 |change: Change| handle.block_on(govern(&rooms, &governed, &host, &change));
             let mut door = chat_door(&mut replica, &mut govern);
@@ -164,16 +165,46 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
                     tracing::warn!(%person, %failure, "moderation step failed");
                 }
             }
-            Ok::<_, String>(replica.take_mutation())
+            Ok::<_, String>((replica.take_mutation(), replica.take_record_mutations()))
         })
         .await
         .map_err(|error| error.to_string())??;
         if let Some(mutation) = mutation {
-            self.publish(mutation).await?;
+            self.publish("", mutation).await?;
+        }
+        // What it took back of the messages is in the chat's parts.
+        for (record, mutation) in beside {
+            self.publish(record.as_str(), mutation).await?;
         }
         let bytes = self.record().await?.unwrap_or_default();
         self.cursor = Some(reports_since(&self.room, &bytes, None)?.1);
         Ok(())
+    }
+
+    /// The parts of the chat's messages the room holds, each whole.
+    async fn parts(&self) -> Result<Vec<(ui::record::RecordId, Vec<u8>)>, String> {
+        let mut parts = Vec::new();
+        for (app, record) in self
+            .rooms
+            .record_routes(&self.room)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            let Some(part) = ui::record::RecordId::parse(&record)
+                .filter(|record| app == CHAT && chat::parts::part_index(record).is_some())
+            else {
+                continue;
+            };
+            if let Some(bytes) = self
+                .rooms
+                .record_document(&self.room, CHAT, &record)
+                .await
+                .map_err(|error| error.to_string())?
+            {
+                parts.push((part, bytes));
+            }
+        }
+        Ok(parts)
     }
 
     async fn record(&self) -> Result<Option<Vec<u8>>, String> {
@@ -183,10 +214,10 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
             .map_err(|error| error.to_string())
     }
 
-    /// Put the bot's changes into the room's chat, as the governor
-    /// publishes any change: they keep their own entries, so history names
-    /// the bot for its installer.
-    async fn publish(&self, mutation: DocumentMutation) -> Result<(), String> {
+    /// Put the bot's changes into the room's chat record (`""`) or one of
+    /// its parts, as the governor publishes any change: they keep their own
+    /// entries, so history names the bot for its installer.
+    async fn publish(&self, record: &str, mutation: DocumentMutation) -> Result<(), String> {
         let bytes = match mutation {
             DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes) => bytes,
         };
@@ -196,7 +227,7 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
                 &self.host,
                 &AppCatalogue::native(),
                 CHAT,
-                "",
+                record,
                 |doc| {
                     tilo_automerge::ApplyIncoming::load_incoming(doc, &bytes)
                         .map(drop)
@@ -233,9 +264,15 @@ fn reports_since(
     ))
 }
 
-/// The moderation agent's replica of the room's chat: the root's
-/// installation, granted reading and undoable changes in the room.
-fn bot_replica(room: &str, installer: &str, bytes: Vec<u8>) -> Result<Replica, String> {
+/// The moderation agent's replica of the room's chat, holding the parts of
+/// its messages beside it: the root's installation, granted reading and
+/// undoable changes in the room.
+fn bot_replica(
+    room: &str,
+    installer: &str,
+    bytes: Vec<u8>,
+    parts: Vec<(ui::record::RecordId, Vec<u8>)>,
+) -> Result<Replica, String> {
     let bot = Subject::bot(MODERATION_INSTALLATION);
     let grant = Grant::new(
         format!("bot:{MODERATION_INSTALLATION}"),
@@ -247,7 +284,7 @@ fn bot_replica(room: &str, installer: &str, bytes: Vec<u8>) -> Result<Replica, S
     );
     let standing =
         Standing::person(RoomPolicy::new(room, installer), installer).bounded_by(bot, vec![grant]);
-    Replica::open(
+    let mut replica = Replica::open(
         &AppCatalogue::native(),
         CHAT,
         room,
@@ -262,7 +299,15 @@ fn bot_replica(room: &str, installer: &str, bytes: Vec<u8>) -> Result<Replica, S
             changes: vec![bytes],
         },
     )
-    .map_err(|error| error.to_string())
+    .map_err(|error| error.to_string())?;
+    for (part, bytes) in parts {
+        // A part it cannot hold leaves only that part's posts out of its
+        // look, not every report.
+        if let Err(error) = replica.apply_record(&part, &DocumentMutation::Snapshot(bytes)) {
+            tracing::warn!(record = %part.as_str(), %error, "moderation agent leaves out a part of the chat");
+        }
+    }
+    Ok(replica)
 }
 
 fn chat_door<'a>(

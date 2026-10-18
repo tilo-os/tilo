@@ -119,24 +119,110 @@ impl Room {
             .unwrap_or_default()
     }
 
-    /// Change the chat's first part of messages as `author`, as their own
-    /// device would, reading the chat record where it is changed.
-    async fn part_as<T: Send + 'static>(
-        &self,
-        change: impl FnOnce(&mut AutoCommit, &chat::Chat) -> Result<T, String> + Send + 'static,
-    ) -> T {
-        let chat = self.chat().await;
-        self.rooms
-            .author_application(
-                &self.id,
-                &self.cert,
-                &self.catalogue,
-                CHAT,
-                chat::parts::part(0).as_str(),
-                move |part| change(part, &chat),
-            )
+    /// Do `invoke` to the chat's messages as `author`, as their page does: a
+    /// view of the chat record and the parts of its messages the room
+    /// holds, the verb going through the chain to the part it changes
+    /// (starting the first), each changed part carried to the room on its
+    /// own route. The ids of the messages it added.
+    async fn part_as(&self, author: &str, invoke: Invoke<chat::parts::ChatPart>) -> Vec<String> {
+        use tilo_agent_participant::{Replica, ReplicaActor, Seed};
+        use ui::collaboration::DocumentMutation;
+        let chat = self
+            .rooms
+            .record_document(&self.id, CHAT, "")
             .await
             .unwrap()
+            .unwrap();
+        let mut held = Vec::new();
+        for (app, record) in self.rooms.record_routes(&self.id).await.unwrap() {
+            let Some(part) = ui::record::RecordId::parse(&record)
+                .filter(|part| app == CHAT && chat::parts::part_index(part).is_some())
+            else {
+                continue;
+            };
+            let bytes = self
+                .rooms
+                .record_document(&self.id, CHAT, &record)
+                .await
+                .unwrap()
+                .unwrap();
+            held.push((part, bytes));
+        }
+        let ids = |page: &Replica| -> Vec<String> {
+            page.records_beside()
+                .iter()
+                .filter_map(|record| page.read_record(record, chat::messages::read_part))
+                .flat_map(|part| {
+                    part.messages
+                        .ids()
+                        .map(|id| id.as_str().to_owned())
+                        .collect::<Vec<_>>()
+                })
+                .collect()
+        };
+        let (taken, added) = {
+            let mut page = Replica::open(
+                &self.catalogue,
+                CHAT,
+                &self.id,
+                author,
+                ReplicaActor::Owner,
+                Seed::Existing {
+                    record: ui::record::RecordId::package_primary(),
+                    changes: vec![chat],
+                },
+            )
+            .unwrap();
+            for (part, bytes) in held {
+                page.apply_record(&part, &DocumentMutation::Snapshot(bytes))
+                    .unwrap();
+            }
+            let before = ids(&page);
+            page.invoke(
+                &ui::tilo_actions::door::ActionAddress::new(
+                    ui::framework::chain_resource_id(&chat::parts::chain()),
+                    invoke.id,
+                ),
+                &invoke.arguments,
+                true,
+            )
+            .unwrap();
+            let added: Vec<String> = ids(&page)
+                .into_iter()
+                .filter(|id| !before.contains(id))
+                .collect();
+            (page.take_record_mutations(), added)
+        };
+        for (record, mutation) in taken {
+            match mutation {
+                DocumentMutation::Snapshot(bytes) => self
+                    .rooms
+                    .author_room_record(&self.id, &self.cert, (CHAT, record.as_str()), move |doc| {
+                        doc.load_incremental(&bytes)
+                            .map(drop)
+                            .map_err(|error| error.to_string())
+                    })
+                    .await
+                    .unwrap(),
+                DocumentMutation::Incremental(bytes) => self
+                    .rooms
+                    .author_application(
+                        &self.id,
+                        &self.cert,
+                        &self.catalogue,
+                        CHAT,
+                        record.as_str(),
+                        move |doc| {
+                            doc.load_incremental(&bytes)
+                                .map(drop)
+                                .map_err(|error| error.to_string())
+                        },
+                    )
+                    .await
+                    .unwrap(),
+            }
+        }
+        added
     }
 
     async fn guild(&self) -> Guild {
@@ -496,25 +582,17 @@ impl Bridge {
     }
 
     /// Ada does `invoke` to Chat's messages from her own device.
-    async fn as_ada_on_messages(&self, invoke: Invoke<chat::parts::ChatPart>) {
-        let ada = self.ada.clone();
-        self.room
-            .part_as(move |part, chat| {
-                chat::demo::apply_part_doc(part, chat, &ada, invoke)
-                    .map_err(|error| error.to_string())
-            })
-            .await;
+    async fn as_ada_on_messages(&self, invoke: impl Into<Invoke<chat::parts::ChatPart>>) {
+        self.room.part_as(&self.ada, invoke.into()).await;
     }
 
     /// Ada posts `text` in #general; the new message's id.
     async fn ada_says(&self, text: &str) -> String {
-        let (ada, general, text) = (self.ada.clone(), self.general.clone(), text.to_owned());
         self.room
-            .part_as(move |part, chat| {
-                chat::demo::say_in_part(part, chat, &ada, &general, &text)
-                    .map_err(|error| error.to_string())
-            })
+            .part_as(&self.ada, chat::demo::post(&self.general, text, None))
             .await
+            .pop()
+            .expect("the post is in a part")
     }
 
     /// The Chat message with `text`, by id.
@@ -547,7 +625,6 @@ impl Bridge {
     }
 }
 
-#[ignore = "needs the Discord bridge to follow the chat's message parts"]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_message_crosses_the_bridge_both_ways_under_its_authors_name() {
     let (bridge, mut runner) = Bridge::start().await;
@@ -597,7 +674,6 @@ async fn a_message_crosses_the_bridge_both_ways_under_its_authors_name() {
     );
 }
 
-#[ignore = "needs the Discord bridge to follow the chat's message parts"]
 #[tokio::test(flavor = "multi_thread")]
 async fn what_ada_does_to_her_messages_in_chat_follows_in_discord() {
     let (bridge, mut runner) = Bridge::start().await;
@@ -698,7 +774,6 @@ async fn what_ada_does_to_her_messages_in_chat_follows_in_discord() {
     .await;
 }
 
-#[ignore = "needs the Discord bridge to follow the chat's message parts"]
 #[tokio::test(flavor = "multi_thread")]
 async fn what_bo_does_to_his_messages_in_discord_follows_in_chat() {
     let (bridge, mut runner) = Bridge::start().await;

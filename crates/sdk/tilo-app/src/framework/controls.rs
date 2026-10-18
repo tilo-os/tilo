@@ -78,12 +78,24 @@ thread_local! {
 /// A view opened a record of `P` beside the app's own, in the person's
 /// room: a surface report lists its surface too, marked as the person's.
 pub(crate) fn opened<P: Resource>() {
+    record_opened::<P>(true);
+}
+
+/// The app opened records of `P` beside its own in the room it lives in
+/// (the parts of a chain): a surface report lists their surface too, so
+/// every member decides a change to them against it as against the app's
+/// own record.
+pub(crate) fn opened_in_room<P: Resource>() {
+    record_opened::<P>(false);
+}
+
+fn record_opened<P: Resource>(person: bool) {
     OPENED.with(|opened| {
         if let Some(opened) = opened.borrow_mut().as_mut()
             && !opened.iter().any(|surface| surface.kind == P::KIND)
         {
             opened.push(tilo_resource::Surface {
-                person: true,
+                person,
                 ..P::surface()
             });
         }
