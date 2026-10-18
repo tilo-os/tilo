@@ -246,7 +246,8 @@ impl crate::services::WorkspaceGovernanceServices for NativeFacadeGovernance {
             .borrow()
             .row()
             .descriptor
-            .unwrap();
+            .unwrap()
+            .descriptor(tilo_actions::ExecutionLocus::default());
         descriptor.address = tilo_actions::ActionAddress::new("workspace", "inspect-native-origin");
         descriptor.contract = tilo_actions::ActionContract::view();
         vec![descriptor]

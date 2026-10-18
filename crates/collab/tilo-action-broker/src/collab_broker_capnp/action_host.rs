@@ -2093,20 +2093,17 @@ impl CapnpBrokerState {
     ) -> Result<Workspace, ActionHostError> {
         let (caller, origin, room) = custody;
         let result = self
-            .check_launch_origin(caller, origin, room)
-            .and_then(|()| {
-                self.decide_for(caller, room, |workspace, policy, now| {
-                    policy
-                        .may_in(
-                            workspace,
-                            &app_node(workspace, app_id),
-                            tilo_action_policy::ActionKind::Undoable,
-                            now,
-                        )
-                        .then(|| workspace.clone())
-                })
-                .flatten()
-                .ok_or(ActionHostError::NotPermitted)
+            .current_framework_authority(caller, origin, room)
+            .and_then(|(workspace, policy, now)| {
+                policy
+                    .may_in(
+                        &workspace,
+                        &app_node(&workspace, app_id),
+                        tilo_action_policy::ActionKind::Undoable,
+                        now,
+                    )
+                    .then_some(workspace)
+                    .ok_or(ActionHostError::NotPermitted)
             });
         if result.is_err() {
             self.complete_host_action(

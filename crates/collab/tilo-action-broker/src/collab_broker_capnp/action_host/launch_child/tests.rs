@@ -1,4 +1,5 @@
 use super::*;
+use crate::collab_broker_capnp::InvocationOwner;
 use crate::collab_broker_capnp::host_steps::signed_test_support::Fixture;
 use crate::services::{HostServices, LaunchableApplication, LauncherServices};
 use crate::test_support::WorkspaceId;
@@ -525,6 +526,76 @@ fn retired_worker_after_admission_never_launches_or_closes() {
                 if error.code == "launch_authority_changed")
             );
         }
+    }
+}
+
+#[test]
+fn keyless_continuation_retains_original_device_cap_at_effect() {
+    for close in [false, true] {
+        let launcher = Arc::new(Launcher {
+            calls: AtomicUsize::new(0),
+            fail: false,
+        });
+        let fixture = Fixture::new(HostServices {
+            launcher: Some(launcher.clone()),
+            ..Default::default()
+        });
+        assert!(fixture.caller.device_public_key().is_none());
+        let descriptor = if close {
+            app_close_descriptor(&app().package_id, "Notes")
+        } else {
+            app_open_descriptor(&app())
+        };
+        let request = child_request(
+            InvocationId::new(),
+            &fixture.room,
+            &descriptor,
+            &app().package_id,
+        );
+        let admitted = fixture
+            .state
+            .admit_host_action(
+                &fixture.caller,
+                Some(&fixture.origin),
+                HostActionAdmission {
+                    room: &fixture.room,
+                    app_id: &app().package_id,
+                    descriptor: &descriptor,
+                    request: &request,
+                },
+            )
+            .unwrap();
+        // The host remains a governor; only the original device loses its
+        // uncapped authority while the durable admission is in flight.
+        fixture
+            .authority
+            .device_governs
+            .store(false, Ordering::SeqCst);
+        let custody = (
+            &fixture.caller,
+            Some(&fixture.origin),
+            fixture.room.as_str(),
+        );
+        let result = if close {
+            fixture
+                .state
+                .close_application(custody, admitted, &app().package_id)
+        } else {
+            fixture.state.launch_application(
+                custody,
+                admitted,
+                &app().package_id,
+                crate::services::LaunchContent {
+                    hash: "",
+                    caller: None,
+                    author: None,
+                },
+                &LaunchPlace::Focus,
+            )
+        };
+        assert!(result.is_err());
+        assert_eq!(launcher.calls.load(Ordering::SeqCst), 0);
+        fixture.assert_signed(&request, true);
     }
 }
 

@@ -222,7 +222,7 @@ impl WorkspaceGovernanceServices for LostGovernance {
         _: &WorkspaceGovernanceRequest<'_>,
     ) -> Result<tilo_actions::remote::Pending<crate::services::WorkspaceGovernanceOutcome>, String>
     {
-        let (pending, answer) = tilo_actions::remote::pending();
+        let (answer, pending) = tilo_actions::remote::pending();
         drop(answer);
         Ok(pending)
     }
