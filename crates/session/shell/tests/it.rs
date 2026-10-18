@@ -209,6 +209,8 @@ mod reopen_closed_tab;
 mod runtime_daemon_process;
 #[path = "sandbox_check.rs"]
 mod sandbox_check;
+#[path = "saved_layout_keymap.rs"]
+mod saved_layout_keymap;
 #[path = "scale_precedes_configure.rs"]
 mod scale_precedes_configure;
 #[path = "server_side_decorations.rs"]
