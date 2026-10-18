@@ -223,7 +223,26 @@ and every frame of the drag ask the same two functions.
   hands it to the shell to persist. Escape or losing focus cancels the drag:
   both windows and the strip go back to where they were. While the pointer is
   down the strip holds the fixed edge even if that cuts a window at the
-  screen edge; let go, it eases to where the strip rests by its framing rule.
+  screen edge, and letting go moves nothing: no window moves to be framed,
+  even when all of them would fit on screen and one is cut off. Only a pan
+  the drag carried past the strip's start or end eases back into its range.
+
+### The strip never scrolls by itself
+
+The strip pans for what the person does, and only then: explicit navigation
+(focusing another window, Super+arrows, a swipe or wheel, a strip or window
+chosen in a switcher) and bringing a window into view that has just opened or
+been focused. It never scrolls on its own to "frame" windows: not after a
+resize, a close, a window changing width, or any other layout change. There
+used to be such a rule ("if all windows fit on screen, scroll so none is cut
+off; otherwise never cut one at each edge"), applied after every layout
+change and when a resize drag was let go; the user rejected it on 2026-10-18
+("no that is BS. i dont even know what that means") after Files' right edge
+moved from 1280 to 1351 px on releasing a resize. The only automatic
+correction left is the clamp that keeps the pan inside the strip's legal
+range, for example when a close at the strip's far end leaves less to show.
+Pinned by `group_row.rs`'s `after_releasing_a_resize_no_window_moves`
+(`USER REQUIREMENT`) and its width-change tests.
 
 Pinned by `edge_resize.rs`'s unit tests (the rule), `group_row.rs`'s row
 tests (hover highlight, push, Shift, limits, cancel, auto-scroll) and the

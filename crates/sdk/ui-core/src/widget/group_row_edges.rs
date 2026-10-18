@@ -371,14 +371,11 @@ impl GroupRow {
         } else {
             drag.origin_scroll
         };
-        // While the pointer was down the strip held the fixed edge, even
-        // past its start or with a window cut while all of them fit. Let go,
-        // it eases to where the strip rests by its own framing rule rather
-        // than jumping there on the next layout.
-        let rest = pan
-            .strip_frame_target(&pan.laid_spans)
-            .unwrap_or(pan.scroll_x)
-            .clamp(0.0, pan.pan_max_scroll_x());
+        // Let go, the strip stays where the drag left it: no window moves
+        // to be framed, even with one cut while all of them fit. Only a pan
+        // the drag carried past the strip's legal range eases back into it,
+        // rather than jumping there on the next layout.
+        let rest = pan.scroll_x.clamp(0.0, pan.pan_max_scroll_x());
         if reduce_motion {
             pan.jump_to(rest);
         } else if (rest - pan.scroll_x).abs() > super::SNAP_SETTLED_PX {

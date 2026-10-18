@@ -1089,55 +1089,6 @@ impl Pan {
         left && right
     }
 
-    /// Where the strip should rest, given what was just laid out; `None`
-    /// (the common case) means it already is. Two rules, in order: (1) if
-    /// all groups could be on screen together, none may be cut — move to
-    /// the nearest edge of the window that shows them all; (2) otherwise
-    /// move to the nearest offset that flushes some group's edge with the
-    /// viewport's edge. Nearest in both cases so the smallest move
-    /// preserves what's already framed.
-    fn strip_frame_target(&self, spans: &[(u64, f64, f64)]) -> Option<f64> {
-        let row_w = self.viewport.width().max(1.0);
-        let max = self.max_scroll_x();
-        let first = spans.first()?;
-        let leftmost = spans.iter().fold(first.1, |a, s| a.min(s.1));
-        let rightmost = spans.iter().fold(first.2, |a, s| a.max(s.2));
-
-        if rightmost - leftmost <= row_w {
-            // Everything fits at once, so nothing is allowed to be cut.
-            // Any offset in `[rightmost - row_w, leftmost]` shows the
-            // lot; clamped into the strip's legal range, the nearest
-            // point of it is where the strip belongs.
-            let lo = (rightmost - row_w).clamp(0.0, max);
-            let hi = leftmost.clamp(0.0, max).max(lo);
-            let target = self.scroll_x.clamp(lo, hi);
-            return ((target - self.scroll_x).abs() > 0.5).then_some(target);
-        }
-
-        if !self.cut_on_both_edges_at(spans, self.scroll_x) {
-            return None;
-        }
-        let mut best: Option<f64> = None;
-        for &(_, x0, x1) in spans {
-            if x1 - x0 <= 0.0 || x1 - x0 > row_w {
-                continue;
-            }
-            for candidate in [x0, x1 - row_w] {
-                let candidate = candidate.clamp(0.0, max);
-                if self.cut_on_both_edges_at(spans, candidate) {
-                    continue;
-                }
-                let nearer = best.is_none_or(|b: f64| {
-                    (candidate - self.scroll_x).abs() < (b - self.scroll_x).abs()
-                });
-                if nearer {
-                    best = Some(candidate);
-                }
-            }
-        }
-        best.filter(|t| (t - self.scroll_x).abs() > 0.5)
-    }
-
     /// True while a snap is in flight, or the user just wheeled (within
     /// the idle threshold); keeps the shell's redraw chain pumping.
     fn snap_in_flight(&self) -> bool {
@@ -1292,26 +1243,14 @@ impl Pan {
         self.ease_scroll_from(from, now, duration);
     }
 
-    /// Re-frame when the run's geometry moved under the pan (resize,
-    /// open/close, output change): the shell's into-view pan only triggers
-    /// on focus change, so an offset chosen for a layout that no longer
-    /// exists would otherwise persist. Held off (`steady == false`) while
-    /// dragging so the strip doesn't snap out from under the hand;
-    /// corrected on release. Returns whether `scroll_x` moved.
-    fn reframe_on_geometry_change(&mut self, spans: Vec<(u64, f64, f64)>, steady: bool) -> bool {
-        let geometry_moved = spans != self.laid_spans;
+    /// Note where the run's groups were laid out. The pan stays where it
+    /// is: the strip never scrolls by itself to frame windows after a
+    /// resize, an insert, a close or an output change. Only explicit
+    /// navigation (switching to a window, Super+arrows) and bringing a
+    /// newly opened or focused window into view move it, besides the clamp
+    /// into its legal range.
+    fn note_laid_spans(&mut self, spans: Vec<(u64, f64, f64)>) {
         self.laid_spans = spans;
-        if geometry_moved
-            && steady
-            && !self.absolute
-            && !self.animating()
-            && let Some(target) = self.strip_frame_target(&self.laid_spans)
-        {
-            self.scroll_x = target;
-            self.last_wheel_at = None;
-            return true;
-        }
-        false
     }
 }
 
@@ -2709,12 +2648,10 @@ impl GroupRow {
         settling
     }
 
-    /// Keep the strip where a person's pan left it when its geometry later
-    /// changes, as [`Self::pan_to`] does, instead of re-framing it onto the
-    /// nearest window edge, until focus next pans a window into view. A
-    /// wheel spin stops wherever its notches took the strip, often with
-    /// windows cut at both edges; a window's width changing by a pixel
-    /// moved it by up to a window.
+    /// Keep the strip where a person's pan left it, bounded as
+    /// [`Self::pan_to`] bounds it, until focus next pans a window into
+    /// view. A wheel spin stops wherever its notches took the strip, often
+    /// with windows cut at both edges.
     pub fn hold_strip_pan(&mut self) {
         self.pan_of_lane_mut(self.focus_lane).absolute = true;
     }
@@ -4685,10 +4622,8 @@ impl Widget for GroupRow {
             }
         }
         // An edge resize holds the pan itself (`group_row_edges`): no clamp
-        // or re-frame may move the strip under the pointer.
+        // may move the strip under the pointer.
         let edge_resizing = self.edge_drag.is_some();
-        let steady = !edge_resizing && !self.group_drag_active();
-        let mut moved = false;
         let ease_reframe = self.shift_armed && !self.reduce_motion;
         let reframe = self.motion.context(
             self.motion_source,
@@ -4713,7 +4648,7 @@ impl Widget for GroupRow {
                 pan.scroll_x = pan.scroll_x.clamp(0.0, pan.pan_max_scroll_x());
             }
             if spans_aligned {
-                moved |= pan.reframe_on_geometry_change(s, steady);
+                pan.note_laid_spans(s);
             }
             // An insert, close or reorder that moves the pan eases it there,
             // carrying every group together; the groups'
@@ -4725,9 +4660,6 @@ impl Widget for GroupRow {
             {
                 pan.ease_scroll_from(before, now, reframe);
             }
-        }
-        if moved {
-            self.scroll_dirty = true;
         }
         // Done AFTER the clamp so a structural mutation that snapped
         // scroll_x to max doesn't get re-eased. A capture hold freezes the
@@ -8546,11 +8478,12 @@ mod tests {
             }
         }
 
-        /// The strip only re-frames when *focus* moves, so widening every
-        /// group (moving every edge) would otherwise keep a stale offset.
-        /// Sequence mirrors the compositor's own: open + bring into view,
-        /// then give groups a new share of the strip.
-        fn widening_a_strip_never_leaves_it_cut_on_both_edges() {
+        /// Windows changing width on their own (a new share of the strip,
+        /// a peer's resize) never pan the strip: it scrolls only for
+        /// explicit navigation and to bring a newly opened or focused
+        /// window into view. Sequence mirrors the compositor's own: open +
+        /// bring into view, then give groups a new share of the strip.
+        fn widening_a_strip_leaves_its_pan_where_it_was() {
             let mut row = strip_at(2, 1920.0, 291.0, 667);
             // Sitting where bringing the newest window into view leaves it:
             // hard against its right end.
@@ -8562,36 +8495,19 @@ mod tests {
             relayout_strip(&mut row, 1920.0);
 
             assert!(
-                !row.cut_on_both_edges(),
-                "the strip rests cut on both edges after the widening — groups \
-             {:?} at scroll_x {:.0}, which shows half of one window on the \
-             left and half of another on the right",
-                row.pan.laid_spans,
+                (row.scroll_x() - parked).abs() < 1e-6,
+                "the strip moved from {parked:.0} to {:.0} by itself — spans {:?}",
                 row.scroll_x(),
-            );
-            let whole = whole_groups(&row);
-            assert!(
-                !whole.is_empty(),
-                "if the two groups cannot both fit, one of them must still be \
-             framed whole — spans {:?} at scroll_x {:.0}",
                 row.pan.laid_spans,
-                row.scroll_x(),
-            );
-            assert_eq!(
-                row.groups_cut_by_row_edges().len(),
-                1,
-                "exactly one window runs off an end when two of them overflow \
-             the output; spans {:?} at scroll_x {:.0}",
-                row.pan.laid_spans,
-                row.scroll_x(),
             );
         }
 
-        /// When both groups fit, neither is cut: an offset showing every
-        /// window whole exists, and resting anywhere else means a stale pan.
-        fn a_strip_that_fits_the_output_frames_every_window_whole() {
+        /// Even when every window would fit on screen and one is cut off at
+        /// an edge, the strip does not scroll by itself to frame them all.
+        fn narrowing_until_everything_fits_does_not_frame_the_strip() {
             let mut row = strip_at(2, 1920.0, 291.0, 720);
-            row.set_scroll_x_for_test(row.max_scroll_x());
+            row.set_scroll_x_for_test(300.0);
+            relayout_strip(&mut row, 1920.0);
 
             set_strip_permille(&mut row, 580);
             relayout_strip(&mut row, 1920.0);
@@ -8607,29 +8523,24 @@ mod tests {
                 span <= 1920.0,
                 "test setup: two groups at 580 permille must fit 1920, got {span:.0}",
             );
-            assert_eq!(
-                row.groups_cut_by_row_edges(),
-                Vec::<u64>::new(),
-                "nothing may be cut when the whole strip fits on screen — spans \
-             {:?} at scroll_x {:.0}",
-                row.pan.laid_spans,
+            assert!(
+                (row.scroll_x() - 300.0).abs() < 1e-6,
+                "the strip moved to {:.0} by itself to frame the windows — spans {:?}",
                 row.scroll_x(),
+                row.pan.laid_spans,
             );
             assert_eq!(
-                whole_groups(&row).len(),
-                2,
-                "both windows are on screen and whole — spans {:?} at scroll_x {:.0}",
-                row.pan.laid_spans,
-                row.scroll_x(),
+                row.groups_cut_by_row_edges(),
+                vec![row.groups[0].id],
+                "the first window stays cut where the person left the strip",
             );
         }
 
         /// A window bigger than the output is cut on both sides by
-        /// definition; without a guard the framing rule would chase an
-        /// impossible target forever. Hand-built spans: `WindowWidth::resolve`
-        /// clamps every group to the strip's own width, so a real layout
-        /// can't currently produce an oversized span.
-        fn a_window_wider_than_the_output_is_left_alone() {
+        /// definition, so it never counts as a two-sided cut. Hand-built
+        /// spans: `WindowWidth::resolve` clamps every group to the strip's
+        /// own width, so a real layout can't currently produce one.
+        fn a_window_wider_than_the_output_is_no_two_sided_cut() {
             let mut row = strip_at(1, 900.0, 0.0, 1000);
             // 1400px window across a 900px row, parked showing its middle so
             // both row edges cross it.
@@ -8638,28 +8549,15 @@ mod tests {
             assert!(
                 !row.pan.cut_on_both_edges_at(&oversized, row.scroll_x()),
                 "a single oversized window is not a two-sided cut: there is no \
-             offset that frames it, so there is nothing to repair",
-            );
-            assert_eq!(
-                row.pan.strip_frame_target(&oversized),
-                None,
-                "the framing rule leaves an unframeable window where it is",
-            );
-            // Two of them, so the rule cannot fall back on a neighbour either.
-            let both = [(100u64, 0.0, 1400.0), (200u64, 1408.0, 2808.0)];
-            row.set_scroll_x_for_test(700.0);
-            assert_eq!(
-                row.pan.strip_frame_target(&both),
-                None,
-                "nor when every group on the strip is wider than the strip",
+             offset that frames it",
             );
         }
 
         content_width_exceeds_viewport_when_groups_overflow();
         no_two_groups_on_a_strip_share_horizontal_space();
-        widening_a_strip_never_leaves_it_cut_on_both_edges();
-        a_strip_that_fits_the_output_frames_every_window_whole();
-        a_window_wider_than_the_output_is_left_alone();
+        widening_a_strip_leaves_its_pan_where_it_was();
+        narrowing_until_everything_fits_does_not_frame_the_strip();
+        a_window_wider_than_the_output_is_no_two_sided_cut();
     }
 
     /// Lay `row` out inside a `viewport_w`-wide viewport through the
@@ -9046,18 +8944,6 @@ mod tests {
         for g in &mut row.groups {
             g.set_width(WindowWidth::Fraction(permille));
         }
-    }
-
-    /// Which groups are wholly on screen, by id.
-    fn whole_groups(row: &GroupRow) -> Vec<u64> {
-        let cut = row.groups_cut_by_row_edges();
-        let (vis0, vis1) = row.visible_canvas_span();
-        row.pan
-            .laid_spans
-            .iter()
-            .filter(|(id, x0, x1)| !cut.contains(id) && *x1 > vis0 + 0.5 && *x0 < vis1 - 0.5)
-            .map(|(id, _, _)| *id)
-            .collect()
     }
 
     /// A 1280 px display with the wheel disc's gutter before the strip: the
@@ -9961,6 +9847,81 @@ mod tests {
         assert_eq!(row.groups[2].take_pending_width_change(), None);
     }
 
+    // USER REQUIREMENT (2026-10-18): "no that is BS. i dont even know what
+    // that means" (about the strip easing back after a resize drag was
+    // released, to frame the windows because all of them fit on screen).
+    // After releasing a resize, no window moves.
+    #[test]
+    fn after_releasing_a_resize_no_window_moves() {
+        // Narrow enough that the strip can pan while all three windows fit.
+        const VIEWPORT: f64 = 1400.0;
+        let (row, _, _) = edge_strip(Some(1), None);
+        let (mut row, _, _) = relayout_row_owned(row, VIEWPORT);
+        // Panned so the first window is cut off at the left edge.
+        row.set_scroll_x_for_test(60.0);
+        let (mut row, taffy, root) = relayout_row_owned(row, VIEWPORT);
+        let before = rects(&row);
+        assert!(
+            before[2].x1 - before[0].x0 <= VIEWPORT,
+            "fixture: every window fits on screen: {before:?}"
+        );
+        assert!(
+            before[0].x0 < row.get_rect().x0,
+            "fixture: the first window is cut off: {before:?}"
+        );
+        // The window in use grabbed at its right edge and widened, still
+        // with room for all three on screen.
+        let from = Point::new(before[2].x0 + 2.0, before[1].center().y);
+        let _ = edge_event(&mut row, &taffy, root, false, &move_to(from));
+        assert!(edge_event(
+            &mut row,
+            &taffy,
+            root,
+            false,
+            &button(ElementState::Pressed)
+        ));
+        let (mut row, taffy, root) = relayout_row_owned(row, VIEWPORT);
+        assert!(edge_event(
+            &mut row,
+            &taffy,
+            root,
+            false,
+            &move_to(Point::new(from.x + 20.0, from.y))
+        ));
+        let (mut row, taffy, root) = relayout_row_owned(row, VIEWPORT);
+        let held = rects(&row);
+        assert!(
+            (held[1].width() - before[1].width() - 20.0).abs() < 1e-6,
+            "fixture: the drag widened the window in use: {held:?}"
+        );
+        let scroll = row.scroll_x();
+
+        assert!(edge_event(
+            &mut row,
+            &taffy,
+            root,
+            false,
+            &button(ElementState::Released)
+        ));
+        assert!(!row.edge_resize_in_flight());
+        for _ in 0..3 {
+            let (laid, _, _) = relayout_row_owned(row, VIEWPORT);
+            row = laid;
+        }
+        assert!(
+            (row.scroll_x() - scroll).abs() < 1e-6,
+            "the strip stays where the drag left it: {scroll} became {}",
+            row.scroll_x()
+        );
+        assert!(!row.snap_in_flight(), "and nothing is on its way anywhere");
+        for (i, (after, held)) in rects(&row).iter().zip(&held).enumerate() {
+            assert!(
+                (after.x0 - held.x0).abs() < 0.5 && (after.x1 - held.x1).abs() < 0.5,
+                "window {i} moved after the release: {held:?} became {after:?}"
+            );
+        }
+    }
+
     /// An app that states its minimum only through its widget tree, as a
     /// `NavShell` does ([`Widget::minimum_window_width`]), and nothing on
     /// `AppWidget`: an app running in the shell's own process.
@@ -10815,14 +10776,16 @@ mod tests {
             );
         }
 
-        /// The strip re-frames its pan in the same pass a close lands in;
-        /// whatever the pan does, no group may jump on the first frame.
+        /// A close at the strip's far end pulls the pan back into its legal
+        /// range in the same pass the close lands in; whatever the pan
+        /// does, no group may jump on the first frame.
         fn a_close_while_panned_starts_every_group_where_it_was_drawn() {
             fn panned_four() -> GroupRow {
                 let (row, _taffy, _root) =
                     make_row_with_groups_with_taffy(&[&[1], &[2], &[3], &[4]]);
                 let (mut row, _taffy, _root) = relayout_row_owned(row, 1200.0);
-                row.set_scroll_x_for_test(1500.0);
+                // Past the end: the layout clamps it to the far end.
+                row.set_scroll_x_for_test(1.0e6);
                 let (row, _taffy, _root) = relayout_row_owned(row, 1200.0);
                 assert!(row.scroll_x() > 1.0, "fixture: the strip is panned");
                 row
@@ -10851,18 +10814,18 @@ mod tests {
                 "the pan, and the wheel riding it, eases from {scroll_before} rather than cutting to {}",
                 row.scroll_x()
             );
-            assert!(row.snap_in_flight(), "the re-frame is travelling");
+            assert!(row.snap_in_flight(), "the pull back is travelling");
 
             assert!(still.remove_group_by_id(closed));
             let theme = Theme::dark().with_reduce_motion(true);
             let (still, _taffy, _root) = relayout_row_owned_with(still, 1200.0, &theme);
             assert!(
                 (still.scroll_x() - scroll_before).abs() > 1.0,
-                "fixture: this close re-frames the pan"
+                "fixture: this close pulls the pan back"
             );
             assert!(
                 !still.needs_animation_frame(),
-                "under reduced motion the re-frame cuts and nothing travels"
+                "under reduced motion the pull back cuts and nothing travels"
             );
         }
 
