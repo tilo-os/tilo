@@ -248,7 +248,7 @@ mod tests {
             Submission {
                 id: "0123456789abcdef0123456789abcdef".into(),
                 destination: Destination {
-                    room: channel.workspace,
+                    room: "room".into(),
                     provider: "demo-chat".into(),
                     channel: channel.id,
                 },

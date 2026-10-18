@@ -15,7 +15,7 @@ fn submitted_as(author: &str) -> (automerge::AutoCommit, Submission, Resource) {
     let submission = Submission {
         id: "0123456789abcdef0123456789abcdef".into(),
         destination: Destination {
-            room: channel.workspace,
+            room: "room".into(),
             provider: "fixture-chat".into(),
             channel: channel.id,
         },
@@ -155,19 +155,16 @@ fn mounted_fixture(author: &str) -> MountedFixture {
                 doc,
                 "visitor",
                 crate::resource::Chat::BEGIN_CHAT.with(crate::record::chat::BeginChat {
-                    workspace: Some(room.into()),
-                    workspace_name: Some("Fixture".into()),
                     name: "Visitor".into(),
                     initials: "V".into(),
                     color: 0,
                 }),
             )
             .map_err(|error| error.to_string())?;
-            crate::testing::insert_category(doc, "feedback-category", room, "Feedback");
+            crate::testing::insert_category(doc, "feedback-category", "Feedback");
             crate::testing::insert_channel(
                 doc,
                 "feedback",
-                room,
                 "feedback-category",
                 "Feedback",
                 crate::model::ChannelKind::Text,

@@ -1,5 +1,5 @@
 //! Rendering for the persistent chat surface: the navigation drawer (the
-//! workspace's channel list), the conversation header, the grouped
+//! room's channel list), the conversation header, the grouped
 //! message timeline, the composer, and the detail drawer (people or a
 //! thread). All geometry is computed from `self.rect` and the drawers; every
 //! clickable area is recorded into `hits`.
@@ -533,8 +533,8 @@ fn square(centre: Point, side: f64) -> Rect {
 impl ChatApp {
     // ------------------------------------------------------- navigation header
     /// The navigation drawer's part of the window's header row: the sidebar
-    /// toggle at its top-leading corner, the workspace (or Inbox) title and
-    /// the "create" action. Who is here is the desktop's to show, not
+    /// toggle at its top-leading corner, the "Channels" title and the
+    /// "create" action. Who is here is the desktop's to show, not
     /// the chat's.
     pub(crate) fn draw_nav_header(
         &self,
@@ -557,7 +557,7 @@ impl ChatApp {
             toggle.x1 + f64::from(sp.s2)
         };
         let mut right = band.x1 - f64::from(sp.s3);
-        if !self.inbox_open && self.can_participate() {
+        if self.can_participate() {
             let add = Rect::new(
                 right - target,
                 band.center().y - target / 2.0,
@@ -572,19 +572,11 @@ impl ChatApp {
                 &ButtonFace::icon_only(add, Icon::Plus, "Create channel or category")
                     .hovered(self.hovered(add)),
             );
-            ChatApp::push_hit(hits, add, Hit::AddCategory(self.active_ws.clone()));
+            ChatApp::push_hit(hits, add, Hit::AddCategory);
             right = add.x0 - f64::from(sp.s1);
         }
 
-        let title = if self.inbox_open {
-            "Inbox".to_owned()
-        } else {
-            self.workspaces
-                .iter()
-                .find(|w| w.id == self.active_ws)
-                .map(|w| w.name.clone())
-                .unwrap_or_default()
-        };
+        let title = crate::i18n::t("chat-channels-title");
         let style = theme.text(TextRole::Heading);
         let mut ctx = PaintCtx::new(scene, tf, tr, theme);
         line_in(
@@ -596,78 +588,6 @@ impl ChatApp {
             band,
             right - title_x,
         );
-    }
-
-    // -------------------------------------------------------- destinations
-    /// The sidebar's top rows, above the channels: Inbox, every other
-    /// workspace's conversations, while there are other workspaces, and the
-    /// way back to this workspace's channels while Inbox shows. One
-    /// workspace is one place; there is no list of servers beside it.
-    /// Returns the cursor `y` under them.
-    fn draw_destinations(
-        &self,
-        paint: PaintCtx<'_>,
-        side: Rect,
-        mut y: f64,
-        hits: &mut Vec<(Rect, Hit)>,
-    ) -> f64 {
-        let PaintCtx {
-            scene,
-            transform: tf,
-            text: tr,
-            theme,
-        } = paint;
-        let elsewhere = self.workspaces.iter().any(|ws| {
-            ws.id != self.context_ws
-                && self
-                    .channels
-                    .iter()
-                    .any(|c| c.workspace == ws.id && c.kind == ChannelKind::Text && !c.archived)
-        });
-        if !elsewhere && !self.inbox_open {
-            return y;
-        }
-        let row_h = nav_row_height(theme);
-        y += f64::from(theme.tokens.spacing.s1);
-        if self.inbox_open && self.workspaces.iter().any(|ws| ws.id == self.context_ws) {
-            let name = self
-                .workspaces
-                .iter()
-                .find(|ws| ws.id == self.context_ws)
-                .map_or_else(String::new, |ws| ws.name.clone());
-            let row = Rect::new(side.x0, y, side.x1, y + row_h);
-            let face = NavRowFace::new(row, &name)
-                .icon(Icon::Hash)
-                .state(SelectionState::new(false, self.hovered(row), false));
-            chrome::paint_nav_row(scene, tf, tr, theme, &face);
-            ChatApp::push_hit(hits, row, Hit::CurrentContext);
-            y += row_h;
-        }
-        let mentions: u32 = self
-            .channels
-            .iter()
-            .filter(|c| c.workspace != self.context_ws)
-            .map(|c| c.mentions)
-            .sum();
-        let unread = self
-            .channels
-            .iter()
-            .any(|c| c.workspace != self.context_ws && c.unread > 0);
-        let row = Rect::new(side.x0, y, side.x1, y + row_h);
-        let mut face = NavRowFace::new(row, "Inbox")
-            .icon(Icon::Inbox)
-            .unread(unread)
-            .state(SelectionState::new(
-                self.inbox_open,
-                self.hovered(row),
-                false,
-            ));
-        if mentions > 0 {
-            face = face.count(NavCount::Live(mentions));
-        }
-        chrome::paint_nav_row(scene, tf, tr, theme, &face);
-        ChatApp::push_hit(hits, row, Hit::Inbox);
-        y + row_h
     }
 
     // ------------------------------------------------------------- sidebar
@@ -684,10 +604,6 @@ impl ChatApp {
         if side.width() <= 0.5 {
             return;
         }
-        if self.inbox_open {
-            self.draw_inbox_sidebar(scene, tf, tr, theme, side, hits);
-            return;
-        }
         // While in a call, the microphone control stays at hand here.
         let bottom = if self.call.active {
             self.draw_voice_bar(scene, tf, tr, theme, side, hits)
@@ -700,77 +616,6 @@ impl ChatApp {
             Rect::new(side.x0, side.y0, side.x1, bottom),
             hits,
         );
-    }
-
-    /// Cross-workspace conversations: one section per workspace, its text
-    /// channels with the most unread first.
-    fn draw_inbox_sidebar(
-        &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        side: Rect,
-        hits: &mut Vec<(Rect, Hit)>,
-    ) {
-        let row_h = nav_row_height(theme);
-        let mut y =
-            self.draw_destinations(PaintCtx::new(scene, tf, tr, theme), side, side.y0, hits);
-        y = self.draw_person_navigation(PaintCtx::new(scene, tf, tr, theme), side, y, hits);
-        let mut first = y <= side.y0;
-        let mut workspaces = self.workspaces.clone();
-        workspaces.sort_by(|left, right| left.name.cmp(&right.name));
-        for workspace in workspaces {
-            let mut channels: Vec<_> = self
-                .channels
-                .iter()
-                .filter(|channel| {
-                    channel.workspace == workspace.id
-                        && channel.kind == ChannelKind::Text
-                        && !channel.archived
-                })
-                .collect();
-            if channels.is_empty() {
-                continue;
-            }
-            channels.sort_by(|left, right| {
-                right
-                    .unread
-                    .cmp(&left.unread)
-                    .then_with(|| left.order.cmp(&right.order))
-            });
-            let section_h = nav_section_height(theme, first);
-            let header = Rect::new(side.x0, y, side.x1, y + section_h);
-            chrome::paint_nav_section(
-                scene,
-                tf,
-                tr,
-                theme,
-                &NavSectionFace::new(header, &workspace.name),
-            );
-            y += section_h;
-            first = false;
-            for channel in channels {
-                if y > side.y1 {
-                    return;
-                }
-                let row = Rect::new(side.x0, y, side.x1, y + row_h);
-                let mut face = NavRowFace::new(row, &channel.name)
-                    .icon(Icon::Hash)
-                    .unread(channel.unread > 0)
-                    .state(SelectionState::new(
-                        channel.id == self.active_channel,
-                        self.hovered(row),
-                        false,
-                    ));
-                if channel.mentions > 0 {
-                    face = face.count(NavCount::Live(channel.mentions));
-                }
-                chrome::paint_nav_row(scene, tf, tr, theme, &face);
-                ChatApp::push_hit(hits, row, Hit::Channel(channel.id.clone()));
-                y += row_h;
-            }
-        }
     }
 
     /// The channel tree: the uncategorised channels first, then each category
@@ -789,8 +634,7 @@ impl ChatApp {
             theme,
         } = paint;
         let mut y =
-            self.draw_destinations(PaintCtx::new(scene, tf, tr, theme), side, side.y0, hits);
-        y = self.draw_person_navigation(PaintCtx::new(scene, tf, tr, theme), side, y, hits);
+            self.draw_person_navigation(PaintCtx::new(scene, tf, tr, theme), side, side.y0, hits);
         y = self.draw_channel_group(
             PaintCtx::new(scene, tf, tr, theme),
             presence,
@@ -842,7 +686,6 @@ impl ChatApp {
                     hits,
                     plus,
                     Hit::AddChannel {
-                        workspace: self.active_ws.clone(),
                         category: cat.id.clone(),
                     },
                 );
@@ -862,8 +705,8 @@ impl ChatApp {
         self.draw_agent_navigation(PaintCtx::new(scene, tf, tr, theme), side, y, first, hits);
     }
 
-    /// Keep private history reachable in both the global Inbox and workspace tree,
-    /// before a long channel list can consume the navigation's visible area.
+    /// Keep private history reachable in the channel tree, before a long
+    /// channel list can consume the navigation's visible area.
     fn draw_person_navigation(
         &self,
         paint: PaintCtx<'_>,
@@ -1222,17 +1065,7 @@ impl ChatApp {
 
         let (name, topic) = self.channel(&self.active_channel).map_or_else(
             || (String::new(), String::new()),
-            |channel| {
-                let topic = if self.inbox_open {
-                    self.workspaces
-                        .iter()
-                        .find(|workspace| workspace.id == channel.workspace)
-                        .map_or_else(String::new, |workspace| workspace.name.clone())
-                } else {
-                    channel.topic.clone()
-                };
-                (channel.name.clone(), topic)
-            },
+            |channel| (channel.name.clone(), channel.topic.clone()),
         );
         HeaderIdentityText {
             name,

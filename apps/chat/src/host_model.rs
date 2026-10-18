@@ -159,10 +159,7 @@ impl ChatApp {
     ) -> Vec<&'static str> {
         if !self.can_participate()
             || !self.channels.iter().any(|ch| {
-                ch.id == channel
-                    && ch.workspace == self.active_ws
-                    && ch.kind == crate::model::ChannelKind::Text
-                    && !ch.archived
+                ch.id == channel && ch.kind == crate::model::ChannelKind::Text && !ch.archived
             })
         {
             return vec![];

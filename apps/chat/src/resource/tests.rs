@@ -157,13 +157,13 @@ fn shared_space_context_consent_is_local_and_relaunch_starts_private() {
     );
 }
 
-/// The general channel of a new chat: its item resource and itself.
+/// The `#chat` channel of a new chat: its item resource and itself.
 fn general(app: &TestApp<ChatShell>) -> (String, crate::model::Channel) {
     let channel = app
         .state()
         .channel_rows()
         .into_iter()
-        .find(|channel| channel.id == "c_general")
+        .find(|channel| channel.id == "c_chat")
         .unwrap();
     (item("channels", &channel.id), channel)
 }
@@ -193,7 +193,7 @@ fn reviewed_feedback_search_opens_the_report_and_triages_through_the_door() {
         .submission(
             "0123456789abcdef0123456789abcdef".into(),
             ui::feedback::Destination {
-                room: channel.workspace,
+                room: "room".into(),
                 provider: "demo-chat".into(),
                 channel: channel.id,
             },
@@ -253,7 +253,7 @@ fn reviewed_feedback_search_opens_the_report_and_triages_through_the_door() {
 }
 
 #[test]
-fn search_hits_open_the_workspace_channel_message_and_person_they_name() {
+fn search_hits_open_the_channel_message_and_person_they_name() {
     let mut app = TestApp::<ChatShell>::capture(None).unwrap();
     // The record's entries, and the messages the window holds.
     let mut entries = Chat::search(&app.state());
@@ -286,11 +286,11 @@ fn search_hits_open_the_workspace_channel_message_and_person_they_name() {
         app.surface_mut::<ChatApp>().revealed_message.as_deref(),
         Some("m_concept")
     );
-    let jam = anchor("Weekend Jam", "workspaces");
-    app.call("open", serde_json::json!({ "anchor": jam }))
+    let hangout = anchor("Hangout", "categories");
+    app.call("open", serde_json::json!({ "anchor": hangout }))
         .unwrap();
     app.settle();
-    assert_eq!(app.surface_mut::<ChatApp>().active_ws, "ws_jam");
+    assert_eq!(app.surface_mut::<ChatApp>().active_channel, "c_ideas");
     let milo = anchor("Milo Park", "people");
     app.call("open", serde_json::json!({ "anchor": milo }))
         .unwrap();
@@ -308,7 +308,7 @@ fn resource_range_opens_and_highlights_current_text_through_the_public_view() {
     app.call_on(
         &crate::testing::chain(),
         "post",
-        serde_json::json!({"channel": "c_general", "text": "café notes"}),
+        serde_json::json!({"channel": "c_chat", "text": "café notes"}),
     )
     .unwrap();
     app.settle();
@@ -353,7 +353,7 @@ fn shared_space_call_status_returns_a_report_and_never_claims_live_capture() {
     let mut app = TestApp::<ChatShell>::new().unwrap();
     let status = app
         .call_on(
-            &crate::testing::call_row("c_lounge"),
+            &crate::testing::call_row("c_voice"),
             "call-status",
             serde_json::json!({}),
         )
@@ -377,7 +377,7 @@ fn shared_space_resource_journey_preserves_address_author_and_viewer_boundary() 
     app.call_on(
         &crate::testing::chain(),
         "share-resource",
-        serde_json::json!({"channel": "c_general", "reference": reference, "source_provider": "record:so.tilo.word-processor:proposal", "text": "Discuss this paragraph"}),
+        serde_json::json!({"channel": "c_chat", "reference": reference, "source_provider": "record:so.tilo.word-processor:proposal", "text": "Discuss this paragraph"}),
     )
     .unwrap();
     app.settle();
@@ -402,7 +402,7 @@ fn shared_space_resource_journey_preserves_address_author_and_viewer_boundary() 
         app.call_on(
             &crate::testing::chain(),
             "share-resource",
-            serde_json::json!({"channel": "c_general", "reference": reference})
+            serde_json::json!({"channel": "c_chat", "reference": reference})
         )
         .is_err()
     );
@@ -431,7 +431,7 @@ fn shared_space_invalid_resource_never_posts_and_voice_has_no_timeline() {
             app.call_on(
                 &crate::testing::chain(),
                 "share-resource",
-                serde_json::json!({"channel": "c_general",
+                serde_json::json!({"channel": "c_chat",
                     "reference": {"kind": "word_processor.block", "id": id, "label": "Proposal"}
                 })
             )
@@ -442,7 +442,7 @@ fn shared_space_invalid_resource_never_posts_and_voice_has_no_timeline() {
         app.call_on(
             &crate::testing::chain(),
             "share-resource",
-            serde_json::json!({"channel": "c_lounge",
+            serde_json::json!({"channel": "c_voice",
                 "reference": {"kind": "word_processor.block", "id": "block-7", "label": "Proposal"}
             })
         )
@@ -451,25 +451,27 @@ fn shared_space_invalid_resource_never_posts_and_voice_has_no_timeline() {
     assert!(messages(&mut app).is_empty());
 }
 
+// USER REQUIREMENT (2026-10-19): "Chat runs *in a workspace*, not the other way around."
 #[test]
-fn a_new_room_record_starts_with_its_creators_workspace() {
+fn a_new_room_record_opens_with_chat_and_voice_and_nothing_else() {
     let app = TestApp::<ChatShell>::new().unwrap();
     let state = app.state();
-    assert_eq!(
-        state
-            .workspace_rows()
-            .iter()
-            .map(|workspace| workspace.id.clone())
-            .collect::<Vec<_>>(),
-        ["ws_home"]
-    );
     assert_eq!(state.people.len(), 1, "only its creator");
-    assert!(
+    assert_eq!(
         state
             .channel_rows()
             .iter()
-            .any(|channel| channel.name == "general"),
-        "the starter channels"
+            .map(|channel| (channel.name.clone(), channel.kind))
+            .collect::<Vec<_>>(),
+        [
+            ("chat".to_owned(), crate::model::ChannelKind::Text),
+            ("voice".to_owned(), crate::model::ChannelKind::Voice),
+        ],
+        "exactly one text channel #chat and one voice channel #voice"
+    );
+    assert!(
+        state.categories.is_empty(),
+        "no categories unless someone makes one"
     );
     let mut app = app;
     assert!(
@@ -500,7 +502,7 @@ fn root_action(app: &mut TestApp<ChatShell>, id: &str) -> ui::tilo_actions::Acti
 }
 
 #[test]
-fn the_root_offers_call_starts_only_once_there_is_a_workspace() {
+fn the_root_offers_call_starts_and_refuses_video() {
     let mut app = TestApp::<ChatShell>::new().unwrap();
     let start = root_action(&mut app, "start-call");
     assert_eq!(start.label, "Start a call");
@@ -517,18 +519,6 @@ fn the_root_offers_call_starts_only_once_there_is_a_workspace() {
             code: crate::effects::VIDEO_CALL_UNAVAILABLE.into(),
             reason: crate::effects::video_call_unavailable_reason(),
         }
-    );
-    let empty = ChatApp::new_ephemeral();
-    assert!(empty.workspaces.is_empty());
-    assert!(
-        empty
-            .effect_statuses()
-            .contains(&ui::framework::EffectStatus::unavailable(
-                crate::effects::ChatEffect::START_CALL,
-                "no_workspace",
-                crate::i18n::t("chat-call-no-workspace"),
-            )),
-        "a chat with no conversation yet offers no call to start"
     );
 }
 
@@ -607,11 +597,12 @@ fn a_window_publishes_its_effects_beside_the_chat_verbs() {
         "attach-file",
         "select-input",
         "start-call",
-        "create-workspace",
+        "create-channel",
+        "create-category",
     ] {
         assert!(root.iter().any(|action| action == id), "{id}: {root:?}");
     }
-    let general = on(&item("channels", "c_general"));
+    let general = on(&item("channels", "c_chat"));
     for id in [
         "open-channel",
         "submit-feedback",
@@ -634,17 +625,14 @@ fn a_window_publishes_its_effects_beside_the_chat_verbs() {
             "{id}: {messages:?}"
         );
     }
-    let lounge = on(&crate::testing::call_row("c_lounge"));
+    let lounge = on(&crate::testing::call_row("c_voice"));
     for id in ["join-call", "leave-call", "mute", "unmute", "call-status"] {
         assert!(lounge.iter().any(|action| action == id), "{id}: {lounge:?}");
     }
-    let workspace = on(&item("workspaces", "ws_home"));
-    for id in ["open-workspace", "create-channel", "create-category"] {
-        assert!(
-            workspace.iter().any(|action| action == id),
-            "{id}: {workspace:?}"
-        );
-    }
+    assert!(
+        !root.iter().any(|action| action.contains("workspace")),
+        "Chat runs in a workspace and makes none: {root:?}"
+    );
 }
 
 #[test]
@@ -659,7 +647,7 @@ fn an_agent_posts_and_reacts_in_one_call_each_as_itself_for_its_person() {
         agent.clone(),
         &crate::testing::chain(),
         "post",
-        serde_json::json!({"channel": "c_general", "text": "Summary: two open questions"}),
+        serde_json::json!({"channel": "c_chat", "text": "Summary: two open questions"}),
     )
     .unwrap();
     app.settle();
@@ -698,7 +686,7 @@ fn history_entries_render_as_the_apps_sentences() {
         agent.clone(),
         &crate::testing::chain(),
         "post",
-        serde_json::json!({"channel": "c_general", "text": "Standup moved to 10"}),
+        serde_json::json!({"channel": "c_chat", "text": "Standup moved to 10"}),
     )
     .unwrap();
     app.settle();
@@ -719,7 +707,7 @@ fn history_entries_render_as_the_apps_sentences() {
     .unwrap();
     let rename = Chat::paths()
         .channels
-        .item(&ui::tilo_resource::Id::from_raw("c_general"))
+        .item(&ui::tilo_resource::Id::from_raw("c_chat"))
         .topic
         .set("Daily notes".into());
     app.call_by(
@@ -732,7 +720,7 @@ fn history_entries_render_as_the_apps_sentences() {
     app.call_by(
         agent.clone(),
         Chat::KIND,
-        "create-workspace",
+        "create-category",
         serde_json::json!({"name": "Offsite"}),
     )
     .unwrap();
@@ -755,9 +743,9 @@ fn history_entries_render_as_the_apps_sentences() {
         // What it did to the messages is in the history of the part that
         // holds them; the record's history has the rest.
         [
-            "Set the topic of #general to Daily notes",
-            "Created the workspace Offsite",
-            "Marked #general read",
+            "Set the topic of #chat to Daily notes",
+            "Created the category Offsite",
+            "Marked #chat read",
         ]
     );
 }
@@ -770,7 +758,11 @@ fn every_scenario_stages_through_the_resource_and_its_surface() {
         let held = crate::testing::mounted_messages(&mut app);
         let state = app.state();
         if *scenario == "starter" {
-            assert!(state.workspace_rows().iter().all(|ws| ws.id == "ws_home"));
+            assert_eq!(
+                state.channel_rows().len(),
+                2,
+                "the first-run room: #chat and #voice"
+            );
         } else {
             assert!(
                 state.message_row(&held, "m_concept").is_some(),
@@ -884,12 +876,7 @@ fn a_commenter_files_feedback_and_a_viewer_cannot() {
             .channels
             .iter()
             .find(|(_, channel)| channel.kind == crate::model::ChannelKind::Text)
-            .map(|(id, channel)| {
-                (
-                    id.as_str().to_owned(),
-                    channel.workspace.as_str().to_owned(),
-                )
-            })
+            .map(|(id, _)| (id.as_str().to_owned(), "room".to_owned()))
             .expect("the chat has a text channel");
         ui::feedback::Submission {
             id: "0123456789abcdef0123456789abcdef".into(),
@@ -977,7 +964,6 @@ fn agent_row_task_navigation_keeps_source_custody_through_the_production_door() 
     // fixture on a live host so the published door must reach Chat's handler.
     let mut app = TestApp::<ChatShell>::new().unwrap();
     app.with_surface::<ChatApp, _>(|surface| surface.stage_scenario("agent-task"));
-    let workspace = app.surface_mut::<ChatApp>().active_ws.clone();
     let target = "chat.agent:scribe";
     // The quick composer has saved this task, but Chat has not projected it.
     let arguments = serde_json::json!({"task": "task:newly-queued", "run_epoch": 0});
@@ -985,7 +971,6 @@ fn agent_row_task_navigation_keeps_source_custody_through_the_production_door() 
         .unwrap();
     app.settle();
     let surface = app.surface_mut::<ChatApp>();
-    assert_eq!(surface.active_ws, workspace);
     assert_eq!(surface.direct_agent.as_deref(), Some("scribe"));
     assert_eq!(
         surface.direct_agent_tasks().unwrap().selected_identity(),
@@ -997,7 +982,7 @@ fn agent_row_task_navigation_keeps_source_custody_through_the_production_door() 
         "opening is not approval and must not start a different projected task"
     );
 
-    for (field, value) in [("workspace", "another-room"), ("agent", "another-agent")] {
+    for (field, value) in [("agent", "another-agent")] {
         let mut forged = arguments.clone();
         forged[field] = value.into();
         assert!(
@@ -1059,7 +1044,6 @@ fn agent_row_task_navigation_keeps_source_custody_through_the_production_door() 
     });
     app.settle();
     let surface = app.surface_mut::<ChatApp>();
-    assert_eq!(surface.active_ws, workspace);
     assert_eq!(surface.direct_agent.as_deref(), Some("scribe"));
     assert_eq!(
         surface.direct_agent_tasks().unwrap().selected_identity(),
@@ -1081,7 +1065,6 @@ fn generated_agent_task_surface_report() {
 #[test]
 fn authenticated_agent_entry_has_navigation_without_an_ordinary_authority_lane() {
     let mut surface = ChatApp::new_ephemeral();
-    surface.active_ws = "ws_home".into();
     surface.room_agents.push("scribe".into());
 
     let expected_identity =
@@ -1131,7 +1114,7 @@ fn a_handed_over_file_posts_as_a_file() {
     app.call_on(
         &crate::testing::chain(),
         "post-file",
-        serde_json::json!({"channel": "c_general",
+        serde_json::json!({"channel": "c_chat",
             "content": ui::tilo_actions::content_resource(&hash),
             "name": "minutes.txt",
             "text": "Here are the minutes",
@@ -1154,7 +1137,7 @@ fn a_handed_over_file_posts_as_a_file() {
         app.call_on(
             &crate::testing::chain(),
             "post-file",
-            serde_json::json!({"channel": "c_general", "content": missing, "name": "x.txt"}),
+            serde_json::json!({"channel": "c_chat", "content": missing, "name": "x.txt"}),
         )
         .is_err()
     );
