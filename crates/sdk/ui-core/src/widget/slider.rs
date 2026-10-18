@@ -102,6 +102,11 @@ pub struct Slider {
     interaction: crate::interaction::InteractionEnvironment,
     /// The target height encoded in the current layout style.
     layout_target: Option<f32>,
+    /// Show the value in words beside the track ([`Self::shows_value`]).
+    shows_value: bool,
+    /// The width the shown value takes at the trailing edge, measured when
+    /// drawn; the track is the rest.
+    value_lane: f64,
 }
 
 impl Slider {
@@ -138,6 +143,8 @@ impl Slider {
             accessible_name: None,
             interaction: crate::interaction::InteractionEnvironment::default(),
             layout_target: None,
+            shows_value: false,
+            value_lane: 0.0,
         }
     }
 
@@ -181,6 +188,25 @@ impl Slider {
         self
     }
 
+    /// Show the value beside the track, in the words it is spoken in
+    /// ([`Self::value_text`], a percentage of a `0..1` range otherwise), so
+    /// "72%" or "1.5 s" is read without moving the knob.
+    #[must_use]
+    pub fn shows_value(mut self) -> Self {
+        self.shows_value = true;
+        self
+    }
+
+    /// Where the track lies: the slider less the shown value's lane.
+    fn track_rect(&self) -> Rect {
+        Rect::new(
+            self.rect.x0,
+            self.rect.y0,
+            (self.rect.x1 - self.value_lane).max(self.rect.x0),
+            self.rect.y1,
+        )
+    }
+
     /// Clamp `value` into the range and onto the step grid.
     fn constrain(&self, value: f64) -> f64 {
         let (min, max) = self.range;
@@ -222,18 +248,23 @@ impl Slider {
     }
 
     /// What assistive technology says for the value.
+    fn spoken_value(&self) -> String {
+        self.spoken_value_of(self.value)
+    }
+
+    /// What assistive technology says for `value`.
     #[allow(
         clippy::cast_possible_truncation,
         reason = "the rounded percentage is bounded to the inclusive range 0..=100"
     )]
-    fn spoken_value(&self) -> String {
+    fn spoken_value_of(&self, value: f64) -> String {
         if let Some(format) = &self.value_text {
-            return format(self.value);
+            return format(value);
         }
         if self.range == (0.0, 1.0) {
-            format!("{}%", (self.fraction() * 100.0).round() as i64)
+            format!("{}%", (value.clamp(0.0, 1.0) * 100.0).round() as i64)
         } else {
-            plain_number(self.value)
+            plain_number(value)
         }
     }
 
@@ -335,7 +366,7 @@ impl Slider {
     /// Map a cursor x in widget-local logical pixels to the slider's
     /// 0..1 value, clamped at both ends.
     fn value_from_cursor_x(&self, cursor_x: f64) -> f64 {
-        let fraction = SliderFace::new(self.rect, 0.0).value_at(Point::new(cursor_x, 0.0));
+        let fraction = SliderFace::new(self.track_rect(), 0.0).value_at(Point::new(cursor_x, 0.0));
         self.at_fraction(fraction)
     }
 
@@ -744,15 +775,56 @@ impl Widget for Slider {
         &mut self,
         scene: &mut Scene,
         transform: Affine,
-        _text_renderer: &mut TextRenderer,
+        text_renderer: &mut TextRenderer,
         theme: &Theme,
         presence: &crate::presence::PresenceCtx,
     ) {
+        if self.shows_value {
+            let style = theme.text(crate::tokens::TextRole::Body).numeric();
+            // The lane fits the widest value the slider shows, so the track
+            // does not shift as the value changes.
+            let widest = [
+                self.range.0,
+                self.range.1,
+                f64::midpoint(self.range.0, self.range.1),
+            ]
+            .into_iter()
+            .map(|value| {
+                let text = self.spoken_value_of(value);
+                f64::from(text_renderer.measure_style(&text, None, &style).0)
+            })
+            .fold(0.0_f64, f64::max);
+            let gap = f64::from(theme.gap_standard);
+            self.value_lane = (widest + gap).min(self.rect.width() / 2.0);
+            let text = self.spoken_value();
+            let (width, height) = text_renderer.measure_style(&text, None, &style);
+            let ink = if self.effectively_enabled() {
+                theme.text_dim
+            } else {
+                theme.text_tertiary
+            };
+            text_renderer.draw_style(
+                scene,
+                &text,
+                ink,
+                transform.pre_translate(
+                    (
+                        self.rect.x1 - f64::from(width),
+                        self.rect.y0 + (self.rect.height() - f64::from(height)) / 2.0,
+                    )
+                        .into(),
+                ),
+                None,
+                &style,
+            );
+        } else {
+            self.value_lane = 0.0;
+        }
         Slider::paint(
             scene,
             transform,
             theme,
-            &SliderFace::new(self.rect, self.fraction())
+            &SliderFace::new(self.track_rect(), self.fraction())
                 .hovered(self.is_hovered)
                 .dragging(self.is_dragging)
                 .focused(self.is_focused)
@@ -770,7 +842,7 @@ impl Widget for Slider {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = ctx.logical(position);
                 self.last_cursor = p;
-                let hover = self.rect.inflate(KNOB_RADIUS, 0.0).contains(p);
+                let hover = self.track_rect().inflate(KNOB_RADIUS, 0.0).contains(p);
                 if hover != self.is_hovered {
                     self.is_hovered = hover;
                     *ctx.handled = true;
@@ -779,7 +851,7 @@ impl Widget for Slider {
                 if self.is_dragging {
                     let new_value = if ctx.modifiers.state().shift_key() {
                         let (x, value) = *self.fine_from.get_or_insert((p.x, self.value));
-                        let track = (self.rect.width() - TRACK_PADDING * 2.0).max(1.0);
+                        let track = (self.track_rect().width() - TRACK_PADDING * 2.0).max(1.0);
                         let span = self.range.1 - self.range.0;
                         self.constrain(value + (p.x - x) / track * Self::FINE_DRAG * span)
                     } else {
@@ -804,7 +876,7 @@ impl Widget for Slider {
                 // "press on track to jump" affordance.
                 if *element_state == ElementState::Pressed
                     && self
-                        .rect
+                        .track_rect()
                         .inflate(KNOB_RADIUS, 0.0)
                         .contains(self.last_cursor)
                 {
@@ -977,6 +1049,22 @@ impl crate::widget::controls::ActionControls for Slider {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_shown_value_takes_its_lane_from_the_track() {
+        let mut slider = Slider::from_state(&crate::LocalState::new(0.72)).shows_value();
+        slider.rect = Rect::new(0.0, 0.0, 200.0, 32.0);
+        assert_eq!(
+            slider.track_rect(),
+            slider.rect,
+            "no lane before it is measured"
+        );
+        slider.value_lane = 48.0;
+        assert_eq!(slider.track_rect().x1, 152.0);
+        assert_eq!(slider.spoken_value(), "72%");
+        // The far end of the shortened track is the top of the range.
+        assert!((slider.value_from_cursor_x(152.0) - 1.0).abs() < 0.05);
+    }
     use super::*;
     use crate::testing::{Dispatch, dispatch};
     use automerge::{AutoCommit, ReadDoc};
