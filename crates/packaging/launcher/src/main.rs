@@ -261,6 +261,13 @@ enum Cmd {
         /// Where the runtime bundles are installed.
         #[arg(long, default_value = launcher::runtime_resident::SYSTEM_RUNTIME_ROOT)]
         runtime_root: PathBuf,
+        /// Keep the runtimes of this person's own store instead: those their
+        /// registry names and the system does not hold, verified as a launch
+        /// verifies them, each library only when its signed fs-verity digest
+        /// is measured on the open file. Run by the user unit
+        /// `tilo-runtime-resident.service`.
+        #[arg(long, conflicts_with_all = ["registry", "runtime_root"])]
+        user: bool,
     },
 }
 
@@ -492,10 +499,78 @@ fn dispatch_command(
         Cmd::SandboxView(command) => sandbox_view(command),
         Cmd::AppSpawner { tree } => run_app_spawner(tree),
         Cmd::Apps { json } => list_apps(json),
+        Cmd::RuntimeResident { user: true, .. } => runtime_resident_user(),
         Cmd::RuntimeResident {
             registry,
             runtime_root,
+            user: false,
         } => runtime_resident(Path::new(&registry), &runtime_root),
+    }
+}
+
+/// Keep the libraries of this person's own runtimes resident until SIGTERM
+/// (`launcher::runtime_resident`, "A runtime a person installed").
+fn runtime_resident_user() -> ExitCode {
+    use launcher::runtime_resident as resident;
+    let (Some(registry), Some(user_root)) =
+        (resident::user_registry(), resident::user_runtime_root())
+    else {
+        eprintln!("tilo-launcher: this session has no data directory to find its runtimes in");
+        return ExitCode::FAILURE;
+    };
+    let registry = match package_store::Registry::load(&registry) {
+        Ok(registry) => registry,
+        Err(error) => {
+            eprintln!("tilo-launcher: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let versions = resident::user_kept_versions(
+        &resident::registered_versions(&registry),
+        Path::new(resident::SYSTEM_RUNTIME_ROOT),
+    );
+    let (files, problems) = resident::user_resident_files(
+        &versions,
+        &user_root,
+        |bundle| launcher::run::verified_user_bundle(bundle).map_err(|error| error.to_string()),
+        resident::verity_vouches,
+    );
+    for problem in &problems {
+        eprintln!("tilo-launcher: {problem}");
+    }
+    let mut mapped = Vec::new();
+    for file in &files {
+        match resident::map_open(&file.path, &file.file, resident::Lock::IfAllowed) {
+            Ok(resident_file) => mapped.push(resident_file),
+            Err(error) => eprintln!(
+                "tilo-launcher: keeping {} resident: {error}",
+                file.path.display()
+            ),
+        }
+    }
+    // The mappings hold the files; the descriptors are no longer needed.
+    drop(files);
+    let bytes: usize = mapped.iter().map(resident::ResidentFile::len).sum();
+    let locked: usize = mapped
+        .iter()
+        .filter(|file| file.is_locked())
+        .map(resident::ResidentFile::len)
+        .sum();
+    println!(
+        "{} libraries of your runtimes resident, {} MiB ({} MiB locked)",
+        mapped.len(),
+        bytes / (1024 * 1024),
+        locked / (1024 * 1024)
+    );
+    if mapped.is_empty() {
+        // Nothing of this person's to keep; the path unit starts this again
+        // when their registry changes.
+        return ExitCode::SUCCESS;
+    }
+    loop {
+        // SAFETY: pause has no preconditions; it returns only after a
+        // handled signal, and this process handles none.
+        unsafe { libc::pause() };
     }
 }
 
@@ -519,7 +594,10 @@ fn runtime_resident(registry: &Path, runtime_root: &Path) -> ExitCode {
     };
     let (mapped, failed) = resident::map_all(&files);
     for (path, error) in &failed {
-        eprintln!("tilo-launcher: keeping {} resident: {error}", path.display());
+        eprintln!(
+            "tilo-launcher: keeping {} resident: {error}",
+            path.display()
+        );
     }
     let bytes: usize = mapped.iter().map(resident::ResidentFile::len).sum();
     println!(
