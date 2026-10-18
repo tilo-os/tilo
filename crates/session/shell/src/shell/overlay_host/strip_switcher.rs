@@ -1252,8 +1252,9 @@ pub(crate) struct DrawCx<'a> {
     pub theme: &'a Theme,
 }
 
-/// The floating ground, square where it meets the screen's right edge like
-/// the ribbon it grows from, rounded inward.
+/// The floating card's ground and edge
+/// ([`ui::widget::floating_surface::paint_card`]), square where it meets the
+/// screen's right edge like the ribbon it grows from, rounded inward.
 fn paint_card_ground(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect) {
     let radius = ui::chrome::ChromeRole::Panel.radius(theme, rect.height());
     ui::surface::shadow(
@@ -1267,7 +1268,7 @@ fn paint_card_ground(scene: &mut Scene, transform: Affine, theme: &Theme, rect: 
     scene.fill(
         Fill::NonZero,
         transform,
-        theme.tokens.colors.surfaces.overlay,
+        ui::widget::floating_surface::card_ground(theme),
         None,
         &shape,
     );

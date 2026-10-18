@@ -24997,18 +24997,16 @@ impl ShellOverlayHost {
         } else {
             transform
         };
-        // A Panel casts `e4` (HIG §9.1): the token's own offset, blur
-        // and strength, following the card's rounded outline. While
-        // the palette is still arriving the shadow fades in with it.
-        let mut shadow = theme.tokens.elevation.floating;
-        shadow.color = shadow.color.with_alpha_factor(alpha);
-        ui::surface::shadow(
+        // The one floating card's shadow; while the palette is still
+        // arriving it fades in with it.
+        ui::widget::floating_surface::paint_card_shadow(
             scene,
             palette_xform,
             palette_rect,
-            ui::widget::command_palette::CommandPalette::surface_radius_px(theme),
-            &shadow,
+            alpha,
+            theme,
         );
+        let shadow = ui::widget::floating_surface::card_shadow(theme);
         // A cloned theme with `surfaces.raised` pre-tinted, since
         // `CommandPalette` (in `quick-ui`) paints its own surface from
         // there and has no override plumbed in.

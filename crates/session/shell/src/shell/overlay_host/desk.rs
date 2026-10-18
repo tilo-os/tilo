@@ -763,7 +763,7 @@ impl ShellOverlayHost {
                         paint_card_ground(scene, at, theme, card);
                         self.desk.music_card.set_text_scale(theme.text_scale);
                         self.desk.music_card.layout(card);
-                        let radius = ui::chrome::ChromeRole::Panel.radius(theme, card.height());
+                        let radius = ui::widget::floating_surface::card_radius(card, theme);
                         scene.push_layer(
                             Fill::NonZero,
                             BlendMode::default(),
@@ -775,6 +775,9 @@ impl ShellOverlayHost {
                             .music_card
                             .draw(scene, at, text, theme, card, cursor, view);
                         scene.pop_layer();
+                        // Its artwork may reach the edge: the card's edge
+                        // stays on top.
+                        ui::widget::floating_surface::paint_card_edge(scene, at, card, theme);
                     }
                 }
                 WidgetId::Team => {
@@ -982,31 +985,11 @@ fn team_card_height(people: usize) -> f64 {
     TEAM_HEADER + TEAM_ROW * ui::num::f64_of_usize(rows) + more + 8.0
 }
 
-/// The opaque floating ground every desk card stands on: overlay surface,
-/// panel edge, the floating elevation. No blur.
+/// The ground every desk card stands on: the one floating card
+/// ([`ui::widget::floating_surface::paint_card`]), as banners and the
+/// palette.
 fn paint_card_ground(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect) {
-    let radius = ui::chrome::ChromeRole::Panel.radius(theme, rect.height());
-    ui::surface::shadow(
-        scene,
-        transform,
-        rect,
-        radius,
-        &theme.tokens.elevation.floating,
-    );
-    ui::surface::card(
-        scene,
-        transform,
-        rect,
-        radius,
-        theme.tokens.colors.surfaces.overlay,
-    );
-    scene.stroke(
-        &Stroke::new(1.0),
-        transform,
-        ui::chrome::panel_border(theme),
-        None,
-        &RoundedRect::from_rect(rect, radius),
-    );
+    ui::widget::floating_surface::paint_card(scene, transform, rect, theme);
 }
 
 fn paint_pill_ground(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect) {
