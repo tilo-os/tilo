@@ -226,6 +226,33 @@ enum Cmd {
     /// room. A Flatpak brings its own sandbox; a distribution binary has no
     /// manifest to build one from. See the `launcher::host` module docs.
     RunHost(RunHostArgs),
+    /// Build or retire the pre-built read-only system view every sandbox
+    /// mounts (`launcher::sandbox_view`). Root only: it mounts in the host
+    /// namespace. Run by `tilo-sandbox-view.service`.
+    #[command(subcommand)]
+    SandboxView(SandboxViewCmd),
+}
+
+#[derive(Debug, Subcommand)]
+enum SandboxViewCmd {
+    /// Build a new generation, make it current and retire the old ones.
+    Build {
+        /// Where the views live.
+        #[arg(long, default_value = launcher::sandbox_view::DEFAULT_ROOT)]
+        root: PathBuf,
+        /// Hand each superseded view a running sandbox still holds to
+        /// `tilo-sandbox-view-retire@<generation>.service`.
+        #[arg(long)]
+        retire_with_systemd: bool,
+    },
+    /// Unmount a superseded generation once no sandbox holds it.
+    Retire {
+        /// Where the views live.
+        #[arg(long, default_value = launcher::sandbox_view::DEFAULT_ROOT)]
+        root: PathBuf,
+        /// The generation, `g<id>`.
+        generation: String,
+    },
 }
 
 #[derive(Debug, clap::Args)]
@@ -400,6 +427,47 @@ fn dispatch_command(
             allow_unsigned_runtime,
         ),
         Cmd::RunHost(args) => run_host(args),
+        Cmd::SandboxView(command) => sandbox_view(command),
+    }
+}
+
+fn sandbox_view(command: SandboxViewCmd) -> ExitCode {
+    match command {
+        SandboxViewCmd::Build {
+            root,
+            retire_with_systemd,
+        } => match launcher::sandbox_view::build(&root) {
+            Ok(built) => {
+                println!("{}", built.generation);
+                for generation in built.busy {
+                    if !retire_with_systemd {
+                        println!("still in use: {generation}");
+                        continue;
+                    }
+                    let unit = format!("tilo-sandbox-view-retire@{generation}.service");
+                    let started = std::process::Command::new("systemctl")
+                        .args(["--no-block", "start", &unit])
+                        .status();
+                    if !started.is_ok_and(|status| status.success()) {
+                        eprintln!("tilo-launcher: could not start {unit}");
+                    }
+                }
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("tilo-launcher: building the sandbox view: {error}");
+                ExitCode::FAILURE
+            }
+        },
+        SandboxViewCmd::Retire { root, generation } => {
+            match launcher::sandbox_view::retire(&root, &generation) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("tilo-launcher: retiring sandbox view {generation}: {error}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
     }
 }
 

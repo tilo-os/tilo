@@ -1,0 +1,28 @@
+[Unit]
+Description=Build the read-only system view every app sandbox mounts
+# The system read profile (fonts, the C library, GPU loader data, CA
+# certificates, ...) assembled once as a tree of read-only bind mounts under
+# /run/tilo-sandbox-view, so a launch binds four directories instead of each
+# path (crates/packaging/launcher/src/sandbox_view.rs). Rebuilt after an
+# extension merge replaces /usr (tilo-extension-activate.service) and when a
+# bound path under /etc is replaced (tilo-sandbox-view.path). Until then a
+# launch whose host paths no longer match the view binds per path, so a stale
+# view is never used.
+After=local-fs.target tilo-extension-activate.service ldconfig.service
+Before=graphical.target display-manager.service greetd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/tilo-launcher sandbox-view build --retire-with-systemd
+# The view is mounted in the host's mount namespace, where every launch
+# finds it: no namespace-based sandboxing (ProtectSystem=, PrivateTmp=, ...),
+# which would build it in a private namespace nobody else sees.
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
