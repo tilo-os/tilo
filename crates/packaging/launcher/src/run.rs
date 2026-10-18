@@ -885,7 +885,7 @@ pub fn resolve_capabilities(manifest: &ManifestView, opts: &RunOptions) -> Capab
 }
 
 /// Priority: explicit override > manifest declaration (per-user, then
-/// system) > no bind. `Ok(None)` (no declaration) is distinct from `Err`.
+/// system; system first for an ABI-bound version) > no bind. `Ok(None)` (no declaration) is distinct from `Err`.
 ///
 /// # Errors
 ///
@@ -1063,7 +1063,7 @@ pub fn resolve_gpu_selection(
 }
 
 /// Priority: explicit override > manifest declaration (per-user, then
-/// system) > no bind. `Ok(None)` (no declaration) is distinct from `Err`.
+/// system; system first for an ABI-bound version) > no bind. `Ok(None)` (no declaration) is distinct from `Err`.
 ///
 /// # Errors
 ///
@@ -1106,8 +1106,9 @@ pub fn resolve_runtime(
 }
 
 /// Look `raw` (`<name>/<version>`) up where runtime bundles are installed —
-/// the configured/user root first, then the immutable system fallback — and
-/// verify the first bundle found. Returns the bundle and its version, plus
+/// the configured/user root first, then the immutable system fallback, and
+/// the other way round for an ABI-bound version ([`runtime_candidates`]) —
+/// and verify the first bundle found. Returns the bundle and its version, plus
 /// every directory checked.
 ///
 /// A developer build honours `TILO_RUNTIME_BUNDLE_DIR`; developer sessions
@@ -1132,7 +1133,7 @@ fn find_runtime_bundle(
     )
     .ok();
     let system = runtime_bundle::system_bundle_path(version);
-    let candidates: Vec<PathBuf> = per_user.iter().cloned().chain([system.clone()]).collect();
+    let candidates = runtime_candidates(version, per_user, system.clone());
     for cand in &candidates {
         if cand.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME).exists() {
             enforce_bundle_policy(cand, opts, cand == &system)?;
@@ -1140,6 +1141,25 @@ fn find_runtime_bundle(
         }
     }
     Ok((None, candidates))
+}
+
+/// Where to look for runtime `version`, in order.
+///
+/// A person's own store comes first, so a runtime they installed stands in
+/// for the system's of the same name. An ABI-bound version
+/// (`<release>+native.<digest>`) is the exception: its name is its payload's
+/// identity (the digest of the root hash every launch verifies), so the
+/// system's bundle of it holds the same bytes as the person's. Apps then run
+/// on the system's copy: proven once by its immutable root-owned tree rather
+/// than hashed at each launch, and the copy `tilo-runtime-resident.service`
+/// keeps in memory for every person, instead of a second copy of the same
+/// file in each person's store.
+fn runtime_candidates(version: &str, per_user: Option<PathBuf>, system: PathBuf) -> Vec<PathBuf> {
+    if runtime_bundle::split_abi_version(version).is_some() {
+        [system].into_iter().chain(per_user).collect()
+    } else {
+        per_user.into_iter().chain([system]).collect()
+    }
 }
 
 /// A version names a directory under the runtime roots and the sandbox's
@@ -1249,6 +1269,28 @@ fn enforce_bundle_policy(
     opts: &RunOptions,
     system_bundle: bool,
 ) -> Result<(), RunError> {
+    verified_bundle(path, opts, system_bundle).map(drop)
+}
+
+/// A runtime bundle a person installed into their own store, verified by the
+/// policy a launch applies to it ([`enforce_bundle_policy`]): every payload
+/// byte proven (by its signed fs-verity digest, else hashed), signed by a
+/// trusted publisher. Returns its manifest, whose root hash is the bundle's
+/// identity.
+///
+/// # Errors
+///
+/// The [`RunError`] a launch of an app on this bundle would refuse with.
+pub fn verified_user_bundle(path: &Path) -> Result<runtime_bundle::BundleManifest, RunError> {
+    verified_bundle(path, &RunOptions::default(), false)
+}
+
+/// [`enforce_bundle_policy`], returning the verified manifest.
+fn verified_bundle(
+    path: &Path,
+    opts: &RunOptions,
+    system_bundle: bool,
+) -> Result<runtime_bundle::BundleManifest, RunError> {
     let trusted = load_trusted_publishers_for_bundle(path).map_err(|error| {
         RunError::RuntimeBundleSignature {
             path: path.to_path_buf(),
@@ -1296,7 +1338,7 @@ fn enforce_bundle_policy(
                     path: path.to_path_buf(),
                     reason: error.to_string(),
                 })?;
-            Ok(())
+            Ok(manifest)
         }
         Err(runtime_bundle::BundleError::NotSigned) => Err(RunError::RuntimeBundleUnsigned {
             path: path.to_path_buf(),
@@ -1599,6 +1641,34 @@ pub const TRUSTED_PUBLISHERS_FILE: &str = "/etc/tilo/runtime-bundle-trusted-publ
 /// build's gate let through ([`package_store::dev_env::dev_override`]).
 fn trusted_publishers_path_from(allowed_override: Option<std::ffi::OsString>) -> PathBuf {
     allowed_override.map_or_else(|| PathBuf::from(TRUSTED_PUBLISHERS_FILE), PathBuf::from)
+}
+
+#[cfg(test)]
+mod runtime_candidate_tests {
+    use super::*;
+
+    #[test]
+    fn an_abi_bound_runtime_runs_on_the_system_copy_of_its_identity() {
+        let user = PathBuf::from("/home/ana/.local/share/tilo-runtime");
+        let system = PathBuf::from("/usr/lib/tilo-runtime");
+        let bound = "2026.07+native.0123456789abcdef0123456789abcdef";
+        assert_eq!(
+            runtime_candidates(bound, Some(user.join(bound)), system.join(bound)),
+            [system.join(bound), user.join(bound)],
+            "the version names its payload, so the system's bundle is the same bytes"
+        );
+        // A release-only version (a development bundle, an engine runtime)
+        // names no payload: the person's own install stands in for the
+        // system's of that name.
+        assert_eq!(
+            runtime_candidates("1", Some(user.join("1")), system.join("1")),
+            [user.join("1"), system.join("1")]
+        );
+        assert_eq!(
+            runtime_candidates(bound, None, system.join(bound)),
+            [system.join(bound)]
+        );
+    }
 }
 
 #[cfg(test)]

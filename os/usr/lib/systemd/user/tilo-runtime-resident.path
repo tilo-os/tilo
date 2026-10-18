@@ -1,0 +1,13 @@
+[Unit]
+Description=Keep your newly installed app runtimes in memory
+
+# Your store's registry names the runtimes your apps run on, and your own
+# runtime bundles live beside it; when either changes, the session's
+# tilo-runtime-resident.service keeps what is new and lets go of what is gone.
+[Path]
+PathChanged=%D/tilo-apps/registry.toml
+PathChanged=%D/tilo-runtime
+Unit=tilo-runtime-resident.service
+
+[Install]
+WantedBy=paths.target

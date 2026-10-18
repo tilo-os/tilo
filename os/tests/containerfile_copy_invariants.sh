@@ -265,8 +265,10 @@ containerfile="$repo/os/Containerfile"
 # rates, is installed by its net-answers component at
 # /usr/libexec/tilo-net-answers: one payload row.
 # tilo-runtime-resident.service, which keeps the shared app runtime's
-# libraries in memory, is a deliberate addition.
-expected_contract=0d49efe636960910fe9445548564fa44b0dd997f43c3a08150e69bc444cc09ae
+# libraries in memory, is a deliberate addition, and so are its user units
+# (tilo-runtime-resident.service and .path), which keep the runtimes a person
+# installed into their own store.
+expected_contract=c5e0594a5534d05f561d5c08c982eec8a78d4e49e6fe47389921caa830c8f76e
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

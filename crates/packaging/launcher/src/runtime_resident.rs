@@ -22,9 +22,30 @@
 //! execute permission, never runs their code, holds no app state and starts
 //! no app: what it changes is only where the bytes the loader reads come
 //! from. A bundle the registry no longer names is unmapped when the service
-//! restarts (after an extension merge replaces `/usr`); a per-user runtime
-//! bundle (one a person installed into their own store) is not covered, as a
-//! system service cannot know which person's will run.
+//! restarts (after an extension merge replaces `/usr`).
+//!
+//! A runtime a person installed into their own store is kept by the same
+//! command in their session (`tilo-launcher runtime-resident --user`, the
+//! user unit `tilo-runtime-resident.service`, restarted by
+//! `tilo-runtime-resident.path` when their registry changes). Their store is
+//! writable by their own processes, so nothing there is mapped by path:
+//!
+//! - a runtime is chosen by its verified identity. An ABI-bound version names
+//!   its payload's digest, and the launcher runs apps of such a version on
+//!   the system's bundle of it when there is one (`run::runtime_candidates`),
+//!   which this service already keeps; only the person's other runtimes are
+//!   theirs to keep, and two names for one root hash are kept once;
+//! - the bundle is verified as a launch verifies it (signature, trusted
+//!   publisher, every byte);
+//! - each library is opened once, and kept only when the kernel measures, on
+//!   that descriptor, the fs-verity digest the publisher signed for it. Such
+//!   a file is immutable, so the pages kept are the signed pages for as long
+//!   as they are kept. A file without fs-verity is left to the page cache: the
+//!   bytes a path names could change after any check.
+//!
+//! A person's session cannot lock more than its `RLIMIT_MEMLOCK` (8 MiB by
+//! default); past that the files stay mapped and read in, which keeps them
+//! in the page cache as long as memory is not short, without pinning them.
 //!
 //! Engine libraries (`crates/runtime/engines/`) and the media libraries the
 //! runtime loads on first use stay out: only the apps that use them map them.
@@ -107,12 +128,198 @@ pub fn resident_files(
     Ok(files)
 }
 
-/// One file mapped read-only and locked into memory.
+/// The registry of a person's own store (`$XDG_DATA_HOME/tilo-apps`), whose
+/// entries name the runtimes their apps run on.
+pub fn user_registry() -> Option<PathBuf> {
+    package_store::layout::default_user_root()
+        .map(|root| package_store::Layout::new(root).registry())
+}
+
+/// Where a person's own runtime bundles are installed: the root the launcher
+/// looks in first ([`runtime_bundle::default_bundle_path_from`]).
+pub fn user_runtime_root() -> Option<PathBuf> {
+    runtime_bundle::bundle_root_from(package_store::dev_env::dev_override(
+        runtime_bundle::RUNTIME_DIR_ENV,
+    ))
+    .ok()
+}
+
+/// The runtime versions of `registered` a person's session keeps itself:
+/// all but the ABI-bound versions the system has a bundle of under
+/// `system_root`. Such a version names its payload's digest, the launcher
+/// runs its apps on the system's bundle (`run::runtime_candidates`), and the
+/// system service keeps that one.
+pub fn user_kept_versions(registered: &BTreeSet<String>, system_root: &Path) -> BTreeSet<String> {
+    registered
+        .iter()
+        .filter(|version| {
+            runtime_bundle::split_abi_version(version).is_none()
+                || !system_root
+                    .join(version)
+                    .join(runtime_bundle::BUNDLE_MANIFEST_FILENAME)
+                    .exists()
+        })
+        .cloned()
+        .collect()
+}
+
+/// One library of a person's runtime, open, and proven to be the bytes the
+/// publisher signed.
+#[derive(Debug)]
+pub struct VerifiedFile {
+    /// Where it was opened; reported, never reopened.
+    pub path: PathBuf,
+    pub file: File,
+}
+
+/// Why a library of a person's runtime is not kept.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Unkept {
+    /// The manifest carries no fs-verity signature, so no digest vouches for
+    /// any file.
+    NoVeritySignature,
+    /// The kernel did not measure the signed digest on the opened file (no
+    /// fs-verity on it or its filesystem, or other bytes).
+    NotVouched(PathBuf),
+}
+
+/// The libraries of the person's runtime `bundle`, verified as `manifest`,
+/// that every app of it maps at exec: the runtime library and, transitively,
+/// each `DT_NEEDED` library the manifest lists under `lib/`. Each is opened
+/// once (never following a link) and kept only when `vouch` proves the open
+/// file is the one the manifest describes; its `DT_NEEDED` entries are read
+/// from that same descriptor.
+///
+/// # Errors
+///
+/// Returns an I/O error from reading a vouched library's dynamic section.
+pub fn verified_user_libraries(
+    bundle: &Path,
+    manifest: &runtime_bundle::BundleManifest,
+    vouch: impl Fn(&File, &runtime_bundle::BundleFile) -> bool,
+) -> io::Result<(Vec<VerifiedFile>, Vec<Unkept>)> {
+    let mut kept = Vec::new();
+    let mut unkept = Vec::new();
+    if manifest.verity_signature_hex.is_none() {
+        unkept.push(Unkept::NoVeritySignature);
+        return Ok((kept, unkept));
+    }
+    let listed: std::collections::BTreeMap<&str, &runtime_bundle::BundleFile> = manifest
+        .files
+        .iter()
+        .map(|file| (file.path.as_str(), file))
+        .collect();
+    let mut seen = BTreeSet::new();
+    let mut pending = VecDeque::from([RUNTIME_LIBRARY.to_owned()]);
+    while let Some(name) = pending.pop_front() {
+        if kept.len() >= MAX_LIBRARIES || !seen.insert(name.clone()) {
+            continue;
+        }
+        if name.contains('/') || name == "." || name == ".." {
+            continue;
+        }
+        let relative = format!("lib/{name}");
+        let Some(expected) = listed.get(relative.as_str()) else {
+            // Not part of the bundle: the loader finds it elsewhere.
+            continue;
+        };
+        let path = bundle.join(&relative);
+        let Ok(file) = open_no_follow(&path) else {
+            unkept.push(Unkept::NotVouched(path));
+            continue;
+        };
+        if !vouch(&file, expected) {
+            unkept.push(Unkept::NotVouched(path));
+            continue;
+        }
+        if let Some(dynamic) = crate::loader_preflight::read_dynamic_section_of(&file)? {
+            pending.extend(dynamic.needed);
+        }
+        kept.push(VerifiedFile { path, file });
+    }
+    Ok((kept, unkept))
+}
+
+/// Whether the kernel vouches for `file` as `expected`: a regular file of the
+/// listed size whose fs-verity digest, measured on this descriptor, is the
+/// signed one. Reads no file data.
+pub fn verity_vouches(file: &File, expected: &runtime_bundle::BundleFile) -> bool {
+    let Some(digest) = expected.verity.as_deref() else {
+        return false;
+    };
+    file.metadata()
+        .is_ok_and(|meta| meta.is_file() && meta.len() == expected.size)
+        && runtime_bundle::verity::measure(file)
+            .is_some_and(|measured| hex::encode(measured) == digest)
+}
+
+fn open_no_follow(path: &Path) -> io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+}
+
+/// What a person's session keeps: for each runtime of `versions` installed
+/// under `user_root` that `verify` accepts (the launch's policy,
+/// [`crate::run::verified_user_bundle`]), the libraries `vouch` proves
+/// ([`verified_user_libraries`]); each runtime identity (root hash) once,
+/// however many versions name it. Returns them with what was left out and
+/// why, for the log.
+pub fn user_resident_files(
+    versions: &BTreeSet<String>,
+    user_root: &Path,
+    verify: impl Fn(&Path) -> Result<runtime_bundle::BundleManifest, String>,
+    vouch: impl Fn(&File, &runtime_bundle::BundleFile) -> bool,
+) -> (Vec<VerifiedFile>, Vec<String>) {
+    let mut identities = BTreeSet::new();
+    let mut files = Vec::new();
+    let mut problems = Vec::new();
+    for version in versions {
+        let bundle = user_root.join(version);
+        if !bundle
+            .join(runtime_bundle::BUNDLE_MANIFEST_FILENAME)
+            .exists()
+        {
+            continue;
+        }
+        let manifest = match verify(&bundle) {
+            Ok(manifest) => manifest,
+            Err(error) => {
+                problems.push(format!("{version} not verified: {error}"));
+                continue;
+            }
+        };
+        if !identities.insert(manifest.root_hash.clone()) {
+            continue;
+        }
+        match verified_user_libraries(&bundle, &manifest, &vouch) {
+            Ok((kept, unkept)) => {
+                files.extend(kept);
+                problems.extend(unkept.into_iter().map(|unkept| match unkept {
+                    Unkept::NoVeritySignature => {
+                        format!("{version} has no fs-verity signature; its pages are left to the page cache")
+                    }
+                    Unkept::NotVouched(path) => format!(
+                        "{} is not sealed with its signed fs-verity digest; left to the page cache",
+                        path.display()
+                    ),
+                }));
+            }
+            Err(error) => problems.push(format!("{version}: reading its libraries: {error}")),
+        }
+    }
+    (files, problems)
+}
+
+/// One file mapped read-only and, where allowed, locked into memory.
 #[derive(Debug)]
 pub struct ResidentFile {
     path: PathBuf,
     address: *mut libc::c_void,
     len: usize,
+    locked: bool,
 }
 
 impl ResidentFile {
@@ -129,6 +336,11 @@ impl ResidentFile {
     /// Whether the file is empty (and so maps nothing).
     pub fn is_empty(&self) -> bool {
         self.len == 0
+    }
+
+    /// Whether its pages are locked, rather than only mapped and read in.
+    pub fn is_locked(&self) -> bool {
+        self.locked
     }
 }
 
@@ -152,7 +364,28 @@ impl Drop for ResidentFile {
 /// with `ENOMEM`/`EPERM` when the process's `RLIMIT_MEMLOCK` is too small;
 /// the service sets it.
 pub fn map_locked(path: &Path) -> io::Result<ResidentFile> {
-    let file = File::open(path)?;
+    map_open(path, &File::open(path)?, Lock::Required)
+}
+
+/// Whether [`map_open`] must lock the pages it maps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lock {
+    /// Lock them, or fail (the system service, whose limit is raised).
+    Required,
+    /// Lock them if `RLIMIT_MEMLOCK` allows; else keep them mapped and read
+    /// in (a person's session).
+    IfAllowed,
+}
+
+/// Map the open `file` (reported as `path`) read-only, never executable, and
+/// read its pages in; lock them as `lock` says. The mapping is of the file
+/// this descriptor holds, whatever `path` names by then.
+///
+/// # Errors
+///
+/// Returns the error of mapping the file, or of locking it under
+/// [`Lock::Required`].
+pub fn map_open(path: &Path, file: &File, lock: Lock) -> io::Result<ResidentFile> {
     let len = usize::try_from(file.metadata()?.len())
         .map_err(|_| io::Error::other("file larger than the address space"))?;
     if len == 0 {
@@ -160,6 +393,7 @@ pub fn map_locked(path: &Path) -> io::Result<ResidentFile> {
             path: path.to_owned(),
             address: std::ptr::null_mut(),
             len,
+            locked: false,
         });
     }
     // SAFETY: a fresh read-only shared mapping of a file we opened; the
@@ -177,19 +411,41 @@ pub fn map_locked(path: &Path) -> io::Result<ResidentFile> {
     if address == libc::MAP_FAILED {
         return Err(io::Error::last_os_error());
     }
-    let mapped = ResidentFile {
+    let mut mapped = ResidentFile {
         path: path.to_owned(),
         address,
         len,
+        locked: false,
     };
     // Read ahead in large requests before the lock faults page by page.
     // SAFETY: advice on the mapping made above.
     unsafe { libc::madvise(address, len, libc::MADV_WILLNEED) };
     // SAFETY: locks the mapping made above.
-    if unsafe { libc::mlock(address, len) } != 0 {
+    if unsafe { libc::mlock(address, len) } == 0 {
+        mapped.locked = true;
+    } else if lock == Lock::Required {
         return Err(io::Error::last_os_error());
+    } else {
+        touch_pages(address, len);
     }
     Ok(mapped)
+}
+
+/// Read one byte of every page of the mapping at `address`, so each is in
+/// the page cache and mapped here: what an unlockable mapping can do.
+fn touch_pages(address: *mut libc::c_void, len: usize) {
+    // SAFETY: sysconf has no preconditions.
+    let page = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) })
+        .ok()
+        .filter(|page| *page > 0)
+        .unwrap_or(4096);
+    let base = address.cast::<u8>();
+    let mut offset = 0usize;
+    while offset < len {
+        // SAFETY: `offset < len`, inside the readable mapping of `len` bytes.
+        unsafe { std::ptr::read_volatile(base.add(offset)) };
+        offset = offset.saturating_add(page);
+    }
 }
 
 /// Map and lock every file; a file that fails is reported and skipped, so
@@ -324,6 +580,171 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["2026.07+native.abc"]
         );
+    }
+
+    fn listed(bundle: &Path, paths: &[&str]) -> runtime_bundle::BundleManifest {
+        runtime_bundle::BundleManifest {
+            version: "1".into(),
+            arch: "aarch64".into(),
+            root_hash: "00".into(),
+            files: paths
+                .iter()
+                .map(|path| runtime_bundle::BundleFile {
+                    path: (*path).to_owned(),
+                    hash: String::new(),
+                    size: std::fs::metadata(bundle.join(path)).map_or(0, |meta| meta.len()),
+                    verity: Some("signed".into()),
+                })
+                .collect(),
+            produced_at: 0,
+            publisher_hex: None,
+            signature_hex: None,
+            verity_signature_hex: Some("signed".into()),
+        }
+    }
+
+    /// Stands in for the kernel's measurement, which needs fs-verity on the
+    /// test's filesystem: the open file is the listed size.
+    fn listed_size(file: &File, expected: &runtime_bundle::BundleFile) -> bool {
+        file.metadata()
+            .is_ok_and(|meta| meta.len() == expected.size)
+    }
+
+    #[test]
+    fn a_persons_runtime_is_kept_by_its_identity_not_its_path() {
+        // An ABI-bound version names its payload: the system's bundle of it
+        // is the same bytes, kept by the system service; the person's own
+        // runtimes of other versions, and release-only names, are theirs.
+        let system = tempfile::tempdir().unwrap();
+        let bound = "2026.07+native.0123456789abcdef0123456789abcdef";
+        let theirs = "2026.08+native.fedcba9876543210fedcba9876543210";
+        write(
+            &system
+                .path()
+                .join(bound)
+                .join(runtime_bundle::BUNDLE_MANIFEST_FILENAME),
+            b"",
+        );
+        write(
+            &system
+                .path()
+                .join("1")
+                .join(runtime_bundle::BUNDLE_MANIFEST_FILENAME),
+            b"",
+        );
+        let registered: BTreeSet<String> = [bound, theirs, "1"].map(str::to_owned).into();
+        assert_eq!(
+            user_kept_versions(&registered, system.path())
+                .into_iter()
+                .collect::<Vec<_>>(),
+            ["1", theirs]
+        );
+
+        // Two names for one root hash are kept once; an unverified bundle
+        // not at all.
+        let user = tempfile::tempdir().unwrap();
+        for version in ["a", "b", "c"] {
+            let bundle = user.path().join(version);
+            write(&bundle.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME), b"");
+            write(
+                &bundle.join("lib").join(RUNTIME_LIBRARY),
+                &elf_fixture(&[], None),
+            );
+        }
+        let versions: BTreeSet<String> = ["a", "b", "c", "absent"].map(str::to_owned).into();
+        let (files, problems) = user_resident_files(
+            &versions,
+            user.path(),
+            |bundle| {
+                if bundle.ends_with("c") {
+                    return Err("a byte differs".to_owned());
+                }
+                Ok(listed(bundle, &[&format!("lib/{RUNTIME_LIBRARY}")]))
+            },
+            listed_size,
+        );
+        assert_eq!(files.len(), 1, "{files:?}");
+        assert!(files[0].path.starts_with(user.path().join("a")));
+        assert_eq!(problems, ["c not verified: a byte differs"]);
+    }
+
+    #[test]
+    fn only_libraries_the_signed_digests_vouch_for_are_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = dir.path().join("lib");
+        write(
+            &lib.join(RUNTIME_LIBRARY),
+            &elf_fixture(&["libstd-0123.so", "libc.so.6", "libnot-listed.so"], None),
+        );
+        write(
+            &lib.join("libstd-0123.so"),
+            &elf_fixture(&["libc.so.6"], None),
+        );
+        write(&lib.join("libc.so.6"), &elf_fixture(&[], None));
+        write(&lib.join("libnot-listed.so"), &elf_fixture(&[], None));
+        let manifest = listed(
+            dir.path(),
+            &[
+                &format!("lib/{RUNTIME_LIBRARY}"),
+                "lib/libstd-0123.so",
+                "lib/libc.so.6",
+            ],
+        );
+
+        let names = |files: &[VerifiedFile]| -> Vec<String> {
+            files
+                .iter()
+                .map(|file| {
+                    file.path
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect()
+        };
+        let (kept, unkept) = verified_user_libraries(dir.path(), &manifest, listed_size).unwrap();
+        assert_eq!(
+            names(&kept),
+            [RUNTIME_LIBRARY, "libstd-0123.so", "libc.so.6"]
+        );
+        assert!(unkept.is_empty(), "{unkept:?}");
+
+        // A file the digest does not vouch for is left out, and what only it
+        // needs is not followed.
+        let (kept, unkept) = verified_user_libraries(dir.path(), &manifest, |file, expected| {
+            listed_size(file, expected) && !expected.path.ends_with("libstd-0123.so")
+        })
+        .unwrap();
+        assert_eq!(names(&kept), [RUNTIME_LIBRARY, "libc.so.6"]);
+        assert_eq!(unkept, [Unkept::NotVouched(lib.join("libstd-0123.so"))]);
+
+        // Without a verity signature no digest vouches for anything.
+        let unsigned = runtime_bundle::BundleManifest {
+            verity_signature_hex: None,
+            ..manifest
+        };
+        let (kept, unkept) = verified_user_libraries(dir.path(), &unsigned, listed_size).unwrap();
+        assert!(kept.is_empty());
+        assert_eq!(unkept, [Unkept::NoVeritySignature]);
+
+        // A link is never followed out of the bundle.
+        std::fs::remove_file(lib.join("libc.so.6")).unwrap();
+        std::os::unix::fs::symlink("/usr/lib64/libc.so.6", lib.join("libc.so.6")).unwrap();
+        let (kept, unkept) =
+            verified_user_libraries(dir.path(), &with_verity_signature(&unsigned), listed_size)
+                .unwrap();
+        assert_eq!(names(&kept), [RUNTIME_LIBRARY, "libstd-0123.so"]);
+        assert_eq!(unkept, [Unkept::NotVouched(lib.join("libc.so.6"))]);
+    }
+
+    fn with_verity_signature(
+        manifest: &runtime_bundle::BundleManifest,
+    ) -> runtime_bundle::BundleManifest {
+        runtime_bundle::BundleManifest {
+            verity_signature_hex: Some("signed".into()),
+            ..manifest.clone()
+        }
     }
 
     #[test]
