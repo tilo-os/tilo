@@ -193,6 +193,7 @@ fn bind_into_tab(tree: &mut WorkspaceTree, target: TabId, app_id: &str, surface_
                     app_id: app_id.to_string(),
                     surface_id,
                 };
+                crate::shell::foreign::store().bind_opening_tab(target, surface_id);
                 // Front the tab, but move focus no further: stealing the strip because somebody else opened something is exactly what the room model rules out.
                 group.activate_tab(target);
                 let _ = strip_id;
@@ -1224,6 +1225,7 @@ fn remove_tab_choosing(tree: &mut WorkspaceTree, tab_id: TabId, back_to_previous
         return false;
     };
     tree.local_app_records.remove(&tab_id);
+    crate::shell::foreign::store().forget_opening_tab(tab_id);
     if let Some(room) = tree.continuation_owned_tabs.remove(&tab_id) {
         tree.continuation_closed_tabs.insert(tab_id, room);
     }

@@ -544,7 +544,9 @@ fn try_to_ui_tile_for_tab(
                 Some((package_id, app)) => opening_card::Wait::Installing { package_id, app },
                 None => opening_card::Wait::Opening,
             };
-            UiTile::App(Box::new(opening_card::OpeningCard::new(label, wait)))
+            UiTile::App(Box::new(
+                opening_card::OpeningCard::new(label, wait).for_tab(tab),
+            ))
         }
         // A legacy window runs only on its host; until a stream of it is
         // attached here, the tab says where it is.
@@ -590,7 +592,9 @@ fn try_to_ui_tile_for_tab(
             } else {
                 opening_card::Wait::Opening
             };
-            UiTile::App(Box::new(opening_card::OpeningCard::new(label, wait)))
+            UiTile::App(Box::new(
+                opening_card::OpeningCard::new(label, wait).for_tab(tab),
+            ))
         }
         ShellTile::PeerWindow { label, note, .. } | ShellTile::LocalApp { label, note, .. } => {
             UiTile::Notice {

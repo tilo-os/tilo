@@ -1292,6 +1292,10 @@ pub struct ChildFrame {
 #[derive(Default)]
 pub struct ForeignFrameStore {
     entries: Mutex<HashMap<SurfaceId, ForeignEntry>>,
+    /// Where each tab still showing its opening card was last laid out, so
+    /// the window that binds into it is configured to that size at once
+    /// rather than after the next layout pass.
+    opening_tabs: Mutex<HashMap<crate::shell::state::TabId, Rect>>,
     painted_frames: Mutex<HashMap<SurfaceId, u64>>,
     presentation_viewport: Mutex<Option<Rect>>,
     children: Mutex<HashMap<SurfaceId, Vec<ChildFrame>>>,
@@ -3925,6 +3929,28 @@ impl ForeignFrameStore {
     }
 
     /// Record the tab rectangle the surface is laid into, in physical pixels — called from `apply_layout`, the authority on where a tab lives.
+    /// The opening card of `tab` was laid out at `rect`.
+    pub fn note_opening_tab(&self, tab: crate::shell::state::TabId, rect: Rect) {
+        self.opening_tabs.lock_recover().insert(tab, rect);
+    }
+
+    /// A window bound into `tab`, which showed its opening card: it is placed
+    /// where the card was, so the configure that lets it map can go out in
+    /// the same dispatch as its toplevel ([`flush_configures`]) instead of
+    /// after the next layout. The next layout publishes the tab's own rect
+    /// as for any window.
+    pub fn bind_opening_tab(&self, tab: crate::shell::state::TabId, id: SurfaceId) {
+        let rect = self.opening_tabs.lock_recover().remove(&tab);
+        if let Some(rect) = rect.filter(|rect| rect.width() > 0.0 && rect.height() > 0.0) {
+            self.note_placement(id, rect);
+        }
+    }
+
+    /// Forget the opening card of `tab`: it closed or became something else.
+    pub fn forget_opening_tab(&self, tab: crate::shell::state::TabId) {
+        self.opening_tabs.lock_recover().remove(&tab);
+    }
+
     pub fn note_placement(&self, id: SurfaceId, rect: Rect) {
         self.with_entry(id, |e| {
             e.placement = Some(rect);

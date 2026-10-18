@@ -676,12 +676,21 @@ mod tests {
                 Some((vec![fixture.page, held, fixture.other], held)),
                 "the opening card sits right after its opener, in front, before any process"
             );
+            // The card was laid out: the window that takes its place is
+            // configured to its size at once, not after the next layout.
+            crate::shell::foreign::store()
+                .note_opening_tab(held, vello::kurbo::Rect::new(10.0, 20.0, 650.0, 500.0));
             let opened = crate::shell::tab_binding::adopt_toplevel(
                 &mut st.tree_mut(),
-                9_102,
+                9_146,
                 Some(APP.into()),
             );
             assert_eq!(opened, held, "the window takes the card's place");
+            assert_eq!(
+                crate::shell::foreign::store().take_pending_configure(9_146),
+                Some((640, 480)),
+                "configured to the card's size in the dispatch that adopted it"
+            );
             assert_eq!(
                 group_tabs(&st.tree(), fixture.group).0,
                 vec![fixture.page, held, fixture.other]
