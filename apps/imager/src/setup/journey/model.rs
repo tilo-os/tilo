@@ -347,7 +347,28 @@ impl Journey {
         Ok(())
     }
 
+    pub fn toggle_details(&mut self) {
+        // Review edits have their own save/cancel trail and restore a snapshot.
+        if self.editing.is_some() {
+            self.details = !self.details;
+            return;
+        }
+        if self.details {
+            if self.history.last() == Some(&Page::Belongings) {
+                self.history.pop();
+            }
+        } else {
+            // Overview and details share a page, but are separate navigation stops.
+            self.history.push(Page::Belongings);
+        }
+        self.details = !self.details;
+    }
+
     pub fn back(&mut self) -> Result<(), &'static str> {
+        if self.page == Page::Belongings && self.details && self.editing.is_none() {
+            self.toggle_details();
+            return Ok(());
+        }
         if self.cancels_edit() {
             if let Some(edit) = self.editing.take() {
                 *self = *edit.original;
@@ -356,6 +377,8 @@ impl Journey {
         }
         let previous = self.history.pop().ok_or("installer-preview-at-start")?;
         self.page = previous;
+        self.details =
+            previous == Page::Belongings && self.history.last() == Some(&Page::Belongings);
         Ok(())
     }
 
@@ -368,6 +391,9 @@ impl Journey {
         }
         let (section, start) = match section {
             "destination" => (ReviewSection::Destination, Page::Destination),
+            "storage" if self.destination == Some(Destination::Computer) => {
+                (ReviewSection::Destination, Page::Storage)
+            }
             "profile" if self.identity == Some(Identity::New) => {
                 (ReviewSection::Profile, Page::Profile)
             }

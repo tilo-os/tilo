@@ -246,7 +246,9 @@ fn reusable_account_is_prepared_only_after_confirm_and_handoff_reseals_it() {
         accounts,
         ..Default::default()
     };
-    installer.journey.page = super::super::model::Page::Storage;
+    // USB preparation is admitted only after the final review, even when
+    // this account-focused fixture deliberately has no storage backend.
+    installer.journey.page = super::super::model::Page::Review;
     installer.journey.destination = Some(super::super::model::Destination::Another);
     installer.journey.migrate = Some(true);
     installer.journey.categories[2] = true;

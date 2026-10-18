@@ -1,4 +1,8 @@
 //! Explicit source/provider decisions, independent of bookmarks/history and files.
+#[cfg(all(test, target_os = "linux"))]
+#[path = "login_tests.rs"]
+mod login_tests;
+mod logins;
 use crate::setup::{account_transfer::Candidate, service_sessions::PreparedSessions};
 use imager_backend::browser_selection::Service;
 use imager_backend::service_selection::{
@@ -34,6 +38,7 @@ pub(super) struct Selection {
     unavailable: bool,
     decided: Vec<Service>,
     baseline: Option<(Vec<(String, Service)>, Vec<Service>)>,
+    collapsed: std::collections::BTreeSet<String>,
 }
 impl Selection {
     pub(super) fn discover(home: &Path, candidates: &[Candidate]) -> io::Result<Self> {
@@ -82,6 +87,7 @@ impl Selection {
             unavailable,
             decided: Vec::new(),
             baseline: None,
+            collapsed: std::collections::BTreeSet::new(),
         })
     }
     pub(super) fn unavailable(&self) -> bool {
@@ -181,6 +187,9 @@ impl Selection {
             .iter()
             .find(|source| source.id == id)
             .ok_or("installer-service-source-changed")?;
+        source
+            .validate()
+            .map_err(|_| "installer-service-source-changed")?;
         if !self
             .detected
             .iter()
@@ -244,7 +253,8 @@ impl Selection {
     pub(super) fn report(&self) -> serde_json::Value {
         serde_json::json!({"sources":self.detected.iter().filter_map(|(id, service, presence)| {
             let source = self.sources.iter().find(|source| &source.id == id)?;
-            Some(serde_json::json!({"id":id,"label":source.label,"service":service,
+            Some(serde_json::json!({"id":id,"label":source.label,"application":source.application,
+                "native_application":source.native_application,"service":service,
                 "needs_access":*presence == Presence::NeedsAccess,
                 "selectable":*presence != Presence::NeedsAccess || source.supports_encrypted_cookie_capture()}))
         }).collect::<Vec<_>>(),"selected":self.included})
@@ -393,7 +403,7 @@ mod tests {
     use crate::setup::account_transfer::{self, SourceRoots};
     use std::os::unix::fs::PermissionsExt;
 
-    fn firefox(home: &Path, name: &str, with_slack: bool) -> rusqlite::Connection {
+    pub(super) fn firefox(home: &Path, name: &str, with_slack: bool) -> rusqlite::Connection {
         let root = home.join(".mozilla/firefox");
         let profile = root.join(name);
         std::fs::create_dir_all(&profile).unwrap();
@@ -420,7 +430,7 @@ mod tests {
         }
         connection
     }
-    fn inventory(home: &Path, names: &[&str]) -> account_transfer::Inventory {
+    pub(super) fn inventory(home: &Path, names: &[&str]) -> account_transfer::Inventory {
         use std::fmt::Write as _;
         let root = home.join(".mozilla/firefox");
         let index = names
@@ -451,7 +461,7 @@ mod tests {
             .collect()
     }
 
-    fn native_slack_database(
+    pub(super) fn native_slack_database(
         home: &Path,
         flatpak: bool,
         encrypted: bool,

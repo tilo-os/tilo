@@ -255,6 +255,7 @@ case "$host" in
     bundle="$out/$artifact_base"
     mkdir -p "$bundle"
     cp target/release/imager "$bundle/tilo-imager-bin"
+    install -m755 target/release/tilo-enroll "$bundle/tilo-enroll"
     cp apps/imager/packaging/linux/tilo-imager "$bundle/tilo-imager"
     chmod +x "$bundle/tilo-imager" "$bundle/tilo-imager-bin"
     cp apps/imager/packaging/linux/tilo-imager.desktop "$bundle/"
@@ -276,6 +277,7 @@ case "$host" in
       "$appdir/usr/share/metainfo" \
       "$appdir/usr/share/icons/hicolor/scalable/apps"
     cp target/release/imager "$appdir/usr/bin/tilo-imager-bin"
+    install -m755 target/release/tilo-enroll "$appdir/usr/bin/tilo-enroll"
     apps/imager/packaging/stage-capture-sidecar.sh target/release/imager "$appdir/usr" "$appdir/usr/bin/tilo-imager-bin"
     cp apps/imager/packaging/linux/tilo-imager "$appdir/usr/bin/tilo-imager"
     cp apps/imager/packaging/linux/tilo-imager.desktop \

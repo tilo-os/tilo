@@ -48,6 +48,13 @@ use ui::widget::Element;
 // Page rhythm (HIG §7b): the crate's steps and the shared page sections.
 use crate::page::{self, Frame, stack};
 
+/// Display facts only; final installation still reprobes through the native helper.
+#[derive(Clone)]
+pub(crate) struct FullOsCheck {
+    pub facts: super::staging::probe::HostFacts,
+    pub plan: super::staging::plan::Plan,
+}
+
 type CommandSink = Rc<RefCell<Vec<SetupCommand>>>;
 type WorkerTask = Box<dyn FnOnce() + Send + 'static>;
 type WorkerLauncher = fn(&str, WorkerTask) -> Result<(), String>;
@@ -150,6 +157,8 @@ pub struct SetupApp {
     guided_navigation: LocalState<bool>,
     guided_desktop: Option<guided_desktop::DesktopPreparation>,
     desktop_only: bool,
+    full_os_check: Option<LocalState<Option<FullOsCheck>>>,
+    check_facts: Option<super::staging::probe::HostFacts>,
     desktop_flow: DesktopFlow,
     desktop_revision: u64,
     review_saver: fn(&[super::controller::FolderChoice]) -> Result<(), String>,
@@ -209,6 +218,11 @@ impl SetupApp {
     }
 
     fn refresh_guided_navigation(&self) {
+        if self.full_os_check.is_some() {
+            self.guided_navigation
+                .set(self.host_command_pending.is_none());
+            return;
+        }
         let allowed = self.guided_mode
             && self.guided_desktop_can_navigate()
             && !self.internal_install.is_running()
@@ -266,6 +280,47 @@ impl SetupApp {
         app
     }
 
+    /// Read-only early compatibility review. This mode never grants installation custody.
+    pub(crate) fn for_full_os_check(result: LocalState<Option<FullOsCheck>>) -> Self {
+        let mut app = Self::for_full_os();
+        app.full_os_check = Some(result);
+        app.refresh_guided_navigation();
+        app
+    }
+
+    fn check_ready(&self) -> bool {
+        self.full_os_check.is_some()
+            && self.internal_install.gate()
+            && self.internal_install.offers_full_os()
+            && self
+                .internal_download_flow
+                .as_ref()
+                .is_some_and(|flow| flow.offered_selection().is_some())
+            && !self.internal_install.is_probing()
+            && self.host_command_pending.is_none()
+            && self.internal_install.pending().is_none()
+            && self.internal_install.blockers().is_empty()
+            && self.check_facts.is_some()
+            && matches!(self.internal_install.plan(), Some(Ok(_)))
+    }
+
+    fn finish_full_os_check(&mut self) -> Result<(), String> {
+        if !self.check_ready() {
+            return Err(super::strings::t("imager-setup-check-not-ready"));
+        }
+        if let (Some(result), Some(facts), Some(Ok(plan))) = (
+            &self.full_os_check,
+            &self.check_facts,
+            self.internal_install.plan(),
+        ) {
+            result.set(Some(FullOsCheck {
+                facts: facts.clone(),
+                plan: plan.clone(),
+            }));
+        }
+        Ok(())
+    }
+
     fn review_full_os(&mut self) {
         self.controller.borrow_mut().review_full_os();
         self.chosen_experience = Some(Experience::FullOs);
@@ -302,7 +357,9 @@ impl SetupApp {
             return;
         }
         if !self.desktop_only {
-            self.start_known_folder_lookup();
+            if self.full_os_check.is_none() {
+                self.start_known_folder_lookup();
+            }
             self.start_host_probe();
         }
         self.refresh_guided_navigation();
@@ -371,6 +428,8 @@ impl SetupApp {
             guided_navigation: LocalState::new(false),
             guided_desktop: None,
             desktop_only: false,
+            full_os_check: None,
+            check_facts: None,
             desktop_flow,
             desktop_revision: 0,
             review_saver: super::desktop_continuation::persist_review,
@@ -567,7 +626,7 @@ impl SetupApp {
             SetupPage::Experience => chosen_experience
                 .is_some_and(|experience| self.capabilities.platform.supports(experience)),
             SetupPage::Folders => self.folder_selection_settled(),
-            SetupPage::Review => false,
+            SetupPage::Review => self.check_ready(),
         };
         let on_folder_choices = page == SetupPage::Folders;
         super::actions::SetupProjection {
@@ -628,6 +687,20 @@ impl SetupApp {
     /// # Errors
     /// Returns why the effect cannot run in the current setup state.
     pub fn answer(&mut self, effect: SetupEffect) -> Result<serde_json::Value, String> {
+        if self.full_os_check.is_some() {
+            match &effect {
+                SetupEffect::ContinueSetup => {
+                    self.finish_full_os_check()?;
+                    return Ok(self.setup_projection().value());
+                }
+                SetupEffect::ReadSetupStatus
+                | SetupEffect::ReadDesktopStatus
+                | SetupEffect::RecheckInternal
+                | SetupEffect::InternalFirmwareSettings
+                | SetupEffect::InternalDisableFastStartup => {}
+                _ => return Err(super::strings::t("imager-setup-check-only")),
+            }
+        }
         if self.import_requested {
             return Err("Guided setup is closed while folder imports are open.".into());
         }
@@ -882,6 +955,26 @@ impl SetupApp {
     }
 
     fn apply_command(&mut self, command: SetupCommand) {
+        if self.full_os_check.is_some() {
+            match command {
+                SetupCommand::Next => {
+                    let result = self.finish_full_os_check();
+                    self.status_is_error = result.is_err();
+                    if let Err(error) = result {
+                        self.status = error;
+                    }
+                    return;
+                }
+                SetupCommand::RecheckInternal
+                | SetupCommand::InternalFirmwareSettings
+                | SetupCommand::InternalDisableFastStartup => {}
+                _ => {
+                    self.status = super::strings::t("imager-setup-check-only");
+                    self.status_is_error = true;
+                    return;
+                }
+            }
+        }
         if matches!(&command, SetupCommand::Next)
             && self.controller().page() == SetupPage::Folders
             && !self.folder_selection_settled()
@@ -1241,6 +1334,9 @@ impl SetupApp {
                 }
             }
             WorkerMessage::HostProbe { facts, records } => {
+                if self.full_os_check.is_some() {
+                    self.check_facts = Some(facts.clone());
+                }
                 let has_release = self
                     .internal_download_flow
                     .as_ref()
@@ -1974,6 +2070,24 @@ impl SetupApp {
     }
 
     fn review_body(&self) -> Column {
+        if self.full_os_check.is_some() {
+            return stack()
+                .push(Box::new(Text::new(&super::strings::t(
+                    "imager-setup-check-title",
+                ))))
+                .push(Box::new(
+                    Text::new(&self.internal_readiness_text()).with_live(Politeness::Polite),
+                ))
+                .push(Box::new(self.internal_blockers_card(None)))
+                .push(Box::new(
+                    self.button(
+                        "setup.check.continue",
+                        &super::strings::t("installer-preview-continue"),
+                        SetupCommand::Next,
+                    )
+                    .with_enabled(self.check_ready()),
+                ));
+        }
         let experience = self.controller().plan().experience;
         let internal_offered =
             experience == Experience::FullOs && self.internal_install.offers_full_os();
@@ -2174,6 +2288,14 @@ impl SetupApp {
         operation: SetupEffect,
     ) -> Result<Option<SetupCommand>, String> {
         use SetupEffect as Op;
+        if self.full_os_check.is_some()
+            && !matches!(
+                &operation,
+                Op::RecheckInternal | Op::InternalFirmwareSettings | Op::InternalDisableFastStartup
+            )
+        {
+            return Err(super::strings::t("imager-setup-check-only"));
+        }
         let t = super::strings::t;
         let review_only = |app: &Self| {
             if app.on_full_os_review() {
@@ -2271,6 +2393,10 @@ impl SetupApp {
     /// Probe the host off the UI thread; Full Tilo shows as checking until
     /// the result arrives.
     fn start_host_probe(&mut self) {
+        if let Some(result) = &self.full_os_check {
+            result.set(None);
+            self.check_facts = None;
+        }
         let Some(task) = self.internal_install.probe_task() else {
             return;
         };
@@ -2515,7 +2641,7 @@ impl SetupApp {
     fn internal_projection(&self) -> super::actions::InternalProjection {
         let install = &self.internal_install;
         let page = self.controller().page();
-        let on_review = self.on_full_os_review();
+        let on_review = self.on_full_os_review() && self.full_os_check.is_none();
         let ready = install.offers_full_os();
         let flow = self.internal_download_flow.as_ref();
         let running = install.is_running();
@@ -2554,7 +2680,11 @@ impl SetupApp {
             max_gib: bounds.map(|(_, max)| max),
             // Without a digest, the projection cannot offer an install action.
             // The invocation path propagates the serialization error.
-            reviewed: install.reviewed_digest().ok().flatten(),
+            reviewed: if self.full_os_check.is_some() {
+                None
+            } else {
+                install.reviewed_digest().ok().flatten()
+            },
             shrink_bytes: plan
                 .and_then(|plan| plan.shrink.as_ref())
                 .map(|shrink| shrink.from_bytes.saturating_sub(shrink.to_bytes)),
@@ -2591,10 +2721,20 @@ impl SetupApp {
                         .is_ok(),
                 restart: on_review && install.can_restart() && idle_host,
                 restart_later: on_review && install.can_restart() && !install.restart_deferred(),
-                retry: install.gate() && resume_page && pending.is_some() && !running,
-                remove: install.gate() && resume_page && pending.is_some() && !running,
-                firmware_settings: on_review && idle_host && install.firmware_command().is_some(),
-                disable_fast_startup: on_review
+                retry: self.full_os_check.is_none()
+                    && install.gate()
+                    && resume_page
+                    && pending.is_some()
+                    && !running,
+                remove: self.full_os_check.is_none()
+                    && install.gate()
+                    && resume_page
+                    && pending.is_some()
+                    && !running,
+                firmware_settings: self.on_full_os_review()
+                    && idle_host
+                    && install.firmware_command().is_some(),
+                disable_fast_startup: self.on_full_os_review()
                     && idle_host
                     && install.command_available(HostCommand::DisableFastStartup),
                 recheck: install.gate() && resume_page && !install.is_probing() && !running,
@@ -2605,6 +2745,9 @@ impl SetupApp {
     fn internal_readiness_text(&self) -> String {
         let host = install_flow::host_arg(self.internal_install.host());
         match self.internal_install.readiness() {
+            Readiness::Gated if self.full_os_check.is_some() => {
+                super::strings::t("imager-setup-check-gated")
+            }
             Readiness::Gated => super::strings::t("imager-setup-internal-gated"),
             Readiness::Checking => {
                 super::strings::t_args("imager-setup-internal-checking", &[("host", host.into())])
@@ -5676,6 +5819,148 @@ mod tests {
         assert_eq!(launches[0].plan_sha256, launches[0].plan.digest().unwrap());
         assert_eq!(fixture.fakes.manifests.lock().unwrap()[0], fixture.bytes);
         assert!(!guard.get());
+    }
+
+    #[test]
+    fn full_os_check_refuses_mutations_even_with_forged_public_actions() {
+        let mut fixture = gated_app(install_flow::tests::Fakes::new(Vec::new()), HostOs::Linux);
+        let result = LocalState::new(None);
+        let app = &mut fixture.app;
+        app.review_full_os();
+        app.full_os_check = Some(result.clone());
+        app.start_host_probe();
+        app.poll_background();
+        assert!(app.check_ready());
+        for effect in [
+            SetupEffect::StartInternalDownload,
+            SetupEffect::ResumeInternalDownload,
+            SetupEffect::ReleaseInternalDownload,
+            SetupEffect::DiscardInternalDownload,
+            SetupEffect::InstallInternal {
+                reviewed: app.internal_install.reviewed_digest().unwrap().unwrap(),
+            },
+            SetupEffect::RetryInternal {
+                operation_id: "forged-operation".into(),
+            },
+            SetupEffect::RemoveInternal {
+                operation_id: "forged-operation".into(),
+            },
+            SetupEffect::RestartInternal,
+            SetupEffect::SetInternalTargetSize { gib: 120 },
+            SetupEffect::InstallDesktop,
+            SetupEffect::ChooseExperience {
+                experience: "desktop".into(),
+            },
+        ] {
+            assert!(invoke_setup_raw(app, effect).is_err());
+        }
+        // Invoke the actual resource contracts too, rather than relying on
+        // buttons being hidden or action availability metadata being honored.
+        for id in [
+            "start-internal-download",
+            "install-internal",
+            "remove-internal",
+        ] {
+            assert!(invoke_internal(app, id).is_err(), "{id}");
+        }
+        assert!(!app.internal_projection().availability.start_download);
+        assert!(!app.internal_projection().availability.install);
+        assert!(!app.internal_projection().availability.remove);
+        assert!(!app.internal_download_ready());
+        assert!(fixture.fakes.launches.lock().unwrap().is_empty());
+        invoke_setup_raw(app, SetupEffect::ContinueSetup).unwrap();
+        assert!(result.get().is_some());
+        assert_eq!(fixture.fakes.probes.load(Ordering::SeqCst), 1);
+        for command in [
+            SetupCommand::StartInternalDownload,
+            SetupCommand::InstallInternal,
+            SetupCommand::RemoveInternal,
+            SetupCommand::RetryInternal,
+        ] {
+            app.apply_command(command);
+            assert!(app.status_is_error);
+        }
+        assert!(fixture.fakes.launches.lock().unwrap().is_empty());
+
+        let mut pending = install_flow::tests::Fakes::new(Vec::new());
+        pending
+            .records
+            .push(install_flow::tests::record("actual-operation"));
+        let mut fixture = gated_app(pending, HostOs::Linux);
+        fixture.app.review_full_os();
+        fixture.app.full_os_check = Some(LocalState::new(None));
+        fixture.app.start_host_probe();
+        fixture.app.poll_background();
+        assert!(fixture.app.internal_install.pending().is_some());
+        assert!(
+            fixture
+                .app
+                .answer(SetupEffect::RemoveInternal {
+                    operation_id: "actual-operation".into(),
+                })
+                .is_err()
+        );
+        assert!(
+            fixture
+                .app
+                .answer(SetupEffect::RetryInternal {
+                    operation_id: "actual-operation".into(),
+                })
+                .is_err()
+        );
+        assert!(fixture.fakes.launches.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn full_os_check_rechecks_fresh_facts_and_does_not_reuse_continue_result() {
+        let fakes = install_flow::tests::Fakes::new(Vec::new());
+        let facts = Arc::new(std::sync::Mutex::new(fakes.facts.clone()));
+        let mut fixture = gated_app(fakes, HostOs::Linux);
+        let mut runtime = fixture.fakes.runtime();
+        let current = Arc::clone(&facts);
+        runtime.probe = Arc::new(move || current.lock().unwrap().clone());
+        fixture.app.internal_install = InternalInstall::new(runtime, true, HostOs::Linux);
+        let result = LocalState::new(None);
+        let app = &mut fixture.app;
+        app.review_full_os();
+        app.full_os_check = Some(result.clone());
+        app.start_host_probe();
+        app.poll_background();
+        invoke_setup_raw(app, SetupEffect::ContinueSetup).unwrap();
+        assert!(result.get().is_some());
+        facts
+            .lock()
+            .unwrap()
+            .blockers
+            .push(super::super::staging::probe::Blocker::NotGpt);
+        invoke_setup_raw(app, SetupEffect::RecheckInternal).unwrap();
+        assert!(result.get().is_none());
+        assert!(invoke_setup_raw(app, SetupEffect::ContinueSetup).is_err());
+        app.poll_background();
+        assert!(!app.check_ready());
+        assert!(invoke_setup_raw(app, SetupEffect::ContinueSetup).is_err());
+        assert!(
+            app.internal_readiness_text()
+                .contains(&install_flow::blocker_text(
+                    super::super::staging::probe::Blocker::NotGpt,
+                    HostOs::Linux
+                ))
+        );
+        assert!(fixture.fakes.launches.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn full_os_check_closed_gate_is_build_limitation_and_keeps_back_available() {
+        let result = LocalState::new(None);
+        let mut app = SetupApp::for_full_os_check(result);
+        app.internal_install = InternalInstall::gated(HostOs::Linux);
+        assert!(!app.check_ready());
+        assert!(app.guided_navigation_guard().get());
+        assert_eq!(
+            app.internal_readiness_text(),
+            super::super::strings::t("imager-setup-check-gated")
+        );
+        assert!(!app.internal_projection().availability.install);
     }
 
     fn run_inline(_: &str, task: WorkerTask) -> Result<(), String> {

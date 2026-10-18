@@ -43,7 +43,10 @@ impl InstallerPreview {
         self.show_desktop(crate::setup::view::SetupApp::for_full_os())
     }
 
-    fn show_desktop(&mut self, child: crate::setup::view::SetupApp) -> Result<(), &'static str> {
+    pub(super) fn show_desktop(
+        &mut self,
+        child: crate::setup::view::SetupApp,
+    ) -> Result<(), &'static str> {
         let navigation = child.guided_navigation_guard();
         let context = self
             .direct
