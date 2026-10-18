@@ -98,9 +98,9 @@ where
 }
 
 /// Give the chat `doc` the starting `channels` (names) while it has only
-/// the `#chat` and `#voice` every room opens with: those make way for the
-/// operator's. Messages, people and channels people made are left as they
-/// are, so this runs at every start and never resets.
+/// the `#chat` and `#voice` every room opens with, beside them. Nothing is
+/// ever removed: messages, people and channels are left as they are, so
+/// this runs at every start and never resets.
 pub(crate) fn settle_chat(
     doc: &mut automerge::AutoCommit,
     channels: &[String],
@@ -116,7 +116,6 @@ pub(crate) fn settle_chat(
         .iter()
         .any(|(id, channel)| channel.conversation_with.is_none() && !opened_with(id));
     if !has_channels && !channels.is_empty() {
-        target.channels.retain(|id, _| !opened_with(id));
         let (category, label) = CHAT_CATEGORY;
         let category = Id::from_raw(category);
         if !target.categories.contains(&category) {
@@ -320,9 +319,21 @@ mod tests {
         let channels = names(&["general", "help", "show-and-tell"]);
         settle_chat(&mut doc, &channels).unwrap();
         let chat = chat::Chat::read(&doc).unwrap();
-        assert_eq!(channel_names(&doc), channels);
+        assert_eq!(
+            channel_names(&doc),
+            ["chat", "voice", "general", "help", "show-and-tell"]
+        );
         let ids: Vec<&str> = chat.channels.iter().map(|(id, _)| id.as_str()).collect();
-        assert_eq!(ids, ["c_general", "c_help", "c_show_and_tell"]);
+        assert_eq!(
+            ids,
+            [
+                "c_chat",
+                "c_voice",
+                "c_general",
+                "c_help",
+                "c_show_and_tell"
+            ]
+        );
     }
 
     #[test]
@@ -368,7 +379,10 @@ mod tests {
         )
         .unwrap();
         settle_chat(&mut doc, &channels).unwrap();
-        assert_eq!(channel_names(&doc), ["general", "show-and-tell"]);
+        assert_eq!(
+            channel_names(&doc),
+            ["chat", "voice", "general", "show-and-tell"]
+        );
     }
 
     /// A bridged server adopts the starting channels: `#general` is joined
@@ -406,7 +420,7 @@ mod tests {
         }
         settle_chat(&mut doc, &channels).unwrap();
         let chat = chat::Chat::read(&doc).unwrap();
-        assert_eq!(channel_names(&doc), ["general", "goal"]);
+        assert_eq!(channel_names(&doc), ["chat", "voice", "general", "goal"]);
         assert_eq!(
             chat.channels
                 .get(&Id::from_raw("c_general"))

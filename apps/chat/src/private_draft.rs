@@ -10,10 +10,13 @@ impl ChatApp {
     ) -> EffectAnswer {
         let token = uuid::Uuid::parse_str(token).map_err(|_| "invalid private draft token")?;
         let draft = ui::private_draft::fetch(token, invocation)?;
-        // The shell hands a draft to the Chat of the workspace it was
-        // written in; this window only needs to be on screen to take it.
-        if self.rect.area() <= 0.0 {
-            return Err("Chat view unavailable".into());
+        // A draft is taken only by the Chat of the room it was written in.
+        let room = ui::collaboration::local_cluster_id();
+        if room.is_nil()
+            || uuid::Uuid::parse_str(&draft.workspace).ok() != Some(room)
+            || self.rect.area() <= 0.0
+        {
+            return Err("private draft room or Chat view unavailable".into());
         }
         let ui::private_draft::Target::Person { public_key } = &draft.target;
         self.open_person_conversation(public_key)?;
