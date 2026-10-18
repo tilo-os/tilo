@@ -118,6 +118,8 @@ class PlanProducerTests(unittest.TestCase):
                 sorted(line.split(launcher, 1)[1].split()[0] for line in calls),
                 sorted([
                     'tools/apps/browser_runtime_release.py',
+                    # The engine dependency of the published collection.
+                    'tools/apps/browser_runtime_release.py',
                     'tools/ci/resolve_builder.py',
                     'tools/app_packaging_qualification.py',
                     'tools/ci/app_release_history.py',
