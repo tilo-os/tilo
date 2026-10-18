@@ -1302,6 +1302,9 @@ pub struct RecordSet {
     /// calls this when done, and the caller is told
     /// [`RecordOpenError::Opening`] meanwhile.
     storage_wake: Option<durable_store::ReadyWake>,
+    /// How many times a record arrived in the backend without being
+    /// opened here ([`RecordStore::note_kept`]).
+    kept: std::cell::Cell<u64>,
     // Drop after the writers and reservations above. Temporary profiles must
     // outlive asynchronous flushes and recovery handles, not just their host.
     _profile_lifetime: Option<std::rc::Rc<dyn std::any::Any>>,
@@ -1369,6 +1372,7 @@ impl RecordSet {
             next_reservation: 0,
             native_initial: crate::collaboration::native_initial::capture_bridge(),
             storage_wake: None,
+            kept: std::cell::Cell::new(0),
             _profile_lifetime: None,
         }
     }
@@ -1396,6 +1400,7 @@ impl RecordSet {
             next_reservation: 0,
             native_initial: None,
             storage_wake: None,
+            kept: std::cell::Cell::new(0),
             _profile_lifetime: None,
         }
     }
@@ -2426,6 +2431,7 @@ impl RecordOwners {
                 .then(crate::collaboration::native_initial::capture_bridge)
                 .flatten(),
             storage_wake: None,
+            kept: std::cell::Cell::new(0),
             _profile_lifetime: self.profile_lifetime.clone(),
         });
         if let Some(cache) = &self.portable {
@@ -3155,6 +3161,23 @@ impl RecordStore {
             }));
         }
         held.into_iter().collect()
+    }
+
+    /// Tell the store that a record it does not have open was just kept in
+    /// its backend by someone else (a room's replication, delivering a part
+    /// another device started): what follows the records it keeps
+    /// ([`Self::held_parts`]) looks again at once instead of at its next
+    /// round. Callable while a frame reads the store.
+    pub fn note_kept(&self) {
+        if let Ok(set) = self.0.try_borrow() {
+            set.kept.set(set.kept.get().wrapping_add(1));
+        }
+    }
+
+    /// Moves whenever [`Self::note_kept`] is called.
+    #[must_use]
+    pub fn kept_revision(&self) -> u64 {
+        self.0.try_borrow().map_or(0, |set| set.kept.get())
     }
 
     /// Every [window default record](RecordId::window_default) of `kind`

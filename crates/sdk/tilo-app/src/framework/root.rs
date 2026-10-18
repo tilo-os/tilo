@@ -1886,6 +1886,7 @@ impl RootModel for ResourceRoot {
     fn settle(&mut self, edits: &mut ui_core::widget::Edits<'_>, path: &ui_core::automerge::ObjId) {
         self.typed.apply_settlements(edits);
         self.content.settle(edits, path);
+        self.storage.settle();
     }
 
     fn draw(

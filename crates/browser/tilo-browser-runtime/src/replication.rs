@@ -644,6 +644,15 @@ impl Room {
             return Ok(());
         }
         self.store_unopened(&app, &record, mutations)?;
+        // A window of the app that follows what its store keeps (a chain's
+        // newer head) takes it up at its next frame.
+        for mounted in self.mounts.values() {
+            for store in mounted.attachment.stores.borrow().iter() {
+                if store.package_and_home().0 == app {
+                    store.note_kept();
+                }
+            }
+        }
         self.stored.insert((app, record));
         for (&id, mounted) in &self.mounts {
             if let Some((handle, shared)) = &mounted.attachment.desktop {

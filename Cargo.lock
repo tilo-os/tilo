@@ -1982,6 +1982,7 @@ dependencies = [
 name = "chat"
 version = "0.1.0"
 dependencies = [
+ "durable-store",
  "emoji",
  "fnv",
  "image",

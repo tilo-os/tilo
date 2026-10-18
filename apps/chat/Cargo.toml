@@ -73,6 +73,8 @@ tempfile.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
 # The host's reading of a part's id, checked against the app's.
 neighbour-wire = { path = "../../crates/collab/neighbour-wire" }
+# Each device's store, for a part that reaches one from another.
+durable-store = { path = "../../crates/system/durable-store" }
 
 [lints]
 workspace = true
