@@ -170,20 +170,29 @@ pub(crate) fn ordered(listings: Vec<DirectoryListing>, now_ms: u64) -> Vec<Direc
 /// Whether a public workspace is listed, and with what.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Publication {
+    /// The room it is about now: another one than asked when making it
+    /// public moved the workspace onto the person's host.
+    pub room: RoomId,
     /// Listed in the directory of the host it lives on.
     pub public: bool,
     /// What it is.
     pub description: String,
     /// The role everyone who joins from the directory gets.
     pub default_role: RoomRole,
+    /// Making it public moved it from this computer onto the person's host.
+    pub moved: bool,
 }
 
-impl Default for Publication {
-    fn default() -> Self {
+impl Publication {
+    /// A workspace nobody lists, in `room`.
+    #[must_use]
+    pub fn private(room: RoomId) -> Self {
         Self {
+            room,
             public: false,
             description: String::new(),
             default_role: RoomRole::Commenter,
+            moved: false,
         }
     }
 }
@@ -199,7 +208,7 @@ const fn role_word(role: RoomRole) -> &'static str {
 }
 
 /// What the room's `publish`, `unpublish` or `publication` answered.
-fn publication_of(value: &serde_json::Value) -> Result<Publication, String> {
+fn publication_of(value: &serde_json::Value, room: RoomId) -> Result<Publication, String> {
     let public = value
         .get("public")
         .and_then(serde_json::Value::as_bool)
@@ -213,7 +222,9 @@ fn publication_of(value: &serde_json::Value) -> Result<Publication, String> {
         _ => RoomRole::Commenter,
     };
     Ok(Publication {
+        room,
         public,
+        moved: false,
         description: value
             .get("description")
             .and_then(serde_json::Value::as_str)
@@ -224,8 +235,10 @@ fn publication_of(value: &serde_json::Value) -> Result<Publication, String> {
 }
 
 /// What a person sees when the workspace they want to make public has no
-/// host to list it.
-const NO_HOST: &str = "Public workspaces are listed by the host they live on. Invite someone first, so this workspace moves to your host, then make it public.";
+/// host to move to.
+const NO_HOST: &str = "Public workspaces are listed by the host they live on, and you have no host yet. Add a home server in Settings, under Devices & sync.";
+/// What a person sees about a workspace someone else runs.
+const NOT_YOURS: &str = "Only the person who runs this workspace can make it public.";
 
 impl ShellNetwork {
     /// The public workspaces the sites this computer knows list, in the
@@ -346,32 +359,51 @@ impl ShellNetwork {
             .map_err(|error| error.to_string())
     }
 
-    /// Whether `room`, a workspace this person administers on their host,
-    /// is public, and with what.
+    /// Whether `room` is public, and with what: as its host answers when
+    /// a host of this person governs it; a workspace only this computer
+    /// governs is private until making it public moves it to their host.
     ///
     /// # Errors
     ///
-    /// When no host of this person governs it, or the host did not answer.
+    /// When someone else runs the workspace, or its host did not answer.
     pub(crate) fn publication(&self, room: RoomId) -> Result<Publication, String> {
-        let held = self.administered_room(room).ok_or(NO_HOST)?;
-        publication_of(&self.govern(&held, "publication", serde_json::Map::new())?)
+        match self.administered_room(room) {
+            Some(held) => publication_of(
+                &self.govern(&held, "publication", serde_json::Map::new())?,
+                held.room(),
+            ),
+            None if self.governs_here(room) => Ok(Publication::private(room)),
+            None => Err(NOT_YOURS.into()),
+        }
     }
 
     /// Make `room` public with `listing`, or private again with `None`, on
-    /// the host that governs it.
+    /// the host that governs it. A workspace only this computer governs is
+    /// moved onto the person's home relay first, in the same slot, and is
+    /// listed there (`moved`). Blocks on the host and the move: call it off
+    /// the frame loop.
     ///
     /// # Errors
     ///
-    /// When no host of this person governs it, or the host refused.
+    /// When someone else runs it, the person has no host to move it to, the
+    /// move failed, or the host refused.
     pub(crate) fn publish(
         &self,
         room: RoomId,
         listing: Option<Listing>,
     ) -> Result<Publication, String> {
-        let held = self.administered_room(room).ok_or(NO_HOST)?;
+        let listing = listing
+            .map(|listing| listing.checked().map_err(|error| error.to_string()))
+            .transpose()?;
+        let (held, moved) = match (self.administered_room(room), &listing) {
+            (Some(held), _) => (held, false),
+            // Private already, and nowhere to take it out of.
+            (None, None) if self.governs_here(room) => return Ok(Publication::private(room)),
+            (None, Some(_)) if self.governs_here(room) => (self.move_to_host(room)?, true),
+            (None, _) => return Err(NOT_YOURS.into()),
+        };
         let answer = match listing {
             Some(listing) => {
-                let listing = listing.checked().map_err(|error| error.to_string())?;
                 let mut arguments = serde_json::Map::new();
                 arguments.insert(
                     "default_role".into(),
@@ -382,9 +414,57 @@ impl ShellNetwork {
             }
             None => self.govern(&held, "unpublish", serde_json::Map::new())?,
         };
-        publication_of(&answer)
+        let mut publication = publication_of(&answer, held.room())?;
+        publication.moved = moved;
+        Ok(publication)
+    }
+
+    /// Whether this computer governs `room` itself, as the person who runs
+    /// it: a workspace that lives only here.
+    fn governs_here(&self, room: RoomId) -> bool {
+        self.replica
+            .lock()
+            .is_ok_and(|replica| replica.tree.read().governs_room(room))
+    }
+
+    /// Move the workspace showing `room` onto this person's home relay and
+    /// wait until this device holds it there, as the room's administrator.
+    fn move_to_host(&self, room: RoomId) -> Result<super::relay_rooms::HeldRoom, String> {
+        let (local, name) = self
+            .replica
+            .lock()
+            .map_err(|_| "the workspaces are unavailable")?
+            .tree
+            .read()
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room == room)
+            .map(|workspace| (workspace.id, workspace.name.clone()))
+            .ok_or("that workspace is not on this computer")?;
+        let moved = self
+            .move_to_home_relay(local, room, &name, None)?
+            .ok_or(NO_HOST)?;
+        // The enrollment's own exchange decides when it is done or failed;
+        // the room is administered here once it is installed.
+        if let Some(id) = moved.enrollment {
+            loop {
+                match self.poll_enrollment(id)? {
+                    crate::shell::peer_sync_overlay::PeerSyncResponse::EnrollmentPending {
+                        ..
+                    } => std::thread::sleep(MOVE_POLL),
+                    _ => break,
+                }
+            }
+        }
+        tracing::info!(from = %room, to = %moved.room, "a workspace moved to its person's host to be made public");
+        self.administered_room(moved.room)
+            .ok_or_else(|| "the workspace moved to your host, but it does not answer yet; try again in a moment".into())
     }
 }
+
+/// How often moving a workspace to make it public looks at its enrollment.
+const MOVE_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 
 #[cfg(test)]
 mod tests {
@@ -559,21 +639,27 @@ mod tests {
 
     #[test]
     fn the_hosts_answer_reads_as_a_publication() {
+        let room = RoomId::new();
         assert_eq!(
-            publication_of(&serde_json::json!({
-                "public": true, "description": "Coffee", "default_role": "viewer"
-            })),
+            publication_of(
+                &serde_json::json!({
+                    "public": true, "description": "Coffee", "default_role": "viewer"
+                }),
+                room
+            ),
             Ok(Publication {
+                room,
                 public: true,
                 description: "Coffee".into(),
                 default_role: RoomRole::Viewer,
+                moved: false,
             })
         );
         assert_eq!(
-            publication_of(&serde_json::json!({ "public": false })),
-            Ok(Publication::default())
+            publication_of(&serde_json::json!({ "public": false }), room),
+            Ok(Publication::private(room))
         );
-        assert!(publication_of(&serde_json::json!({})).is_err());
+        assert!(publication_of(&serde_json::json!({}), room).is_err());
         assert_eq!(
             relay_directory("https://eu1.tilo.coffee").map(String::from),
             Some("https://eu1.tilo.coffee/peer/v1/directory".to_owned())

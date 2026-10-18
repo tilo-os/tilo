@@ -3078,3 +3078,4 @@ directory-role-moderator = Moderierende
 directory-reported = Arbeitsbereich gemeldet
 directory-reported-body = Die Betreibenden wurden benachrichtigt.
 directory-report-failed = Die Meldung ist nicht angekommen
+directory-moved = { $name } ist auf deinen Host umgezogen, damit alle ihn finden und beitreten können.

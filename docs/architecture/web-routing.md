@@ -584,17 +584,21 @@ A web host may also name a **directory** of public workspaces in
 A workspace is public when its owner (or anyone the room lets change its
 settings) made it so in its settings: a short description and the **default
 role** everyone who joins gets (viewer, commenter or editor; moderators are
-chosen). The host the workspace lives on lists it (`POST
+chosen). A workspace that lives only on the owner's computer moves onto
+their home relay when they make it public, in the same place on their
+desktop. The host the workspace lives on lists it (`POST
 <api>/directory`: name, description, default role, who is in it now, how many
 belong to it, when it was last active) and answers its door (`POST
 <api>/directory/<room>/join`): an invitation only that person can redeem and
 the token of a pre-admission at the default role, so the ordinary redemption
-admits them at once; nobody decides each join. A banned person is refused at
+admits them at once; nobody decides each join. The host signs that grant
+with its own device key, and a redemption is admitted only under a grant
+the room's owner or this host's door signed while the room is public. A banned person is refused at
 the door, the room's moderators remove and ban as in any room, `…/report`
 files a report its owner sees, and a host with a moderation model key runs
 the moderation agent in every public room. A site's room service lists its
-own community workspace the same way (`/directory`, its door the site's
-`/join`). On a Tilo computer, "Join a workspace…" (the workspace overview,
+own community workspace the same way (`/directory`, with the faces of the
+members online its relay reports, its door the site's `/join`). On a Tilo computer, "Join a workspace…" (the workspace overview,
 the strip switcher, the workspace menu and search) lists the directories of
 the community site first, then those of the hosts of the workspaces it holds
 through the web and any site the person types; joining adds the workspace and

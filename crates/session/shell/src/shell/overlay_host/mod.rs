@@ -4517,7 +4517,29 @@ impl ShellOverlayHost {
                     let mut state = chrome.borrow_mut();
                     match outcome {
                         Ok(PeerSyncResponse::Publication(publication)) => {
-                            state.set_publication(*room, Ok(publication));
+                            if publication.moved {
+                                // Making it public moved it to the person's
+                                // host: say so once, in a sentence.
+                                let name = state
+                                    .tree()
+                                    .desktop
+                                    .workspaces
+                                    .iter()
+                                    .find(|workspace| workspace.room == publication.room)
+                                    .map(|workspace| workspace.name.clone())
+                                    .unwrap_or_default();
+                                state.push_notification(
+                                    t_args("directory-moved", &[("name", name.into())]),
+                                    String::new(),
+                                );
+                            }
+                            if publication.room != *room {
+                                state.set_publication(
+                                    *room,
+                                    Ok(crate::shell::network::Publication::private(*room)),
+                                );
+                            }
+                            state.set_publication(publication.room, Ok(publication));
                         }
                         Ok(_) => {
                             state.set_publication(*room, Err(t("peer-sync-unexpected-response")))
