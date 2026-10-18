@@ -307,6 +307,30 @@ pub fn take<T: 'static>(source: &mut dyn FieldSource) -> Result<T, ModelError> {
     Ok(value)
 }
 
+/// The next field of `source`, a `T`, or what `repair` derives for it when
+/// the document holds none: a field declared `#[model(default = ..)]`, so a
+/// record missing it (written by an older app, or half-made by an edit that
+/// raced its deletion) still reads, and the next whole write stores it.
+///
+/// # Errors
+/// Why it does not read, other than being absent.
+pub fn take_or<T: 'static>(
+    source: &mut dyn FieldSource,
+    repair: impl FnOnce() -> T,
+) -> Result<T, ModelError> {
+    let mut out: Option<T> = None;
+    match source.next(&mut out) {
+        Ok(()) => {}
+        Err(ModelError::Missing { .. }) => out = Some(repair()),
+        Err(error) => return Err(error),
+    }
+    let Some(mut value) = out else {
+        return Err(mismatch());
+    };
+    source.read(&mut value)?;
+    Ok(value)
+}
+
 /// Put `value` into `out`, an `Option` of its type.
 ///
 /// # Errors
@@ -1148,6 +1172,45 @@ pub fn read_fields(
     )
 }
 
+/// Read the record from the maps `objs`, field by field: each field from
+/// the first map that holds it. Two replicas that made the same item
+/// concurrently each made a map for it, and the document keeps both under
+/// one key; this reads them as one item, so a field only the losing map
+/// holds is not lost.
+///
+/// # Errors
+/// Why a field does not read from any of them.
+pub(crate) fn read_fields_merged(
+    record: &RecordDesc,
+    doc: &Doc,
+    objs: &[ObjId],
+    out: &mut dyn Any,
+) -> Result<(), ModelError> {
+    let mut keys: Vec<&str> = Vec::with_capacity(record.fields.len());
+    for field in record.fields {
+        keys.push(field.key);
+    }
+    let mut slots = vec![None; keys.len()];
+    for obj in objs {
+        let mut found = vec![None; keys.len()];
+        crate::model::fill_slots(doc, obj, &keys, &mut found);
+        for (slot, found) in slots.iter_mut().zip(found) {
+            if slot.is_none() {
+                *slot = found;
+            }
+        }
+    }
+    (record.build)(
+        &mut DocSource {
+            record,
+            doc,
+            slots,
+            index: 0,
+        },
+        out,
+    )
+}
+
 fn reload(
     record: &RecordDesc,
     target: &mut dyn Any,
@@ -1294,6 +1357,13 @@ pub fn store_changed(
     slot: Slot<'_>,
     dirty: &Delta,
 ) -> Result<(), ModelError> {
+    // A record whose map is gone (deleted by a change this one raced) is
+    // written whole, as a whole write would: writing only the fields that
+    // changed into a map made now would leave the others missing, an item
+    // no replica can read.
+    if !matches!(slot.current(doc)?, Some((Value::Object(ObjType::Map), _))) {
+        return store(record, value, doc, slot);
+    }
     let obj = slot.object(doc, ObjType::Map)?;
     write_changed_fields(record, value, before, doc, &obj, dirty)
 }

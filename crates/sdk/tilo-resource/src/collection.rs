@@ -139,6 +139,28 @@ pub struct Collection<T> {
     membership: Membership,
     /// How to copy an item another collection still shares.
     copier: Copier<T>,
+    /// Stored items that did not read, and why: left out of the items,
+    /// kept in the document for their repair ([`Self::quarantined`]).
+    quarantine: Vec<Quarantined>,
+    /// A quarantined item was repaired or discarded since the collection
+    /// was read: only a whole write stores that as a whole read and write
+    /// would, keeping the stored order key or deleting what it never read.
+    whole_write: bool,
+}
+
+/// A stored item of a [`Collection`] that does not read as its type, left
+/// out of the collection rather than making the whole record unreadable.
+///
+/// It stays in the document as it is. It is repaired by pushing a whole
+/// item under its id ([`Collection::push`]), which stores every field, or
+/// removed with the remove-item edit (or [`Collection::discard`]); a
+/// migration may rewrite it in place.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Quarantined {
+    /// The item's id.
+    pub id: Id,
+    /// Why it does not read, where in the item.
+    pub reason: String,
 }
 
 impl<T: Clone> Clone for Collection<T> {
@@ -151,6 +173,8 @@ impl<T: Clone> Clone for Collection<T> {
             index: self.index.clone(),
             membership: self.membership,
             copier: Copier(OnceLock::from(copy)),
+            quarantine: self.quarantine.clone(),
+            whole_write: self.whole_write,
         }
     }
 }
@@ -329,6 +353,8 @@ impl<T> Default for Collection<T> {
             index: Index::default(),
             membership: Membership::EMPTY,
             copier: Copier::default(),
+            quarantine: Vec::new(),
+            whole_write: false,
         }
     }
 }
@@ -414,9 +440,36 @@ impl<T> Collection<T> {
         self.copier.unshare(&mut entry.item)
     }
 
+    /// The stored items that did not read, each with why: the view shows
+    /// the rest, and these are repaired by pushing a whole item under the
+    /// id or removed ([`Quarantined`]).
+    #[must_use]
+    pub fn quarantined(&self) -> &[Quarantined] {
+        &self.quarantine
+    }
+
+    /// Forget the quarantined item `id`: the next write deletes it from the
+    /// document, as it deletes any item no longer in the collection.
+    /// Whether it was quarantined.
+    pub fn discard(&mut self, id: &Id) -> bool {
+        let before = self.quarantine.len();
+        self.quarantine.retain(|held| &held.id != id);
+        let discarded = self.quarantine.len() != before;
+        self.whole_write |= discarded;
+        discarded
+    }
+
+    /// Stop holding the quarantined item `id`, as an item takes its place.
+    fn repaired(&mut self, id: &Id) {
+        let before = self.quarantine.len();
+        self.quarantine.retain(|held| &held.id != id);
+        self.whole_write |= self.quarantine.len() != before;
+    }
+
     /// Append an item. Returns its id for chaining. An id already present
-    /// is replaced in place.
+    /// is replaced in place; a quarantined one is repaired by it.
     pub fn push(&mut self, id: Id, item: T) -> Id {
+        self.repaired(&id);
         if let Some(position) = self.position(&id)
             && let Some(existing) = self.items.get_mut(position)
         {
@@ -433,6 +486,7 @@ impl<T> Collection<T> {
     /// Insert an item at `index` (clamped to the end). An id already present
     /// is moved there.
     pub fn insert(&mut self, index: usize, id: Id, item: T) -> Id {
+        self.repaired(&id);
         self.remove(&id);
         let index = index.min(self.items.len());
         self.items.insert(index, Entry::new(id.clone(), item));
@@ -634,7 +688,8 @@ pub(crate) fn put_entry(
 }
 
 /// Write `items`, in this order, as the map from id to `{ k, v }` a
-/// [`Collection`] is stored as: items no longer there are deleted, every
+/// [`Collection`] is stored as: items no longer there (and not
+/// `quarantined`) are deleted, every
 /// order key still consistent with the new order is kept (the longest
 /// increasing run), and keys are minted only for new or moved items.
 pub(crate) fn store_in_order(
@@ -642,12 +697,15 @@ pub(crate) fn store_in_order(
     slot: Slot<'_>,
     items: &[(&Id, &dyn Stores)],
     order_only: bool,
+    quarantined: &dyn Fn(&Id) -> bool,
 ) -> Result<(), ModelError> {
     let map = slot.object(doc, ObjType::Map)?;
     let stored = stored_entries(doc, &map)?;
     let present: HashSet<&Id> = items.iter().map(|(id, _)| *id).collect();
     for entry in &stored {
-        if !present.contains(&entry.id) {
+        // An item that did not read is kept as it is stored, for its
+        // repair: not reading it is no reason to delete it.
+        if !present.contains(&entry.id) && !quarantined(&entry.id) {
             doc.delete(&map, entry.id.as_str())?;
         }
     }
@@ -746,6 +804,14 @@ pub(crate) fn edit_entries(
             let Some((Value::Object(ObjType::Map), entry)) = doc.get(&map, id.as_str())? else {
                 return Err(ModelError::invalid(format!("no item `{id}`")));
             };
+            // An edit inside an item whose value is gone would make the
+            // value anew holding the edited field alone: an item missing
+            // every other field.
+            if !rest.is_empty() && doc.get(&entry, VALUE)?.is_none() {
+                return Err(ModelError::invalid(format!(
+                    "item `{id}` holds nothing to edit"
+                )));
+            }
             (edits.item)(doc, Slot::Key(&entry, VALUE), rest, op, cx).located(id.as_str())
         }
         (None, EditOp::InsertItem { id, at, value }) => {
@@ -848,6 +914,20 @@ pub(crate) fn store_entries_changed(
         };
         let kept = touched == Touch::Untouched && stored_key == key;
         if kept && (writes.same)(now, at) {
+            continue;
+        }
+        // The entry this item was read from is gone from the document (a
+        // change it raced deleted it): written whole, as a whole write
+        // would, never as the fields that changed in an entry made now.
+        if !writes.order_only
+            && !matches!(
+                doc.get(&map, id.as_str())?,
+                Some((Value::Object(ObjType::Map), _))
+            )
+        {
+            put_entry(doc, &map, id, key, false, &|doc, slot| {
+                (writes.store)(now, doc, slot)
+            })?;
             continue;
         }
         if writes.order_only {
@@ -1007,7 +1087,11 @@ pub(crate) fn stored_entries(doc: &Doc, map: &ObjId) -> Result<Vec<Stored>, Mode
         }
         let entry = item.id();
         let [order, value] = crate::model::read_slots(doc, &entry, [ORDER, VALUE]);
-        let order: crate::Atom = crate::model::load_slot(doc, order, ORDER)?;
+        // An entry without a readable order key is no entry anyone placed:
+        // left out, never the reason its whole collection does not read.
+        let Ok(order) = crate::model::load_slot::<crate::Atom>(doc, order, ORDER) else {
+            continue;
+        };
         entries.push(Stored {
             id: Id(item.key.into_owned()),
             key: order.0,
@@ -1263,6 +1347,14 @@ pub(crate) trait Entries {
     fn reorder(&mut self);
     /// The ids changed.
     fn changed(&mut self);
+    /// Whether the stored item `id` is quarantined.
+    fn is_quarantined(&self, id: &Id) -> bool;
+    /// Hold the stored item `id` as quarantined, for `reason`.
+    fn quarantine(&mut self, id: Id, reason: String);
+    /// Stop holding `id` as quarantined: it reads again, or is gone.
+    fn release(&mut self, id: &Id);
+    /// Only a whole write stores the collection as it now is.
+    fn needs_whole_write(&self) -> bool;
 }
 
 impl<T: 'static> Entries for Collection<T> {
@@ -1353,6 +1445,25 @@ impl<T: 'static> Entries for Collection<T> {
         self.index.reset();
         self.moved();
     }
+
+    fn is_quarantined(&self, id: &Id) -> bool {
+        self.quarantine.iter().any(|held| &held.id == id)
+    }
+
+    fn quarantine(&mut self, id: Id, reason: String) {
+        match self.quarantine.iter_mut().find(|held| held.id == id) {
+            Some(held) => held.reason = reason,
+            None => self.quarantine.push(Quarantined { id, reason }),
+        }
+    }
+
+    fn release(&mut self, id: &Id) {
+        self.quarantine.retain(|held| &held.id != id);
+    }
+
+    fn needs_whole_write(&self) -> bool {
+        self.whole_write
+    }
 }
 
 /// What `Collection<T>`'s table reaches into one with.
@@ -1436,6 +1547,86 @@ impl Stores for StagedItem {
     }
 }
 
+/// Whether `error` says a stored value does not read as its type (absent,
+/// of another shape, invalid): what quarantines one item rather than
+/// failing its whole record. A document error is no such thing.
+fn quarantines(error: &ModelError) -> bool {
+    matches!(
+        error,
+        ModelError::Missing { .. } | ModelError::Shape { .. } | ModelError::Invalid { .. }
+    )
+}
+
+/// The value maps the entry `key` of the collection map `map` holds: the
+/// winning entry's first, then those of the entries (and values) that
+/// replicas made concurrently and the document keeps in conflict beside it.
+fn conflicting_values(doc: &Doc, (map, key): (&ObjId, &str)) -> Vec<ObjId> {
+    fn maps(doc: &Doc, obj: &ObjId, key: &str, out: &mut Vec<ObjId>) {
+        if let Ok(Some((Value::Object(ObjType::Map), winner))) = doc.get(obj, key)
+            && !out.contains(&winner)
+        {
+            out.push(winner);
+        }
+        for (value, id) in doc.get_all(obj, key).unwrap_or_default() {
+            if matches!(value, Value::Object(ObjType::Map)) && !out.contains(&id) {
+                out.push(id);
+            }
+        }
+    }
+    let mut entries = Vec::new();
+    maps(doc, map, key, &mut entries);
+    let mut values = Vec::new();
+    for entry in &entries {
+        maps(doc, entry, VALUE, &mut values);
+    }
+    values
+}
+
+/// Read the item stored under the entry `key` of the collection map `map`
+/// into `into` (an `Option` of `item`'s type), from the value slot `slot`
+/// its entry holds. When that does not read and replicas made the entry
+/// concurrently, the copies the document keeps in conflict are read as one
+/// item, each field from the first copy holding it: the same id made on two
+/// devices is one complete item, never one missing what the other copy
+/// holds. `Ok(true)` when it was read so.
+///
+/// # Errors
+/// Why the item does not read, from its winning copy.
+fn fill_item(
+    item: &ModelTable,
+    doc: &Doc,
+    entry: (&ObjId, &str),
+    slot: Option<(&Value<'_>, &ObjId)>,
+    into: &mut dyn Any,
+) -> Result<bool, ModelError> {
+    let error = match crate::table::load_slot(item, doc, slot, into) {
+        Ok(()) => return Ok(false),
+        Err(error) if quarantines(&error) => error,
+        Err(error) => return Err(error),
+    };
+    let copies = conflicting_values(doc, entry);
+    if copies.len() < 2 {
+        return Err(error);
+    }
+    let merged = match item.record() {
+        Some(record) => crate::table::read_fields_merged(record, doc, &copies, into).is_ok(),
+        None => copies.iter().any(|copy| {
+            crate::table::load_slot(item, doc, Some((&Value::Object(ObjType::Map), copy)), into)
+                .is_ok()
+        }),
+    };
+    if merged { Ok(true) } else { Err(error) }
+}
+
+/// The item just appended to `entries` was read from conflicting copies:
+/// it forgets its order key, so the next write stores it whole, over the
+/// winning copy, and the document holds it complete again.
+fn mark_merged(entries: &mut dyn Entries) {
+    if let Some(last) = entries.count().checked_sub(1) {
+        entries.set_order(last, None);
+    }
+}
+
 /// Read a collection stored in the map `id` into `out`, a fresh one.
 fn load_into(
     desc: &CollectionDesc,
@@ -1447,10 +1638,26 @@ fn load_into(
     let item = desc.item;
     load_entries(doc, value, id, &mut |stored| {
         let slot = stored.value;
-        out.push_filled((stored.id, Some(stored.key), false), &mut |into| {
-            crate::table::load_slot(item, doc, slot.as_ref().map(|(v, i)| (v, i)), into)
-                .located(VALUE)
-        })
+        let key = stored.id.clone();
+        let mut merged = false;
+        let read = out.push_filled((stored.id, Some(stored.key), false), &mut |into| {
+            let slot = slot.as_ref().map(|(v, i)| (v, i));
+            merged = fill_item(item, doc, (id, key.as_str()), slot, into).located(VALUE)?;
+            Ok(())
+        });
+        match read {
+            Ok(()) => {
+                if merged {
+                    mark_merged(out);
+                }
+                Ok(())
+            }
+            Err(error) if quarantines(&error) => {
+                out.quarantine(key.clone(), error.at(key.as_str()).to_string());
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
     })?;
     // What was read is a membership of its own.
     out.changed();
@@ -1528,7 +1735,9 @@ pub static COLLECTION_OPS: ModelOps = ModelOps {
         for (id, item) in &held {
             items.push((*id, item as &dyn Stores));
         }
-        store_in_order(doc, slot, &items, order_only(desc.item))
+        store_in_order(doc, slot, &items, order_only(desc.item), &|id| {
+            entries.is_quarantined(id)
+        })
     },
     stores_as: |table, value, before| {
         let Some(desc) = table.collection() else {
@@ -1537,7 +1746,7 @@ pub static COLLECTION_OPS: ModelOps = ModelOps {
         let (Some(now), Some(was)) = ((desc.entries)(value), (desc.entries)(before)) else {
             return false;
         };
-        if now.count() != was.count() || !strictly_ordered_entries(was) {
+        if now.needs_whole_write() || now.count() != was.count() || !strictly_ordered_entries(was) {
             return false;
         }
         for at in 0..now.count() {
@@ -1560,6 +1769,9 @@ pub static COLLECTION_OPS: ModelOps = ModelOps {
         let desc = listed(table)?;
         let now = (desc.entries)(value).ok_or_else(crate::table::mismatch)?;
         let was = (desc.entries)(before).ok_or_else(crate::table::mismatch)?;
+        if now.needs_whole_write() {
+            return (COLLECTION_OPS.store)(table, value, doc, slot);
+        }
         let mut ids: Vec<&Id> = Vec::with_capacity(now.count());
         for at in 0..now.count() {
             if let Some(id) = now.id_at(at) {
@@ -1840,8 +2052,21 @@ fn refresh_entries(
         let item_id = Id(key.to_owned());
         let position = entries.find(&item_id);
         let below = touched.key(key) == Touch::Below && position.is_some();
-        match touched_entry(doc, id, key, delta, below)? {
+        let touched_now = match touched_entry(doc, id, key, delta, below) {
+            Ok(touched_now) => touched_now,
+            Err(error) if quarantines(&error) => {
+                if let Some(position) = position {
+                    entries.remove_at(position);
+                    entries.changed();
+                }
+                entries.quarantine(item_id, error.to_string());
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        match touched_now {
             Touched::Gone => {
+                entries.release(&item_id);
                 if let Some(position) = position {
                     entries.remove_at(position);
                     entries.changed();
@@ -1854,9 +2079,22 @@ fn refresh_entries(
                         entries.set_order(position, order);
                         reorder = true;
                     }
-                    if let Some(existing) = entries.item_at_mut(position) {
-                        crate::table::refresh_slot(item, existing, doc, &entry, VALUE, delta)
-                            .located(key)?;
+                    let refreshed = match entries.item_at_mut(position) {
+                        Some(existing) => {
+                            crate::table::refresh_slot(item, existing, doc, &entry, VALUE, delta)
+                                .located(key)
+                        }
+                        None => Ok(()),
+                    };
+                    match refreshed {
+                        Ok(()) => {}
+                        // It no longer reads: out of the items, held for repair.
+                        Err(error) if quarantines(&error) => {
+                            entries.remove_at(position);
+                            entries.changed();
+                            entries.quarantine(item_id, error.to_string());
+                        }
+                        Err(error) => return Err(error),
                     }
                 }
             }
@@ -1880,16 +2118,41 @@ fn refresh_entries(
             // A new item, or one whose entry was replaced.
             Touched::Fresh { entry, order } => {
                 let slot = crate::model::get_slot(doc, &entry, VALUE).located(key)?;
+                let mut merged = false;
                 let mut fill = |into: &mut dyn Any| {
-                    crate::table::load_slot(item, doc, slot.as_ref().map(|(v, i)| (v, i)), into)
+                    let slot = slot.as_ref().map(|(v, i)| (v, i));
+                    merged = fill_item(item, doc, (id, key), slot, into)
                         .located(VALUE)
-                        .located(key)
+                        .located(key)?;
+                    Ok(())
                 };
-                if let Some(position) = position {
-                    entries.replace_filled(position, Some(order), &mut fill)?;
-                } else {
-                    entries.push_filled((item_id, Some(order), false), &mut fill)?;
-                    entries.changed();
+                let read = match position {
+                    Some(position) => entries.replace_filled(position, Some(order), &mut fill),
+                    None => entries.push_filled((item_id.clone(), Some(order), false), &mut fill),
+                };
+                match read {
+                    Ok(()) => {
+                        entries.release(&item_id);
+                        let at = match position {
+                            Some(position) => Some(position),
+                            None => {
+                                entries.changed();
+                                entries.count().checked_sub(1)
+                            }
+                        };
+                        if merged && let Some(at) = at {
+                            entries.set_order(at, None);
+                        }
+                    }
+                    // It does not read: out of the items, held for repair.
+                    Err(error) if quarantines(&error) => {
+                        if let Some(position) = position {
+                            entries.remove_at(position);
+                            entries.changed();
+                        }
+                        entries.quarantine(item_id, error.to_string());
+                    }
+                    Err(error) => return Err(error),
                 }
                 reorder = true;
             }

@@ -53,7 +53,7 @@ want, not only for the value you hold.
 | `Vec<T>` | list, by position | for short lists that are replaced whole |
 | `BTreeMap<String, T>` | map | per key; copied whole when a view holds the state, so for small maps |
 | `Map<T>` | map, as `BTreeMap<String, T>` | per key; a change copies only its chunk of a held state, and saving it visits only the chunks changes copied |
-| `Collection<T>` | items with stable `Id`s and order keys | per item; moves keep identity |
+| `Collection<T>` | items with stable `Id`s and order keys | per item; moves keep identity; one id made on two replicas reads as one item, field by field |
 | `Grid<T>` | rows and columns with stable ids, sparse cells | per cell; inserting a row keeps every cell's identity; saving and comparing a copy visit only the rows of cells changes copied |
 | `Bytes` | content-addressed blob reference; small values inline | last writer wins |
 | `Outbox<T>` | queue of entries settled by the owning device | see §2.4 |
@@ -79,6 +79,10 @@ shared ones (`RichText`, `Grid`). An app does not implement `Resource` by hand.
 - `#[model(whole)]` reads all of a value that is otherwise read as views ask
   for it (a `RichText`'s paragraphs), so verbs, search and `read_content` see
   every word: for short texts such as a note's body or a slide's text box.
+- `#[model(default = expr)]` is what the field reads as when the document holds
+  none: a required field with a sensible derivation (`#[model(default =
+  Id::from_raw("ws_home"))]`), so an item written without it still reads. The
+  next whole write of the item stores it.
 - `#[model(rename = "key")]`, `#[model(skip)]` as before.
 - `#[model(check = path)]` on a type names an invariant,
   `fn(&Self) -> Result<(), Refusal>`. It runs after every change that touched a
@@ -474,9 +478,27 @@ actions that queued an outside consequence undo through their inverse action.
   versions, so two devices migrating concurrently produce the same change.
   `tilo-app check` fails when the schema in `surface.toml` changed
   incompatibly without a version bump.
-- **An unreadable document fails loudly.** A document that does not read as the
-  model shows an error state in the view and its actions report why they are
-  unavailable; stale state is never shown as current.
+- **An unreadable item is quarantined; only an unreadable record fails.** One
+  item of a `Collection` that does not read as its type (a required field
+  absent, a value of another shape) never makes the whole app unopenable: it
+  is left out of the collection, which reads and shows the rest, and
+  `Collection::quarantined()` lists it with why. It stays in the document as
+  it is, through every write, until it is repaired: pushing a whole item under
+  its id stores every field, `Collection::discard` (or the remove-item edit)
+  deletes it, and a migration may rewrite it. A record that does not read
+  outside its collections (a field of the record itself, a newer storage
+  version) shows an error state in the view and its actions report why they
+  are unavailable; stale state is never shown as current.
+- **The same item made twice is one item.** Two replicas pushing one fixed id
+  concurrently each make an entry map, and the document keeps both under the
+  key. A read that finds the winning copy incomplete reads the copies as one
+  item, each field from the first copy holding it, and the next write stores
+  it whole over the winning copy. A compared write never stores half an item:
+  an item whose entry or value is gone from the document is written whole, and
+  a field edit into an item holding no value is refused. An app that creates
+  the same items on every replica (a starter) makes them in its genesis
+  (`ResourceApp::genesis`), one identical change on every device, rather than
+  in each device's seed.
 - **Old history keeps rendering.** An entry naming a field or verb that no
   longer exists renders through the framework fallback.
 

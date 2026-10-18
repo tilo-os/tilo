@@ -40,7 +40,10 @@ fn krate() -> Tokens {
 /// resource with its own operations (rich text: published beneath the
 /// record's resource, an item's or the record's own, at `<record>/<key>`,
 /// its actions applied as field edits; see `tilo_resource::child`), `#[model(remove = "quiet")]` on a collection whose items are cheap to
-/// remove (removing one by field edit asks no confirmation).
+/// remove (removing one by field edit asks no confirmation),
+/// `#[model(default = expr)]` (what the field reads as when the document
+/// holds none: a required field with a sensible derivation, so an item
+/// missing it still reads; the next whole write stores it).
 ///
 /// A struct's `Model::SHAPE` lists its stored fields, so layout-aware services
 /// (History restore) reconcile it field by field.
@@ -137,6 +140,8 @@ struct FieldOptions {
     quiet_remove: bool,
     whole: bool,
     resource: bool,
+    /// `default = expr`: what an absent field reads as.
+    default: Option<Expr>,
 }
 
 fn field_options(attrs: &[Attribute]) -> syn::Result<FieldOptions> {
@@ -160,6 +165,8 @@ fn field_options(attrs: &[Attribute]) -> syn::Result<FieldOptions> {
                 options.whole = true;
             } else if meta.path.is_ident("resource") {
                 options.resource = true;
+            } else if meta.path.is_ident("default") {
+                options.default = Some(meta.value()?.parse()?);
             } else if meta.path.is_ident("remove") {
                 let how: syn::LitStr = meta.value()?.parse()?;
                 if how.value() != "quiet" {
@@ -169,7 +176,7 @@ fn field_options(attrs: &[Attribute]) -> syn::Result<FieldOptions> {
             } else {
                 return Err(meta.error(
                     "expected `skip`, `rename = \"...\"`, `label`, `readonly`, `unit`, `atom`, \
-                     `whole`, `resource` or `remove = \"quiet\"`",
+                     `whole`, `resource`, `default = ..` or `remove = \"quiet\"`",
                 ));
             }
             Ok(())
@@ -598,7 +605,10 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             whole: #whole,
             items: #items,
         }));
-        builds.push(quote!(#ident: #table::take::<#ty>(source)?));
+        builds.push(match &options.default {
+            Some(default) => quote!(#ident: #table::take_or::<#ty>(source, || #default)?),
+            None => quote!(#ident: #table::take::<#ty>(source)?),
+        });
         reach.push(quote!(#index => ::core::option::Option::Some(&value.#ident),));
         reach_mut.push(quote!(#index => ::core::option::Option::Some(&mut value.#ident),));
         checks_const.push(quote!(<#ty as #krate::Model>::CHECKS));
