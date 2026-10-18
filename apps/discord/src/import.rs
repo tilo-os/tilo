@@ -3,8 +3,10 @@
 //! Planned in rounds: categories first, channels once their category is
 //! mapped, and `finish-import` once everything is, naming the Tilo channels
 //! the server had no match for so they stay Tilo's. A Tilo category with
-//! the name, or a Tilo channel with the name in the matching category, is
-//! joined rather than duplicated. Once adopted, a channel made in Discord
+//! the name, or a Tilo channel with the name, is joined rather than
+//! duplicated: a channel in the matching category first, else one in a
+//! category of Tilo's own (the channels a room opened with), so a room's
+//! `#general` becomes the server's `#general` whatever category it sits in. Once adopted, a channel made in Discord
 //! later is imported the same way. Message history is not imported.
 
 use discord_wire::op::{ChannelKind, DiscordOp, DiscordResult};
@@ -13,7 +15,8 @@ use ui::tilo_resource::{self, JsonSchema};
 
 use crate::record::{DChannel, Guild, MappedKind, Ownership};
 use crate::slug;
-use crate::tilo::Workspace;
+use crate::tilo::{Channel, Workspace};
+use std::collections::HashSet;
 use ui::tilo_resource::Settled;
 
 /// Chat `create-category`, then `map` (category, origin Discord).
@@ -103,7 +106,23 @@ pub fn plan(guild: &Guild, workspace_id: &str, workspace: &Workspace) -> ImportP
         return plan;
     }
     let mut pending = false;
-    for category in ordered(guild, &[ChannelKind::Category]) {
+    let discord_categories = ordered(guild, &[ChannelKind::Category]);
+    // A Tilo category no Discord category is, or will be, joined with.
+    let tilo_own = |category: &String| {
+        guild.mapping(MappedKind::Category, category).is_none()
+            && workspace
+                .categories
+                .iter()
+                .find(|c| c.id == *category)
+                .is_none_or(|tilo| {
+                    !discord_categories.iter().any(|d| {
+                        guild.by_discord(MappedKind::Category, &d.id).is_none()
+                            && d.name.eq_ignore_ascii_case(&tilo.name)
+                    })
+                })
+    };
+    let mut claimed: HashSet<&str> = HashSet::new();
+    for category in &discord_categories {
         if guild
             .by_discord(MappedKind::Category, &category.id)
             .is_some()
@@ -154,18 +173,36 @@ pub fn plan(guild: &Guild, workspace_id: &str, workspace: &Workspace) -> ImportP
         };
         pending = true;
         let voice = channel.kind.0 == ChannelKind::Voice;
-        let existing = workspace.channels.iter().find(|c| {
+        let free = |c: &&Channel| {
             guild.mapping(MappedKind::Channel, &c.id).is_none()
+                && !claimed.contains(c.id.as_str())
                 && c.voice == voice
-                && c.category == category
                 && slug::channel_slug(&c.name) == slug::channel_slug(&channel.name)
-        });
+        };
+        // The same name in the same category first; else one in a category
+        // the server has no counterpart for (such as the channels a room
+        // opened with), which no other Discord channel will claim.
+        let existing = workspace
+            .channels
+            .iter()
+            .filter(free)
+            .find(|c| c.category == category)
+            .or_else(|| {
+                workspace
+                    .channels
+                    .iter()
+                    .filter(free)
+                    .find(|c| c.category.as_ref().is_none_or(|k| tilo_own(k)))
+            });
         match existing {
-            Some(existing) => plan.adopt.push(AdoptItem {
-                kind: MappedKind::Channel,
-                tilo: existing.id.clone(),
-                discord: channel.id.clone(),
-            }),
+            Some(existing) => {
+                claimed.insert(&existing.id);
+                plan.adopt.push(AdoptItem {
+                    kind: MappedKind::Channel,
+                    tilo: existing.id.clone(),
+                    discord: channel.id.clone(),
+                });
+            }
             None => plan.channels.push(ChannelItem {
                 workspace: workspace_id.into(),
                 name: channel.name.clone(),
@@ -202,7 +239,6 @@ mod tests {
     use super::*;
     use crate::layout::tests::{dchan, mapping};
     use crate::record::{Mapping, Origin};
-    use crate::tilo::Channel;
 
     /// The Tilo Discord server as it was when the bridge was added.
     fn tilo_server() -> Guild {
@@ -478,5 +514,115 @@ mod tests {
             }],
             "Tilo's own #help and #show-and-tell stay Tilo's"
         );
+    }
+
+    /// The live room: its chat opened with `Channels › #general`, and the
+    /// server keeps its `#general` under `chat`.
+    #[test]
+    fn the_rooms_starting_channel_becomes_the_servers_of_that_name() {
+        let mut guild = tilo_server();
+        let ws = Workspace {
+            categories: vec![crate::tilo::Category {
+                id: "k_seeded".into(),
+                name: "Channels".into(),
+            }],
+            channels: vec![Channel {
+                id: "c_general".into(),
+                name: "general".into(),
+                category: Some("k_seeded".into()),
+                ..Channel::default()
+            }],
+        };
+        let first = plan(&guild, "w1", &ws);
+        assert!(first.adopt.is_empty(), "Channels has no counterpart");
+        for c in &first.channels {
+            guild.map.push(discord(
+                MappedKind::Channel,
+                &format!("c_{}", c.name),
+                &c.discord,
+            ));
+        }
+        guild
+            .map
+            .push(discord(MappedKind::Category, "k_chat", "d_chat"));
+
+        let second = plan(&guild, "w1", &ws);
+        assert_eq!(
+            second.adopt,
+            [AdoptItem {
+                kind: MappedKind::Channel,
+                tilo: "c_general".into(),
+                discord: "d_general".into()
+            }],
+            "one #general, bridged"
+        );
+        assert_eq!(
+            second
+                .channels
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
+            ["voice"]
+        );
+        guild
+            .map
+            .push(discord(MappedKind::Channel, "c_general", "d_general"));
+        guild
+            .map
+            .push(discord(MappedKind::Channel, "c_voice", "d_voice"));
+        assert_eq!(
+            plan(&guild, "w1", &ws).finish,
+            [FinishItem {
+                tilo_only: vec!["k_seeded".into()]
+            }]
+        );
+    }
+
+    /// A channel whose category the server is joining waits for that
+    /// category's own channel of the name, and two of Discord's never
+    /// join the same one.
+    #[test]
+    fn a_channel_is_joined_once_and_not_away_from_a_joined_category() {
+        let mut guild = existing_server();
+        guild
+            .channels
+            .push(dchan("d_help", ChannelKind::Text, "help", None, 3));
+        guild.channels.push(dchan(
+            "d_help_2",
+            ChannelKind::Text,
+            "help",
+            Some("d_chat"),
+            0,
+        ));
+        let ws = seeded();
+        let first = plan(&guild, "w1", &ws);
+        assert!(
+            first.adopt.iter().all(|a| a.kind == MappedKind::Category),
+            "Channels is about to be joined, so its #help is not taken: {:?}",
+            first.adopt
+        );
+        assert!(first.channels.iter().any(|c| c.discord == "d_help"));
+
+        let mut ws = ws;
+        ws.categories.clear();
+        for c in &mut ws.channels {
+            c.category = None;
+        }
+        let mut guild = existing_server();
+        guild
+            .channels
+            .push(dchan("d_help", ChannelKind::Text, "help", None, 3));
+        guild
+            .channels
+            .push(dchan("d_help_2", ChannelKind::Text, "help", None, 4));
+        let once = plan(&guild, "w1", &ws);
+        let helps: Vec<_> = once
+            .adopt
+            .iter()
+            .filter(|a| a.tilo == "c_help")
+            .map(|a| a.discord.as_str())
+            .collect();
+        assert_eq!(helps, ["d_help"]);
+        assert!(once.channels.iter().any(|c| c.discord == "d_help_2"));
     }
 }
