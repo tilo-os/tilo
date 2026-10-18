@@ -529,7 +529,7 @@ taffy = "0.10.1"
 # crates.io crates reach it through the `[patch]` facade below. The default
 # `wayland-csd-adwaita` draws titles through ab_glyph and owned_ttf_parser;
 # `-notitle` keeps the client-side frame without that stack.
-winit = { package = "tilo-winit", version = "0.30.13", path = "vendor/winit", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen", "wayland-csd-adwaita-notitle"] }
+winit = { package = "tilo-winit", version = "0.30.13", path = "vendor/winit", default-features = false, features = ["rwh_06", "wayland", "wayland-dlopen", "wayland-csd-adwaita-notitle"] }
 # Automerge 0.12.0 folded the formatting changes of several text objects in
 # one diff into a single patch on the first of them, so undoing a mark set
 # across several paragraphs cleared it from the first alone. Tilo's fork keeps

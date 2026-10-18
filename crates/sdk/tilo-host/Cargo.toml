@@ -27,6 +27,9 @@ native = ["dep:tokio", "dep:jni", "dep:ndk-context", "dep:tilo-files", "dep:tilo
 # File choosers, OpenURI and location are platform crates' (`tilo-dialogs`,
 # `tilo-location`), selected per target without a feature.
 portal = ["native", "dep:ashpd"]
+# The X11 clipboard, for development builds on an X11 host (see the
+# toolkit's `x11`).
+x11 = ["tilo-clipboard/x11"]
 # Desktop media integration: the system's now-playing controls on macOS,
 # MPRIS (`org.mpris.MediaPlayer2`) on the Unix session bus elsewhere. zbus
 # runs on the workspace's tokio backend; the server lives on its own thread

@@ -23546,8 +23546,6 @@ dependencies = [
  "wgpu-core",
  "winnow 0.7.14",
  "writeable",
- "x11rb",
- "x11rb-protocol",
  "x25519-dalek 3.0.0",
  "yoke",
  "zbus",
