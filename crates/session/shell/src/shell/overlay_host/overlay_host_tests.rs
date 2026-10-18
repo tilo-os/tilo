@@ -1001,7 +1001,7 @@ fn overlay_accessibility_paths_follow_painted_geometry_and_coexistence_order() {
                 .children
                 .first()
                 .and_then(|node| node.name.as_deref()),
-            Some("Session")
+            Some(crate::shell::i18n::t("power-menu-title").as_str())
         );
         assert_eq!(
             h.host.synthetic_accessibility_rect(&[0, 0]),
