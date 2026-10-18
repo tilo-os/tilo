@@ -257,7 +257,9 @@ containerfile="$repo/os/Containerfile"
 # verify-no-python-runtime.sh is copied in for the rootfs's final checks.
 # The community workspace's vendor default (/usr/share/tilo/community.toml),
 # which names the site a computer is in by default, is a deliberate addition.
-expected_contract=5b38cfd346cedfff89c98654689de89a044d790bcb627df9222f63bd42df30a6
+# The sandbox system view's three units (tilo-sandbox-view.service, .path and
+# the retire@ template) are deliberate additions.
+expected_contract=754de836470eed5c600848c9f85105e60c274253b3230d0d140cd63250d48283
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

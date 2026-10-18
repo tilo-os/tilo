@@ -18,6 +18,9 @@ mod room_confinement;
 mod sandbox_environment;
 #[path = "support.rs"]
 mod support;
+#[cfg(target_os = "linux")]
+#[path = "system_view.rs"]
+mod system_view;
 
 #[path = "managed.rs"]
 mod managed;

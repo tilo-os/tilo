@@ -2829,6 +2829,15 @@ fn spawn_and_wait(
         });
     let account_fd = stage_sandbox_account(&mut argv, original_identity)?;
     let host_account_fd = account_fd.as_raw_fd();
+    // The system read profile from the host's pre-built view, when it can
+    // carry this launch's mounts unchanged. Held until the child is reaped:
+    // a superseded view is retired only once no sandbox built from it runs.
+    // Supervised launches keep their audited per-path argv.
+    let system_view = if observer.is_none() {
+        crate::sandbox_view::attach(&mut argv)
+    } else {
+        None
+    };
 
     if observer
         .and_then(crate::managed::EnrolledProcessObserver::namespace_init_fd)
@@ -3056,6 +3065,7 @@ fn spawn_and_wait(
         child.wait()?
     };
     stop_identity_broker(identity_broker_control, identity_broker_thread);
+    drop(system_view);
     Ok(status)
 }
 

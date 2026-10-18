@@ -1,0 +1,26 @@
+[Unit]
+Description=Rebuild the sandbox system view when a bound path is replaced
+
+# Each /etc entry of the system read profile. Their contents can change in
+# place (live through the view's binds), but ldconfig, a time zone change or
+# an administrator replaces some of them outright, and the view still holds
+# the old object; launches bind per path until it is rebuilt.
+[Path]
+PathChanged=/etc/ld.so.cache
+PathChanged=/etc/ld.so.conf
+PathChanged=/etc/ld.so.conf.d
+PathChanged=/etc/fonts
+PathChanged=/etc/vulkan
+PathChanged=/etc/machine-id
+PathChanged=/etc/os-release
+PathChanged=/etc/localtime
+PathChanged=/etc/alternatives/libnssckbi.so
+PathChanged=/etc/alternatives/libnssckbi.so.x86_64
+PathChanged=/etc/alternatives/libnssckbi.so.aarch64
+PathChanged=/etc/pki
+PathChanged=/etc/ssl
+PathChanged=/etc/crypto-policies
+Unit=tilo-sandbox-view.service
+
+[Install]
+WantedBy=paths.target
