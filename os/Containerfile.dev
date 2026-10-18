@@ -212,6 +212,7 @@ COPY os/legacy-guest-snapshot.env /build/os/legacy-guest-snapshot.env
 COPY os/hardware/profiles/lenovo-83ed/input/keyboard.json os/hardware/profiles/lenovo-83ed/input/mouse.json os/hardware/profiles/lenovo-83ed/input/touchpad.json /build/os/hardware/profiles/lenovo-83ed/input/
 COPY tools/policy/app_portability_rules.toml /build/tools/policy/app_portability_rules.toml
 COPY tools/policy/app_capability_usage.toml /build/tools/policy/app_capability_usage.toml
+COPY os/usr/share/tilo/system-interfaces.toml /build/os/usr/share/tilo/system-interfaces.toml
 COPY tools/protocols/airdrop_sender.py /build/tools/protocols/airdrop_sender.py
 COPY tools/test-assets-build.rs /build/tools/test-assets-build.rs
 COPY tools/test-assets.py /build/tools/test-assets.py

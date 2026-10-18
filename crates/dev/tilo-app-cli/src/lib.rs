@@ -29,6 +29,7 @@ pub mod contract;
 mod dev_reload;
 pub mod examples;
 mod font_assets;
+pub mod interface_versions;
 mod json;
 pub mod native_libs;
 pub mod native_sdk;
@@ -4173,6 +4174,9 @@ fn doctor_resolved_app(app_dir: PathBuf) -> DoctorReport {
     let mut checks = Vec::new();
     let package_name = check_cargo_manifest(&app_dir, &mut checks);
     let manifest = check_package_manifest(&app_dir, &mut checks);
+    if let Some(manifest) = &manifest {
+        interface_versions::check(manifest, &mut checks);
+    }
     let package_id = manifest
         .as_ref()
         .map(|manifest| manifest.package.id.clone());
