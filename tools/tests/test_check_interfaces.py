@@ -220,6 +220,15 @@ class AgainstMainTests(unittest.TestCase):
             code.write_text(self.source(1, "a: u32, b: Option<u8>"))
             self.assertEqual(interfaces.against("main", root), [])
 
+            # Its number moved to another crate: still compared, by name.
+            moved = root / "crates/demo/other/interface.toml"
+            moved_code = root / "crates/demo/other/src/lib.rs"
+            moved_code.parent.mkdir(parents=True)
+            moved.write_text(self.SPEC.replace("demo/wire", "demo/other"))
+            moved_code.write_text(self.source(1, "a: u64"))
+            spec.unlink()
+            self.assertIn("`S.a` is now `u64`", interfaces.against("main", root)[0])
+
 
 class RepositoryTests(unittest.TestCase):
     def test_every_committed_interface_matches_its_code(self):

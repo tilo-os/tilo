@@ -983,11 +983,40 @@ def schema_at(revision: str, rel: str, root: Path = ROOT) -> tuple[dict, int, di
             return data, int(data.get("version", 0)), dict(committed)
 
 
+def files_at(revision: str, root: Path = ROOT) -> dict[str, str]:
+    """Interface name -> the path of its file at `revision`, wherever it was:
+    an interface whose number moved to another crate is still compared."""
+    listed = subprocess.run(
+        ["git", "ls-tree", "-r", "--name-only", revision, "--", "crates"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+    )
+    found = {}
+    for rel in listed.stdout.splitlines():
+        if rel.count("/") != 3 or not rel.endswith(f"/{FILE}"):
+            continue
+        text = at_revision(root, revision, rel)
+        if text is None:
+            continue
+        try:
+            found[tomllib.loads(text)["name"]] = rel
+        except (tomllib.TOMLDecodeError, KeyError):
+            continue
+    return found
+
+
 def against(base: str, root: Path = ROOT) -> list[str]:
     problems = []
+    before = files_at(base, root)
     for path in interface_files(root):
         rel = path.relative_to(root).as_posix()
-        old = schema_at(base, rel, root)
+        try:
+            name = load_spec(path)[0].name
+        except (InterfaceError, KeyError, OSError, tomllib.TOMLDecodeError) as error:
+            problems.append(f"{rel}: {error}")
+            continue
+        old = schema_at(base, before[name], root) if name in before else None
         if old is None:
             continue
         _, old_version, old_schema = old
