@@ -3163,22 +3163,27 @@ impl OnboardingView {
         }
         self.joined_member =
             crate::onboarding::holds_no_identity_secret(&self.flow.minted().ok_or(())?.path);
-        self.identity_ready_page = self.joined_member;
-        self.refresh_backup_capability()?;
-        let stage = if self.identity_ready_page {
-            PersistedStage::ReadyToEnter
+        self.identity_ready_page = false;
+        if self.joined_member {
+            // A joined member holds no identity secret, so there is nothing
+            // to back up. The journal records the hand-off first and the
+            // ready screen follows it, so a restart resumes there.
+            self.backup_export_available = false;
+            self.codec_page = false;
+            self.journal_then(
+                JournalChange::Store(PersistedStage::ReadyToEnter),
+                AfterJournal::EnterReadyAfterJoin,
+            );
         } else {
-            PersistedStage::IdentityReady
-        };
-        self.journal_then(
-            JournalChange::Store(stage),
-            if self.joined_member {
-                AfterJournal::EnterReadyAfterJoin
+            self.refresh_backup_capability()?;
+            let stage = if self.identity_ready_page {
+                PersistedStage::ReadyToEnter
             } else {
-                AfterJournal::Nothing
-            },
-        );
-        self.codec_page = self.identity_ready_page && self.codec_step_offered;
+                PersistedStage::IdentityReady
+            };
+            self.journal_then(JournalChange::Store(stage), AfterJournal::Nothing);
+            self.codec_page = self.identity_ready_page && self.codec_step_offered;
+        }
         self.invalidation.both();
         Ok(())
     }
@@ -8159,6 +8164,8 @@ mod tests {
             "args":{"destination":backup,"passphrase":passphrase,"confirmation":passphrase}}),
         );
         assert_eq!(answer["answer"]["status"], "accepted");
+        // The backup is written off the loop; take its report as a frame would.
+        sync_journaled(&mut view, &AutoCommit::new());
         let proof =
             runtime_identity::verify_portable_backup(&backup, passphrase.as_bytes()).unwrap();
         assert_eq!(
@@ -8183,7 +8190,7 @@ mod tests {
             )["answer"]["status"],
             "accepted"
         );
-        view.sync(&doc, &automerge::ROOT);
+        sync_journaled(&mut view, &doc);
         assert!(view.identity_ready_page);
         assert!(semantic::test_observe(&view).is_some());
         assert_eq!(
@@ -8226,7 +8233,7 @@ mod tests {
             "accepted"
         );
         let doc = AutoCommit::new();
-        view.sync(&doc, &automerge::ROOT);
+        sync_journaled(&mut view, &doc);
         assert!(view.identity_ready_page);
         assert!(!view.backup_was_verified);
         assert!(semantic::test_observe(&view).is_some());
@@ -8338,7 +8345,7 @@ mod tests {
             "accepted"
         );
         let doc = AutoCommit::new();
-        view.sync(&doc, &automerge::ROOT);
+        sync_journaled(&mut view, &doc);
         assert!(view.codec_page_visible());
         assert!(semantic::test_observe(&view).is_some());
         let stale_install = backup_action_id(&mut view, "onboarding.codecs.install");
@@ -8391,7 +8398,7 @@ mod tests {
             "accepted"
         );
         let doc = AutoCommit::new();
-        view.sync(&doc, &automerge::ROOT);
+        sync_journaled(&mut view, &doc);
         assert!(view.codec_page_visible());
         let install = invoke_footer(&mut view, "onboarding.codecs.install", &doc);
         assert_eq!(
@@ -10097,10 +10104,13 @@ mod tests {
                 .expect("large-text done layout");
             view.apply_layout(&taffy, node, Point::ZERO);
 
+            // The ready hand-off owns only the height its content needs
+            // (61034652be); at large text it must still fit the viewport
+            // and hold its actions whole rather than clip them.
             let panel = view.composed.as_ref().expect("composition").get_rect();
             assert!(
-                panel.height() > f64::from(PANEL_MAX_HEIGHT),
-                "large-text setup should use otherwise-empty viewport height before clipping: {panel:?}",
+                panel.y0 >= 0.0 && panel.y1 <= 720.0 && panel.height() > 0.0,
+                "large-text ready screen must fit the laptop-height viewport: {panel:?}",
             );
 
             for id in ["onboarding.finish.button", "onboarding.tour.start.button"] {
@@ -10117,6 +10127,10 @@ mod tests {
                         && action.y0 >= 0.0
                         && action.y1 <= 720.0,
                     "the action must stay fully in the viewport, id={id}, action={action:?}"
+                );
+                assert!(
+                    action.y0 >= panel.y0 && action.y1 <= panel.y1,
+                    "the panel must hold the action unclipped, id={id}, action={action:?}, panel={panel:?}"
                 );
             }
         }
