@@ -251,9 +251,8 @@ pub use record_transaction::{
 };
 #[cfg(feature = "filesystem")]
 pub use replica_ack::{
-    MAX_REPLICA_ACK_FRAME_BYTES, MAX_REPLICA_ACK_LIFETIME_MS, REPLICA_ACK_PROTOCOL_VERSION,
-    ReplicaAckError, ReplicaAckRequestV1, ReplicaAckResponseV1, ReplicaAckV1,
-    TILO_FS_REPLICA_ACK_ALPN,
+    MAX_REPLICA_ACK_LIFETIME_MS, REPLICA_ACK_PROTOCOL_VERSION, ReplicaAckError,
+    ReplicaAckRequestV1, ReplicaAckResponseV1, ReplicaAckV1,
 };
 #[cfg(feature = "filesystem")]
 pub use share_authority::{Redemption, ShareAuthority, ShareAuthorityError};

@@ -1043,8 +1043,8 @@ rule, and two physical backings:
   also takes. Changesets are stored with their envelopes, so peers relay
   them. A new file is published with its content as its first version, so
   no empty intermediate version exists at all.
-- Envelopes stay individually signed: peers without changesets pull them
-  stream by stream through `Pull` and the per-request mesh, as before.
+- Envelopes stay individually signed: a peer that answers no changesets is
+  pulled stream by stream through `Pull`.
 - Measured end to end with the sync benchmark (two release daemons,
   loop-mounted Btrfs stores, loopback, load 2–8): 100 × 4 KiB files 4.0 s
   → 0.79 s (of which 0.5 s is the epoch's quiescence), 1000 files
@@ -1159,8 +1159,8 @@ One engine moves record operations, file content, CRDT segments and packages.
   receipts (only for revisions not acknowledged recently), the authority
   exchange, and announcements that make peers pull at once. Envelopes that
   belong to a signed changeset travel as that whole changeset
-  (`PullChangesets`, §8.3). Peers without it are served and reached
-  through the per-request protocols, which stay registered.
+  (`PullChangesets`, §8.3). A peer that does not speak the session
+  protocol is not reconciled with: it is at another version.
 - Content goes over one pooled iroh-blobs connection per peer as `GetMany`
   batches (512 blobs or 8 MiB, 8 in flight per peer, spread over every
   healthy peer). Each batch names the manifests of its chunks with empty
