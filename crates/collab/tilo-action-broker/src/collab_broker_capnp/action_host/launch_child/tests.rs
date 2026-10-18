@@ -27,6 +27,15 @@ impl LauncherServices for Launcher {
         vec![app()]
     }
 
+    fn closes_applications(&self) -> bool {
+        true
+    }
+
+    fn close(&self, _: &str, _: &Workspace) -> Result<(), String> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
     fn launch(
         &self,
         _: &str,
@@ -284,6 +293,96 @@ fn launcher_observes_signed_admission_before_its_first_effect() {
         )
         .unwrap();
     fixture.assert_signed(&child, true);
+}
+
+/// Stop at the actual durable admission boundary, then withdraw the original
+/// certificate before continuing through the production launch/close effect.
+#[test]
+fn revoked_original_after_admission_never_launches_or_closes() {
+    for certified in [false, true] {
+        for close in [false, true] {
+            let launcher = Arc::new(Launcher {
+                calls: AtomicUsize::new(0),
+                fail: false,
+            });
+            let services = HostServices {
+                launcher: Some(launcher.clone()),
+                ..Default::default()
+            };
+            let fixture = if certified {
+                Fixture::new_certified(services)
+            } else {
+                Fixture::new(services)
+            };
+            let descriptor = if close {
+                app_close_descriptor(&app().package_id, "Notes")
+            } else {
+                app_open_descriptor(&app())
+            };
+            let request = child_request(
+                InvocationId::new(),
+                &fixture.room,
+                &descriptor,
+                &app().package_id,
+            );
+            let admitted = fixture
+                .state
+                .admit_host_action(
+                    &fixture.caller,
+                    Some(&fixture.origin),
+                    HostActionAdmission {
+                        room: &fixture.room,
+                        app_id: &app().package_id,
+                        descriptor: &descriptor,
+                        request: &request,
+                    },
+                )
+                .unwrap();
+            fixture.assert_signed(&request, false);
+            fixture.authority.revoked.store(true, Ordering::SeqCst);
+            let custody = (
+                &fixture.caller,
+                Some(&fixture.origin),
+                fixture.room.as_str(),
+            );
+            let effect = || {
+                if close {
+                    fixture
+                        .state
+                        .close_application(custody, admitted, &app().package_id)
+                } else {
+                    fixture.state.launch_application(
+                        custody,
+                        admitted,
+                        &app().package_id,
+                        crate::services::LaunchContent {
+                            hash: "",
+                            caller: None,
+                            author: None,
+                        },
+                        &LaunchPlace::Focus,
+                    )
+                }
+            };
+            let result = if let InvocationCaller::Certified { caller, .. } = &fixture.origin {
+                // The original synchronous dispatch can still have its
+                // pre-barrier verification memo installed at this boundary.
+                crate::collab_broker_capnp::admission_memo::with_admitted_now(
+                    caller,
+                    caller.admitted.clone(),
+                    effect,
+                )
+            } else {
+                effect()
+            };
+            assert!(result.is_err());
+            assert_eq!(launcher.calls.load(Ordering::SeqCst), 0);
+            assert!(matches!(
+                fixture.record(&request).update,
+                InvocationUpdate::Failed { .. }
+            ));
+        }
+    }
 }
 
 #[test]
