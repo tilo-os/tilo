@@ -42,6 +42,7 @@ mod eager_bridge_tests {
     fn uncertified_origin(fixture: &LocalDirectoryFixture) -> InvocationCaller {
         InvocationCaller::Local {
             route: fixture.route.clone(),
+            time: fixture.state.registered_policy_time().unwrap(),
             admitted: Box::new(AdmittedJoinIdentity {
                 host_scope: None,
                 worker_registration: None,

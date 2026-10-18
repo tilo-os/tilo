@@ -237,15 +237,23 @@ impl CapnpBrokerState {
         // Retain the original certificate's ceiling rather than rebuilding
         // unrestricted authority from that person's principal string.
         let original_policy = match origin {
-            Some(super::published_invocation::InvocationCaller::Local { route, admitted }) => Some(
-                self.revalidate_admission(route, admitted)
-                    .map_err(|error| {
-                        abandon(ActionHostError::Unavailable {
-                            reason: error.to_string(),
-                        })
-                    })?
-                    .broker_actor(),
-            ),
+            Some(super::published_invocation::InvocationCaller::Local {
+                route,
+                admitted,
+                time,
+            }) => {
+                self.checked_policy_time(time.as_ref())
+                    .map_err(|reason| abandon(ActionHostError::Unavailable { reason }))?;
+                Some(
+                    self.revalidate_admission(route, admitted)
+                        .map_err(|error| {
+                            abandon(ActionHostError::Unavailable {
+                                reason: error.to_string(),
+                            })
+                        })?
+                        .broker_actor(),
+                )
+            }
             Some(super::published_invocation::InvocationCaller::Certified {
                 caller: original,
                 foreign_restriction,
@@ -432,12 +440,19 @@ pub(super) mod signed_test_support {
     pub(crate) struct Authority {
         certificate: tilo_user_identity::DeviceCert,
         pub revoked: AtomicBool,
-        time: crate::peer_actions::PolicyTime,
+        time: Mutex<crate::peer_actions::PolicyTime>,
+        replace_time_on_authorize: Mutex<Option<crate::peer_actions::PolicyTime>>,
+    }
+
+    impl Authority {
+        pub fn replace_time_on_authorize(&self, time: crate::peer_actions::PolicyTime) {
+            *self.replace_time_on_authorize.lock().unwrap() = Some(time);
+        }
     }
 
     impl crate::peer_actions::CertificateAuthority for Authority {
         fn policy_time(&self) -> Result<Option<crate::peer_actions::PolicyTime>, String> {
-            Ok(Some(self.time.clone()))
+            Ok(Some(self.time.lock().unwrap().clone()))
         }
 
         fn authorize(
@@ -445,6 +460,9 @@ pub(super) mod signed_test_support {
             _room: uuid::Uuid,
             certificate: &tilo_user_identity::DeviceCert,
         ) -> Result<(), String> {
+            if let Some(time) = self.replace_time_on_authorize.lock().unwrap().take() {
+                *self.time.lock().unwrap() = time;
+            }
             if self.revoked.load(Ordering::SeqCst) || certificate != &self.certificate {
                 return Err("device is no longer enrolled".into());
             }
@@ -462,11 +480,15 @@ pub(super) mod signed_test_support {
         _fanout: Arc<FanoutState>,
         _environment: tilo_test_env::ScopedEnv,
         _directory: tempfile::TempDir,
-        _clock: crate::peer_actions::OwnerPolicyClock,
+        clock: crate::peer_actions::OwnerPolicyClock,
         _origin: crate::peer_actions::PolicyOrigin,
     }
 
     impl Fixture {
+        pub fn new_policy_origin(&self) -> crate::peer_actions::PolicyOrigin {
+            self.clock.new_origin()
+        }
+
         pub fn new(services: HostServices) -> Self {
             let directory = tempfile::tempdir().unwrap();
             let mut environment = tilo_test_env::ScopedEnv::new();
@@ -509,7 +531,8 @@ pub(super) mod signed_test_support {
             let authority = Arc::new(Authority {
                 certificate: certificate.clone(),
                 revoked: AtomicBool::new(false),
-                time: policy_origin.capture().unwrap(),
+                time: Mutex::new(policy_origin.capture().unwrap()),
+                replace_time_on_authorize: Mutex::new(None),
             });
             let config = crate::peer_actions::NativePeerBrokerConfig {
                 journal_root: directory.path().join("journal"),
@@ -539,6 +562,7 @@ pub(super) mod signed_test_support {
             let origin = InvocationCaller::Local {
                 route: super::super::CrdtRoute::cluster(&room),
                 admitted: Box::new(verified.admitted),
+                time: state.registered_policy_time().unwrap(),
             };
             Self {
                 state,
@@ -550,7 +574,7 @@ pub(super) mod signed_test_support {
                 _fanout: fanout,
                 _environment: environment,
                 _directory: directory,
-                _clock: clock,
+                clock,
                 _origin: policy_origin,
             }
         }

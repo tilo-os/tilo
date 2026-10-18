@@ -196,6 +196,7 @@ impl CapnpChannelHandle {
         parent: Option<InvocationId>,
     ) -> Result<AdmittedHostAction, String> {
         use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
+        let time = self.state.registered_policy_time()?;
         let invocation = InvocationId::new();
         // A continuation belongs to its starter, not the Store worker that
         // happens to carry this RPC. Never reconstruct custody from an actor.
@@ -244,6 +245,7 @@ impl CapnpChannelHandle {
                 InvocationCaller::Local {
                     route,
                     admitted: Box::new(self.verified_identity.clone()),
+                    time,
                 },
             )
         };

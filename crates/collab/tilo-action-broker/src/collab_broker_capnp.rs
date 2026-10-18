@@ -2124,7 +2124,9 @@ impl ContinuingCaller {
                 foreign_restriction: *foreign_restriction,
                 direct: None,
             },
-            InvocationCaller::Local { route, admitted } => Self::Admitted {
+            InvocationCaller::Local {
+                route, admitted, ..
+            } => Self::Admitted {
                 room: route.cluster_id.clone(),
                 admitted: admitted.clone(),
             },
@@ -5877,7 +5879,12 @@ impl CapnpBrokerState {
                         agent: None,
                     }
                 }
-                Some(InvocationCaller::Local { route, admitted }) => {
+                Some(InvocationCaller::Local {
+                    route,
+                    admitted,
+                    time,
+                }) => {
+                    self.checked_policy_time(time.as_ref())?;
                     let current = self
                         .revalidate_admission(route, admitted)
                         .map_err(|error| error.to_string())?;
@@ -5997,11 +6004,20 @@ impl CapnpBrokerState {
                     .into(),
             );
         }
+        let local_time = if let Some(InvocationCaller::Local { time, .. }) = &origin {
+            self.checked_policy_time(time.as_ref())?;
+            time.as_ref()
+        } else {
+            None
+        };
         let retained_time = original_time.or(retained_time);
         let policy_time = match (durable, retained_time) {
             (Some(context), None) => self.checked_policy_time(context.time())?.0,
             (None, Some(original)) => self.checked_policy_time(Some(original))?.0,
-            (None, None) => self.registered_policy_time()?,
+            (None, None) => match &origin {
+                Some(InvocationCaller::Local { .. }) => local_time.cloned(),
+                _ => self.registered_policy_time()?,
+            },
             (Some(_), Some(_)) => return Err("duplicate original invocation time custody".into()),
         };
         let now = self.checked_policy_time(policy_time.as_ref())?.1 / 1_000_000_000;
@@ -9499,6 +9515,10 @@ impl channel_handle::Server for CapnpChannelHandle {
         mut results: channel_handle::RemoteActionResults,
     ) -> Promise<(), capnp::Error> {
         use tilo_actions::remote::RemoteActionFrame;
+        let original_time = match self.state.registered_policy_time() {
+            Ok(time) => time,
+            Err(error) => return Promise::err(capnp::Error::failed(error)),
+        };
         let current = match self
             .state
             .revalidate_admission(&self.route(), &self.verified_identity)
@@ -9579,6 +9599,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             own_peer: self.peer_id,
             origin: InvocationCaller::Local {
                 route,
+                time: original_time,
                 admitted: Box::new(current),
             },
         };
@@ -11614,6 +11635,10 @@ impl channel_handle::Server for CapnpChannelHandle {
         params: channel_handle::InvokePublishedActionParams,
         mut results: channel_handle::InvokePublishedActionResults,
     ) -> Promise<(), capnp::Error> {
+        let original_time = match self.state.registered_policy_time() {
+            Ok(time) => time,
+            Err(error) => return Promise::err(capnp::Error::failed(error)),
+        };
         let current = match self
             .state
             .revalidate_admission(&self.route(), &self.verified_identity)
@@ -11738,6 +11763,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                     },
                     Some(InvocationCaller::Local {
                         route: origin_route.clone(),
+                        time: original_time.clone(),
                         admitted: Box::new(current),
                     }),
                 )
@@ -11761,6 +11787,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                             Some(InvocationCaller::Local {
                                 route: origin_route.clone(),
                                 admitted: Box::new(current.clone()),
+                                time: original_time.clone(),
                             }),
                         ),
                     tilo_actions::ConfirmationPolicy::Confirm => {
@@ -11800,6 +11827,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                             Some(InvocationCaller::Local {
                                 route: origin_route.clone(),
                                 admitted: Box::new(current.clone()),
+                                time: original_time.clone(),
                             }),
                         )
                     }
@@ -11831,6 +11859,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                             Some(InvocationCaller::Local {
                                 route: origin_route.clone(),
                                 admitted: Box::new(current.clone()),
+                                time: original_time.clone(),
                             }),
                         )
                     }

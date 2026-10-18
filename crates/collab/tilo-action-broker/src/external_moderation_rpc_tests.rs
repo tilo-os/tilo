@@ -141,6 +141,7 @@ mod external_moderation_rpc_tests {
                 InvocationCaller::Local {
                     route: self.route.clone(),
                     admitted: Box::new(admitted),
+                    time: self.state.registered_policy_time().unwrap(),
                 },
             )
         }

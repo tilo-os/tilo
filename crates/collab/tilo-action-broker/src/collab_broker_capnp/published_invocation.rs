@@ -26,6 +26,8 @@ pub(super) enum InvocationCaller {
     Local {
         route: CrdtRoute,
         admitted: Box<AdmittedJoinIdentity>,
+        // Captured at request custody, never rebound at admission or effect.
+        time: Option<crate::peer_actions::PolicyTime>,
     },
 }
 #[derive(Clone)]
@@ -427,7 +429,12 @@ impl OriginalInvocationData {
             InvocationCaller::Certified { caller, .. } => {
                 state.current_action_caller(caller)?;
             }
-            InvocationCaller::Local { route, admitted } => {
+            InvocationCaller::Local {
+                route,
+                admitted,
+                time,
+            } => {
+                state.checked_policy_time(time.as_ref())?;
                 state
                     .revalidate_admission(route, admitted)
                     .map_err(|error| error.to_string())?;
@@ -474,7 +481,12 @@ impl OriginalInvocationData {
                     .certificate
                     .ok_or("original person certificate unavailable")?
             }
-            InvocationCaller::Local { route, admitted } => {
+            InvocationCaller::Local {
+                route,
+                admitted,
+                time,
+            } => {
+                state.checked_policy_time(time.as_ref())?;
                 if route != &self.route {
                     return Err("original local caller route changed".into());
                 }
@@ -1097,7 +1109,12 @@ impl OriginalInvocation {
             InvocationCaller::Certified { caller, .. } => {
                 state.current_action_caller(caller)?;
             }
-            InvocationCaller::Local { route, admitted } => {
+            InvocationCaller::Local {
+                route,
+                admitted,
+                time,
+            } => {
+                state.checked_policy_time(time.as_ref())?;
                 state
                     .revalidate_admission(route, admitted)
                     .map_err(|error| error.to_string())?;

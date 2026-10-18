@@ -1104,6 +1104,7 @@ mod durable_local_matrix {
                     crate::collab_broker_capnp::published_invocation::InvocationCaller::Local {
                         route: env.route.clone(),
                         admitted: Box::new(admitted),
+                        time: rig.state.registered_policy_time().unwrap(),
                     };
                 let invocation = tilo_actions::InvocationId::new();
                 let request = tilo_actions::remote::InvokeRequest {
