@@ -76,6 +76,15 @@ pub enum Action {
     /// Move to a live group's empty tab-bar grab zone. Unlike raw screen
     /// coordinates this remains valid in compact and normal viewport sweeps.
     MoveCursorGroupGrab(usize),
+    /// Move to 2 px inside a live group's leading (`leading: true`) or
+    /// trailing edge, at mid-height: where a person grabs a window's edge.
+    MoveCursorGroupEdge {
+        group: usize,
+        leading: bool,
+    },
+    /// Move the cursor `dx` px sideways from where it is, keeping its y, so a
+    /// drag can be stepped without baking viewport geometry into a shot.
+    MoveCursorBy(f64),
     /// Move an active whole-group drag beyond the named group's midpoint,
     /// resolving the after-slot without baking viewport geometry into a shot.
     MoveCursorGroupReorderTarget(usize),
@@ -611,6 +620,12 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
                 eprintln!("scenario: could not resolve group {index}'s drag handle");
             }
         }
+        Action::MoveCursorGroupEdge { group, leading } => {
+            if !driver.move_cursor_to_group_edge(*group, *leading) {
+                eprintln!("scenario: could not resolve group {group}'s edge");
+            }
+        }
+        Action::MoveCursorBy(dx) => driver.move_cursor_by(*dx),
         Action::MoveCursorGroupReorderTarget(index) => {
             if !driver.move_cursor_to_group_reorder_target(*index) {
                 eprintln!("scenario: could not resolve group {index}'s reorder target");
@@ -1588,6 +1603,19 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
         "palette_query": palette_query,
         "revision": st.revision,
         "groups_per_strip": groups_per_strip,
+        // Where each window is drawn and where the pointer is, so a resize
+        // can be read off a capture to the pixel.
+        "tab_tiles": host
+            .tab_tiles()
+            .iter()
+            .map(|(tab, r)| serde_json::json!([tab, r.x0, r.y0, r.x1, r.y1]))
+            .collect::<Vec<_>>(),
+        "strip_scroll": host
+            .strip_scroll_offsets()
+            .iter()
+            .map(|(strip, scroll, max)| serde_json::json!([strip, scroll, max]))
+            .collect::<Vec<_>>(),
+        "pointer": [driver.cursor().x, driver.cursor().y],
     })
     .to_string()
 }
@@ -3852,6 +3880,88 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::SetWindowWidths(333),
                 Action::Wait(8),
                 Action::Snapshot("03-after-open"),
+            ],
+        },
+        Scenario {
+            name: "strip_edge_resize",
+            description: "Notes, Terminal and Files side by side, Files focused. Hover and drag \
+                      Files' left edge (the seam it shares with Terminal) left and back, then \
+                      Shift+drag it, then drag its right edge: only Files changes width on a \
+                      plain drag, its opposite edge holds still, and Shift trades width with \
+                      Terminal alone.",
+            actions: vec![
+                Action::LoneWindow(0),
+                Action::SelectGroup(Some(0)),
+                Action::OpenHostedWindow {
+                    app: "Terminal",
+                    title: "Terminal",
+                },
+                Action::SelectGroup(Some(1)),
+                Action::OpenHostedWindow {
+                    app: "Files",
+                    title: "Files",
+                },
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::SetWindowWidths(300),
+                Action::SelectGroup(Some(2)),
+                Action::Wait(PLACEMENT_SETTLE_FRAMES * 3),
+                Action::Relayout,
+                Action::Snapshot("01-files-focused"),
+                Action::MoveCursorGroupEdge {
+                    group: 2,
+                    leading: true,
+                },
+                Action::Wait(2),
+                Action::Snapshot("02-hover-files-left-edge"),
+                Action::MousePress,
+                Action::MoveCursorBy(-40.0),
+                Action::Wait(1),
+                Action::Snapshot("03-drag-left-040"),
+                Action::MoveCursorBy(-40.0),
+                Action::Wait(1),
+                Action::Snapshot("03-drag-left-080"),
+                Action::MoveCursorBy(-40.0),
+                Action::Wait(1),
+                Action::Snapshot("03-drag-left-120"),
+                Action::MoveCursorBy(200.0),
+                Action::Wait(1),
+                Action::Snapshot("03-drag-right-080"),
+                Action::MouseRelease,
+                Action::Wait(PLACEMENT_SETTLE_FRAMES * 3),
+                Action::Snapshot("04-released"),
+                Action::MoveCursorGroupEdge {
+                    group: 2,
+                    leading: true,
+                },
+                Action::Modifiers(ModifiersState::SHIFT),
+                Action::MoveCursorBy(0.0),
+                Action::Wait(2),
+                Action::Snapshot("05-hover-shift"),
+                Action::Modifiers(ModifiersState::SHIFT),
+                Action::MousePress,
+                Action::MoveCursorBy(-60.0),
+                Action::Wait(1),
+                Action::Snapshot("06-shift-drag-left-060"),
+                Action::MoveCursorBy(-60.0),
+                Action::Wait(1),
+                Action::Snapshot("06-shift-drag-left-120"),
+                Action::MouseRelease,
+                Action::Modifiers(ModifiersState::empty()),
+                Action::Wait(PLACEMENT_SETTLE_FRAMES * 3),
+                Action::Snapshot("07-shift-released"),
+                Action::MoveCursorGroupEdge {
+                    group: 2,
+                    leading: false,
+                },
+                Action::Wait(2),
+                Action::Snapshot("08-hover-files-right-edge"),
+                Action::MousePress,
+                Action::MoveCursorBy(-60.0),
+                Action::Wait(1),
+                Action::Snapshot("09-drag-right-edge-in-060"),
+                Action::MouseRelease,
+                Action::Wait(PLACEMENT_SETTLE_FRAMES * 3),
+                Action::Snapshot("10-released"),
             ],
         },
         Scenario {
