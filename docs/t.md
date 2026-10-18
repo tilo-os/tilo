@@ -1,13 +1,8 @@
-# Running Tilo's checks with t
+# t: testing and integrating changes
 
-[t](https://code.tilo.so/tilo/t) runs Tilo's tests, lints and builds on a shared server
-and caches each result by the files it depends on. It is how you check a change before
-pushing it to `main`, and it is also the CI on `main`: the server follows `main` and runs every
-check on each new commit. People and agents use it the same way, from the command line or
-through MCP.
-
-The checks are declared in [`t.toml`](../t.toml) at the root of the repository. Change that
-file to add or change a check; nothing else needs to know about it.
+Tilo's checks (tests, lints, builds) run on [t](https://code.tilo.so/tilo/t), which caches each
+result by the files it depends on. The checks are declared in [`t.toml`](../t.toml). This page is
+how to use t and how changes get from your checkout to a release.
 
 ## Setting up
 
@@ -15,93 +10,63 @@ file to add or change a check; nothing else needs to know about it.
 cargo install --locked --git https://code.tilo.so/tilo/t
 ```
 
-Then put the server and your token in `~/.config/t/config.toml` (mode `0600`):
+Put the server and your token in `~/.config/t/config.toml` (mode `0600`):
 
 ```toml
 server = "https://t.tilo.so"
 token = "…"
 ```
 
-Ask a maintainer for a token. `T_SERVER` and `T_TOKEN` override the file. Your machine needs
-neither a Rust toolchain for Tilo nor any of its system dependencies: everything runs on the
-server, in the same builder image CI uses.
+Ask a maintainer for a token. `T_SERVER` and `T_TOKEN` override the file. Nothing else is needed
+locally: checks run on the server, in the builder image.
 
-## Before you push
+## How changes reach a release
 
-```
-t
-```
+- **`main`:** push straight to it; no pull request is needed. Rebase on `main` and push; a push
+  that isn't a fast-forward is refused. Nothing is gated and nothing is reverted.
+- **CI on `main`:** t runs every default check on each new commit of `main`, finds the commit a
+  failure began with and tells its author. `main` is sometimes red; that is expected.
+- **`stable`:** releases are cut from it. The stabilizer (usually an agent) picks a recent `main`
+  commit, runs the checks a release needs, and for each failure commits a fix (brought back to
+  `main`) or an exclusion of unfinished work (with an issue saying what and why). It never weakens
+  a check to make it pass. When everything passes it moves `stable` there. Only the stabilizer
+  pushes to `stable`.
 
-runs the default checks your files affect: the tests, Clippy and policy checks of every
-package your change reaches, against your working tree, uncommitted changes included. Only
-the files that changed are uploaded. A check whose inputs nobody has changed returns the
-stored result at once, whoever ran it first.
+Many people and agents change Tilo at once. Gating every change on a full CI round trip
+serialized them, and automatic reverts fought the fixes that followed; this way landing is fast,
+and releasability is the stabilizer's job instead of something every push has to prove.
 
-What the exit code means:
-
-| code | meaning |
-|---|---|
-| `0` | everything passed |
-| `1` | something failed that may be yours |
-| `3` | everything that failed also fails on `main`: not caused by your change |
-| `2` | t could not do what was asked (no connection, bad arguments) |
-
-Each failure comes with its relevant output and the command that reproduces it.
-`t log <check>` shows the full log.
-
-## Everyday commands
+## Testing a change
 
 ```
-t suggest                      # what to run next: what failed for you, what your change affects
-t test clippy                  # one family (test, test-x86_64, clippy, check, goldens), a check (fmt, deny, wasm, ...), a package, a check id, a glob, or `all`
-t test test/tilo-fs            # one package's tests
-t test 'suite-*'               # the suites outside Cargo, one check per group of tools/ci/suites.toml
-t test 'nightly-*'             # the scheduled suites (also 'weekly-*'), only when asked for
-t test test-x86_64/shell --test 'interaction_test::'   # selected tests; never cached
-t failed                       # run again what failed for you recently
-t cargo check -p shell --tests # any compiling cargo subcommand, output streamed
-t build -p terminal            # build on the server; the programs land in ./target
-t run -p ebook -- --help       # build on the server, run here
-t status                       # how busy the server is: running and queued jobs
+t test <check|package|family|glob>      # exactly that, on your working tree
+t test test/tilo-fs --test parser::empty   # one test
+t test                                  # what failed for you last time
 ```
 
-Builds reuse a build directory on the server that already holds a build of a nearby version
-of the tree, so a `t cargo` or `t test` of a small change compiles only what the change
-touches, even when the server is busy with other people's work.
+What you test before pushing is up to you; t runs exactly what you name. Results that nobody's
+change could have affected come back at once from the cache. Everything else is tested on `main`
+after you push.
 
-## `main`
+Exit codes: `0` passed; `1` something failed that may be yours; `3` everything that failed also
+fails on `main`; `2` t couldn't do what was asked. Each failure comes with its relevant output and
+the command that reruns it.
+
+`t cargo …`, `t build` and `t run` compile on the server's warm builds; programs land in
+`./target`.
+
+## After pushing
 
 ```
-t main                         # what fails on main, by item id, since which commit, who is on it
-t claim test/tilo-fs@1a2b3c4d5e   # an item's id from `t main`: say you are fixing it
-t release test/tilo-fs@1a2b3c4d5e # say you stopped
-t inbox                        # main failures traced to your commits
+t inbox                               # failures on main traced to your commits
+t main                                # what fails on main, since which commit, who is on it
+t claim <item>   t release <item>     # say you are fixing a failure, or stopped
 ```
 
-CI on `main` informs; it never reverts anything. If a failure there is yours, fix it forward:
-once `main` passes it again, the item leaves the board. If you pick up someone else's, claim it
-so nobody duplicates the work. How changes move from `main` to the `stable` branch is described
-in [DEVELOPMENT.md](../DEVELOPMENT.md#routine-delivery-workflow).
+Fix your own failures on `main` forward. Claim someone else's before you work on it.
 
-## Agents
-
-Agents use the same commands as people:
-
-1. `t`, then read each failure: whether it is yours (`new`), already fails on `main`, or is
-   flaky, with the `t log …` that prints its full log and the command that reruns it alone
-   (`t test test/x --test name`).
-2. Fix, and `t` again; what the fix didn't touch is cached.
-3. Compile with `t cargo …`, `t build` and `t run` rather than a local `cargo`.
-4. A run's id (`r1a2b3c4d5`) is in every summary: `t follow <run>` shows that run's results,
-   `t log --run <run> <check>` one of its logs.
-
-`--json` prints JSON lines for scripts; t's
-[README](https://code.tilo.so/tilo/t#for-agents) describes them, and the hooks that tell an
-agent's session when its commit broke `main`. `t mcp` serves the same commands as MCP tools
-over stdio. Agent sessions are recognized by their session id (`CLAUDE_CODE_SESSION_ID`,
-`PI_SESSION_ID`, `CODEX_THREAD_ID`), so their runs, failures and claims show up as theirs.
-`t session` shows the current session's record, and `t session name <name>` gives it a
-readable name.
+Agents use the same commands, or `t mcp` for MCP. Sessions are recognized by their session id
+(`CLAUDE_CODE_SESSION_ID`, `PI_SESSION_ID`, `CODEX_THREAD_ID`); `t session name <name>` names one.
 
 ## Adding a check
 
@@ -116,8 +81,9 @@ inputs = ["docs/codemap.md", "tools/docs/codemap.py", "**/Cargo.toml"]
 
 `inputs` are the files the result depends on: a change to any of them runs the check again,
 and nothing else does. List too few and a stale result is reused; list too many and it reruns
-for nothing. `default = false` keeps a check out of a plain `t` run, so it only runs when asked
-for by name (and on `main`).
+for nothing. `default = false` keeps a check out of `all` and out of `main`'s CI: it runs when named, or where
+its `on` says (`on = ["stable"]`, `on = ["schedule:…"]`). Image builds, VM end-to-end tests and
+long suites are declared this way.
 
 The cargo families (`test/<package>`, `clippy/<package>`, `check/<package>`) need no globs for
 Rust code: t derives what each package reads from the manifests and `Cargo.lock`, the way cargo
@@ -143,6 +109,10 @@ by `tools/policy/check_workflow_package_paths.py` can still be tighter.
 Files a package reads that no manifest names (an `include_str!` of a file outside every crate, a
 fixture a test opens) still have to be declared: in `tools/ci/suites.toml`, which generates the
 families' `package_inputs`, or in the check's `inputs`.
+
+Every check states the cores and memory it must be able to pass with (`requirement`, with a
+default at the top of `t.toml`). A check that needs more fails, so a test that slowly needs more
+shows up instead of being fed. t usually gives checks more when there is room.
 
 A check that needs particular hardware says so, and runs only on a node that has it:
 
