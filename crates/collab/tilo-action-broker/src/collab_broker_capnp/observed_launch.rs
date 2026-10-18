@@ -1,7 +1,7 @@
 //! Completion of a launch admitted on an application's original channel.
 use super::host_action_admission::{AdmittedHostAction, HostActionAdmission};
 use super::{BrokerActor, CapnpChannelHandle, InvocationCaller, app_node};
-use crate::services::LaunchReadiness;
+use crate::services::{LaunchReadiness, LaunchReadinessError};
 use tilo_actions::InvocationId;
 
 #[cfg(test)]
@@ -327,21 +327,25 @@ impl CapnpChannelHandle {
         app: &str,
         parent: Option<InvocationId>,
         admitted: &AdmittedHostAction,
-        outcome: Result<Option<crate::services::LaunchAdoption>, String>,
+        outcome: Result<Option<crate::services::LaunchAdoption>, LaunchReadinessError>,
     ) -> Result<tilo_actions::InvocationUpdate, capnp::Error> {
         let outcome = outcome.and_then(|adoption| {
-            self.current_launch_authority(app, parent)?;
+            self.current_launch_authority(app, parent)
+                .map_err(LaunchReadinessError::Failed)?;
             if let Some(window) = &adoption
                 && (window.package_id != app
                     || window.room != self.route().cluster_id
                     || window.surface_id == 0
                     || window.adoption_id.is_nil())
             {
-                return Err("the adopted application window has foreign custody".into());
+                return Err(LaunchReadinessError::Failed(
+                    "the adopted application window has foreign custody".into(),
+                ));
             }
             Ok(adoption)
         });
         let invocation = admitted.invocation;
+        let uncertain = outcome.as_ref().is_err_and(|error| error.is_uncertain());
         let update = match outcome {
             Ok(adoption) => tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
@@ -350,34 +354,38 @@ impl CapnpChannelHandle {
                     ..tilo_actions::ActionOutput::default()
                 },
             },
-            Err(message) => tilo_actions::InvocationUpdate::Failed {
+            Err(error) => tilo_actions::InvocationUpdate::Failed {
                 invocation,
                 error: tilo_actions::ActionFailure {
                     code: "launch_failed".into(),
-                    message,
+                    message: error.to_string(),
                     details: None,
                     retryable: false,
                 },
             },
         };
-        self.state
-            .complete_host_action(admitted, update.clone())
-            .map_err(|error| capnp::Error::failed(error.to_string()))?;
+        if uncertain {
+            self.state
+                .complete_uncertain_host_action(admitted, update.clone())
+        } else {
+            self.state.complete_host_action(admitted, update.clone())
+        }
+        .map_err(|error| capnp::Error::failed(error.to_string()))?;
         Ok(update)
     }
 }
 
 pub(super) async fn wait_for_startup(
     started: Result<LaunchReadiness, String>,
-) -> Result<Option<crate::services::LaunchAdoption>, String> {
+) -> Result<Option<crate::services::LaunchAdoption>, LaunchReadinessError> {
     match started {
         Ok(readiness) => tokio::time::timeout(
             crate::services::APPLICATION_STARTUP_TIMEOUT,
             readiness.wait_with_adoption(),
         )
         .await
-        .unwrap_or_else(|_| Err("the application did not open a window in time".into())),
-        Err(error) => Err(error),
+        .unwrap_or(Err(LaunchReadinessError::TimedOut)),
+        Err(error) => Err(LaunchReadinessError::Failed(error)),
     }
 }
 
