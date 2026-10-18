@@ -226,79 +226,21 @@ impl CapnpBrokerState {
         else {
             return Err(abandon(ActionHostError::UnknownAction));
         };
-        let Some((workspace, policy, now)) =
-            self.decide_for(caller, room, |workspace, policy, now| {
-                (workspace.clone(), policy.clone(), now)
-            })
-        else {
-            return Err(abandon(ActionHostError::UnknownAction));
-        };
-        // The local door may present a person without a transport device key.
-        // Retain the original certificate's ceiling rather than rebuilding
-        // unrestricted authority from that person's principal string.
-        let original_policy = match origin {
-            Some(super::published_invocation::InvocationCaller::Local {
-                route,
-                admitted,
-                time,
-            }) => {
-                self.checked_policy_time(time.as_ref())
-                    .map_err(|reason| abandon(ActionHostError::Unavailable { reason }))?;
-                Some(
-                    self.revalidate_admission(route, admitted)
-                        .map_err(|error| {
-                            abandon(ActionHostError::Unavailable {
-                                reason: error.to_string(),
-                            })
-                        })?
-                        .broker_actor(),
-                )
-            }
-            Some(super::published_invocation::InvocationCaller::Certified {
-                caller: original,
-                foreign_restriction,
-            }) => {
-                let mut current = self
-                    .current_action_caller(original)
-                    .map_err(|reason| abandon(ActionHostError::Unavailable { reason }))?
-                    .broker_actor();
-                current.capped |= super::cap_applies_in(
-                    self.certificate_authority.get().map(AsRef::as_ref),
-                    room,
-                    *foreign_restriction,
-                    original
-                        .admitted
-                        .certificate
-                        .as_ref()
-                        .map(|cert| &cert.device_public_key),
-                );
-                Some(current)
-            }
-            Some(super::published_invocation::InvocationCaller::NativePerson {
-                certificate,
-                ..
-            }) => Some(self.certified_person(room, certificate)),
-            None => None,
-        };
-        let mut policy = policy;
-        if let Some(original) = original_policy {
-            if original.id != policy.id || original.is_agent != policy.is_agent {
-                return Err(abandon(ActionHostError::NotPermitted));
-            }
-            policy.capped |= original.capped;
-        }
+        let (workspace, policy, now) = self
+            .current_framework_authority(caller, origin, room)
+            .map_err(abandon)?;
         let argument = request.argument.to_slot();
         // One answer covers both gates of this exact host invocation.
         let witnessed = self.consume_answer(
             request.confirmation.as_ref(),
             &self.witness_binding(policy.id(), room, request),
         );
-        self.admit_answer(
+        self.framework_policy(
             (&workspace, &policy, now),
-            steps.app_id(),
-            &descriptor,
-            (argument.as_deref(), request.confirmation.as_ref()),
+            (steps.app_id(), &descriptor),
+            request.confirmation.as_ref(),
             witnessed,
+            false,
         )
         .map_err(abandon)?;
         if !Self::confirmed_as_asked(
@@ -326,6 +268,29 @@ impl CapnpBrokerState {
         if let Ok(mut ledger) = self.remote_invocations.lock() {
             ledger.complete(&request.invocation, id);
         }
+        // Signing and journalling may block. Resolve original custody and the
+        // committed policy again for the effect, not the pre-admission actor.
+        let policy = self.framework_effect_ready(&admitted, || {
+            let (workspace, policy, now) =
+                self.current_framework_authority(caller, origin, room)?;
+            if !Self::confirmed_as_asked(
+                &policy,
+                &descriptor,
+                argument.as_deref(),
+                request.confirmation.as_ref(),
+                witnessed,
+            ) {
+                return Err(ActionHostError::ConfirmationRequired);
+            }
+            self.admit_answer(
+                (&workspace, &policy, now),
+                steps.app_id(),
+                &descriptor,
+                (argument.as_deref(), request.confirmation.as_ref()),
+                witnessed,
+            )?;
+            Ok(policy)
+        })?;
         let started = steps.start(room, &policy, address, argument.as_deref());
         match started {
             Ok(started) => self.follow_admitted_host_step(admitted, started),
@@ -481,6 +446,7 @@ pub(super) mod signed_test_support {
         pub origin: InvocationCaller,
         pub authority: Arc<Authority>,
         pub room: String,
+        pub tree: crate::test_support::WorkspaceTreeHandle,
         certified_host: Option<Arc<dyn tilo_actions::remote::ActionHost>>,
         _fanout: Arc<FanoutState>,
         _environment: tilo_test_env::ScopedEnv,
@@ -492,6 +458,10 @@ pub(super) mod signed_test_support {
     impl Fixture {
         pub fn new_policy_origin(&self) -> crate::peer_actions::PolicyOrigin {
             self.clock.new_origin()
+        }
+
+        pub fn retire_policy_origin(&self) {
+            self._origin.invalidate();
         }
 
         pub fn new(services: HostServices) -> Self {
@@ -531,6 +501,7 @@ pub(super) mod signed_test_support {
             workspace.set_owner(person.clone());
             let mut tree = WorkspaceTree::default();
             tree.workspaces.push(workspace);
+            let tree = tree.shared();
             let clock = crate::peer_actions::OwnerPolicyClock::new().unwrap();
             let policy_origin = clock.new_origin();
             let authority = Arc::new(Authority {
@@ -549,7 +520,7 @@ pub(super) mod signed_test_support {
                 &fanout,
                 Arc::new(Mutex::new(BrokerChannels::default())),
                 publisher,
-                Some(tree.shared().authority()),
+                Some(tree.authority()),
                 None,
                 Some(&config),
                 services,
@@ -576,6 +547,7 @@ pub(super) mod signed_test_support {
                 origin,
                 authority,
                 room,
+                tree,
                 certified_host: None,
                 _fanout: fanout,
                 _environment: environment,
@@ -1153,6 +1125,134 @@ mod identity_admin_tests {
                 ) if invocation == asked.invocation),
                     "failed durability must not publish success"
                 );
+            }
+        }
+    }
+
+    /// Like the production community service, this effect trusts the actor the
+    /// broker supplies; it cannot recover the original certificate itself.
+    #[derive(Default)]
+    struct CommunityHost(Host);
+
+    impl crate::services::CommunityServices for CommunityHost {
+        fn app_id(&self) -> &str {
+            self.0.app_id()
+        }
+
+        fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
+            let mut descriptor = self
+                .0
+                .descriptors()
+                .into_iter()
+                .find(|descriptor| descriptor.address.action == identity_admin::REMOVE)
+                .unwrap();
+            descriptor.address =
+                tilo_actions::remote::community::target(tilo_actions::remote::community::LEAVE)
+                    .address;
+            descriptor.resource_kind = tilo_actions::remote::community::RESOURCE.into();
+            vec![descriptor]
+        }
+
+        fn start(
+            &self,
+            request: &crate::services::CommunityRequest<'_>,
+        ) -> Result<Pending<crate::services::CommunityOutcome>, String> {
+            request
+                .actor
+                .direct_person()
+                .ok_or("a person is required")?;
+            self.0.start(request)
+        }
+    }
+
+    #[test]
+    fn host_steps_recheck_live_authority_after_blocked_durable_admission() {
+        use std::sync::{atomic::Ordering, mpsc};
+        use std::time::Duration;
+        use tilo_actions::{InvocationUpdate, remote::community};
+
+        for certified in [false, true] {
+            for change in [
+                "unchanged",
+                "certificate",
+                "execution",
+                "permission",
+                "time",
+            ] {
+                let host = Arc::new(CommunityHost::default());
+                let services = crate::services::HostServices {
+                    community: Some(host.clone()),
+                    ..Default::default()
+                };
+                let mut f = if certified {
+                    super::signed_test_support::Fixture::new_certified(services)
+                } else {
+                    super::signed_test_support::Fixture::new(services)
+                };
+                f.caller = f.caller.clone().in_new_execution();
+                let mut asked = request(identity_admin::REMOVE, Some(Confirmation::Confirmed));
+                asked.target = community::target(community::LEAVE);
+                let (entered, blocked) = mpsc::sync_channel(0);
+                let (release, resume) = mpsc::sync_channel(0);
+                f.state
+                    .journal
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .after_admission = Some(Box::new(move || {
+                    entered.send(()).unwrap();
+                    resume.recv_timeout(Duration::from_secs(5)).unwrap();
+                }));
+                let result = std::thread::scope(|scope| {
+                    let state = f.state.clone();
+                    let caller = f.caller.clone();
+                    let origin = f.origin.clone();
+                    let steps = super::HostSteps::Community(host.clone());
+                    let asked = &asked;
+                    let worker = scope.spawn(move || {
+                        state.invoke_host_step(&caller, Some(&origin), &steps, asked)
+                    });
+                    blocked.recv_timeout(Duration::from_secs(5)).unwrap();
+                    // The journal writer holds a signed admission but has not
+                    // returned a dispatch permit. Change authority in that gap.
+                    match change {
+                        "certificate" => f.authority.revoked.store(true, Ordering::SeqCst),
+                        "execution" => f.caller.retire_execution(),
+                        "time" => f.retire_policy_origin(),
+                        "permission" => f.tree.write().workspaces[0].set_owner("someone-else"),
+                        _ => {}
+                    }
+                    release.send(()).unwrap();
+                    worker.join().unwrap()
+                });
+                if change == "unchanged" {
+                    result.expect("unchanged custody must still start");
+                    assert_eq!(host.0.started.lock().unwrap().len(), 1);
+                    host.0
+                        .answers
+                        .lock()
+                        .unwrap()
+                        .pop()
+                        .unwrap()
+                        .complete(Ok(tilo_actions::ActionOutput::default()));
+                    let record = f.assert_signed(&asked, true);
+                    assert!(matches!(record.update, InvocationUpdate::Succeeded { .. }));
+                } else {
+                    assert!(result.is_err(), "{certified}/{change}");
+                    assert!(
+                        host.0.started.lock().unwrap().is_empty(),
+                        "{certified}/{change}"
+                    );
+                    let record = f.assert_signed(&asked, true);
+                    assert!(!record.uncertain);
+                    assert!(
+                        matches!(record.update, InvocationUpdate::Failed { ref error, .. }
+                        if error.code == "host_action_refused")
+                    );
+                }
             }
         }
     }
