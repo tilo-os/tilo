@@ -334,6 +334,11 @@ struct Setup {
     /// A server that already had channels of its own when its bridge first ran,
     /// and the room's Chat holding channels of its own already.
     existing: bool,
+    /// The room's Chat as a public room's opens: "Channels" with #general.
+    room_seeded: bool,
+    /// Messages Bo wrote before the bridge first ran: channel, text, when
+    /// (Unix ms).
+    history: &'static [(&'static str, &'static str, u64)],
 }
 
 /// A Discord server laid out before its bridge: a category "Channels" with #general and a
@@ -393,6 +398,10 @@ impl Bridge {
             FakeDiscord::start().await
         }
         .unwrap();
+        let bo = User::new("3001", "Bo");
+        for (channel, text, at_ms) in setup.history {
+            fake.post_written(channel, &bo, text, *at_ms);
+        }
         let scratch = tempfile::tempdir().unwrap();
         let (key, cert) = governor();
         // The host decides what members and the bot change against the
@@ -453,6 +462,9 @@ impl Bridge {
                         .clone();
                     if setup.existing {
                         seed_channels(doc, &owner, &workspace)?;
+                    }
+                    if setup.room_seeded {
+                        seed_as_a_room(doc, &owner, &workspace)?;
                     }
                     Ok(workspace.as_str().to_owned())
                 }
@@ -751,6 +763,7 @@ async fn what_ada_does_to_her_messages_in_chat_follows_in_discord() {
                     size: bytes.len() as u64,
                 }),
                 mentions: None,
+                written: None,
             }),
         )
         .await;
@@ -1002,6 +1015,79 @@ async fn an_existing_server_is_adopted_as_it_is() {
     .await;
 }
 
+/// When Bo wrote the server's first messages, long before the bridge ran.
+const WRITTEN_MS: u64 = 1_751_317_200_000;
+
+/// A public room's Chat opens with "Channels" › #general; the server has
+/// #goal at the top and #general and a voice channel under "chat", and
+/// messages written before the bridge first ran. Adopted, the room lists
+/// exactly the server's channels under the same categories, and holds its
+/// messages under their author's name, at the time they were written.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_room_takes_on_its_servers_layout_and_history() {
+    let (bridge, mut runner) = Bridge::start_with(Setup {
+        room_seeded: true,
+        history: &[
+            (
+                fake_discord::CHANNEL_GOAL,
+                "What we are building",
+                WRITTEN_MS,
+            ),
+            (CHANNEL_GENERAL, "Hi?", WRITTEN_MS + 60_000),
+        ],
+        ..Setup::default()
+    })
+    .await;
+    let hi = settle(&mut runner, "the history is in Chat", || async {
+        bridge.chat_message("What we are building").await?;
+        bridge.chat_message("Hi?").await
+    })
+    .await;
+    assert_eq!(hi.1.channel.as_str(), bridge.general);
+    assert_eq!(
+        hi.1.ts,
+        i64::try_from((WRITTEN_MS + 60_000) / 1000).unwrap(),
+        "shown when it was written in Discord"
+    );
+    assert_eq!(
+        hi.1.appearance.0.as_ref().map(|a| a.name.as_str()),
+        Some("Bo")
+    );
+
+    // Exactly the server's layout: "Channels" is gone, #general is under
+    // "chat", and nothing is Tilo's alone.
+    let chat = bridge.room.chat().await;
+    let ours = bridge.workspace.as_str();
+    let category = |id: &Option<Id>| {
+        id.as_ref()
+            .and_then(|id| chat.categories.get(id))
+            .map(|c| c.name.clone())
+    };
+    let mut layout: Vec<(String, Option<String>)> = chat
+        .channels
+        .values()
+        .filter(|c| c.workspace.as_str() == ours)
+        .map(|c| (c.name.clone(), category(&c.category)))
+        .collect();
+    layout.sort();
+    assert_eq!(
+        layout,
+        [
+            ("general".to_owned(), Some("chat".to_owned())),
+            ("goal".to_owned(), None),
+            ("voice".to_owned(), Some("chat".to_owned())),
+        ]
+    );
+    let categories: Vec<&str> = chat
+        .categories
+        .values()
+        .filter(|c| c.workspace.as_str() == ours)
+        .map(|c| c.name.as_str())
+        .collect();
+    assert_eq!(categories, ["chat"]);
+    assert!(bridge.room.guild().await.tilo_only.is_empty());
+}
+
 /// Opted in, the bridge adds roles of its own and permissions for them, and
 /// makes in Discord only the channels Tilo makes later; still nothing of
 /// the server's own is changed.
@@ -1123,6 +1209,41 @@ async fn a_bridge_of_one_channel_touches_nothing_else_in_the_server() {
 
 /// The room's own "Channels" with #general, #help and #show-and-tell, made
 /// by its owner before any bridge ran.
+/// Leave the workspace as a public room's Chat opens: "Channels" with
+/// #general, and nothing else.
+fn seed_as_a_room(doc: &mut AutoCommit, owner: &str, workspace: &Id) -> Result<(), String> {
+    let chat = chat::Chat::read(doc).map_err(|error| error.to_string())?;
+    let channels: Vec<Id> = chat
+        .channels
+        .iter()
+        .filter(|(_, c)| &c.workspace == workspace && c.name != "general")
+        .map(|(id, _)| id.clone())
+        .collect();
+    let categories: Vec<Id> = chat
+        .categories
+        .iter()
+        .filter(|(_, c)| &c.workspace == workspace && c.name != "Channels")
+        .map(|(id, _)| id.clone())
+        .collect();
+    for channel in channels {
+        chat::demo::apply_as(
+            doc,
+            owner,
+            chat::Chat::DELETE_CHANNEL.with(chat::record::chat::DeleteChannel { channel }),
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    for category in categories {
+        chat::demo::apply_as(
+            doc,
+            owner,
+            chat::Chat::DELETE_CATEGORY.with(chat::record::chat::DeleteCategory { category }),
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
 fn seed_channels(doc: &mut AutoCommit, owner: &str, workspace: &Id) -> Result<(), String> {
     // A new workspace already has "Channels" with #general in it.
     let category = chat::Chat::read(doc)

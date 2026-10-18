@@ -753,6 +753,7 @@ async fn live(token: String, guild_id: String) -> usize {
                 size: bytes.len() as u64,
             }),
             mentions: None,
+            written: None,
         }),
     )
     .await;

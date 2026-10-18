@@ -52,6 +52,16 @@ fn seconds(cx: &ActionCx) -> i64 {
     cx.now_ms().div_euclid(1000)
 }
 
+/// A post's time: when it was `written` elsewhere, for a message a bot
+/// brings over on someone's behalf (`brought`), never later than now; else
+/// now. A member's own post is always now, so no one backdates theirs.
+fn written_at(cx: &ActionCx, written: Option<i64>, brought: bool) -> i64 {
+    let now = seconds(cx);
+    written
+        .filter(|_| brought)
+        .map_or(now, |written| written.clamp(0, now))
+}
+
 impl ChatPart {
     /// The message text of the part, in bytes: what fills it
     /// ([`parts::PART_TEXT_BYTES`]).
@@ -153,6 +163,10 @@ impl ChatPart {
         #[param("Filled in where it is posted; leave it out")] mentions: Option<
             Vec<crate::mention::Mention>,
         >,
+        #[param(
+            "When it was written, in Unix seconds, for a message a bot brings over from elsewhere; leave it out"
+        )]
+        written: Option<i64>,
     ) -> Result<(), Refusal> {
         let attachment = match attachment {
             Some(update) => Some(
@@ -167,7 +181,8 @@ impl ChatPart {
         }
         let id = cx.id();
         let by = author(cx)?;
-        let ts = seconds(cx);
+        let appearance = cx.appearance();
+        let ts = written_at(cx, written, appearance.is_some());
         self.append(
             id,
             &channel,
@@ -178,7 +193,7 @@ impl ChatPart {
                 body: body.unwrap_or_default(),
                 parent,
                 attachment,
-                appearance: cx.appearance(),
+                appearance,
                 mentions: mentions.unwrap_or_default(),
                 ..Posting::default()
             },

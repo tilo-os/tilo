@@ -525,6 +525,7 @@ fn inbound_plan(plan: &mut BridgePlan, read: Reading<'_>, inbound: InboundPlan) 
             "appearance": p.appearance,
             "discord": p.discord,
             "persona": p.persona,
+            "written": p.written,
         })
     }));
     plan.files.extend(inbound.files.into_iter().map(|f| {
@@ -536,6 +537,7 @@ fn inbound_plan(plan: &mut BridgePlan, read: Reading<'_>, inbound: InboundPlan) 
             "appearance": f.post.appearance,
             "discord": f.post.discord,
             "persona": f.post.persona,
+            "written": f.post.written,
         })
     }));
     plan.chat_edits.extend(

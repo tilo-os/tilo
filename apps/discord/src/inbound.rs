@@ -53,6 +53,8 @@ pub struct PostItem {
     /// The Discord message the post mirrors.
     pub discord: String,
     pub persona: String,
+    /// When it was written in Discord, in Unix seconds: Chat shows it then.
+    pub written: i64,
 }
 
 /// `fetch-asset`, then a Chat `post` whose attachment is the result's
@@ -275,6 +277,7 @@ pub fn plan_created(guild: &Guild, event: &MessageCreated) -> InboundPlan {
         appearance: appearance.clone(),
         discord: event.message_id.clone(),
         persona: event.author.id.clone(),
+        written: discord_wire::snowflake_ms(&event.message_id).div_euclid(1000),
     };
     // The text goes with the first file, as one Chat message, the way
     // Discord shows them; any further file is a message of its own.

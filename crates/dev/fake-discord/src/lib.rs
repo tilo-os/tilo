@@ -402,6 +402,22 @@ impl FakeDiscord {
         self.post_message(channel, author, content, None, false)
     }
 
+    /// A message `author` wrote at `at_ms` (Unix ms), long before anyone
+    /// connected: in the channel's history, its id carrying that time, and
+    /// never announced on the gateway.
+    pub fn post_written(&self, channel: &str, author: &User, content: &str, at_ms: u64) -> String {
+        let mut state = self.shared.lock();
+        let mut message = state.message_json(channel, author, content, None);
+        let since = at_ms.saturating_sub(DISCORD_EPOCH_MS);
+        // Ids differ by their low bits, as Discord's do within one millisecond.
+        let sequence = u64::try_from(state.messages.len()).unwrap_or(0) & 0xfff;
+        let id = ((since << 22) | sequence).to_string();
+        message["id"] = json!(id);
+        message["timestamp"] = json!(time::rfc3339(at_ms));
+        state.messages.push(message);
+        id
+    }
+
     fn post_message(
         &self,
         channel: &str,

@@ -1813,6 +1813,7 @@ impl ChatApp {
                 body: Some(body),
                 attachment: None,
                 mentions: None,
+                written: None,
             }),
         );
         if let Err(reason) = posted {
@@ -2221,6 +2222,7 @@ impl ChatApp {
             body: None,
             attachment: Some(crate::record::AttachmentUpdate::of(&attachment)),
             mentions: None,
+            written: None,
         }));
         self.scroll = 0.0;
         self.attachment_status = Some("Attachment shared".into());

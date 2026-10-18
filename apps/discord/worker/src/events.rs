@@ -22,8 +22,7 @@ use discord_wire::op::ChannelKind;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-/// Discord's epoch, the zero of a snowflake's timestamp.
-pub const DISCORD_EPOCH_MS: i64 = 1_420_070_400_000;
+pub use discord_wire::{DISCORD_EPOCH_MS, snowflake_ms};
 
 /// One event for the host's log.
 #[derive(Clone, Debug, PartialEq)]
@@ -68,15 +67,6 @@ fn text(value: &Value) -> String {
 
 fn opt_text(value: &Value) -> Option<String> {
     value.as_str().filter(|s| !s.is_empty()).map(str::to_owned)
-}
-
-/// The creation time of a snowflake, in Unix milliseconds.
-#[must_use]
-pub fn snowflake_ms(id: &str) -> i64 {
-    id.parse::<u64>()
-        .ok()
-        .and_then(|id| i64::try_from(id >> 22).ok())
-        .map_or(0, |ms| ms.saturating_add(DISCORD_EPOCH_MS))
 }
 
 /// `2026-10-12T10:30:00.123000+00:00` (Discord writes UTC) as Unix ms.

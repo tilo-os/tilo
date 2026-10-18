@@ -155,6 +155,7 @@ fn reply(parent: &Id, text: &str) -> Invoke<ChatPart> {
         body: None,
         attachment: None,
         mentions: None,
+        written: None,
     })
 }
 
@@ -239,6 +240,22 @@ fn posting_records_its_author_time_and_mentions() {
 }
 
 #[test]
+fn a_member_cannot_backdate_a_post() {
+    let mut ada = Talk::new();
+    ada.set_now_ms(1_234_000);
+    ada.apply(ChatPart::POST.with(chat_part::Post {
+        written: Some(5),
+        ..post_fields("c_general", "from the past")
+    }))
+    .unwrap();
+    assert_eq!(
+        ada.rows("c_general")[0].ts,
+        1234,
+        "only a message a bot brings over keeps when it was written"
+    );
+}
+
+#[test]
 fn a_post_that_says_nothing_or_is_misplaced_is_refused() {
     let mut ada = Talk::new();
     assert!(ada.apply(post("   ")).is_err(), "an empty message");
@@ -267,6 +284,7 @@ fn a_post_that_says_nothing_or_is_misplaced_is_refused() {
                 size: 0,
             }),
             mentions: None,
+            written: None,
         }))
         .is_err(),
         "an attachment is a content address"
@@ -275,14 +293,19 @@ fn a_post_that_says_nothing_or_is_misplaced_is_refused() {
 }
 
 fn post_to(channel: &str, text: &str) -> Invoke<ChatPart> {
-    ChatPart::POST.with(chat_part::Post {
+    ChatPart::POST.with(post_fields(channel, text))
+}
+
+fn post_fields(channel: &str, text: &str) -> chat_part::Post {
+    chat_part::Post {
         channel: id(channel),
         text: text.into(),
         parent: None,
         body: None,
         attachment: None,
         mentions: None,
-    })
+        written: None,
+    }
 }
 
 #[test]
@@ -325,6 +348,7 @@ fn an_attachment_is_posted_by_its_content_address() {
             size: 1200,
         }),
         mentions: None,
+        written: None,
     }))
     .unwrap();
     let rows = ada.rows("c_general");
