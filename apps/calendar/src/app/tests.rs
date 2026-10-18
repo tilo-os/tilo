@@ -1629,6 +1629,32 @@ fn mobile_event_editor_is_a_full_window_page_with_a_reachable_done_action() {
 }
 
 #[test]
+fn done_dismisses_the_mobile_editor_of_an_event_with_a_conflict() {
+    for (width, height) in [(360, 800), (800, 360)] {
+        let mut app = CalendarApp::new_demo();
+        let open = app.selected_event().expect("the sample event is open");
+        let start = app.model.event(open).unwrap().start + Duration::minutes(30);
+        app.model
+            .events
+            .push(crate::resource::event_at("Overlapping", start));
+        let mut h = Harness::mount(app, width, height);
+        h.resize(width, height);
+        assert!(h.app.form.conflict.area() > 0.0, "the conflict is shown");
+        let done = h
+            .app
+            .modal
+            .clone()
+            .and_then(|modal| modal.actions.first().copied())
+            .expect("Done is retained");
+        h.click(done.center());
+        assert!(
+            !h.app.detail_open,
+            "Done dismisses the editor at {width}x{height}"
+        );
+    }
+}
+
+#[test]
 fn view_switcher_lives_in_the_header_or_the_drawer_without_duplicates() {
     // Case `view_switcher_stays_in_the_header_until_it_does_not_fit`.
     {
