@@ -104,7 +104,7 @@ impl RenderContext {
             format,
             target_texture,
             target_view,
-            blitter: TextureBlitter::new(&device_handle.device, format),
+            blitter: Some(TextureBlitter::new(&device_handle.device, format)),
         };
         self.configure_surface(&surface);
         Ok(surface)
@@ -228,7 +228,10 @@ pub struct RenderSurface<'s> {
     pub format: TextureFormat,
     pub target_texture: Texture,
     pub target_view: TextureView,
-    pub blitter: TextureBlitter,
+    /// Draws the target into the surface texture. `None` for a surface that
+    /// takes the target by a texture copy instead (it was configured with
+    /// `COPY_DST` in a matching format), which then compiles no blit pipeline.
+    pub blitter: Option<TextureBlitter>,
 }
 
 impl std::fmt::Debug for RenderSurface<'_> {

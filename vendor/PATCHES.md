@@ -290,6 +290,18 @@ Adds `WgpuEngine::clear_pool()`: drops every buffer the size-class pool is
 holding for reuse. Called only when the budget just grew, so old size
 classes stop being kept for a request that will not come again.
 
+## `vendor/vello/src/util.rs`: a surface without a blitter
+
+`RenderSurface::blitter` is `Option<TextureBlitter>` instead of
+`TextureBlitter`. `TextureBlitter::new` compiles a render pipeline (about
+2.6 ms on a Snapdragon X), and every Tilo window made one on its way to the
+first frame although a surface configured with `COPY_DST` in the target's
+format (`Rgba8Unorm`, the common case) takes the target by a texture copy and
+never blits. `ui::gpu::RenderContext::create_surface` makes the blitter only
+for a surface that needs it, and `ui::gpu::draw_target_to_surface` copies or
+blits accordingly. vello's own `RenderContext::create_surface` always makes
+one (`Some`), so its behaviour is unchanged.
+
 ## `vendor/vello_encoding/src/encoding.rs`: append keeps forced state
 
 Upstream `Encoding::append` sets `self.flags = other.flags`. A glyph run
