@@ -8160,8 +8160,9 @@ fn draw_replay_layout(
         let total = workspace
             .groups
             .iter()
-            .map(|group| u32::from(group.width_permille.max(1)))
-            .sum::<u32>()
+            .map(|group| group.width_permille.max(1))
+            // Widths have no felt maximum: a sum of very wide ones saturates.
+            .fold(0_u32, u32::saturating_add)
             .max(1);
         let mut x = groups.x0;
         for (index, group) in workspace.groups.iter().enumerate() {

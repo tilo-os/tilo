@@ -8700,7 +8700,7 @@ mod tests {
     /// A strip of `count` groups, each `permille` of the strip's usable
     /// width, behind the shell's wheel-disc gutter — the shape the
     /// compositor actually lays out.
-    fn strip_at(count: usize, viewport_w: f64, leading_inset: f64, permille: u16) -> GroupRow {
+    fn strip_at(count: usize, viewport_w: f64, leading_inset: f64, permille: u32) -> GroupRow {
         let groups: Vec<WindowGroup> = (0..count)
             .map(|i| {
                 make_group(
@@ -9042,7 +9042,7 @@ mod tests {
         assert!(!draws_external_pixels(&Scene::new()));
     }
 
-    fn set_strip_permille(row: &mut GroupRow, permille: u16) {
+    fn set_strip_permille(row: &mut GroupRow, permille: u32) {
         for g in &mut row.groups {
             g.set_width(WindowWidth::Fraction(permille));
         }
