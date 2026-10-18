@@ -7,7 +7,7 @@
 use crate::authority::WorkspaceAuthority as _;
 use crate::i18n::{t, t_args};
 use ui::num::{f32_of_f64, f64_of_usize};
-use ui::time::{Duration, Instant};
+use ui::time::Instant;
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -197,7 +197,7 @@ pub struct WorkspaceSettingsOverlay {
     general_text_scale: f64,
     /// Measured footer plus its themed inset/gap, reserved outside the body clip.
     general_footer_height: f64,
-    transition: ui::Transition,
+    transition: ui::motion::Presence,
     tab_pill_rects: [Rect; 5],
     default_app_rects: Vec<(desktop_policy::ResourceKind, Rect, Rect)>,
     revoke_rects: Vec<(String, Rect)>,
@@ -239,7 +239,7 @@ impl Default for WorkspaceSettingsOverlay {
             general_scroll_y: 0.0,
             general_text_scale: 1.0,
             general_footer_height: 48.0,
-            transition: ui::Transition::closed(),
+            transition: ui::motion::Presence::closed(),
             tab_pill_rects: [Rect::ZERO; 5],
             default_app_rects: Vec::new(),
             revoke_rects: Vec::new(),
@@ -530,11 +530,11 @@ impl WorkspaceSettingsOverlay {
     }
 
     pub fn force_settled(&mut self) {
-        self.transition = ui::Transition::open();
+        self.transition = ui::motion::Presence::opened();
     }
 
     pub fn is_animating(&self, now: Instant) -> bool {
-        self.transition.is_animating(now)
+        self.transition.is_moving(now)
     }
 
     pub fn tab_pill_rect(&self, tab: WsTab) -> Rect {
@@ -863,78 +863,42 @@ impl WorkspaceSettingsOverlay {
             self.clear_hits();
             self.dismiss_member_sheet();
         }
-        self.transition.set_open(
+        let now = ui::time::now();
+        // A click on the workspace pill opens it; a shortcut lands at once
+        // (the host has no source here, and a click is the common case).
+        self.transition.show(
             open,
-            if theme.reduce_motion {
-                Duration::ZERO
-            } else {
-                // A Panel opens over `durations.base` (HIG §9.7), read from
-                // the motion tokens rather than a per-surface constant.
-                Duration::from_millis(u64::from(theme.tokens.motion.durations.base_ms))
-            },
-            ui::Curve::EaseOut,
+            ui::motion::Appear::SPEC,
+            theme.motion(),
+            ui::tokens::MotionSource::Pointer,
+            now,
         );
-        let now = Instant::now();
         if !self.transition.is_visible(now) {
             return None;
         }
-        let alpha = self.transition.value(now);
-        let in_flight = alpha < 1.0;
         let rect = self.rect();
-        if !theme.reduce_motion
-            && in_flight
-            && let Some(anchor) = anchor.filter(|anchor| anchor.area() > 0.0)
-        {
-            let start = anchor.center();
-            let end = Point::new(rect.x0 + 28.0, rect.y0 + 24.0);
-            let t = f64::from(alpha);
-            let point = Point::new(
-                start.x + (end.x - start.x) * t,
-                start.y + (end.y - start.y) * t,
-            );
-            let pulse_alpha = (std::f32::consts::PI * alpha).sin().max(0.0);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme
-                    .tokens
-                    .colors
-                    .text_primary
-                    .with_alpha_factor(pulse_alpha),
-                None,
-                &RoundedRect::from_rect(
-                    Rect::new(point.x - 14.0, point.y - 2.0, point.x + 14.0, point.y + 2.0),
-                    2.0,
-                ),
-            );
-        }
+        // The one Panel entrance (HIG §9.7, `ui::motion::Appear`): the sheet
+        // comes from the control that opened it and goes back to it.
+        let origin = anchor.filter(|anchor| anchor.area() > 0.0).map_or_else(
+            || rect.center(),
+            |anchor| ui::motion::Appear::origin(rect, anchor.center()),
+        );
+        let pose = ui::motion::Appear::pose(self.transition.progress(now), origin, theme.motion());
+        let in_flight = !pose.is_rest();
         if in_flight {
             scene.push_layer(
                 Fill::NonZero,
                 BlendMode::default(),
-                alpha,
+                pose.opacity,
                 transform,
                 &self.viewport,
             );
         }
-        // The one Panel entrance (HIG §9.7): opacity, a short rise and a
-        // scale-up about the sheet's centre, shared with the other modal
-        // surfaces through `ui::Transition::modal_curve` — not a bespoke 48 px
-        // slide in from the right. Reduced motion keeps the end state.
-        let (_, dy, scale) = if theme.reduce_motion {
-            (alpha, 0.0, 1.0)
-        } else {
-            self.transition.modal_curve(now, 0.95)
-        };
-        let centre = rect.center();
-        let panel_transform = transform
-            .pre_translate((centre.x, centre.y + dy).into())
-            .pre_scale(scale)
-            .pre_translate((-centre.x, -centre.y).into());
+        let panel_transform = pose.applied_to(transform);
         // Panel role (HIG §9.1–§9.3): the Panel radius, an elevation-token
         // shadow that follows the sheet's own corners and fades with it,
         // `panel_ground` and the derived Panel border.
-        ui::chrome::shell::paint_panel(scene, panel_transform, rect, theme, alpha);
+        ui::chrome::shell::paint_panel(scene, panel_transform, rect, theme, 1.0);
         Some(DrawPlan {
             transform: panel_transform,
             layered: in_flight,
@@ -3090,18 +3054,18 @@ mod tests {
         {
             let mut overlay = WorkspaceSettingsOverlay::default();
             overlay.force_settled();
-            // The lens opens and closes over the motion token's `base` (HIG §9.7).
-            let open_ms = u64::from(Theme::dark().tokens.motion.durations.base_ms);
-            overlay
-                .transition
-                .set_open(false, Duration::from_millis(open_ms), ui::Curve::EaseOut);
-            let now = Instant::now();
-            assert!(overlay.transition.is_visible(now));
-            assert!(
-                !overlay
-                    .transition
-                    .is_visible(now + Duration::from_millis(open_ms + 500))
+            // The lens leaves on the standard dismiss (`ui::motion::Appear`).
+            let now = ui::time::now();
+            overlay.transition.show(
+                false,
+                ui::motion::Appear::SPEC,
+                Theme::dark().motion(),
+                ui::tokens::MotionSource::Pointer,
+                now,
             );
+            assert!(overlay.transition.is_visible(now));
+            let gone = overlay.transition.settles_at().expect("closing");
+            assert!(!overlay.transition.is_visible(gone));
         }
 
         // Phase `close_button_is_one_pointer_target`.

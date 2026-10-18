@@ -35,13 +35,14 @@ use vello::peniko::{BlendMode, Fill};
 /// does not leave it hanging around afterwards.
 pub const OSD_HOLD: Duration = Duration::from_millis(1_500);
 
-/// The fade-in, from the moment the readout first appears. Equal to the
-/// motion token `durations.fast`; the lifecycle clock runs without a theme
-/// in hand, so a test pins the two together.
+/// The fade-in, from the moment the readout first appears: the arrival of
+/// the standard transient motion (`ui::motion::Transient`), the token
+/// `durations.fast`; the lifecycle clock runs without a theme in hand, so a
+/// test pins the two together.
 pub const OSD_FADE_IN: Duration = Duration::from_millis(130);
 
-/// The fade-out tail, inside [`OSD_HOLD`]'s trailing edge. Equal to the
-/// motion token `durations.base`.
+/// The fade-out tail, inside [`OSD_HOLD`]'s trailing edge: the transient's
+/// exit, the token `durations.base`.
 pub const OSD_FADE: Duration = Duration::from_millis(210);
 
 /// What the slab is reporting.
@@ -380,25 +381,16 @@ impl Osd {
     /// Opacity at `now`: easing in over [`OSD_FADE_IN`], opaque, then easing
     /// out over [`OSD_FADE`], then `0.0`.
     pub fn alpha_at(&self, now: Instant) -> f32 {
-        let elapsed = now.saturating_duration_since(self.raised_at);
-        let Some(remaining) = OSD_HOLD.checked_sub(elapsed) else {
-            return 0.0;
-        };
-        let shown = now.saturating_duration_since(self.shown_since);
-        let rise = if shown >= OSD_FADE_IN {
-            1.0
-        } else {
-            // Ease-out: the readout arrives quickly and settles.
-            let t = shown.as_secs_f32() / OSD_FADE_IN.as_secs_f32();
-            1.0 - (1.0 - t) * (1.0 - t)
-        };
-        if remaining >= OSD_FADE {
-            return rise;
-        }
-        let t = remaining.as_secs_f32() / OSD_FADE.as_secs_f32();
-        // Ease-out so the last frames are the ones that thin out, rather
-        // than a linear ramp that reads as a flicker at the end.
-        rise * t * t
+        let expires = self
+            .raised_at
+            .checked_add(OSD_HOLD)
+            .unwrap_or(self.raised_at);
+        ui::motion::Transient::opacity(
+            ui::motion::Transient::READOUT,
+            (self.shown_since, expires),
+            now,
+            ui::tokens::EffectiveMotion::default(),
+        )
     }
 
     /// [`Self::alpha_at`] as `theme` shows it: under reduced motion the
@@ -1010,6 +1002,13 @@ mod tests {
             let d = ui::tokens::motion::Durations::default();
             assert_eq!(OSD_FADE_IN, d.fast());
             assert_eq!(OSD_FADE, d.base());
+            let motion = ui::tokens::EffectiveMotion::default();
+            let readout = ui::motion::Transient::READOUT;
+            assert_eq!(
+                ui::motion::Transient::enter_time(readout, motion),
+                OSD_FADE_IN
+            );
+            assert_eq!(ui::motion::Transient::exit_time(readout, motion), OSD_FADE);
             let theme = Theme::dark().with_reduce_motion(true);
             let o = Osd::volume(0.5, false);
             assert_eq!(o.alpha_in(&theme, o.raised_at), 1.0, "cuts in");

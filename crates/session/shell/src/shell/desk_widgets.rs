@@ -37,7 +37,6 @@ pub mod team;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
-use ui::tokens::Durations;
 use vello::kurbo::{Point, Rect};
 
 pub use settings_store::desk_widgets::{
@@ -66,26 +65,11 @@ pub const REACH_HOLD: Duration = Duration::from_millis(600);
 /// back, so a hand that overshoots its edge by a few pixels does not lose it.
 pub const LEAVE_GRACE: Duration = Duration::from_millis(300);
 
-/// How long a widget takes to change how much of it shows, from the
-/// theme's motion durations.
-///
-/// - **Leaving is instant.** A widget goes away because the person started
-///   typing (or covered the desk, or let go of Super): motion draws the eye,
-///   and something leaving has nothing to say, so it is simply gone by the
-///   time the key lands.
-/// - **Arriving unasked is slow**, opacity only, at the edge: on a pause
-///   the widgets come back over [`Durations::slow`], too gently to pull the
-///   eye from the line just written.
-/// - **Arriving asked for is quick**: reaching for its edge, Super, or a
-///   click answers the person over [`Durations::fast`].
-#[must_use]
-pub fn fade(arriving: bool, asked: bool, durations: Durations) -> Duration {
-    match (arriving, asked) {
-        (false, _) => Duration::ZERO,
-        (true, true) => durations.fast(),
-        (true, false) => durations.slow(),
-    }
-}
+/// How a widget comes and goes is the standard ambient motion
+/// ([`ui::motion::Ambient`]): it leaves at once (the person started typing,
+/// covered the desk or let go of Super, and something leaving has nothing to
+/// say), arrives unasked slowly and opacity only, and arrives asked for
+/// (reaching for its edge, Super, a click) quickly.
 
 /// The space kept clear around the text caret, so a widget near it never
 /// sits on the line being typed.
@@ -760,11 +744,44 @@ mod tests {
 
     #[test]
     fn widgets_leave_at_once_and_arrive_slowly_unless_asked_for() {
-        let d = Durations::default();
-        assert_eq!(fade(false, false, d), Duration::ZERO, "typing: gone");
-        assert_eq!(fade(false, true, d), Duration::ZERO);
-        assert_eq!(fade(true, false, d), d.slow(), "a pause: slow");
-        assert!(fade(true, false, d) >= Duration::from_millis(400));
-        assert_eq!(fade(true, true, d), d.fast(), "reached for: quick");
+        use ui::motion::{Ambient, Presence};
+        use ui::tokens::{EffectiveMotion, Motion, MotionSource};
+        let d = ui::tokens::Durations::default();
+        let motion = EffectiveMotion::new(Motion::default(), false);
+        let t0 = ui::time::now();
+        let arrive = |asked: bool| {
+            let mut p = Presence::closed();
+            p.show(
+                true,
+                Ambient::spec(asked),
+                motion,
+                MotionSource::Pointer,
+                t0,
+            );
+            p.settles_at().expect("arriving").duration_since(t0)
+        };
+        let leave = |asked: bool| {
+            let mut p = Presence::opened();
+            p.show(
+                false,
+                Ambient::spec(asked),
+                motion,
+                MotionSource::Pointer,
+                t0,
+            );
+            p.is_visible(t0)
+        };
+        assert!(!leave(false), "typing: gone");
+        assert!(!leave(true));
+        let slow = arrive(false);
+        assert!(
+            slow >= d.slow() / 2 && slow <= d.slow() + Duration::from_millis(1),
+            "a pause: slow, {slow:?}"
+        );
+        let quick = arrive(true);
+        assert!(
+            quick <= d.fast() + Duration::from_millis(1),
+            "reached for: quick, {quick:?}"
+        );
     }
 }

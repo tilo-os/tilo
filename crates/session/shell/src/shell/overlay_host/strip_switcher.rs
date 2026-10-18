@@ -18,7 +18,7 @@
 //! The state is pure: every method takes the instant it reasons about, and
 //! the host turns a returned [`Command`] into the change on the desktop.
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use tilo_desktop::text_entry::{self, Edit, Mods};
 use ui::TextRole;
@@ -62,8 +62,6 @@ const AVATAR_STEP: f64 = 13.0;
 const AVATARS_SHOWN: usize = 3;
 /// The rename control at a strip row's end.
 const RENAME_W: f64 = 28.0;
-/// The card fades in over this long; reduced motion shows it at once.
-const OPEN_FADE: Duration = Duration::from_millis(120);
 
 /// Someone other than this person, on a strip.
 #[derive(Clone, Debug, PartialEq)]
@@ -378,8 +376,11 @@ pub(crate) struct StripSwitcher {
     selected: Option<Row>,
     naming: Option<Naming>,
     layout: Layout,
-    /// The theme's reduced-motion setting as of the last paint.
-    reduce_motion: bool,
+    /// The card fading in (`ui::motion::Ambient`): nothing in it moves, so
+    /// the row under the pointer stays level with its segment.
+    fade: ui::motion::Presence,
+    /// The motion the person allows, as of the last paint.
+    motion: ui::tokens::EffectiveMotion,
 }
 
 impl StripSwitcher {
@@ -446,6 +447,14 @@ impl StripSwitcher {
                 at: now,
                 by_keyboard,
             });
+            let source = if by_keyboard {
+                ui::tokens::MotionSource::Keyboard
+            } else {
+                ui::tokens::MotionSource::Pointer
+            };
+            self.fade = ui::motion::Presence::closed();
+            self.fade
+                .show(true, ui::motion::Ambient::ASKED, self.motion, source, now);
         } else if let Some(open) = self.open.as_mut() {
             open.by_keyboard |= by_keyboard;
         }
@@ -817,27 +826,22 @@ impl StripSwitcher {
     }
 
     /// Opacity of the card at `now`.
-    fn alpha(&self, now: Instant, reduce_motion: bool) -> f32 {
-        let Some(open) = self.open else {
+    fn alpha(&self, now: Instant) -> f32 {
+        if self.open.is_none() {
             return 0.0;
-        };
-        if reduce_motion {
-            return 1.0;
         }
-        let t = now.saturating_duration_since(open.at).as_secs_f32() / OPEN_FADE.as_secs_f32();
-        let t = t.clamp(0.0, 1.0);
-        1.0 - (1.0 - t) * (1.0 - t)
+        ui::motion::unit_opacity(self.fade.progress(now))
     }
 
     /// Frames are owed only while the card fades in.
     pub(crate) fn needs_animation_frame(&self, now: Instant) -> bool {
-        self.open.is_some() && self.alpha(now, self.reduce_motion) < 1.0
+        self.open.is_some() && self.fade.is_moving(now)
     }
 
     /// Paint the open card. The host paints the ribbon over its band.
     pub(crate) fn draw(&mut self, cx: &mut DrawCx<'_>, now: Instant) {
-        self.reduce_motion = cx.theme.reduce_motion;
-        let alpha = self.alpha(now, self.reduce_motion);
+        self.motion = cx.theme.motion();
+        let alpha = self.alpha(now);
         if alpha <= 0.0 {
             return;
         }
@@ -1615,6 +1619,7 @@ impl super::ShellOverlayHost {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     fn ms(n: u64) -> Duration {
         Duration::from_millis(n)

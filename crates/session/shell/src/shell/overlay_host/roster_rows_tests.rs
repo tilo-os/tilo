@@ -183,17 +183,20 @@ fn quick_settings_bounds_cover_shadows_and_hints_yield_to_modal_surfaces() {
             "the hint cannot paint across a popover"
         );
         chrome.borrow_mut().overlays.quick_settings = false;
-        host.qs_transition = ui::Transition::open();
-        host.qs_transition.set_open(
-            false,
-            Duration::from_millis(QS_OPEN_ANIM_MS),
-            ui::Curve::EaseOut,
-        );
+        host.qs_motion = super::qs_motion::QsMotion::opened();
+        host.qs_motion.follow(&super::qs_motion::QsFrame {
+            open: false,
+            stack: &[crate::shell::quick_settings::QsLevel::Root],
+            height: 300.0,
+            motion: ui::tokens::EffectiveMotion::new(ui::tokens::Motion::default(), false),
+            source: ui::tokens::MotionSource::Pointer,
+            now: ui::time::now(),
+        });
         assert!(
             host.shortcut_help_button_is_suppressed(),
             "a closing popover keeps the hint hidden until its last fading frame"
         );
-        host.qs_transition = ui::Transition::closed();
+        host.qs_motion = super::qs_motion::QsMotion::closed();
 
         host.palette_visible = true;
         assert!(

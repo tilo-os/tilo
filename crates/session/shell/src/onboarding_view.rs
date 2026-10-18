@@ -747,10 +747,13 @@ pub struct OnboardingView {
     invalidation: Invalidation,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
-    transition_started: Instant,
-    transition_duration: Duration,
+    /// A step arriving: forward from the trailing side, back from the
+    /// leading side (`ui::motion::Drill`).
+    transition: ui::motion::Presence,
     transition_direction: f64,
     reduce_motion: bool,
+    /// The motion the person allows, as of the last layout.
+    motion: ui::tokens::EffectiveMotion,
     picker: Option<(PickerPurpose, FilePicker)>,
     connect_source_selected: bool,
     connect_passphrase: Arc<Mutex<String>>,
@@ -1133,10 +1136,10 @@ impl OnboardingView {
             invalidation: Invalidation::Focus,
             composed: None,
             rect: Rect::ZERO,
-            transition_started: Instant::now(),
-            transition_duration: ui::tokens::motion::Motion::default().durations.slow(),
+            transition: step_arriving(ui::tokens::EffectiveMotion::default()),
             transition_direction: 1.0,
             reduce_motion: false,
+            motion: ui::tokens::EffectiveMotion::default(),
             picker: None,
             connect_source_selected: false,
             connect_passphrase: Arc::new(Mutex::new(String::new())),
@@ -2025,8 +2028,7 @@ impl OnboardingView {
     /// advances the exact same transition on animation frames.
     #[doc(hidden)]
     pub fn settle_motion_for_snapshot(&mut self) {
-        let now = Instant::now();
-        self.transition_started = now.checked_sub(Duration::from_secs(1)).unwrap_or(now);
+        self.transition = ui::motion::Presence::opened();
     }
 
     #[doc(hidden)]
@@ -4682,25 +4684,15 @@ impl OnboardingView {
         );
     }
 
-    fn transition_reveal(&mut self, theme: &Theme) -> f32 {
+    /// The arriving step's pose: it comes in from the side it lives on.
+    fn transition_pose(&mut self, theme: &Theme) -> ui::motion::Pose {
         self.reduce_motion = theme.reduce_motion;
-        self.transition_duration = theme.tokens.motion.durations.slow();
-        let duration = self.transition_duration;
-        let elapsed = self.transition_started.elapsed();
-        let raw = if duration.is_zero() {
-            1.0
-        } else {
-            (elapsed.as_secs_f32() / duration.as_secs_f32()).clamp(0.0, 1.0)
-        };
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "the eased value is clamped to 0..=1 before conversion for vello opacity"
-        )]
-        if theme.reduce_motion {
-            1.0
-        } else {
-            ui::ease_out(f64::from(raw)) as f32
-        }
+        let arrived = self.transition.progress(ui::time::now());
+        ui::motion::Drill::pose(
+            self.transition_direction * (1.0 - arrived),
+            self.rect.width(),
+            theme.motion(),
+        )
     }
 
     fn draw_composed(
@@ -4714,7 +4706,7 @@ impl OnboardingView {
         if self.composed.is_none() {
             return;
         }
-        let reveal = self.transition_reveal(theme);
+        let pose = self.transition_pose(theme);
         let Some(composed) = self.composed.as_mut() else {
             return;
         };
@@ -4735,22 +4727,11 @@ impl OnboardingView {
         scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
-            reveal,
+            pose.opacity,
             transform,
             &self.rect,
         );
-        scene.append(
-            &local,
-            Some(
-                transform.pre_translate(
-                    (
-                        self.transition_direction * f64::from(1.0 - reveal) * 22.0,
-                        f64::from(1.0 - reveal) * 8.0,
-                    )
-                        .into(),
-                ),
-            ),
-        );
+        scene.append(&local, Some(pose.applied_to(transform)));
         scene.pop_layer();
     }
 
@@ -5291,7 +5272,7 @@ impl Widget for OnboardingView {
                 1.0
             };
             self.invalidation.both();
-            self.transition_started = Instant::now();
+            self.transition = step_arriving(self.motion);
         }
         self.publish_semantic_state();
     }
@@ -5303,7 +5284,7 @@ impl Widget for OnboardingView {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.reduce_motion = theme.reduce_motion;
-        self.transition_duration = theme.tokens.motion.durations.slow();
+        self.motion = theme.motion();
         let accessibility_expanded =
             theme.text_scale > 1.0 || theme.name.eq_ignore_ascii_case("high contrast");
         let panel_height = if accessibility_expanded {
@@ -5595,7 +5576,7 @@ impl Widget for OnboardingView {
                 .identity_work
                 .as_ref()
                 .is_some_and(IdentityWork::reported)
-            || (!self.reduce_motion && self.transition_started.elapsed() < self.transition_duration)
+            || self.transition.is_moving(ui::time::now())
             || self
                 .picker
                 .as_ref()
@@ -6478,7 +6459,9 @@ mod tests {
             !view.identity_ready_page,
             "the hand-off waits for the journal that records it"
         );
-        release_journal.send(()).expect("the writer waits for its release");
+        release_journal
+            .send(())
+            .expect("the writer waits for its release");
         sync_journaled(&mut view, &doc);
 
         assert_eq!(view.flow.screen(), Screen::Done);
@@ -10265,4 +10248,17 @@ mod tests {
             }
         }
     }
+}
+
+/// A step arriving now, on the drill.
+fn step_arriving(motion: ui::tokens::EffectiveMotion) -> ui::motion::Presence {
+    let mut arriving = ui::motion::Presence::closed();
+    arriving.show(
+        true,
+        ui::motion::Drill::SPEC,
+        motion,
+        ui::tokens::MotionSource::Pointer,
+        ui::time::now(),
+    );
+    arriving
 }

@@ -92,8 +92,8 @@ pub struct OpeningCard {
     drawn: String,
     /// When the first bytes arrived: the bar fades in from here, and stays.
     bar_since: Option<Instant>,
-    /// How long the dots take to give way to the bar.
-    crossfade: Duration,
+    /// The dots giving way to the bar (`ui::motion::CrossFade`).
+    indicator_fade: ui::motion::CrossFade<bool>,
     /// The dots' and the bar's opacity as last drawn.
     drawn_indicator: (f32, f32),
     /// The package whose window this is, when it is known: while that
@@ -114,7 +114,7 @@ impl OpeningCard {
             reduce_motion: false,
             drawn: String::new(),
             bar_since: None,
-            crossfade: Duration::ZERO,
+            indicator_fade: ui::motion::CrossFade::new(false),
             drawn_indicator: (0.0, 0.0),
             package: None,
         }
@@ -220,15 +220,11 @@ impl OpeningCard {
     /// crossfading from when the first bytes arrived, at once under reduced
     /// motion.
     fn indicator_alphas(&self, indicator: Indicator, now: Instant) -> (f32, f32) {
-        let (Indicator::Bar(_), Some(since)) = (indicator, self.bar_since) else {
+        if !matches!(indicator, Indicator::Bar(_)) || self.bar_since.is_none() {
             return (1.0, 0.0);
-        };
-        let elapsed = now.saturating_duration_since(since);
-        if self.reduce_motion || elapsed >= self.crossfade {
-            return (0.0, 1.0);
         }
-        let shown = elapsed.as_secs_f32() / self.crossfade.as_secs_f32();
-        (1.0 - shown, shown)
+        let dots = self.indicator_fade.outgoing(now).map_or(0.0, |(_, o)| o);
+        (dots, self.indicator_fade.incoming(now))
     }
 
     #[cfg(test)]
@@ -282,11 +278,12 @@ impl Widget for OpeningCard {
         presence: &PresenceCtx,
     ) {
         self.reduce_motion = theme.reduce_motion;
-        self.crossfade = Duration::from_millis(u64::from(theme.tokens.motion.durations.base_ms));
         let now = ui::time::now();
         let (status, indicator) = self.status_at(now);
         if matches!(indicator, Indicator::Bar(_)) && self.bar_since.is_none() {
             self.bar_since = Some(now);
+            self.indicator_fade
+                .show(true, theme.motion(), ui::tokens::MotionSource::Pointer, now);
         }
         let (dots, bar) = self.indicator_alphas(indicator, now);
         let place = ui::widget::paint_opening_card(
@@ -597,14 +594,12 @@ mod tests {
         catalogue::set_install_progress(package, None);
         let (dots, bar) = card.drawn_indicator_for_test();
         assert!(
-            dots > 0.0 && bar < 1.0 && (dots + bar - 1.0).abs() < 1e-6,
+            dots > 0.0 && bar < 1.0,
             "the first frame with bytes crossfades: {dots} {bar}"
         );
-        card.bar_since = card
-            .bar_since
-            .and_then(|since| since.checked_sub(card.crossfade));
+        let settled = card.indicator_fade.settles_at().expect("crossfading");
         assert_eq!(
-            card.indicator_alphas(card.status_at(ui::time::now()).1, ui::time::now()),
+            card.indicator_alphas(card.status_at(settled).1, settled),
             (0.0, 1.0),
             "then the bar stands alone"
         );

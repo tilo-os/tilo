@@ -1,6 +1,6 @@
 //! Session power modal: state, layout, paint, animation, and click policy.
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -22,10 +22,6 @@ use ui::widget::{ListRowFace, RowLeading};
 /// A Panel opens and closes over the motion token's `base` (HIG §9.7). The
 /// default token: `open`/`close` have no theme in hand, and the menu is
 /// compositor chrome that does not follow per-app motion overrides.
-fn panel_open_duration() -> Duration {
-    Duration::from_millis(u64::from(ui::tokens::Durations::default().base_ms))
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PowerMenuClick {
     Ignored,
@@ -47,7 +43,10 @@ enum ArmedBy {
 
 pub(crate) struct PowerMenu {
     open: bool,
-    transition: ui::Transition,
+    /// The flyout's appear and dismiss (`ui::motion::Appear`).
+    transition: ui::motion::Presence,
+    /// The motion the person allows, as of the last draw.
+    motion: ui::tokens::EffectiveMotion,
     /// The armed row: the one Enter or a click activates. Pointer hover and
     /// the keyboard arm the same row, so the menu has one highlight.
     selected: usize,
@@ -183,7 +182,8 @@ impl PowerMenu {
     pub(crate) fn for_session(user_switching: bool) -> Self {
         Self {
             open: false,
-            transition: ui::Transition::closed(),
+            transition: ui::motion::Presence::closed(),
+            motion: ui::tokens::EffectiveMotion::new(ui::tokens::Motion::default(), false),
             selected: 0,
             armed_by: ArmedBy::Pointer,
             resolved_metrics: PowerMenuMetrics::for_text_scale(1.0),
@@ -298,8 +298,13 @@ impl PowerMenu {
         self.open = true;
         self.selected = 0;
         self.armed_by = ArmedBy::Pointer;
-        self.transition
-            .set_open(true, panel_open_duration(), ui::Curve::EaseOut);
+        self.transition.show(
+            true,
+            ui::motion::Appear::SPEC,
+            self.motion,
+            ui::tokens::MotionSource::Pointer,
+            ui::time::now(),
+        );
     }
 
     pub(crate) fn close(&mut self) -> bool {
@@ -307,22 +312,35 @@ impl PowerMenu {
         self.open = false;
         self.armed_by = ArmedBy::Pointer;
         if was_open {
-            self.transition
-                .set_open(false, panel_open_duration(), ui::Curve::EaseOut);
+            self.transition.show(
+                false,
+                ui::motion::Appear::SPEC,
+                self.motion,
+                ui::tokens::MotionSource::Pointer,
+                ui::time::now(),
+            );
         }
         was_open
     }
 
     pub(crate) fn is_animating(&self, now: Instant) -> bool {
-        self.transition.is_animating(now)
+        self.transition.is_moving(now)
     }
 
     /// Pin the production modal at its resting state for deterministic visual
     /// review. This is deliberately test-only state control: opening and
     /// arming still go through [`Self::open`] and [`Self::key`].
     pub(crate) fn force_settled_for_visual_test(&mut self) {
-        self.transition
-            .set_open(self.open, Duration::ZERO, ui::Curve::Linear);
+        self.transition.snap(self.open);
+    }
+
+    /// The flyout's pose at `now`: it appears in place, from its centre.
+    fn pose(&self, viewport: Rect, now: Instant) -> ui::motion::Pose {
+        ui::motion::Appear::pose(
+            self.transition.progress(now),
+            self.panel_rect(viewport).center(),
+            self.motion,
+        )
     }
 
     pub(crate) fn click(&mut self, viewport: Rect, point: Point) -> PowerMenuClick {
@@ -390,20 +408,12 @@ impl PowerMenu {
     }
 
     /// Convert a pointer in painted viewport coordinates back into the
-    /// flyout's stable layout coordinates. During the 220ms open/close scale
-    /// animation the rows are painted through a centre transform; hit-testing
-    /// the untransformed rectangles made a visibly correct click activate an
-    /// adjacent action (most dangerously Lock instead of Log out).
+    /// flyout's stable layout coordinates. While it appears or leaves the
+    /// rows are painted through its pose; hit-testing the untransformed
+    /// rectangles made a visibly correct click activate an adjacent action
+    /// (most dangerously Lock instead of Log out).
     fn untransform_pointer(&self, viewport: Rect, point: Point, now: Instant) -> Point {
-        let (_, dy, scale) = self.transition.modal_curve(now, 0.94);
-        if !scale.is_finite() || scale <= f64::EPSILON {
-            return point;
-        }
-        let centre = self.panel_rect(viewport).center();
-        Point::new(
-            centre.x + (point.x - centre.x) / scale,
-            centre.y + (point.y - centre.y - dy) / scale,
-        )
+        self.pose(viewport, now).to_local(point)
     }
 
     pub(crate) fn key(&mut self, key: &winit::keyboard::Key, shift: bool) -> PowerMenuClick {
@@ -483,11 +493,8 @@ impl PowerMenu {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        if theme.reduce_motion {
-            self.transition
-                .set_open(self.open, Duration::ZERO, ui::Curve::Linear);
-        }
-        let now = Instant::now();
+        self.motion = theme.motion();
+        let now = ui::time::now();
         if !self.transition.is_visible(now) {
             return;
         }
@@ -496,29 +503,15 @@ impl PowerMenu {
         let renderer_scale = text_renderer.text_scale();
         text_renderer.set_text_scale(1.0);
         self.resolved_metrics = PowerMenuMetrics::for_theme(theme, text_renderer);
-        let (alpha, dy, scale) = self.transition.modal_curve(now, 0.94);
-        let panel = self.panel_rect(viewport);
+        let pose = self.pose(viewport, now);
         scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
-            alpha,
+            pose.opacity,
             transform,
             &viewport,
         );
-        let centre = panel.center();
-        // `Affine`'s `Mul` composes transform matrices with plain float
-        // multiply-adds — it cannot overflow or panic — but kurbo has no
-        // non-operator way to chain a translate/scale/translate around an
-        // arbitrary center point.
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "Affine * Affine is a panic-free float matrix multiply; no combinator \
-                      exists to compose this translate/scale/translate chain"
-        )]
-        let modal_transform = transform
-            * Affine::translate((centre.x, centre.y + dy))
-            * Affine::scale(scale)
-            * Affine::translate((-centre.x, -centre.y));
+        let modal_transform = pose.applied_to(transform);
         // Theme type tokens already carry the user's text scale, and the
         // panel paints with those resolved sizes; the renderer must not
         // scale them again (HIG §7a) — reset for this pass, as the shell's
@@ -964,15 +957,12 @@ mod tests {
         fn opening_animation_hit_test_tracks_the_painted_logout_row() {
             let mut menu = PowerMenu::default();
             menu.open();
-            let now = Instant::now();
-            let panel = panel_rect(VIEWPORT);
+            let now = ui::time::now();
             let stable = action_rect(VIEWPORT, 1).center();
-            let (_, dy, scale) = menu.transition.modal_curve(now, 0.94);
-            let centre = panel.center();
-            let painted = Point::new(
-                centre.x + (stable.x - centre.x) * scale,
-                centre.y + dy + (stable.y - centre.y) * scale,
-            );
+            let pose = menu.pose(VIEWPORT, now + std::time::Duration::from_millis(20));
+            assert!(!pose.is_rest(), "sampled while it appears");
+            let painted = pose.to_drawn(stable);
+            let now = now + std::time::Duration::from_millis(20);
             let logical = menu.untransform_pointer(VIEWPORT, painted, now);
             assert!((logical.x - stable.x).abs() < 0.001);
             assert!((logical.y - stable.y).abs() < 0.001);
