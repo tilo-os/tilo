@@ -45,6 +45,7 @@ fn main() {
     };
     let item = StoreItem {
         bot: None,
+        awaiting_developer: false,
         id: id.clone(),
         name,
         description: "driven by verify-open-flow.sh".into(),

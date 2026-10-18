@@ -310,6 +310,12 @@ pub struct StoreItem {
     /// Set for a directory bot, which has no downloadable app version.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bot: Option<BotListing>,
+    /// The app publishes builds for this machine, but every one speaks an
+    /// older interface version than this system serves: it is waiting for
+    /// an update from its developer, and the listing says so
+    /// (docs/architecture/compatibility.md).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub awaiting_developer: bool,
 }
 
 impl StoreItem {
@@ -465,6 +471,16 @@ impl StoreItem {
                 "device_managed_repository",
                 ui::i18n!("store-remote-managed"),
             ))
+        } else if self.awaiting_developer
+            && matches!(
+                action,
+                ActionKind::Open | ActionKind::Update | ActionKind::RuntimeInstall
+            )
+        {
+            Some((
+                "waiting_for_developer",
+                ui::i18n!("store-waiting-for-developer"),
+            ))
         } else if matches!(
             action,
             ActionKind::Open | ActionKind::Update | ActionKind::RuntimeInstall
@@ -607,6 +623,7 @@ mod tests {
     fn tilo_item(name: &str, installed: InstalledState, latest: &str) -> StoreItem {
         StoreItem {
             bot: None,
+            awaiting_developer: false,
             id: format!("so.tilo.{}", name.to_ascii_lowercase()),
             name: name.into(),
             description: format!("Some {name} app"),
@@ -638,6 +655,7 @@ mod tests {
     fn flatpak_item(name: &str, installed: InstalledState) -> StoreItem {
         StoreItem {
             bot: None,
+            awaiting_developer: false,
             id: format!("org.example.{name}"),
             name: name.into(),
             description: format!("{name} on Flathub"),

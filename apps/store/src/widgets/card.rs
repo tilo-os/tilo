@@ -131,7 +131,8 @@ pub fn store_card(
 }
 
 /// The secondary line under a card's name: what kind of app it is and which
-/// version the source lists.
+/// version the source lists, or that it is waiting for an update from its
+/// developer when no build of it fits this system.
 pub fn provenance(item: &StoreItem) -> String {
     if let Some(bot) = &item.bot {
         return format!("{}, version {}", ui::i18n!("store-bot-label"), bot.version);
@@ -146,6 +147,9 @@ pub fn provenance(item: &StoreItem) -> String {
             };
         }
     };
+    if item.awaiting_developer {
+        return ui::i18n!("store-waiting-for-developer");
+    }
     let version = visible_version(item);
     if version.is_empty() {
         kind.to_string()
@@ -194,6 +198,7 @@ mod tests {
 
         let item = StoreItem {
             bot: None,
+            awaiting_developer: false,
             id: "org.example.Editor".into(),
             name: "Editor".into(),
             description: "Write without distractions.".into(),
@@ -231,5 +236,47 @@ mod tests {
         );
         native.versions[0].version = "0.2.0+gpu".into();
         assert_eq!(visible_version(&native), "0.2.0+gpu");
+    }
+
+    // USER REQUIREMENT (2026-10-18): "it's fine if we break compat with old versions every few days, people just need to update"
+    #[test]
+    fn the_listing_says_an_app_waits_for_its_developer() {
+        ui::i18n::I18nManager::install(
+            "en-US",
+            "en-US",
+            &[("en-US", include_str!("../../locales/en-US.ftl"))],
+        )
+        .unwrap();
+        let item = StoreItem {
+            bot: None,
+            awaiting_developer: true,
+            id: "so.example.mail".into(),
+            name: "Mail".into(),
+            description: "Mail.".into(),
+            tagline: String::new(),
+            supported_languages: Vec::new(),
+            categories: Vec::new(),
+            icon_url: None,
+            screenshot_urls: Vec::new(),
+            homepage_url: None,
+            source_url: None,
+            install_ref_path: None,
+            source: StoreSource::Tilo {
+                registry_name: "Tilo".into(),
+            },
+            trust: StoreTrust::PublisherSigned,
+            versions: Vec::new(),
+            publisher_pubkey_hex: None,
+            installed: InstalledState::Not,
+        };
+        assert_eq!(
+            provenance(&item),
+            "Waiting for an update from the developer"
+        );
+        let (code, reason) = item
+            .unavailable_action(crate::model::ActionKind::Open)
+            .expect("an app no build of which fits cannot open");
+        assert_eq!(code, "waiting_for_developer");
+        assert_eq!(reason, "Waiting for an update from the developer");
     }
 }
