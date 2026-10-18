@@ -80,7 +80,13 @@ dx12-shader-cache = []
 # (`webview::adblock`). Off by default: only the browser app (and any
 # other app embedding a WebView with built-in blocking) pays for the
 # adblock-rust dependency.
-webview-adblock = ["dep:adblock"]
+webview-adblock = ["dep:tilo-content-blocker"]
+# The compiler is not linked: `webview::adblock` opens it from
+# libtilo_adblock_engine.so the first time an app compiles lists. The engine
+# library's own build (crates/runtime/engines/adblock) turns this on, so the
+# shared runtime every app maps leaves adblock-rust out; any other build links
+# the compiler.
+lazy-adblock = ["webview-adblock", "dep:tilo-engine-loader"]
 # Zero-copy DMA-BUF -> wgpu texture import via Vulkan external memory
 # (`dmabuf_import`). Shared by the WebView's rendered pages and the video
 # decoder's hardware frames — both hand over a GPU buffer as a dmabuf. Pulls
@@ -155,10 +161,11 @@ form_urlencoded.workspace = true
 # First-frame marks are shared with the greeter's startup metrics capture.
 tilo-startup-metrics = { version = "0.1.0", path = "../../system/tilo-startup-metrics" }
 # Filter-list compiler for the WebView's built-in ad blocking (feature
-# `webview-adblock`). The `content-blocking` feature provides the
-# EasyList→WebKit-content-blocker conversion; blocking then runs inside
-# WebKit's network process, not in Rust.
-adblock = { version = "0.12", optional = true, default-features = false, features = ["content-blocking", "embedded-domain-resolver", "full-regex-handling"] }
+# `webview-adblock`): adblock-rust's EasyList→WebKit-content-blocker
+# conversion; blocking then runs inside WebKit's network process, not in Rust.
+tilo-content-blocker = { version = "0.1.0", path = "../../browser/content-blocker", optional = true }
+# Opens the engine libraries the toolkit uses on first use (`lazy-*`).
+tilo-engine-loader = { version = "0.1.0", path = "../../runtime/engine-loader", optional = true }
 # runtime-collab is the Tilo collab broker Cap'n Proto SDK. Its vocabulary
 # types are part of `CollabRequest` / `CollabEvent`; the RPC client behind
 # them is only needed by the `broker-transport` feature.

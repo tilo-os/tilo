@@ -16255,6 +16255,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-adblock-engine"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-content-blocker",
+ "tilo-ui",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-advisory-lock"
 version = "0.1.0"
 dependencies = [
@@ -16951,6 +16961,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-content-blocker"
+version = "0.1.0"
+dependencies = [
+ "adblock",
+ "serde_json",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-content-types"
 version = "0.1.0"
 dependencies = [
@@ -17325,6 +17344,14 @@ dependencies = [
  "tilo-test-env",
  "tokio",
  "tracing",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-engine-loader"
+version = "0.1.0"
+dependencies = [
+ "libc",
  "workspace-hack",
 ]
 
@@ -19417,7 +19444,6 @@ version = "0.1.0"
 dependencies = [
  "accesskit",
  "accesskit_android",
- "adblock",
  "ash",
  "base64",
  "blake3",
@@ -19479,9 +19505,11 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-content",
+ "tilo-content-blocker",
  "tilo-cpu-raster",
  "tilo-desktop-model",
  "tilo-doc",
+ "tilo-engine-loader",
  "tilo-files",
  "tilo-font-catalog",
  "tilo-headless-schema",
