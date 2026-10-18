@@ -118,6 +118,18 @@ impl CapnpBrokerState {
         if let Ok(mut ledger) = self.remote_invocations.lock() {
             ledger.complete(&request.invocation, id);
         }
+        // The journal barrier can block while custody or room policy changes.
+        // Resolve the original admission again immediately before forwarding.
+        self.framework_effect_ready(&admitted, || {
+            let (workspace, actor, now) = self.current_framework_authority(caller, origin, room)?;
+            self.admit_answer(
+                (&workspace, &actor, now),
+                &checked.app,
+                &descriptor,
+                (None, request.confirmation.as_ref()),
+                false,
+            )
+        })?;
         match service.invoke(caller, &checked, request) {
             Ok(started) => self.follow_admitted_host_step(admitted, started),
             Err(error) => {
@@ -310,6 +322,95 @@ mod tests {
             .store(true, std::sync::atomic::Ordering::SeqCst);
         assert!(f.invoke(&request(&invocation(SETTINGS))).is_err());
         assert_eq!(network.sent.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn own_device_rechecks_authority_after_blocked_durable_admission() {
+        use std::sync::{atomic::Ordering, mpsc};
+        use std::time::Duration;
+        use tilo_actions::InvocationUpdate;
+
+        for certified in [false, true] {
+            for change in [
+                "unchanged",
+                "certificate",
+                "execution",
+                "permission",
+                "time",
+            ] {
+                let network = Arc::new(Network::default());
+                let services = crate::services::HostServices {
+                    own_device: Some(network.clone()),
+                    ..Default::default()
+                };
+                let mut f = if certified {
+                    super::super::super::host_steps::signed_test_support::Fixture::new_certified(
+                        services,
+                    )
+                } else {
+                    super::super::super::host_steps::signed_test_support::Fixture::new(services)
+                };
+                f.caller = f.caller.clone().in_new_execution();
+                let asked = request(&invocation(SETTINGS));
+                let (entered, blocked) = mpsc::sync_channel(0);
+                let (release, resume) = mpsc::sync_channel(0);
+                f.state
+                    .journal
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .after_admission = Some(Box::new(move || {
+                    entered.send(()).unwrap();
+                    resume.recv_timeout(Duration::from_secs(5)).unwrap();
+                }));
+                let result = std::thread::scope(|scope| {
+                    let state = f.state.clone();
+                    let caller = f.caller.clone();
+                    let origin = f.origin.clone();
+                    let asked = &asked;
+                    let worker =
+                        scope.spawn(move || state.invoke_own_device(&caller, Some(&origin), asked));
+                    blocked.recv_timeout(Duration::from_secs(5)).unwrap();
+                    match change {
+                        "certificate" => f.authority.revoked.store(true, Ordering::SeqCst),
+                        "execution" => f.caller.retire_execution(),
+                        "permission" => f.tree.write().workspaces[0].set_owner("someone-else"),
+                        "time" => f.retire_policy_origin(),
+                        _ => {}
+                    }
+                    release.send(()).unwrap();
+                    worker.join().unwrap()
+                });
+                if change == "unchanged" {
+                    result.expect("unchanged custody must still forward");
+                    assert_eq!(network.sent.lock().unwrap().len(), 1);
+                    network
+                        .answers
+                        .lock()
+                        .unwrap()
+                        .pop()
+                        .unwrap()
+                        .complete(Ok(Default::default()));
+                    let record = f.assert_signed(&asked, true);
+                    assert!(matches!(record.update, InvocationUpdate::Succeeded { .. }));
+                } else {
+                    assert!(result.is_err(), "{certified}/{change}");
+                    assert!(
+                        network.sent.lock().unwrap().is_empty(),
+                        "{certified}/{change}"
+                    );
+                    let record = f.assert_signed(&asked, true);
+                    assert!(!record.uncertain);
+                    assert!(
+                        matches!(record.update, InvocationUpdate::Failed { ref error, .. }
+                        if error.code == "host_action_refused")
+                    );
+                }
+            }
+        }
     }
 
     #[test]
