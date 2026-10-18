@@ -83,6 +83,8 @@ tilo-moq = { path = "../../hosting/tilo-moq", features = ["relay"] }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 tilo-files = { path = "../../platform/tilo-files", features = ["json"] }
 bounded-command = { path = "../../system/bounded-command" }
+# The wire format of the network-answers helper search runs (exchange rates).
+tilo-net-answers = { path = "../../system/net-answers", default-features = false }
 # The MLS vault's master and signer keys: Secret Service or Keychain.
 tilo-secrets.workspace = true
 tempfile.workspace = true

@@ -118,6 +118,21 @@ files = [
   { from = "/usr/share/fonts/tilo/", to = "/usr/share/fonts/tilo/", tree = true, layer = "direct" },
 ]
 
+# The network-answers helper: search's one door to the network (exchange
+# rates), run by the compositor, which never opens a socket itself. It
+# confines itself to reading the trust bundle and resolver files and to
+# connecting to HTTPS.
+[[component]]
+name = "net-answers"
+kind = "userspace"
+scope = "session"
+packages = ["tilo-net-answers"]
+bins = ["tilo-net-answers"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-net-answers", to = "/usr/libexec/tilo-net-answers", mode = "0755" },
+]
+
 # The control-socket CLI, the one way agents and scripts drive a running
 # desktop (AGENTS.md): the action model over the device admin's control socket
 # in every image, plus synthetic input over a dev session's test-control

@@ -113,6 +113,7 @@ pub mod mpris;
 pub(crate) mod native_media;
 pub(crate) mod native_workspace_owner;
 pub mod nearby_transfer;
+pub mod net_answers;
 pub mod network;
 pub mod notification;
 pub mod notification_history;
