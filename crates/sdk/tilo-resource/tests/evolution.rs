@@ -99,6 +99,23 @@ fn an_old_document_migrates_once_and_reads_as_the_new_model() {
     assert_eq!(replica.state().unwrap().given, "Grace");
 }
 
+// USER REQUIREMENT (2026-10-18): "it's fine if we break compat with old versions every few days, people just need to update"
+/// A migration is one change on top of the document's history, so the
+/// document as it was before it is the snapshot a rollback reads: the
+/// previous build finds its own version there, whole.
+#[test]
+fn the_document_before_a_migration_stays_readable_in_its_history() {
+    let mut doc = old_document();
+    let before = doc.get_heads();
+    assert!(evolution::migrate::<Contact>(&mut doc).unwrap());
+    let snapshot = doc.fork_at(&before).unwrap();
+    assert_eq!(evolution::stored_version(&snapshot), 1);
+    assert_eq!(ContactV1::read(&snapshot).unwrap().name, "Ada Lovelace");
+    // The build that wrote it refuses the migrated document rather than
+    // reading it as its own.
+    assert!(evolution::read_checked::<ContactV1>(&doc).is_err());
+}
+
 #[test]
 fn two_devices_migrating_concurrently_make_the_same_change() {
     let mut left = old_document();

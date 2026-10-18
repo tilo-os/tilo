@@ -122,6 +122,31 @@ pub fn fs_capability_export_path() -> PathBuf {
 /// Native file envelope; the portable desktop schema remains independently versioned.
 pub const NATIVE_STATE_SCHEMA_VERSION: u32 = 3;
 
+/// `state.json` as a versioned format: a file of an older version comes up
+/// to [`NATIVE_STATE_SCHEMA_VERSION`] when it is loaded, after a snapshot of
+/// it is kept beside it (docs/architecture/compatibility.md). A change to the
+/// file's shape bumps the version and adds a step from the one before;
+/// `oldest` never rises, so a machine that missed updates still loads.
+pub(crate) const STATE_FORMAT: tilo_files::native::migration::Format =
+    tilo_files::native::migration::Format {
+        name: "desktop state",
+        version: NATIVE_STATE_SCHEMA_VERSION,
+        oldest: 3,
+        steps: &[],
+    };
+
+/// A file the previous version of [`STATE_FORMAT`] wrote, which its step
+/// is tested against; `None` while the format has only its first version.
+#[cfg(test)]
+const PREVIOUS_STATE_FILE: Option<&[u8]> = None;
+
+/// The version a state file says it is, read before anything else of it.
+#[derive(serde::Deserialize)]
+struct StoredVersion {
+    #[serde(default)]
+    schema_version: u32,
+}
+
 /// Encode `tree` as its state file, refusing what exceeds the file's bounds.
 ///
 /// # Errors
@@ -597,6 +622,17 @@ pub fn load_tree_from(path: &Path) -> std::io::Result<WorkspaceTree> {
             "native encoded state refusal cap exceeded",
         ));
     }
+    // An older file comes up to date first, a snapshot of it kept; a newer
+    // one is refused untouched.
+    let stored = serde_json::from_str::<StoredVersion>(&s)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?
+        .schema_version;
+    let s = String::from_utf8(
+        STATE_FORMAT
+            .bring_up(path, s.into_bytes(), stored)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?,
+    )
+    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     let mut tree: WorkspaceTree = serde_json::from_str::<WorkspaceTree>(&s)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     // Refuse before anything else touches it: mutators here write the
@@ -763,6 +799,43 @@ fn schema_version_in(path: &Path) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The state file keeps every version a machine may hold loadable: each
+    /// step is tested against the file the version before it wrote, and a
+    /// file from a newer build is refused untouched.
+    #[test]
+    fn the_previous_state_file_comes_up_to_date_and_a_newer_one_is_left_alone() {
+        assert!(STATE_FORMAT.is_whole());
+        match PREVIOUS_STATE_FILE {
+            Some(previous) => {
+                let stored: StoredVersion = serde_json::from_slice(previous).unwrap();
+                assert_eq!(
+                    stored.schema_version,
+                    STATE_FORMAT.version - 1,
+                    "PREVIOUS_STATE_FILE is a file the previous version wrote"
+                );
+                tilo_files::native::migration::assert_step_reads_previous(
+                    &STATE_FORMAT,
+                    previous,
+                    |current| {
+                        serde_json::from_slice::<WorkspaceTree>(current)
+                            .expect("the step's output reads as the current state");
+                    },
+                );
+            }
+            None => assert_eq!(
+                STATE_FORMAT.version, STATE_FORMAT.oldest,
+                "a state format past its first version keeps a file its previous version wrote \
+                 in PREVIOUS_STATE_FILE"
+            ),
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let newer = format!("{{\"schema_version\":{}}}", NATIVE_STATE_SCHEMA_VERSION + 1);
+        std::fs::write(&path, &newer).unwrap();
+        assert!(load_tree_from(&path).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), newer);
+    }
 
     /// Preparing for sleep makes the settings and the queued saves durable
     /// from the compositor loop under a 2 s bound. A settings flush stuck
