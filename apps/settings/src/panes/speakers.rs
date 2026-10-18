@@ -668,7 +668,7 @@ impl SpeakersModel {
                     self.setup.saved(group.clone());
                 }
                 Ok(t_args(
-                    "speakers-done-saved",
+                    "speakers-done-created",
                     &[("name", name.as_str().into())],
                 ))
             }

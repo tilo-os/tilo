@@ -6,7 +6,7 @@ use super::participants::note_participant_outcome;
 use crate::WpFormat;
 use crate::effects::WordProcessorEffect;
 use crate::find_bar::Blocks;
-use crate::i18n::{arg, t, t_args};
+use crate::i18n::t;
 use crate::num;
 use crate::word_processor::Caret;
 use automerge::AutoCommit;
@@ -1276,15 +1276,9 @@ impl WordProcessorWidget {
         path: &std::path::Path,
     ) -> Result<(), String> {
         let doc = cx.document().ok_or("the document is not at hand")?.clone();
+        // Saving where the document lives says nothing; only a failure is
+        // news.
         self.try_write_to_path(&doc, path, WpFormat::from_path(path))?;
-        // No chooser was involved, so nothing on screen changed: say so in
-        // passing. A save through the chooser stays quiet, since the person
-        // just picked the file.
-        let file = path
-            .file_name()
-            .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
-        self.acknowledger
-            .say(t_args("saved-file", &[arg("file", file)]));
         Ok(())
     }
 

@@ -200,7 +200,6 @@ impl ResourceApp for HexEditorShell {
             "find",
             "goto",
             "edited",
-            "saved",
             "error",
             "narrow",
             "narrow-inspector",

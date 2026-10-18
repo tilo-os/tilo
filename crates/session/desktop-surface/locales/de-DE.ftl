@@ -1106,8 +1106,7 @@ activity-task-direction-close = Zurück zur Aufgabe
 activity-task-direction-label = Anweisungen für den Agenten
 activity-task-direction-placeholder = Beschreibe, was der Agent ändern soll
 activity-task-direction-observation = Sag dem Agenten, was er anders machen soll. Er folgt deinen Anweisungen ab seinem nächsten Schritt, und alle in diesem Arbeitsbereich können sie sehen.
-activity-task-review-saving = Wird gespeichert…
-activity-task-review-saved = Gespeichert. Warte auf die Antwort des Agenten.
+activity-task-review-waiting = Warte auf die Antwort des Agenten.
 activity-task-review-refused = Nicht gespeichert. Dein Entwurf bleibt erhalten. { $detail }
 
 activity-confirm-waiting = Wartet auf deine Bestätigung

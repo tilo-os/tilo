@@ -230,10 +230,7 @@ impl Widget for WordProcessorWidget {
     fn needs_animation_frame(&self) -> bool {
         // Only the outline and inspector drawers move, while they open or
         // close.
-        self.outline_drawer.is_animating()
-            || self.inspector_drawer.is_animating()
-            // A passing "Saved …" holds, fades and goes on its own.
-            || self.acknowledger.current(ui::time::now()).is_some()
+        self.outline_drawer.is_animating() || self.inspector_drawer.is_animating()
     }
 
     fn modal_capture(&self) -> Option<Rect> {
@@ -494,11 +491,6 @@ impl Widget for WordProcessorWidget {
         }
         let mut node = tree.into_access_node();
         node.children.extend(self.toast.access_node());
-        node.children.extend(
-            self.acknowledger
-                .current(ui::time::now())
-                .map(|ack| ack.accessibility()),
-        );
         Some(node)
     }
 

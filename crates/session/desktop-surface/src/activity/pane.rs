@@ -6320,7 +6320,8 @@ impl RoomActivityPane {
         if let Some(task) = &indexed.run.task
             && self.undo_task_run(task)
         {
-            self.agent_undo_notice = Some((indexed.run.id, t("activity-task-review-saving")));
+            // Quiet until the undo lands or is refused.
+            self.agent_undo_notice = None;
             return UndoApply::default();
         }
         let Some(records) = records else {

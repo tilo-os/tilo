@@ -1198,7 +1198,7 @@ impl CaptureExecutor {
 
     /// Stop taking frames now and finish the file on the capture worker:
     /// draining the encoder and the muxer's end of stream wait up to 30 s.
-    /// The pill reads "Saving…" until the finished file is reported.
+    /// The pill reads "Stopping…" until the finished file is reported.
     fn stop_recording(&mut self, frame_builder: &mut FrameBuilder) -> Result<(), String> {
         let Some(mut recording) = self.recording.take() else {
             frame_builder.set_capture_recording_active(false);

@@ -1244,9 +1244,6 @@ pub struct WordProcessorWidget {
     /// A transient operation result (e.g. save confirmation or failure),
     /// drawn as a toast in the overlay pass. Dismissed on the next interaction.
     toast: Notice,
-    /// "Saved report.docx", said in passing for a save that changed nothing
-    /// on screen; never a toast, since there is nothing to read or act on.
-    acknowledger: ui::widget::acknowledgement::Acknowledger,
     ime_rect: Option<Rect>,
     /// The style inspector's shared color-picker popover. It owns its lifecycle,
     /// layout, drawing, and modal input routing; this editor applies its result.
@@ -1521,7 +1518,6 @@ impl WordProcessorWidget {
             pending_save: None,
             style_menu: StyleMenu::default(),
             toast: Notice::default(),
-            acknowledger: ui::widget::acknowledgement::Acknowledger::default(),
             ime_rect: None,
             color_picker: StyleColorPicker::default(),
             participants: participants::ParticipantViews::default(),

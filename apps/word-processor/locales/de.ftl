@@ -141,7 +141,6 @@ style-menu-duplicate = Stil duplizieren
 
 ## Transient toasts (confirmation cues)
 toast-toc-empty = Erst Überschriften hinzufügen — ein Inhaltsverzeichnis listet sie auf
-saved-file = { $file } gespeichert
 toast-save-failed = Dokument konnte nicht gespeichert werden
 toast-open-failed = Dokument konnte nicht geöffnet werden. Das aktuelle Dokument bleibt unverändert.
 toast-view-only = Dieses Dokument ist nur zum Ansehen geöffnet.

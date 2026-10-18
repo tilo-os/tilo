@@ -130,7 +130,9 @@ impl VideoEditorApp {
         match crate::project_file::save(&path, &self.project) {
             Ok(()) => {
                 self.recents = crate::project_file::recents::remember(&self.recents, &path);
-                self.project_notice = Some(Notice::ok(saved_words(&path)));
+                // The project button's unsaved mark clears; saving says
+                // nothing more.
+                self.project_notice = None;
                 // Save As can move the project; relative media follows it.
                 crate::media::set_project_anchor(path.parent().map(std::path::Path::to_path_buf));
                 self.project_path = Some(path);
@@ -502,14 +504,4 @@ impl VideoEditorApp {
     pub(super) fn export_is_offered(&self) -> bool {
         crate::export::unavailable_reason().is_none() && !self.export_running()
     }
-}
-
-/// What the header row says after a save: the folder the file went to, by
-/// name. The project button already names the file, and a whole path in a
-/// pill is a line nobody reads.
-pub(super) fn saved_words(path: &Path) -> String {
-    path.parent().and_then(Path::file_name).map_or_else(
-        || "Saved".to_string(),
-        |folder| format!("Saved to {}", folder.to_string_lossy()),
-    )
 }

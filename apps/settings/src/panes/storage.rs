@@ -1193,7 +1193,7 @@ impl StorageModel {
                 self.cache_policy = Some(policy);
                 if let Some(effect) = effect {
                     self.replies
-                        .finish(effect, Ok(t("settings-storage-cache-saved")));
+                        .finish(effect, Ok(t("settings-storage-cache-changed")));
                 }
             }
             Err(error) => {

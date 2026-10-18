@@ -1059,7 +1059,9 @@ impl SignInFlow {
             Outcome::Prepared(prepared, completed) => {
                 self.stage = Stage::Form;
                 self.preparation = Some(prepared);
-                self.message = Some("Saving…".into());
+                // Storing the account is the system's job: the sheet closes
+                // when it lands and says why if it does not.
+                self.message = None;
                 (Some(*completed), true)
             }
             Outcome::Saved(id) => {
@@ -1080,7 +1082,7 @@ impl SignInFlow {
                     (None, true)
                 } else {
                     self.stage = Stage::Form;
-                    self.message = Some("Saving…".into());
+                    self.message = None;
                     (Some(*completed), true)
                 }
             }

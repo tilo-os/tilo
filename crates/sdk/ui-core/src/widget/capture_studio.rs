@@ -3644,7 +3644,7 @@ impl CaptureStudio {
             }
         };
         let settled_label = if self.take.stop_pending {
-            "Saving…".to_string()
+            "Stopping…".to_string()
         } else if self.take.paused {
             format!("Paused · {}", crate::format::timecode(elapsed))
         } else if self

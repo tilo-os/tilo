@@ -1830,7 +1830,7 @@ impl PrintCentre {
                                 "Scanned page saved"
                             }
                             .into(),
-                            message: format!("Saved {name}."),
+                            message: format!("Saved as {name}."),
                         },
                         Ok(Effected::done()),
                     ),

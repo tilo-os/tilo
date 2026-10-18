@@ -1428,11 +1428,6 @@ impl WordProcessorWidget {
         );
         self.toast
             .paint(scene, transform, tr, theme, area, ToastAnchor::BottomCenter);
-        let now = ui::time::now();
-        if let Some(ack) = self.acknowledger.current(now) {
-            let alpha = ack.alpha_at(now, theme.reduce_motion);
-            ack.draw(scene, transform, tr, theme, area, alpha);
-        }
     }
 }
 

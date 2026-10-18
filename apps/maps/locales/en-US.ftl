@@ -3,7 +3,7 @@
 ## History: what each change to the shared map did
 
 maps-place-saved = { $new ->
-    [true] Saved { $item }
+    [true] Added { $item } to the saved places
    *[false] Removed { $item } from the saved places
 }
 maps-place-name = Renamed { $item }

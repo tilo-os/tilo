@@ -25,6 +25,6 @@ remote-remote-connections = { $op ->
     [remove] Deleted a connection
    *[other] Changed the saved connections
 }
-remote-add-connection = Saved { $name }
+remote-add-connection = Added { $name }
 remote-delete-connection = Deleted { $item }
 remote-mark-used = Connected to { $item }

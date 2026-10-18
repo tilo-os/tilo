@@ -157,10 +157,10 @@ mod tests {
             (
                 "a notice leads",
                 StatusState {
-                    notice: "Saved main.rs".into(),
+                    notice: "Reloaded main.rs from disk".into(),
                     ..caret(2, 1, "Rust")
                 },
-                "Saved main.rs",
+                "Reloaded main.rs from disk",
                 "Ln 2, Col 1",
             ),
             (

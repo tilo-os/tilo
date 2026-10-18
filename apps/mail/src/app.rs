@@ -1817,7 +1817,8 @@ impl MailApp {
         // so it can be found and reopened — not a write-only slot.
         let id = self.upsert_draft_message(doc, &draft);
         self.editing_draft = Some(id);
-        self.shared.borrow_mut().status = Some("Draft saved".into());
+        // The composer closes: say where the draft went.
+        self.shared.borrow_mut().status = Some("Saved to Drafts".into());
         self.compose.close();
         self.store_preferences_if_changed();
         self.dirty = true;
@@ -2596,7 +2597,7 @@ impl MailApp {
             return crate::i18n::t(if adding {
                 "mail-setup-signing-in"
             } else {
-                "mail-setup-saving"
+                "mail-setup-checking"
             });
         }
         if self.signs_in_with_browser_first() {
@@ -5327,7 +5328,7 @@ impl MailApp {
         resource: String,
     ) -> ui::framework::Effected {
         self.shared.borrow_mut().status = Some(if saved {
-            format!("Saved {name}")
+            format!("Saved a copy as {name}")
         } else {
             "Attachment save cancelled".into()
         });
@@ -9281,7 +9282,7 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
         ));
         assert_eq!(
             app.shared.borrow().status.as_deref(),
-            Some(format!("Saved {name}").as_str())
+            Some(format!("Saved a copy as {name}").as_str())
         );
         let cancelled = app.finish_attachment_save(false, &name, resource);
         assert!(matches!(

@@ -366,7 +366,6 @@ canvas-save-title = Save the artwork
 canvas-duplicate-title = Save a copy
 canvas-save = Save
 canvas-copy-of = { $title } copy
-canvas-saved = Saved { $name }
 canvas-duplicated = Saved a copy as { $name }
 canvas-save-failed = Could not save: { $why }
 canvas-chooser-gone = the file chooser went away

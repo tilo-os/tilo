@@ -793,11 +793,11 @@ impl ContactsApp {
                         self.awaiting = Some(id);
                     }
                     self.selected = Some(id);
-                    self.show_toast(if form.is_new {
-                        "Contact created"
-                    } else {
-                        "Saved"
-                    });
+                    // An edited contact shows its changes as the form closes;
+                    // storing them says nothing.
+                    if form.is_new {
+                        self.show_toast("Contact created");
+                    }
                     self.mode = Mode::View;
                     self.shared.borrow_mut().reveal = Some(id);
                     self.unconfirmed_save = Some(form);
