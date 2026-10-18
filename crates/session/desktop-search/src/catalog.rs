@@ -895,10 +895,10 @@ pub(super) const APPS: &[CatalogApp] = &[
     },
     CatalogApp {
         id: "so.tilo.settings",
-        name: "Personal Settings",
+        name: "Settings",
         category: "System",
         platforms: &["tilo-os"],
-        names: &["Persönliche Einstellungen"],
+        names: &["Einstellungen"],
         keywords: &[
             "preferences",
             "system settings",

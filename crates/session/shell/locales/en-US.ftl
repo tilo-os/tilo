@@ -2829,7 +2829,7 @@ agent-quick-stop-refused = Couldn't stop it. Try again.
 ## Each `search-kw-*` message is a comma-separated list; desktop search matches
 ## the lists of every language whatever language the desktop speaks.
 search-kind-settings-pages = Settings
-search-settings-page-subtitle = Personal Settings
+search-settings-page-subtitle = Settings
 search-toggle-wifi = Wi-Fi
 search-toggle-wifi-subtitle = Turn Wi-Fi on or off
 search-toggle-bluetooth = Bluetooth

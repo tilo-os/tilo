@@ -2788,7 +2788,7 @@ agent-quick-stop-refused = Konnte nicht gestoppt werden. Versuch es noch einmal.
 ## Jede `search-kw-*`-Nachricht ist eine kommagetrennte Liste; die Desktop-Suche nutzt
 ## die Listen aller Sprachen, gleich welche Sprache der Desktop spricht.
 search-kind-settings-pages = Einstellungen
-search-settings-page-subtitle = Persönliche Einstellungen
+search-settings-page-subtitle = Einstellungen
 search-toggle-wifi = WLAN
 search-toggle-wifi-subtitle = WLAN ein- oder ausschalten
 search-toggle-bluetooth = Bluetooth
