@@ -166,6 +166,7 @@ pub mod session_policy;
 pub mod settings_failures;
 pub(crate) mod shared_display_actions;
 pub mod shell_narrator;
+pub mod software_dim;
 pub mod spatial_calibration;
 pub mod speaker_calibration;
 pub mod speaker_group;

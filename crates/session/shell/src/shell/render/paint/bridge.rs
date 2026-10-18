@@ -464,6 +464,7 @@ impl VelloDrmBridge {
                 sdr_white_nits,
                 hdr_layers,
                 color_lut: None,
+                dim: None,
                 layers: None,
             },
         )
@@ -495,27 +496,29 @@ impl VelloDrmBridge {
     }
 
     /// The final pass `output` needs exists and is set up for the next submission: the PQ
-    /// encode for an HDR target, the oriented copy for an SDR one that is rotated or
-    /// calibrated (`color_lut`). Returns whether the oriented copy runs; an unrotated,
-    /// uncalibrated SDR target keeps the plain blit.
+    /// encode for an HDR target, the oriented copy for an SDR one that is rotated,
+    /// calibrated (`color_lut`) or dimmed in software (`dim`). Returns whether the oriented
+    /// copy runs; an unrotated, uncalibrated, undimmed SDR target keeps the plain blit. An
+    /// HDR target is dimmed by placing SDR white lower.
     fn prepare_final_pass(
         &mut self,
         output: OutputTarget<'_>,
         hdr: bool,
         sdr_white_nits: f32,
-        color_lut: Option<&IccLut>,
+        (color_lut, dim): (Option<&IccLut>, Option<f32>),
     ) -> bool {
         if hdr {
+            let sdr_white_nits = sdr_white_nits * dim.unwrap_or(1.0);
             self.prepare_hdr_encoder(output.format, sdr_white_nits, output.orientation);
             return false;
         }
-        if output.orientation == OutputTransform::Normal && color_lut.is_none() {
+        if output.orientation == OutputTransform::Normal && color_lut.is_none() && dim.is_none() {
             return false;
         }
         let (device, queue) = (&self.target.device, &self.target.queue);
         self.oriented_copy
             .get_or_insert_with(|| OrientedCopy::new(device))
-            .prepare(device, queue, output.orientation, color_lut);
+            .prepare(device, queue, output.orientation, color_lut, dim);
         true
     }
 
@@ -568,7 +571,8 @@ impl VelloDrmBridge {
         let hdr = output.format != wgpu::TextureFormat::Bgra8Unorm;
         // The profile describes the panel's SDR response; the PQ encode replaces it.
         let color_lut = signal.color_lut.filter(|_| !hdr);
-        let copies = self.prepare_final_pass(output, hdr, signal.sdr_white_nits, color_lut);
+        let copies =
+            self.prepare_final_pass(output, hdr, signal.sdr_white_nits, (color_lut, signal.dim));
         let encode = self
             .hdr_encoders
             .iter()
@@ -633,7 +637,8 @@ impl VelloDrmBridge {
             self.target.hdr_pass = Some(compositor.prepare(
                 self.target.size,
                 hdr_layers,
-                Some((output.format, sdr_white_nits)),
+                // Dimmed in the final pass: SDR white sits lower.
+                Some((output.format, sdr_white_nits * signal.dim.unwrap_or(1.0))),
             ));
             compositor.set_orientation(output.orientation);
         }
@@ -650,7 +655,7 @@ impl VelloDrmBridge {
         };
         // The profile describes the panel's SDR response; the PQ encode replaces it.
         let color_lut = signal.color_lut.filter(|_| !hdr);
-        let copies = self.prepare_final_pass(output, hdr, sdr_white_nits, color_lut);
+        let copies = self.prepare_final_pass(output, hdr, sdr_white_nits, (color_lut, signal.dim));
         let encode = self
             .hdr_encoders
             .iter()

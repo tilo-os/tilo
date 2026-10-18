@@ -443,6 +443,170 @@ impl AdaptiveSync {
     }
 }
 
+/// Software dimming in the CRTC's colour pipeline: the `GAMMA_LUT` the
+/// display engine applies to every plane after composition, so a dimmed
+/// display stays dimmed while a fullscreen client's buffer is scanned out
+/// directly ([`crate::shell::software_dim`]). Like adaptive sync, it is
+/// written between flips through the legacy `SETPROPERTY` ioctl, and the
+/// decision of what to write is kept here, testable without a device.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct CrtcGamma {
+    /// The CRTC's `GAMMA_LUT` property, when the driver exposes one.
+    property: Option<property::Handle>,
+    /// Its `GAMMA_LUT_SIZE`: how many entries the LUT takes.
+    size: usize,
+    /// The light to let through (`f32` bits) and whether the signal is PQ.
+    wanted: (u32, bool),
+    /// What the kernel holds, as far as this process knows. `None` after a
+    /// session resume, when another DRM master may have changed it.
+    applied: Option<(u32, bool)>,
+    /// The driver refused a LUT. Latched until the next session resume; the
+    /// final pass dims meanwhile.
+    rejected: bool,
+}
+
+/// The undimmed LUT: no LUT at all, whatever the signal.
+const UNDIMMED: (u32, bool) = (0x3F80_0000, false);
+
+impl CrtcGamma {
+    pub(super) fn probe<D: ControlDevice>(device: &D, crtc: drm_re::control::crtc::Handle) -> Self {
+        let property = find_property(device, crtc, "GAMMA_LUT").map(|(handle, _, _)| handle);
+        let size = find_property(device, crtc, "GAMMA_LUT_SIZE")
+            .map_or(0, |(_, value, _)| usize::try_from(value).unwrap_or(0));
+        Self::new(property, size)
+    }
+
+    pub(super) fn new(property: Option<property::Handle>, size: usize) -> Self {
+        Self {
+            property,
+            size,
+            wanted: UNDIMMED,
+            // A fresh session starts without a LUT, so undimmed costs no
+            // commit.
+            applied: Some(UNDIMMED),
+            rejected: false,
+        }
+    }
+
+    /// The CRTC can dim: it has a LUT of at least two entries, and the
+    /// driver has not refused one.
+    pub(super) fn carries(&self) -> bool {
+        self.property.is_some() && self.size >= 2 && !self.rejected
+    }
+
+    /// Let `light` through (`1.0`: undimmed) on a signal that is PQ when
+    /// `pq`, else sRGB.
+    pub(super) fn want(&mut self, light: f32, pq: bool) {
+        self.wanted = if crate::shell::software_dim::dims(light) {
+            (light.to_bits(), pq)
+        } else {
+            UNDIMMED
+        };
+    }
+
+    /// The signal changed between SDR and PQ: a dimmed LUT follows it.
+    pub(super) fn set_pq(&mut self, pq: bool) {
+        if self.wanted != UNDIMMED {
+            self.wanted.1 = pq;
+        }
+    }
+
+    /// The light and transfer to write before the next flip, if the kernel
+    /// differs from what is wanted.
+    pub(super) fn pending_write(&self) -> Option<(f32, bool)> {
+        (self.carries() && self.applied != Some(self.wanted))
+            .then(|| (f32::from_bits(self.wanted.0), self.wanted.1))
+    }
+
+    /// Write what is pending to `crtc`'s LUT: no LUT when undimmed, else the
+    /// dimming curve at the LUT's full size and precision.
+    pub(super) fn write<D: ControlDevice>(
+        &mut self,
+        device: &D,
+        crtc: drm_re::control::crtc::Handle,
+    ) -> Result<(), String> {
+        use crate::shell::software_dim::{Transfer, gamma_lut, gamma_lut_blob};
+        let (Some((light, pq)), Some(property)) = (self.pending_write(), self.property) else {
+            return Ok(());
+        };
+        let blob = if self.wanted == UNDIMMED {
+            None
+        } else {
+            let transfer = if pq { Transfer::Pq } else { Transfer::Srgb };
+            let bytes = gamma_lut_blob(&gamma_lut(self.size, light, transfer));
+            match create_blob(device, &bytes) {
+                Ok(blob) => Some(blob),
+                Err(error) => {
+                    self.rejected = true;
+                    return Err(format!("create GAMMA_LUT blob: {error}"));
+                }
+            }
+        };
+        let result = device.set_property(crtc, property, blob.map_or(0, u64::from));
+        // The CRTC holds its own reference to a LUT it took.
+        if let Some(blob) = blob {
+            let _ = device.destroy_property_blob(u64::from(blob));
+        }
+        match result {
+            Ok(()) => {
+                self.applied = Some(self.wanted);
+                Ok(())
+            }
+            // A commit still in flight: the write stays pending and goes
+            // out before the next flip.
+            Err(error) if error.raw_os_error() == Some(libc::EBUSY) => {
+                Err(format!("GAMMA_LUT busy: {error}"))
+            }
+            Err(error) => {
+                self.rejected = true;
+                Err(format!("GAMMA_LUT: {error}"))
+            }
+        }
+    }
+
+    /// After a session resume the kernel state is unknown and a previous
+    /// refusal may have been a transient master-less failure.
+    pub(super) fn forget_applied(&mut self) {
+        self.applied = None;
+        self.rejected = false;
+    }
+}
+
+/// Create a property blob holding `bytes`: `DRM_IOCTL_MODE_CREATEPROPBLOB`.
+/// The `drm` crate's own wrapper takes a sized value; a LUT's length is the
+/// CRTC's.
+fn create_blob<D: ControlDevice>(device: &D, bytes: &[u8]) -> std::io::Result<u32> {
+    use std::os::fd::{AsFd as _, AsRawFd as _};
+    /// `DRM_IOCTL_MODE_CREATEPROPBLOB`: `_IOWR('d', 0xBD, struct drm_mode_create_blob)`.
+    const CREATE_BLOB: u32 = 0xC010_64BD;
+    #[repr(C)]
+    struct CreateBlob {
+        data: u64,
+        length: u32,
+        blob_id: u32,
+    }
+    let invalid = || std::io::Error::from(std::io::ErrorKind::InvalidInput);
+    let mut request = CreateBlob {
+        data: u64::try_from(bytes.as_ptr().addr()).map_err(|_| invalid())?,
+        length: u32::try_from(bytes.len()).map_err(|_| invalid())?,
+        blob_id: 0,
+    };
+    // SAFETY: the request is the kernel's `drm_mode_create_blob` layout and
+    // lives for the call; the kernel copies `length` bytes from `data`,
+    // which `bytes` holds for the call.
+    let result = unsafe {
+        libc::ioctl(
+            device.as_fd().as_raw_fd(),
+            CREATE_BLOB.into(),
+            &raw mut request,
+        )
+    };
+    if result != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(request.blob_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -465,6 +629,38 @@ mod tests {
 
     fn u16_at(blob: &[u8], offset: usize) -> u16 {
         u16::from_le_bytes([blob[offset], blob[offset.saturating_add(1)]])
+    }
+
+    #[test]
+    fn the_crtc_lut_is_written_only_when_dimming_changes() {
+        let mut gamma = CrtcGamma::new(Some(handle()), 1024);
+        assert!(gamma.carries());
+        assert_eq!(gamma.pending_write(), None, "undimmed costs no commit");
+        gamma.want(0.5, false);
+        assert_eq!(gamma.pending_write(), Some((0.5, false)));
+        gamma.applied = Some(gamma.wanted);
+        assert_eq!(gamma.pending_write(), None);
+        gamma.set_pq(true);
+        assert_eq!(
+            gamma.pending_write(),
+            Some((0.5, true)),
+            "a PQ signal gets a PQ curve"
+        );
+        gamma.applied = Some(gamma.wanted);
+        gamma.want(1.0, true);
+        assert_eq!(gamma.pending_write(), Some((1.0, false)), "back to no LUT");
+        gamma.forget_applied();
+        gamma.applied = None;
+        assert!(gamma.pending_write().is_some(), "a resume writes again");
+
+        let mut none = CrtcGamma::new(None, 0);
+        none.want(0.5, false);
+        assert!(!none.carries(), "no LUT: the final pass dims");
+        assert_eq!(none.pending_write(), None);
+        let mut refused = CrtcGamma::new(Some(handle()), 256);
+        refused.rejected = true;
+        refused.want(0.5, false);
+        assert!(!refused.carries());
     }
 
     #[test]

@@ -131,6 +131,10 @@ pub struct OutputSignal<'a> {
     /// The output's ICC profile, sampled. An SDR target is written through it; an HDR one
     /// ignores it, as the readback does (the profile describes the panel's SDR response).
     pub color_lut: Option<&'a IccLut>,
+    /// The share of linear light software dimming lets through, when the
+    /// output's CRTC cannot dim it itself: the final pass scales and dithers
+    /// it ([`crate::shell::software_dim`]). `None` dims nothing.
+    pub dim: Option<f32>,
     /// The frame as layers, when it came as layers: an output that is the
     /// whole scene composites a strip pan from them instead of rendering it.
     pub layers: Option<&'a crate::shell::frame::FrameCache>,
@@ -371,6 +375,7 @@ impl VelloDrmBridge {
                 sdr_white_nits: signal.sdr_white_nits,
                 hdr_layers: &layers,
                 color_lut: signal.color_lut,
+                dim: signal.dim,
                 // The layers are drawn for the whole scene, not this view.
                 layers: None,
             },
