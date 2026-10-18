@@ -1,7 +1,7 @@
 //! Portable access to file metadata that only some platforms have:
 //! permission bits, symbolic links, extended attributes, no-replace
-//! rename, private staging directories, trash management and the capacity
-//! and free space of a filesystem.
+//! rename, private staging directories, trash management, whether two paths
+//! share a filesystem, and the capacity and free space of one.
 //!
 //! Apps that preserve or present such metadata (a backup engine, a file
 //! manager) call these functions; each one says what it does where the
@@ -57,6 +57,26 @@ pub fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
     {
         let _ = (path, mode);
         Ok(())
+    }
+}
+
+/// Whether `path` and `dir` live on one filesystem, so moving `path` into
+/// `dir` is a rename rather than a copy. When either cannot be read, assume
+/// they do: the move itself then says why.
+#[must_use]
+pub fn same_filesystem(path: &Path, dir: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        match (std::fs::symlink_metadata(path), std::fs::metadata(dir)) {
+            (Ok(file), Ok(directory)) => file.dev() == directory.dev(),
+            _ => true,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, dir);
+        true
     }
 }
 
