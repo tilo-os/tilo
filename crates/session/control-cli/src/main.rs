@@ -432,15 +432,6 @@ const READ_DISCOVERY_LISTINGS: u32 = 64;
 /// reply until then (`wait_ms`).
 const READ_ANSWER_WAIT_MS: u64 = 20_000;
 
-/// The job of an admitted invocation that has not answered yet.
-fn unanswered_job(response: &serde_json::Value) -> Option<u64> {
-    let receipt = response.pointer("/answer/receipt")?;
-    let state = receipt.pointer("/update/state")?.as_str()?;
-    (!settled(state))
-        .then(|| receipt.get("broker_invocation_id")?.as_u64())
-        .flatten()
-}
-
 /// Whether an invocation in `state` has ended, one way or another.
 fn settled(state: &str) -> bool {
     matches!(state, "succeeded" | "failed" | "cancelled")
@@ -458,13 +449,6 @@ fn read_action_id(answer: &serde_json::Value, app: &str) -> Option<String> {
                 && row.get("operation").and_then(serde_json::Value::as_str) == Some("read")
         })
         .and_then(|row| row.get("id")?.as_str().map(str::to_string))
-}
-
-/// The request that reads `job`'s state and output once it has settled,
-/// waiting at most `wait_ms`.
-fn job_status_request(job: u64, wait_ms: u64) -> String {
-    serde_json::json!({ "op": "actions_status", "invocation_id": job, "wait_ms": wait_ms })
-        .to_string()
 }
 
 /// The `read` listing request: settled within `wait_ms`, and with
@@ -566,27 +550,13 @@ fn run_read_with(
         "wait_ms": READ_ANSWER_WAIT_MS,
     })
     .to_string();
-    let answered = std::time::Instant::now();
-    let mut response = match round_trip(&invoke) {
+    let response = match round_trip(&invoke) {
         Ok(response) => response,
         Err(e) => {
             eprintln!("tilo-control: socket round-trip: {e}");
             return 2;
         }
     };
-    // A desktop that answered the admission at once (it predates `wait_ms`
-    // on invocations) is asked once more, by a job read that waits for
-    // the rest of the time.
-    let left = remaining_ms(READ_ANSWER_WAIT_MS, answered);
-    if let Some(job) = unanswered_job(&response).filter(|_| left > 0) {
-        response = match round_trip(&job_status_request(job, left)) {
-            Ok(response) => response,
-            Err(e) => {
-                eprintln!("tilo-control: socket round-trip: {e}");
-                return 2;
-            }
-        };
-    }
     print_read_answer(&response, json)
 }
 
@@ -2262,35 +2232,10 @@ mod tests {
         );
         assert_eq!(code, 1);
         assert_eq!(sent.len(), 1);
-
-        // A desktop that answered the admission is asked once more, by a
-        // job read that waits, never by a poll.
-        let mut sent = Vec::new();
-        let code = run_read_with(
-            &mut scripted(
-                vec![
-                    read_listing("r1", true),
-                    serde_json::json!({"answer": {"receipt": {
-                        "broker_invocation_id": 7, "update": {"state": "accepted"}}}}),
-                    serde_json::json!({"answer": {"receipt": {
-                        "broker_invocation_id": 7,
-                        "update": {"state": "succeeded", "output": {"value": 2}}}}}),
-                ],
-                &mut sent,
-            ),
-            "so.tilo.notes",
-            None,
-            true,
-        );
-        assert_eq!(code, 0);
-        assert_eq!(sent.len(), 3);
-        assert_eq!(sent[2]["op"], "actions_status");
-        assert_eq!(sent[2]["invocation_id"], 7);
-        assert!(sent[2]["wait_ms"].as_u64().is_some_and(|wait| wait > 0));
     }
 
-    /// `read` follows its job inside the desktop: the client holds no pause
-    /// of its own to tune.
+    /// `read` waits inside the desktop: the client holds no pause of its
+    /// own to tune.
     #[test]
     fn read_contains_no_sleep() {
         let source = include_str!("main.rs");
@@ -2302,35 +2247,17 @@ mod tests {
         assert!(!read.contains("sleep"), "run_read_with must not sleep");
     }
 
-    /// An app's read is admitted first and answers on its job: `read`
-    /// follows the job, and never prints a receipt as if it were content.
+    /// An app's read the desktop's wait did not see answered prints no
+    /// receipt as if it were content.
     #[test]
-    fn read_follows_an_admitted_job_to_its_answer() {
+    fn read_never_prints_an_unanswered_receipt_as_content() {
         let admitted = serde_json::json!({"answer": {"receipt": {
             "broker_invocation_id": 7, "update": {"state": "accepted"}}}});
-        assert_eq!(unanswered_job(&admitted), Some(7));
         assert_eq!(print_read_answer(&admitted, true), 1);
-        let request: serde_json::Value =
-            serde_json::from_str(&job_status_request(7, 500)).expect("json");
-        assert_eq!(
-            request,
-            serde_json::json!({"op": "actions_status", "invocation_id": 7, "wait_ms": 500})
-        );
-
         let answered = serde_json::json!({"answer": {"receipt": {
             "broker_invocation_id": 7,
             "update": {"state": "succeeded", "output": {"value": {"pages": []}}}}}});
-        assert_eq!(unanswered_job(&answered), None);
         assert_eq!(print_read_answer(&answered, true), 0);
-        let refused = serde_json::json!({"err": {"code": "unknown_action", "message": "gone"}});
-        assert_eq!(unanswered_job(&refused), None);
-        let progressing = serde_json::json!({"answer": {"receipt": {
-            "broker_invocation_id": 7, "update": {"state": "progress", "phase": "copying"}}}});
-        assert_eq!(
-            unanswered_job(&progressing),
-            Some(7),
-            "a job reporting progress has not answered yet"
-        );
     }
 
     /// `--wait` asks the desktop to hold the answer until the action
