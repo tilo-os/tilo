@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Keep the image builders' source copies complete, and narrow.
 
-The Rust compile stages of os/Containerfile (`builder`) and os/Containerfile.dev
-(`dev-builder`) copy only what they read, never the whole build context: with
-`COPY . /build`, editing a unit, an /etc file or a test script under os/ re-ran
-the compile and relinked every binary although none of them depends on it.
+The stage of os/Containerfile that packs the compiled tree into the runtime
+bundle and the app store (`apps-payload`; the compile itself is
+os/image/compile.sh, outside any image build) copies only what it reads, never
+the whole build context: with `COPY . /build`, editing a unit, an /etc file or a
+test script under os/ re-ran it and rewrote every layer it makes although none
+of them depends on it.
 
 A narrow copy fails the other way when it misses an input, so each stage must
 copy, to the same path under /build:
@@ -21,7 +23,7 @@ A compile stage may take these from a scratch stage whole
 (`COPY --from=<stage> /build/ /build/`, one layer instead of one per COPY);
 that stage's copies then count as its own.
 
-And neither stage may copy the whole context back in.
+And the stage may not copy the whole context back in.
 
 Every finding names file:line, why it matters, and the fix.
 """

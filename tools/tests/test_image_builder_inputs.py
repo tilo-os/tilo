@@ -18,8 +18,11 @@ assert SPEC.loader is not None
 sys.modules[SPEC.name] = policy
 SPEC.loader.exec_module(policy)
 
-NARROW = """\
-FROM base AS builder
+# The stage the policy covers in os/Containerfile.
+STAGE = dict(policy.STAGES)["os/Containerfile"]
+
+NARROW = f"""\
+FROM base AS {STAGE}
 WORKDIR /build
 COPY Cargo.toml Cargo.lock rust-toolchain.toml /build/
 COPY .cargo /build/.cargo
@@ -75,7 +78,7 @@ class ImageBuilderInputsTests(unittest.TestCase):
         self.assertEqual(self.findings(NARROW), [])
 
     def test_copying_the_whole_context_is_refused(self) -> None:
-        found = self.findings("FROM base AS builder\nWORKDIR /build\nCOPY . /build\nRUN cargo build\n")
+        found = self.findings(f"FROM base AS {STAGE}\nWORKDIR /build\nCOPY . /build\nRUN cargo build\n")
         self.assertEqual(len(found), 1, found)
         self.assertIn("copies the whole build context", found[0])
 
