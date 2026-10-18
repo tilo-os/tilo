@@ -393,12 +393,14 @@ fn date_style_from_code(s: &str) -> Option<DateStyle> {
 }
 fn time_style_code(s: TimeStyle) -> &'static str {
     match s {
+        TimeStyle::Language => "Language",
         TimeStyle::H24 => "H24",
         TimeStyle::H12 => "H12",
     }
 }
 fn time_style_from_code(s: &str) -> Option<TimeStyle> {
     Some(match s {
+        "Language" => TimeStyle::Language,
         "H24" => TimeStyle::H24,
         "H12" => TimeStyle::H12,
         _ => return None,
@@ -593,10 +595,11 @@ pub fn serial_to_time(serial: f64, style: TimeStyle) -> String {
     let total_secs = (frac * 86400.0).round() as i64;
     let h = (total_secs / 3600) % 24;
     let mi = (total_secs % 3600) / 60;
-    match style {
+    // A cell that follows the language reads each person's own clock.
+    match style.resolved() {
         // format: machine (a cell's own number format, the same for every
         // collaborator)
-        TimeStyle::H24 => format!("{h:02}:{mi:02}"),
+        TimeStyle::Language | TimeStyle::H24 => format!("{h:02}:{mi:02}"),
         TimeStyle::H12 => {
             let suffix = if h < 12 { "AM" } else { "PM" };
             let h12 = match h % 12 {
@@ -853,6 +856,9 @@ mod tests {
             let serial = (14.0 * 3600.0 + 5.0 * 60.0) / 86400.0;
             assert_eq!(serial_to_time(serial, TimeStyle::H24), "14:05");
             assert_eq!(serial_to_time(serial, TimeStyle::H12), "2:05 PM");
+            for style in TimeStyle::ALL {
+                assert_eq!(time_style_from_code(time_style_code(style)), Some(style));
+            }
         }
 
         // Case `format_string_round_trip_all_variants`.

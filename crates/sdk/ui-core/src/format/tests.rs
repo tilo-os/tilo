@@ -112,31 +112,46 @@ fn the_timestamp_and_date_styles_follow_the_date_and_clock_settings() {
     );
 }
 
-/// With no date format chosen, full timestamps and dates follow the
-/// desktop's language; ISO is only what someone picks.
+/// With no date format or clock chosen, full timestamps, dates and times
+/// follow the desktop's language and region; ISO, 12-hour and 24-hour are
+/// only what someone picks.
 #[test]
-fn without_a_chosen_date_format_dates_follow_the_language() {
+fn without_a_chosen_format_dates_and_clocks_follow_the_language() {
     assert_eq!(RegionFormats::default().date, DateStyle::Language);
-    assert_eq!(
-        RegionFormats::from_section(serde_json::Map::new()).date,
-        DateStyle::Language
-    );
+    assert_eq!(RegionFormats::default().time, TimeStyle::Language);
+    let unset = RegionFormats::from_section(serde_json::Map::new());
+    assert_eq!(unset.date, DateStyle::Language);
+    assert_eq!(unset.time, TimeStyle::Language);
     let moment = at(2026, 6, 30, 13, 42);
-    let default24 = Formats::default();
-    let default12 = Formats::with(RegionFormats {
-        time: TimeStyle::H12,
+    let unchosen = Formats::default();
+    let chosen24 = Formats::with(RegionFormats {
+        time: TimeStyle::H24,
         ..RegionFormats::default()
     });
 
     speak("en-US");
-    assert_eq!(default12.timestamp(moment), "Jun 30, 2026, 1:42 PM");
-    assert_eq!(default24.timestamp(moment), "Jun 30, 2026, 13:42");
-    assert_eq!(default24.date(day(2026, 6, 30)), "Jun 30, 2026");
-    assert_eq!(default24.date(day(2026, 1, 3)), "Jan 3, 2026");
+    assert_eq!(unchosen.timestamp(moment), "Jun 30, 2026, 1:42 PM");
+    assert_eq!(unchosen.time(&moment), "1:42 PM");
+    assert!(!TimeStyle::Language.is_24_hour());
+    assert_eq!(chosen24.timestamp(moment), "Jun 30, 2026, 13:42");
+    assert_eq!(unchosen.date(day(2026, 6, 30)), "Jun 30, 2026");
+    assert_eq!(unchosen.date(day(2026, 1, 3)), "Jan 3, 2026");
 
     speak("de-DE");
-    assert_eq!(default24.timestamp(moment), "30.06.2026, 13:42");
-    assert_eq!(default24.date(day(2026, 1, 3)), "03.01.2026");
+    assert_eq!(unchosen.timestamp(moment), "30.06.2026, 13:42");
+    assert_eq!(unchosen.date(day(2026, 1, 3)), "03.01.2026");
+    assert_eq!(unchosen.time(&moment), "13:42");
+    assert!(TimeStyle::Language.is_24_hour());
+    assert_eq!(TimeStyle::Language.example(), "14:05");
+    assert_eq!(
+        Formats::with(RegionFormats {
+            time: TimeStyle::H12,
+            ..RegionFormats::default()
+        })
+        .time(&moment),
+        "1:42 PM",
+        "a chosen 12-hour clock holds in German"
+    );
     assert_eq!(DateStyle::Language.example(), "15.03.2023");
     // ISO stays an explicit choice, the same in every language.
     assert_eq!(
@@ -365,7 +380,10 @@ fn relative_times_bucket_at_their_boundaries() {
 #[test]
 fn a_formats_change_applies_live_and_moves_the_i18n_revision() {
     speak("en-US");
-    region::install(RegionFormats::default());
+    region::install(RegionFormats {
+        time: TimeStyle::H24,
+        ..RegionFormats::default()
+    });
     let before = I18nManager::revision();
     let time = chrono::NaiveTime::from_hms_opt(16, 2, 0).unwrap();
     assert_eq!(super::time(&time), "16:02");

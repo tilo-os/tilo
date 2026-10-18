@@ -76,8 +76,11 @@ const DATE_STYLES: [(&str, DateStyle); 5] = [
     ("EU", DateStyle::Eu),
     ("Long", DateStyle::Long),
 ];
-const TIME_STYLES: [(&str, TimeStyle); 2] =
-    [("24-hour", TimeStyle::H24), ("12-hour", TimeStyle::H12)];
+const TIME_STYLES: [(&str, TimeStyle); 3] = [
+    ("Language", TimeStyle::Language),
+    ("24-hour", TimeStyle::H24),
+    ("12-hour", TimeStyle::H12),
+];
 /// Importing is deliberately bounded before a parsed workbook can become a
 /// durable action stream.  This is large enough for useful real-world sheets,
 /// while keeping one user-selected file from monopolising a collaborator's
@@ -2513,6 +2516,7 @@ fn date_label(d: DateStyle) -> &'static str {
 }
 fn time_label(t: TimeStyle) -> &'static str {
     match t {
+        TimeStyle::Language => "Language",
         TimeStyle::H24 => "24-hour",
         TimeStyle::H12 => "12-hour",
     }

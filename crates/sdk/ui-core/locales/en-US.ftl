@@ -451,6 +451,8 @@ format-day-range-in-month = { $month } { $start } – { $end }
 format-range = { $start } – { $end }
 # The top of a month grid: "June 2026".
 format-month-heading = { $month } { $year }
+# The clock the language reads by default: 12 or 24 (here 12-hour).
+format-clock-hours = 12
 # The halves of a 12-hour clock: "2:05 PM".
 format-time-am = AM
 format-time-pm = PM
