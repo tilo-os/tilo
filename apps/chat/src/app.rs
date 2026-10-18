@@ -469,7 +469,8 @@ impl Hit {
 /// never leave those layers a frame apart.
 #[derive(Debug)]
 pub(crate) struct CallChromeMotion {
-    transition: ui::Transition,
+    /// The participants disclosing (`ui::motion::Disclose`).
+    transition: ui::motion::Presence,
     target_open: bool,
     initialized: bool,
     pub(crate) sampled: f32,
@@ -481,7 +482,7 @@ pub(crate) struct CallChromeMotion {
 impl Default for CallChromeMotion {
     fn default() -> Self {
         Self {
-            transition: ui::Transition::open(),
+            transition: ui::motion::Presence::opened(),
             target_open: true,
             initialized: false,
             sampled: 1.0,
@@ -500,32 +501,25 @@ impl CallChromeMotion {
         }
         if !self.initialized {
             self.transition = if open {
-                ui::Transition::open()
+                ui::motion::Presence::opened()
             } else {
-                ui::Transition::closed()
+                ui::motion::Presence::closed()
             };
             self.target_open = open;
             self.initialized = true;
         } else if open != self.target_open {
-            let spring = theme.tokens.motion.springs.subtle;
-            self.transition.set_open(
+            self.transition.show(
                 open,
-                if theme.reduce_motion {
-                    ui::time::Duration::ZERO
-                } else {
-                    theme.tokens.motion.durations.base()
-                },
-                ui::Curve::Spring {
-                    stiffness: spring.stiffness,
-                    damping: spring.damping,
-                    mass: spring.mass,
-                },
+                ui::motion::Disclose::SPEC,
+                theme.motion(),
+                ui::tokens::MotionSource::Pointer,
+                ui::time::now(),
             );
             self.target_open = open;
         }
         let now = ui::time::now();
-        self.sampled = self.transition.value(now);
-        self.animating = self.transition.is_animating(now);
+        self.sampled = ui::motion::unit_opacity(self.transition.progress(now));
+        self.animating = self.transition.is_moving(now);
     }
 
     pub(crate) fn reset(&mut self) {

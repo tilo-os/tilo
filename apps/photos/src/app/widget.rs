@@ -95,8 +95,8 @@ impl Widget for PhotosApp {
             || (!self.places_motion_reduced
                 && (self
                     .places_camera_feedback
-                    .is_some_and(|feedback| !feedback.done(now))
-                    || self.people_detail_transition.is_animating(now)))
+                    .is_some_and(|feedback| feedback.is_moving(now))
+                    || self.people_detail_transition.is_moving(now)))
     }
 
     fn take_structure_dirty(&mut self) -> bool {

@@ -56,8 +56,6 @@ pub(crate) struct Presentation {
     paused_elapsed: Option<Duration>,
     paused_total: Duration,
     transition: Option<(usize, Instant)>,
-    /// How long a slide change cross-fades: the theme's base motion.
-    fade: Duration,
     blank: Blank,
     presenter_view: bool,
     /// A real, host-owned audience toplevel is live. The app's original
@@ -149,7 +147,6 @@ impl Default for Presentation {
             paused_elapsed: None,
             paused_total: Duration::ZERO,
             transition: None,
-            fade: Theme::dark().tokens.motion.durations.base(),
             blank: Blank::None,
             presenter_view: false,
             external_audience: false,
@@ -183,12 +180,6 @@ impl Presentation {
         self.audience_cache = None;
     }
 
-    /// Follow the theme's motion: a slide change fades over its base
-    /// duration.
-    pub(crate) fn set_fade(&mut self, fade: Duration) {
-        self.fade = fade;
-    }
-
     pub(crate) fn start_transition(&mut self, from: usize) {
         self.transition = Some((from, ui::time::now()));
         self.blank = Blank::None;
@@ -196,9 +187,14 @@ impl Presentation {
 
     pub(crate) fn expire_transition(&mut self, reduce_motion: bool) {
         if reduce_motion
-            || self
-                .transition
-                .is_some_and(|(_, at)| at.elapsed() >= self.fade)
+            || self.transition.is_some_and(|(_, at)| {
+                at.elapsed()
+                    >= ui::motion::CROSS_FADE.settle_time(
+                        ui::motion::Direction::Enter,
+                        ui::tokens::EffectiveMotion::default(),
+                        ui::tokens::MotionSource::Pointer,
+                    )
+            })
         {
             self.transition = None;
         }
@@ -208,12 +204,14 @@ impl Presentation {
         if reduce_motion {
             return 1.0;
         }
+        // The next slide cross-fades in over the last (`ui::motion::CROSS_FADE`).
         match self.transition {
-            Some((_, at)) => {
-                let fade = self.fade.as_secs_f32().max(f32::EPSILON);
-                let p = (at.elapsed().as_secs_f32() / fade).min(1.0);
-                (p * p * (3.0 - 2.0 * p)).clamp(0.0, 1.0)
-            }
+            Some((_, at)) => ui::motion::unit_opacity(ui::motion::CROSS_FADE.progress_after(
+                ui::motion::Direction::Enter,
+                ui::tokens::EffectiveMotion::default(),
+                ui::tokens::MotionSource::Pointer,
+                ui::time::now().saturating_duration_since(at),
+            )),
             None => 1.0,
         }
     }

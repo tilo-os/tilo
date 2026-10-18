@@ -6,8 +6,6 @@ use crate::actions::PhotosEffect;
 use crate::strings::{tr, tr_args};
 use crate::timeline_projection::TimelinePhoto;
 use ui::ArgValue;
-use ui::animation::{Animated, Curve};
-use ui::time::Duration;
 use ui::widget::{Button, DateIndexIntent, DateIndexedScrollbar, Widget};
 use vello::kurbo::Vec2;
 
@@ -327,12 +325,13 @@ impl PhotosApp {
         }
         self.places_viewport = viewport;
         if !self.places_motion_reduced {
-            self.places_camera_feedback = Some(Animated::new(
-                1.0,
-                0.0,
-                Duration::from_millis(180),
-                Curve::EaseOut,
-            ));
+            // A settle cue: on at once, gone over the feedback's fade.
+            let motion = ui::tokens::EffectiveMotion::default();
+            let now = ui::time::now();
+            let mut feedback = ui::motion::Feedback::default();
+            feedback.set(true, motion, now);
+            feedback.set(false, motion, now);
+            self.places_camera_feedback = Some(feedback);
         }
     }
 
@@ -347,12 +346,12 @@ impl PhotosApp {
         let Some(feedback) = self.places_camera_feedback else {
             return 0.0;
         };
-        let value = feedback.current(ui::time::now());
-        if feedback.done(ui::time::now()) {
+        let now = ui::time::now();
+        if feedback.is_moving(now) {
+            f64::from(feedback.level(now))
+        } else {
             self.places_camera_feedback = None;
             0.0
-        } else {
-            value
         }
     }
 

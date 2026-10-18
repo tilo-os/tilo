@@ -8,6 +8,7 @@ use crate::model::{AnnoKind, LibraryPrefs, Progress};
 use serial_test::serial;
 use ui::presence::PresenceCtx;
 use ui::testing::Dispatch;
+use ui::time::Duration;
 use ui::widget::Edits;
 
 /// Point the compatibility `TILO_WORKSPACE_DIR` override at `path` until the

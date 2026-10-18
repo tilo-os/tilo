@@ -33,7 +33,6 @@ use vello::kurbo::{Point, Rect};
 use vello::peniko::ImageData;
 
 use ui::a11y::Role;
-use ui::animation::{Animated, Transition};
 use ui::icons::Icon;
 use ui::theme::Theme;
 use ui::widget::{
@@ -588,7 +587,7 @@ pub struct PhotosApp {
     people_selection: Option<PeopleSelection>,
     /// The person review sheet enters with the shared motion primitive.  The
     /// renderer snaps it open when reduced motion is requested.
-    people_detail_transition: Transition,
+    people_detail_transition: ui::motion::Presence,
     people_merge_mode: bool,
     people_show_hidden: bool,
     /// How far the People cards are scrolled under the recognition section.
@@ -645,7 +644,7 @@ pub struct PhotosApp {
     /// only presentation geometry—camera position itself stays immediate so
     /// keyboard, pointer, agents, and screen readers all observe the same
     /// completed operation at once.
-    places_camera_feedback: Option<Animated<f64>>,
+    places_camera_feedback: Option<ui::motion::Feedback>,
     places_motion_reduced: bool,
     /// Count for the always-addressable Favorites virtual collection. This is
     /// a scalar projection of the shared library, so paint never walks the
@@ -978,7 +977,7 @@ impl PhotosApp {
             people_scan_progress: PeopleScanProgress::load(),
             people_mode: false,
             people_selection: None,
-            people_detail_transition: Transition::closed(),
+            people_detail_transition: ui::motion::Presence::closed(),
             people_merge_mode: false,
             people_show_hidden: false,
             people_scroll: 0.0,

@@ -767,22 +767,16 @@ fn account_motion_step(
 #[cfg(target_os = "linux")]
 fn motion_frames(app: &mut TestApp<GuidedInstallerShell>, name: &str, direction: f64) {
     app.with_widget::<InstallerPreview, _>(|preview| {
-        assert_eq!(preview.slide.as_ref().unwrap().from(), direction);
+        assert_eq!(preview.slide.as_ref().unwrap().0, direction);
         assert!(preview.outgoing.is_some());
     })
     .unwrap();
-    let duration = Theme::dark().tokens.motion.durations.base();
     let mut previous = None;
     for percent in [0, 25, 50, 75, 100] {
         app.with_widget::<InstallerPreview, _>(|preview| {
-            preview.slide = Some(Animated::starting_at(
+            preview.slide = Some((
                 direction,
-                0.0,
-                ui::time::now()
-                    .checked_sub(duration.mul_f64(f64::from(percent) / 100.0))
-                    .unwrap(),
-                duration,
-                Curve::EaseInOut,
+                ui::motion::Presence::held_at(u16::try_from(percent * 10).unwrap()),
             ));
         })
         .unwrap();
@@ -827,11 +821,7 @@ fn personal_motion_frames(
             "{name}: controls resized"
         );
         assert_eq!(
-            preview
-                .slide
-                .as_ref()
-                .expect("page transition was lost")
-                .from(),
+            preview.slide.as_ref().expect("page transition was lost").0,
             direction
         );
         assert!(
@@ -840,18 +830,12 @@ fn personal_motion_frames(
         );
     })
     .unwrap();
-    let duration = ui::time::Duration::from_secs(30);
     let mut previous = None;
     for percent in [0, 50, 100] {
         app.with_widget::<InstallerPreview, _>(|preview| {
-            preview.slide = Some(Animated::starting_at(
+            preview.slide = Some((
                 direction,
-                0.0,
-                ui::time::now()
-                    .checked_sub(duration.mul_f64(f64::from(percent) / 100.0))
-                    .unwrap(),
-                duration,
-                Curve::EaseInOut,
+                ui::motion::Presence::held_at(u16::try_from(percent * 10).unwrap()),
             ));
         })
         .unwrap();
@@ -1242,16 +1226,9 @@ fn account_decision_pages_slide_forward_back_and_block_pointer_until_settled() {
     account_motion_step(&mut app, "choose-provider", Some("spotify-streaming"));
     app.with_widget::<InstallerPreview, _>(|preview| {
         assert_eq!(preview.accounts.navigation_step(), "confirm");
-        let slide = preview.slide.as_ref().unwrap();
-        // Hold the midpoint long enough for deterministic pointer delivery.
-        let duration = ui::time::Duration::from_secs(30);
-        preview.slide = Some(Animated::starting_at(
-            slide.from(),
-            0.0,
-            ui::time::now().checked_sub(duration / 2).unwrap(),
-            duration,
-            Curve::EaseInOut,
-        ));
+        let direction = preview.slide.as_ref().unwrap().0;
+        // Hold the midpoint for deterministic pointer delivery.
+        preview.slide = Some((direction, ui::motion::Presence::held_at(500)));
     })
     .unwrap();
     app.harness().click_named("installer.back").unwrap();
@@ -1295,14 +1272,7 @@ fn account_field_pages_advance_through_public_continue_and_preserve_keyboard_foc
     motion_frames(&mut app, "accounts-field-provider-selection", 1.0);
     account_motion_step(&mut app, "choose-provider", Some("webdav"));
     app.with_widget::<InstallerPreview, _>(|preview| {
-        let duration = ui::time::Duration::from_secs(30);
-        preview.slide = Some(Animated::starting_at(
-            1.0,
-            0.0,
-            ui::time::now().checked_sub(duration / 2).unwrap(),
-            duration,
-            Curve::EaseInOut,
-        ));
+        preview.slide = Some((1.0, ui::motion::Presence::held_at(500)));
     })
     .unwrap();
     app.harness()
