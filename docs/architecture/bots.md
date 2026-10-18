@@ -776,11 +776,9 @@ pub struct BotRequirements {
 }
 ```
 
-- **Signing.** An app entry encodes and signs exactly as before bots existed,
-  so every released client keeps reading and verifying the registry. A bot
-  entry signs under `tilo-registry-bot-entry-v1\0`, and snapshots carry bot
-  entries under `bots` with their own signature by the snapshot's key, beside
-  the app entries older clients verify ([../registry.md](../registry.md)).
+- **Signing.** A bot entry signs under `tilo-registry-bot-entry-v1\0`, and
+  snapshots list it among the app entries, under the snapshot's one
+  signature ([../registry.md](../registry.md)).
   The program file is the Shortcut's canonical
   JSON. Its BLAKE3 is signed in the entry, and the registry stores the bytes as
   a content-addressed blob like a thin package's payload. Publishers build

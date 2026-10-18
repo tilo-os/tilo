@@ -170,7 +170,6 @@ fn publish(
         entries,
         owner_signature_hex: String::new(),
         channel_authorization: None,
-        bots_signature_hex: String::new(),
     };
     registry_types::sign_snapshot(&mut full, owner).unwrap();
     let (mut compact, indexes) = registry_types::compact_snapshot(&full).unwrap();

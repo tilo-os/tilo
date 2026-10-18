@@ -302,7 +302,6 @@ fn routes(
         entries: vec![entry],
         owner_signature_hex: String::new(),
         channel_authorization: None,
-        bots_signature_hex: String::new(),
     };
     registry_types::sign_snapshot(&mut full, owner).map_err(|e| format!("sign snapshot: {e}"))?;
     let (mut compact, indexes) =

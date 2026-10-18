@@ -14,10 +14,6 @@
 //! checkpoints, so a client may switch between the forms without tripping
 //! its rollback or fork checks.
 //!
-//! Like the full form, a compact snapshot carries bot entries apart from app
-//! entries, under a second signature by the same key (see
-//! [`crate::snapshot`]).
-//!
 //! Both forms, the version indexes and the channel authorizations are part
 //! of the Store package format and carry its one version,
 //! [`crate::PACKAGE_FORMAT_VERSION`], in their `protocol` field; a reader
@@ -29,10 +25,7 @@ use ed25519_dalek::{Signer, SigningKey};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::snapshot::{
-    SignedHeader, bots_signing_message, check_entry_identity, entry_within_bounds, join_kinds,
-    split_kinds, valid_hex,
-};
+use crate::snapshot::{SignedHeader, check_entry_identity, entry_within_bounds, valid_hex};
 use crate::{
     ChannelAuthorization, PACKAGE_FORMAT_VERSION, PublisherAuthorization, RegistryEntry,
     RegistryTarget, RegistryVersion, SignedRegistrySnapshot, SnapshotError, snapshot_hash,
@@ -40,7 +33,6 @@ use crate::{
 };
 
 const COMPACT_INDEX_DOMAIN: &[u8] = b"tilo-registry-compact-index-v4\0";
-const COMPACT_BOTS_DOMAIN: &[u8] = b"tilo-registry-compact-bots-v1\0";
 /// Largest version index a client fetches. An entry holds at most
 /// [`crate::entry::MAX_ENTRY_VERSIONS`] versions of a few hundred bytes each.
 pub const MAX_VERSION_INDEX_BYTES: u64 = 1024 * 1024;
@@ -63,7 +55,7 @@ pub struct CompactRegistryEntry {
 }
 
 /// The compact form of one signed snapshot.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompactRegistrySnapshot {
     pub protocol: u32,
     pub sequence: u64,
@@ -75,113 +67,13 @@ pub struct CompactRegistrySnapshot {
     /// checkpoint and the next snapshot names as its predecessor.
     pub snapshot_hash_hex: String,
     pub publishers: Vec<PublisherAuthorization>,
-    /// App and bot entries. On the wire app entries travel under `entries`
-    /// and bot entries under `bots`.
+    /// App and bot entries.
     pub entries: Vec<CompactRegistryEntry>,
     /// The owner's signature, or the authorized channel key's when
     /// `channel_authorization` is present.
     pub signature_hex: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel_authorization: Option<ChannelAuthorization>,
-    /// The same key's signature over the bot entries and what
-    /// `signature_hex` covers; empty when there are no bots.
-    pub bots_signature_hex: String,
-}
-
-#[derive(Serialize)]
-#[serde(rename = "CompactRegistrySnapshot")]
-struct CompactOut<'a> {
-    protocol: u32,
-    sequence: u64,
-    issued_at_unix: u64,
-    expires_at_unix: u64,
-    previous_snapshot_hash_hex: &'a str,
-    moderation_head_hex: &'a str,
-    snapshot_hash_hex: &'a str,
-    publishers: &'a [PublisherAuthorization],
-    entries: Vec<&'a CompactRegistryEntry>,
-    signature_hex: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    channel_authorization: Option<&'a ChannelAuthorization>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    bots: Vec<&'a CompactRegistryEntry>,
-    #[serde(skip_serializing_if = "str::is_empty")]
-    bots_signature_hex: &'a str,
-}
-
-#[derive(Deserialize)]
-struct CompactIn {
-    protocol: u32,
-    sequence: u64,
-    issued_at_unix: u64,
-    expires_at_unix: u64,
-    previous_snapshot_hash_hex: String,
-    moderation_head_hex: String,
-    snapshot_hash_hex: String,
-    publishers: Vec<PublisherAuthorization>,
-    entries: Vec<CompactRegistryEntry>,
-    signature_hex: String,
-    #[serde(default)]
-    channel_authorization: Option<ChannelAuthorization>,
-    #[serde(default)]
-    bots: Vec<CompactRegistryEntry>,
-    #[serde(default)]
-    bots_signature_hex: String,
-}
-
-impl CompactRegistrySnapshot {
-    /// The app entries, in order: what `signature_hex` covers.
-    #[must_use]
-    pub fn apps(&self) -> Vec<&CompactRegistryEntry> {
-        split_kinds(&self.entries, |compact| &compact.entry).0
-    }
-
-    /// The bot entries, in order: what `bots_signature_hex` covers.
-    #[must_use]
-    pub fn bots(&self) -> Vec<&CompactRegistryEntry> {
-        split_kinds(&self.entries, |compact| &compact.entry).1
-    }
-}
-
-impl Serialize for CompactRegistrySnapshot {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let (entries, bots) = split_kinds(&self.entries, |compact| &compact.entry);
-        CompactOut {
-            protocol: self.protocol,
-            sequence: self.sequence,
-            issued_at_unix: self.issued_at_unix,
-            expires_at_unix: self.expires_at_unix,
-            previous_snapshot_hash_hex: &self.previous_snapshot_hash_hex,
-            moderation_head_hex: &self.moderation_head_hex,
-            snapshot_hash_hex: &self.snapshot_hash_hex,
-            publishers: &self.publishers,
-            entries,
-            signature_hex: &self.signature_hex,
-            channel_authorization: self.channel_authorization.as_ref(),
-            bots,
-            bots_signature_hex: &self.bots_signature_hex,
-        }
-        .serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for CompactRegistrySnapshot {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let wire = CompactIn::deserialize(deserializer)?;
-        Ok(Self {
-            protocol: wire.protocol,
-            sequence: wire.sequence,
-            issued_at_unix: wire.issued_at_unix,
-            expires_at_unix: wire.expires_at_unix,
-            previous_snapshot_hash_hex: wire.previous_snapshot_hash_hex,
-            moderation_head_hex: wire.moderation_head_hex,
-            snapshot_hash_hex: wire.snapshot_hash_hex,
-            publishers: wire.publishers,
-            entries: join_kinds(wire.entries, wire.bots, |compact| &compact.entry)?,
-            signature_hex: wire.signature_hex,
-            channel_authorization: wire.channel_authorization,
-            bots_signature_hex: wire.bots_signature_hex,
-        })
-    }
 }
 
 /// A version index file: the complete publisher-signed entry.
@@ -201,7 +93,7 @@ struct CompactSigningPayload<'a> {
     moderation_head_hex: &'a str,
     snapshot_hash_hex: &'a str,
     publishers: &'a [PublisherAuthorization],
-    entries: Vec<&'a CompactRegistryEntry>,
+    entries: &'a [CompactRegistryEntry],
     channel_authorization: Option<&'a ChannelAuthorization>,
 }
 
@@ -314,7 +206,6 @@ pub fn compact_snapshot(
             entries,
             signature_hex: String::new(),
             channel_authorization: full.channel_authorization.clone(),
-            bots_signature_hex: String::new(),
         },
         indexes,
     ))
@@ -336,7 +227,7 @@ pub fn compact_signing_message(
         moderation_head_hex: &snapshot.moderation_head_hex,
         snapshot_hash_hex: &snapshot.snapshot_hash_hex,
         publishers: &snapshot.publishers,
-        entries: snapshot.apps(),
+        entries: &snapshot.entries,
         channel_authorization: snapshot.channel_authorization.as_ref(),
     })
     .map_err(|_| SnapshotError::Encoding)?;
@@ -358,30 +249,7 @@ pub fn sign_compact_snapshot(
     snapshot.protocol = PACKAGE_FORMAT_VERSION;
     snapshot.signature_hex.clear();
     snapshot.signature_hex = hex::encode(key.sign(&compact_signing_message(snapshot)?).to_bytes());
-    snapshot.bots_signature_hex = if snapshot.bots().is_empty() {
-        String::new()
-    } else {
-        hex::encode(
-            key.sign(&compact_bots_signing_message(snapshot)?)
-                .to_bytes(),
-        )
-    };
     Ok(())
-}
-
-/// The digest `bots_signature_hex` signs: the bot entries bound to what
-/// `signature_hex` covers.
-///
-/// # Errors
-/// Returns an encoding error if the canonical payload cannot be serialized.
-pub fn compact_bots_signing_message(
-    snapshot: &CompactRegistrySnapshot,
-) -> Result<[u8; 32], SnapshotError> {
-    bots_signing_message(
-        COMPACT_BOTS_DOMAIN,
-        compact_signing_message(snapshot)?,
-        snapshot.bots(),
-    )
 }
 
 /// Hash naming the exact signed compact bytes, for HTTP revalidation.
@@ -437,12 +305,6 @@ pub fn verify_compact_snapshot(
     }
     let publishers =
         header.check_signature(pinned_owner_pubkey_hex, &compact_signing_message(snapshot)?)?;
-    header.check_bots_signature(
-        pinned_owner_pubkey_hex,
-        !snapshot.bots().is_empty(),
-        &snapshot.bots_signature_hex,
-        &compact_bots_signing_message(snapshot)?,
-    )?;
     let mut packages = HashSet::with_capacity(snapshot.entries.len());
     for compact in &snapshot.entries {
         check_entry_identity(&compact.entry, &mut packages, &publishers)?;
@@ -687,7 +549,6 @@ mod tests {
             entries: vec![notes, sheets],
             owner_signature_hex: String::new(),
             channel_authorization: None,
-            bots_signature_hex: String::new(),
         };
         sign_snapshot(&mut snapshot, owner).unwrap();
         snapshot
@@ -707,7 +568,7 @@ mod tests {
     }
 
     #[test]
-    fn compact_bots_ride_beside_what_older_clients_verify() {
+    fn compact_bots_are_signed_with_the_app_entries() {
         let owner = SigningKey::from_bytes(&[8; 32]);
         let owner_hex = hex::encode(owner.verifying_key().to_bytes());
         let (_, plain, _) = compact(&owner);
@@ -735,18 +596,21 @@ mod tests {
         sign_compact_snapshot(&mut mixed, &owner).unwrap();
         assert_eq!(indexes.len(), 3);
         verify_compact_snapshot(&mixed, &owner_hex, 15).unwrap();
-        assert_eq!(mixed.signature_hex, plain.signature_hex);
-        assert_eq!(mixed.snapshot_hash_hex, plain.snapshot_hash_hex);
-        let mut json = serde_json::to_value(&mixed).unwrap();
-        assert_eq!(json["bots"].as_array().unwrap().len(), 1);
-        let object = json.as_object_mut().unwrap();
-        object.remove("bots");
-        object.remove("bots_signature_hex");
+        assert_ne!(mixed.signature_hex, plain.signature_hex);
+        assert_ne!(mixed.snapshot_hash_hex, plain.snapshot_hash_hex);
+        let json = serde_json::to_value(&mixed).unwrap();
+        assert_eq!(json["entries"].as_array().unwrap().len(), 3);
         let read: CompactRegistrySnapshot = serde_json::from_value(json).unwrap();
-        assert_eq!(read, plain);
-        let mut unsigned = mixed.clone();
-        unsigned.bots_signature_hex.clear();
-        assert!(verify_compact_snapshot(&unsigned, &owner_hex, 15).is_err());
+        assert_eq!(read, mixed);
+        verify_compact_snapshot(&read, &owner_hex, 15).unwrap();
+        let mut dropped = mixed.clone();
+        dropped
+            .entries
+            .retain(|compact| compact.entry.kind == EntryKind::App);
+        assert_eq!(
+            verify_compact_snapshot(&dropped, &owner_hex, 15),
+            Err(SnapshotError::OwnerSignature)
+        );
     }
 
     #[test]

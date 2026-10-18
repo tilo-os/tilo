@@ -2458,7 +2458,6 @@ mod tests {
             entries: vec![sample_entry(marker)],
             owner_signature_hex: marker.to_string(),
             channel_authorization: None,
-            bots_signature_hex: String::new(),
         }
     }
 

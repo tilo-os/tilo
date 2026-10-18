@@ -1364,7 +1364,6 @@ fn unsigned_snapshot(
         entries,
         owner_signature_hex: String::new(),
         channel_authorization: None,
-        bots_signature_hex: String::new(),
     })
 }
 
@@ -1428,7 +1427,6 @@ fn cmd_sign_snapshot(
         entries,
         owner_signature_hex: String::new(),
         channel_authorization: None,
-        bots_signature_hex: String::new(),
     };
     registry_types::sign_snapshot(&mut snapshot, &key)?;
     registry_types::verify_snapshot(&snapshot, &identity.owner_pubkey_hex, issued_at_unix)?;
@@ -1511,7 +1509,6 @@ fn cmd_rollback_snapshot(
         entries: target.entries,
         owner_signature_hex: String::new(),
         channel_authorization: None,
-        bots_signature_hex: String::new(),
     };
     registry_types::sign_snapshot(&mut snapshot, &key)?;
     registry_types::verify_snapshot(&snapshot, &identity.owner_pubkey_hex, issued_at_unix)?;

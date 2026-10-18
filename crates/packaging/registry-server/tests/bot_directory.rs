@@ -402,7 +402,6 @@ fn publish_snapshot(bots: &Bots) {
         entries,
         owner_signature_hex: String::new(),
         channel_authorization: None,
-        bots_signature_hex: String::new(),
     };
     registry_types::sign_snapshot(&mut snapshot, &bots.owner).unwrap();
     storage.save_snapshot(&snapshot).unwrap();
