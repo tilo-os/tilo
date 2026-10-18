@@ -10,6 +10,7 @@
 //! moves to another port keeps it.
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -82,8 +83,11 @@ pub fn edid_key(edid: &[u8]) -> Option<String> {
         return None;
     }
     let identity = edid.get(8..16)?;
-    let hex: String = identity.iter().map(|b| format!("{b:02x}")).collect();
-    Some(format!("edid:{hex}"))
+    let mut key = String::from("edid:");
+    for byte in identity {
+        let _ = write!(key, "{byte:02x}");
+    }
+    Some(key)
 }
 
 fn monitors_in(drm: &Path, backlight: &Path, dev: &Path) -> Vec<MonitorBrightness> {
@@ -517,12 +521,11 @@ impl Writer {
 /// Wait until the writer owning `state` has nothing pending or in flight.
 fn wait_idle(state: &(Mutex<WriterState>, Condvar)) {
     let (lock, wake) = state;
-    let mut guard = lock.lock_recover();
-    while guard.pending.is_some() || guard.busy {
-        guard = wake
-            .wait(guard)
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-    }
+    let guard = lock.lock_recover();
+    drop(
+        wake.wait_while(guard, |state| state.pending.is_some() || state.busy)
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    );
 }
 
 impl Drop for Writer {
@@ -778,6 +781,7 @@ impl BrightnessService {
                 return false;
             };
             writer.send(entry.monitor.target.clone(), pct, entry.maximum);
+            drop(writers);
         }
         if self.memory_path.is_some()
             && let Some(tx) = &self.tx
@@ -1388,8 +1392,9 @@ mod tests {
     /// write is not held up behind the first's queue.
     #[test]
     fn ddc_writes_coalesce_to_the_newest_value_one_at_a_time_per_monitor() {
-        let buses: Arc<Mutex<BTreeMap<String, Arc<Mutex<Vec<Vec<u8>>>>>>> =
-            Arc::new(Mutex::new(BTreeMap::new()));
+        /// The writes one monitor's bus received, in order.
+        type BusWrites = Arc<Mutex<Vec<Vec<u8>>>>;
+        let buses: Arc<Mutex<BTreeMap<String, BusWrites>>> = Arc::new(Mutex::new(BTreeMap::new()));
         let in_flight = Arc::new(Mutex::new(BTreeMap::<String, usize>::new()));
         let overlapped = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (wire, flight, overlap) = (
@@ -1414,13 +1419,14 @@ mod tests {
                         return Ok(());
                     };
                     let name = node.display().to_string();
-                    {
+                    let writing = {
                         let mut flight = flight.lock().unwrap();
                         let count = flight.entry(name.clone()).or_default();
                         *count = count.saturating_add(1);
-                        if *count > 1 {
-                            overlap.store(true, Ordering::SeqCst);
-                        }
+                        *count
+                    };
+                    if writing > 1 {
+                        overlap.store(true, Ordering::SeqCst);
                     }
                     let frames = Arc::clone(wire.lock().unwrap().entry(name.clone()).or_default());
                     let mut bus = SlowBus { frames };
