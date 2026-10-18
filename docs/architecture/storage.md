@@ -678,10 +678,12 @@ bounds.
 
 An external file account set up in Settings (WebDAV, Nextcloud, Google
 Drive, OneDrive, Dropbox and iCloud Drive) is an ordinary folder at `~/Remote/<account label>`. Every app and POSIX tool
-uses it the way it uses any other folder. Rooms replicate signed records
-between peers. A cloud account mirrors a server, and the server is the
-authority for its own tree. That is why this is a separate backing, not a
-room.
+uses it the way it uses any other folder. The server is the authority for
+its own tree. In the target design ([§13.10](#1310-connector-peers)) that
+makes the server a **connector peer** of the record plane, not a separate
+backing: the account's tree is file records in a room, and devices exchange
+its content among themselves as they do any other. What follows describes
+today's separate backing, which becomes the first connector.
 
 **Processes and credentials.** `fs cloud-service` (user unit
 `tilo-fs-cloud.service`) follows Settings' account store. It keeps one
@@ -1874,6 +1876,91 @@ on a room topic, never through a workspace host.
 - A person record larger than the collaboration transport's limit (64 MiB in
   one mutation) is refused like any record's; one that grows toward it
   should become a collection.
+
+### 13.10 Connector peers
+
+Status: design (2026-10-19, agreed with the owner). Not implemented.
+
+**An external service is a peer with authority, not a separate world.** A mail
+server (IMAP, JMAP), a calendar or address book (CalDAV, CardDAV), a cloud
+drive (§6.10), a feed (RSS, Atom) and similar services each hold data the
+person works with. Today each has its own engine and cache inside an app (Mail
+keeps a JSON corpus per account, capped at 5,000 messages, with its own format
+version). In the target design they all join the one record plane through one
+mechanism.
+
+**Connector.** A connector is the code that speaks one external protocol. It
+runs in the storage daemon's connector runtime, never in an app and never in a
+UI process. It holds the account's short-lived credential through the existing
+handoff store (§6.10). Each connector maps the service's objects to records:
+
+| Service | Records |
+|---|---|
+| IMAP / JMAP | a mailbox is a `Collection<Message>`; each message is an item (or promoted record) with body and attachments as blobs |
+| CalDAV | a calendar is a `Collection<Event>` |
+| CardDAV | an address book is a `Collection<Contact>` |
+| Cloud drives | file records in the account's room (§6.10) |
+| Feeds | a feed is a `Collection<Entry>` |
+
+**Fields have an owner.** A record a connector maintains declares which of its
+fields the external service owns:
+- **Service-owned fields** (a message's headers, body, attachments, server
+  flags and folder; an event's time and attendees as the server holds them)
+  are not merged as a CRDT. The server's state is the truth. Whichever device
+  next reconciles with the server writes it, and it wins over any device's
+  copy.
+- **Everything the person or their collaborators add** (notes, tags, links to
+  tasks, a summary an agent wrote, a "follow up Friday") are ordinary fields or
+  records in the plane. They merge, have history, and sync like everything
+  else: across the person's devices and with every member of the room the
+  record lives in. They are never sent to the service.
+- **Identity** comes from the service and is stable across devices: IMAP
+  `UIDVALIDITY` + `UID` (or the `Message-ID` when a server renumbers),
+  CalDAV/CardDAV href + ETag, a feed entry's id. Two devices that fetch the
+  same message from the server produce the same record, never a duplicate.
+
+**Devices serve each other.** Service-owned content lives in the content store
+like any other content: addressed by hash, with residency, prefetch and
+eviction (§12). A device that lacks a message's body fetches it from whichever
+source is fastest and allowed: another device of the person, an always-on host,
+a room member with read access, or the server. A device that cannot reach the
+server (offline, server down, slow link) still gets everything another
+reachable peer holds. Permission is the record's own (§14): exactly who may
+read the record may fetch its content, whatever the source.
+
+**One device talks to the server at a time, any device can.** Reconciliation
+with a service is a lease (§11.2) per account and collection, so devices don't
+all poll the same server. The holder is chosen by reachability and cost (an
+always-on host first, then an awake device on a good link). When it goes away
+the lease expires and another device takes over. Push (IMAP IDLE, CalDAV
+sync-collection, JMAP push) goes to the lease holder.
+
+**Changes the person makes to service-owned fields are intents.** Archiving,
+flagging, moving, sending, accepting an invitation: each becomes an entry in
+an `Outbox<T>` (resources.md §2.4) on the record. The change shows at once,
+marked as pending. Whichever device holds the lease carries it out exactly
+once (intent ids are idempotency keys), and the server's resulting state then
+settles the field. If the server refuses, the intent fails visibly with its
+reason, and the field shows the server's state again.
+
+**Storage fits the data.** Service-owned fields have no history of their own
+worth keeping, so they don't accumulate Automerge history. They are stored as
+snapshots per item in the collection's shards. A new server state replaces the
+old. The person's additions keep full history as usual. There is no fixed
+item cap: residency (§12) decides what is local.
+- Metadata of every item is always local (searchable offline).
+- Bodies and attachments are hydrated by usage and prefetch, and evicted
+  automatically when space is tight, because they can always be fetched again
+  from a peer or the service.
+- "Available offline" pins a mailbox, calendar or folder (residency `Pinned`).
+
+**Apps store nothing themselves.** Mail, Calendar, Contacts, Feeds, Music and
+Photos libraries, Files' cloud folders and similar read and write these
+collections through the Record Store API (§13.1). Search, agents, history and
+permissions see them like any other records. The app-private caches they hold
+today (about 23 apps keep their own files) move onto collections or
+connectors. A cache with no external authority becomes a derived local index
+(§13.3), rebuilt from records, never a second copy of the data.
 
 ## 14. Permissions
 
