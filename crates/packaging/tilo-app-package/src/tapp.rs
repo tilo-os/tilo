@@ -36,7 +36,13 @@ use crate::id::PackageId;
 use crate::package::{MetaError, PackageMeta};
 use crate::signed::SIGNED_ROOT_LEN;
 
-/// Current version of the archive layout.
+/// The store package format's one version: the archive layout, the
+/// manifest it signs, the signed root and the chunk list. A device reads
+/// only packages of exactly this version (docs/architecture/compatibility.md);
+/// `interface.toml` holds the manifest and header schema, and the repository
+/// policy fails a change to it that keeps the number. The binary layouts
+/// (signed root, chunk list) are not in that schema: a change to them bumps
+/// this by hand.
 pub const TAPP_FORMAT_VERSION: u32 = 1;
 
 const HEADER: &str = "tapp.toml";

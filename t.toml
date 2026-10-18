@@ -404,6 +404,7 @@ if [ "$base" = "$(git rev-parse HEAD)" ]; then base=$(git rev-parse HEAD^); fi
 python3 tools/ci/check_changed_rust_allows.py "$base"
 python3 tools/policy/check_commit_policy.py "$base"
 python3 tools/policy/check_user_requirement_tests.py "$base"
+python3 tools/policy/check_interfaces.py against "$base"
 python3 tools/perf/tapp_size_ratchet.py check-budget --base "$base"
 python3 tools/perf/runtime_size_ratchet.py check-budget --base "$base"
 """

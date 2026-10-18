@@ -33,6 +33,15 @@ pub mod runtime_request;
 pub mod service_socket;
 pub mod tools;
 
+/// The app ↔ runtime interface's one version: what an app and the session
+/// services the launcher connects it to (collaboration, the filesystem and
+/// its document media, the app host, the identity broker, shell-owned
+/// tools) speak. The launcher connects an app only when its manifest names
+/// this version (docs/architecture/compatibility.md); `interface.toml`
+/// holds the schema, and the repository policy fails a change to it that
+/// keeps the number.
+pub const RUNTIME_INTERFACE_VERSION: u32 = 1;
+
 use std::env;
 use std::io;
 
