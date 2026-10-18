@@ -1091,10 +1091,7 @@ pub fn json_field<T: Model>(
 #[doc(hidden)]
 #[must_use]
 #[inline(never)]
-pub fn json_of_variant(
-    variant: &str,
-    fields: Vec<(&str, serde_json::Value)>,
-) -> serde_json::Value {
+pub fn json_of_variant(variant: &str, fields: Vec<(&str, serde_json::Value)>) -> serde_json::Value {
     let mut map = serde_json::Map::new();
     map.insert(VARIANT_KEY.to_owned(), serde_json::Value::from(variant));
     for (key, value) in fields {
@@ -1796,8 +1793,13 @@ impl<T: Model> Model for BTreeMap<String, T> {
 }
 
 /// An opaque value stored as one JSON string: written whole, last writer
-/// wins. The escape hatch for nested data that has no meaningful concurrent
-/// merge (a colour curve, a filter preset).
+/// wins. Only for a payload whose shape is another party's and opaque to the
+/// app's model: an account type's connection settings, a shortcut step's
+/// bindings (literal JSON values, other apps' parameter declarations with
+/// their JSON Schemas). Data the app shapes itself is a model type — a
+/// struct, an enum (a data enum is a map naming its variant), a list, a map —
+/// so its parts merge and migrate as values; a field that was `Json<T>` moves
+/// to one with `evolution::retype_json`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Json<T>(pub T);
 

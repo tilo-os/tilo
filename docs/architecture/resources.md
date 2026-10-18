@@ -58,7 +58,8 @@ want, not only for the value you hold.
 | `Bytes` | content-addressed blob reference; small values inline | last writer wins |
 | `Outbox<T>` | queue of entries settled by the owning device | see §2.4 |
 | `Option<T>`, `Box<T>`, nested `Model` structs | as the inner type | as the inner type |
-| `Json<T>` | one JSON string | last writer wins; an escape hatch, not a default |
+| enum with fields (`#[derive(Model)]`) | map: the variant's name under `$variant`, its fields beside it | per field of one variant; a change of variant is last writer wins |
+| `Json<T>` | one JSON string | last writer wins; only for a payload opaque to the app's model: another party's JSON (a binding's literal value, a parameter's JSON Schema, a provider's settings) |
 
 A type with a layout the table does not cover implements `Model` by hand. That
 is the only place storage code is written by hand, and the framework ships the
@@ -518,7 +519,8 @@ Apps and examples once held code written against the APIs this model
 replaced: hand-written `impl Resource for`, `ActionDecl::new`, `ActionAddress::new`,
 untyped argument parsing (`args.text(..)`, `args.get(..)`), `ActionSpec::`
 descriptors, direct Automerge writes (`put`, `put_object`, `insert_object`,
-`splice_text`, `update_text`, `increment`) and `Json<T>` fields. None is left,
+`splice_text`, `update_text`, `increment`) and `Json<T>` fields holding data
+they shape themselves. None is left,
 and `tools/policy/check_app_resource_action_contract.py` refuses each one in
 every source file of an app crate (`src`, `tests`, `examples`, `benches`) and
 of an example: there is no ceiling to raise. What to write instead:

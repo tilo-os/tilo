@@ -84,7 +84,7 @@ fn plan_one(plan: &mut LayoutPlan, guild: &Guild, only: &str) {
     let Some(mapping) = guild.by_discord(MappedKind::Channel, only) else {
         return;
     };
-    let text = observed(guild, only).is_some_and(|c| c.kind.0 == ChannelKind::Text);
+    let text = observed(guild, only).is_some_and(|c| c.kind == ChannelKind::Text);
     if text && guild.mapping(MappedKind::Webhook, &mapping.tilo).is_none() {
         plan.webhooks.push(CreateWebhookOp {
             channel: only.to_owned(),
@@ -96,7 +96,7 @@ fn plan_one(plan: &mut LayoutPlan, guild: &Guild, only: &str) {
 /// Every bridged text channel Discord shows gets the bridge's webhook.
 fn plan_webhooks(plan: &mut LayoutPlan, guild: &Guild) {
     for mapping in guild.map.iter().filter(|m| m.kind == MappedKind::Channel) {
-        let text = observed(guild, &mapping.discord).is_some_and(|c| c.kind.0 == ChannelKind::Text);
+        let text = observed(guild, &mapping.discord).is_some_and(|c| c.kind == ChannelKind::Text);
         if text && guild.mapping(MappedKind::Webhook, &mapping.tilo).is_none() {
             plan.webhooks.push(CreateWebhookOp {
                 channel: mapping.discord.clone(),
@@ -159,7 +159,7 @@ fn plan_mirror(plan: &mut LayoutPlan, guild: &Guild, room: &RoomChat) {
     let mut categories = guild
         .channels
         .iter()
-        .filter(|c| c.kind.0 == ChannelKind::Category)
+        .filter(|c| c.kind == ChannelKind::Category)
         .count();
     for category in &room.categories {
         if guild.tilo_only.contains(&category.id) || queued(guild, &category.id) {
@@ -228,7 +228,7 @@ fn plan_mirror(plan: &mut LayoutPlan, guild: &Guild, room: &RoomChat) {
                 let siblings = guild
                     .channels
                     .iter()
-                    .filter(|c| c.kind.0 == kind_of(channel) && c.parent == parent)
+                    .filter(|c| c.kind == kind_of(channel) && c.parent == parent)
                     .count();
                 plan.apply.push(ApplyItem {
                     op: want(None, position(siblings)),

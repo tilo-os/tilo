@@ -10,7 +10,7 @@ use tilo_actions::{Doc, ResourceId};
 /// blocks in characters, byte offsets are natural elsewhere — and the two agree
 /// only for ASCII, so an implicit unit reads correctly in every English test and
 /// addresses the wrong run on the first accented character.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::Model)]
 pub enum SpanUnit {
     /// Unicode scalar values, counted as `chars()`.
     Chars,
@@ -22,7 +22,7 @@ pub enum SpanUnit {
 ///
 /// Offsets are in the publishing app's own unit, so a consumer can hand them
 /// straight to that app's actions without a coordinate change.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::Model)]
 pub struct Span {
     pub start: usize,
     pub end: usize,
@@ -89,14 +89,16 @@ fn byte_at(text: &str, n: usize) -> Option<usize> {
 /// resolve, compare or route on it. That separation is the point of the crate:
 /// once a consumer matches on `label`, the reference has degraded back into the
 /// prose it was meant to replace.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::Model)]
 pub struct ResourceRef {
     /// Stable kind tag (`word_processor.block`, `files.entry`), shared with the
     /// resource trees apps publish so the same kind means the same thing
     /// everywhere.
+    #[model(atom)]
     pub kind: String,
     /// The publishing app's own resource id, so an address minted from a
     /// selection and one surveyed through the door are the same address.
+    #[model(atom)]
     pub id: String,
     /// Human, localisable label for the chip. Never the address.
     pub label: String,

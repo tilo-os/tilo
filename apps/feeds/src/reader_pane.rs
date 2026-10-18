@@ -247,7 +247,7 @@ impl Core {
         ui::surface::separator(scene, t, x, x + width, y, 0.0, palette.ground);
         y += f64::from(spacing.s6) * scale;
 
-        for (index, block) in article.blocks.0.iter().enumerate() {
+        for (index, block) in article.blocks.iter().enumerate() {
             y = self.paint_block(
                 PaintCtx::new(scene, t, text, theme),
                 &BlockFrame {
@@ -518,7 +518,7 @@ impl Core {
                     .with_action_target(format!("feeds.reader-tag:{key}")),
             )
         }));
-        children.extend(article.blocks.0.iter().enumerate().map(|(index, block)| {
+        children.extend(article.blocks.iter().enumerate().map(|(index, block)| {
             let role = match block.kind {
                 BlockKind::Heading1 => Role::Heading { level: 2 },
                 BlockKind::Heading2 => Role::Heading { level: 3 },

@@ -38,6 +38,13 @@ pub struct Program {
 /// both keep their edit: every step is an item of [`Self::steps`] with its
 /// arguments under their own keys, every input an item of [`Self::inputs`].
 /// [`Self::program`] reads it back as one [`Program`].
+///
+/// Each unit (an input's declaration, an argument's binding, a step's head,
+/// the output, the triggers) is written whole and kept as the automation
+/// value the run engine reads, as one JSON string (`Json`): it carries JSON
+/// the draft does not shape — a binding's literal value, another app's
+/// parameter declaration with its JSON Schema — so it has no parts of the
+/// draft's own to merge.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Draft {
     /// Name

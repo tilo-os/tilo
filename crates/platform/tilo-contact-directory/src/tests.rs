@@ -573,27 +573,26 @@ fn reviewed_revision_replacement_is_atomic_and_keeps_old_attribution() {
 
 #[test]
 fn legacy_person_records_load_without_email_hints_or_identity_changes() {
-    use tilo_resource::{Collection, Doc, Fields, Json, Model};
-    #[derive(Model, Default)]
-    struct LegacyPerson {
-        label: String,
-        removed: bool,
-        phones: Json<Vec<String>>,
-        endpoints: Collection<super::Endpoint>,
-    }
+    use tilo_resource::{Doc, Fields};
+    // A person from before mail hints, their phone hints one JSON string.
     let mut doc = Doc::new();
-    let old = LegacyPerson {
-        label: "Alex".into(),
-        phones: Json(vec!["+12025550123".into()]),
-        ..LegacyPerson::default()
-    };
-    old.write_fields(&mut doc, &tilo_resource::__private::ROOT)
-        .expect("legacy record writes");
+    tilo_resource::evolution::fixture(
+        &mut doc,
+        &tilo_resource::__private::ROOT,
+        &tilo_resource::__private::serde_json::json!({
+            "label": "Alex",
+            "removed": false,
+            "phones": r#"["+12025550123"]"#,
+            "endpoints": {},
+        }),
+    )
+    .expect("legacy record writes");
+    super::upgrade_person(&mut doc, &tilo_resource::__private::ROOT).expect("migrates");
     let person = super::Person::read_fields(&doc, &tilo_resource::__private::ROOT)
-        .expect("additive schema reads legacy record");
-    assert_eq!(person.label, old.label);
-    assert_eq!(person.phones, old.phones);
-    assert!(person.emails.0.is_empty());
+        .expect("the migrated record reads");
+    assert_eq!(person.label, "Alex");
+    assert_eq!(person.phones, ["+12025550123"]);
+    assert!(person.emails.is_empty());
     assert!(person.endpoints.is_empty());
 }
 
@@ -694,10 +693,10 @@ fn a_projected_picture_shows_for_the_one_person_with_that_mailbox() {
 
     let third = Id::from_raw("00000000-0000-4000-8000-000000000003");
     record
-        .apply(ContactDirectory::PROJECT_CONTACTS.with((
-            vec![person(third, "team@example.test", "R0hJ")],
-            Vec::new(),
-        )))
+        .apply(
+            ContactDirectory::PROJECT_CONTACTS
+                .with((vec![person(third, "team@example.test", "R0hJ")], Vec::new())),
+        )
         .expect("projecting succeeds");
     let state = record.state().expect("readable");
     assert_eq!(state.photo_for_email("team@example.test"), None);
@@ -706,11 +705,18 @@ fn a_projected_picture_shows_for_the_one_person_with_that_mailbox() {
         .apply(ContactDirectory::REMOVE_CONTACT.with(first()))
         .expect("removing succeeds");
     assert_eq!(
-        record.state().expect("readable").photo_for_email("ada@example.test"),
+        record
+            .state()
+            .expect("readable")
+            .photo_for_email("ada@example.test"),
         None
     );
 
-    let oversized = person(second(), "team@example.test", &"A".repeat(MAX_PHOTO_BYTES + 1));
+    let oversized = person(
+        second(),
+        "team@example.test",
+        &"A".repeat(MAX_PHOTO_BYTES + 1),
+    );
     assert!(
         record
             .apply(ContactDirectory::PROJECT_CONTACTS.with((vec![oversized], Vec::new())))

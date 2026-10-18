@@ -185,7 +185,7 @@ pub struct CreateWebhookOp {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "resource", derive(JsonSchema))]
+#[cfg_attr(feature = "resource", derive(JsonSchema, tilo_resource::Model))]
 #[serde(rename_all = "kebab-case")]
 pub enum ChannelKind {
     #[default]

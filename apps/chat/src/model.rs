@@ -211,7 +211,7 @@ pub struct User {
     pub is_agent: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::Model)]
 pub enum Attachment {
     /// An image addressed by its content hash. `w`/`h` are the real pixel
     /// dimensions read at import time; bytes live in the content store, never as a path meaningful only on the sending peer.
@@ -398,7 +398,7 @@ pub struct AgentWork {
 ///
 /// Recorded from the decision the agent actually took, so `route` cannot say
 /// a model chose when the deterministic floor did.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::Model)]
 pub struct AgentReasoning {
     /// Which path reached the decision — a model, or the agent's own keyword
     /// vocabulary. Never cosmetic: a turn decided on the floor must be
@@ -411,7 +411,7 @@ pub struct AgentReasoning {
 }
 
 /// Which path chose the operation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::Model)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentRoute {
     /// A model was asked and its answer was in the room's exported catalogue.
@@ -475,7 +475,7 @@ impl AgentStep {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::Model)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum AgentStepOutcome {
     /// It has been handed to the app that owns it and has not answered.
@@ -648,7 +648,7 @@ impl AgentWork {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::Model)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum AgentWorkState {
     /// The summons was taken. The agent has read it and nothing is decided.

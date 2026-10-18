@@ -21,7 +21,19 @@ pub use net::{Allowed, EgressPolicy, HostPattern, NetHostError, NetHostPattern, 
 use crate::crypto::Ed25519PublicKey;
 
 /// How far a sandbox capability reaches into its resource.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    tilo_resource::Model,
+)]
 #[serde(deny_unknown_fields)]
 pub enum Access {
     /// Read, observe, capture. The floor: `Write` implies it, so no
@@ -39,7 +51,9 @@ impl Access {
 }
 
 /// A named principal — the string-keyed half of the subject space.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, tilo_resource::Model,
+)]
 #[serde(deny_unknown_fields)]
 pub enum Principal {
     /// A human, by stable id. When the person has a signing key the id is its
@@ -80,7 +94,7 @@ impl Principal {
 }
 
 /// Who a capability is about: one signing identity or a named [`Principal`].
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::Model)]
 #[serde(deny_unknown_fields)]
 pub enum Subject {
     /// One specific identity, by public key.
@@ -206,7 +220,7 @@ impl Actor {
 }
 
 /// What a sandbox capability ranges over.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::Model)]
 #[serde(deny_unknown_fields)]
 pub enum Scope {
     /// A filesystem path and everything below it.
@@ -421,7 +435,9 @@ pub enum ResourceRef {
 /// The whole lifetime vocabulary: the portal's "Just once" / "Until I log
 /// out" / "Always" map to [`Expiry::AfterUse`], `EndOfSession` and
 /// `Never` respectively, not a parallel enum.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::Model,
+)]
 #[serde(deny_unknown_fields)]
 pub enum Expiry {
     /// Lives until explicitly revoked, and survives a restart.
@@ -489,7 +505,7 @@ impl Expiry {
 }
 
 /// Whether a capability grants or restricts.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::Model)]
 #[serde(deny_unknown_fields)]
 pub enum Effect {
     /// Extend a subject's access within the scope.
@@ -501,7 +517,7 @@ pub enum Effect {
 }
 
 /// One sandbox capability.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::Model)]
 #[serde(deny_unknown_fields)]
 pub struct CapOverride {
     pub subject: Subject,

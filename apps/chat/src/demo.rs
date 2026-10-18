@@ -7,7 +7,7 @@
 
 use automerge::AutoCommit;
 use ui::tilo_actions::DoorError;
-use ui::tilo_resource::{Atom, Edit, Id, Invoke, Json, ModelError, Replica, Set};
+use ui::tilo_resource::{Atom, Edit, Id, Invoke, ModelError, Replica, Set};
 
 use crate::messages::{Messages, chat_part};
 use crate::model::{Attachment, ChannelKind, EditRecord, Presence};
@@ -419,22 +419,20 @@ pub fn demo_part(me: &str) -> ChatPart {
                 channel: Id::from_raw(channel),
                 author: Atom(mine(&message.author)),
                 ts: message.ts,
-                mentions: Json(crate::mention::resolve(&message.text, &participants)),
+                mentions: crate::mention::resolve(&message.text, &participants),
                 text: message.text,
                 edited: message.edited,
-                history: Json(
-                    message
-                        .history
-                        .into_iter()
-                        .map(|record| Revision {
-                            ts: record.ts,
-                            text: record.text,
-                        })
-                        .collect(),
-                ),
+                history: message
+                    .history
+                    .into_iter()
+                    .map(|record| Revision {
+                        ts: record.ts,
+                        text: record.text,
+                    })
+                    .collect(),
                 parent: message.parent.map(Id::from_raw),
                 reactions,
-                attachment: Json(message.attachment),
+                attachment: message.attachment,
                 ..Message::default()
             },
         );

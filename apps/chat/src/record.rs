@@ -20,8 +20,10 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use tilo_document::ClipBlock;
+use ui::automerge::ObjId;
+use ui::tilo_resource::evolution::{collection_items, map_at, map_values, retype_json};
 use ui::tilo_resource::{
-    self, ActionCx, Atom, Collection, Id, Identified, Json, JsonSchema, Keyed, Model, Refusal,
+    self, ActionCx, Atom, Collection, Id, Identified, JsonSchema, Keyed, Model, ModelError, Refusal,
 };
 
 use crate::model::{ChannelKind, Presence};
@@ -50,16 +52,20 @@ pub const VOICE_CHANNEL: &str = "c_voice";
 /// is what parts replace, and nothing carries them over. Versions 1 to 3
 /// kept workspaces of the chat's own; Chat runs in its room now, so that
 /// structure is dropped and every channel and category stays
-/// ([`drop_workspaces`]).
+/// ([`drop_workspaces`]). Versions 1 to 4 kept a filed report's submission,
+/// a triage step's update and a moderation decision's reports and
+/// take-backs as one JSON string each; they are model values now, rewritten
+/// in place.
 ///
 /// # Errors
-/// When `from` is not a version this chat was.
+/// When `from` is not a version this chat was, or a stored value does not
+/// read as its new type.
 fn migrate(
     doc: &mut ui::tilo_resource::Doc,
     from: u32,
 ) -> Result<(), ui::tilo_resource::ModelError> {
     use ui::automerge::{ROOT, ReadDoc as _, transaction::Transactable as _};
-    if !(1..=3).contains(&from) {
+    if !(1..=4).contains(&from) {
         return Err(ui::tilo_resource::ModelError::invalid(format!(
             "no Chat migration from {from}"
         )));
@@ -75,7 +81,19 @@ fn migrate(
         read.remove(doc)?;
         read.object(doc, ui::automerge::ObjType::Map)?;
     }
-    drop_workspaces(doc)
+    if from <= 3 {
+        drop_workspaces(doc)?;
+    }
+    for report in collection_items(doc, &ROOT, "feedback")? {
+        retype_json::<Option<ui::feedback::Submission>>(doc, &report, "submission")?;
+        for step in collection_items(doc, &report, "triage")? {
+            retype_json::<Option<crate::feedback::TriageUpdate>>(doc, &step, "update")?;
+        }
+    }
+    if let Some(moderation) = map_at(doc, &ROOT, "moderation")? {
+        moderation_model::record::upgrade_decisions(doc, &moderation)?;
+    }
+    Ok(())
 }
 
 /// Drop the workspaces a chat of version 3 or older kept: they were the
@@ -116,6 +134,48 @@ fn drop_workspaces(doc: &mut ui::tilo_resource::Doc) -> Result<(), ui::tilo_reso
                     doc.delete(&value, "workspace")?;
                 }
             }
+        }
+    }
+    Ok(())
+}
+
+/// Bring a part of the chat's messages of version 1 up to this one. Version
+/// 1 kept a message's paragraphs, earlier texts, mentions, reference,
+/// attachment and shown name, and an agent's record of its work, as one
+/// JSON string each; they are model values now, rewritten in place.
+///
+/// # Errors
+/// When `from` is not a version a part was, or a stored value does not read
+/// as its new type.
+pub(crate) fn upgrade_part(doc: &mut ui::tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
+    if from != 1 {
+        return Err(ModelError::invalid(format!(
+            "no chat part migration from {from}"
+        )));
+    }
+    for message in collection_items(doc, &ui::automerge::ROOT, "messages")? {
+        upgrade_message(doc, &message)?;
+    }
+    Ok(())
+}
+
+/// [`upgrade_part`] of one message stored at `message`.
+fn upgrade_message(doc: &mut ui::tilo_resource::Doc, message: &ObjId) -> Result<(), ModelError> {
+    use crate::model::{AgentReasoning, AgentStepOutcome, Attachment};
+    retype_json::<Vec<ClipBlock>>(doc, message, "body")?;
+    retype_json::<Vec<Revision>>(doc, message, "history")?;
+    retype_json::<Vec<crate::mention::Mention>>(doc, message, "mentions")?;
+    retype_json::<Option<tilo_reference::ResourceRef>>(doc, message, "reference")?;
+    retype_json::<Option<Attachment>>(doc, message, "attachment")?;
+    retype_json::<Option<ShownAs>>(doc, message, "appearance")?;
+    if let Some(work) = map_at(doc, message, "work")? {
+        retype_json::<Option<Transition>>(doc, &work, "state")?;
+        retype_json::<Option<AgentReasoning>>(doc, &work, "reasoning")?;
+        if let Some(stream) = map_at(doc, &work, "stream")? {
+            retype_json::<Option<crate::agent_stream::AgentFinish>>(doc, &stream, "finish")?;
+        }
+        for (_, step) in map_values(doc, &work, "trace")? {
+            retype_json::<Option<AgentStepOutcome>>(doc, &step, "outcome")?;
         }
     }
     Ok(())
@@ -213,13 +273,13 @@ pub struct Message {
     pub text: String,
     /// Its paragraphs as written, with their formatting; empty for plain text.
     #[model(readonly)]
-    pub body: Json<Vec<ClipBlock>>,
+    pub body: Vec<ClipBlock>,
     /// Whether it was changed after it was posted.
     #[model(readonly)]
     pub edited: bool,
     /// Its earlier texts, oldest first.
     #[model(readonly)]
-    pub history: Json<Vec<Revision>>,
+    pub history: Vec<Revision>,
     /// The message it answers in a thread.
     #[model(readonly)]
     pub parent: Option<Id>,
@@ -229,16 +289,16 @@ pub struct Message {
     pub reactions: ui::tilo_resource::Set<Reacted>,
     /// Who the text refers to, resolved when it was written.
     #[model(readonly)]
-    pub mentions: Json<Vec<crate::mention::Mention>>,
+    pub mentions: Vec<crate::mention::Mention>,
     /// The thing it is about, when it was written by sharing something.
     #[model(readonly)]
-    pub reference: Json<Option<tilo_reference::ResourceRef>>,
+    pub reference: Option<tilo_reference::ResourceRef>,
     /// The record the reference lives in, when the host resolved one.
     #[model(readonly)]
     pub source_provider: Option<Atom>,
     /// A file, an image or a video, by its content address.
     #[model(readonly)]
-    pub attachment: Json<Option<crate::model::Attachment>>,
+    pub attachment: Option<crate::model::Attachment>,
     /// Pinned messages are listed for everyone (`pin`).
     #[model(readonly)]
     pub pinned: bool,
@@ -249,7 +309,57 @@ pub struct Message {
     /// The name and avatar a bot showed for it instead of its own (a bridge
     /// posting an outside person's line); the author stays the bot.
     #[model(readonly)]
-    pub appearance: Json<Option<tilo_actions::Appearance>>,
+    pub appearance: Option<ShownAs>,
+}
+
+/// The name and avatar a bot showed for a message instead of its own, as the
+/// message keeps it: [`tilo_actions::Appearance`] as stored values.
+#[derive(Model, Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShownAs {
+    /// The shown name.
+    #[model(atom)]
+    pub name: String,
+    /// BLAKE3 hex of an image in the room's content store.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<String>,
+    /// The outside account this stands for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persona: Option<ShownPersona>,
+}
+
+/// An account on another service a message was shown as coming from.
+#[derive(Model, Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShownPersona {
+    #[model(atom)]
+    pub service: String,
+    #[model(atom)]
+    pub account: String,
+}
+
+impl From<tilo_actions::Appearance> for ShownAs {
+    fn from(appearance: tilo_actions::Appearance) -> Self {
+        Self {
+            name: appearance.name,
+            avatar: appearance.avatar,
+            persona: appearance.persona.map(|persona| ShownPersona {
+                service: persona.service,
+                account: persona.account,
+            }),
+        }
+    }
+}
+
+impl From<ShownAs> for tilo_actions::Appearance {
+    fn from(shown: ShownAs) -> Self {
+        Self {
+            name: shown.name,
+            avatar: shown.avatar,
+            persona: shown.persona.map(|persona| tilo_actions::Persona {
+                service: persona.service,
+                account: persona.account,
+            }),
+        }
+    }
 }
 
 impl Default for Message {
@@ -259,18 +369,18 @@ impl Default for Message {
             author: Atom::default(),
             ts: 0,
             text: String::new(),
-            body: Json::default(),
+            body: Vec::new(),
             edited: false,
-            history: Json::default(),
+            history: Vec::new(),
             parent: None,
             reactions: ui::tilo_resource::Set::new(),
-            mentions: Json::default(),
-            reference: Json::default(),
+            mentions: Vec::new(),
+            reference: None,
             source_provider: None,
-            attachment: Json::default(),
+            attachment: None,
             pinned: false,
             work: None,
-            appearance: Json::default(),
+            appearance: None,
         }
     }
 }
@@ -285,7 +395,7 @@ pub struct Reacted {
 ui::tilo_resource::json_model!(Reacted);
 
 /// An earlier text of a message.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Model, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Revision {
     pub ts: i64,
     pub text: String,
@@ -324,9 +434,9 @@ pub struct Work {
     pub stream: Option<ProviderStream>,
     /// Where it is, and since when: one authored claim, never mixed with
     /// another's time.
-    pub state: Json<Option<Transition>>,
+    pub state: Option<Transition>,
     /// How it decided, in the decider's words.
-    pub reasoning: Json<Option<crate::model::AgentReasoning>>,
+    pub reasoning: Option<crate::model::AgentReasoning>,
     /// One row per operation it dispatched, rewritten when the app answers.
     pub trace: Keyed<Step>,
 }
@@ -338,7 +448,7 @@ pub struct ProviderStream {
     pub sequence: u64,
     pub reasoning: String,
     pub progress: String,
-    pub finish: Json<Option<crate::agent_stream::AgentFinish>>,
+    pub finish: Option<crate::agent_stream::AgentFinish>,
     pub detail: String,
 }
 
@@ -349,14 +459,14 @@ impl ProviderStream {
             sequence: self.sequence,
             reasoning: self.reasoning.clone(),
             progress: self.progress.clone(),
-            finish: self.finish.0,
+            finish: self.finish,
             detail: self.detail.clone(),
         }
     }
 }
 
 /// One state of an agent's work and when it entered it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Model, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Transition {
     pub state: crate::model::AgentWorkState,
     pub since: i64,
@@ -370,7 +480,7 @@ pub struct Step {
     pub resource: Atom,
     #[model(label)]
     pub label: String,
-    pub outcome: Json<Option<crate::model::AgentStepOutcome>>,
+    pub outcome: Option<crate::model::AgentStepOutcome>,
 }
 
 impl Identified for Step {
@@ -388,7 +498,7 @@ impl Identified for Step {
 pub struct FeedbackReport {
     /// What was submitted, as the person reviewed it.
     #[model(readonly)]
-    pub submission: Json<Option<ui::feedback::Submission>>,
+    pub submission: Option<ui::feedback::Submission>,
     /// Who filed it.
     #[model(readonly)]
     pub author: Atom,
@@ -408,7 +518,7 @@ pub struct Triage {
     #[model(readonly)]
     pub ts: i64,
     #[model(readonly)]
-    pub update: Json<Option<crate::feedback::TriageUpdate>>,
+    pub update: Option<crate::feedback::TriageUpdate>,
 }
 
 /// What an agent records of its work, as a verb takes it.
@@ -815,7 +925,7 @@ impl Chat {
     read_content = Chat::content,
     effects = crate::effects::ChatEffect,
     item_views = crate::effects::item_views,
-    version = 4,
+    version = 5,
     migrate = migrate,
 )]
 impl Chat {
@@ -1151,7 +1261,7 @@ impl Chat {
         let ts = seconds(cx);
         let key = Id::from_raw(submission.id.clone());
         if let Some(known) = self.feedback.get(&key) {
-            return if known.submission.0.as_ref() == Some(&submission) && known.author.0 == me {
+            return if known.submission.as_ref() == Some(&submission) && known.author.0 == me {
                 Ok(())
             } else {
                 Err(Refusal::new("feedback id conflict"))
@@ -1163,7 +1273,7 @@ impl Chat {
         self.feedback.push(
             key,
             FeedbackReport {
-                submission: Json(Some(submission)),
+                submission: Some(submission),
                 author: Atom(me),
                 ts,
                 triage: Collection::new(),
@@ -1197,13 +1307,15 @@ impl Chat {
                 Triage {
                     author: Atom(me),
                     ts,
-                    update: Json(Some(update)),
+                    update: Some(update),
                 },
             );
         Ok(())
     }
 }
 
+#[cfg(test)]
+mod migration_tests;
 #[cfg(test)]
 mod terminal_tests;
 #[cfg(test)]

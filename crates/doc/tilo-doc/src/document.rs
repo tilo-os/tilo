@@ -31,6 +31,7 @@ pub enum DocError {
     serde::Serialize,
     serde::Deserialize,
     tilo_resource::JsonSchema,
+    tilo_resource::Model,
 )]
 pub enum MarkValue {
     Bool(bool),
@@ -68,11 +69,19 @@ impl From<&automerge::ScalarValue> for MarkValue {
 
 /// One inline formatting span as seen from the read side.
 #[derive(
-    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, tilo_resource::JsonSchema,
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+    tilo_resource::Model,
 )]
 pub struct MarkSpan {
     pub start: usize,
     pub end: usize,
+    #[model(atom)]
     pub name: String,
     pub value: MarkValue,
 }

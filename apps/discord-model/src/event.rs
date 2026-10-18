@@ -175,12 +175,15 @@ pub struct ReactionChanged {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "resource", derive(JsonSchema))]
+#[cfg_attr(feature = "resource", derive(JsonSchema, tilo_resource::Model))]
 pub struct OverwriteInfo {
+    #[cfg_attr(feature = "resource", model(atom))]
     pub id: String,
     /// 0 role, 1 member, as Discord numbers them.
     pub kind: u8,
+    #[cfg_attr(feature = "resource", model(atom))]
     pub allow: String,
+    #[cfg_attr(feature = "resource", model(atom))]
     pub deny: String,
 }
 

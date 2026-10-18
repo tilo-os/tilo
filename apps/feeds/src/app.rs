@@ -459,7 +459,7 @@ impl Core {
             .store
             .articles_for(&Filter::All)
             .into_iter()
-            .max_by_key(|a| a.blocks.0.len() + if a.read { 0 } else { 100 })
+            .max_by_key(|a| a.blocks.len() + if a.read { 0 } else { 100 })
             .map(|a| a.id.clone());
     }
 
@@ -2104,7 +2104,7 @@ impl FeedsApp {
         {
             let href = core
                 .open_article()
-                .and_then(|article| article.item().blocks.0.get(index))
+                .and_then(|article| article.item().blocks.get(index))
                 .and_then(|block| block.href.clone())?;
             core.open_url(&href);
         } else if target == "feeds.empty.add" {

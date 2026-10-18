@@ -7,9 +7,10 @@
 //! check places them there.
 
 use serde::{Deserialize, Serialize};
+use ui::automerge::ObjId;
 use ui::tilo_actions::ActorKind;
 use ui::tilo_resource::{
-    self, ActionCx, Id, Identified, Json, JsonSchema, Keyed, Model, Refusal, resource,
+    self, ActionCx, Id, Identified, JsonSchema, Keyed, Model, ModelError, Refusal, resource,
 };
 
 /// The longest reason a reporter may give.
@@ -71,11 +72,14 @@ pub enum Outcome {
 
 /// A record whose changes by the person a decision took back, and the run
 /// that did it, so overturning can take the take-back back.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Model, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Reverted {
+    #[model(atom)]
     pub app: String,
+    #[model(atom)]
     pub record: String,
     /// The history run the moderation agent's undo ran in.
+    #[model(atom)]
     pub run: String,
     /// How many of the person's changes it took back.
     pub changes: u32,
@@ -105,7 +109,7 @@ pub struct Decision {
     pub id: String,
     pub person: String,
     /// The reports it settles.
-    pub reports: Json<Vec<String>>,
+    pub reports: Vec<String>,
     pub outcome: Outcome,
     /// When a restriction lapses.
     pub until_ms: Option<i64>,
@@ -113,7 +117,8 @@ pub struct Decision {
     pub reasoning: String,
     /// The model that judged, empty for a person's own decision.
     pub model: String,
-    pub reverted: Json<Vec<Reverted>>,
+    /// What it took back.
+    pub reverted: Vec<Reverted>,
     /// Who decided: the agent's or the Moderator's actor id.
     pub by: String,
     pub at_ms: i64,
@@ -181,8 +186,44 @@ fn optional_id(value: Option<&String>, what: &str) -> Result<(), Refusal> {
     value.map_or(Ok(()), |value| id_like(value, what))
 }
 
-#[resource(kind = "tilo.moderation", label = "Moderation", params = moderation)]
+/// Rewrite the decisions of the moderation record stored at `moderation`
+/// from before a decision's reports and take-backs were model values (each
+/// one JSON string) into the shape they are stored in now: a list of report
+/// ids and a list of take-backs. An app embedding the record runs it from its
+/// own migration.
+///
+/// # Errors
+/// Returns why a stored value does not read as its new type.
+pub fn upgrade_decisions(
+    doc: &mut tilo_resource::Doc,
+    moderation: &ObjId,
+) -> Result<(), ModelError> {
+    for (_, decision) in tilo_resource::evolution::map_values(doc, moderation, "decisions")? {
+        tilo_resource::evolution::retype_json::<Vec<String>>(doc, &decision, "reports")?;
+        tilo_resource::evolution::retype_json::<Vec<Reverted>>(doc, &decision, "reverted")?;
+    }
+    Ok(())
+}
+
+#[resource(
+    kind = "tilo.moderation",
+    label = "Moderation",
+    params = moderation,
+    version = 2,
+    migrate = Moderation::upgrade
+)]
 impl Moderation {
+    /// Bring a moderation record of version 1 up to this one: its decisions'
+    /// reports and take-backs become model values ([`upgrade_decisions`]).
+    fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
+        if from != 1 {
+            return Err(ModelError::invalid(format!(
+                "no moderation migration from {from}"
+            )));
+        }
+        upgrade_decisions(doc, &ui::automerge::ROOT)
+    }
+
     /// Report someone.
     ///
     /// Tells the room's moderators, and its moderation agent, that this
@@ -305,12 +346,12 @@ impl Moderation {
         self.decisions.push(Decision {
             id,
             person,
-            reports: Json(reports),
+            reports,
             outcome,
             until_ms,
             reasoning,
             model,
-            reverted: Json(reverted),
+            reverted,
             by,
             at_ms: now,
             overturned_by: None,

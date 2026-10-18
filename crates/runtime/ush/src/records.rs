@@ -87,16 +87,32 @@ impl Records {
             .map_err(|e| RecordError::Store(e.to_string()))
     }
 
+    /// The document `store` holds, brought up to the environment's storage
+    /// version when an older Tilo wrote it, the migration kept with it.
+    fn load_current(store: &mut DocStore) -> Result<Option<tilo_resource::Doc>, RecordError> {
+        let Some(mut doc) = store
+            .load()
+            .map_err(|e| RecordError::Store(e.to_string()))?
+        else {
+            return Ok(None);
+        };
+        if tilo_resource::evolution::migrate::<Environment>(&mut doc)
+            .map_err(|e| RecordError::Model(e.to_string()))?
+        {
+            store
+                .append(&mut doc)
+                .map_err(|e| RecordError::Store(e.to_string()))?;
+        }
+        Ok(Some(doc))
+    }
+
     /// The environment `key`, or `None` when no record has been made.
     ///
     /// # Errors
     /// Returns an error for a bad key, or a stored record that cannot be read.
     pub fn load(&self, key: &str) -> Result<Option<Environment>, RecordError> {
         let mut store = self.open(key)?;
-        let Some(doc) = store
-            .load()
-            .map_err(|e| RecordError::Store(e.to_string()))?
-        else {
+        let Some(doc) = Self::load_current(&mut store)? else {
             return Ok(None);
         };
         Environment::read(&doc)
@@ -111,10 +127,7 @@ impl Records {
     /// Returns an error for a bad key or a store that refuses the write.
     pub fn create(&self, key: &str, env: &Environment) -> Result<Environment, RecordError> {
         let mut store = self.open(key)?;
-        if let Some(doc) = store
-            .load()
-            .map_err(|e| RecordError::Store(e.to_string()))?
-        {
+        if let Some(doc) = Self::load_current(&mut store)? {
             return Environment::read(&doc).map_err(|e| RecordError::Model(e.to_string()));
         }
         let mut doc = store.new_document();
@@ -215,10 +228,8 @@ impl Records {
         invoke: Invoke<Environment>,
     ) -> Result<Environment, RecordError> {
         let mut store = self.open(key)?;
-        let doc = store
-            .load()
-            .map_err(|e| RecordError::Store(e.to_string()))?
-            .ok_or_else(|| RecordError::Missing(key.to_owned()))?;
+        let doc =
+            Self::load_current(&mut store)?.ok_or_else(|| RecordError::Missing(key.to_owned()))?;
         let mut replica = Replica::<Environment>::from_doc(doc).as_author(AUTHOR);
         replica.set_now_ms(tilo_clock::unix_now_ms_i64());
         // The person asked for this at the shell: that is the confirmation.

@@ -16,7 +16,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use ui::tilo_resource::{self, Collection, Id, Json, JsonSchema, Model, Refusal, Set};
+use ui::tilo_resource::{self, Collection, Id, JsonSchema, Model, ModelError, Refusal, Set};
 use uuid::Uuid;
 
 /// Stable identifier for a single rule. Backs selection + edit/delete.
@@ -180,7 +180,7 @@ impl Target {
 }
 
 /// Transport protocol for a port rule.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Model)]
 pub enum Proto {
     Tcp,
     Udp,
@@ -243,8 +243,9 @@ impl Action {
 }
 
 /// What a rule matches: a named service, or an explicit port + protocol.
-/// Stored whole: a rule's match changes as one value.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Stored as the variant and its fields: concurrent edits of one variant's
+/// fields merge, a change of variant is one value.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Model)]
 pub enum Matcher {
     /// A named service from the catalog (e.g. `https`).
     Service(String),
@@ -459,7 +460,7 @@ impl FirewallConfig {
 #[derive(Model, Default, Clone, Debug, PartialEq)]
 pub struct StoredRule {
     /// What it matches
-    pub matcher: Json<Matcher>,
+    pub matcher: Matcher,
     /// What it does
     pub action: Action,
     /// Source address
@@ -485,6 +486,26 @@ pub struct StoredZone {
     /// and an import never brings the rule back.
     #[model(readonly)]
     pub deleted_rules: Set<String>,
+}
+
+/// Bring a firewall configuration of version 1 up to this one: a rule's
+/// match was one JSON string, and is its variant and fields now.
+///
+/// # Errors
+/// Returns why a stored match does not read as one.
+pub fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
+    use tilo_resource::evolution::{collection_items, map_values, retype_json};
+    if from != 1 {
+        return Err(ModelError::invalid(format!(
+            "no firewall migration from {from}"
+        )));
+    }
+    for (_, zone) in map_values(doc, &ui::automerge::ROOT, "zones")? {
+        for rule in collection_items(doc, &zone, "rules")? {
+            retype_json::<Matcher>(doc, &rule, "matcher")?;
+        }
+    }
+    Ok(())
 }
 
 /// The stored firewall configuration: what every device running the app
@@ -532,7 +553,7 @@ impl Firewall {
                     .filter_map(|(id, rule)| {
                         Some(Rule {
                             id: id.as_str().parse().ok()?,
-                            matcher: rule.matcher.0.clone(),
+                            matcher: rule.matcher.clone(),
                             action: rule.action,
                             source: rule.source.clone(),
                             enabled: rule.enabled,
@@ -594,7 +615,7 @@ impl Firewall {
                     continue;
                 }
                 let stored = StoredRule {
-                    matcher: Json(rule.matcher.clone()),
+                    matcher: rule.matcher.clone(),
                     action: rule.action,
                     source: rule.source.clone(),
                     enabled: rule.enabled,

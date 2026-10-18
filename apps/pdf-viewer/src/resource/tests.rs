@@ -135,3 +135,66 @@ fn the_surface_publishes_find_hits_beside_the_resource_never_a_document_root() {
         "no find slice without a query"
     );
 }
+
+/// Markup from before a comment's and a reply's formatted paragraphs were
+/// lists: each was one JSON string. Opened now, both read with their
+/// paragraphs, formatting included.
+#[test]
+fn comments_kept_as_json_strings_migrate_to_their_paragraphs() {
+    use ui::tilo_resource::evolution;
+    let paragraph = tilo_document::ClipBlock {
+        kind: "paragraph".into(),
+        text: "Check the totals".into(),
+        marks: Vec::new(),
+        level: None,
+        ordered: None,
+        align: None,
+        attrs: std::collections::BTreeMap::new(),
+    };
+    let rich = ui::serde_json::to_string(&vec![paragraph.clone()]).unwrap();
+    let mut replica = ui::tilo_resource::Replica::<PdfMarkup>::new();
+    let doc = replica.doc_mut();
+    let root = ui::automerge::ROOT;
+    ui::tilo_resource::Slot::Key(&root, evolution::VERSION_KEY)
+        .remove(doc)
+        .unwrap();
+    evolution::fixture(
+        doc,
+        &root,
+        &ui::serde_json::json!({
+            "comments": {
+                "c1": {
+                    "id": "c1",
+                    "anno": "",
+                    "page_id": "p1",
+                    "author": "ada",
+                    "text": "Check the totals",
+                    "rich": rich,
+                    "created": 1,
+                    "resolved": false,
+                    "replies": {
+                        "r1": {
+                            "k": "a",
+                            "v": { "author": "bo", "text": "Done", "rich": rich },
+                        },
+                    },
+                },
+            },
+        }),
+    )
+    .unwrap();
+    doc.commit();
+    let mut old = doc.fork();
+    assert!(
+        evolution::read_checked::<PdfMarkup>(&old).is_err(),
+        "unmigrated"
+    );
+    assert!(evolution::migrate::<PdfMarkup>(&mut old).unwrap());
+    let markup = evolution::read_checked::<PdfMarkup>(&old).unwrap();
+    let comment = markup.comments.iter().next().unwrap();
+    assert_eq!(comment.rich, vec![paragraph.clone()]);
+    assert_eq!(
+        comment.replies.values().next().unwrap().rich,
+        vec![paragraph]
+    );
+}
