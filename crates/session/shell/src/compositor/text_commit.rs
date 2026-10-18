@@ -74,27 +74,6 @@ const KEY_LEFTSHIFT: u32 = 42;
 const KEY_V: u32 = 47;
 const KEYSYM_V: u32 = 0x76;
 
-/// Whether the app with `app_id` is a terminal, whose paste shortcut is
-/// Ctrl+Shift+V (Ctrl+V types a literal ^V there).
-fn pastes_with_shift(app_id: &str) -> bool {
-    let id = app_id.to_ascii_lowercase();
-    [
-        "terminal",
-        "kitty",
-        "alacritty",
-        "foot",
-        "wezterm",
-        "konsole",
-        "xterm",
-        "ghostty",
-        "tilix",
-        "terminator",
-        "ptyxis",
-    ]
-    .iter()
-    .any(|name| id.contains(name))
-}
-
 /// `zwp_text_input_v3.content_purpose` values whose text is a secret. Digits
 /// count: the on-screen keyboard treats a digits field as a PIN pad too.
 const SECRET_PURPOSES: [u32; 3] = [2, 8, 9];
@@ -457,13 +436,20 @@ impl State {
             return;
         }
         self.text_commit.paste_until = None;
+        // Ctrl+Shift+V in terminals (Ctrl+V types a literal ^V there), as
+        // the app id suggests or the person set it for that app in Settings.
         let terminal = smithay::wayland::compositor::with_states(&target, |states| {
             states
                 .data_map
                 .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
                 .and_then(|data| data.lock().ok()?.app_id.clone())
         })
-        .is_some_and(|app_id| pastes_with_shift(&app_id));
+        .is_some_and(|app_id| {
+            use settings_store::paste_shortcut as paste;
+            let input = settings_store::load_section(paste::SECTION);
+            paste::resolve(&app_id, &paste::overrides_from_section(&input))
+                == paste::PasteShortcut::CtrlShiftV
+        });
         let v = self.keysym_to_keycode(KEYSYM_V).unwrap_or(KEY_V);
         let mut chord = vec![KEY_LEFTCTRL];
         if terminal {
@@ -890,22 +876,6 @@ delegate_noop!(LentState: ignore zwp_input_method_manager_v2::ZwpInputMethodMana
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn terminals_paste_with_ctrl_shift_v_and_other_apps_with_ctrl_v() {
-        for id in [
-            "so.tilo.terminal",
-            "kitty",
-            "org.gnome.Ptyxis",
-            "foot",
-            "Alacritty",
-        ] {
-            assert!(pastes_with_shift(id), "{id}");
-        }
-        for id in ["so.tilo.notes", "org.mozilla.firefox", "so.tilo.mail"] {
-            assert!(!pastes_with_shift(id), "{id}");
-        }
-    }
 
     #[test]
     fn secrets_are_the_protocol_secret_purposes_and_hints() {

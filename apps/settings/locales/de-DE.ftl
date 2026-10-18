@@ -2461,3 +2461,13 @@ settings-drives-change-error = Nicht geändert: { $error }
 settings-drives-bad-request = Das ist kein gemerktes Laufwerk.
 settings-drives-unexpected = Der Laufwerksdienst hat unerwartet geantwortet.
 settings-drives-refreshed = Laufwerke neu gelesen.
+
+# Which shortcut pastes in an app when the shell pastes for you (Super+V)
+input-paste-title = Einfügekürzel
+input-paste-caption = Wenn du in der Zwischenablage-Liste (Super+V) ein Bild oder Dateien wählst, fügt Tilo sie mit dem Kürzel der App ein: Strg+Umschalt+V in Terminals, sonst Strg+V. Lege es hier für eine App fest, die anders einfügt.
+input-paste-app = App-ID
+input-paste-app-placeholder = org.example.Terminal
+input-paste-ctrl-v = Strg+V
+input-paste-ctrl-shift-v = Strg+Umschalt+V
+input-paste-entry = { $app }: { $shortcut }
+input-paste-remove = Entfernen

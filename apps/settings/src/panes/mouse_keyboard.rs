@@ -857,6 +857,16 @@ pub enum InputEffect {
     },
     /// Reset this person's local dictionary. Other accounts are unchanged.
     ResetDictionary { revision: u64 },
+    /// Set which shortcut pastes in one app when the shell pastes for the
+    /// person (Super+V with an image or files), or `default` to go back to
+    /// what its app id suggests (Ctrl+Shift+V for terminals, else Ctrl+V).
+    #[effect(idempotent)]
+    SetPasteShortcut {
+        #[param("The app's id, such as `org.wezfurlong.wezterm`")]
+        app: String,
+        #[param("The shortcut", choices = ["ctrl_v", "ctrl_shift_v", "default"])]
+        shortcut: String,
+    },
     /// Map a drawing tablet onto one display, or the whole desktop.
     #[effect(idempotent)]
     SetTabletOutput {
@@ -1187,6 +1197,7 @@ fn apply(
         | E::EditDictionaryWord { .. }
         | E::RemoveDictionaryWord { .. }
         | E::ResetDictionary { .. } => {}
+        E::SetPasteShortcut { app, shortcut } => input.set_paste_shortcut(&app, &shortcut)?,
     }
     Ok(())
 }
@@ -1276,6 +1287,16 @@ pub(crate) fn answer(
             return ui::personal_dictionary::edit(revision, ui::personal_dictionary::Edit::Reset)
                 .map(|()| Effected::done())
                 .map_err(|error| error.to_string());
+        }
+        // Not a keyboard-source edit: no keyboard scope applies to it.
+        InputEffect::SetPasteShortcut { app, shortcut } => {
+            let settings = host.settings::<InputPrefs>();
+            let mut input = settings.get();
+            input.set_paste_shortcut(&app, &shortcut)?;
+            return settings
+                .set(&input)
+                .map(|()| Effected::done())
+                .map_err(|error| format!("the input settings could not be saved: {error}"));
         }
         _ => {}
     }
@@ -1625,6 +1646,8 @@ pub struct MouseKeyboardPane {
     dictionary_word: ui::LocalState<String>,
     dictionary_language: ui::LocalState<String>,
     dictionary_edits: RefCell<HashMap<DictionaryKey, DictionaryFields>>,
+    /// The app id typed into the paste-shortcut card's field.
+    paste_app: ui::LocalState<String>,
     /// The input section as shown: normalised.
     last: InputPrefs,
     catalog: Vec<CatalogEntry>,
@@ -1673,6 +1696,7 @@ impl MouseKeyboardPane {
             dictionary_word: ui::LocalState::new(String::new()),
             dictionary_language: ui::LocalState::new(String::new()),
             dictionary_edits: RefCell::new(HashMap::new()),
+            paste_app: ui::LocalState::new(String::new()),
             last,
             catalog: area.catalog().to_vec(),
             catalog_error: area.catalog_error().map(str::to_owned),
@@ -1768,7 +1792,11 @@ impl MouseKeyboardPane {
 
     fn build_composition(&self) -> Box<dyn Widget> {
         match self.page {
-            InputPage::Keyboard => crate::widgets::cards(self.keyboard_page()),
+            InputPage::Keyboard => {
+                let mut page = self.keyboard_page();
+                page.push(self.paste_shortcut_card());
+                crate::widgets::cards(page)
+            }
             InputPage::Spelling => {
                 crate::widgets::cards(vec![self.spell_checker_card(), self.dictionary_card()])
             }
@@ -2287,6 +2315,72 @@ impl MouseKeyboardPane {
             ),
         )));
         card(&t("input-dictionary-title"), rows(children))
+    }
+
+    /// Which shortcut pastes in an app when the shell pastes for the person
+    /// (Super+V with an image or files): terminals as their app id suggests,
+    /// and any app the person names here, so an unusual terminal is fixed
+    /// without a code change.
+    fn paste_shortcut_card(&self) -> crate::widgets::SettingsSection {
+        let set = |id: &str, label: &str, shortcut: &'static str| {
+            let app = self.paste_app.clone();
+            self.cx.bind(
+                Button::new(id, label),
+                effect(InputEffect::SET_PASTE_SHORTCUT)
+                    .map(move |()| (app.get(), shortcut.to_string())),
+            )
+        };
+        let mut children = vec![
+            crate::widgets::note(&t("input-paste-caption")),
+            field_row(
+                &t("input-paste-app"),
+                Box::new(
+                    TextInput::from_state(&self.paste_app)
+                        .with_id("paste.app")
+                        .with_accessible_name(t("input-paste-app"))
+                        .with_placeholder(t("input-paste-app-placeholder"))
+                        .with_spellcheck(false)
+                        .with_autocorrect(false),
+                ),
+            ),
+            crate::widgets::row(Box::new(
+                Row::new()
+                    .push(Box::new(set(
+                        "paste.ctrl_shift_v",
+                        &t("input-paste-ctrl-shift-v"),
+                        "ctrl_shift_v",
+                    )))
+                    .push(Box::new(set(
+                        "paste.ctrl_v",
+                        &t("input-paste-ctrl-v"),
+                        "ctrl_v",
+                    ))),
+            )),
+        ];
+        for (index, (app, shortcut)) in self.last.paste_shortcuts.iter().enumerate() {
+            let shown = if shortcut == "ctrl_shift_v" {
+                t("input-paste-ctrl-shift-v")
+            } else {
+                t("input-paste-ctrl-v")
+            };
+            children.push(setting_row(
+                &t_args(
+                    "input-paste-entry",
+                    &[
+                        ("app", ArgValue::from(app.as_str())),
+                        ("shortcut", ArgValue::from(shown)),
+                    ],
+                ),
+                Box::new(self.cx.bind_invocation(
+                    Button::new(&format!("paste.{index}.remove"), &t("input-paste-remove")),
+                    InputEffect::SetPasteShortcut {
+                        app: app.clone(),
+                        shortcut: "default".into(),
+                    },
+                )),
+            ));
+        }
+        card(&t("input-paste-title"), rows(children))
     }
 
     fn dictionary_word_row(
