@@ -851,6 +851,10 @@ impl SystemView {
         for path in LIVE_READ_PATHS {
             replacement.extend(["--ro-bind-try", path, path].map(str::to_string));
         }
+        // The cgroup hierarchy stays covered on top of the live `/sys`.
+        for path in crate::profile::HIDDEN_PATHS {
+            replacement.extend(["--tmpfs", path, "--remount-ro", path].map(str::to_string));
+        }
         if variant == Variant::Net {
             for path in NETWORK_READ_PATHS {
                 replacement.extend(["--ro-bind-try", path, path].map(str::to_string));
@@ -1136,10 +1140,23 @@ mod tests {
             );
         }
         // Kept per launch: /sys (live submounts) and the device nodes.
-        assert!(
-            argv.windows(3)
-                .any(|w| w[0] == "--ro-bind-try" && w[1] == "/sys" && w[2] == "/sys")
-        );
+        let sys = argv
+            .windows(3)
+            .position(|w| w[0] == "--ro-bind-try" && w[1] == "/sys" && w[2] == "/sys")
+            .unwrap();
+        // The cgroup hierarchy is still covered, after /sys.
+        let hidden = argv
+            .windows(4)
+            .position(|w| {
+                w == [
+                    "--tmpfs",
+                    "/sys/fs/cgroup",
+                    "--remount-ro",
+                    "/sys/fs/cgroup",
+                ]
+            })
+            .unwrap();
+        assert!(sys < hidden, "{argv:?}");
         for device in SYSTEM_DEVICE_PATHS {
             assert!(
                 argv.windows(3)

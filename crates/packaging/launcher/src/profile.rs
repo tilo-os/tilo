@@ -108,6 +108,20 @@ pub const SYSTEM_DEVICE_PATHS: &[&str] = &[
     "/dev/nvidia-caps",
 ];
 
+/// Paths below the profile's binds that an app must not see, each covered by
+/// an empty read-only tmpfs.
+///
+/// `/sys/fs/cgroup` is the cgroup hierarchy: the session's app tree and
+/// every app's cgroup in it (`crate::app_cgroup`), named by app id with its
+/// memory and CPU counters. Read-only already (the `/sys` bind is), it would
+/// still tell an app which other apps run and how much they use, and a
+/// writable cgroupfs is the one place a process could move or reconfigure
+/// cgroups from. Nothing an app runs needs it: `available_parallelism` and
+/// the engines' memory probes fall back to the affinity mask and
+/// `/proc/meminfo`. Its own place stays visible as `/proc/self/cgroup`,
+/// which reads `0::/` in the cgroup namespace bwrap gives it.
+pub const HIDDEN_PATHS: &[&str] = &["/sys/fs/cgroup"];
+
 /// Push the profile's binds onto a bwrap argv.
 ///
 /// Callers must splice this in *before* the trailing entrypoint token —
@@ -115,6 +129,9 @@ pub const SYSTEM_DEVICE_PATHS: &[&str] = &[
 pub fn push_system_profile(argv: &mut Vec<String>, shares_host_network: bool) {
     for path in SYSTEM_READ_PATHS {
         push(argv, "--ro-bind-try", path, path);
+    }
+    for path in HIDDEN_PATHS {
+        argv.extend(["--tmpfs", path, "--remount-ro", path].map(str::to_string));
     }
     if shares_host_network {
         for path in NETWORK_READ_PATHS {
@@ -277,6 +294,24 @@ mod tests {
                     .any(|w| w[0] == "--dev-bind-try" && w[1] == "/dev/dri"),
                 "the GPU node needs a device bind: {argv:?}"
             );
+            // The cgroup hierarchy is covered, after `/sys` is bound, by an
+            // empty tree no app can write either.
+            let sys = argv
+                .windows(3)
+                .position(|w| w[0] == "--ro-bind-try" && w[1] == "/sys")
+                .expect("/sys is bound");
+            let hidden = argv
+                .windows(4)
+                .position(|w| {
+                    w == [
+                        "--tmpfs",
+                        "/sys/fs/cgroup",
+                        "--remount-ro",
+                        "/sys/fs/cgroup",
+                    ]
+                })
+                .expect("/sys/fs/cgroup is covered and read-only");
+            assert!(sys < hidden, "the cover must come after the bind: {argv:?}");
             // Nothing in the profile may be writable. A `--bind` here would
             // be a system directory an app can rewrite.
             assert!(

@@ -10,6 +10,9 @@
 //   rename <from> <to>                 rename(2) it, print RENAMED/ERR
 //   env   <name>                       print the variable's value
 //   envall                             print every variable name it has
+//   mkdir <path>                       mkdir(2) it, print MADE/ERR
+//   mount <fstype> <target>            mkdir -p the target, mount(2) the
+//                                      filesystem there, print MOUNTED/ERR
 //
 // Exit code is always 0 — a test that asserted on it couldn't tell
 // "denied" from "the fixture crashed".
@@ -91,6 +94,40 @@ fn main() {
             names.sort();
             writeln!(out, "ENVALL {}", names.join(",")).unwrap()
         }
+        Some("mkdir") => match std::fs::create_dir(&args[1]) {
+            Ok(()) => writeln!(out, "MADE {}", &args[1]).unwrap(),
+            Err(e) => writeln!(out, "ERR {} {}", &args[1], e.kind_str()).unwrap(),
+        },
+        Some("mount") => {
+            unsafe extern "C" {
+                fn mount(
+                    source: *const std::ffi::c_char,
+                    target: *const std::ffi::c_char,
+                    fstype: *const std::ffi::c_char,
+                    flags: std::ffi::c_ulong,
+                    data: *const std::ffi::c_void,
+                ) -> std::ffi::c_int;
+            }
+            let _ = std::fs::create_dir_all(&args[2]);
+            let fstype = std::ffi::CString::new(args[1].as_str()).unwrap();
+            let target = std::ffi::CString::new(args[2].as_str()).unwrap();
+            // SAFETY: NUL-terminated strings that outlive the call.
+            let status = unsafe {
+                mount(
+                    fstype.as_ptr(),
+                    target.as_ptr(),
+                    fstype.as_ptr(),
+                    0,
+                    std::ptr::null(),
+                )
+            };
+            if status == 0 {
+                writeln!(out, "MOUNTED {}", &args[2]).unwrap()
+            } else {
+                let e = std::io::Error::last_os_error();
+                writeln!(out, "ERR {} {}", &args[2], e.kind_str()).unwrap()
+            }
+        }
         other => writeln!(out, "ERR unknown-command {other:?}").unwrap(),
     }
 }
@@ -106,6 +143,7 @@ impl KindStr for std::io::Error {
     fn kind_str(&self) -> String {
         match self.raw_os_error() {
             Some(libc_enoent) if libc_enoent == 2 => "ENOENT".into(),
+            Some(1) => "EPERM".into(),
             Some(13) => "EACCES".into(),
             Some(16) => "EBUSY".into(),
             Some(30) => "EROFS".into(),

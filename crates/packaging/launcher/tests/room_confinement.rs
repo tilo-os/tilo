@@ -855,3 +855,42 @@ fn settings_reaches_only_its_own_parts_of_the_session_configuration() {
     }
     drop(home);
 }
+
+/// An app's cgroup is out of its reach: its own place is the root of its
+/// cgroup namespace, the hierarchy (every app's cgroup, named by app, with
+/// its counters) is hidden behind an empty read-only directory, and no
+/// other cgroupfs can be mounted to reach it. The other half of the
+/// boundary, the kernel refusing moves out of that namespace and writes to
+/// its own limits, is `app_spawner::a_process_in_an_app_cgroup_cannot_move_or_retune_itself`.
+#[test]
+fn an_app_can_neither_see_nor_reach_the_cgroup_hierarchy() {
+    let data = DataHome::new();
+    let run = |argv: &[&str]| run_in_room(&data, Some("room-a"), argv);
+    assert_eq!(
+        run(&["read", "/proc/self/cgroup"]),
+        "OK /proc/self/cgroup 0::/",
+        "the app sees its own cgroup as the root of its namespace"
+    );
+    assert_eq!(
+        run(&["readdir", "/sys/fs/cgroup"]),
+        "OK /sys/fs/cgroup",
+        "no other app's cgroup, and no tree, is visible"
+    );
+    assert_eq!(
+        run(&["writeabs", "/sys/fs/cgroup/cgroup.procs", "0"]),
+        "ERR /sys/fs/cgroup/cgroup.procs EROFS"
+    );
+    assert_eq!(
+        run(&["mkdir", "/sys/fs/cgroup/escape"]),
+        "ERR /sys/fs/cgroup/escape EROFS"
+    );
+    // Neither a fresh cgroup2 mount nor a remount of the hidden one.
+    assert_eq!(
+        run(&["mount", "cgroup2", "/tmp/cgroup"]),
+        "ERR /tmp/cgroup EPERM"
+    );
+    assert_eq!(
+        run(&["mount", "cgroup2", "/sys/fs/cgroup"]),
+        "ERR /sys/fs/cgroup EPERM"
+    );
+}
