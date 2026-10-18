@@ -264,11 +264,17 @@ impl CapnpBrokerState {
             policy.capped |= original.capped;
         }
         let argument = request.argument.to_slot();
+        // One answer covers both gates of this exact host invocation.
+        let witnessed = self.consume_answer(
+            request.confirmation.as_ref(),
+            &self.witness_binding(policy.id(), room, request),
+        );
         self.admit_answer(
             (&workspace, &policy, now),
             steps.app_id(),
             &descriptor,
             (argument.as_deref(), request.confirmation.as_ref()),
+            witnessed,
         )
         .map_err(abandon)?;
         if !self.confirmed_as_asked(
@@ -276,6 +282,7 @@ impl CapnpBrokerState {
             &descriptor,
             argument.as_deref(),
             request.confirmation.as_ref(),
+            witnessed,
         ) {
             return Err(abandon(ActionHostError::ConfirmationRequired));
         }
