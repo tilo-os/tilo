@@ -502,4 +502,4 @@ mod tests;
 
 #[cfg(test)]
 #[path = "admission_tests.rs"]
-mod admission_tests;
+pub(super) mod admission_tests;
