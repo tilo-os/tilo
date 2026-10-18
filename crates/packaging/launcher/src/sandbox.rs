@@ -1154,6 +1154,7 @@ mod tests {
             opens_schemes: Vec::new(),
             opens_secondary: false,
             continuity: crate::manifest::ContinuityContract::default(),
+            capabilities: Vec::new(),
         }
     }
 

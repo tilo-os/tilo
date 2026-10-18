@@ -131,9 +131,11 @@ pub(crate) struct DeskState {
     reduce_motion: bool,
     /// The theme's motion durations, as last painted.
     durations: ui::tokens::Durations,
-    /// The system monitor's readings, taken only while it shows.
+    /// The system monitor's readings, sent only while it shows.
     monitor: system_monitor::Monitor,
     monitor_source: Box<dyn system_monitor::Source>,
+    /// Wakes the loop when a reading arrives.
+    monitor_wake: Option<crate::session_runtime::Wake>,
 }
 
 impl Default for DeskState {
@@ -157,7 +159,8 @@ impl Default for DeskState {
             reduce_motion: false,
             durations: ui::tokens::Durations::default(),
             monitor: system_monitor::Monitor::default(),
-            monitor_source: Box::new(system_monitor::Kernel),
+            monitor_source: Box::new(system_monitor::Service::default()),
+            monitor_wake: None,
         }
     }
 }
@@ -421,10 +424,17 @@ impl ShellOverlayHost {
         )
     }
 
-    /// Read the system monitor from `source` instead of the kernel.
+    /// Read the system monitor from `source` instead of the session's
+    /// service.
     #[cfg(test)]
     pub(crate) fn set_monitor_source_for_tests(&mut self, source: Box<dyn system_monitor::Source>) {
         self.desk.monitor_source = source;
+    }
+
+    /// What wakes the loop when a desk widget's reading arrives from
+    /// another thread.
+    pub fn set_desk_wake(&mut self, wake: crate::session_runtime::Wake) {
+        self.desk.monitor_wake = Some(wake);
     }
 
     /// The clock the desk reads the date from: the top bar's, a fixture's
@@ -578,14 +588,16 @@ impl ShellOverlayHost {
                 .or_insert_with(ui::Transition::closed)
                 .set_open_at(open, fade(open), ui::Curve::EaseOut, now);
         }
-        // The system monitor reads only while it shows.
+        // The system monitor is sent readings only while it shows; each one
+        // wakes the loop, so nothing here waits on a deadline.
         if self.desk.board.form(WidgetId::SystemMonitor) == Form::Away {
-            self.desk.monitor.pause();
+            self.desk.monitor.pause(self.desk.monitor_source.as_mut());
         } else {
+            let wake = self.desk.monitor_wake.clone();
             changed |= self
                 .desk
                 .monitor
-                .sample_if_due(self.desk.monitor_source.as_ref(), now);
+                .show(self.desk.monitor_source.as_mut(), wake);
         }
         // A track change wakes the loop through the observer; repaint once.
         let revision = crate::shell::mpris::now_playing_revision();
@@ -613,16 +625,12 @@ impl ShellOverlayHost {
             let secs = ui::clock::local_now().num_seconds_from_midnight();
             now + Duration::from_secs(u64::from(86_400_u32.saturating_sub(secs).max(1)))
         });
-        let monitor = showing(WidgetId::SystemMonitor)
-            .then(|| self.desk.monitor.deadline())
-            .flatten();
         self.desk
             .board
             .deadline(now)
             .into_iter()
             .chain(clock)
             .chain(day)
-            .chain(monitor)
             .min()
     }
 

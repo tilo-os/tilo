@@ -80,6 +80,8 @@ pub mod seccomp;
 pub mod services;
 #[cfg(target_os = "linux")]
 pub mod system_authority;
+#[cfg(target_os = "linux")]
+pub mod system_stats;
 
 #[cfg(test)]
 mod managed_tests;

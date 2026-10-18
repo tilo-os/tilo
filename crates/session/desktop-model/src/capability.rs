@@ -72,6 +72,16 @@ pub enum Capability {
     /// by the shell runtime's Host target; answered into its policy, never
     /// bound into a sandbox.
     HostShell { scope: GrantScope },
+    /// How busy the device is: processor, memory, disks, network, graphics,
+    /// battery and temperature, from the session's system information
+    /// service. Brokered, never bound: no sandbox sees the host's `/proc`.
+    SystemInfo { scope: GrantScope },
+    /// The programs running on the device (name, app, user, processor and
+    /// memory, never their environment), and ending the person's own.
+    Processes { scope: GrantScope },
+    /// The command lines of those programs, which can name files, hosts or
+    /// tokens: asked for apart from the list.
+    ProcessCommands { scope: GrantScope },
 }
 
 impl Capability {
@@ -108,6 +118,15 @@ impl Capability {
             Capability::HostShell { .. } => {
                 vec![(Scope::Device("host-shell".into()), Access::Write)]
             }
+            Capability::SystemInfo { .. } => {
+                vec![(Scope::Device("system-info".into()), Access::Read)]
+            }
+            Capability::Processes { .. } => {
+                vec![(Scope::Device("processes".into()), Access::Read)]
+            }
+            Capability::ProcessCommands { .. } => {
+                vec![(Scope::Device("process-commands".into()), Access::Read)]
+            }
             Capability::Network { hosts, .. } => match hosts {
                 // An allowlist means exactly those hosts; `None` is the
                 // only thing that produces a wildcard scope — behaving
@@ -131,6 +150,9 @@ impl Capability {
             | Capability::RemoteDesktop { scope }
             | Capability::Print { scope }
             | Capability::HostShell { scope }
+            | Capability::SystemInfo { scope }
+            | Capability::Processes { scope }
+            | Capability::ProcessCommands { scope }
             | Capability::Network { scope, .. } => *scope,
         }
     }
@@ -159,6 +181,11 @@ impl Capability {
             // granted in the Permissions tab.
             Scope::Device(d) if d == "printer" => Some(Capability::Print { scope }),
             Scope::Device(d) if d == "host-shell" => Some(Capability::HostShell { scope }),
+            Scope::Device(d) if d == "system-info" => Some(Capability::SystemInfo { scope }),
+            Scope::Device(d) if d == "processes" => Some(Capability::Processes { scope }),
+            Scope::Device(d) if d == "process-commands" => {
+                Some(Capability::ProcessCommands { scope })
+            }
             Scope::NetHost(h) => Some(Capability::Network {
                 hosts: if h == "*" {
                     None

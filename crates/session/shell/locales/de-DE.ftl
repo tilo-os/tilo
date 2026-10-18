@@ -712,6 +712,9 @@ capability-screencast = Bildschirmaufnahme
 capability-remote-desktop = Fernsteuerung (Zeiger + Tastatur)
 capability-print = Dokumente an einen Drucker senden
 capability-host-shell = Die eigene Shell dieses Geräts öffnen, außerhalb jeder Sandbox
+capability-system-info = Sehen, wie ausgelastet dieses Gerät ist
+capability-processes = Die laufenden Programme dieses Geräts sehen und eigene beenden
+capability-process-commands = Die Befehlszeilen laufender Programme sehen
 capability-network-hosts = Netzwerkzugriff auf { $hosts }
 capability-network = Netzwerkzugriff
 

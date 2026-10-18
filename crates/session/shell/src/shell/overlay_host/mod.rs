@@ -22941,6 +22941,9 @@ pub(crate) fn capability_label(cap: &Capability) -> String {
         Capability::RemoteDesktop { .. } => t("capability-remote-desktop"),
         Capability::Print { .. } => t("capability-print"),
         Capability::HostShell { .. } => t("capability-host-shell"),
+        Capability::SystemInfo { .. } => t("capability-system-info"),
+        Capability::Processes { .. } => t("capability-processes"),
+        Capability::ProcessCommands { .. } => t("capability-process-commands"),
         Capability::Network { hosts, .. } => match hosts {
             Some(h) if !h.is_empty() => t_args(
                 "capability-network-hosts",

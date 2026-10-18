@@ -3603,6 +3603,15 @@ pub(crate) fn run_with_context(
         {
             resolved.push(chooser);
         }
+        if let Some(stats) = crate::system_stats::resolve_bind(
+            manifest,
+            &capabilities,
+            payload_root,
+            opts.workspace_id.as_deref(),
+            opts.no_services,
+        )? {
+            resolved.push(stats);
+        }
         resolved
     };
     let binds = to_service_binds(&resolved);
@@ -4342,6 +4351,15 @@ fn run_with_capture_spawn<T>(
         resolve_chooser_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
     {
         resolved.push(chooser);
+    }
+    if let Some(stats) = crate::system_stats::resolve_bind(
+        manifest,
+        &capabilities,
+        payload_root,
+        opts.workspace_id.as_deref(),
+        opts.no_services,
+    )? {
+        resolved.push(stats);
     }
     let binds = to_service_binds(&resolved);
 

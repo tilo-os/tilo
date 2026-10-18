@@ -45,6 +45,9 @@ pub struct ProcessInfo {
     /// Linux kernel worker thread (pid-2 descendant). Hidden unless the
     /// "show kernel threads" preference is on.
     pub kernel: bool,
+    /// The app the process belongs to (`so.tilo.notes`), when it belongs to
+    /// one: what "End app" ends.
+    pub app: Option<String>,
 }
 
 /// Whole-system gauges + rolling histories. One instance per app.
@@ -579,7 +582,22 @@ fn build_sample_process(rows: &[SampleRow], pids: &[u32], i: usize, row: SampleR
         run_secs,
         open_files,
         kernel,
+        app: sample_app(name).map(str::to_owned),
     }
+}
+
+/// The app a sample process belongs to: the person's apps and the programs
+/// they started, never the system's services.
+fn sample_app(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "browser" | "Web Content" | "GPU Process" => "so.tilo.browser",
+        "code" | "rust-analyzer" | "cargo" | "rustc" => "so.tilo.code-editor",
+        "terminal" | "fish" => "so.tilo.terminal",
+        "monitor" => "so.tilo.monitor",
+        "file-explorer" => "so.tilo.file-explorer",
+        "blender" => "org.blender.Blender",
+        _ => return None,
+    })
 }
 
 fn sample_processes() -> Vec<ProcessInfo> {

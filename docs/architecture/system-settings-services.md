@@ -20,6 +20,47 @@ still decides what the person may change. When a read fails, the pane shows
 the reason as an error. It never shows a placeholder as if it were the
 device's state.
 
+## System information
+
+An app sandbox has a process namespace of its own: its `/proc` shows the app
+and nothing else, and binding the host's would hand every program's command
+line and environment to it. Machine readings and the process list are a
+typed service of the session instead (`tilo-system-stats`), reached like the
+other session services: the compositor serves
+`<services root>/system-stats.sock`, which no sandbox can reach, and the
+launcher opens a connection for an app that declares the `system-info`
+capability, writes the app's id, room and grants as its first frame, and
+hands it to the app (`TILO_SVC_SYSTEM-STATS_FD`) before the sandbox starts.
+
+- **What is sent.** Processor (total and per core), load, memory and swap,
+  pressure (PSI), disks (space and I/O), network throughput, graphics load
+  and memory where the driver reports them, batteries and temperatures; the
+  running apps, each its processes taken together by the app's cgroup; and a
+  process list with pid, parent, name, app, user, processor, memory, threads
+  and state. A process's command line is sent only with its own grant. Its
+  environment, open files and memory never are: the service does not read
+  them.
+- **Pushed, not polled.** An app subscribes at an interval and is sent a
+  snapshot each interval. One thread reads for every subscriber, and only
+  while there is one; nobody subscribed costs no thread and no read.
+- **Grants.** `system-info` covers the readings; `processes` covers the app
+  and process lists and ending the person's own; `process-commands` covers
+  command lines. The launcher grants an app the image ships what it
+  declares of the first two; any other app gets what the room's capabilities
+  name (`Scope::Device`) and asks for the rest through the ordinary
+  permission prompt, which the service raises and whose answer it keeps as
+  the portal keeps its choices. The manifest is the ceiling of every grant.
+  `processes` alone keeps its older meaning (starting programs of its own)
+  and opens no connection.
+- **Ending.** "End app" and "End process" are Monitor's actions, confirmed
+  like every destructive action. The service ends only processes that are
+  the person's and live in their own `app.slice`, never a system service or
+  the login session that draws the screen. A request names the process's
+  start time too and the process is pinned with a pidfd before it is checked,
+  so a reused pid is never signalled.
+- **The desk.** The System monitor widget reads the same hub in the
+  compositor, subscribed only while it shows.
+
 ## Ownership and roaming
 
 Every leaf in the shared `settings.json` contract has an explicit entry in

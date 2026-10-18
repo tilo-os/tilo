@@ -75,6 +75,7 @@ fn hello_manifest(payload_root: &Path, services: BTreeMap<String, ServiceReq>) -
         opens_schemes: Vec::new(),
         opens_secondary: false,
         continuity: launcher::manifest::ContinuityContract::default(),
+        capabilities: Vec::new(),
     }
 }
 
@@ -476,6 +477,7 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
             opens_schemes: Vec::new(),
             opens_secondary: false,
             continuity: launcher::manifest::ContinuityContract::default(),
+            capabilities: Vec::new(),
         };
         // Assert the sandbox argv contains the runtime bind + LD_LIBRARY_PATH
         // for a manually-supplied runtime tuple (the pure-function surface).
@@ -604,6 +606,7 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
             opens_schemes: Vec::new(),
             opens_secondary: false,
             continuity: launcher::manifest::ContinuityContract::default(),
+            capabilities: Vec::new(),
         };
 
         // The manifest's `runtime` field resolves to the signed bundle

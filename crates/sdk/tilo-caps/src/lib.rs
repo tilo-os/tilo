@@ -228,11 +228,15 @@ impl Capability {
             Self::Print => [Planned, Planned, Available],
             Self::NetworkSockets => [Available, Available, Unsupported(WEB_SOCKETS)],
             Self::ScheduledWake => [Planned, Planned, Unsupported(WEB_WAKE)],
-            Self::MediaDecode | Self::MediaSession => [Available, Available, Planned],
+            // System information: on Linux the session's system information
+            // service, which a sandboxed app reaches through its launcher
+            // (`tilo-system-stats`); on macOS the platform's own interfaces.
+            Self::MediaDecode | Self::MediaSession | Self::SystemInfo => {
+                [Available, Available, Planned]
+            }
             Self::Speech => [Available, Planned, Planned],
             Self::Location => [Prompt, Prompt, Prompt],
             Self::Camera | Self::Microphone | Self::ScreenCapture => [Prompt, Planned, Planned],
-            Self::SystemInfo => [Planned, Planned, Planned],
             Self::WebView => [Available, Available, Unsupported(WEB_WEBVIEW)],
         };
         row.get(target.column()).copied().unwrap_or(Planned)

@@ -1,9 +1,9 @@
 //! System Monitor as a resource: the shared table layout (sort, tree or
 //! flat) is the [`Monitor`] model, edited at its paths; this machine's
 //! processes are the surface's [`ResourceSurface::live_rows`], and
-//! everything Monitor does to them (refresh, inspect, copy a PID, stop,
-//! kill) is its typed effect vocabulary [`MonitorEffect`], answered by the
-//! surface.
+//! everything Monitor does to them (refresh, inspect, copy a PID, end a
+//! process or a whole app) is its typed effect vocabulary [`MonitorEffect`],
+//! answered by the surface.
 
 use std::rc::Rc;
 
@@ -75,9 +75,13 @@ pub enum MonitorEffect {
         #[param("The process row's id")]
         process: String,
     },
-    /// Stop process.
+    /// End process.
+    ///
+    /// Asks the process to close, as quitting it would. Only the person's
+    /// own apps and the programs they started can be ended, never the
+    /// system's services.
     #[effect(destructive)]
-    Stop {
+    EndProcess {
         #[param("The process row's id")]
         process: String,
     },
@@ -86,6 +90,14 @@ pub enum MonitorEffect {
     Kill {
         #[param("The process row's id")]
         process: String,
+    },
+    /// End app.
+    ///
+    /// Asks every process of the app to close.
+    #[effect(destructive)]
+    EndApp {
+        #[param("The app's id, as a process row names it")]
+        app: String,
     },
 }
 
@@ -161,6 +173,7 @@ impl ResourceSurface<Monitor, MonitorEffect> for MonitorApp {
     }
 
     fn attach(&mut self, cx: SurfaceCx<Monitor>) {
+        self.wake_with(cx.waker());
         self.follow_preferences(cx.settings());
         self.attach_framework(cx.dispatcher());
         self.attach_actions(cx.actions());
@@ -407,8 +420,9 @@ mod tests {
             "filter",
             "inspect",
             "copy-pid",
-            "stop",
+            "end-process",
             "kill",
+            "end-app",
         ] {
             assert!(
                 ids.contains(&id),
@@ -464,10 +478,23 @@ mod tests {
 
     /// The process row id of `pid`, a process this test started.
     fn row_id(pid: u32) -> String {
-        let mut system = sysinfo::System::new();
-        let target = sysinfo::Pid::from_u32(pid);
-        system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[target]), true);
-        let started_at = system.process(target).expect("the child runs").start_time();
+        // On Linux a lifetime is the kernel's start tick, as the session's
+        // service reports it.
+        #[cfg(target_os = "linux")]
+        let started_at = {
+            let stat =
+                std::fs::read_to_string(format!("/proc/{pid}/stat")).expect("the child runs");
+            tilo_system_stats::probe::parse_stat(pid, &stat)
+                .expect("a stat line")
+                .started_at
+        };
+        #[cfg(not(target_os = "linux"))]
+        let started_at = {
+            let mut system = sysinfo::System::new();
+            let target = sysinfo::Pid::from_u32(pid);
+            system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[target]), true);
+            system.process(target).expect("the child runs").start_time()
+        };
         format!("process:{pid}:started:{started_at}")
     }
 
@@ -667,7 +694,7 @@ mod tests {
             registry
         },
         resources: |_| TestApp::<MonitorShell>::new().unwrap().harness().resources(),
-        palette: ["Refresh processes", "Show process details", "Copy PID", "Stop process"],
+        palette: ["Refresh processes", "Show process details", "Copy PID", "End process"],
     }
 
     /// Two people changing the layout at once converge: each part is its

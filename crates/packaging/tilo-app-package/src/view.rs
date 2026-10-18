@@ -94,9 +94,20 @@ pub struct ManifestView {
     /// Signed minimum handoff-fidelity facets. Legacy manifests default to
     /// framework presentation state.
     pub continuity: ContinuityContract,
+    /// `[capabilities]`, required and optional together: the host
+    /// capabilities the app uses. What the launcher hands an app for one
+    /// (a service connection, say) is decided by the launcher; declaring it
+    /// is only the ceiling.
+    pub capabilities: Vec<String>,
 }
 
 impl ManifestView {
+    /// Whether `[capabilities]` names `name`, required or optional.
+    #[must_use]
+    pub fn declares_capability(&self, name: &str) -> bool {
+        self.capabilities.iter().any(|declared| declared == name)
+    }
+
     /// Decode manifest TOML through the canonical schema.
     ///
     /// # Errors
@@ -139,8 +150,14 @@ impl TryFrom<Manifest> for ManifestView {
             entrypoint,
             providers,
             cli,
+            capabilities,
             ..
         } = manifest;
+        let capabilities = capabilities
+            .required
+            .into_iter()
+            .chain(capabilities.optional)
+            .collect();
         let entrypoint = entrypoint
             .ok_or_else(|| ManifestReadError::Parse("missing `[entrypoint]`".to_string()))?;
         let localized_names = package
@@ -190,6 +207,7 @@ impl TryFrom<Manifest> for ManifestView {
             opens_schemes,
             opens_secondary,
             continuity,
+            capabilities,
         })
     }
 }

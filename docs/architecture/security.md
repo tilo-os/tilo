@@ -44,6 +44,8 @@ What a sandboxed app is actually presented with. It names none of this; the laun
 
 Anything outside that set is a capability the user grants at runtime, which becomes a bind on the app's next launch (`launcher::capabilities`).
 
+`/proc` inside the sandbox is the app's own process namespace: no other process, command line or environment is visible. Machine readings and the person's process list reach an app only as typed snapshots from the session's system information service, behind the `system-info` and `processes` grants (`launcher::system_stats`, docs/architecture/system-settings-services.md, "System information").
+
 ### Application audio output
 
 Hosted apps submit output PCM through the launcher's attested collaboration channel;

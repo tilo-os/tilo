@@ -27,10 +27,18 @@ serde_json.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
-sysinfo.workspace = true
 tracing.workspace = true
-host-info = { path = "../../crates/system/host-info" }
 workspace-hack = { version = "0.1" }
+
+# Linux: the session's system information service. The sandbox shows
+# Monitor no other process, so it never reads /proc itself.
+[target.'cfg(target_os = "linux")'.dependencies]
+tilo-system-stats = { path = "../../crates/system/system-stats" }
+
+# Elsewhere (macOS): the platform's own interfaces.
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+sysinfo.workspace = true
+host-info = { path = "../../crates/system/host-info" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
