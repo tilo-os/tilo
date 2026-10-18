@@ -194,7 +194,9 @@ spotify() (
 )
 
 # Apps run their engine libraries. Settings has no probe, to keep its tapp as
-# it is: for it only the trace of its start counts (it need not accept --help).
+# it is, and Calendar none for the accounts engine (its probe runs the time-zone
+# one): for those only the trace of the start counts (an app need not accept
+# --help).
 engines() (
   set -euo pipefail
   libdir=$(rustc --print target-libdir)
@@ -205,6 +207,7 @@ engines() (
                "mail libtilo_accounts_engine.so --probe-accounts-engine" \
                "settings libtilo_accounts_engine.so" \
                "calendar libtilo_timezone_engine.so --probe-timezone-engine" \
+               "calendar libtilo_accounts_engine.so" \
                "clocks libtilo_timezone_engine.so --probe-timezone-engine" \
                "contacts libtilo_contact_directory_engine.so --probe-contact-directory-engine" \
                "mail libtilo_contact_directory_engine.so --probe-contact-directory-engine" \

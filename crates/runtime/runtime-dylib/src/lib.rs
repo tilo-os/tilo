@@ -49,7 +49,6 @@ pub use thumbnail;
 pub use tilo_actions;
 pub use tilo_app;
 pub use tilo_bluez;
-pub use tilo_dav;
 pub use tilo_doc_codecs;
 pub use tilo_document;
 pub use tilo_files;
