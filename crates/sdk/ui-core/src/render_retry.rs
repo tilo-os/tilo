@@ -121,7 +121,6 @@ pub(crate) fn widget_deadline(
 )]
 #[cfg(feature = "native")]
 pub(crate) struct WakeDemand {
-    pub primary_startup: bool,
     pub tooltip: bool,
     pub typing: bool,
     pub widget_due: bool,
@@ -148,7 +147,7 @@ pub(crate) fn next_wake(
 ) -> Option<Instant> {
     let fast = presentation_demand(
         blocked_until.is_some(),
-        demand.primary_startup || demand.tooltip || demand.typing || demand.widget_due,
+        demand.tooltip || demand.typing || demand.widget_due,
     ) || (any_render_available && demand.animation)
         || demand.auxiliary_startup
         || demand.retry_due;
@@ -302,10 +301,6 @@ mod tests {
             let now = crate::time::now();
             let retry = now + Duration::from_millis(250);
             for demand in [
-                WakeDemand {
-                    primary_startup: true,
-                    ..Default::default()
-                },
                 WakeDemand {
                     tooltip: true,
                     ..Default::default()

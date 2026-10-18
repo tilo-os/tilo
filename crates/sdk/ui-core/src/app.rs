@@ -2723,21 +2723,11 @@ fn render_retry_deadline(outcome: FrameOutcome, now: Instant) -> Option<Instant>
     })
 }
 
-/// The first surface submission may race a Wayland compositor's initial
-/// configure. In that case wgpu reports `Reconfigured`, but no input or frame
-/// callback exists yet to trigger the redraw that can consume that result.
-/// Pump only until one primary frame is actually presented; steady-state apps
-/// remain event-driven and idle at zero wakeups.
-#[cfg(feature = "native")]
-const fn primary_startup_pump_needed(frames_sent: u64, last_presented: u64) -> bool {
-    frames_sent > 0 && last_presented == 0
-}
-
 #[cfg(test)]
 mod generic_floating_activity_tests {
     use super::{
         completed_primary_frame_gates, generic_floating_ids_to_dismiss,
-        native_floating_logical_size, primary_startup_pump_needed,
+        native_floating_logical_size,
     };
     use crate::floating_surface::FloatingSurfacePresentation;
     use std::collections::{HashMap, HashSet};
@@ -2745,14 +2735,6 @@ mod generic_floating_activity_tests {
 
     #[test]
     fn floating_activity_pumps_and_proxies_until_the_exact_primary_frame() {
-        // Case `primary_surface_pumps_only_until_its_first_presented_frame`.
-        {
-            assert!(!primary_startup_pump_needed(0, 0));
-            assert!(primary_startup_pump_needed(1, 0));
-            assert!(primary_startup_pump_needed(3, 0));
-            assert!(!primary_startup_pump_needed(3, 1));
-        }
-
         // Case `generic_pip_activity_edge_dismisses_without_touching_native_surfaces`.
         {
             let previous = HashSet::from([
