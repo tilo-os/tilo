@@ -216,6 +216,19 @@ def block():
             if variant == "release":
                 fields.append(("on", RELEASE_ON))
             out.append(check(fields))
+    for arch, node in ARCHES:
+        out.append(check([
+            ("name", f'"os-disk-{arch}"'),
+            ("image", ASSEMBLER_IMAGE.format(arch=arch)),
+            ("run", f'"bash os/image/build-layer.sh disk {arch} /target/os/{arch}/disk"'),
+            ("inputs", arr(sorted(set(["os/image/build-layer.sh", "tools/ci/publish/lib.sh", "os/dev/build-image.sh",
+                                       "os/dev/disk-image.sh", "os/account.env"] + scripts_of(["os/dev/disk-image.sh"]))))),
+            ("needs", arr([f"os-image-{arch}"])),
+            ("outputs", arr([f"/target/os/{arch}/disk/**"])),
+            ("git", "true"),
+            ("requires", arr([node, "disk-100g"])), ("isolation", '"vm"'), ("writable_sources", "true"),
+            ("cost", '"heavy"'), ("cpus", "4"), ("memory", '"8G"'), ("timeout_secs", "3600"),
+            ("default", "false")]))
     for variant in VARIANTS:
         suffix = "" if variant == "dev" else "-release"
         fields = [

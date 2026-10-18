@@ -5090,6 +5090,40 @@ default = false
 on = ["schedule:0 2 * * *", "stable", "dispatch"]
 
 [[check]]
+name = "os-disk-x86_64"
+image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
+run = "bash os/image/build-layer.sh disk x86_64 /target/os/x86_64/disk"
+inputs = ["os/account.env", "os/dev/_common.sh", "os/dev/build-custom-installer.sh", "os/dev/build-dev-image.sh", "os/dev/build-image.sh", "os/dev/build-local-rpms.sh", "os/dev/build-orangepi-uboot.sh", "os/dev/cache-github-assets.sh", "os/dev/derive-rpm-package-set.py", "os/dev/development-trust.py", "os/dev/disk-image.sh", "os/dev/greeter-acceptance.py", "os/dev/hardware_profile.py", "os/dev/installer-console.py", "os/dev/installer-offline-target.py", "os/dev/local-inputs.sh", "os/dev/next-generation.sh", "os/dev/raw-rootfs-receipt.py", "os/dev/reseal-image.sh", "os/dev/resolve-env-runtime.sh", "os/dev/resolve-rpm-snapshot.sh", "os/dev/sign-development-rootfs.py", "os/dev/sign-target-prediction.sh", "os/dev/validation-access.sh", "os/dev/verify-kernel-provenance.sh", "os/dev/verify-rpm-snapshot-package-set.sh", "os/dev/vm.sh", "os/dev/windows_provider.py", "os/image/build-layer.sh", "os/scripts/verify-runtime-crypto-packages.sh", "os/tests/app_store.sh", "os/tests/boot_performance_gate.sh", "os/tests/collaborative-files-image-contract.sh", "os/tests/containerfile_sources.sh", "os/tests/esp_capacity.sh", "os/tests/input-hotplug-check.sh", "os/tests/installed-admin-actions.sh", "os/tests/installed_atspi_apps.sh", "os/tests/projection-boot-check.sh", "os/tests/rollback-boot-check.sh", "tools/ci/publish/lib.sh"]
+needs = ["os-image-x86_64"]
+outputs = ["/target/os/x86_64/disk/**"]
+git = true
+requires = ["arch=x86_64", "disk-100g"]
+isolation = "vm"
+writable_sources = true
+cost = "heavy"
+cpus = 4
+memory = "8G"
+timeout_secs = 3600
+default = false
+
+[[check]]
+name = "os-disk-aarch64"
+image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
+run = "bash os/image/build-layer.sh disk aarch64 /target/os/aarch64/disk"
+inputs = ["os/account.env", "os/dev/_common.sh", "os/dev/build-custom-installer.sh", "os/dev/build-dev-image.sh", "os/dev/build-image.sh", "os/dev/build-local-rpms.sh", "os/dev/build-orangepi-uboot.sh", "os/dev/cache-github-assets.sh", "os/dev/derive-rpm-package-set.py", "os/dev/development-trust.py", "os/dev/disk-image.sh", "os/dev/greeter-acceptance.py", "os/dev/hardware_profile.py", "os/dev/installer-console.py", "os/dev/installer-offline-target.py", "os/dev/local-inputs.sh", "os/dev/next-generation.sh", "os/dev/raw-rootfs-receipt.py", "os/dev/reseal-image.sh", "os/dev/resolve-env-runtime.sh", "os/dev/resolve-rpm-snapshot.sh", "os/dev/sign-development-rootfs.py", "os/dev/sign-target-prediction.sh", "os/dev/validation-access.sh", "os/dev/verify-kernel-provenance.sh", "os/dev/verify-rpm-snapshot-package-set.sh", "os/dev/vm.sh", "os/dev/windows_provider.py", "os/image/build-layer.sh", "os/scripts/verify-runtime-crypto-packages.sh", "os/tests/app_store.sh", "os/tests/boot_performance_gate.sh", "os/tests/collaborative-files-image-contract.sh", "os/tests/containerfile_sources.sh", "os/tests/esp_capacity.sh", "os/tests/input-hotplug-check.sh", "os/tests/installed-admin-actions.sh", "os/tests/installed_atspi_apps.sh", "os/tests/projection-boot-check.sh", "os/tests/rollback-boot-check.sh", "tools/ci/publish/lib.sh"]
+needs = ["os-image-aarch64"]
+outputs = ["/target/os/aarch64/disk/**"]
+git = true
+requires = ["arch=arm64", "disk-100g"]
+isolation = "vm"
+writable_sources = true
+cost = "heavy"
+cpus = 4
+memory = "8G"
+timeout_secs = 3600
+default = false
+
+[[check]]
 name = "os-image"
 run = "python3 tools/ci/os/oci_layers.py index /target/os/image /target/os/x86_64/image/oci /target/os/aarch64/image/oci"
 inputs = ["tools/ci/os/oci_layers.py"]

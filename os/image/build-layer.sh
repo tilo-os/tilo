@@ -12,6 +12,8 @@
 #                                                as the fragment of the layers it added
 #   build-layer.sh compose ARCH VARIANT OUT      the image of every layer, into OUT/oci, with
 #                                                OUT/digest (no root)
+#   build-layer.sh disk ARCH OUT                 the development image installed onto a disk,
+#                                                OUT/disk.qcow2, for VM tests and development VMs
 #
 # Image and layer actions run as root in a micro-VM step, in the OS assembler image
 # (os/image/assembler.Containerfile: podman, skopeo, cosign and the tools build-image.sh
@@ -273,6 +275,26 @@ cmd_layer() {
   done
 }
 
+# The image's disk: os-image-ARCH installed onto a qcow2 as a device installs it (bootc
+# install, os/dev/disk-image.sh through build-image.sh), keyed by the image, so every VM test
+# of the image and every development VM of it boots the same disk, made once.
+cmd_disk() {
+  local in=$os/image id
+  guest_devices
+  id=$(load "$in/oci")
+  [[ $(podman image inspect --format '{{.Digest}}' "$id") == "$(cat "$in/digest")" ]] || die "$in/oci is not the image $in/digest names"
+  podman tag "$id" localhost/tilo:disk
+  export TILO_IMAGE=localhost/tilo:disk TILO_SKIP_BUILD=1 TILO_DISTROBOX= TILO_OUTPUT=$scratch/disk-output TMPDIR=/var/tmp
+  mkdir -p "$TILO_OUTPUT"
+  bash os/dev/build-image.sh
+  rm -rf "$out"
+  mkdir -p "$out"
+  # Compressed clusters: the disk is mostly empty, and what t stores and moves is its bytes.
+  qemu-img convert -c -O qcow2 "$TILO_OUTPUT/qcow2/disk.qcow2" "$out/disk.qcow2"
+  cp "$in/digest" "$out/image-digest"
+  printf 'disk of %s: %s\n' "$(cat "$in/digest")" "$(du -h "$out/disk.qcow2" | cut -f1)"
+}
+
 cmd_compose() {
   local frags=() l
   frags+=("$os/base/oci")
@@ -290,5 +312,6 @@ case ${1:-} in
   image) arch=${3:?} out=${4:?} os=/target/os/$arch variant=dev; cmd_image "${2:?}" ;;
   layer) arch=${3:?} variant=${4:?} out=${5:?} os=/target/os/$arch; [[ $(uname -m) == "$arch" ]] || die "the $arch layers build natively"; cmd_layer "${2:?}" ;;
   compose) arch=${2:?} variant=${3:?} out=${4:?} os=/target/os/$arch; cmd_compose ;;
-  *) die "usage: build-layer.sh assets | base ARCH OUT | image NAME ARCH OUT | layer NAME ARCH VARIANT OUT | compose ARCH VARIANT OUT" ;;
+  disk) arch=${2:?} out=${3:?} os=/target/os/$arch variant=dev; cmd_disk ;;
+  *) die "usage: build-layer.sh assets | base ARCH OUT | image NAME ARCH OUT | layer NAME ARCH VARIANT OUT | compose ARCH VARIANT OUT | disk ARCH OUT" ;;
 esac
