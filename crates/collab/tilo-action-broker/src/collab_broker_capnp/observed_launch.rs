@@ -1,9 +1,30 @@
 //! Completion of a launch admitted on an application's original channel.
-use super::{BrokerActor, CapnpChannelHandle, InvocationOwner, app_node};
+use super::host_action_admission::{AdmittedHostAction, HostActionAdmission};
+use super::{BrokerActor, CapnpChannelHandle, InvocationCaller, app_node};
 use crate::services::LaunchReadiness;
 use tilo_actions::InvocationId;
 
+#[cfg(test)]
+thread_local! {
+    static EFFECT_BARRIER: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+impl super::CapnpBrokerState {
+    pub(crate) fn set_observed_launch_effect_hook(&self, hook: impl FnOnce() + 'static) {
+        EFFECT_BARRIER.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+    }
+}
+
 impl CapnpChannelHandle {
+    #[cfg(test)]
+    pub(super) fn observed_launch_effect_barrier(&self) {
+        if let Some(hook) = EFFECT_BARRIER.with(|slot| slot.borrow_mut().take()) {
+            hook();
+        }
+    }
+
     pub(super) fn begin_original_launch(
         &self,
         app: &str,
@@ -149,6 +170,7 @@ impl CapnpChannelHandle {
             match matches.as_slice() {
                 [invocation] => {
                     invocation.cluster_id == self.route().cluster_id
+                        && !invocation.update.is_terminal()
                         && invocation.cancellation_requested_at.is_none()
                         && invocation.original.as_ref().is_some_and(|original| {
                             original.permits_launch_in(&self.route().cluster_id)
@@ -167,11 +189,115 @@ impl CapnpChannelHandle {
         Ok(self.state.caller_actor(&caller, &self.route().cluster_id))
     }
 
-    fn current_launch_authority(
+    pub(super) fn admit_observed_launch(
+        &self,
+        app: &str,
+        root: Option<&str>,
+        parent: Option<InvocationId>,
+    ) -> Result<AdmittedHostAction, String> {
+        use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
+        let invocation = InvocationId::new();
+        // A continuation belongs to its starter, not the Store worker that
+        // happens to carry this RPC. Never reconstruct custody from an actor.
+        let (caller, origin) = if let Some(parent) = parent {
+            self.launch_actor(Some(parent))?;
+            let caller = self
+                .state
+                .continuing_caller(self.peer_id, parent)
+                .ok_or("original launch caller unavailable")?;
+            let pending = self
+                .state
+                .pending_invocations
+                .lock()
+                .map_err(|_| "invocation registry unavailable")?;
+            let mut entries = pending.values().filter(|entry| {
+                entry.peer_id == self.peer_id && entry.update.invocation() == parent
+            });
+            let entry = entries
+                .next()
+                .ok_or("original launch invocation disappeared")?;
+            if entries.next().is_some()
+                || entry.update.is_terminal()
+                || entry.cancellation_requested_at.is_some()
+            {
+                return Err("original launch invocation is no longer active".into());
+            }
+            let origin = entry
+                .original
+                .as_ref()
+                .ok_or("original certified launch caller unavailable")?
+                .launch_child_caller(invocation);
+            (caller, origin)
+        } else {
+            let route = self.route();
+            let current = self
+                .state
+                .revalidate_admission(&route, &self.verified_identity)
+                .map_err(|error| error.to_string())?;
+            let caller = if current.certificate.is_some() {
+                current.certified_caller(&route.cluster_id, false)
+            } else {
+                current.caller(&route.cluster_id)
+            };
+            (
+                caller,
+                InvocationCaller::Local {
+                    route,
+                    admitted: Box::new(self.verified_identity.clone()),
+                },
+            )
+        };
+        let descriptor = tilo_actions::ActionDescriptor {
+            semantic_identity: None,
+            address: tilo_actions::ActionAddress::new(app, "launch"),
+            resource_kind: "application".into(),
+            resource_label: app.into(),
+            action_label: "Open".into(),
+            description: None,
+            locus: tilo_actions::ExecutionLocus::default(),
+            kind: tilo_actions::OperationKind::Effect,
+            contract: tilo_actions::ActionContract {
+                kind: tilo_actions::ActionKind::Undoable,
+                ..Default::default()
+            },
+            input: tilo_actions::InputSpec::None,
+            params: Vec::new(),
+            view: None,
+        };
+        let request = InvokeRequest {
+            invocation,
+            on_behalf_of: parent,
+            target: RemoteActionTarget {
+                provider: "host-launch".into(),
+                address: descriptor.address.clone(),
+            },
+            argument: InvokeArgument::None,
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+        };
+        self.state
+            .admit_host_action_with_start(
+                &caller,
+                Some(&origin),
+                HostActionAdmission {
+                    room: &self.route().cluster_id,
+                    app_id: app,
+                    descriptor: &descriptor,
+                    request: &request,
+                },
+                Some(serde_json::json!({"package_root": root})),
+            )
+            .map_err(|error| error.to_string())
+    }
+
+    pub(super) fn current_launch_authority(
         &self,
         app: &str,
         parent: Option<InvocationId>,
-    ) -> Result<(), String> {
+    ) -> Result<(tilo_desktop_model::Workspace, BrokerActor, u64), String> {
         let actor = self.launch_actor(parent)?;
         let membership = self
             .state
@@ -190,19 +316,19 @@ impl CapnpChannelHandle {
                 ) {
                     return Err("the caller is no longer allowed to launch that application");
                 }
-                Ok(())
+                Ok(workspace.clone())
             })?
             .map_err(str::to_owned)
+            .map(|workspace| (workspace, actor, now))
     }
 
     pub(super) fn finish_observed_launch(
         &self,
         app: &str,
-        actor: String,
         parent: Option<InvocationId>,
-        id: u64,
+        admitted: &AdmittedHostAction,
         outcome: Result<Option<crate::services::LaunchAdoption>, String>,
-    ) -> tilo_actions::InvocationUpdate {
+    ) -> Result<tilo_actions::InvocationUpdate, capnp::Error> {
         let outcome = outcome.and_then(|adoption| {
             self.current_launch_authority(app, parent)?;
             if let Some(window) = &adoption
@@ -215,7 +341,7 @@ impl CapnpChannelHandle {
             }
             Ok(adoption)
         });
-        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
+        let invocation = admitted.invocation;
         let update = match outcome {
             Ok(adoption) => tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
@@ -235,8 +361,9 @@ impl CapnpChannelHandle {
             },
         };
         self.state
-            .record_completion(id, InvocationOwner::Local { actor }, update.clone());
-        update
+            .complete_host_action(admitted, update.clone())
+            .map_err(|error| capnp::Error::failed(error.to_string()))?;
+        Ok(update)
     }
 }
 
