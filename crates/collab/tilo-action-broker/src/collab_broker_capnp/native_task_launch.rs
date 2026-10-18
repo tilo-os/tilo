@@ -428,13 +428,34 @@ impl NativeLaunch {
         self.check(state)?;
         if self.bootstrap {
             let caller = Caller::local_agent(&self.run.agent_id).in_room(&self.run.cluster_id);
-            self.launch(
-                state,
-                &self.destination(state)?,
-                &state.launch_place(&caller, &self.run.cluster_id, None),
-                None,
-            )
-            .await?;
+            // The wait loop may already have completed this exact activation
+            // before its publisher appeared. Observe its owner-authenticated
+            // receipt instead of reserving the spent invocation a second time.
+            let observed = state.native_host_observation(
+                &self.run,
+                runtime_collab::TaskAction {
+                    peer_id: self.peer,
+                    provider: &self.provider,
+                    resource: &self.resource,
+                    action: &self.action,
+                    argument: self.original_argument.as_deref(),
+                },
+                &self.caller,
+                self.invocation,
+            )?;
+            if let Some((_, update)) = observed {
+                if !matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }) {
+                    return Err("host activation has no successful retained receipt".into());
+                }
+            } else {
+                self.launch(
+                    state,
+                    &self.destination(state)?,
+                    &state.launch_place(&caller, &self.run.cluster_id, None),
+                    None,
+                )
+                .await?;
+            }
             let key = self.launch_key(state)?;
             let guard = state
                 .journal

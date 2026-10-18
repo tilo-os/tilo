@@ -1,5 +1,7 @@
 //! Exercise the real task subscription against durable owner-private mail.
 use super::*;
+#[path = "native_task_control_starter_tests.rs"]
+mod starter;
 
 // Delay the synchronous private-read service seam, not a task model or the
 // stream server. All underlying reads and mutations still use the real owner.
@@ -326,6 +328,11 @@ async fn blocked_private_control_keeps_stop_and_same_actor_other_task_live() {
                 .unwrap()
                 .is_err()
             );
+            let after_stop = mail_for(&f, &other, 9915);
+            let refreshed = control(&stream).await;
+            assert_eq!(refreshed.task_id, other);
+            assert_eq!(refreshed.messages.last(), Some(&after_stop));
+            assert_eq!(service.subscriptions.lock().unwrap().get(&other), Some(&1));
         })
         .await;
 }
@@ -392,6 +399,48 @@ async fn revocation_during_private_read_refuses_captured_body() {
                 .unwrap()
                 .unwrap();
             f.remove_agent();
+            release.send(()).unwrap();
+            assert!(
+                tokio::time::timeout(Duration::from_secs(2), reading)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .is_err()
+            );
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn starter_revocation_during_private_read_refuses_captured_body() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (f, service) = DelayedControl::fixture();
+            let starter = starter::approve(&f);
+            let channel = f.channel(100, true);
+            let (stream, run) = subscribed(&channel).await;
+            report(&channel, &run, runtime_collab::TaskRunUpdate::Accepted)
+                .await
+                .unwrap();
+            mail(&f, 9914);
+            let before = f
+                .native
+                .agent_snapshot(&room().to_string(), "scribe")
+                .unwrap();
+            let (entered, release) = service.delay(&f.task);
+            let pending = stream.read_control_request().send().promise;
+            let reading = tokio::task::spawn_local(async move { pending.await });
+            tokio::time::timeout(Duration::from_secs(2), entered)
+                .await
+                .unwrap()
+                .unwrap();
+            starter::revoke(&f, &starter);
+            let after = f
+                .native
+                .agent_snapshot(&room().to_string(), "scribe")
+                .unwrap();
+            assert_eq!(after.tasks, before.tasks);
+            assert_eq!(after.controls, before.controls);
             release.send(()).unwrap();
             assert!(
                 tokio::time::timeout(Duration::from_secs(2), reading)

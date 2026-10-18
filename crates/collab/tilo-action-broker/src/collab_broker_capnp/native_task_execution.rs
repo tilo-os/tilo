@@ -1200,6 +1200,11 @@ impl CapnpBrokerState {
         {
             return Err("native task authority changed during private observation".into());
         }
+        // A starter's authorization can change without touching task/control
+        // records. Captured private context must still be readable now.
+        self.native_tasks(&run.cluster_id)
+            .ok_or("native task owner unavailable")?
+            .private_instructions(&run.cluster_id, binding)?;
         Self::bounded_native_task_status(result_control)
     }
 

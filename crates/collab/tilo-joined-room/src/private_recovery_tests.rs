@@ -232,6 +232,18 @@ fn refuse_forged_or_unrelated(
 fn keyed_open_recovers_contaminated_signed_checkpoint_before_strict_restore() {
     let (directory, owner, room, now) = enrolled();
     let key = SigningKey::from_bytes(&[61; 32]);
+    owner
+        .with_current(room, |view| {
+            // Recovery replaces signed history, so this fixture must actually
+            // enroll the signing governor rather than relabel a member view.
+            assert_eq!(view.device(), view.governor());
+            assert_eq!(
+                view.device().device_public_key,
+                key.verifying_key().to_bytes()
+            );
+            Ok(())
+        })
+        .unwrap();
     owner.ensure_private_task_baseline(room, &key, now).unwrap();
     let (candidate, baseline) = legacy_candidate(&owner, room, now, &key);
     refuse_forged_or_unrelated(&candidate, &baseline, &key, now);

@@ -35,7 +35,7 @@ fn presentation_history_is_archived_exactly_and_only_prose_leaves_are_scrubbed()
     let original = json!({
         "presentations": {"turn:1": presentation},
         "execution": {"sequence": 7, "phase": "executing"},
-        "confirmation": {"future_confirmation_fields": [1, 2, 3], "draft": "unchanged"},
+        "confirmation": null,
         "future": {"preserved": true}
     });
     for id in ["automatic", "deleted", "manual"] {
@@ -56,6 +56,19 @@ fn presentation_history_is_archived_exactly_and_only_prose_leaves_are_scrubbed()
     room.delete(&controls, "deleted").unwrap();
     room.commit();
     assert!(validate_reports(&room).is_err());
+    let mut malformed = room.clone();
+    let mut invalid = current.clone();
+    invalid["confirmation"] =
+        json!({"future_confirmation_fields": [1, 2, 3], "draft": "unchanged"});
+    malformed
+        .put(
+            &controls,
+            "automatic",
+            serde_json::to_vec(&invalid).unwrap(),
+        )
+        .unwrap();
+    malformed.commit();
+    assert!(sanitize_task_room(&malformed, &BTreeMap::new()).is_err());
     let (mut sanitized, archive) = sanitize_task_room(&room, &BTreeMap::new()).unwrap();
     validate_reports(&sanitized).unwrap();
     for id in ["automatic", "deleted"] {

@@ -1943,7 +1943,7 @@ impl ChatApp {
                 self.agent_tasks.direct(&agent, text, revision)
             }
             crate::agent_tasks::AgentComposerIntent::Queue => {
-                self.agent_tasks.queue(&agent, text, revision)
+                self.agent_tasks.queue(&agent, text, route, revision)
             }
         };
         if accepted {
@@ -4328,6 +4328,7 @@ mod tests {
             let mut child = parent.clone();
             child.task_id = format!("task:child-{index}");
             child.title = format!("Example child {index}");
+            child.child_order = Some(index);
             child.parent_task_id = Some(parent.task_id.clone());
             view.tasks.push(child);
         }
@@ -4380,6 +4381,7 @@ mod tests {
         for goal in ["A private goal", "A private goal\nwith a second line"] {
             let (mut app, doc) = app_with_doc();
             app.begin_task_goal(None);
+            app.agent_tasks.stage_missing_model_capture();
             app.answer_effect(crate::effects::ChatEffect::SetTaskGoal { text: goal.into() })
                 .unwrap();
             app.composer_main.sync(&doc);
@@ -4410,6 +4412,7 @@ mod tests {
         app.room_agents.clear();
         app.answer_effect(crate::effects::ChatEffect::NewTask)
             .unwrap();
+        app.agent_tasks.stage_missing_model_capture();
         app.composer_main.sync(&doc);
         app.set_composer_focus();
         type_str(
@@ -4850,6 +4853,61 @@ mod tests {
             assert!(!crate::projection::has_draft(&doc, &app.active_channel));
             assert_eq!(app.composer_main.value(), "An unsent new task");
         }
+    }
+
+    #[test]
+    fn finished_task_followup_keeps_its_private_editor_but_queues_a_new_task() {
+        let (mut app, mut doc) = app_with_doc();
+        app.stage_scenario("RunningSteering");
+        render_frame(&mut app, 420.0, 680.0);
+        app.set_composer_focus();
+        type_str(&mut app, &mut doc, "Keep this follow-up private.");
+        app.composer_main.select(5, 12);
+        let route = app.agent_draft_route();
+        let text = app.composer_main.value();
+        let selection = app.composer_main.selection();
+        app.agent_tasks
+            .stage_answer_capture(&app.active_ws, "scribe");
+        app.sync_agent_route();
+        render_frame(&mut app, 420.0, 680.0);
+        assert_eq!(
+            app.direct_agent_intent(),
+            crate::agent_tasks::AgentComposerIntent::Queue
+        );
+        assert!(app.main_composer_can_edit());
+        assert_eq!(app.agent_draft_route(), route);
+        assert_eq!(app.composer_main.value(), text);
+        assert_eq!(app.composer_main.selection(), selection);
+        assert!(!app.direct_agent_tasks().unwrap().can_steer());
+        assert!(
+            !app.hits
+                .iter()
+                .any(|(_, hit)| matches!(hit, Hit::AgentStop))
+        );
+        assert!(!crate::projection::has_draft(&doc, &app.active_channel));
+    }
+
+    #[test]
+    fn task_setup_pending_is_passive_until_the_service_reports_missing_model() {
+        let (mut app, _doc) = app_with_doc();
+        app.begin_task_goal(None);
+        render_frame(&mut app, 420.0, 680.0);
+        assert!(
+            !app.hits
+                .iter()
+                .any(|(_, hit)| matches!(hit, Hit::AgentSetup))
+        );
+        app.agent_tasks.stage_missing_model_capture();
+        render_frame(&mut app, 420.0, 680.0);
+        assert!(
+            app.hits
+                .iter()
+                .any(|(_, hit)| matches!(hit, Hit::AgentSetup))
+        );
+        assert_eq!(
+            app.agent_tasks.setup_label(),
+            crate::i18n::t("chat-task-setup")
+        );
     }
 
     fn stage_agent_work(app: &mut ChatApp, doc: &mut crate::testing::Room) {

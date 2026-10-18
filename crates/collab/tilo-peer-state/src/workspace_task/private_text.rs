@@ -26,6 +26,9 @@ pub struct NativeTaskPrivateText {
 }
 /// An opaque binding to a private model/account snapshot. Never return the
 /// original object in a room projection, journal, or sanitized baseline.
+///
+/// # Errors
+/// Returns an error if the contract cannot be serialized for its digest.
 pub fn private_model_contract_reference(
     contract: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {

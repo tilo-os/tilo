@@ -202,7 +202,7 @@ fn answer(
             confirmation.state = WorkspaceTaskConfirmationState::Declined {
                 person: person.clone(),
                 at: context.now,
-                reason: reason.clone(),
+                reason,
             };
             "decline-action"
         }

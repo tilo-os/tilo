@@ -110,18 +110,7 @@ impl StatePeer {
                 .kind(&resource.kind)
                 .resource(&resource.id);
         }
-        if model_start.request_model.room_id() != Some(self.core.room.as_str())
-            || model_start.request_model.is_root()
-            || model_start
-                .request_model
-                .segments()
-                .iter()
-                .any(|segment| segment.id().is_none())
-            || !model_start.contract.is_object()
-            || !member.allows(&model_start.request_model, model_start.kind, now)
-        {
-            return Err("prepared Start model source or permission invalid".into());
-        }
+        self.validate_prepared_model_start(model_start, &member, now)?;
         let ceiling = WorkspaceTaskExecutionAuthority {
             epoch: expected_run_epoch
                 .checked_add(1)
@@ -137,6 +126,27 @@ impl StatePeer {
             ceiling,
             model_start: model_start.clone(),
         })
+    }
+
+    fn validate_prepared_model_start(
+        &self,
+        model_start: &crate::workspace_task::WorkspaceTaskModelStart,
+        member: &crate::state::MemberAuthority,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        if model_start.request_model.room_id() != Some(self.core.room.as_str())
+            || model_start.request_model.is_root()
+            || model_start
+                .request_model
+                .segments()
+                .iter()
+                .any(|segment| segment.id().is_none())
+            || !model_start.contract.is_object()
+            || !member.allows(&model_start.request_model, model_start.kind, now)
+        {
+            return Err("prepared Start model source or permission invalid".into());
+        }
+        Ok(())
     }
 
     /// Revalidate and atomically bind/approve on an unpublished candidate.
@@ -200,7 +210,10 @@ impl StatePeer {
                 &prepared.authority,
                 &prepared.command,
                 now,
-                Some(&prepared.model_start),
+                crate::workspace_task::WorkspaceTaskOwnerPreparation {
+                    model_start: Some(&prepared.model_start),
+                    private_retry: None,
+                },
                 Some(&prepared.ceiling),
             )?;
         *self = candidate;

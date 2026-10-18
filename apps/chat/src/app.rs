@@ -2561,6 +2561,16 @@ impl ChatApp {
         let Some(agent) = &self.direct_agent else {
             return AgentComposerIntent::Queue;
         };
+        if self.direct_agent_tasks().is_some_and(|view| {
+            view.current().is_some_and(|task| {
+                matches!(
+                    task.status.as_str(),
+                    "queued" | "done" | "cancelled" | "ended"
+                )
+            })
+        }) {
+            return AgentComposerIntent::Queue;
+        }
         self.agent_intents.with(|intents| {
             intents
                 .get(&(self.active_ws.clone(), agent.clone()))
@@ -2581,7 +2591,13 @@ impl ChatApp {
 
     pub(crate) fn agent_draft_route(&self) -> Option<String> {
         let agent = self.direct_agent.as_ref()?;
-        if self.direct_agent_intent() == AgentComposerIntent::Steer {
+        let retained_task_draft = self.agent_intents.with(|intents| {
+            intents.get(&(self.active_ws.clone(), agent.clone()))
+                == Some(&AgentComposerIntent::Steer)
+        });
+        if self.direct_agent_intent() == AgentComposerIntent::Steer || retained_task_draft {
+            // A finished run cannot receive direction, but its unsent editor
+            // remains intact while the follow-up is submitted as a new task.
             return self.direct_agent_tasks()?.draft_route();
         }
         Some(agent.clone())
@@ -2641,8 +2657,7 @@ impl ChatApp {
             AgentComposerIntent::Queue => self.direct_agent_tasks().is_some(),
             AgentComposerIntent::Steer => self
                 .direct_agent_tasks()
-                .and_then(AgentTaskView::selected_identity)
-                .is_some(),
+                .is_some_and(AgentTaskView::can_steer),
         }
     }
 
@@ -2948,8 +2963,10 @@ impl ChatApp {
             || !self.host_focused;
         // Without an open channel (or an agent to talk to) the main composer
         // has nowhere to send, so it takes no keys.
-        let has_target =
-            self.direct_agent.is_some() || self.channel(&self.active_channel).is_some();
+        let has_target = self.task_goal.is_some()
+            || self.direct_person.is_some()
+            || self.direct_agent.is_some()
+            || self.channel(&self.active_channel).is_some();
         let main = matches!(self.focus, Focus::Main) && !editing && has_target;
         let thread = matches!(self.focus, Focus::Thread) && self.thread_open.is_some() && !editing;
         self.composer_main.set_focus(main);
@@ -3535,7 +3552,10 @@ impl ChatApp {
     /// a reading column's minimum; below that the channel list and the
     /// conversation take turns filling the window.
     fn navigation_drawer() -> SidebarDrawer {
-        SidebarDrawer::new().content_kind(ui::widget::ContentKind::Reading)
+        let metrics = ui::tokens::Metrics::BASE;
+        SidebarDrawer::new()
+            .content_kind(ui::widget::ContentKind::Reading)
+            .breakpoint(f64::from(metrics.sidebar_width + metrics.detail_min_width))
     }
 
     /// The trailing detail drawer, summoned on demand. It docks while the
@@ -6046,7 +6066,7 @@ mod identity_on_screen {
             "Example: Review search actions"
         );
         assert_ne!(app.user_name("agent:unrelated"), other.title);
-        assert_eq!(app.user_name(&app.me.id), "You");
+        assert_eq!(app.user_name(&app.me.id), crate::identity::DEMO_NAME);
 
         assert!(app.agent_tasks.select("scribe", &other));
         assert_eq!(app.user_name("agent:scribe"), other.title);

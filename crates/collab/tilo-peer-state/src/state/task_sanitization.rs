@@ -1,6 +1,7 @@
 //! Governor-owned extraction and signed private-task history replacement.
 use super::{StatePeer, SystemTime};
 use automerge::transaction::Transactable as _;
+mod direction_references;
 mod sanitize;
 use sanitize::sanitize_task_room;
 #[cfg(test)]
@@ -43,7 +44,9 @@ impl StatePeer {
             .room_doc
             .as_deref()
             .ok_or("private task room absent")?;
-        let (mut candidate, extracted) = sanitize_task_room(room, known_references)?;
+        let mut references = known_references.clone();
+        direction_references::merge(room, self.core.authority.device_public_key, &mut references)?;
+        let (mut candidate, extracted) = sanitize_task_room(room, &references)?;
         let generation = super::sanitized_baseline::binding(room)?
             .map_or(0, |value| value.generation)
             .checked_add(1)

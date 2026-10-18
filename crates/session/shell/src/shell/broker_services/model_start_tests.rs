@@ -33,6 +33,7 @@ fn settings() -> (
         id: "local-test".into(),
         label: "Local test".into(),
         endpoint: "http://localhost:8000/v1".into(),
+        location: agent_provider_config::EndpointLocation::ThisDevice,
         default_model: Some("selected-model".into()),
         models: vec![agent_provider_config::ModelDescriptor {
             id: "selected-model".into(),

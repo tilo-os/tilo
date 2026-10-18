@@ -479,6 +479,9 @@ fn renewal_spends_old_nonce_and_cannot_restart_expired_connection() {
             admission.register_model_host(&registered, &fixture.certificate, SystemTime::now())?;
             let mut wire = serde_json::to_value(&registered).unwrap();
             wire["id"] = serde_json::json!(uuid::Uuid::new_v4());
+            let issued = wire["issued_at_ns"].as_u64().unwrap();
+            wire["issued_at_ns"] = serde_json::json!(issued + 1);
+            wire["expires_at_ns"] = serde_json::json!(wire["expires_at_ns"].as_u64().unwrap() + 1);
             let renewed = resign(wire, &fixture.key);
             admission.register_model_host(&renewed, &fixture.certificate, SystemTime::now())?;
             assert!(

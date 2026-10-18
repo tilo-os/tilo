@@ -8,6 +8,8 @@ use std::{collections::BTreeSet, time::SystemTime};
 use tilo_owner_commit::{CommitBinding, CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::{Reseal, StatePeer};
 
+#[cfg(test)]
+mod recovery_tests;
 mod reservation;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use reservation::check_actual_projection_bound;
@@ -1097,6 +1099,318 @@ pub(crate) fn retry_covered(view: &NativeCommittedView, bytes: &[u8]) -> Result<
     let message: NeighbourMsg = postcard::from_bytes(bytes).map_err(|e| e.to_string())?;
     retired(&view.peer, &message, view.device().device_public_key)
 }
+/// Inspect retained task payloads, not merely the presence of task maps. Manual
+/// coordination remains public; managed-model inputs and automatic prose do not.
+/// Walk every frontier and conflict so overwritten/deleted secrets cannot escape.
+fn has_private_task_history(
+    room: &automerge::AutoCommit,
+    references: &tilo_peer_state::workspace_task::NativeTaskPrivateReferences,
+) -> Result<bool, String> {
+    if private_task_values(room, references)? {
+        return Ok(true);
+    }
+    let mut history = room.clone();
+    let hashes: Vec<_> = history
+        .get_changes(&[])
+        .iter()
+        .map(automerge::Change::hash)
+        .collect();
+    for hash in hashes {
+        let past = history.fork_at(&[hash]).map_err(|e| e.to_string())?;
+        if private_task_values(&past, references)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn task_history_values(
+    room: &automerge::AutoCommit,
+    field: &str,
+) -> Result<std::collections::BTreeMap<String, Vec<serde_json::Value>>, String> {
+    use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value};
+    let mut result = std::collections::BTreeMap::<String, Vec<serde_json::Value>>::new();
+    for (value, object) in room.get_all(ROOT, field).map_err(|e| e.to_string())? {
+        if value != Value::Object(ObjType::Map) {
+            return Err("task history root is not a map".into());
+        }
+        for id in room.keys(&object) {
+            for (value, _) in room.get_all(&object, &id).map_err(|e| e.to_string())? {
+                let Value::Scalar(value) = value else {
+                    return Err("task history value is not bytes".into());
+                };
+                let ScalarValue::Bytes(bytes) = value.as_ref() else {
+                    return Err("task history value is not bytes".into());
+                };
+                match serde_json::from_slice(bytes) {
+                    Ok(value) => result.entry(id.clone()).or_default().push(value),
+                    // Like extraction, leave unknown non-schema task blobs alone.
+                    Err(_) if field == tilo_desktop_model::projection::ROOM_TASKS_KEY => {}
+                    Err(error) => return Err(error.to_string()),
+                }
+            }
+        }
+    }
+    Ok(result)
+}
+
+fn private_confirmation_action(what: &serde_json::Value, has_note: bool) -> Result<bool, String> {
+    use serde_json::Value;
+    if !what.is_object() {
+        return Err("task audit action is not an object".into());
+    }
+    if matches!(
+        what.pointer("/action/action").and_then(Value::as_str),
+        Some("ask-confirmation" | "confirm-action" | "decline-action")
+    ) && (has_note
+        || what
+            .get("args")
+            .is_some_and(|args| args != &serde_json::json!({})))
+    {
+        return Ok(true);
+    }
+    for field in ["members", "distinct"] {
+        if let Some(members) = what.get(field) {
+            for member in members
+                .as_array()
+                .ok_or("task audit members are not a list")?
+            {
+                if private_confirmation_action(member, has_note)? {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+    if let Some(previous) = what.pointer("/of/what") {
+        return private_confirmation_action(previous, has_note);
+    }
+    Ok(false)
+}
+
+/// Read-only counterpart of task extraction. Use the same typed confirmation,
+/// audit and presentation payloads and opaque contract bindings as the sanitizer.
+fn private_task_values(
+    room: &automerge::AutoCommit,
+    references: &tilo_peer_state::workspace_task::NativeTaskPrivateReferences,
+) -> Result<bool, String> {
+    use serde_json::Value;
+    let tasks = task_history_values(room, tilo_desktop_model::projection::ROOM_TASKS_KEY)?;
+    for versions in tasks.values() {
+        for task in versions {
+            let automatic = matches!(
+                task.get("route").and_then(Value::as_str),
+                Some("model" | "rules_only")
+            );
+            if automatic
+                && task
+                    .pointer("/resource/agent_request")
+                    .is_some_and(|value| !value.is_null())
+            {
+                return Ok(true);
+            }
+            if let Some(audit) = task.get("audit") {
+                for event in audit.as_array().ok_or("task audit is not a list")? {
+                    if private_task_audit(event, automatic)? {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+    }
+    for (id, versions) in
+        task_history_values(room, tilo_peer_state::workspace_task::TASK_CONTROL_KEY)?
+    {
+        // A conflicting automatic route must not inherit a manual exemption.
+        let manual = tasks.get(&id).is_some_and(|tasks| {
+            !tasks.is_empty()
+                && tasks
+                    .iter()
+                    .all(|task| task.get("route").and_then(Value::as_str) == Some("manual"))
+        });
+        for control in versions {
+            if private_task_control(&control, &id, manual, references)? {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn private_task_audit(event: &serde_json::Value, automatic: bool) -> Result<bool, String> {
+    use serde_json::Value;
+    if !event.is_object() {
+        return Err("task audit event is not an object".into());
+    }
+    if let Some(what) = event.get("what")
+        && private_confirmation_action(what, event.get("note").is_some())?
+    {
+        return Ok(true);
+    }
+    if automatic && event.get("note").is_some_and(|note| !note.is_null()) {
+        let parsed: tilo_desktop_model::WorkspaceTaskAuditEvent =
+            serde_json::from_value(event.clone()).map_err(|e| e.to_string())?;
+        let neutral = match parsed.action() {
+            "finish" => match event.pointer("/what/args/outcome").and_then(Value::as_str) {
+                Some("done") => "done",
+                Some("cancelled") => "cancelled",
+                _ => "waiting",
+            },
+            "abandon" => "abandoned",
+            _ => "progress",
+        };
+        return Ok(event.get("note").and_then(Value::as_str) != Some(neutral));
+    }
+    Ok(false)
+}
+
+fn private_task_control(
+    control: &serde_json::Value,
+    id: &str,
+    manual: bool,
+    references: &tilo_peer_state::workspace_task::NativeTaskPrivateReferences,
+) -> Result<bool, String> {
+    use serde_json::Value;
+    if !control.is_object() {
+        return Err("task control is not an object".into());
+    }
+    if let Some(model) = control
+        .get("model_authority")
+        .filter(|model| !model.is_null())
+        && !model
+            .get("contract")
+            .is_some_and(tilo_peer_state::workspace_task::is_private_model_contract_reference)
+    {
+        return Ok(true);
+    }
+    if !manual {
+        if control
+            .get("instruction")
+            .is_some_and(|value| !value.is_null())
+        {
+            return Ok(true);
+        }
+        if let Some(directions) = control.get("directions") {
+            for direction in directions
+                .as_array()
+                .ok_or("task directions are not a list")?
+            {
+                let revision = direction
+                    .get("revision")
+                    .and_then(Value::as_u64)
+                    .ok_or("task direction revision absent")?;
+                let text = direction
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .ok_or("task direction text absent")?;
+                if references
+                    .get(id)
+                    .and_then(|known| known.get(&revision))
+                    .map(String::as_str)
+                    != Some(text)
+                {
+                    return Ok(true);
+                }
+            }
+        }
+        if let Some(presentations) = control.get("presentations") {
+            for presentation in presentations
+                .as_object()
+                .ok_or("task presentations are not a map")?
+                .values()
+            {
+                let parsed: collab_types::task_presentation::TaskPresentation =
+                    serde_json::from_value(presentation.clone()).map_err(|e| e.to_string())?;
+                if !parsed.text.is_empty()
+                    || !parsed.reasoning.is_empty()
+                    || !parsed.detail.is_empty()
+                {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+    if let Some(confirmation) = control.get("confirmation").filter(|value| !value.is_null()) {
+        let full: tilo_desktop_model::WorkspaceTaskConfirmation =
+            serde_json::from_value(confirmation.clone()).map_err(|e| e.to_string())?;
+        let mut public = full.clone();
+        public.draft = tilo_actions::Draft::default();
+        match &mut public.state {
+            tilo_desktop_model::WorkspaceTaskConfirmationState::Confirmed { edits, .. } => {
+                edits.clear();
+            }
+            tilo_desktop_model::WorkspaceTaskConfirmationState::Declined { reason, .. } => {
+                *reason = None;
+            }
+            tilo_desktop_model::WorkspaceTaskConfirmationState::Waiting => {}
+        }
+        if full != public {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn needs_private_task_migration(view: &NativeCommittedView) -> Result<bool, String> {
+    let mut references = view.record.private_task_text.private_references();
+    if let Some(baseline) = &view.record.sanitized_baseline {
+        match baseline.verify_anchored_document(
+            &view.record.room.to_string(),
+            view.governor().device_public_key,
+            &baseline.anchor(),
+        ) {
+            Ok(document) => {
+                for (id, controls) in task_history_values(
+                    &document,
+                    tilo_peer_state::workspace_task::TASK_CONTROL_KEY,
+                )? {
+                    for control in controls {
+                        if let Some(directions) = control.get("directions") {
+                            for direction in directions
+                                .as_array()
+                                .ok_or("signed directions are not a list")?
+                            {
+                                let revision = direction
+                                    .get("revision")
+                                    .and_then(serde_json::Value::as_u64)
+                                    .ok_or("signed direction revision absent")?;
+                                let text = direction
+                                    .get("text")
+                                    .and_then(serde_json::Value::as_str)
+                                    .ok_or("signed direction reference absent")?;
+                                // A signature authenticates custody, not sanitization
+                                // by an older producer. Plaintext is never a reference.
+                                if !text.strip_prefix("private-instruction:").is_some_and(
+                                    |digest| {
+                                        digest.len() == 64
+                                            && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+                                    },
+                                ) {
+                                    return Ok(true);
+                                }
+                                let known = references.entry(id.clone()).or_default();
+                                if known.get(&revision).is_some_and(|old| old != text) {
+                                    return Err(
+                                        "private direction differs from signed baseline".into()
+                                    );
+                                }
+                                known.insert(revision, text.to_owned());
+                            }
+                        }
+                    }
+                }
+            }
+            Err(error) if recoverable_private_baseline(&error) => return Ok(true),
+            Err(error) => return Err(error),
+        }
+    }
+    view.peer
+        .merge_native_task_private_direction_references(&mut references)?;
+    has_private_task_history(
+        view.peer.admitted_room().ok_or("publication room absent")?,
+        &references,
+    )
+}
+
 impl NativeWorkspaceOwner {
     /// Read `room`'s outgoing custody: what the relay session may send now.
     ///
@@ -1109,7 +1423,7 @@ impl NativeWorkspaceOwner {
         read: impl FnOnce(&NativeCommittedView, NativeOutgoing<'_>) -> Result<T, String>,
     ) -> Result<T, String> {
         self.with_current(room, |view| {
-            if view.record.sanitized_baseline.is_none() {
+            if view.record.sanitized_baseline.is_none() && needs_private_task_migration(view)? {
                 return Err("public history requires an authenticated privacy baseline".into());
             }
             view.peer
@@ -1145,7 +1459,6 @@ impl NativeWorkspaceOwner {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<(), String> {
-        self.ensure_private_task_baseline(room, key, now)?;
         let _turn = self.0.mutation.lock();
         let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
         if key.verifying_key().to_bytes() != candidate.device().device_public_key {
@@ -1154,6 +1467,13 @@ impl NativeWorkspaceOwner {
         candidate
             .peer
             .permissions(candidate.device().device_public_key, now)?;
+        // Public/manual task history needs no governor key. Only private leaves
+        // require signed replacement, under the recovery projection's barrier.
+        let migrated = if needs_private_task_migration(&candidate)? {
+            enrollment::ensure_private_task_baseline(&mut candidate, key, now)?
+        } else {
+            false
+        };
         let before = state(&candidate)?.revision;
         retire(&mut candidate)?;
         let originals = decode_entries(&state(&candidate)?.entries)?;
@@ -1178,7 +1498,7 @@ impl NativeWorkspaceOwner {
             }
         }
         reservation::refresh(&mut candidate)?;
-        if before != state(&candidate)?.revision {
+        if migrated || before != state(&candidate)?.revision {
             candidate.record.peer = candidate.peer.durable()?;
             candidate.record.generation = candidate
                 .generation()

@@ -1857,9 +1857,34 @@ mod tests {
             tilo_desktop_model::WorkspaceTaskControl::default(),
         );
         let catalogue = actions(&snapshot, "Workspace", &std::collections::BTreeSet::new());
-        // An open task offers its grant set's grant and revoke beside its
-        // own actions.
-        assert_eq!(catalogue.len(), 9);
+        // Keep the original nine actions and all seven metadata/private-task
+        // additions. Count and exact names also reject duplicate publications.
+        let expected = std::collections::BTreeSet::from([
+            "read-current-tasks",
+            "read-task-compute",
+            "queue",
+            "create-task",
+            "queue-agent-task",
+            "read-task",
+            "inspect",
+            "grant",
+            "revoke",
+            "attach-resource",
+            "list-tasks",
+            "queue-private-subtask",
+            "create-subtask",
+            "move-task",
+            "set-labels",
+            "set-assignees",
+        ]);
+        assert_eq!(catalogue.len(), expected.len());
+        assert_eq!(
+            catalogue
+                .iter()
+                .map(|row| row.action.as_str())
+                .collect::<std::collections::BTreeSet<_>>(),
+            expected,
+        );
         assert!(
             ["grant", "revoke"]
                 .iter()
@@ -1889,7 +1914,22 @@ mod tests {
             "Workspace",
             &std::collections::BTreeSet::from(["scribe".into()]),
         );
-        assert_eq!(managed.len(), 11);
+        let mut managed_expected = expected;
+        assert!(managed_expected.remove("attach-resource"));
+        managed_expected.extend([
+            "read-conversation",
+            "approve-run",
+            "stop",
+            "set-execution-budget",
+        ]);
+        assert_eq!(managed.len(), managed_expected.len());
+        assert_eq!(
+            managed
+                .iter()
+                .map(|row| row.action.as_str())
+                .collect::<std::collections::BTreeSet<_>>(),
+            managed_expected,
+        );
         assert!(managed.iter().any(|row| row.action == "approve-run"));
         assert!(
             managed

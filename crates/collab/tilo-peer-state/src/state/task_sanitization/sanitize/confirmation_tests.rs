@@ -39,8 +39,20 @@ fn audit(action: &str, note: Option<&str>) -> serde_json::Value {
     serde_json::to_value(event).unwrap()
 }
 
-#[test]
-fn archives_exact_current_and_retired_confirmations_and_scrubs_new_history() {
+fn confirmed(waiting: &Confirmation) -> Confirmation {
+    let mut confirmed = waiting.clone();
+    confirmed.state = State::Confirmed {
+        person: "person".into(),
+        at: 19,
+        edits: vec![tilo_actions::DraftEdit {
+            path: vec!["body".into()],
+            text: "private edit\n  exact".into(),
+        }],
+    };
+    confirmed
+}
+
+fn empty_room() -> (AutoCommit, ObjId, ObjId) {
     let mut room = AutoCommit::new();
     let controls = room
         .put_object(ROOT, TASK_CONTROL_KEY, ObjType::Map)
@@ -52,6 +64,12 @@ fn archives_exact_current_and_retired_confirmations_and_scrubs_new_history() {
             ObjType::Map,
         )
         .unwrap();
+    (room, controls, tasks)
+}
+
+#[test]
+fn archives_exact_current_and_retired_confirmations_and_scrubs_new_history() {
+    let (mut room, controls, tasks) = empty_room();
     let waiting = full();
     let old_event = audit("ask-confirmation", None);
     room.put(
@@ -67,15 +85,7 @@ fn archives_exact_current_and_retired_confirmations_and_scrubs_new_history() {
     )
     .unwrap();
     room.commit();
-    let mut confirmed = waiting.clone();
-    confirmed.state = State::Confirmed {
-        person: "person".into(),
-        at: 19,
-        edits: vec![tilo_actions::DraftEdit {
-            path: vec!["body".into()],
-            text: "private edit\n  exact".into(),
-        }],
-    };
+    let confirmed = confirmed(&waiting);
     room.put(
         &controls,
         "task",
@@ -138,8 +148,8 @@ fn archives_exact_current_and_retired_confirmations_and_scrubs_new_history() {
     let restored = AutoCommit::load(&clean.save()).unwrap();
     let public: serde_json::Value =
         serde_json::from_slice(&blobs(&restored, TASK_CONTROL_KEY).unwrap()["task"]).unwrap();
-    let mut expected = declined.clone();
-    expected.draft = Default::default();
+    let mut expected = declined;
+    expected.draft = tilo_actions::Draft::default();
     if let State::Declined { reason, .. } = &mut expected.state {
         *reason = None;
     }

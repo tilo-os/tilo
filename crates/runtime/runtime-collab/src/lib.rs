@@ -3069,7 +3069,11 @@ impl TaskRunStream {
             match self.inner.read_control_request().send().promise.await {
                 Err(error)
                     if error.kind == capnp::ErrorKind::Overloaded
-                        && error.extra == "task control observation superseded" =>
+                        && matches!(
+                            error.extra.as_str(),
+                            "task control observation superseded"
+                                | "remote exception: task control observation superseded"
+                        ) =>
                 {
                     // The owner changed during the read. The rejected private
                     // page is never delivered; ask for a freshly authorized one.

@@ -853,7 +853,7 @@ impl NativeWorkspaceOwner {
         };
         let (confirmation_command, private_confirmation) =
             crate::private_task_confirmation::prepare(&candidate, &command)?;
-        let (report_command, private_report) = crate::private_task_outputs::prepare_report(
+        let (report_command, mut private_report) = crate::private_task_outputs::prepare_report(
             &confirmation_command,
             &candidate.peer,
             &authority,
@@ -864,9 +864,40 @@ impl NativeWorkspaceOwner {
                 .record
                 .private_task_text
                 .reports
-                .contains_key(&invocation.to_string())
+                .get(&invocation.to_string())
+                .is_some_and(|report| {
+                    report
+                        .request_digest
+                        .is_some_and(|digest| digest != binding.request_digest)
+                })
         {
             return Err("private report invocation already belongs to another source".into());
+        }
+        if let Some(report) = private_report.as_mut() {
+            report.request_digest = Some(binding.request_digest);
+            if let Some(existing) = candidate
+                .record
+                .private_task_text
+                .reports
+                .get(&invocation.to_string())
+                && existing.request_digest == report.request_digest
+            {
+                report.accepted_at_unix_ns = existing.accepted_at_unix_ns;
+                report.sequence = existing.sequence;
+                if report != existing {
+                    return Err(
+                        "private report invocation already belongs to another source".into(),
+                    );
+                }
+                // This exact accepted report is a replay, not fresh run authority.
+                return self.with_current(room, |view| {
+                    Ok(OwnerCommitReceipt {
+                        binding,
+                        generation: view.generation(),
+                        aggregate_hash: *blake3::hash(&view.record.peer).as_bytes(),
+                    })
+                });
+            }
         }
         if let tilo_peer_state::workspace_task::WorkspaceTaskCommand::RequestConfirmation {
             task_id,
@@ -879,6 +910,11 @@ impl NativeWorkspaceOwner {
                 .task_admission
                 .validate_confirmation_request(task_id, *run_epoch, confirmation)?;
         }
+        let private_retry = candidate
+            .record
+            .private_task_text
+            .retained_chat_retry(&report_command, &candidate.peer, &authority, now)?
+            .map(str::to_owned);
         let (public_command, private_write) = candidate
             .record
             .private_task_text
@@ -928,14 +964,37 @@ impl NativeWorkspaceOwner {
         let (changed, result) = candidate
             .peer
             .workspace_mut()
-            .apply_workspace_task_command_with_model_start(
+            .apply_workspace_task_command_with_owner_preparation(
                 invocation,
                 binding.request_digest,
                 &authority,
                 &public_command,
                 now,
-                model_snapshot.as_ref(),
+                tilo_peer_state::workspace_task::WorkspaceTaskOwnerPreparation {
+                    model_start: model_snapshot.as_ref(),
+                    private_retry: private_retry.as_deref(),
+                },
             )?;
+        // The reducer validates exact command retries before private invocation
+        // collision checks. A new command must never overwrite another report.
+        if changed
+            && let Some(report) = private_report.as_mut()
+            && let Some(existing) = candidate
+                .record
+                .private_task_text
+                .reports
+                .get(&invocation.to_string())
+        {
+            // Acceptance time and order belong to the first owner receipt.
+            // Every source, task, actor and private body must still match.
+            report.accepted_at_unix_ns = existing.accepted_at_unix_ns;
+            report.sequence = existing.sequence;
+            report.request_digest = existing.request_digest;
+            if report != existing {
+                return Err("private report invocation already belongs to another source".into());
+            }
+            private_report = None;
+        }
         if changed && let Some(model) = model_snapshot {
             let tilo_peer_state::workspace_task::WorkspaceTaskCommand::ApproveRun {
                 task_id, ..
@@ -988,6 +1047,15 @@ impl NativeWorkspaceOwner {
         }
         if changed {
             crate::private_task_confirmation::retain(&mut candidate, private_confirmation)?;
+            if let Some(key) = key {
+                // A receiver may recover this delta without any private bodies.
+                // Authenticate retained direction references independently of
+                // the older signed history checkpoint, in the same owner commit.
+                candidate.peer.attest_native_task_private_directions(
+                    key,
+                    &candidate.record.private_task_text.private_references(),
+                )?;
+            }
         }
         let admission_changed = stop_task_admission(&mut candidate, room, &command, key)?;
         if changed || migrated || admission_changed {
@@ -1039,6 +1107,55 @@ fn stop_task_admission(
     Ok(false)
 }
 
+/// Merge only exact references from a signature-verified clean checkpoint.
+/// Read the direction schema alone so older unrelated control fields remain valid.
+fn merge_signed_direction_references(
+    document: &automerge::AutoCommit,
+    references: &mut tilo_peer_state::workspace_task::NativeTaskPrivateReferences,
+) -> Result<(), String> {
+    use automerge::{ObjType, ROOT, ReadDoc as _, ScalarValue, Value};
+    let root = match document
+        .get(ROOT, tilo_peer_state::workspace_task::TASK_CONTROL_KEY)
+        .map_err(|error| error.to_string())?
+    {
+        None => return Ok(()),
+        Some((Value::Object(ObjType::Map), root)) => root,
+        Some(_) => return Err("signed task control root is not a map".into()),
+    };
+    for row in document.map_range(&root, ..) {
+        let Value::Scalar(value) = row.value.into_value() else {
+            return Err("signed task control is not bytes".into());
+        };
+        let ScalarValue::Bytes(bytes) = value.as_ref() else {
+            return Err("signed task control is not bytes".into());
+        };
+        let control: serde_json::Value =
+            serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+        let Some(directions) = control.get("directions") else {
+            continue;
+        };
+        let known = references.entry(row.key.into_owned()).or_default();
+        for direction in directions
+            .as_array()
+            .ok_or("signed directions are not a list")?
+        {
+            let revision = direction
+                .get("revision")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or("signed direction revision absent")?;
+            let text = direction
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("signed direction reference absent")?;
+            if known.get(&revision).is_some_and(|value| value != text) {
+                return Err("private direction differs from signed baseline".into());
+            }
+            known.insert(revision, text.to_owned());
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn ensure_private_task_baseline(
     candidate: &mut NativeCommittedView,
     key: &ed25519_dalek::SigningKey,
@@ -1047,13 +1164,20 @@ pub(crate) fn ensure_private_task_baseline(
     // A checkpoint produced before automatic report privacy was enforced may
     // still contain report bodies. Its presence alone is not migration proof.
     let mut clean_baseline = false;
+    let mut references = candidate.record.private_task_text.private_references();
     if let Some(baseline) = &candidate.record.sanitized_baseline {
         match baseline.verify_anchored_document(
             &candidate.record.room.to_string(),
             candidate.governor().device_public_key,
             &baseline.anchor(),
         ) {
-            Ok(_) => clean_baseline = true,
+            Ok(document) => {
+                clean_baseline = true;
+                // The independently signed checkpoint authenticates these exact
+                // references even on a host that has never held their bodies.
+                // A reference-shaped string in ordinary sync is not sufficient.
+                merge_signed_direction_references(&document, &mut references)?;
+            }
             // Authentication and checkpoint framing passed before this check.
             // Other failures must not be disguised as privacy upgrades.
             Err(error) if publication::recoverable_private_baseline(&error) => {
@@ -1065,7 +1189,6 @@ pub(crate) fn ensure_private_task_baseline(
     if key.verifying_key().to_bytes() != candidate.governor().device_public_key {
         return Err("task history requires a signed privacy migration by its governor".into());
     }
-    let references = candidate.record.private_task_text.private_references();
     let mut peer = candidate.peer.clone();
     let (text, baseline) = peer.extract_native_task_private_baseline(key, now, &references)?;
     if clean_baseline && !crate::PrivateTaskTextStore::migration_has_private_text(&text) {

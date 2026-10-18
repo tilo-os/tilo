@@ -26,9 +26,14 @@ fn actors_use_the_selected_person_not_the_default_or_a_generated_root() {
         .values()
         .next()
         .expect("second person");
-    let second = registry
-        .import(&second.record_path)
-        .expect("register second person");
+    // This is already a secured identity on the same host, not a portable
+    // plaintext import. Register its existing provider-backed custody.
+    let mut current = registry.load_reconciled().expect("current registry");
+    let second = current
+        .register_record(&second.record_path)
+        .expect("register second person")
+        .clone();
+    registry.save(&current).expect("save selected identities");
     DeviceFleetStore::from_env()
         .expect("fleet")
         .register_current_device(&second.id)

@@ -9,6 +9,7 @@ pub struct PreparedNativeTaskStart {
     frontier: tilo_peer_state::PreparedTaskStart,
     room: RoomId,
     continuity: u64,
+    enrollment_intent: Vec<u8>,
     governor: DeviceCert,
     model: crate::NativeModelContract,
 }
@@ -32,39 +33,43 @@ impl NativeWorkspaceOwner {
             return Err("Start requires a task command".into());
         };
         let _turn = self.0.mutation.lock();
-        let (frontier, continuity, governor, model) = self.with_current(room, |view| {
-            if view.device() != view.governor() {
-                return Err("prepared Start requires the actual governor".into());
-            }
-            let tilo_peer_state::workspace_task::WorkspaceTaskAuthority::Person { caller } =
-                authority
-            else {
-                return Err("only a person may prepare Start".into());
-            };
-            let tilo_peer_state::workspace_task::WorkspaceTaskCommand::ApproveRun {
-                task_id, ..
-            } = command
-            else {
-                return Err("prepared Start requires ApproveRun".into());
-            };
-            let model = model_start.approved_model_start(view, task_id, caller, now)?;
-            validate_model(&model, &request.room, task_id)?;
-            let snapshot = model_snapshot(&model)?;
-            let frontier = view
-                .peer
-                .prepare_workspace_task_start(authority, command, &snapshot, now)?;
-            Ok((
-                frontier,
-                view.record.continuity,
-                view.governor().clone(),
-                model,
-            ))
-        })?;
+        let (frontier, continuity, enrollment_intent, governor, model) =
+            self.with_current(room, |view| {
+                if view.device() != view.governor() {
+                    return Err("prepared Start requires the actual governor".into());
+                }
+                let tilo_peer_state::workspace_task::WorkspaceTaskAuthority::Person { caller } =
+                    authority
+                else {
+                    return Err("only a person may prepare Start".into());
+                };
+                let tilo_peer_state::workspace_task::WorkspaceTaskCommand::ApproveRun {
+                    task_id,
+                    ..
+                } = command
+                else {
+                    return Err("prepared Start requires ApproveRun".into());
+                };
+                let model = model_start.approved_model_start(view, task_id, caller, now)?;
+                validate_model(&model, &request.room, task_id)?;
+                let snapshot = model_snapshot(&model)?;
+                let frontier = view
+                    .peer
+                    .prepare_workspace_task_start(authority, command, &snapshot, now)?;
+                Ok((
+                    frontier,
+                    view.record.continuity,
+                    view.record.enrollment_intent.clone(),
+                    view.governor().clone(),
+                    model,
+                ))
+            })?;
         Ok(PreparedNativeTaskStart {
             request,
             frontier,
             room,
             continuity,
+            enrollment_intent,
             governor,
             model,
         })
@@ -85,7 +90,12 @@ impl NativeWorkspaceOwner {
     ) -> Result<OwnerCommitReceipt, String> {
         let _turn = self.0.mutation.lock();
         let mut candidate = self.with_current(prepared.room, |view| Ok(view.clone()))?;
-        if candidate.record.continuity != prepared.continuity
+        // Enrolling the exact executor legitimately advances security continuity.
+        // It must not change enrollment custody or roll it back. The prepared
+        // frontier below repeats current authority checks while keeping the
+        // original person's ceiling, never later widened grants.
+        if candidate.record.continuity < prepared.continuity
+            || candidate.record.enrollment_intent != prepared.enrollment_intent
             || candidate.governor() != &prepared.governor
             || candidate.device() != &prepared.governor
             || key.verifying_key().to_bytes() != prepared.governor.device_public_key

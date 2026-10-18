@@ -1,5 +1,8 @@
 //! Bind private custody only on an unpublished, accepted owner candidate.
-use super::*;
+use super::{
+    AutoCommit, WorkspaceTaskMutationResult, WorkspaceTaskRoute, WorkspaceTaskStatus, controls_of,
+    project_controls,
+};
 
 pub(crate) fn bind_private_instruction(
     room: &AutoCommit,
@@ -72,6 +75,9 @@ pub(crate) fn bind_private_instruction(
 
 #[cfg(test)]
 mod tests {
+    use super::super::{
+        AdmittedTaskActor, WorkspaceTaskCommand, apply, private_instruction_reference,
+    };
     use super::*;
 
     fn queued() -> (AutoCommit, WorkspaceTaskMutationResult) {

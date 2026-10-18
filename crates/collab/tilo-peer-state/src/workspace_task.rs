@@ -352,7 +352,16 @@ pub(crate) struct AppliedTaskCommand {
     pub result: WorkspaceTaskMutationResult,
 }
 
-/// Apply one owner-admitted command to the room document.
+/// In-memory preparation from the owner, never accepted as command wire data.
+#[derive(Clone, Copy, Default)]
+pub struct WorkspaceTaskOwnerPreparation<'a> {
+    pub model_start: Option<&'a WorkspaceTaskModelStart>,
+    /// Exact task resolved against the owner's retained canonical private Chat parent.
+    pub private_retry: Option<&'a str>,
+}
+
+/// Apply a command without retained private source preparation in reducer tests.
+#[cfg(test)]
 pub(crate) fn apply(
     doc: &mut AutoCommit,
     invocation: uuid::Uuid,
@@ -360,6 +369,18 @@ pub(crate) fn apply(
     actor: &AdmittedTaskActor,
     command: &WorkspaceTaskCommand,
     now: i64,
+) -> Result<AppliedTaskCommand, String> {
+    apply_with_private_retry(doc, invocation, request_digest, actor, command, now, None)
+}
+
+pub(crate) fn apply_with_private_retry(
+    doc: &mut AutoCommit,
+    invocation: uuid::Uuid,
+    request_digest: [u8; 32],
+    actor: &AdmittedTaskActor,
+    command: &WorkspaceTaskCommand,
+    now: i64,
+    private_retry: Option<&str>,
 ) -> Result<AppliedTaskCommand, String> {
     if invocation.is_nil() {
         return Err("task command invocation is nil".into());
@@ -385,7 +406,11 @@ pub(crate) fn apply(
         actor,
         now,
     };
-    let (task_id, result) = dispatch(&mut tasks, &mut controls, &context, command)?;
+    let (task_id, result) = if let Some(task_id) = private_retry {
+        retained_private_queue(&tasks, actor, command, task_id)?
+    } else {
+        dispatch(&mut tasks, &mut controls, &context, command)?
+    };
     confirmation::lapse(&mut controls);
     let control = controls
         .get_mut(&task_id)
@@ -470,34 +495,9 @@ fn dispatch(
         | WorkspaceTaskCommand::Presentation { .. } => {
             dispatch_agent_report(tasks, controls, context, command)
         }
-        WorkspaceTaskCommand::Finish {
-            task_id,
-            run_epoch,
-            outcome,
-            summary,
-        } => finish(
-            tasks,
-            controls,
-            context.actor,
-            task_id,
-            *run_epoch,
-            *outcome,
-            summary,
-            context.now,
-        ),
-        WorkspaceTaskCommand::Abandon {
-            task_id,
-            run_epoch,
-            reason,
-        } => abandon(
-            tasks,
-            controls,
-            context.actor,
-            task_id,
-            *run_epoch,
-            reason,
-            context.now,
-        ),
+        command @ (WorkspaceTaskCommand::Finish { .. } | WorkspaceTaskCommand::Abandon { .. }) => {
+            dispatch_terminal(tasks, controls, context, command)
+        }
         WorkspaceTaskCommand::DirectionForRun {
             task_id,
             run_epoch,
@@ -829,6 +829,57 @@ fn validate_subject(subject: &tilo_actions::SelectionSubject) -> Result<(), Stri
     })
 }
 
+fn dispatch_terminal(
+    tasks: &mut [WorkspaceTask],
+    controls: &mut std::collections::BTreeMap<String, WorkspaceTaskControl>,
+    context: &CommandContext<'_>,
+    command: &WorkspaceTaskCommand,
+) -> Result<(String, WorkspaceTaskMutationResult), String> {
+    match command {
+        WorkspaceTaskCommand::Finish {
+            task_id,
+            run_epoch,
+            outcome,
+            summary,
+        } => finish(
+            tasks,
+            controls,
+            context.actor,
+            task_id,
+            *run_epoch,
+            *outcome,
+            summary,
+            context.now,
+        ),
+        WorkspaceTaskCommand::Abandon {
+            task_id,
+            run_epoch,
+            reason,
+        } => abandon(
+            tasks,
+            controls,
+            context.actor,
+            task_id,
+            *run_epoch,
+            reason,
+            context.now,
+        ),
+        _ => Err("not a terminal task command".into()),
+    }
+}
+
+fn validate_manual_title(title: &str, task_count: usize) -> Result<&str, String> {
+    let title = title.trim();
+    if title.is_empty()
+        || title.chars().count() > MAX_TASK_TITLE_CHARS
+        || title.chars().any(char::is_control)
+        || task_count >= 1024
+    {
+        return Err("manual task title or task capacity is invalid".into());
+    }
+    Ok(title)
+}
+
 fn manual_command(
     tasks: &mut Vec<WorkspaceTask>,
     controls: &mut std::collections::BTreeMap<String, WorkspaceTaskControl>,
@@ -840,14 +891,7 @@ fn manual_command(
     };
     match command {
         WorkspaceTaskCommand::CreateManual { title, resource } => {
-            let title = title.trim();
-            if title.is_empty()
-                || title.chars().count() > MAX_TASK_TITLE_CHARS
-                || title.chars().any(char::is_control)
-                || tasks.len() >= 1024
-            {
-                return Err("manual task title or task capacity is invalid".into());
-            }
+            let title = validate_manual_title(title, tasks.len())?;
             if let Some(resource) = resource {
                 validate_manual_resource(resource)?;
             }
@@ -1090,6 +1134,44 @@ fn queue(
 // A retry may come from another admitted device, so device-scoped invocation
 // receipts alone cannot prevent a second executable task for the same message.
 // This runs inside the owner's serialized mutation, before creating a task.
+fn retained_private_queue(
+    tasks: &[WorkspaceTask],
+    actor: &AdmittedTaskActor,
+    command: &WorkspaceTaskCommand,
+    task_id: &str,
+) -> Result<(String, WorkspaceTaskMutationResult), String> {
+    let AdmittedTaskActor::Person { id, .. } = actor else {
+        return Err("only the original person can retry a private Chat task".into());
+    };
+    let WorkspaceTaskCommand::Queue {
+        title,
+        assigned_agent,
+        route,
+        resource,
+    } = command
+    else {
+        return Err("private Chat retry requires a queue command".into());
+    };
+    let task = tasks
+        .iter()
+        .find(|task| task.id == task_id)
+        .ok_or("private Chat task absent")?;
+    if task.created_by != *id
+        || task.assigned_agent.as_deref() != Some(assigned_agent)
+        || task.route != *route
+        || task.title != *title
+        || task.resource != resource.as_deref().cloned()
+    {
+        return Err("canonical Chat parent is already bound to another task request".into());
+    }
+    Ok((
+        task_id.to_owned(),
+        WorkspaceTaskMutationResult::Queued {
+            task_id: task_id.to_owned(),
+        },
+    ))
+}
+
 fn existing_chat_task(
     tasks: &[WorkspaceTask],
     author: &str,

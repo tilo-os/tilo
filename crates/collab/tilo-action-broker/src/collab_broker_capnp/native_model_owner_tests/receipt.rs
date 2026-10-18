@@ -147,6 +147,59 @@ pub(super) fn respond(
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn applied_direction_remains_available_to_the_registered_stream() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let f = Fixture::new();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let _env = configure(&f, format!("http://{}/v1", listener.local_addr().unwrap()));
+            approve_model(&f);
+            let (_broker, channel) = launched_channel(&f).await;
+            let stream = channel.subscribe_task_runs().await.unwrap();
+            let run = stream.read().await.unwrap();
+            accept(&channel, &run).await;
+            direction(&f, 0);
+            let observed = context(&channel, &run).await;
+            let prepared = at_revision(&run, 1);
+            let id = channel
+                .claim_native_model(run.run_id, &prepared.lease)
+                .await
+                .unwrap();
+            let peer = respond(listener, true);
+            let reply = channel
+                .execute_native_model(&complete(id, &observed.directions, &[]))
+                .await
+                .unwrap();
+            assert_eq!(reply["response"]["ok"], true, "{reply}");
+            let body = tokio::time::timeout(Duration::from_secs(3), peer)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(body.to_string().contains(&observed.directions[0].text));
+            assert!(ack(&channel, &prepared, 1).await);
+            // A successful fallback request and truthful ACK cannot consume
+            // context which this registered stream has never delivered.
+            let page = tokio::time::timeout(Duration::from_secs(3), stream.read_control())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(page.from_revision, 0);
+            assert_eq!(page.applied_revision, 1);
+            assert_eq!(page.latest_revision, 1);
+            assert_eq!(page.directions, observed.directions);
+            let message = mail(&f);
+            let next = tokio::time::timeout(Duration::from_secs(3), stream.read_control())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(next.from_revision, 1);
+            assert!(next.directions.is_empty());
+            assert_eq!(next.messages, vec![message]);
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn successful_complete_ack_requires_exact_request_revision_and_owner_envelope() {
     tokio::task::LocalSet::new()
         .run_until(async {

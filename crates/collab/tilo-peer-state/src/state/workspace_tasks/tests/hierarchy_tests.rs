@@ -3,7 +3,7 @@ use tilo_desktop_model::{WorkspaceTaskMetadata, WorkspaceTaskMutationResult};
 
 fn submit(
     fixture: &mut SteeringFixture,
-    command: WorkspaceTaskCommand,
+    command: &WorkspaceTaskCommand,
 ) -> Result<WorkspaceTaskMutationResult, String> {
     fixture
         .peer
@@ -12,7 +12,7 @@ fn submit(
             uuid::Uuid::new_v4(),
             [14; 32],
             &fixture.caller,
-            &command,
+            command,
             fixture.now,
         )
         .map(|(_, result)| result)
@@ -21,7 +21,7 @@ fn submit(
 fn manual(fixture: &mut SteeringFixture, title: &str) -> String {
     let result = submit(
         fixture,
-        WorkspaceTaskCommand::CreateManual {
+        &WorkspaceTaskCommand::CreateManual {
             title: title.into(),
             resource: None,
         },
@@ -87,7 +87,7 @@ fn subtask_creation_rechecks_parent_resource_write_permission() {
         },
     ] {
         assert!(
-            submit(&mut fixture, command)
+            submit(&mut fixture, &command)
                 .unwrap_err()
                 .contains("not writable")
         );
@@ -101,7 +101,7 @@ fn moving_or_editing_child_cannot_escape_revoked_parent_authority() {
     let parent = manual(&mut fixture, "Parent");
     let WorkspaceTaskMutationResult::Queued { task_id: child } = submit(
         &mut fixture,
-        WorkspaceTaskCommand::CreateSubtask {
+        &WorkspaceTaskCommand::CreateSubtask {
             parent_task_id: parent.clone(),
             title: "Child".into(),
             assigned_agent: None,
@@ -129,7 +129,7 @@ fn moving_or_editing_child_cannot_escape_revoked_parent_authority() {
         },
     ] {
         assert!(
-            submit(&mut fixture, command)
+            submit(&mut fixture, &command)
                 .unwrap_err()
                 .contains("not writable")
         );

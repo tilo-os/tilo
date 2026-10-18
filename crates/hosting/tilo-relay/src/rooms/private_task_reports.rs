@@ -116,13 +116,19 @@ impl GovernedRoom {
     }
 
     pub(super) fn load_task_reports(&self) -> Result<BTreeMap<String, TaskReport>, String> {
+        let retained = self.retained_task_reports()?;
+        // An archival predecessor has no typed native receipts to authorize.
+        // Do not interpret its historical controls as the current run schema.
+        if retained.is_empty() {
+            return Ok(BTreeMap::new());
+        }
         let doc = self
             .peer
             .admitted_room()
             .ok_or("private report room absent")?;
         let state = workspace_task::snapshot(doc)?;
         let mut accepted = BTreeMap::new();
-        for (id, retained) in self.retained_task_reports()? {
+        for (id, retained) in retained {
             let report = retained.report;
             if state
                 .controls

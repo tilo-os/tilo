@@ -1180,7 +1180,28 @@ impl Fixture {
     }
 }
 
-async fn delivered(channel: &channel_handle::Client) -> runtime_collab::TaskRunEnvelope {
+#[derive(Clone)]
+struct DeliveredRun {
+    envelope: runtime_collab::TaskRunEnvelope,
+    // The runner keeps its actual subscription alive while using this lease.
+    _stream: task_run_stream::Client,
+}
+
+impl std::ops::Deref for DeliveredRun {
+    type Target = runtime_collab::TaskRunEnvelope;
+
+    fn deref(&self) -> &Self::Target {
+        &self.envelope
+    }
+}
+
+impl std::ops::DerefMut for DeliveredRun {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.envelope
+    }
+}
+
+async fn delivered(channel: &channel_handle::Client) -> DeliveredRun {
     let stream = channel
         .subscribe_task_runs_request()
         .send()
@@ -1195,7 +1216,7 @@ async fn delivered(channel: &channel_handle::Client) -> runtime_collab::TaskRunE
         .await
         .unwrap()
         .unwrap();
-    serde_json::from_str(
+    let envelope = serde_json::from_str(
         reply
             .get()
             .unwrap()
@@ -1204,7 +1225,11 @@ async fn delivered(channel: &channel_handle::Client) -> runtime_collab::TaskRunE
             .to_str()
             .unwrap(),
     )
-    .unwrap()
+    .unwrap();
+    DeliveredRun {
+        envelope,
+        _stream: stream,
+    }
 }
 async fn report(
     channel: &channel_handle::Client,
@@ -1560,7 +1585,7 @@ async fn native_live_owner_revocation_fences_new_and_retained_actions_with_stale
                     .await
                     .unwrap_err()
                     .to_string()
-                    .contains("not allowed")
+                    .contains("current policy denies retained native observation")
             );
             assert!(
                 invoke(&agent, &run, uuid::Uuid::from_u128(8011))
@@ -1830,7 +1855,7 @@ async fn native_stream_replacement_keeps_run_identity_and_cancel_fences_new_effe
             let run = delivered(&agent).await;
             assert_eq!(run.execution_budget, Some(budget));
             let replaced = delivered(&agent).await;
-            assert_eq!(run, replaced);
+            assert_eq!(run.envelope, replaced.envelope);
             let (_target, stream) = notes_target(&f).await;
             grant_notes(&f);
             f.person_command(WorkspaceTaskCommand::CancelForRun {
@@ -2132,8 +2157,18 @@ async fn authenticated_presentations_coalesce_without_audit_or_receipt_exhaustio
             second.text = "é".repeat(runtime_collab::TaskPresentation::MAX_TEXT_BYTES);
             let second_id = second.run.clone();
             assert!(report(&agent, &run, update(second.clone())).await.is_err());
-            second.text = "é".repeat(runtime_collab::TaskPresentation::MAX_TEXT_BYTES / 2);
             second.detail = "Exact private detail".into();
+            let text_bytes = tilo_actions::task_messaging::TaskReportPresentation::MAX_PROSE_BYTES
+                - second.reasoning.len()
+                - second.detail.len();
+            second.text = "é".repeat(text_bytes / 2);
+            if text_bytes % 2 != 0 {
+                second.text.push('x');
+            }
+            assert_eq!(
+                second.text.len() + second.reasoning.len() + second.detail.len(),
+                tilo_actions::task_messaging::TaskReportPresentation::MAX_PROSE_BYTES
+            );
             let exact = second.clone();
             report(&agent, &run, update(second)).await.unwrap();
             let snapshot =
@@ -2219,7 +2254,9 @@ async fn native_approved_run_reconnects_and_steering_stays_pending_until_applied
                     .await
                     .is_err()
             );
-            f.approve();
+            // Protected HTTP needs the person's signed, privately retained
+            // model selection, not only ordinary task-run approval.
+            model_owner::approve_model(&f);
             let (connection, agent) = model_owner::legacy::channel(&f, 100).await;
             let run = delivered(&agent).await;
             assert_eq!(run.task_id, f.task);

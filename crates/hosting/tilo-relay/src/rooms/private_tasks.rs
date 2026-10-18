@@ -668,7 +668,7 @@ impl GovernedRoom {
             requirement.check_task_message_payload(recipient, *invocation, send)?;
             let ledger = self.load_native_admission()?;
             let exact = ledger.dispatched_invocation(*invocation, caller.device_public_key)?;
-            requirement.check_retained(&self.peer, exact, now)?;
+            ledger.check_retained_action(&self.peer, &requirement, exact, now)?;
         } else if let PrivateOperation::TaskRecordOutputs {
             task: target,
             epoch: run,
@@ -693,7 +693,7 @@ impl GovernedRoom {
                 let id = uuid::Uuid::parse_str(&output.invocation)
                     .map_err(|_| "invalid native output invocation")?;
                 let exact = ledger.dispatched_invocation(id, caller.device_public_key)?;
-                requirement.check_retained(&self.peer, exact, now)?;
+                ledger.check_retained_action(&self.peer, &requirement, exact, now)?;
                 if exact.task != task
                     || exact.epoch != epoch
                     || exact.agent != agent

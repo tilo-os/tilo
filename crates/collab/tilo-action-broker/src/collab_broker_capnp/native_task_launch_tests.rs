@@ -537,26 +537,31 @@ async fn a_capped_authenticated_task_cannot_activate_outside_its_connection_ceil
             let run = delivered(&agent).await;
             let provider = tilo_actions::remote::workspace_provider(&room().to_string());
             let resource = format!("app.{WRITER}");
+            let requirement = crate::services::NativeTaskActionRequirement {
+                binding: f
+                    .state
+                    .task_run_for(100, "scribe", run.run_id, &run.lease)
+                    .unwrap()
+                    .native,
+                app: WRITER.into(),
+                resource_kind: "applications.app".into(),
+                resource: resource.clone(),
+                action: "open".into(),
+                need: tilo_actions::ActionNeed::of(tilo_actions::ActionKind::Undoable),
+                consequential: false,
+                confirmation: None,
+                invocation: None,
+            };
             f.native
-                .authorize_action(
-                    &room().to_string(),
-                    "scribe",
-                    &crate::services::NativeTaskActionRequirement {
-                        binding: f
-                            .state
-                            .task_run_for(100, "scribe", run.run_id, &run.lease)
-                            .unwrap()
-                            .native,
-                        app: WRITER.into(),
-                        resource_kind: "applications.app".into(),
-                        resource: resource.clone(),
-                        action: "open".into(),
-                        need: tilo_actions::ActionNeed::of(tilo_actions::ActionKind::Undoable),
-                        consequential: false,
-                        confirmation: None,
-                        invocation: None,
-                    },
-                )
+                .owner
+                .with_current(room(), |view| {
+                    requirement.check(
+                        view.peer(),
+                        &room().to_string(),
+                        "scribe",
+                        std::time::SystemTime::now(),
+                    )
+                })
                 .expect("canonical starter/task authority alone would permit this activation");
             f.cap_connection();
             assert!(

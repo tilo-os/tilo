@@ -270,6 +270,9 @@ struct Entry {
     #[serde(default)]
     completion: Option<NativeInvocationCompletion>,
     custody: Custody,
+    /// Original authenticated starter and ceiling survive terminal public settlement.
+    #[serde(default)]
+    retained_source: Option<crate::task_policy::RetainedNativeTaskSource>,
 }
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -676,6 +679,9 @@ impl NativeGovernorAdmission<'_> {
                 host_started: false,
                 completion: None,
                 custody: Custody::Reserved,
+                retained_source: crate::task_policy::RetainedNativeTaskSource::from_control(
+                    control,
+                ),
             },
         );
         Ok(reservation)
@@ -1127,6 +1133,7 @@ fn consume_local_candidate(
             host_started: true,
             completion: None,
             custody: Custody::Dispatched,
+            retained_source: crate::task_policy::RetainedNativeTaskSource::from_control(control),
         },
     );
 

@@ -110,9 +110,22 @@ pub(super) fn sanitize_task_room(
             retained.directions.extend(private.directions);
         }
     }
+    scrub_model_authority(&mut visible, &mut extracted)?;
+    reports::scrub_control_presentations(&mut visible)?;
+    confirmations::scrub_controls(&mut visible, &mut extracted)?;
+    visible.commit();
+    // Crucially, no historical change or secret-containing transaction is copied.
+    let candidate = super::super::sanitized_baseline::rebuild(&visible)?;
+    Ok((candidate, extracted))
+}
+
+fn scrub_model_authority(
+    visible: &mut AutoCommit,
+    extracted: &mut BTreeMap<String, NativeTaskPrivateText>,
+) -> Result<(), String> {
     // Model/account configuration is private regardless of task route. Extract
     // current custody, then rebuild history without any old profile bytes.
-    for (id, bytes) in blobs(&visible, TASK_CONTROL_KEY)? {
+    for (id, bytes) in blobs(visible, TASK_CONTROL_KEY)? {
         let mut control: serde_json::Value =
             serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
         if let Some(model) = control
@@ -125,17 +138,12 @@ pub(super) fn sanitize_task_room(
                 let reference =
                     crate::workspace_task::private_model_contract_reference(&full.contract)?;
                 extracted.entry(id.clone()).or_default().model_authority = Some(full);
-                model["contract"] = reference;
-                put_blob(&mut visible, TASK_CONTROL_KEY, &id, &bytes, &control)?;
+                *model.get_mut("contract").ok_or("model contract absent")? = reference;
+                put_blob(visible, TASK_CONTROL_KEY, &id, &bytes, &control)?;
             }
         }
     }
-    reports::scrub_control_presentations(&mut visible)?;
-    confirmations::scrub_controls(&mut visible, &mut extracted)?;
-    visible.commit();
-    // Crucially, no historical change or secret-containing transaction is copied.
-    let candidate = super::super::sanitized_baseline::rebuild(&visible)?;
-    Ok((candidate, extracted))
+    Ok(())
 }
 
 pub(super) fn validate_reports(room: &AutoCommit) -> Result<(), String> {

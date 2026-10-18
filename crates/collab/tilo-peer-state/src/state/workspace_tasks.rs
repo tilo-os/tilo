@@ -10,6 +10,25 @@ mod prepared_start;
 pub use prepared_start::PreparedTaskStart;
 
 impl StatePeer {
+    fn check_task_command_certificate(
+        &self,
+        authority: &WorkspaceTaskAuthority,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        let certificate = authority.certificate();
+        if self
+            .core
+            .certificates
+            .get(&certificate.device_public_key)
+            .map(AsRef::as_ref)
+            != Some(certificate)
+        {
+            return Err("workspace task certificate is not current admitted evidence".into());
+        }
+        self.certificate(&certificate.device_public_key, now)?;
+        Ok(())
+    }
+
     fn mint_task_authority(
         &self,
         doc: &mut automerge::AutoCommit,
@@ -306,6 +325,9 @@ impl PeerWorkspaceMut<'_> {
 
     /// Trusted owner entrypoint. `model_start` is a shell snapshot, never a
     /// serialized task-command field. Legacy callers cannot mint MODEL use.
+    ///
+    /// # Errors
+    /// Refuses stale certificates, permissions, model consent or task frontiers.
     pub fn apply_workspace_task_command_with_model_start(
         self,
         invocation: uuid::Uuid,
@@ -315,13 +337,39 @@ impl PeerWorkspaceMut<'_> {
         now: SystemTime,
         model_start: Option<&crate::workspace_task::WorkspaceTaskModelStart>,
     ) -> Result<(bool, tilo_desktop_model::WorkspaceTaskMutationResult), String> {
+        self.apply_workspace_task_command_with_owner_preparation(
+            invocation,
+            request_digest,
+            authority,
+            command,
+            now,
+            crate::workspace_task::WorkspaceTaskOwnerPreparation {
+                model_start,
+                private_retry: None,
+            },
+        )
+    }
+
+    /// Owner-only preparation from retained private storage, not serialized arguments.
+    ///
+    /// # Errors
+    /// Refuses changed certificates, permissions, private parent binding or task frontier.
+    pub fn apply_workspace_task_command_with_owner_preparation(
+        self,
+        invocation: uuid::Uuid,
+        request_digest: [u8; 32],
+        authority: &WorkspaceTaskAuthority,
+        command: &WorkspaceTaskCommand,
+        now: SystemTime,
+        preparation: crate::workspace_task::WorkspaceTaskOwnerPreparation<'_>,
+    ) -> Result<(bool, tilo_desktop_model::WorkspaceTaskMutationResult), String> {
         self.apply_workspace_task_command_with_prepared(
             invocation,
             request_digest,
             authority,
             command,
             now,
-            model_start,
+            preparation,
             None,
         )
     }
@@ -333,31 +381,18 @@ impl PeerWorkspaceMut<'_> {
         authority: &WorkspaceTaskAuthority,
         command: &WorkspaceTaskCommand,
         now: SystemTime,
-        model_start: Option<&crate::workspace_task::WorkspaceTaskModelStart>,
+        preparation: crate::workspace_task::WorkspaceTaskOwnerPreparation<'_>,
         ceiling: Option<&tilo_desktop_model::WorkspaceTaskExecutionAuthority>,
     ) -> Result<(bool, tilo_desktop_model::WorkspaceTaskMutationResult), String> {
+        let model_start = preparation.model_start;
         if model_start.is_some()
             && (!matches!(authority, WorkspaceTaskAuthority::Person { .. })
                 || !matches!(command, WorkspaceTaskCommand::ApproveRun { .. }))
         {
             return Err("model ceiling requires an explicit person approval".into());
         }
-        let certificate = authority.certificate();
-        if self
-            .peer
-            .core
-            .certificates
-            .get(&certificate.device_public_key)
-            .map(AsRef::as_ref)
-            != Some(certificate)
-        {
-            return Err("workspace task certificate is not current admitted evidence".into());
-        }
-        self.peer.certificate(&certificate.device_public_key, now)?;
-        let seconds = now
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_err(|_| "workspace task clock is before the Unix epoch")?
-            .as_secs();
+        self.peer.check_task_command_certificate(authority, now)?;
+        let seconds = task_command_timestamp(now)?;
         let room = self
             .peer
             .core
@@ -420,14 +455,16 @@ impl PeerWorkspaceMut<'_> {
             .check_agent_task_approval(&actor, command, room, now)?;
         self.peer.check_task_steering(&actor, command, room, now)?;
         let mut candidate = room.clone();
-        let AppliedTaskCommand { changed, result } = crate::workspace_task::apply(
-            &mut candidate,
-            invocation,
-            request_digest,
-            &actor,
-            command,
-            i64::try_from(seconds).unwrap_or(i64::MAX),
-        )?;
+        let AppliedTaskCommand { changed, result } =
+            crate::workspace_task::apply_with_private_retry(
+                &mut candidate,
+                invocation,
+                request_digest,
+                &actor,
+                command,
+                seconds,
+                preparation.private_retry,
+            )?;
         if changed {
             if let tilo_desktop_model::WorkspaceTaskMutationResult::RunStarted { task_id, epoch } =
                 &result
@@ -446,6 +483,14 @@ impl PeerWorkspaceMut<'_> {
         }
         Ok((changed, result))
     }
+}
+
+fn task_command_timestamp(now: SystemTime) -> Result<i64, String> {
+    let seconds = now
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_err(|_| "workspace task clock is before the Unix epoch")?
+        .as_secs();
+    Ok(i64::try_from(seconds).unwrap_or(i64::MAX))
 }
 
 /// Concrete representatives of every policy cell intersecting the execution

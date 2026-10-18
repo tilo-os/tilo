@@ -424,6 +424,69 @@ impl PrivateTaskTextStore {
             _ => Ok((command.clone(), None)),
         }
     }
+    /// Resolve a canonical parent only from retained owner-private storage.
+    /// Matching prose or public resource metadata never identifies a retry.
+    pub(crate) fn retained_chat_retry(
+        &self,
+        command: &tilo_peer_state::workspace_task::WorkspaceTaskCommand,
+        peer: &crate::StatePeer,
+        authority: &WorkspaceTaskAuthority,
+        now: SystemTime,
+    ) -> Result<Option<&str>, String> {
+        let tilo_peer_state::workspace_task::WorkspaceTaskCommand::Queue { resource, .. } = command
+        else {
+            return Ok(None);
+        };
+        let Some(request) = resource
+            .as_ref()
+            .and_then(|resource| resource.agent_request.as_ref())
+        else {
+            return Ok(None);
+        };
+        let WorkspaceTaskAuthority::Person { caller } = authority else {
+            return Err("private Chat task requires its original person".into());
+        };
+        if !peer.certificates().contains(caller) {
+            return Err("private Chat caller certificate changed".into());
+        }
+        let member = peer.permissions(caller.device_public_key, now)?;
+        if !member.allows(
+            &tilo_action_policy::TreePath::room(peer.room()),
+            tilo_action_policy::ActionKind::Undoable,
+            now,
+        ) {
+            return Err("private Chat task person lacks write authority".into());
+        }
+        let snapshot = tilo_peer_state::workspace_task::snapshot(
+            peer.admitted_room()
+                .ok_or("private Chat task room absent")?,
+        )?;
+        let mut found = None;
+        for (task, private) in &self.instructions {
+            let Some(prior) = &private.agent_request else {
+                continue;
+            };
+            if prior.chat_record != request.chat_record || prior.message_id != request.message_id {
+                continue;
+            }
+            // Check ownership before comparing any retained private prose.
+            if !snapshot
+                .tasks
+                .iter()
+                .any(|value| value.id == *task && value.created_by == member.person)
+                || prior != request
+            {
+                return Err(
+                    "canonical Chat parent is already bound to another task request".into(),
+                );
+            }
+            if found.replace(task.as_str()).is_some() {
+                return Err("canonical Chat parent has ambiguous private custody".into());
+            }
+        }
+        Ok(found)
+    }
+
     fn prepare_private_agent_request(
         title: &str,
         assigned_agent: &str,
@@ -814,7 +877,7 @@ mod sanitized_baseline_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::{ROOM, raw_fixture};
+    use crate::testing::{ROOM, raw_owner_fixture};
     use ed25519_dalek::SigningKey;
     use tilo_owner_commit::{CommitOperation, OwnerCommitRequest};
     use tilo_peer_state::workspace_task::WorkspaceTaskCommand;
@@ -906,7 +969,7 @@ mod tests {
     pub(super) fn enrolled() -> (tempfile::TempDir, NativeWorkspaceOwner, RoomId, SystemTime) {
         let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         let owner = crate::open_file(&directory.path().join("rooms.json")).unwrap();
-        let (intent, bootstrap, _, _, now) = raw_fixture();
+        let (intent, bootstrap, _, _, now) = raw_owner_fixture();
         let pending = owner.prepare_enrollment_into(&intent, None, now).unwrap();
         let enrollment = crate::testing::finalize(intent, pending, bootstrap).unwrap();
         owner.install(&enrollment, now).unwrap();

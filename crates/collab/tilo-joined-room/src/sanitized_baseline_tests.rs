@@ -160,7 +160,7 @@ fn reenrolled_receiver_baseline_retry_cannot_resurrect_a_stopped_run() {
             crate::VerifiedNativeEnrollmentIntent::restore(&view.record.enrollment_intent)
         })
         .unwrap();
-    let (_, bootstrap, _, _, _) = crate::testing::raw_fixture_at(now);
+    let (_, bootstrap, _, _, _) = crate::testing::raw_owner_fixture_at(now);
     let key = SigningKey::from_bytes(&[61; 32]);
     source
         .commit_workspace_task_command_with_key(
@@ -180,6 +180,16 @@ fn reenrolled_receiver_baseline_retry_cannot_resurrect_a_stopped_run() {
     let (baseline, messages) = source
         .with_current(room, |view| {
             let baseline = view.record.sanitized_baseline.clone().unwrap();
+            let checkpoint = baseline.verify_anchored_document(
+                &baseline.room,
+                baseline.governor,
+                &baseline.anchor(),
+            )?;
+            assert!(
+                tilo_peer_state::workspace_task::controls_of(&checkpoint)?[&task]
+                    .directions
+                    .is_empty()
+            );
             let mut peer = view.peer().clone();
             let mut messages = vec![frame(&baseline)];
             messages.extend(peer.durable_bootstrap_messages(&key, now, view.generation())?);
@@ -210,6 +220,10 @@ fn reenrolled_receiver_baseline_retry_cannot_resurrect_a_stopped_run() {
         WorkspaceTaskStatus::InProgress
     );
     assert_eq!(running.controls[&task].run_epoch, 1);
+    assert_eq!(
+        running.controls[&task].directions[0].text,
+        tilo_peer_state::workspace_task::private_instruction_reference("private steer")
+    );
 
     // Stop on the second host after recovery. Replay is authenticated but
     // must not reinstall the old running checkpoint or lose the Stop receipt.
@@ -227,8 +241,36 @@ fn reenrolled_receiver_baseline_retry_cannot_resurrect_a_stopped_run() {
     let stale_running = source
         .with_current(room, |view| Ok(view.peer().room_message()))
         .unwrap();
-    let stopped_message = receiver
-        .with_current(room, |view| Ok(view.peer().room_message()))
+    let (stopped_baseline, stopped_message) = receiver
+        .with_current(room, |view| {
+            Ok((
+                view.record.sanitized_baseline.clone().unwrap(),
+                view.peer().room_message(),
+            ))
+        })
+        .unwrap();
+    // The checkpoint predates the direction. Recovery must recognize the
+    // separately signed direction custody, not hash its digest as new prose
+    // and reset history against this host's divergent Automerge predecessor.
+    assert_eq!(stopped_baseline, baseline);
+    receiver
+        .with_current(room, |view| {
+            assert!(
+                view.record
+                    .private_task_text
+                    .private_references()
+                    .is_empty()
+            );
+            Ok(())
+        })
+        .unwrap();
+    source
+        .receive(
+            room,
+            TransportOrigin::RetainedRelayDelta(stopped_baseline.governor),
+            frame(&stopped_baseline),
+            now,
+        )
         .unwrap();
     source
         .receive(
@@ -288,6 +330,28 @@ fn reenrolled_receiver_baseline_retry_cannot_resurrect_a_stopped_run() {
         assert!(report.summary().duplicate);
         assert!(!report.summary().changed);
     }
+    for origin in [
+        TransportOrigin::RetainedRelayDelta([55; 32]),
+        TransportOrigin::UntrustedPresence(baseline.governor),
+    ] {
+        assert!(
+            receiver
+                .receive(room, origin, frame(&baseline), now)
+                .is_err()
+        );
+    }
+    let mut forged = baseline.clone();
+    *forged.signature.first_mut().unwrap() ^= 1;
+    assert!(
+        receiver
+            .receive(
+                room,
+                TransportOrigin::RetainedRelayDelta(baseline.governor),
+                frame(&forged),
+                now,
+            )
+            .is_err()
+    );
     receiver
         .with_current(room, |view| {
             assert_eq!(

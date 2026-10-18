@@ -330,14 +330,11 @@ impl AgentTaskView {
 
     pub(crate) fn current(&self) -> Option<&AgentTaskFrontier> {
         let (task_id, run_epoch) = self.selected.as_ref()?;
-        self.live_selected()
-            .filter(|task| task.active_agent.is_some() || task.status == "queued")
-            .or_else(|| {
-                self.selected_snapshot
-                    .as_ref()
-                    .filter(|task| task.task_id == *task_id && task.run_epoch == Some(*run_epoch))
-            })
-            .or_else(|| self.live_selected())
+        self.live_selected().or_else(|| {
+            self.selected_snapshot
+                .as_ref()
+                .filter(|task| task.task_id == *task_id && task.run_epoch == Some(*run_epoch))
+        })
     }
 
     fn live_selected(&self) -> Option<&AgentTaskFrontier> {
@@ -351,7 +348,8 @@ impl AgentTaskView {
         self.complete
             && !self.loading
             && self.live_selected().is_some_and(|task| {
-                task.run_epoch.is_some()
+                !matches!(task.status.as_str(), "done" | "cancelled" | "ended")
+                    && task.run_epoch.is_some_and(|epoch| epoch > 0)
                     && task.after_revision.is_some()
                     && task.active_agent.as_deref() == Some(task.assigned_agent.as_str())
             })
@@ -394,6 +392,9 @@ impl AgentTaskView {
 
     pub(crate) fn can_stop(&self) -> bool {
         (self.can_steer() || self.pending_start_revision.is_some())
+            && !self
+                .current()
+                .is_some_and(|task| matches!(task.status.as_str(), "done" | "cancelled" | "ended"))
             && !self.stop_pending
             && !matches!(self.receipt, AgentTaskReceipt::StopRequested)
     }
@@ -528,6 +529,7 @@ enum Purpose {
     Queue {
         instruction: String,
         agent: String,
+        draft_route: String,
         draft_revision: u64,
     },
 }
@@ -653,6 +655,24 @@ impl AgentTaskClient {
             compute_status: String::new(),
             goal_receipt: None,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn stage_missing_model_capture(&mut self) {
+        self.settle_compute(
+            &Purpose::Compute {
+                workspace: self.workspace.clone(),
+            },
+            tilo_actions::ActionOutput {
+                value: Some(serde_json::json!({
+                    "status": "needsConfiguration",
+                    "configuredModel": null,
+                    "settings": "settings://agent_models",
+                    "workers": [],
+                })),
+                resources: Vec::new(),
+            },
+        );
     }
 
     /// Capture-only fixture, called by the framework's explicit shot scenario.
@@ -941,7 +961,9 @@ impl AgentTaskClient {
     }
 
     pub(crate) fn needs_compute_controls(&self) -> bool {
-        self.eligible_compute(&self.workspace).is_none() && !self.can_prepare_model_start()
+        self.compute_ready
+            && self.eligible_compute(&self.workspace).is_none()
+            && !self.can_prepare_model_start()
     }
 
     pub(crate) fn needs_setup(&self) -> bool {
@@ -1405,7 +1427,13 @@ impl AgentTaskClient {
         true
     }
 
-    pub(crate) fn queue(&mut self, agent: &str, instruction: String, draft_revision: u64) -> bool {
+    pub(crate) fn queue(
+        &mut self,
+        agent: &str,
+        instruction: String,
+        draft_route: String,
+        draft_revision: u64,
+    ) -> bool {
         if self.submission_pending(agent) {
             return false;
         }
@@ -1421,6 +1449,7 @@ impl AgentTaskClient {
             Purpose::Queue {
                 instruction: instruction.clone(),
                 agent: agent.to_owned(),
+                draft_route,
                 draft_revision,
             },
             Map::from_iter([
@@ -1430,9 +1459,8 @@ impl AgentTaskClient {
                 ("planning".into(), Value::String("model".into())),
             ]),
         );
-        if let Some(view) = self.views.get_mut(agent) {
-            view.receipt = AgentTaskReceipt::Saving;
-        }
+        // A new task's pending save is not a receipt on the selected run.
+        // Keep that run's actual direction/apply history intact until ACK.
         true
     }
 
@@ -2012,6 +2040,7 @@ impl AgentTaskClient {
         let Purpose::Queue {
             instruction,
             agent,
+            draft_route,
             draft_revision,
         } = purpose
         else {
@@ -2043,7 +2072,8 @@ impl AgentTaskClient {
             view.first_run = FirstRun::Observed;
             view.selected = Some((task_id, 0));
             view.receipt = AgentTaskReceipt::Queued;
-            self.cleared_drafts.push((agent.clone(), *draft_revision));
+            self.cleared_drafts
+                .push((draft_route.clone(), *draft_revision));
             view.complete = false;
             view.refresh_at = None;
             self.observe(&self.workspace.clone(), agent);
@@ -3017,7 +3047,7 @@ mod tests {
             .views
             .insert("scribe".into(), AgentTaskView::default());
         let instruction = format!("{}\nKeep the whole second paragraph.", "x".repeat(180));
-        assert!(client.queue("scribe", instruction.clone(), 3));
+        assert!(client.queue("scribe", instruction.clone(), "scribe".into(), 3));
         assert_eq!(client.pending[0].arguments["instruction"], instruction);
         assert_eq!(
             client.pending[0].arguments["title"],
@@ -3040,6 +3070,48 @@ mod tests {
             Purpose::ReadTask { task_id, run_epoch: 0, .. } if task_id == "task:new"
         ));
         assert_eq!(client.pending[0].arguments["_resource"], "desktop:task:new");
+    }
+
+    #[test]
+    fn followup_queue_ack_clears_only_the_original_task_editor_revision() {
+        let mut client = AgentTaskClient::new();
+        client.stage_answer_capture("room", "scribe");
+        let route = client.view("scribe").unwrap().draft_route().unwrap();
+        assert!(client.queue("scribe", "Follow-up".into(), route.clone(), 5));
+        assert!(client.take_cleared_drafts().is_empty());
+        let pending = client.pending.remove(0);
+        client.settle_invocation(
+            &pending.purpose,
+            &succeeded(serde_json::json!({"result":{"queued":{"task_id":"task:followup"}}})),
+        );
+        assert_eq!(client.take_cleared_drafts(), vec![(route, 5)]);
+        assert_eq!(
+            client.view("scribe").unwrap().selected_identity(),
+            Some(("task:followup", 0))
+        );
+        let original = &client.views.runs[&TaskRunKey {
+            task_id: "task:review".into(),
+            run_epoch: 7,
+        }];
+        assert_eq!(original.current().unwrap().status, "done");
+        assert!(matches!(original.receipt, AgentTaskReceipt::Saved { .. }));
+    }
+
+    #[test]
+    fn terminal_frontier_supersedes_the_same_runs_active_snapshot() {
+        let mut client = AgentTaskClient::new();
+        let view = client.stage_capture("room", "scribe");
+        view.selected_snapshot = view.current().cloned();
+        view.tasks[0].status = "done".into();
+        view.tasks[0].active_agent = None;
+        // Execution metadata can lag behind the authenticated terminal state.
+        assert_eq!(view.current().unwrap().status, "done");
+        assert_eq!(
+            crate::render_chat::agent_task_status_lines(view).primary,
+            crate::i18n::t("chat-agent-task-complete")
+        );
+        assert!(!view.can_steer());
+        assert!(!view.can_stop());
     }
 
     #[test]

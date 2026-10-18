@@ -1,5 +1,5 @@
 //! Extract old confirmation bodies before replacing their replicated history.
-use super::*;
+use super::{AutoCommit, BTreeMap, NativeTaskPrivateText, TASK_CONTROL_KEY, blobs, put_blob};
 use serde_json::Value as Json;
 use tilo_desktop_model::{
     WorkspaceTaskConfirmation as Confirmation, WorkspaceTaskConfirmationState as State,
@@ -73,7 +73,10 @@ pub(super) fn scrub_controls(
             if full != scrubbed {
                 recovered.entry(id.clone()).or_default().confirmation = Some(full);
             }
-            control["confirmation"] = serde_json::to_value(scrubbed).map_err(|e| e.to_string())?;
+            *control
+                .get_mut("confirmation")
+                .ok_or("task confirmation absent")? =
+                serde_json::to_value(scrubbed).map_err(|e| e.to_string())?;
             put_blob(room, TASK_CONTROL_KEY, &id, &bytes, &control)?;
         }
     }
@@ -127,7 +130,9 @@ fn neutralize_what(what: &mut Json) -> Result<bool, String> {
     ) {
         // Old versions wrote the private draft label into args.action. Drop all
         // arguments rather than guessing which future argument might be prose.
-        what["args"] = serde_json::json!({});
+        what.as_object_mut()
+            .ok_or("task audit action is not an object")?
+            .insert("args".into(), serde_json::json!({}));
         affected = true;
     }
     for field in ["members", "distinct"] {

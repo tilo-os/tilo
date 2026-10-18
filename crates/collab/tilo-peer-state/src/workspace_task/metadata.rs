@@ -295,6 +295,7 @@ mod tests {
         AutoCommit, WorkspaceTaskActiveRun, WorkspaceTaskFinish, apply, project_controls, snapshot,
     };
     use super::*;
+    use tilo_desktop_model::WorkspaceTaskMetadata;
 
     fn apply_command(
         doc: &mut AutoCommit,
@@ -942,14 +943,14 @@ mod tests {
         assert_eq!(postcard::to_stdvec(&presentation).unwrap()[0], 20);
         let metadata = WorkspaceTaskCommand::SetMetadata {
             task_id: "task:one".into(),
-            metadata: Default::default(),
+            metadata: WorkspaceTaskMetadata::default(),
         };
         assert_eq!(postcard::to_stdvec(&metadata).unwrap()[0], 27);
         let queue = WorkspaceTaskCommand::QueueWithMetadata {
             title: "Task".into(),
             assigned_agent: None,
             route: WorkspaceTaskRoute::Model,
-            metadata: Default::default(),
+            metadata: WorkspaceTaskMetadata::default(),
         };
         assert_eq!(postcard::to_stdvec(&queue).unwrap()[0], 28);
         let result = WorkspaceTaskMutationResult::MetadataUpdated {

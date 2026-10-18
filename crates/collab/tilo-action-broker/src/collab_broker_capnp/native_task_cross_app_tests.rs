@@ -215,8 +215,10 @@ async fn native_cross_app_approval_steering_stop_and_grants() {
         .run_until(Box::pin(async {
             let f = Fixture::with_model_launcher(None, None, true);
             let listener = Arc::new(tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap());
-            let _env =
-                model_owner::configure(&f, format!("http://{}/v1", listener.local_addr().unwrap()));
+            let _env = model_owner::legacy::configure_task_model(
+                &f,
+                format!("http://{}/v1", listener.local_addr().unwrap()),
+            );
             let mut writer =
                 Worker::<Document>::mount(&f, 210, "so.tilo.word-processor", "append-paragraph")
                     .await;
@@ -281,7 +283,7 @@ async fn approve_journey(
     agent: &channel_handle::Client,
     writer: &Worker<Document>,
     settings: &Worker<DesktopControls>,
-) -> runtime_collab::TaskRunEnvelope {
+) -> DeliveredRun {
     let queued = f.native.owner.workspace_task_snapshot(room()).unwrap();
     assert_eq!(queued.tasks[0].status, WorkspaceTaskStatus::Queued);
     assert!(queued.controls[&f.task].active_run.is_none());
@@ -294,7 +296,9 @@ async fn approve_journey(
     writer.assert_no_delivery().await;
     settings.assert_no_delivery().await;
 
-    f.approve(); // Authenticated person command, independent of any tool grant.
+    // The authenticated person freezes MODEL consent separately from the
+    // original data/tool ceiling; later app grants do not manufacture it.
+    model_owner::approve_model(f);
     let run = delivered(agent).await;
     assert_eq!(run.task_id, f.task);
     assert!(run.instruction().contains("blocking inconsistency"));
@@ -363,7 +367,10 @@ async fn steering_journey(
     })
     .unwrap();
     let saved = f.native.owner.workspace_task_snapshot(room()).unwrap();
-    assert!(saved.controls[&f.task].directions[0].text.is_empty());
+    assert_eq!(
+        saved.controls[&f.task].directions[0].text,
+        tilo_peer_state::workspace_task::private_instruction_reference(direction)
+    );
     let private = f
         .native
         .owner

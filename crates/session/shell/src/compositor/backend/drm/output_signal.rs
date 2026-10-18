@@ -576,7 +576,7 @@ impl CrtcGamma {
 /// The `drm` crate's own wrapper takes a sized value; a LUT's length is the
 /// CRTC's.
 fn create_blob<D: ControlDevice>(device: &D, bytes: &[u8]) -> std::io::Result<u32> {
-    use std::os::fd::{AsFd as _, AsRawFd as _};
+    use std::os::fd::AsRawFd as _;
     /// `DRM_IOCTL_MODE_CREATEPROPBLOB`: `_IOWR('d', 0xBD, struct drm_mode_create_blob)`.
     const CREATE_BLOB: u32 = 0xC010_64BD;
     #[repr(C)]

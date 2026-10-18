@@ -74,6 +74,57 @@ pub(super) fn exact(
 }
 
 impl TaskAdmissionLedger {
+    /// Observe only an exact already-dispatched child, without consuming a new
+    /// confirmation or admitting another effect. Private provenance outlives runs.
+    /// # Errors
+    /// Missing dispatch custody, changed metadata, or a live Deny.
+    pub fn check_retained_action(
+        &self,
+        peer: &crate::StatePeer,
+        requirement: &NativeTaskActionRequirement,
+        binding: &NativeInvocationBinding,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        let admitted = self.dispatched_invocation(binding.invocation, binding.host)?;
+        if admitted != binding {
+            return Err("retained native invocation differs from owner ledger".into());
+        }
+        let entry = self
+            .reservations
+            .get(&binding.invocation)
+            .ok_or("retained native invocation absent")?;
+        if !entry.host_started {
+            return Err("retained native physical dispatch absent".into());
+        }
+        let source = entry
+            .retained_source
+            .as_ref()
+            .ok_or("retained native starter custody absent")?;
+        let reviewed = requirement
+            .invocation
+            .as_ref()
+            .and_then(|invocation| invocation.activation_for.as_deref())
+            .unwrap_or(requirement);
+        if let Some(reference) = &reviewed.confirmation {
+            // A physical remote host holds a signed consumed permit, not the
+            // governor's private answer. At the governor verify consumption too.
+            if peer.authority().device_public_key == entry.reservation.governor {
+                let frozen = self
+                    .confirmations
+                    .get(reference)
+                    .ok_or("retained native confirmation custody absent")?;
+                if frozen.consumed != Some(binding.request)
+                    || frozen.host != binding.host
+                    || frozen.requirement.confirmation_ceiling_digest()?
+                        != reviewed.confirmation_ceiling_digest()?
+                {
+                    return Err("retained native confirmation consumption differs".into());
+                }
+            }
+        }
+        requirement.check_retained_source(peer, binding, source, now)
+    }
+
     pub(super) fn validate_confirmations(&self) -> Result<(), String> {
         if self.confirmations.len() > MAX_RESERVATIONS {
             return Err("native confirmation capacity exhausted".into());
@@ -397,7 +448,9 @@ impl NativeCommittedView {
         binding: &NativeInvocationBinding,
         now: SystemTime,
     ) -> Result<(), String> {
-        requirement.check_retained(self.peer(), binding, now)
+        self.record
+            .task_admission
+            .check_retained_action(self.peer(), requirement, binding, now)
     }
     fn check_private_run(&self, requirement: &NativeTaskActionRequirement) -> Result<(), String> {
         let binding = requirement

@@ -5,6 +5,21 @@ use tilo_owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest}
 use tilo_peer_state::workspace_task::WorkspaceTaskAuthority;
 use tilo_relay_session::rooms::private::{PrivateOperation, PrivateReply};
 
+#[cfg(test)]
+thread_local! {
+    static NEXT_OWNER_FAILURE: std::cell::Cell<Option<tilo_files::native::atomic::test_support::Checkpoint>> = const { std::cell::Cell::new(None) };
+}
+
+/// Inject the next operation's storage failure on its actual owner worker.
+#[cfg(test)]
+pub(super) fn fail_next_owner_operation(
+    checkpoint: tilo_files::native::atomic::test_support::Checkpoint,
+) {
+    NEXT_OWNER_FAILURE.with(|next| {
+        assert!(next.replace(Some(checkpoint)).is_none());
+    });
+}
+
 /// Drive an owned owner operation away from the broker's LocalSet. The runtime
 /// still drives remote I/O and timers; synchronous custody RPCs, owner reads and
 /// durable writes run on the blocking worker, including after an await.
@@ -15,9 +30,19 @@ where
     Fut: std::future::Future<Output = Result<T, String>>,
 {
     let runtime = tokio::runtime::Handle::current();
-    tokio::task::spawn_blocking(move || runtime.block_on(work()))
-        .await
-        .map_err(|_| "native owner operation interrupted; outcome unknown".to_owned())?
+    #[cfg(test)]
+    let failure = NEXT_OWNER_FAILURE.with(std::cell::Cell::take);
+    tokio::task::spawn_blocking(move || {
+        #[cfg(test)]
+        if let Some(checkpoint) = failure {
+            return tilo_files::native::atomic::test_support::with_failure(checkpoint, || {
+                runtime.block_on(work())
+            });
+        }
+        runtime.block_on(work())
+    })
+    .await
+    .map_err(|_| "native owner operation interrupted; outcome unknown".to_owned())?
 }
 
 impl NativeOwnerCommitService {

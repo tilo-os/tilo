@@ -6,6 +6,9 @@ mod model_host_tests;
 #[path = "task_admission/local_admission_tests.rs"]
 mod local_admission_tests;
 
+#[path = "task_admission/retained_action_tests.rs"]
+mod retained_action_tests;
+
 use crate::application_record::tests::{Fixture, fixture};
 use tilo_owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::workspace_task::{WorkspaceTaskAuthority, WorkspaceTaskCommand};

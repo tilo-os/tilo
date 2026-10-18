@@ -23,6 +23,53 @@ use tilo_joined_room::task_policy::NativeTaskBinding;
 use tilo_peer_state::workspace_task::{WorkspaceTaskAuthority, WorkspaceTaskCommand as T};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+const PRIVATE_GOAL: &str = "Keep this draft private";
+
+/// Only the pinned governor can write policy in the desktop task namespace.
+/// An Observer's general preset deliberately does not authorize outside effects.
+async fn model_permission(
+    rooms: &Rooms,
+    room: &str,
+    task: &str,
+    governor_key: &SigningKey,
+    agent_answer: tilo_action_policy::Answer,
+) {
+    use tilo_action_policy::{Answer, Grant, KindSet, Subject};
+    let state = rooms.room(room).await.unwrap();
+    let mut held = state.lock().await;
+    let mut candidate = held.peer().clone();
+    let now = SystemTime::now();
+    let governor = candidate.authority();
+    let person = candidate
+        .permissions(governor.device_public_key, now)
+        .unwrap()
+        .person;
+    let node = NativeModelContract::task_resource(room, task).action("requestModel");
+    let grants = [
+        ("starter", Subject::person(person.clone()), Answer::Allow),
+        ("agent", Subject::agent("scribe"), agent_answer),
+    ]
+    .into_iter()
+    .map(|(name, subject, answer)| {
+        Grant::new(
+            format!("remote-model-{task}-{name}"),
+            subject,
+            node.clone(),
+            KindSet::OUTSIDE,
+            answer,
+            Subject::person(person.clone()),
+        )
+    })
+    .collect::<Vec<_>>();
+    candidate
+        .governance_mut()
+        .put_governed_grants(&grants, governor_key, now)
+        .unwrap();
+    let collaboration = held.collaboration().clone();
+    held.commit(candidate, governor_key, now, |_, _| Ok(collaboration))
+        .unwrap();
+}
+
 struct Selection(NativeModelContract);
 impl NativeModelStartAuthority for Selection {
     fn approved_model_start(
@@ -121,7 +168,14 @@ async fn lease(
 ) -> Lease {
     let id = tilo_desktop_model::RoomId::parse(room).unwrap();
     let state = native.owner.workspace_task_snapshot(id).unwrap();
-    let run = state.controls[task].active_run.as_ref().unwrap();
+    let control = &state.controls[task];
+    let reference = tilo_peer_state::workspace_task::private_instruction_reference(PRIVATE_GOAL);
+    assert_eq!(
+        control.private_instruction_ref,
+        Some(reference),
+        "the joined sanitized baseline must bind the governor's private goal"
+    );
+    let run = control.active_run.as_ref().unwrap();
     let read = |operation| PrivateOperation::NativeTaskRead {
         task: task.into(),
         epoch: run.epoch,
@@ -157,6 +211,39 @@ async fn lease(
     else {
         panic!("native private contract refused")
     };
+    let instructions = rpc(
+        &native.client,
+        address,
+        room,
+        read(PrivateOperation::TaskInstructions {
+            task: task.into(),
+            epoch: run.epoch,
+        }),
+    )
+    .await;
+    let PrivateReply::TaskInstructions(encoded) = instructions else {
+        panic!("authenticated instructions refused before MODEL enrollment: {instructions:?}")
+    };
+    let private: tilo_joined_room::NativePrivateTaskInstructions =
+        serde_json::from_str(&encoded).unwrap();
+    assert_eq!(private.instruction.as_deref(), Some(PRIVATE_GOAL));
+    assert_eq!(
+        tilo_joined_room::task_admission::private_run::private_run_digest(
+            id,
+            &state,
+            &NativeTaskBinding {
+                task_id: task.into(),
+                agent_id: run.agent_id.clone(),
+                epoch: run.epoch,
+                revision: run.applied_direction_revision,
+                starter: Some(run.approval.as_ref().unwrap().person.clone()),
+            },
+            &private,
+        )
+        .expect("joined baseline and authenticated private instructions must describe one run"),
+        digest,
+        "host baseline digest must match the governor's authenticated run digest"
+    );
     Lease {
         context: NativeModelContext {
             actor: run.agent_id.clone(),
@@ -232,12 +319,36 @@ fn requirement(
 }
 
 async fn claim(
+    rooms: &Rooms,
     native: &NativeEditor,
     address: &iroh::EndpointAddr,
     registration: &NativeModelHostRegistration,
     need: &TypedNativeModelRequirement,
 ) -> NativeInvocationPermit {
     let room = need.room.to_string();
+    // Diagnose policy/enrollment failures before the private wire intentionally
+    // collapses their details into Refused. This never issues an extra permit.
+    {
+        let caller = native
+            .owner
+            .with_current(need.room, |view| Ok(view.device().clone()))
+            .unwrap();
+        let state = rooms.room(&room).await.unwrap();
+        let held = state.lock().await;
+        let current = held
+            .load_native_admission()
+            .unwrap()
+            .check_model_host(registration.id(), need, &caller)
+            .expect("MODEL source must be independently enrolled before reservation");
+        need.check_registered_context(
+            held.peer(),
+            &held.task_policy_snapshot().unwrap(),
+            &need.binding().unwrap(),
+            &current,
+            SystemTime::now(),
+        )
+        .unwrap_or_else(|error| panic!("governor MODEL reservation preflight: {error}"));
+    }
     let Some(R::Reserved(reservation)) = command(
         native,
         address,
@@ -426,7 +537,7 @@ async fn two_authenticated_native_hosts_dispatch_exact_model_http_and_persist_st
         &room,
         T::QueueInstruction {
             title: "Review a private draft".into(),
-            instruction: "Keep this draft private".into(),
+            instruction: PRIVATE_GOAL.into(),
             assigned_agent: "scribe".into(),
             route: tilo_desktop_model::WorkspaceTaskRoute::Model,
         },
@@ -443,6 +554,14 @@ async fn two_authenticated_native_hosts_dispatch_exact_model_http_and_persist_st
         .tasks[0]
         .id
         .clone();
+    model_permission(
+        &rooms,
+        &room,
+        &task,
+        &governor_key,
+        tilo_action_policy::Answer::Allow,
+    )
+    .await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let http = listener.local_addr().unwrap();
     let selection = Selection(NativeModelContract::for_task(
@@ -500,6 +619,18 @@ async fn two_authenticated_native_hosts_dispatch_exact_model_http_and_persist_st
     // Fresh, independently invited native stores observe the committed run.
     let a = NativeEditor::join(&rooms, &room, &governor, &key_a, &cert_a).await;
     let b = NativeEditor::join(&rooms, &room, &governor, &key_b, &cert_b).await;
+    assert_ne!(a.directory.path(), b.directory.path());
+    assert_ne!(a.endpoint.id(), b.endpoint.id());
+    for native in [&a, &b] {
+        native
+            .owner
+            .with_current(id, |view| {
+                assert!(view.device().capabilities.can_act_as_host);
+                assert_eq!(view.governor(), &governor);
+                Ok(())
+            })
+            .unwrap();
+    }
     let lease_a = lease(&a, &address, &room, &task).await;
     let lease_b = lease(&b, &address, &room, &task).await;
     assert_eq!(lease_a.context, lease_b.context);
@@ -515,6 +646,40 @@ async fn two_authenticated_native_hosts_dispatch_exact_model_http_and_persist_st
         br#"{"model":"selected","messages":[{"role":"user","content":"Plan the review"}],"max_tokens":16}"#.to_vec(),
         br#"{"model":"selected","messages":[{"role":"user","content":"Complete the review"}],"max_tokens":16}"#.to_vec(),
     ];
+    // Enrollment and a still-live host lease do not override current policy.
+    // Keep the replicas stale on purpose: the governor must reject independently.
+    model_permission(
+        &rooms,
+        &room,
+        &task,
+        &governor_key,
+        tilo_action_policy::Answer::Deny,
+    )
+    .await;
+    for (native, lease, registration) in [(&a, &lease_a, &reg_a), (&b, &lease_b, &reg_b)] {
+        assert!(
+            command(
+                native,
+                &address,
+                &room,
+                C::ReserveModel {
+                    registration: registration.id(),
+                    requirement: requirement(native, &room, lease, &bodies[0]),
+                },
+            )
+            .await
+            .is_none(),
+            "a live enrolled host must not bypass a denied requestModel action"
+        );
+    }
+    model_permission(
+        &rooms,
+        &room,
+        &task,
+        &governor_key,
+        tilo_action_policy::Answer::Allow,
+    )
+    .await;
     let peer = tokio::spawn(http_peer(listener, bodies.to_vec()));
     for ((native, lease, registration, key), body) in [
         (&a, &lease_a, &reg_a, &key_a),
@@ -524,7 +689,7 @@ async fn two_authenticated_native_hosts_dispatch_exact_model_http_and_persist_st
     .zip(&bodies)
     {
         let need = requirement(native, &room, lease, body);
-        let permit = claim(native, &address, registration, &need).await;
+        let permit = claim(&rooms, native, &address, registration, &need).await;
         let gate = HostDispatchModel {
             owner: &native.owner,
             authority: lease,
@@ -594,6 +759,11 @@ async fn two_authenticated_native_hosts_dispatch_exact_model_http_and_persist_st
         (&b, reg_a.id(), need.clone()),
         (&a, reg_a.id(), {
             let mut n = need.clone();
+            n.private_run_digest = [0x55; 32];
+            n
+        }),
+        (&a, reg_a.id(), {
+            let mut n = need.clone();
             n.run.epoch = n.run.epoch.checked_add(1).unwrap();
             n
         }),
@@ -659,6 +829,19 @@ async fn two_authenticated_native_hosts_dispatch_exact_model_http_and_persist_st
         );
     }
     let mut forged = serde_json::to_value(&reg_a).unwrap();
+    forged["context"]["private_run_digest"] = serde_json::to_value([0x55_u8; 32]).unwrap();
+    assert!(
+        command(
+            &a,
+            &address,
+            &room,
+            C::RegisterModelHost(resign(forged, &key_a))
+        )
+        .await
+        .is_none(),
+        "even a certified host cannot enroll a different private run digest"
+    );
+    let mut forged = serde_json::to_value(&reg_a).unwrap();
     forged["context"]["contract"]["selection"]["model"] = serde_json::json!("tampered-model");
     assert!(
         command(
@@ -677,9 +860,9 @@ async fn two_authenticated_native_hosts_dispatch_exact_model_http_and_persist_st
     );
 
     let stopped_need = requirement(&b, &room, &lease_b, &bodies[1]);
-    let queued = claim(&b, &address, &reg_b, &stopped_need).await;
+    let queued = claim(&rooms, &b, &address, &reg_b, &stopped_need).await;
     let queued_need = requirement(&a, &room, &lease_a, &bodies[0]);
-    let queued_a = claim(&a, &address, &reg_a, &queued_need).await;
+    let queued_a = claim(&rooms, &a, &address, &reg_a, &queued_need).await;
     HostDispatchModel {
         owner: &a.owner,
         authority: &lease_a,

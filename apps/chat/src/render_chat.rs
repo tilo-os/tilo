@@ -96,18 +96,18 @@ pub(crate) struct AgentTaskStatusLines {
 
 pub(crate) fn agent_task_status_lines(view: &AgentTaskView) -> AgentTaskStatusLines {
     let primary = if let Some(task) = view.current() {
-        let state = match task.execution_phase() {
-            Some("accepted") => crate::i18n::t("chat-agent-task-accepted"),
-            Some("planning") => crate::i18n::t("chat-agent-task-planning"),
-            Some("executing") => crate::i18n::t("chat-agent-task-executing"),
-            _ => match task.status.as_str() {
-                "queued" => crate::i18n::t("chat-agent-task-queued"),
-                "done" => crate::i18n::t("chat-agent-task-complete"),
-                "cancelled" => crate::i18n::t("chat-agent-task-cancelled"),
-                "ended" => crate::i18n::t("chat-agent-task-ended"),
-                _ => crate::i18n::t("chat-agent-task-phase-unknown"),
+        let state = crate::i18n::t(match task.status.as_str() {
+            "done" => "chat-agent-task-complete",
+            "cancelled" => "chat-agent-task-cancelled",
+            "ended" => "chat-agent-task-ended",
+            "queued" => "chat-agent-task-queued",
+            _ => match task.execution_phase() {
+                Some("accepted") => "chat-agent-task-accepted",
+                Some("planning") => "chat-agent-task-planning",
+                Some("executing") => "chat-agent-task-executing",
+                _ => "chat-agent-task-phase-unknown",
             },
-        };
+        });
         if task.run_epoch.is_none_or(|epoch| epoch == 0) {
             return AgentTaskStatusLines {
                 primary: state,
@@ -120,19 +120,7 @@ pub(crate) fn agent_task_status_lines(view: &AgentTaskView) -> AgentTaskStatusLi
                 }),
             };
         }
-        crate::i18n::t_args(
-            "chat-agent-task-status",
-            &[
-                ("state", state.into()),
-                ("title", task.title.clone().into()),
-                (
-                    "run",
-                    task.run_epoch
-                        .map_or_else(|| "—".into(), |epoch| epoch.to_string())
-                        .into(),
-                ),
-            ],
-        )
+        state
     } else if let Some((task, epoch)) = view.selected_identity() {
         crate::i18n::t_args(
             "chat-agent-task-selected-unavailable",
@@ -153,17 +141,34 @@ pub(crate) fn agent_task_status_lines(view: &AgentTaskView) -> AgentTaskStatusLi
             )],
         )
     };
-    let receipt = view.start_error.clone().or_else(|| match &view.receipt {
-        // Storing the direction is the system's job; only what the agent
-        // does with it is news. A start refusal still takes precedence.
-        AgentTaskReceipt::None | AgentTaskReceipt::Saving => None,
-        AgentTaskReceipt::Saved { .. } => Some(crate::i18n::t("chat-agent-direction-waiting")),
-        AgentTaskReceipt::Applied => Some(crate::i18n::t("chat-agent-direction-applied")),
-        AgentTaskReceipt::Started => Some(crate::i18n::t("chat-agent-task-started")),
-        AgentTaskReceipt::StopRequested => Some(crate::i18n::t("chat-agent-task-stopped")),
-        AgentTaskReceipt::Queued => Some(crate::i18n::t("chat-agent-task-saved")),
-        AgentTaskReceipt::Refused => Some(crate::i18n::t("chat-agent-direction-refused")),
-    });
+    let receipt =
+        view.start_error.clone().or_else(|| match &view.receipt {
+            // Storing the direction is the system's job; only what the agent
+            // does with it is news. A start refusal still takes precedence.
+            AgentTaskReceipt::None | AgentTaskReceipt::Saving => None,
+            AgentTaskReceipt::Saved { .. } => Some(crate::i18n::t(
+                if view.current().is_some_and(|task| {
+                    matches!(task.status.as_str(), "done" | "cancelled" | "ended")
+                }) {
+                    "chat-agent-direction-unapplied-ended"
+                } else {
+                    "chat-agent-direction-waiting"
+                },
+            )),
+            AgentTaskReceipt::Applied => Some(crate::i18n::t(
+                if view.current().is_some_and(|task| {
+                    matches!(task.status.as_str(), "done" | "cancelled" | "ended")
+                }) {
+                    "chat-agent-direction-applied-ended"
+                } else {
+                    "chat-agent-direction-applied"
+                },
+            )),
+            AgentTaskReceipt::Started => Some(crate::i18n::t("chat-agent-task-started")),
+            AgentTaskReceipt::StopRequested => Some(crate::i18n::t("chat-agent-task-stopped")),
+            AgentTaskReceipt::Queued => Some(crate::i18n::t("chat-agent-task-saved")),
+            AgentTaskReceipt::Refused => Some(crate::i18n::t("chat-agent-direction-refused")),
+        });
     AgentTaskStatusLines { primary, receipt }
 }
 
@@ -1205,7 +1210,7 @@ impl ChatApp {
         task: &crate::agent_tasks::AgentTaskFrontier,
         tasks: &[&crate::agent_tasks::AgentTaskFrontier],
     ) -> Option<usize> {
-        let completed = matches!(task.status.as_str(), "done" | "cancelled");
+        let completed = matches!(task.status.as_str(), "done" | "cancelled" | "ended");
         if (!self.task_label.is_empty() && !task.labels.contains(&self.task_label))
             || (self.task_filter == "active" && completed)
             || (self.task_filter == "completed" && !completed)
@@ -1245,6 +1250,7 @@ impl ChatApp {
             "queued" => "chat-agent-task-queued",
             "done" => "chat-agent-task-complete",
             "cancelled" => "chat-agent-task-cancelled",
+            "ended" => "chat-agent-task-ended",
             "in_progress" => "chat-agent-task-executing",
             _ => "chat-agent-task-phase-unknown",
         });
@@ -1963,11 +1969,15 @@ impl ChatApp {
             text: tr,
             theme,
         } = paint;
-        // Calls happen in voice channels, joined from the sidebar; while
-        // one is on, the way back to its window stands here.
+        // Ordinary channels retain the call entry point; private Task and
+        // person conversations use their separate header above.
         let mut right = right;
-        if self.call.active {
-            let call_label = crate::i18n::t("chat-header-call-open");
+        {
+            let call_label = crate::i18n::t(if self.call.active {
+                "chat-header-call-open"
+            } else {
+                "chat-header-call-start"
+            });
             let probe = ButtonFace::new(Rect::ZERO, &call_label);
             let call_w = probe.intrinsic_width(tr, theme);
             let call = Rect::new(
@@ -5228,12 +5238,33 @@ mod tests {
         let task = view.current().unwrap();
         let status = super::agent_task_status_lines(view);
         assert!(status.primary.contains("Working"));
-        assert!(status.primary.contains("Run 7"));
+        assert!(!status.primary.contains("Run 7"));
+        assert_eq!(task.run_epoch, Some(7));
         assert!(!status.primary.contains(&task.title));
         assert_eq!(
             status.receipt,
             Some(crate::i18n::t("chat-agent-direction-waiting"))
         );
+    }
+
+    #[test]
+    fn completed_task_never_claims_pending_direction_or_running_execution() {
+        let mut app = crate::app::ChatApp::new_ephemeral();
+        app.agent_tasks.stage_answer_capture("workspace", "scribe");
+        let view = app.agent_tasks.view("scribe").unwrap();
+        let status = super::agent_task_status_lines(view);
+        assert_eq!(status.primary, crate::i18n::t("chat-agent-task-complete"));
+        assert_eq!(
+            status.receipt,
+            Some(crate::i18n::t("chat-agent-direction-unapplied-ended"))
+        );
+        assert!(matches!(
+            view.receipt,
+            crate::agent_tasks::AgentTaskReceipt::Saved { .. }
+        ));
+        assert!(!view.can_steer());
+        assert!(!view.can_stop());
+        assert_eq!(view.selected_identity(), Some(("task:review", 7)));
     }
 
     #[test]

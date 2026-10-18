@@ -35,10 +35,18 @@ struct Enrolled {
 
 /// Enroll through the file store and admit the governor's history.
 fn enrolled() -> Enrolled {
+    enrolled_fixture(false)
+}
+
+fn enrolled_fixture(native_owner: bool) -> Enrolled {
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let path = directory.path().join("joined-rooms.json");
     let owner = open_file(&path).unwrap();
-    let (intent, bootstrap, messages, governor, now) = raw_fixture();
+    let (intent, bootstrap, messages, governor, now) = if native_owner {
+        crate::testing::raw_owner_fixture()
+    } else {
+        raw_fixture()
+    };
     let pending = owner.prepare_enrollment_into(&intent, None, now).unwrap();
     let enrollment = crate::testing::finalize(intent, pending, bootstrap).unwrap();
     owner.install(&enrollment, now).unwrap();
@@ -487,7 +495,7 @@ fn run_bound_steering_refuses_stale_epoch_and_revision_without_owner_write() {
 
 #[test]
 fn task_action_admission_and_direction_commit_are_one_serialized_owner_turn() {
-    let joined = enrolled();
+    let joined = enrolled_fixture(true);
     let (task_id, caller) = queued_and_started_task(&joined);
     let admission_owner = joined.owner.clone();
     let nested_read_owner = joined.owner.clone();
@@ -734,6 +742,32 @@ fn unordered_edit(joined: &Enrolled, topic: &str) -> OwnerCommitRequest {
     }
 }
 
+fn assert_unkeyed_document_recovery(joined: &Enrolled) {
+    joined
+        .owner
+        .with_outgoing(joined.room, joined.now, |view, _| {
+            assert_eq!(
+                view.device().device_public_key,
+                member().verifying_key().to_bytes()
+            );
+            assert_ne!(
+                view.device().device_public_key,
+                view.governor().device_public_key
+            );
+            assert!(view.record.sanitized_baseline.is_none());
+            Ok(())
+        })
+        .unwrap();
+    // Ordinary reopening needs no governor migration or signing custody.
+    open_file(&joined.path)
+        .unwrap()
+        .with_outgoing(joined.room, joined.now, |view, _| {
+            assert!(view.record.sanitized_baseline.is_none());
+            Ok(())
+        })
+        .unwrap();
+}
+
 #[test]
 fn dense_snapshot_sequence_is_stale_after_an_intervening_recovery_projection() {
     let joined = enrolled();
@@ -749,6 +783,7 @@ fn dense_snapshot_sequence_is_stale_after_an_intervening_recovery_projection() {
         1,
         "the owner's own turn must sign a recovery projection at floor + 1"
     );
+    assert_unkeyed_document_recovery(&joined);
     assert_eq!(
         joined.owner.commit_document(dense, joined.now).unwrap_err(),
         "native local document signed sequence is stale"
@@ -770,6 +805,7 @@ fn unordered_sequence_survives_an_intervening_recovery_projection() {
         1,
         "the owner's own turn must sign a recovery projection at floor + 1"
     );
+    assert_unkeyed_document_recovery(&joined);
     joined
         .owner
         .commit_document(request.clone(), joined.now)

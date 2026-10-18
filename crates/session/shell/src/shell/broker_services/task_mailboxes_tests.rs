@@ -121,6 +121,7 @@ fn report_conversion_preserves_full_presentation_and_refuses_oversize() {
     };
     let original = NativePrivateTaskReport {
         invocation: uuid::Uuid::new_v4(),
+        request_digest: None,
         source_device: [7; 32],
         role: NativePrivateTaskReportRole::Assistant,
         accepted_at_unix_ns: 123,

@@ -121,13 +121,49 @@ pub fn raw_fixture() -> (
 ) {
     raw_fixture_at(SystemTime::now())
 }
+pub fn raw_fixture_at(
+    now: SystemTime,
+) -> (
+    VerifiedNativeEnrollmentIntent,
+    join::JoinBootstrap,
+    Vec<NeighbourMsg>,
+    [u8; 32],
+    SystemTime,
+) {
+    raw_fixture_with_owner(now, false)
+}
+
+/// A genuinely enrolled selected governor, with its own signing custody.
+pub fn raw_owner_fixture() -> (
+    VerifiedNativeEnrollmentIntent,
+    join::JoinBootstrap,
+    Vec<NeighbourMsg>,
+    [u8; 32],
+    SystemTime,
+) {
+    raw_owner_fixture_at(SystemTime::now())
+}
+
+pub fn raw_owner_fixture_at(
+    now: SystemTime,
+) -> (
+    VerifiedNativeEnrollmentIntent,
+    join::JoinBootstrap,
+    Vec<NeighbourMsg>,
+    [u8; 32],
+    SystemTime,
+) {
+    raw_fixture_with_owner(now, true)
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "one linear signed-enrollment fixture; splitting it would scatter the protocol \
               steps each test depends on"
 )]
-pub fn raw_fixture_at(
+fn raw_fixture_with_owner(
     now: SystemTime,
+    native_owner: bool,
 ) -> (
     VerifiedNativeEnrollmentIntent,
     join::JoinBootstrap,
@@ -147,8 +183,16 @@ pub fn raw_fixture_at(
         &governor_key,
         "Governor",
     );
-    let device_key = SigningKey::from_bytes(&[63; 32]);
-    let device = certificate(&SigningKey::from_bytes(&[64; 32]), &device_key, "Member");
+    let device_key = if native_owner {
+        governor_key.clone()
+    } else {
+        SigningKey::from_bytes(&[63; 32])
+    };
+    let device = if native_owner {
+        governor.clone()
+    } else {
+        certificate(&SigningKey::from_bytes(&[64; 32]), &device_key, "Member")
+    };
     let host_key = SigningKey::from_bytes(&[69; 32]);
     let mut host = certificate(
         &SigningKey::from_bytes(&[62; 32]),

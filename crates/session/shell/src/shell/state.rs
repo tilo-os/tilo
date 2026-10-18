@@ -6897,7 +6897,7 @@ mod automerge_foundation_tests {
         {
             let mut tree_a = WorkspaceTree::bootstrap_demo();
             let target_group = tree_a.desktop.workspaces[0].strips[0].window_groups[0].id;
-            let new_share: u16 = 600;
+            let new_share: u32 = 600;
 
             tree_a.desktop.workspaces[0].strips[0].window_groups[0].width =
                 WindowWidth::Fraction(new_share);

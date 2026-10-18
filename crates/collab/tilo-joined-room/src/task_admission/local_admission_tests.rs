@@ -280,7 +280,7 @@ fn current_run(f: &Fixture, room: RoomId, task: &str) -> crate::task_policy::Nat
     }
 }
 
-fn action_requirement(
+pub(super) fn action_requirement(
     f: &Fixture,
     exact: &NativeInvocationBinding,
 ) -> crate::task_policy::NativeTaskActionRequirement {

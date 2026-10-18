@@ -62,6 +62,7 @@ pub(super) struct TaskControlReader {
     mailbox_changes: HashMap<u64, watch::Receiver<()>>,
     jobs: FuturesUnordered<ObservationJob>,
     running: HashSet<u64>,
+    retired: HashSet<u64>,
     observed: HashMap<u64, u64>,
     generation: u64,
     read_sequence: u64,
@@ -85,6 +86,7 @@ impl TaskControlReader {
             mailbox_changes: HashMap::new(),
             jobs: FuturesUnordered::new(),
             running: HashSet::new(),
+            retired: HashSet::new(),
             observed: HashMap::new(),
             generation: 1,
             read_sequence: 0,
@@ -94,6 +96,7 @@ impl TaskControlReader {
     fn cancel(&mut self) {
         self.jobs = FuturesUnordered::new();
         self.running.clear();
+        self.retired.clear();
         self.mailbox_changes.clear();
         self.seen.clear();
         self.observed.clear();
@@ -131,11 +134,12 @@ impl TaskControlReader {
                 .lock()
                 .map_err(|_| capnp::Error::failed("task run registry unavailable".into()))?
                 .iter()
-                .filter(|(_, run)| {
+                .filter(|(id, run)| {
                     run.peer_id == self.peer
                         && run.agent_id == *agent
                         && run.cluster_id == self.route.cluster_id
                         && !run.terminal
+                        && !self.retired.contains(id)
                         && run.native.is_some()
                 })
                 .map(|(id, run)| (*id, run.clone()))
@@ -144,6 +148,7 @@ impl TaskControlReader {
             self.mailbox_changes.retain(|id, _| runs.contains_key(id));
             self.observed.retain(|id, _| runs.contains_key(id));
             for (id, run) in runs {
+                let revision = delivered_revision(self.seen.get(&id), &run);
                 if self.running.contains(&id) || self.observed.get(&id) == Some(&self.generation) {
                     continue;
                 }
@@ -172,7 +177,7 @@ impl TaskControlReader {
                                 .map_err(capnp::Error::failed)?;
                             Ok(ObservationStage::Armed(Box::new(run), changes))
                         } else {
-                            observe(&state, peer, id, run).map(|observation| {
+                            observe(&state, peer, id, run, revision).map(|observation| {
                                 ObservationStage::Observed(Box::new(observation))
                             })
                         }
@@ -229,10 +234,13 @@ impl TaskControlReader {
                                 "private task has no active run" | "private task run ended"
                                 | "task run ended")
                             {
-                                // Refuse the ended run's captured body to the
-                                // caller. The client retries this typed transient
-                                // response; admission/custody errors do not retry.
-                                self.cancel();
+                                // Retire only this lease. A stopped sibling must
+                                // neither erase delivery cursors nor cancel live
+                                // observations on the shared subscription.
+                                self.retired.insert(id);
+                                self.seen.remove(&id);
+                                self.mailbox_changes.remove(&id);
+                                self.observed.remove(&id);
                                 return Err(capnp::Error::overloaded(
                                     "task control observation superseded".into()));
                             }
@@ -247,6 +255,7 @@ impl TaskControlReader {
                             // Own the watch before starting a potentially slow
                             // private read, so disconnect cancels it immediately.
                             if let Some(changes) = changes { self.mailbox_changes.insert(id, changes); }
+                            let revision = delivered_revision(self.seen.get(&id), &run);
                             let (state, route, identity, peer) = (
                                 self.state.clone(), self.route.clone(), self.identity.clone(), self.peer,
                             );
@@ -254,7 +263,7 @@ impl TaskControlReader {
                             self.jobs.push(Box::pin(async move {
                                 let result = blocking(move || {
                                     state.revalidate_admission(&route, &identity)?;
-                                    observe(&state, peer, id, *run).map(|observation| ObservationStage::Observed(Box::new(observation)))
+                                    observe(&state, peer, id, *run, revision).map(|observation| ObservationStage::Observed(Box::new(observation)))
                                 }).await;
                                 (id, generation, 0, result)
                             }));
@@ -297,6 +306,18 @@ impl TaskControlReader {
     }
 }
 
+fn delivered_revision(prior: Option<&runtime_collab::TaskRunControl>, run: &PendingTaskRun) -> u64 {
+    prior.map_or_else(
+        || runtime_collab::native_task_revision(&run.lease).map_or(0, |(_, revision)| revision),
+        |control| {
+            control
+                .directions
+                .last()
+                .map_or(control.from_revision, |direction| direction.revision)
+        },
+    )
+}
+
 fn exact_run(
     state: &CapnpBrokerState,
     peer: u64,
@@ -331,6 +352,7 @@ fn observe(
     peer: u64,
     id: u64,
     run: PendingTaskRun,
+    revision: u64,
 ) -> Result<Observation, capnp::Error> {
     exact_run(state, peer, id, &run)?;
     let binding = run
@@ -366,10 +388,13 @@ fn observe(
                     .and_then(|owner| owner.execution.as_ref())
                     .is_some_and(|execution| execution.run_epoch == binding.epoch)
         });
-    let control = if let Some(active) = active {
+    let control = if active.is_some() {
         let (base, _) = runtime_collab::native_task_revision(&run.lease)
             .ok_or_else(|| capnp::Error::failed("invalid native task lease".into()))?;
-        let lease = format!("{base}:{}", active.applied_direction_revision);
+        // ACKs from fallback polling must not consume this subscription's
+        // cursor. Private direction history stays owner-only and is re-read
+        // under current authority until this reader actually delivers it.
+        let lease = format!("{base}:{revision}");
         state
             .read_native_task_status(&run, &lease)
             .map_err(capnp::Error::failed)?
@@ -407,6 +432,16 @@ fn validate_observation(
             "task control owner changed during observation".into(),
         ));
     }
+    // Task records alone cannot witness a revoked starter certificate or
+    // write grant. Recheck the exact private run after the snapshot gap.
+    service
+        .private_instructions(
+            &run.cluster_id,
+            run.native
+                .as_ref()
+                .ok_or_else(|| capnp::Error::failed("native task binding absent".into()))?,
+        )
+        .map_err(capnp::Error::failed)?;
     exact_run(state, peer, id, run)
 }
 

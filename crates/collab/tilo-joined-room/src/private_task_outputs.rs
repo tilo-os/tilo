@@ -6,11 +6,14 @@ use tilo_actions::task_messaging::{TaskOutputRef, TaskRunAddress};
 use tilo_peer_state::workspace_task::WorkspaceTaskAuthority;
 
 /// Exact native report body, retained only after the canonical reducer accepts it.
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativePrivateTaskReport {
     /// Exact source message identity: the owner-command invocation UUID.
     pub invocation: uuid::Uuid,
+    /// Exact original owner command; absent only on older retained reports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_digest: Option<[u8; 32]>,
     /// Authenticated device that submitted this exact invocation.
     pub source_device: [u8; 32],
     pub role: NativePrivateTaskReportRole,
@@ -312,6 +315,7 @@ pub(crate) fn prepare_report(
     };
     let report = NativePrivateTaskReport {
         invocation,
+        request_digest: None,
         source_device: authority.certificate().device_public_key,
         role: NativePrivateTaskReportRole::Assistant,
         accepted_at_unix_ns: crate::enrollment::ns(std::time::SystemTime::now())?,

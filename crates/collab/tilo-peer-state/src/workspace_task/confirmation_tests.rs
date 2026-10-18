@@ -262,7 +262,11 @@ fn declining_keeps_the_reason_for_the_agent() {
         .cloned()
         .unwrap();
     assert_eq!(event.action(), "decline-action");
-    assert_eq!(event.note.as_deref(), Some("Not to Bob, he is away"));
+    assert!(
+        event.note.is_none(),
+        "a private refusal reason must not enter public audit"
+    );
+    assert!(!format!("{event:?}").contains("Not to Bob"));
 }
 
 #[test]

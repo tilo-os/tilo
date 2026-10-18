@@ -80,22 +80,10 @@ async fn native_owner_service_offline_receipt_follows_actual_state_file_barrier(
         };
         let before = std::fs::read(&path).unwrap();
         let result = if fail {
-            // The adapter's future has no await; poll it inside the real storage failure scope.
-            tilo_files::native::atomic::test_support::with_failure(
+            super::task_custody::fail_next_owner_operation(
                 tilo_files::native::atomic::test_support::Checkpoint::BeforePublish,
-                || {
-                    let mut future = std::pin::pin!(service.commit(request.clone()));
-                    match future
-                        .as_mut()
-                        .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
-                    {
-                        std::task::Poll::Ready(result) => result,
-                        std::task::Poll::Pending => {
-                            panic!("the adapter's commit future completes without awaiting")
-                        }
-                    }
-                },
-            )
+            );
+            service.commit(request.clone()).await
         } else {
             service.commit(request.clone()).await
         };

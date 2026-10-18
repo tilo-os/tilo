@@ -5,6 +5,48 @@ use tilo_action_policy::{Answer, Authority, Context, agent_answers, roles};
 #[path = "task_policy/confirmation.rs"]
 mod confirmation;
 
+/// Private admission provenance, never reconstructed from a starter label.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct RetainedNativeTaskSource {
+    approval: tilo_desktop_model::WorkspaceTaskApproval,
+    authority: tilo_desktop_model::WorkspaceTaskExecutionAuthority,
+}
+
+impl RetainedNativeTaskSource {
+    pub(crate) fn from_control(control: &tilo_desktop_model::WorkspaceTaskControl) -> Option<Self> {
+        Some(Self {
+            approval: control.active_run.as_ref()?.approval.clone()?,
+            authority: control.execution_authority.clone()?,
+        })
+    }
+
+    fn answer(
+        &self,
+        peer: &tilo_peer_state::StatePeer,
+        binding: &NativeTaskBinding,
+        node: &tilo_action_policy::TreePath,
+        kind: tilo_action_policy::ActionKind,
+        now: SystemTime,
+    ) -> Result<Answer, String> {
+        let member = peer.permissions(self.approval.device, now)?;
+        if binding.starter.as_deref() != Some(self.approval.person.as_str())
+            || member.person != self.approval.person
+            || self.authority.epoch != binding.epoch
+            || !self.authority.scope.covers(node)
+        {
+            return Err("native task starter or frozen execution scope changed".into());
+        }
+        let foreign = roles::foreign_device_bound();
+        let cx = Context::at_time(now);
+        let live = member.authority(&foreign).decide(node, kind, &cx).answer;
+        let frozen = self.authority.starter.answer(node, kind, &cx);
+        if live == Answer::Deny || frozen == Answer::Deny {
+            return Err("native task action is no longer authorized by its starter".into());
+        }
+        Ok(live.min(frozen))
+    }
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct NativeTaskBinding {
     pub task_id: String,
@@ -218,27 +260,9 @@ impl NativeTaskActionRequirement {
         let agent_answer = verdict.parts.first().map_or(Answer::Deny, |decision| {
             agent_answers::held_to_contract(decision, self.consequential())
         });
-        let member = peer.permissions(approval.device, now)?;
-        let foreign = roles::foreign_device_bound();
-        let starter = member
-            .authority(&foreign)
-            .decide(&node, self.need.kind, &cx)
-            .answer;
-        if member.person != approval.person || starter == Answer::Deny {
-            return Err("native task action is no longer authorized by its starter".into());
-        }
-        let bound = control
-            .execution_authority
-            .as_ref()
-            .ok_or("native task authority absent")?;
-        let frozen = if bound.scope.covers(&node) {
-            bound.starter.answer(&node, self.need.kind, &cx)
-        } else {
-            Answer::Deny
-        };
-        if bound.epoch != binding.epoch || frozen == Answer::Deny {
-            return Err("native task action exceeds its frozen execution authority".into());
-        }
+        let starter = RetainedNativeTaskSource::from_control(control)
+            .ok_or("native task authority absent")?
+            .answer(peer, binding, &node, self.need.kind, now)?;
         let task_answer = policy
             .task_answer(&binding.task_id, &node, self.need.kind, &cx)
             .unwrap_or(Answer::Allow);
@@ -248,7 +272,7 @@ impl NativeTaskActionRequirement {
                 self.need.kind.phrase()
             ));
         }
-        Ok([agent_answer, starter, frozen, task_answer]
+        Ok([agent_answer, starter, task_answer]
             .into_iter()
             .fold(Answer::Allow, Answer::min))
     }
@@ -496,10 +520,10 @@ impl NativeTaskActionRequirement {
         Ok(())
     }
 
-    /// Read-only recheck after the owner ledger authenticated already-dispatched
-    /// provenance. Ask does not revoke observation; Deny does. Never mints a grant.
+    /// Metadata alone cannot authenticate a retained read. Use the private
+    /// ledger's `check_retained_action` or the committed owner's retained door.
     /// # Errors
-    /// Exact metadata changed or a current ceiling denies observation.
+    /// Always refuses: this entry point has no private dispatch provenance.
     pub fn check_retained(
         &self,
         peer: &tilo_peer_state::StatePeer,
@@ -507,14 +531,27 @@ impl NativeTaskActionRequirement {
         now: SystemTime,
     ) -> Result<(), String> {
         self.check_metadata(peer, exact, now)?;
-        self.retained_answer(peer, exact, now)?;
+        Err("retained native observation requires owner ledger provenance".into())
+    }
+
+    pub(crate) fn check_retained_source(
+        &self,
+        peer: &tilo_peer_state::StatePeer,
+        exact: &crate::task_admission::NativeInvocationBinding,
+        source: &RetainedNativeTaskSource,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        self.check_metadata(peer, exact, now)?;
+        peer.workspace()
+            .check_task_execution_actor(&exact.agent, None, now)?;
+        self.retained_answer(peer, exact, source, now)?;
         if let Some(child) = self
             .invocation
             .as_ref()
             .and_then(|i| i.activation_for.as_ref())
         {
             // Observation cannot bypass a newly denied reviewed child either.
-            child.retained_answer(peer, exact, now)?;
+            child.retained_answer(peer, exact, source, now)?;
         }
         Ok(())
     }
@@ -523,16 +560,20 @@ impl NativeTaskActionRequirement {
         &self,
         peer: &tilo_peer_state::StatePeer,
         exact: &crate::task_admission::NativeInvocationBinding,
+        source: &RetainedNativeTaskSource,
         now: SystemTime,
     ) -> Result<(), String> {
         let binding = self
             .binding
             .as_ref()
             .ok_or("retained native binding absent")?;
-        let starter = binding
-            .starter
-            .as_deref()
-            .ok_or("retained native starter absent")?;
+        let starter = &source.approval.person;
+        if binding.task_id != exact.task
+            || binding.agent_id != exact.agent
+            || binding.epoch != exact.epoch
+        {
+            return Err("retained native source binding differs".into());
+        }
         let room = exact.room.to_string();
         let policy = tilo_desktop_model::projection::room_policy_of(
             peer.admitted_room().ok_or("native room absent")?,
@@ -547,15 +588,12 @@ impl NativeTaskActionRequirement {
             &self.action,
         );
         let cx = Context::at_time(now);
+        source.answer(peer, binding, &node, self.need.kind, now)?;
         let delegation = roles::agent_delegation(&room, &exact.agent, starter);
         if Authority::person(delegation.party(&policy.grants))
             .decide(&node, self.need.kind, &cx)
             .answer
             == Answer::Deny
-            || Authority::person(policy.party_of(tilo_action_policy::Subject::person(starter)))
-                .decide(&node, self.need.kind, &cx)
-                .answer
-                == Answer::Deny
             || policy.task_answer(&exact.task, &node, self.need.kind, &cx) == Some(Answer::Deny)
         {
             return Err("current policy denies retained native observation".into());

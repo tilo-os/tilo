@@ -2777,6 +2777,7 @@ impl BrowserWidget {
         if let Some(message) = &self.private_window_notice {
             notices.push(
                 crate::notice::Notice::warning("Couldn’t open a private window")
+                    .with_id("browser.private-window.notice")
                     .with_message(message.clone()),
             );
         }

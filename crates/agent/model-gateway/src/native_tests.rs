@@ -149,7 +149,10 @@ async fn generic_native_http_uses_exact_frozen_body_and_awaits_response_outside_
             .map_err(|failure| failure.why)
             .unwrap();
         let decoded = super::super::rig_adapter::neutral_response(response).unwrap();
-        assert_eq!(decoded.text, "done");
+        assert_eq!(
+            decoded.message,
+            neutral::Message::text(neutral::Role::Assistant, "done")
+        );
         tokio::time::timeout(Duration::from_secs(3), peer)
             .await
             .unwrap()
@@ -228,6 +231,45 @@ async fn native_transform_does_not_replay_an_http_busy_response() {
 
 #[tokio::test]
 async fn native_deadline_bounds_profile_cache_wait_before_transport() {
+    // Isolate settings from other tests and from the person's host selection.
+    if std::env::var_os("NATIVE_CACHE_DEADLINE_CHILD").is_none() {
+        let root = tempfile::tempdir().unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "service::native::tests::native_deadline_bounds_profile_cache_wait_before_transport",
+                "--nocapture",
+            ])
+            .env_clear()
+            .env("XDG_CONFIG_HOME", root.path())
+            .env("NATIVE_CACHE_DEADLINE_CHILD", "1")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        return;
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut profile = ProviderProfile::local_vllm();
+    profile.id = "locked-profile".into();
+    profile.endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+    profile.models = vec![agent_provider_config::ModelDescriptor::new("selected")];
+    profile.default_model = Some("selected".into());
+    let config = agent_provider_config::ProviderConfig {
+        default_profile: Some(profile.id.clone()),
+        profiles: vec![profile.clone()],
+    };
+    assert!(config.validation_errors().is_empty());
+    config.save().unwrap();
+    // Complete resolves through plan_profile, including effective host settings,
+    // before taking PLAN_PROFILES. Prove that validation reaches that cache.
+    let (resolved, secret) = super::super::plan_profile(&profile.id, "selected").unwrap();
+    assert_eq!(resolved, profile);
+    agent_provider_config::transform::profile_headers(
+        &resolved,
+        secret.as_deref().map(|s| s.as_str()),
+    )
+    .unwrap();
+    super::super::rig_adapter::neutral_request(ask()).unwrap();
     let gate = Arc::new(Gate::default());
     let source = NativeGatewaySource::new(gate.clone()).unwrap();
     // Production resolution runs on a blocking worker. Holding this cache
@@ -242,7 +284,7 @@ async fn native_deadline_bounds_profile_cache_wait_before_transport() {
     locked.await.unwrap();
     let request = Request::NativeComplete {
         invocation: json!({"child":"one"}),
-        profile_id: String::new(),
+        profile_id: "locked-profile".into(),
         model_id: "selected".into(),
         request: ask(),
         timeout_ms: 50,
@@ -260,6 +302,12 @@ async fn native_deadline_bounds_profile_cache_wait_before_transport() {
         ErrorKind::TimedOut
     );
     assert_eq!(gate.starts.load(Ordering::SeqCst), 0);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), listener.accept())
+            .await
+            .is_err(),
+        "cache resolution must time out before opening transport"
+    );
 }
 
 #[tokio::test]

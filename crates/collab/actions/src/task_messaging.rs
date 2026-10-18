@@ -146,7 +146,7 @@ pub struct TaskReport {
 }
 
 /// Exact private model-turn snapshot. Kept here to avoid a dependency cycle with
-/// the collaboration wire types; its serialized fields match TaskPresentation.
+/// the collaboration wire types; its serialized fields match `TaskPresentation`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskReportPresentation {

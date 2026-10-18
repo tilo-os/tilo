@@ -108,7 +108,7 @@ fn model_start_request(f: &Fixture) -> OwnerCommitRequest {
         },
     }
 }
-fn approve_model(f: &Fixture) {
+pub(super) fn approve_model(f: &Fixture) {
     f.native
         .owner
         .commit_workspace_task_command_with_model_start(

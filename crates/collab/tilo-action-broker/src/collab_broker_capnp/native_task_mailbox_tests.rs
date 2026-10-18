@@ -176,11 +176,91 @@ async fn person_action_door_cannot_obtain_a_native_task_inbox() {
         .await;
 }
 
+fn publish_owner_mail(f: &Fixture, run: &runtime_collab::TaskRunEnvelope) {
+    use tilo_actions::task_messaging::TaskMessageSend;
+    let snapshot = f.native.owner.workspace_task_snapshot(room()).unwrap();
+    let registered = crate::workspace_tasks::actions(
+        &snapshot,
+        "Workspace",
+        &std::collections::BTreeSet::from(["scribe".into()]),
+    )
+    .into_iter()
+    .find(|action| {
+        action.resource == format!("desktop:{}", f.task) && action.action == "send-message"
+    })
+    .unwrap();
+    let binding = f
+        .state
+        .task_run_for(100, "scribe", run.run_id, &run.lease)
+        .unwrap()
+        .native
+        .unwrap();
+    put_grant(
+        f,
+        tilo_action_policy::Grant::new(
+            "owner-wake-send",
+            tilo_action_policy::Subject::agent("scribe"),
+            tilo_actions::action_node(
+                &tilo_action_policy::TreePath::room(room().to_string()),
+                "so.tilo.desktop",
+                &registered.resource_kind,
+                &registered.resource,
+                registered.contract.field.as_deref(),
+                &registered.action,
+            ),
+            tilo_action_policy::KindSet::UNDOABLE,
+            tilo_action_policy::Answer::Allow,
+            tilo_action_policy::Subject::person(hex::encode(f.native.certificate.user_public_key)),
+        ),
+    );
+    let send = TaskMessageSend {
+        run_epoch: 1,
+        text: "private owner context".into(),
+    };
+    let arguments = serde_json::to_string(&send).unwrap();
+    let sent = uuid::Uuid::from_u128(8901);
+    let mut exact = crate::services::NativeTaskInvocation::new(
+        sent,
+        &tilo_actions::remote::workspace_provider(&room().to_string()),
+        Some(&arguments),
+        &registered.contract,
+        &run.lease,
+    )
+    .unwrap();
+    exact.private_run_digest = f
+        .native
+        .private_run_digest(&room().to_string(), &binding)
+        .unwrap();
+    let requirement = NativeTaskActionRequirement {
+        binding: Some(binding.clone()),
+        app: "so.tilo.desktop".into(),
+        resource_kind: registered.resource_kind,
+        resource: registered.resource,
+        action: registered.action,
+        need: registered.contract.need(),
+        consequential: false,
+        confirmation: None,
+        invocation: Some(exact),
+    };
+    f.native
+        .admit_custodied(&room().to_string(), &binding, &requirement, || Ok(()))
+        .unwrap();
+    f.native
+        .send_message(
+            &room().to_string(),
+            &binding,
+            &f.task,
+            sent,
+            send,
+            &requirement,
+        )
+        .unwrap();
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn accepted_owner_private_mail_wakes_registered_wait_without_broker_refresh() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            use tilo_actions::task_messaging::{TaskMessageSend, TaskRunAddress};
             let f = Fixture::new();
             f.approve();
             inbox_permission(&f);
@@ -205,26 +285,10 @@ async fn accepted_owner_private_mail_wakes_registered_wait_without_broker_refres
                 "an unchanged owner must not be sampled"
             );
             let owner_changes = f.native.owner.workspace_task_changes();
-            // Publish directly at the owner, not through execute_task_message:
-            // only the post-commit owner watch can wake this retained child.
-            f.native
-                .owner
-                .send_task_message(
-                    room(),
-                    TaskRunAddress {
-                        task_id: f.task.clone(),
-                        run_epoch: 1,
-                        agent_id: "scribe".into(),
-                    },
-                    &f.task,
-                    uuid::Uuid::from_u128(8901),
-                    TaskMessageSend {
-                        run_epoch: 1,
-                        text: "private owner context".into(),
-                    },
-                    |_| Ok(()),
-                )
-                .unwrap();
+            // Publish at the owner without execute_task_message's broker
+            // refresh, but with the registered contract and a real signed
+            // owner admission. Only the post-commit owner watch wakes the wait.
+            publish_owner_mail(&f, &run);
             assert!(owner_changes.has_changed().unwrap());
             let (same_wire, terminal) = tokio::time::timeout(
                 Duration::from_secs(2),
@@ -250,6 +314,11 @@ async fn accepted_owner_private_mail_wakes_registered_wait_without_broker_refres
                 serde_json::from_value(output.value.unwrap()).unwrap();
             assert_eq!(page.messages.len(), 1);
             assert_eq!(page.messages[0].sequence, 1);
+            assert_eq!(page.messages[0].text, "private owner context");
+            assert_eq!(page.messages[0].source.task_id, f.task);
+            assert_eq!(page.messages[0].source.run_epoch, 1);
+            assert_eq!(page.messages[0].source.agent_id, "scribe");
+            assert_eq!(page.messages[0].recipient, page.task_run);
             assert!(!page.timed_out);
         })
         .await;
