@@ -642,7 +642,11 @@ mod tests {
         // Phase `identity_copy_does_not_overstate_per_edit_signing`.
         {
             let copy = format!("{} {}", intro_body(), intro_points().join(" ")).to_lowercase();
-            assert!(copy.contains("not all cryptographically signed"));
+            // It admits that signing does not yet cover every edit.
+            assert!(
+                copy.contains("not every edit in apps is signed yet"),
+                "the intro must not imply every edit is signed: {copy}"
+            );
             assert!(!copy.contains("signs the changes you make"));
             assert!(!copy.contains("edit in a shared document really came from you"));
         }
