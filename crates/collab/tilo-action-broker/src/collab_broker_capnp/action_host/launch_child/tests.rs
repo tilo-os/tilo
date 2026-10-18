@@ -599,6 +599,177 @@ fn keyless_continuation_retains_original_device_cap_at_effect() {
     }
 }
 
+/// Revoke from another thread while a production invoke worker is stopped at
+/// a real boundary. Timeouts make a missing boundary fail rather than hang.
+fn revocation_gate(fixture: &Fixture) -> (Box<dyn FnOnce() + Send>, std::thread::JoinHandle<()>) {
+    let (entered, waiting) = std::sync::mpsc::sync_channel(0);
+    let (release, resume) = std::sync::mpsc::sync_channel(0);
+    let authority = fixture.authority.clone();
+    let invoking_thread = std::thread::current().id();
+    let timeout = std::time::Duration::from_secs(3);
+    let revoker = std::thread::spawn(move || {
+        waiting
+            .recv_timeout(timeout)
+            .expect("invoke reached the gate");
+        authority.revoked.store(true, Ordering::SeqCst);
+        release.send(()).expect("invoke is still blocked");
+    });
+    let gate = Box::new(move || {
+        assert_ne!(std::thread::current().id(), invoking_thread);
+        entered.send(()).expect("revoker is waiting");
+        resume.recv_timeout(timeout).expect("certificate revoked");
+    });
+    (gate, revoker)
+}
+
+#[test]
+fn production_invoke_revoked_at_durable_admission_never_launches_or_closes() {
+    for certified in [false, true] {
+        for close in [false, true] {
+            let launcher = Arc::new(Launcher {
+                calls: AtomicUsize::new(0),
+                fail: false,
+            });
+            let services = HostServices {
+                launcher: Some(launcher.clone()),
+                ..Default::default()
+            };
+            let fixture = if certified {
+                Fixture::new_certified(services)
+            } else {
+                Fixture::new(services)
+            };
+            let descriptor = if close {
+                app_close_descriptor(&app().package_id, "Notes")
+            } else {
+                app_open_descriptor(&app())
+            };
+            let request = child_request(
+                InvocationId::new(),
+                &fixture.room,
+                &descriptor,
+                &app().package_id,
+            );
+            let (gate, revoker) = revocation_gate(&fixture);
+            fixture
+                .state
+                .journal
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .after_admission = Some(gate);
+            let result = fixture.invoke(&request);
+            revoker.join().unwrap();
+            assert!(result.is_err());
+            assert_eq!(launcher.calls.load(Ordering::SeqCst), 0);
+            let record = fixture.assert_signed(&request, true);
+            assert!(matches!(
+                record.update,
+                InvocationUpdate::Failed { ref error, .. }
+                    if error.code == "launch_authority_changed"
+            ));
+            assert!(!record.uncertain);
+        }
+    }
+}
+
+/// Stop installed-application discovery on the actual launch worker, before
+/// the retained action can start a signed launch child.
+struct DiscoveryGate {
+    launcher: Launcher,
+    invoking_thread: std::thread::ThreadId,
+    gate: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
+}
+
+impl LauncherServices for DiscoveryGate {
+    fn attest_process(&self, pid: u32, room: &str, app: &str) -> bool {
+        self.launcher.attest_process(pid, room, app)
+    }
+
+    fn applications(&self) -> Vec<LaunchableApplication> {
+        if std::thread::current().id() != self.invoking_thread {
+            let gate = self.gate.lock().unwrap().take();
+            if let Some(gate) = gate {
+                gate();
+            }
+        }
+        self.launcher.applications()
+    }
+
+    fn closes_applications(&self) -> bool {
+        true
+    }
+
+    fn close(&self, app: &str, workspace: &Workspace) -> Result<(), String> {
+        self.launcher.close(app, workspace)
+    }
+
+    fn launch(
+        &self,
+        app: &str,
+        workspace: &Workspace,
+        record: Option<&str>,
+        place: &LaunchPlace,
+    ) -> Result<(), String> {
+        self.launcher.launch(app, workspace, record, place)
+    }
+}
+
+#[test]
+fn production_retained_invoke_revoked_during_discovery_never_starts_launcher() {
+    let launcher = Arc::new(DiscoveryGate {
+        launcher: Launcher {
+            calls: AtomicUsize::new(0),
+            fail: false,
+        },
+        invoking_thread: std::thread::current().id(),
+        gate: std::sync::Mutex::new(None),
+    });
+    let fixture = Fixture::new_certified(HostServices {
+        launcher: Some(launcher.clone()),
+        ..Default::default()
+    });
+    let surface = crate::collab_broker_capnp::PublishedSurface {
+        peer_id: 7,
+        app_id: app().package_id,
+        route: crate::collab_broker_capnp::CrdtRoute::app("record", &fixture.room),
+        live: false,
+        actions: vec![PublishedAction {
+            semantic_identity: None,
+            resource: "document".into(),
+            action: "append".into(),
+            resource_kind: "document".into(),
+            resource_label: "Document".into(),
+            action_label: "Append".into(),
+            description: None,
+            operation_kind: tilo_actions::OperationKind::Document,
+            params: Vec::new(),
+            contract: tilo_actions::ActionContract::default(),
+            view: None,
+            input: crate::collab_broker_capnp::PublishedInput::None,
+        }],
+    };
+    fixture.state.launchable.retain(&surface);
+    let mut request = parent();
+    request.target.provider = crate::collab_broker_capnp::launchable::launchable_provider(&surface);
+    let (gate, revoker) = revocation_gate(&fixture);
+    *launcher.gate.lock().unwrap() = Some(gate);
+    let result = fixture.invoke(&request);
+    revoker.join().unwrap();
+    assert!(result.is_err());
+    assert_eq!(launcher.launcher.calls.load(Ordering::SeqCst), 0);
+    assert!(launcher.gate.lock().unwrap().is_none());
+    assert!(
+        fixture
+            .state
+            .remote_job(&fixture.caller, &request.invocation)
+            .is_none()
+    );
+}
+
 #[test]
 fn child_identity_is_stable_and_framed() {
     let parent = InvocationId::new();
