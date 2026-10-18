@@ -837,21 +837,18 @@ impl MessageReader {
                     let known = self
                         .html_document
                         .filter(|doc| (doc.width - width).abs() < 0.5);
-                    let (laid, kept) = match known {
-                        Some(doc) => {
-                            let height = doc.height.clamp(1.0, most);
-                            (height, height)
-                        }
-                        None => {
-                            // A sliver until it says how tall it is, keeping
-                            // the room it had at another width.
-                            self.html_measuring = Some(width);
-                            let sliver = f64::from(spacing.s1);
-                            let kept = self
-                                .html_document
-                                .map_or(sliver, |doc| doc.height.clamp(1.0, most));
-                            (sliver, kept)
-                        }
+                    let (laid, kept) = if let Some(doc) = known {
+                        let height = doc.height.clamp(1.0, most);
+                        (height, height)
+                    } else {
+                        // A sliver until it says how tall it is, keeping
+                        // the room it had at another width.
+                        self.html_measuring = Some(width);
+                        let sliver = f64::from(spacing.s1);
+                        let kept = self
+                            .html_document
+                            .map_or(sliver, |doc| doc.height.clamp(1.0, most));
+                        (sliver, kept)
                     };
                     webview_rect = Some(Rect::new(flow.x, flow.y, flow.x + width, flow.y + laid));
                     flow.y += kept;
@@ -1064,7 +1061,7 @@ impl MessageReader {
     fn measured(&mut self, height: f64, scroll_y: f64) {
         let width = self
             .html_measuring
-            .or(self.html_document.map(|doc| doc.width));
+            .or_else(|| self.html_document.map(|doc| doc.width));
         let Some(width) = width else {
             return;
         };
@@ -1075,7 +1072,7 @@ impl MessageReader {
         };
         if self
             .html_document
-            .is_none_or(|doc| doc.height != height || doc.width != width)
+            .is_none_or(|doc| (doc.height - height).abs() > 0.5 || (doc.width - width).abs() > 0.5)
         {
             self.dirty = true;
         }

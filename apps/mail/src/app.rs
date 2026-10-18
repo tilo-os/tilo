@@ -1728,7 +1728,9 @@ impl MailApp {
                     Mail::CANCEL_SEND.with(mailbox::CancelSend { id: refused }),
                 );
             }
-            st.submit(
+            // The press is the person's own: Undo on the sending notice is
+            // its way back, so nothing is asked.
+            st.submit_gesture(
                 doc,
                 Mail::SEND_MESSAGE.with(mailbox::SendMessage {
                     account: acct.email,
@@ -2769,6 +2771,38 @@ impl MailApp {
 
     // ---- engine drain -----------------------------------------------------
 
+    /// A watched inbox of `account_id` changed: fetch it, if the account is
+    /// still on this device.
+    fn fetch_arrived(&mut self, st: &MailState, account_id: &str) {
+        if let Some(account) = st
+            .accounts
+            .accounts
+            .iter()
+            .find(|account| account.config.email == account_id)
+        {
+            self.pending_watch_fetches.push(account.config.clone());
+        }
+    }
+
+    /// Keep `account_id`'s mail on this device, so the next window opens on
+    /// it at once; the attachments whose bytes are kept say so.
+    fn keep_on_device(&self, st: &mut MailState, account_id: &str) {
+        let kept = self.store.save(
+            account_id,
+            st.mailbox.of_account(account_id).cloned().collect(),
+        );
+        for (id, index) in kept {
+            if let Some(attachment) = st
+                .mailbox
+                .messages
+                .get_mut(&id)
+                .and_then(|message| message.attachments.get_mut(index))
+            {
+                attachment.kept = true;
+            }
+        }
+    }
+
     fn apply_fetched_messages(
         &mut self,
         doc: &mut ui::widget::Edits<'_>,
@@ -2778,55 +2812,7 @@ impl MailApp {
         folder: Folder,
         synced: crate::sync::Synced,
     ) {
-        let held_here = |message: &Message| {
-            message.account == account_id
-                && message.folder == folder
-                && message.server.is_some_and(|at| at.folder == folder)
-        };
-        // What the server no longer holds goes: everything of a folder that
-        // started over and is not in its new page, and every message of the
-        // known window its server did not report.
-        let mut gone: Vec<MessageId> = Vec::new();
-        if synced.reset {
-            let fresh: std::collections::HashSet<MessageId> =
-                synced.messages.iter().map(|message| message.id).collect();
-            gone.extend(
-                st.mailbox
-                    .of_account(account_id)
-                    .filter(|message| held_here(message) && !fresh.contains(&message.id))
-                    .map(|message| message.id),
-            );
-        }
-        let mut reflagged: Vec<Message> = Vec::new();
-        if let Some((oldest, newest)) = synced.window {
-            let reported: HashMap<u32, (bool, bool)> = synced
-                .flags
-                .iter()
-                .map(|(uid, seen, flagged)| (*uid, (*seen, *flagged)))
-                .collect();
-            for message in st.mailbox.of_account(account_id).filter(|m| held_here(m)) {
-                let Some(uid) = message.server.map(|at| at.uid) else {
-                    continue;
-                };
-                if uid < oldest || uid > newest {
-                    continue;
-                }
-                match reported.get(&uid) {
-                    None => gone.push(message.id),
-                    // Another client read or starred it: the record decides
-                    // whether that or a change made here wins.
-                    Some(&(seen, flagged))
-                        if seen != message.read || flagged != message.starred =>
-                    {
-                        let mut reported = message.clone();
-                        reported.read = seen;
-                        reported.starred = flagged;
-                        reflagged.push(reported);
-                    }
-                    Some(_) => {}
-                }
-            }
-        }
+        let (gone, reflagged) = server_changes(&st.mailbox, account_id, folder, &synced);
         for id in gone {
             st.mailbox.purge(id);
         }
@@ -2864,21 +2850,7 @@ impl MailApp {
                 .first()
                 .and_then(|thread| thread.message_ids.last().copied());
         }
-        // Kept on this device, so the next window opens on it at once.
-        let kept = self.store.save(
-            account_id,
-            st.mailbox.of_account(account_id).cloned().collect(),
-        );
-        for (id, index) in kept {
-            if let Some(attachment) = st
-                .mailbox
-                .messages
-                .get_mut(&id)
-                .and_then(|message| message.attachments.get_mut(index))
-            {
-                attachment.kept = true;
-            }
-        }
+        self.keep_on_device(st, account_id);
         // The account works again: a failure it showed is over.
         st.sync_error = None;
         report_account_sync(
@@ -3144,30 +3116,11 @@ impl MailApp {
                 account_id,
                 messages,
             } if self.expects_engine_event(request_id, EngineRequestKind::Search) => {
-                // What the server found joins the mail this device holds,
-                // and so the search; nothing is replaced that is held.
-                let fresh: Vec<Message> = messages
-                    .into_iter()
-                    .filter(|message| st.mailbox.get(message.id).is_none())
-                    .collect();
-                st.ingest_fetched(doc, &account_id, &fresh);
-                for message in fresh {
-                    st.mailbox.insert(message);
-                }
+                take_found(doc, st, &account_id, messages);
             }
             // A watch outlives its request: what it hears is answered for
             // any account this device still holds.
-            EngineEvent::Arrived { account_id, .. } => {
-                let account = st
-                    .accounts
-                    .accounts
-                    .iter()
-                    .find(|account| account.config.email == account_id)
-                    .map(|account| account.config.clone());
-                if let Some(account) = account {
-                    self.pending_watch_fetches.push(account);
-                }
-            }
+            EngineEvent::Arrived { account_id, .. } => self.fetch_arrived(st, &account_id),
             EngineEvent::Error {
                 request_id,
                 kind,
@@ -6177,6 +6130,83 @@ impl MailApp {
     }
 }
 
+/// What the server's answer for `folder` of `account_id` changes in what
+/// `mailbox` holds: the messages it no longer has, and those another client
+/// read or starred, as reported.
+fn server_changes(
+    mailbox: &crate::model::Mailbox,
+    account_id: &str,
+    folder: Folder,
+    synced: &crate::sync::Synced,
+) -> (Vec<MessageId>, Vec<Message>) {
+    let held_here = |message: &Message| {
+        message.account == account_id
+            && message.folder == folder
+            && message.server.is_some_and(|at| at.folder == folder)
+    };
+    // What the server no longer holds goes: everything of a folder that
+    // started over and is not in its new page, and every message of the
+    // known window its server did not report.
+    let mut gone: Vec<MessageId> = Vec::new();
+    if synced.reset {
+        let fresh: std::collections::HashSet<MessageId> =
+            synced.messages.iter().map(|message| message.id).collect();
+        gone.extend(
+            mailbox
+                .of_account(account_id)
+                .filter(|message| held_here(message) && !fresh.contains(&message.id))
+                .map(|message| message.id),
+        );
+    }
+    let mut reflagged: Vec<Message> = Vec::new();
+    if let Some((oldest, newest)) = synced.window {
+        let reported: HashMap<u32, (bool, bool)> = synced
+            .flags
+            .iter()
+            .map(|(uid, seen, flagged)| (*uid, (*seen, *flagged)))
+            .collect();
+        for message in mailbox.of_account(account_id).filter(|m| held_here(m)) {
+            let Some(uid) = message.server.map(|at| at.uid) else {
+                continue;
+            };
+            if uid < oldest || uid > newest {
+                continue;
+            }
+            match reported.get(&uid) {
+                None => gone.push(message.id),
+                // Another client read or starred it: the record decides
+                // whether that or a change made here wins.
+                Some(&(seen, flagged)) if seen != message.read || flagged != message.starred => {
+                    let mut reported = message.clone();
+                    reported.read = seen;
+                    reported.starred = flagged;
+                    reflagged.push(reported);
+                }
+                Some(_) => {}
+            }
+        }
+    }
+    (gone, reflagged)
+}
+
+/// What a server search found joins the mail this device holds, and so the
+/// search; nothing held is replaced.
+fn take_found(
+    doc: &mut ui::widget::Edits<'_>,
+    st: &mut MailState,
+    account_id: &str,
+    messages: Vec<Message>,
+) {
+    let fresh: Vec<Message> = messages
+        .into_iter()
+        .filter(|message| st.mailbox.get(message.id).is_none())
+        .collect();
+    st.ingest_fetched(doc, account_id, &fresh);
+    for message in fresh {
+        st.mailbox.insert(message);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6418,8 +6448,10 @@ mod tests {
             };
             app.compose.open_with_draft(&draft);
             app.send_compose(&mut ui::widget::Edits::lend(&mut doc));
-            assert!(TestMail::outbox(&doc).is_empty());
-            assert!(outgoing.try_recv().is_err(), "no delivery before consent");
+            assert!(
+                outgoing.try_recv().is_err(),
+                "nothing reaches the server before the undo time is up"
+            );
             if to.is_empty() && cc.is_empty() && bcc.is_empty() {
                 assert!(app.compose.open, "an empty recipient list keeps the draft");
                 assert_eq!(
@@ -6433,7 +6465,7 @@ mod tests {
             TestMail::confirm(&mut doc, &dispatcher);
             let outbox = TestMail::outbox(&doc);
             let [(queued, None)] = outbox.as_slice() else {
-                panic!("one confirmed send action must queue a message: {outbox:?}");
+                panic!("one send action must queue a message: {outbox:?}");
             };
             assert_eq!(queued.draft.to, to);
             assert_eq!(queued.draft.cc, cc);
@@ -6749,7 +6781,7 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
         incoming
             .send(EngineEvent::Found {
                 request_id,
-                account_id: account.email.clone(),
+                account_id: account.email,
                 messages: vec![old],
             })
             .unwrap();
@@ -6823,7 +6855,7 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
         assert!(app.send_notice, "the sending notice offers Undo");
         app.server_outbox()
             .borrow_mut()
-            .deliver(outgoing.clone(), Box::new(|_| {}));
+            .deliver(outgoing, Box::new(|_| {}));
         app.flush_server_outbox();
         app.release_held_sends(&ui::widget::Edits::lend(&mut doc));
         assert!(requests.try_recv().is_err(), "it waits before it goes");
@@ -7861,17 +7893,16 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             };
             app.compose.reattach(&draft);
             app.send_compose(&mut ui::widget::Edits::lend(&mut doc));
-            assert!(
-                TestMail::outbox(&doc).is_empty(),
-                "sending asks the person first"
-            );
             let dispatcher = app
                 .shared
                 .borrow()
                 .dispatcher
                 .clone()
                 .expect("a dispatcher");
-            TestMail::confirm(&mut doc, &dispatcher);
+            assert!(
+                dispatcher.take_asked().expect("builds").is_empty(),
+                "the person's own Send asks nothing: Undo is its way back"
+            );
             let outbox = TestMail::outbox(&doc);
             let [(outgoing, None)] = outbox.as_slice() else {
                 panic!("one message waits in the outbox: {outbox:?}");
