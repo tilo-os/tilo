@@ -87,6 +87,15 @@ fn the_timestamp_and_date_styles_follow_the_date_and_clock_settings() {
             "the date style reads as Settings' example"
         );
     }
+    for (style, want) in [
+        (DateStyle::Iso, "2023-03-15"),
+        (DateStyle::Us, "03/15/2023"),
+        (DateStyle::Eu, "15/03/2023"),
+        (DateStyle::Long, "15 Mar 2023"),
+        (DateStyle::Language, "Mar 15, 2023"),
+    ] {
+        assert_eq!(style.example(), want);
+    }
 
     speak("de-DE");
     assert_eq!(
@@ -103,6 +112,45 @@ fn the_timestamp_and_date_styles_follow_the_date_and_clock_settings() {
     );
 }
 
+/// With no date format chosen, full timestamps and dates follow the
+/// desktop's language; ISO is only what someone picks.
+#[test]
+fn without_a_chosen_date_format_dates_follow_the_language() {
+    assert_eq!(RegionFormats::default().date, DateStyle::Language);
+    assert_eq!(
+        RegionFormats::from_section(serde_json::Map::new()).date,
+        DateStyle::Language
+    );
+    let moment = at(2026, 6, 30, 13, 42);
+    let default24 = Formats::default();
+    let default12 = Formats::with(RegionFormats {
+        time: TimeStyle::H12,
+        ..RegionFormats::default()
+    });
+
+    speak("en-US");
+    assert_eq!(default12.timestamp(moment), "Jun 30, 2026, 1:42 PM");
+    assert_eq!(default24.timestamp(moment), "Jun 30, 2026, 13:42");
+    assert_eq!(default24.date(day(2026, 6, 30)), "Jun 30, 2026");
+    assert_eq!(default24.date(day(2026, 1, 3)), "Jan 3, 2026");
+
+    speak("de-DE");
+    assert_eq!(default24.timestamp(moment), "30.06.2026, 13:42");
+    assert_eq!(default24.date(day(2026, 1, 3)), "03.01.2026");
+    assert_eq!(DateStyle::Language.example(), "15.03.2023");
+    // ISO stays an explicit choice, the same in every language.
+    assert_eq!(
+        formats(DateStyle::Iso, TimeStyle::H24).timestamp(moment),
+        "2026-06-30 13:42"
+    );
+    // A spreadsheet cell that follows the language does so under any choice.
+    assert_eq!(
+        formats(DateStyle::Iso, TimeStyle::H24).language_date(day(2026, 6, 30)),
+        "30.06.2026"
+    );
+    speak("en-US");
+}
+
 #[test]
 fn headings_name_the_day_and_month_in_the_language() {
     speak("en-US");
@@ -114,16 +162,28 @@ fn headings_name_the_day_and_month_in_the_language() {
     assert_eq!(H24.month_heading(day(2026, 6, 30)), "June 2026");
     assert_eq!(H24.month_heading_short(day(2026, 6, 30)), "Jun 2026");
     assert_eq!(H24.day_heading_short(day(2026, 6, 30)), "Tue, Jun 30");
-    assert_eq!(H24.day_range(day(2026, 6, 23), day(2026, 6, 29)), "Jun 23 – 29");
-    assert_eq!(H24.day_range(day(2026, 6, 29), day(2026, 7, 5)), "Jun 29 – Jul 5");
+    assert_eq!(
+        H24.day_range(day(2026, 6, 23), day(2026, 6, 29)),
+        "Jun 23 – 29"
+    );
+    assert_eq!(
+        H24.day_range(day(2026, 6, 29), day(2026, 7, 5)),
+        "Jun 29 – Jul 5"
+    );
     assert_eq!(
         H24.day_range(day(2025, 12, 29), day(2026, 1, 4)),
         "Dec 29, 2025 – Jan 4, 2026"
     );
     speak("de-DE");
     assert_eq!(H24.day_heading_short(day(2026, 6, 30)), "Di., 30. Juni");
-    assert_eq!(H24.day_range(day(2026, 6, 23), day(2026, 6, 29)), "23.–29. Juni");
-    assert_eq!(H24.day_heading(day(2026, 6, 30), false), "Dienstag, 30. Juni");
+    assert_eq!(
+        H24.day_range(day(2026, 6, 23), day(2026, 6, 29)),
+        "23.–29. Juni"
+    );
+    assert_eq!(
+        H24.day_heading(day(2026, 6, 30), false),
+        "Dienstag, 30. Juni"
+    );
     assert_eq!(
         H24.day_heading(day(2026, 6, 30), true),
         "Dienstag, 30. Juni 2026"
@@ -137,7 +197,10 @@ fn the_week_starts_on_the_day_the_person_chose() {
     for (first, want) in [
         (FirstDayOfWeek::Monday, [Mon, Tue, Wed, Thu, Fri, Sat, Sun]),
         (FirstDayOfWeek::Sunday, [Sun, Mon, Tue, Wed, Thu, Fri, Sat]),
-        (FirstDayOfWeek::Saturday, [Sat, Sun, Mon, Tue, Wed, Thu, Fri]),
+        (
+            FirstDayOfWeek::Saturday,
+            [Sat, Sun, Mon, Tue, Wed, Thu, Fri],
+        ),
     ] {
         let formats = Formats::with(RegionFormats {
             first_day: first,
@@ -338,4 +401,9 @@ fn the_locale_section_reads_key_by_key() {
         RegionFormats::from_section(serde_json::Map::new()),
         RegionFormats::default()
     );
+    for (stored, want) in [("ISO", DateStyle::Iso), ("Language", DateStyle::Language)] {
+        let section = serde_json::json!({ "date_format": stored });
+        let read = RegionFormats::from_section(section.as_object().cloned().unwrap());
+        assert_eq!(read.date, want, "{stored}");
+    }
 }

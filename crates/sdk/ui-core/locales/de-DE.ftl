@@ -430,9 +430,13 @@ format-month-day = { $day }. { $month }
 format-month-day-year = { $day }. { $month } { $year }
 # The "Long" date style: "30 Jun 2026".
 format-date-long = { $day }. { $month } { $year }
+# The default date style, the language's own convention: "Jun 30, 2026" (de "30.06.2026").
+# $day and $month2 / $day2 are the zero-padded numbers, $month the short month name.
+format-date-language = { $day2 }.{ $month2 }.{ $year }
 # A date and a time of day, the date numeric ("2026-06-30 13:42") or worded ("30 Jun 2026, 13:42").
 format-date-time-numeric = { $date } { $time }
 format-date-time-worded = { $date }, { $time }
+format-date-time-language = { $date }, { $time }
 # The top of a day: "Tuesday, June 30" and "Tuesday, June 30, 2026".
 format-day-heading = { $weekday }, { $day }. { $month }
 format-day-heading-year = { $weekday }, { $day }. { $month } { $year }

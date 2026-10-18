@@ -14,8 +14,8 @@
 //! | Style | Function | English | German |
 //! |---|---|---|---|
 //! | list | [`list_date`] | `16:02`, `Yesterday`, `Sun`, `Jun 30`, `Jun 30, 2025` | `16:02`, `Gestern`, `So.`, `30. Juni`, `30. Juni 2025` |
-//! | timestamp | [`timestamp`] | `2026-06-30 13:42` | `2026-06-30 13:42` |
-//! | date | [`date`] | `2026-06-30` (or US, EU, `30 Jun 2026`) | `30. Juni 2026` (Long) |
+//! | timestamp | [`timestamp`] | `Jun 30, 2026, 13:42` (or ISO `2026-06-30 13:42`, …) | `30.06.2026, 13:42` |
+//! | date | [`date`] | `Jun 30, 2026` (or ISO, US, EU, `30 Jun 2026`) | `30.06.2026` (or `30. Juni 2026`, Long) |
 //! | time | [`time`] | `13:42` or `1:42 PM` | `13:42` |
 //! | day heading | [`day_heading`] | `Tuesday, June 30` | `Dienstag, 30. Juni` |
 //! | month heading | [`month_heading`] | `June 2026` | `Juni 2026` |
@@ -299,7 +299,7 @@ pub fn list_date(at: &impl Moment) -> String {
     })
 }
 
-/// The **timestamp** style: `2026-06-30 13:42`. See [`Formats::timestamp`].
+/// The **timestamp** style: `Jun 30, 2026, 13:42` by default. See [`Formats::timestamp`].
 #[must_use]
 pub fn timestamp(at: &impl Moment) -> String {
     at.local()
@@ -320,7 +320,7 @@ pub fn time_of(at: &impl Moment) -> String {
         .map_or_else(String::new, |at| Formats::current().time(&at))
 }
 
-/// The **date** style: `2026-06-30`. See [`Formats::date`].
+/// The **date** style: `Jun 30, 2026` by default. See [`Formats::date`].
 #[must_use]
 pub fn date(day: NaiveDate) -> String {
     Formats::current().date(day)

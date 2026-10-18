@@ -15,10 +15,7 @@ impl Formats {
     /// years the full date (`Jun 30, 2025`).
     #[must_use]
     pub fn list_date(&self, at: NaiveDateTime, now: NaiveDateTime) -> String {
-        let days = at
-            .date()
-            .signed_duration_since(now.date())
-            .num_days();
+        let days = at.date().signed_duration_since(now.date()).num_days();
         match days {
             0 => self.time(&at),
             -1 | 1 => super::near_day(days).unwrap_or_default(),
@@ -29,10 +26,13 @@ impl Formats {
     }
 
     /// The **timestamp** style: the date in the person's date style and the
-    /// time in their clock style (`2026-06-30 13:42`, `30 Jun 2026, 1:42 PM`).
+    /// time in their clock style. By default the language's convention
+    /// (`Jun 30, 2026, 13:42`, `30.06.2026, 13:42`), or the style they chose
+    /// (`2026-06-30 13:42`, `30 Jun 2026, 1:42 PM`).
     #[must_use]
     pub fn timestamp(&self, at: NaiveDateTime) -> String {
         let key = match self.region.date {
+            DateStyle::Language => "format-date-time-language",
             DateStyle::Long => "format-date-time-worded",
             DateStyle::Iso | DateStyle::Us | DateStyle::Eu => "format-date-time-numeric",
         };
@@ -45,12 +45,15 @@ impl Formats {
         )
     }
 
-    /// The **date** style: a calendar day in the person's date style
-    /// (`2026-06-30`, `06/30/2026`, `30/06/2026`, `30 Jun 2026`).
+    /// The **date** style: a calendar day in the person's date style. By
+    /// default the language's convention (`Jun 30, 2026`, `30.06.2026`), or
+    /// the style they chose (`2026-06-30`, `06/30/2026`, `30/06/2026`,
+    /// `30 Jun 2026`).
     #[must_use]
     pub fn date(&self, day: NaiveDate) -> String {
         let (y, m, d) = (day.year(), day.month(), day.day());
         match self.region.date {
+            DateStyle::Language => self.language_date(day),
             DateStyle::Iso => format!("{y:04}-{m:02}-{d:02}"),
             DateStyle::Us => format!("{m:02}/{d:02}/{y:04}"),
             DateStyle::Eu => format!("{d:02}/{m:02}/{y:04}"),
@@ -63,6 +66,25 @@ impl Formats {
                 ],
             ),
         }
+    }
+
+    /// A calendar day in the desktop language's own convention, whatever
+    /// date style is chosen: `Jun 30, 2026` in English, `30.06.2026` in
+    /// German. For values that carry "follow the language" as their own
+    /// format (a spreadsheet cell's).
+    #[must_use]
+    pub fn language_date(&self, day: NaiveDate) -> String {
+        let (y, m, d) = (day.year(), day.month(), day.day());
+        widget_format(
+            "format-date-language",
+            &[
+                ("day", d.to_string().into()),
+                ("day2", format!("{d:02}").into()),
+                ("month", self.month_short(m).into()),
+                ("month2", format!("{m:02}").into()),
+                ("year", format!("{y:04}").into()),
+            ],
+        )
     }
 
     /// A time of day in the person's clock style: `14:05` or `2:05 PM`.

@@ -5,7 +5,7 @@
 //! ```json
 //! "locale": {
 //!   "currency": "USD",
-//!   "date_format": "ISO",
+//!   "date_format": "Language",
 //!   "time_format": "H24",
 //!   "measurement": "Metric"
 //! }
@@ -171,7 +171,7 @@ impl Default for Locale {
     fn default() -> Self {
         Self {
             currency: Currency::USD,
-            date_format: DateStyle::Iso,
+            date_format: DateStyle::Language,
             time_format: TimeStyle::H24,
             measurement: Measurement::Metric,
             number_style: NumberStyle::DecimalPoint,
@@ -197,7 +197,15 @@ mod tests {
     fn the_locale_section_keeps_the_cross_app_shape() {
         let locale = Locale::default();
         assert_eq!(locale.currency, Currency::USD);
-        assert_eq!(locale.date_format, DateStyle::Iso);
+        assert_eq!(
+            locale.date_format,
+            DateStyle::Language,
+            "dates follow the desktop's language until a format is chosen"
+        );
+        assert_eq!(
+            serde_json::to_value(locale).unwrap()["date_format"],
+            "Language"
+        );
         assert_eq!(locale.time_format, TimeStyle::H24);
         assert_eq!(locale.measurement, Measurement::Metric);
 

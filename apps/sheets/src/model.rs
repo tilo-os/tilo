@@ -374,6 +374,7 @@ pub enum FormatCategory {
 
 fn date_style_code(s: DateStyle) -> &'static str {
     match s {
+        DateStyle::Language => "Language",
         DateStyle::Iso => "ISO",
         DateStyle::Us => "US",
         DateStyle::Eu => "EU",
@@ -382,6 +383,7 @@ fn date_style_code(s: DateStyle) -> &'static str {
 }
 fn date_style_from_code(s: &str) -> Option<DateStyle> {
     Some(match s {
+        "Language" => DateStyle::Language,
         "ISO" => DateStyle::Iso,
         "US" => DateStyle::Us,
         "EU" => DateStyle::Eu,
@@ -567,6 +569,13 @@ fn serial_to_unix_days(serial: f64) -> i64 {
 pub fn serial_to_date(serial: f64, style: DateStyle) -> String {
     let (y, m, d) = civil_from_days(serial_to_unix_days(serial));
     match style {
+        DateStyle::Language => i32::try_from(y)
+            .ok()
+            .and_then(|year| ui::format::NaiveDate::from_ymd_opt(year, m, d))
+            .map_or_else(
+                || format!("{y:04}-{m:02}-{d:02}"),
+                |day| ui::format::Formats::current().language_date(day),
+            ),
         DateStyle::Iso => format!("{y:04}-{m:02}-{d:02}"),
         DateStyle::Us => format!("{m:02}/{d:02}/{y:04}"),
         DateStyle::Eu => format!("{d:02}/{m:02}/{y:04}"),
@@ -820,6 +829,9 @@ mod tests {
             assert_eq!(serial_to_date(serial, DateStyle::Us), "03/15/2023");
             assert_eq!(serial_to_date(serial, DateStyle::Eu), "15/03/2023");
             assert_eq!(serial_to_date(serial, DateStyle::Long), "15 Mar 2023");
+            for style in DateStyle::ALL {
+                assert_eq!(date_style_from_code(date_style_code(style)), Some(style));
+            }
         }
 
         // Case `date_serial_round_trips`.

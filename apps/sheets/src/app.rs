@@ -69,7 +69,8 @@ const TAB_MENU_ACTIONS: [TabAction; 6] = [
     TabAction::Delete,
 ];
 /// Options of the document-settings sheet, in display order.
-const DATE_STYLES: [(&str, DateStyle); 4] = [
+const DATE_STYLES: [(&str, DateStyle); 5] = [
+    ("Language", DateStyle::Language),
     ("ISO", DateStyle::Iso),
     ("US", DateStyle::Us),
     ("EU", DateStyle::Eu),
@@ -2503,6 +2504,7 @@ struct SelectionSummary {
 
 fn date_label(d: DateStyle) -> &'static str {
     match d {
+        DateStyle::Language => "Language",
         DateStyle::Iso => "ISO",
         DateStyle::Us => "US",
         DateStyle::Eu => "EU",

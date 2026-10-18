@@ -1461,6 +1461,7 @@ settings-region-time-format = Time format
 settings-region-measurement = Measurement
 settings-region-number-format = Number format
 settings-region-first-day = First day of week
+settings-region-date-language = Follow language
 settings-region-date-iso = ISO (2023-03-15)
 settings-region-date-us = US (03/15/2023)
 settings-region-date-eu = European (15/03/2023)

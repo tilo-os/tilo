@@ -16,9 +16,11 @@ use tilo_lock::RwLockRecover as _;
 
 use crate::clock::TimeStyle;
 
-/// How numeric dates render: the shared `locale.date_format` setting. The
-/// serde names are the exact strings the settings file uses
-/// (`ISO`/`US`/`EU`/`Long`).
+/// How dates render: the shared `locale.date_format` setting. The serde
+/// names are the exact strings the settings file uses
+/// (`Language`/`ISO`/`US`/`EU`/`Long`). Until the person picks one, dates
+/// follow the desktop's language ([`DateStyle::Language`]); ISO is a choice
+/// like the others.
 #[derive(
     Clone,
     Copy,
@@ -31,8 +33,13 @@ use crate::clock::TimeStyle;
     tilo_resource::Model,
 )]
 pub enum DateStyle {
-    /// `2023-03-15`
+    /// The desktop language's own convention: `Mar 15, 2023` in English,
+    /// `15.03.2023` in German.
     #[default]
+    #[serde(rename = "Language")]
+    #[model(rename = "Language")]
+    Language,
+    /// `2023-03-15`
     #[serde(rename = "ISO")]
     #[model(rename = "ISO")]
     Iso,
@@ -51,28 +58,32 @@ pub enum DateStyle {
 }
 
 impl DateStyle {
-    pub const ALL: [DateStyle; 4] = [
+    pub const ALL: [DateStyle; 5] = [
+        DateStyle::Language,
         DateStyle::Iso,
         DateStyle::Us,
         DateStyle::Eu,
         DateStyle::Long,
     ];
 
-    /// A worked example so the picker shows what each style produces.
+    /// A worked example so the picker shows what each style produces:
+    /// 15 March 2023 in this style, [`DateStyle::Language`] in the language
+    /// active on the calling thread.
     #[must_use]
-    pub fn example(self) -> &'static str {
-        match self {
-            DateStyle::Iso => "2023-03-15",
-            DateStyle::Us => "03/15/2023",
-            DateStyle::Eu => "15/03/2023",
-            DateStyle::Long => "15 Mar 2023",
-        }
+    pub fn example(self) -> String {
+        let day = chrono::NaiveDate::from_ymd_opt(2023, 3, 15).unwrap_or_default();
+        super::Formats::with(RegionFormats {
+            date: self,
+            ..RegionFormats::default()
+        })
+        .date(day)
     }
 
     /// User-facing name for the dropdown.
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
+            DateStyle::Language => "Follow language",
             DateStyle::Iso => "ISO (2023-03-15)",
             DateStyle::Us => "US (03/15/2023)",
             DateStyle::Eu => "European (15/03/2023)",
