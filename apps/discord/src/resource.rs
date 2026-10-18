@@ -61,23 +61,23 @@ impl ResourceApp for Discord {
             .with_role(TextRole::Title);
         let summary = cx.text(status).with_id("guild-status");
         let link = cx.effect_button("discord-link-account", &DiscordEffect::LinkAccount);
-        let code = Text::from_state(&shown, |code| {
+        let instruction = Text::from_state(&shown, |code| {
             if code.is_empty() {
                 String::new()
             } else {
-                CATALOG.t_args(
-                    "discord-link-code",
-                    &[("code", ArgValue::Text(code.clone()))],
-                )
+                CATALOG.t("discord-link-code")
             }
         })
-        .with_id("link-code")
         .with_live(ui::a11y::Politeness::Polite);
+        let code = Text::from_state(&shown, Clone::clone)
+            .with_id("link-code")
+            .with_role(TextRole::Code);
         Box::new(
             Column::new()
                 .push(Box::new(name))
                 .push(Box::new(summary))
                 .push(Box::new(link))
+                .push(Box::new(instruction))
                 .push(Box::new(code)),
         )
     }

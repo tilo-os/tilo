@@ -99,6 +99,9 @@ pub struct PaneCx {
     /// The radios this device has; never read when it reaches no device.
     radios: crate::radios::Radios,
     pub(crate) provider_admin: ui::models::ProviderAdministration,
+    /// The person's accounts with the services the room is connected to,
+    /// when the host lent them.
+    pub(crate) linked: ui::linked_accounts::LinkedAccounts,
 }
 
 /// Retype portable panel bindings without changing public Settings action ids.
@@ -153,7 +156,15 @@ impl PaneCx {
             scene: None,
             radios: crate::radios::Radios::unread(),
             provider_admin: ui::models::ProviderAdministration::default(),
+            linked: ui::linked_accounts::LinkedAccounts::default(),
         }
+    }
+
+    /// This pane reaching `linked` for the person's linked accounts.
+    #[must_use]
+    pub fn with_linked_accounts(mut self, linked: ui::linked_accounts::LinkedAccounts) -> Self {
+        self.linked = linked;
+        self
     }
 
     /// A detached pane over the settings document at `path`, for a test.
@@ -178,6 +189,19 @@ impl PaneCx {
         while let Some(loan) = cx.take_lent::<ui::models::ProviderAdministration>() {
             provider_admin = loan;
         }
+        let mut linked = ui::linked_accounts::LinkedAccounts::default();
+        while let Some(loan) = cx.take_lent::<ui::linked_accounts::LinkedAccounts>() {
+            linked = loan;
+        }
+        let scene = cx.fixture::<crate::scenarios::CaptureScene>();
+        if let Some(state) = scene
+            .as_ref()
+            .and_then(|scene| scene.linked_account.clone())
+        {
+            linked = ui::linked_accounts::LinkedAccounts::new(Rc::new(
+                crate::scenarios::CaptureBridge(state),
+            ));
+        }
         let mut attached = Self {
             door: Some(Door {
                 actions: cx.actions(),
@@ -186,8 +210,9 @@ impl PaneCx {
             }),
             storage: cx.storage().clone(),
             mode: cx.mode(),
-            scene: cx.fixture::<crate::scenarios::CaptureScene>(),
+            scene,
             provider_admin,
+            linked,
             radios: crate::radios::Radios::unread(),
         };
         if attached.reaches_devices() {

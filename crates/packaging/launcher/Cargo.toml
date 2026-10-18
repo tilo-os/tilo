@@ -71,7 +71,6 @@ serde.workspace = true
 # `library_path` to match an installed driver to the compositor's
 # chosen render node.
 serde_json.workspace = true
-tilo-actions = { path = "../../collab/actions" }
 toml.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

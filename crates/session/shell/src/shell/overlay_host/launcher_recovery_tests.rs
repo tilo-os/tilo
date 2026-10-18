@@ -128,6 +128,12 @@ fn failed_palette_keyboard_invocation_keeps_context_for_retry_and_escape() {
     assert_eq!(attempts.get(), 2);
     assert_recovery_context(&h);
     assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Escape))));
+    assert!(
+        h.host.palette_visible(),
+        "the first Escape clears the query, keeping search open"
+    );
+    assert_eq!(h.host.palette_query(), "");
+    assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Escape))));
     assert!(!h.host.palette_visible());
     assert_eq!(attempts.get(), 2, "cancel must not retry");
     h.host.set_palette_visible(true);

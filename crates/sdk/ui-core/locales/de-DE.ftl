@@ -421,18 +421,9 @@ history-action-invalid = Diese Verlaufsanfrage ist ungültig.
 palette-name = Befehlspalette
 palette-results = Ergebnisse
 palette-placeholder = Suchen…
-palette-hint-navigate = Navigieren
-palette-hint-select = Auswählen
-palette-hint-open = Öffnen
-palette-hint-run = Ausführen
-palette-hint-close = Schließen
-palette-result-count = { $count ->
-    [one] 1 Ergebnis
-   *[other] { $count } Ergebnisse
-}
 palette-empty = Nichts anzuzeigen
 palette-no-results = Keine Ergebnisse für „{ $query }“
-palette-no-results-hint = Weniger Wörter versuchen oder den Bereich erweitern
+palette-no-results-hint = Schreibweise prüfen oder ein anderes Wort versuchen
 palette-searching = Suche läuft…
 
 # Kalender-Abschnitte in der Arbeitsbereich-Aktivität.
@@ -469,6 +460,11 @@ find-bar-replace = Ersetzen
 find-bar-replace-all = Alle ersetzen
 find-bar-position = { $current } von { $total }
 find-bar-no-matches = Keine Treffer
+widget-mention-agent = Agent
+widget-mention-shortcut = Kurzbefehl
+widget-mention-app = App
+widget-mention-bot = Bot
+widget-mention-list = Personen zum Erwähnen
 widget-block-duplicate = Block mit Unterelementen duplizieren
 
 widget-block-duplicate-selection = Ausgewählte oder fokussierte Blöcke duplizieren

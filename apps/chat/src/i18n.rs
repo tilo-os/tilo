@@ -34,7 +34,6 @@ mod tests {
         "chat-context-following",
         "chat-context-stop",
         "chat-header-call-open",
-        "chat-header-voice-call",
         "chat-attachment-no-access",
         "chat-call-connected",
         "chat-call-reconnecting",

@@ -559,6 +559,28 @@ impl Service {
         response
     }
 
+    /// `GET /mode`: the mode, which build answers and, for a persistent
+    /// room, whether its relay serves.
+    async fn mode(&self) -> Response<Body> {
+        let mut mode = serde_json::json!({
+            "mode": ops::get().map_or(Mode::Normal, ops::Ops::mode).as_str(),
+            // Public like the web entry's version.json: which build answers
+            // here, for drift reports from outside the cluster.
+            "revision": ops::get().map_or(ops::UNKNOWN_REVISION, ops::Ops::revision),
+        });
+        // A deploy's health check needs the relay: one that cannot start
+        // leaves this service answering while nobody gets in.
+        if let (Some(persistent), Some(fields)) = (&self.persistent, mode.as_object_mut()) {
+            let relay = if persistent.relay_up().await {
+                "up"
+            } else {
+                "restarting"
+            };
+            fields.insert("relay".into(), relay.into());
+        }
+        Self::json(StatusCode::OK, &mode)
+    }
+
     async fn avatar(persistent: &persistent::Persistent, name: &str) -> Response<Body> {
         use tilo_relay_protocol::public_avatars::{MAX_AVATAR_BYTES, sniff};
         let Some(path) = persistent.avatar_path(name) else {
@@ -724,15 +746,7 @@ impl Service {
                     .await
             }
             (&Method::GET, ["metrics"]) => self.metrics(request.headers()).await,
-            (&Method::GET, ["mode"]) => Self::json(
-                StatusCode::OK,
-                &serde_json::json!({
-                    "mode": ops::get().map_or(Mode::Normal, ops::Ops::mode).as_str(),
-                    // Public like the web entry's version.json: which build
-                    // answers here, for drift reports from outside the cluster.
-                    "revision": ops::get().map_or(ops::UNKNOWN_REVISION, ops::Ops::revision),
-                }),
-            ),
+            (&Method::GET, ["mode"]) => self.mode().await,
             (&Method::POST, ["errors"]) => self.client_error(request.into_body()).await,
             (&Method::POST, ["rooms"]) => match Self::paused() {
                 Some(refused) => refused,

@@ -60,9 +60,14 @@ impl ListIndex {
     where
         R: IntoIterator<Item = (&'a str, FieldWeight)>,
     {
+        let one_word = query.split_whitespace().nth(1).is_none();
         let rows: Vec<Vec<(&'a str, FieldWeight)>> = rows
             .into_iter()
-            .map(|row| row.into_iter().collect())
+            .map(|row| {
+                row.into_iter()
+                    .filter(|(text, weight)| !(one_word && is_phrase_keyword(text, *weight)))
+                    .collect()
+            })
             .collect();
         if query.trim().is_empty() {
             return vec![Some(0); rows.len()];
@@ -104,10 +109,42 @@ impl ListIndex {
     }
 }
 
+/// A keyword of several words is one name for the row, matched as a phrase:
+/// a query of one word never matches it. "rechner" is not asking for
+/// "rechner neu starten" (Restart), and "bildschirm" not for "bildschirm
+/// sperren" (Lock); "rechner neu" is.
+fn is_phrase_keyword(text: &str, weight: FieldWeight) -> bool {
+    weight == FieldWeight::KEYWORD && text.split_whitespace().nth(1).is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::MatchTier;
+
+    #[test]
+    fn a_keyword_phrase_needs_more_than_its_first_word() {
+        let list = ListIndex::new(Matching::LOOSE);
+        let rows = [
+            vec![
+                ("Restart", FieldWeight::TITLE),
+                ("neustart", FieldWeight::KEYWORD),
+                ("rechner neu starten", FieldWeight::KEYWORD),
+            ],
+            vec![
+                ("Calculator", FieldWeight::TITLE),
+                ("rechner", FieldWeight::KEYWORD),
+            ],
+        ];
+        let ranks = |query| list.ranks(query, rows.iter().map(|row| row.iter().copied()));
+        assert_eq!(ranks("rechner")[0], None, "one word never matches a phrase");
+        assert!(ranks("rechner")[1].is_some());
+        assert!(ranks("rechner neu")[0].is_some(), "the phrase, typed on");
+        assert!(
+            ranks("neustart")[0].is_some(),
+            "a one-word keyword still matches"
+        );
+    }
 
     #[test]
     fn ranks_rows_and_reindexes_only_on_change() {

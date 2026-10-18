@@ -19,6 +19,8 @@ tilo-browser-peer = { path = "../../browser/tilo-browser-peer", default-features
 # authoring the seeded chat is one of its agents-only host actions.
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["web", "agents"] }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+# The HTTPS host routes (`/rooms`) the load drives directly.
+tilo-relay-client = { path = "../../hosting/tilo-relay-client", default-features = false }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tilo-automerge-isolate.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }

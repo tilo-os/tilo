@@ -3527,6 +3527,135 @@ async fn revoked_device_remote_action_is_refused() {
     assert_eq!(served(), 1, "a revoked device never reaches the plane");
 }
 
+/// An action the host runs for a member spends that member's change
+/// budget, as a change they send does; reading the catalogue spends none.
+#[tokio::test]
+async fn a_members_actions_served_by_the_host_spend_their_change_budget() {
+    let (root, user) = UserIdentity::generate("alice", 1);
+    let (host, _) = certified_device(&root, user.public_key, "host");
+    // A guest: another person than the host's, whose budget applies.
+    let (guest_root, guest) = UserIdentity::generate("guest", 1);
+    let (a, _) = certified_device(&guest_root, guest.public_key, "a");
+    let id = 12;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut wr = crate::workspace::WorkspaceRuntime::open(
+        tmp.path(),
+        id,
+        true,
+        crate::workspace::Membership::default(),
+    )
+    .unwrap();
+    wr.admit_device(a.device_public_key).unwrap();
+    let (atx, _arx) = mpsc::channel(2);
+    let (ap, _apr) = mpsc::channel(2);
+    let (disconnect, _disconnect_rx) = mpsc::channel(1);
+    wr.add_subscriber(Subscriber {
+        device_public_key: a.device_public_key,
+        role: a.role,
+        tx: atx.clone(),
+        disconnect: disconnect.clone(),
+    });
+    let registry = Arc::new(AsyncMutex::new(HashMap::from([(
+        id,
+        Arc::new(AsyncMutex::new(wr)),
+    )])));
+    let trust = Arc::new(std::sync::RwLock::new(crate::policy::TrustPolicy::AllowAny));
+    let revocations = Arc::new(std::sync::RwLock::new(RevocationList::new()));
+    let metrics = Arc::new(crate::metrics::Metrics::default());
+    let counting = Arc::new(CountingPlane::default());
+    let plane: Arc<dyn crate::app_serving::AppServingPlane> = counting.clone();
+    let limits =
+        crate::member_limits::MemberLimits::new(crate::member_limits::MemberLimitsConfig {
+            changes_per_window: 1,
+            window_secs: 3600,
+            burst: 2,
+            ..crate::member_limits::MemberLimitsConfig::default()
+        });
+    let session = SessionCtx {
+        workspaces: &registry,
+        autobind: None,
+        outbound: &atx,
+        state_outbound: None,
+        connection_live: None,
+        own_user_public_key: &user.public_key,
+        own_device_cert: &host.cert,
+        own_device_public_key: &host.cert.device_public_key,
+        app_serving: Some(&plane),
+        metrics: &metrics,
+        trust_policy: &trust,
+        disconnect: &disconnect,
+        framing: tilo_delivery_protocol::transport_v2::StateFraming::V1,
+        presence: None,
+        signed_actions: false,
+        private_tx: &ap,
+        revocations: &revocations,
+        live_bridge: None,
+        agents: Box::leak(Box::default()),
+        positions: None,
+        compactor: None,
+        member_limits: Some(&limits),
+        resumes: Box::leak(Box::default()),
+        lag: Box::leak(Box::default()),
+    };
+    let encode = |message| {
+        tilo_actions::remote::RemoteActionFrame::new(message)
+            .encode()
+            .unwrap()
+    };
+    let invoke = || {
+        encode(tilo_actions::remote::RemoteActionMessage::Invoke(
+            tilo_actions::remote::InvokeRequest {
+                on_behalf_of: None,
+                invocation: tilo_actions::InvocationId::new(),
+                target: tilo_actions::remote::RemoteActionTarget {
+                    provider: "record:so.tilo.discord:".into(),
+                    address: tilo_actions::ActionAddress::new("", "link-account"),
+                },
+                argument: tilo_actions::remote::InvokeArgument::None,
+                context: None,
+                confirmation: None,
+                revision: None,
+                wait_ms: None,
+                appearance: None,
+            },
+        ))
+    };
+    let route = || RemoteActionRoute {
+        workspace_id: id,
+        version: crate::transport::REMOTE_ACTION_ENVELOPE_VERSION,
+        to: host.device_public_key,
+    };
+    let served = || counting.0.load(std::sync::atomic::Ordering::SeqCst);
+    for _ in 0..2 {
+        assert_eq!(
+            handle_remote_action(&a, &session, &[id], route(), invoke()).await,
+            None
+        );
+    }
+    assert_eq!(served(), 2, "within the burst, the host runs them");
+    let refused = handle_remote_action(&a, &session, &[id], route(), invoke()).await;
+    let Some(Envelope::RemoteActionUndeliverable { reason, .. }) = refused else {
+        panic!("a spent budget is refused, got {refused:?}");
+    };
+    assert_eq!(
+        UnavailableReason::from_wire_reason(&reason),
+        Some(UnavailableReason::Backpressure),
+        "{reason}"
+    );
+    assert_eq!(served(), 2, "a refused action never reaches the host");
+    let catalogue = encode(
+        tilo_actions::remote::RemoteActionMessage::CatalogueRequest {
+            correlation: 1,
+            query: tilo_actions::remote::CatalogueQuery::default(),
+        },
+    );
+    assert_eq!(
+        handle_remote_action(&a, &session, &[id], route(), catalogue).await,
+        None
+    );
+    assert_eq!(served(), 3, "reading spends no change budget");
+}
+
 #[tokio::test]
 async fn route_private_refuses_an_agent_whose_delegation_expired() {
     let (root, user) = UserIdentity::generate("alice", 1);

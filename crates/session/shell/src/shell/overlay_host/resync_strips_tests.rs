@@ -88,9 +88,21 @@ fn closing_a_window_is_quiet_and_still_reopens_its_exact_tab() {
     }
     host.set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
         .expect("valid default shortcut configuration");
-    let modifiers =
+    let app_first =
         winit::keyboard::ModifiersState::CONTROL | winit::keyboard::ModifiersState::SHIFT;
     let mut handled = false;
+    assert!(
+        !host.handle_shell_keyboard_event(
+            &winit::keyboard::Key::Character("T".into()),
+            app_first.into(),
+            false,
+            &AutoCommit::new(),
+            &automerge::ROOT,
+            &mut handled,
+        ) && !handled,
+        "Ctrl+Shift+T goes to the focused app first; the desktop reopens only what it leaves"
+    );
+    let modifiers = winit::keyboard::ModifiersState::SUPER | winit::keyboard::ModifiersState::SHIFT;
     assert!(host.handle_shell_keyboard_event(
         &winit::keyboard::Key::Character("T".into()),
         modifiers.into(),
@@ -101,7 +113,7 @@ fn closing_a_window_is_quiet_and_still_reopens_its_exact_tab() {
     ));
     assert!(
         handled,
-        "the OS frame owns Ctrl+Shift+T before the app receives it"
+        "the desktop owns Super+Shift+T before the app receives it"
     );
     let state = chrome.borrow();
     let tree = state.tree();

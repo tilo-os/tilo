@@ -374,6 +374,7 @@ impl CapnpChannelHandle {
         let action = match &command {
             Command::Publish { cut: false, .. }
             | Command::Capture { .. }
+            | Command::CaptureNamed { .. }
             | Command::Release { .. } => "copy-selection",
             Command::Publish { cut: true, .. } => "cut-selection",
             Command::Undo { .. } => "undo",
@@ -478,6 +479,11 @@ impl SelectedOpenCustody {
     fn check(&self) -> Result<(), String> {
         self.local.revalidate()?;
         let state = self.state.upgrade().ok_or("OpenWith broker retired")?;
+        self.check_with(&state)
+    }
+
+    /// The remaining custody checks, against the live broker `state`.
+    fn check_with(&self, state: &super::CapnpBrokerState) -> Result<(), String> {
         if !state.is_accepting() {
             return Err("OpenWith broker retired".into());
         }
@@ -486,7 +492,7 @@ impl SelectedOpenCustody {
             .original
             .as_ref()
             .ok_or("original OpenWith custody absent")?;
-        data.revalidate_clipboard_origin(&state)?;
+        data.revalidate_clipboard_origin(state)?;
         if match &self.v2 {
             Some(request) => !data.permits_selected_open_v2(request),
             None => !data.permits_selected_open(&self.expected),
@@ -516,7 +522,7 @@ impl SelectedOpenCustody {
             .original
             .caller
             .as_ref()
-            .and_then(|caller| caller.current(&state))
+            .and_then(|caller| caller.current(state))
             .ok_or("original OpenWith caller unavailable")?;
         if caller.execution_id().is_some() && !caller.execution_is_live() {
             return Err("original OpenWith execution ended".into());
@@ -556,7 +562,6 @@ impl SelectedOpenCustody {
                 Ok(())
             })?
             .map_err(str::to_owned)?;
-        drop(state);
         Ok(())
     }
 }

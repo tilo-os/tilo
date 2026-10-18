@@ -150,6 +150,7 @@ pub async fn start_host_limiting(
             public_origin: None,
             live_origin: None,
             limits: tilo_relay::web::WebLimits::default(),
+            country: None,
         })
         .await
         .unwrap();
@@ -192,6 +193,7 @@ pub async fn start_room_host(
             public_origin: None,
             live_origin: None,
             limits: tilo_relay::web::WebLimits::default(),
+            country: None,
         })
         .await
         .unwrap();

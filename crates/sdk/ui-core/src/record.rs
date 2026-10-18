@@ -2924,19 +2924,19 @@ impl RecordReservation {
 
 /// A record lent to an action frame ([`RecordStore::with_action_state`]),
 /// returned to its set when the frame ends, however it ends.
-struct Lent<'a> {
+struct RecordLoan<'a> {
     store: &'a RecordStore,
     id: &'a RecordId,
-    lent: Option<(
+    parts: Option<(
         AutoCommit,
         crate::state::UndoLog,
         crate::bound_dispatch::RecordActionState,
     )>,
 }
 
-impl Drop for Lent<'_> {
+impl Drop for RecordLoan<'_> {
     fn drop(&mut self) {
-        let Some((doc, history, action_state)) = self.lent.take() else {
+        let Some((doc, history, action_state)) = self.parts.take() else {
             return;
         };
         let Ok(mut set) = self.store.0.try_borrow_mut() else {
@@ -3755,13 +3755,13 @@ impl RecordStore {
                 std::mem::take(&mut parked.action_state),
             );
             set.lent.insert(id.clone());
-            Lent {
+            RecordLoan {
                 store: self,
                 id,
-                lent: Some(lent),
+                parts: Some(lent),
             }
         };
-        let (doc, history, state) = loan.lent.as_mut().ok_or(RecordOpenError::MissingRecord)?;
+        let (doc, history, state) = loan.parts.as_mut().ok_or(RecordOpenError::MissingRecord)?;
         Ok(crate::invocation_scope::with_record_loan(
             self,
             id,

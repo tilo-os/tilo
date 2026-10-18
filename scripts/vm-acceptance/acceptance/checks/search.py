@@ -103,7 +103,7 @@ def windows(ctx, res):
                  "no result that switches to it")
 
 
-@check("S06", AREA, "Actions are findable ('overview' finds Toggle workspace overview)")
+@check("S06", AREA, "Actions are findable ('overview' finds Show workspace overview)")
 def actions(ctx, res):
     results = ctx.vm.actions("overview")
     head = [(a["provider"], a["id"]) for a in results[:3]]

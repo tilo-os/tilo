@@ -101,7 +101,7 @@ fn linked_mentions_ping_and_others_are_plain() {
     g.links.push(Link {
         discord_user: "d_bo".into(),
         person: "u_bo".into(),
-        linked_at: 0,
+        ..Link::default()
     });
     let mentions = "[{\"user\":\"u_bo\",\"start\":3,\"len\":3,\"is_agent\":false},{\"user\":\"u_ada\",\"start\":11,\"len\":4,\"is_agent\":false}]";
     let chat = chat(&[msg(

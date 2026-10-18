@@ -2,7 +2,6 @@
 //! keyed hash of it (no raw address is ever kept), and the per-address
 //! join windows of a public room.
 
-use anyhow::{Context, Result, ensure};
 use hmac::{Hmac, KeyInit, Mac};
 use std::collections::{HashMap, VecDeque};
 use std::net::IpAddr;
@@ -16,60 +15,7 @@ const SEAT_HOLD_MS: u64 = 30_000;
 
 /// Address ranges whose `X-Forwarded-For` is believed: the cluster's own
 /// ingress, never the open internet.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct TrustedProxies(Vec<(IpAddr, u8)>);
-
-impl std::str::FromStr for TrustedProxies {
-    type Err = anyhow::Error;
-    fn from_str(text: &str) -> Result<Self> {
-        let mut ranges = Vec::new();
-        for item in text
-            .split(',')
-            .map(str::trim)
-            .filter(|item| !item.is_empty())
-        {
-            let (address, bits) = match item.split_once('/') {
-                Some((address, bits)) => (address, Some(bits)),
-                None => (item, None),
-            };
-            let address: IpAddr = address
-                .parse()
-                .with_context(|| format!("{item} is not an address"))?;
-            let max = if address.is_ipv4() { 32 } else { 128 };
-            let bits = bits
-                .map_or(Ok(max), str::parse::<u8>)
-                .with_context(|| format!("{item} has an invalid prefix"))?;
-            ensure!(bits <= max, "{item} has a prefix longer than its address");
-            ranges.push((address, bits));
-        }
-        Ok(Self(ranges))
-    }
-}
-
-/// The address as the high bits of a `u128`, so IPv4 and IPv6 prefixes
-/// mask the same way.
-fn prefix_bits(ip: IpAddr) -> u128 {
-    match ip {
-        IpAddr::V4(v4) => u128::from(u32::from(v4)) << 96,
-        IpAddr::V6(v6) => u128::from(v6),
-    }
-}
-
-impl TrustedProxies {
-    pub fn contains(&self, ip: IpAddr) -> bool {
-        self.0.iter().any(|(range, bits)| {
-            if range.is_ipv4() != ip.is_ipv4() {
-                return false;
-            }
-            // An IPv4 address sits in the top 32 bits, so its prefix of
-            // `bits` keeps the top `bits` bits just like an IPv6 one.
-            let mask = u128::MAX
-                .checked_shl(128_u32.saturating_sub(u32::from(*bits)))
-                .unwrap_or(0);
-            prefix_bits(*range) & mask == prefix_bits(ip) & mask
-        })
-    }
-}
+pub use tilo_relay_protocol::proxies::TrustedProxies;
 
 /// The visitor's address: the peer, unless the peer is a trusted proxy,
 /// in which case the rightmost `X-Forwarded-For` entry that is not itself

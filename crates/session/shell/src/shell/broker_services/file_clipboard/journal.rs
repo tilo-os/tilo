@@ -6,6 +6,34 @@ use std::os::unix::fs::OpenOptionsExt as _;
 mod relocate;
 
 const MAX_RECEIPT_BYTES: u64 = 2 * 1024 * 1024;
+/// A receipt is written whole at most every this many item steps; the steps
+/// between are appended to its log, so a paste of many entries costs one
+/// short append per step instead of rewriting every entry each time.
+const LOG_COMPACT: usize = 64;
+/// The most a receipt's step log holds before it is folded in.
+const MAX_LOG_BYTES: u64 = MAX_RECEIPT_BYTES;
+
+/// One item step appended to a receipt's log: the item's whole new state.
+/// It applies only to the receipt generation it was written against.
+#[derive(Serialize, Deserialize)]
+struct LogLine {
+    generation: u64,
+    index: usize,
+    item: Item,
+}
+
+/// Whether a receipt still has work to resume or undo (its pending marker).
+fn pending_active(receipt: &Receipt) -> bool {
+    (!receipt.settled || receipt.error.is_some()) && receipt.items.iter().any(|item| !item.undone)
+        || receipt.items.iter().any(|item| {
+            !item.undone && (item.undo_recovery.is_some() || item.redoing || item.moving.is_some())
+        })
+}
+
+/// The log file beside receipt `name` (`<hash>.json` → `<hash>.log`).
+fn log_name(name: &str) -> Option<String> {
+    name.strip_suffix(".json").map(|stem| format!("{stem}.log"))
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct Seal {
@@ -27,6 +55,18 @@ impl Seal {
     }
     pub(super) fn unchanged(&self, metadata: &fs::Metadata) -> bool {
         self.matches(metadata) && self.changed == (metadata.ctime(), metadata.ctime_nsec())
+    }
+
+    /// Whether `metadata` is the same object, edits allowed: its identity,
+    /// and its birth time where the filesystem keeps one. For a pasted copy
+    /// a person may have edited since; never for a source about to be read.
+    pub(super) fn same_object(&self, metadata: &fs::Metadata) -> bool {
+        let current = Self::of(metadata);
+        self.identity == current.identity
+            && match (self.born, current.born) {
+                (Some(saved), Some(now)) => saved == now,
+                _ => true,
+            }
     }
 
     pub(super) fn matches(&self, metadata: &fs::Metadata) -> bool {
@@ -122,6 +162,9 @@ struct Receipt {
     items: Vec<Item>,
     error: Option<String>,
     settled: bool,
+    /// Which whole write this is; log lines name it.
+    #[serde(default)]
+    generation: u64,
 }
 impl Receipt {
     fn filename(&self) -> Result<String, String> {
@@ -161,7 +204,10 @@ impl Journal {
                     &source.parent,
                 )?,
                 original_seal: Seal::of(
-                    &source.entry.metadata().map_err(|error| error.to_string())?,
+                    &source
+                        .entry()?
+                        .metadata()
+                        .map_err(|error| error.to_string())?,
                 ),
                 staged: None,
                 quarantine: None,
@@ -197,11 +243,13 @@ impl Journal {
             items,
             error: None,
             settled: false,
+            generation: 0,
         };
         let pending = Arc::new(PendingReceipt {
             directory: self.directory()?,
             receipt: Mutex::new(receipt),
             published: AtomicBool::new(false),
+            logged: std::sync::atomic::AtomicUsize::new(0),
         });
         pending.change(|_| Ok(()))?;
         Ok(pending)
@@ -232,6 +280,7 @@ impl Journal {
             directory: Some(directory),
             receipt: Mutex::new(receipt),
             published: AtomicBool::new(true),
+            logged: std::sync::atomic::AtomicUsize::new(0),
         }))
     }
     fn read(
@@ -261,8 +310,9 @@ impl Journal {
         {
             return Err("invalid clipboard journal file".into());
         }
-        let receipt: Receipt = serde_json::from_reader(file.take(MAX_RECEIPT_BYTES + 1))
+        let mut receipt: Receipt = serde_json::from_reader(file.take(MAX_RECEIPT_BYTES + 1))
             .map_err(|error| error.to_string())?;
+        Self::replay_log(directory, name, &mut receipt)?;
         let restore_shape = receipt
             .items
             .iter()
@@ -273,12 +323,60 @@ impl Journal {
             || (receipt.version == 2
                 && (receipt.items.len() != 1 || restore_shape != 1 || !receipt.cut))
             || name != std::ffi::OsStr::new(&receipt.filename()?)
-            || receipt.items.len() > runtime_collab::file_clipboard::MAX_ENTRIES
+            || receipt.items.len() > runtime_collab::file_clipboard::MAX_OFFER_ENTRIES
         {
             return Err("invalid clipboard journal receipt".into());
         }
         Ok(receipt)
     }
+    /// Apply the item steps logged since `receipt` was written whole. A torn
+    /// last line (an append cut short) ends the replay; lines of an older
+    /// generation are already folded in and are skipped.
+    fn replay_log(
+        directory: &SecureNearbyDestination,
+        name: &std::ffi::OsStr,
+        receipt: &mut Receipt,
+    ) -> Result<(), String> {
+        let Some(log) = name.to_str().and_then(log_name) else {
+            return Ok(());
+        };
+        let file = match fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+            .open(directory.anchored_root().join(&log))
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.to_string()),
+        };
+        let metadata = file.metadata().map_err(|error| error.to_string())?;
+        if !metadata.is_file()
+            || metadata.len() > MAX_LOG_BYTES
+            || metadata.uid() != rustix::process::geteuid().as_raw()
+            || metadata.mode() & 0o077 != 0
+        {
+            return Err("invalid clipboard journal log".into());
+        }
+        let mut bytes = Vec::new();
+        file.take(MAX_LOG_BYTES)
+            .read_to_end(&mut bytes)
+            .map_err(|error| error.to_string())?;
+        for line in bytes.split_inclusive(|byte| *byte == b'\n') {
+            let Some(line) = line.strip_suffix(b"\n") else {
+                break;
+            };
+            let Ok(step) = serde_json::from_slice::<LogLine>(line) else {
+                break;
+            };
+            if step.generation == receipt.generation
+                && let Some(item) = receipt.items.get_mut(step.index)
+            {
+                *item = step.item;
+            }
+        }
+        Ok(())
+    }
+
     fn load(directory: &SecureNearbyDestination) -> Result<Vec<Receipt>, String> {
         let pending = super::trash::private_directory(directory, "pending")?;
         let mut receipts = Vec::new();
@@ -324,6 +422,7 @@ impl Journal {
                     ),
                     receipt: Mutex::new(receipt),
                     published: AtomicBool::new(true),
+                    logged: std::sync::atomic::AtomicUsize::new(0),
                 };
                 pending.change(|receipt| {
                     receipt.settled = true;
@@ -355,6 +454,7 @@ impl Journal {
                 ),
                 receipt: Mutex::new(receipt),
                 published: AtomicBool::new(true),
+                logged: std::sync::atomic::AtomicUsize::new(0),
             };
             match pending.undo(tree, context)? {
                 Reply::Settled {
@@ -385,6 +485,8 @@ pub(super) struct PendingReceipt {
     directory: Option<SecureNearbyDestination>,
     receipt: Mutex<Receipt>,
     published: AtomicBool,
+    /// Item steps appended to the log since the receipt was written whole.
+    logged: std::sync::atomic::AtomicUsize,
 }
 impl PendingReceipt {
     fn change(
@@ -400,6 +502,9 @@ impl PendingReceipt {
             drop(receipt);
             return Err("durable clipboard storage unavailable".into());
         };
+        // A new generation: log lines written against the last one are
+        // folded into this write and never replayed over it.
+        receipt.generation = receipt.generation.wrapping_add(1);
         let bytes = serde_json::to_vec(&*receipt).map_err(|error| error.to_string())?;
         if u64::try_from(bytes.len()).map_err(|error| error.to_string())? > MAX_RECEIPT_BYTES {
             return Err("clipboard journal receipt exceeds its bound".into());
@@ -434,23 +539,94 @@ impl PendingReceipt {
             let _ = fs::remove_file(path);
         }
         result.map_err(|error: io::Error| error.to_string())?;
+        if let Some(log) = log_name(&name) {
+            // Whether it goes or not: its lines name an older generation now
+            // and are never replayed.
+            let _ = fs::remove_file(directory.anchored_root().join(log));
+        }
+        self.logged.store(0, Ordering::Release);
         let result = update_pending(directory, &name, &receipt);
         drop(receipt);
         result
     }
+
+    /// Change one item: appended to the receipt's log as the item's new
+    /// state, and folded into a whole write every [`LOG_COMPACT`] steps.
     fn item_change(
         &self,
         source: &Source,
         change: impl FnOnce(&mut Item) -> Result<(), String>,
     ) -> Result<(), String> {
-        self.change(|receipt| {
-            let item = receipt
+        let mut receipt = self
+            .receipt
+            .lock()
+            .map_err(|_| "clipboard journal unavailable")?;
+        let index = receipt
+            .items
+            .iter()
+            .position(|item| item.original == source.path.as_os_str().as_bytes())
+            .ok_or("clipboard journal source unavailable")?;
+        let active = pending_active(&receipt);
+        change(
+            receipt
                 .items
-                .iter_mut()
-                .find(|item| item.original == source.path.as_os_str().as_bytes())
-                .ok_or("clipboard journal source unavailable")?;
-            change(item)
+                .get_mut(index)
+                .ok_or("clipboard journal item unavailable")?,
+        )?;
+        let logged = self.logged.load(Ordering::Acquire);
+        let directory = match &self.directory {
+            Some(directory) if self.published.load(Ordering::Acquire) && logged < LOG_COMPACT => {
+                directory
+            }
+            _ => {
+                drop(receipt);
+                return self.change(|_| Ok(()));
+            }
+        };
+        let name = receipt.filename()?;
+        let log = log_name(&name).ok_or("invalid clipboard receipt name")?;
+        let mut line = serde_json::to_vec(&LogLine {
+            generation: receipt.generation,
+            index,
+            item: receipt
+                .items
+                .get(index)
+                .cloned()
+                .ok_or("clipboard journal item unavailable")?,
         })
+        .map_err(|error| error.to_string())?;
+        line.push(b'\n');
+        let result = (|| {
+            let mut file = fs::OpenOptions::new()
+                .append(true)
+                .create(true)
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .open(directory.anchored_root().join(&log))?;
+            if file.metadata()?.len().saturating_add(line.len() as u64) > MAX_LOG_BYTES {
+                return Err(io::Error::other("clipboard journal log full"));
+            }
+            file.write_all(&line)?;
+            file.sync_data()?;
+            if logged == 0 {
+                fs::File::open(directory.anchored_root())?.sync_all()?;
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            // Fold the step into a whole write instead.
+            drop(receipt);
+            return self.change(|_| Ok(()));
+        }
+        self.logged
+            .store(logged.saturating_add(1), Ordering::Release);
+        let result = if pending_active(&receipt) == active {
+            Ok(())
+        } else {
+            update_pending(directory, &name, &receipt)
+        };
+        drop(receipt);
+        result
     }
     pub(super) fn consume_restore_info(
         &self,
@@ -1263,11 +1439,7 @@ fn update_pending(
     receipt: &Receipt,
 ) -> Result<(), String> {
     let pending = super::trash::private_directory(directory, "pending")?;
-    let active = (!receipt.settled || receipt.error.is_some())
-        && receipt.items.iter().any(|item| !item.undone)
-        || receipt.items.iter().any(|item| {
-            !item.undone && (item.undo_recovery.is_some() || item.redoing || item.moving.is_some())
-        });
+    let active = pending_active(receipt);
     let leaf = std::ffi::OsStr::new(name);
     if active {
         if let Some(entry) = optional_entry(&pending, leaf)? {

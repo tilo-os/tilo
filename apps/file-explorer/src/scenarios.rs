@@ -49,6 +49,8 @@ const ALL_SCENARIOS: &[&str] = &[
     "thumbnails",
     "thumbnails-fs",
     "undo-trash",
+    "clash",
+    "preview",
 ];
 
 /// The scenarios a host without extended attributes can show truthfully:
@@ -81,6 +83,8 @@ const PORTABLE_SCENARIOS: &[&str] = &[
     "status",
     "thumbnails",
     "undo-trash",
+    "clash",
+    "preview",
 ];
 
 /// The screenshot scenarios this host can show.

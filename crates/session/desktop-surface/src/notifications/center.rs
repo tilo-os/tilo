@@ -209,6 +209,11 @@ pub struct CenterLayout {
     /// settings): its leading control goes back there. Otherwise the centre
     /// stands alone and the control closes it.
     drill_in: bool,
+    /// Fresh banners are being held (Do Not Disturb, presenting, a focus
+    /// schedule): the header carries a status line saying so, where the
+    /// person looks for what they missed, instead of a card over their
+    /// work.
+    quiet: bool,
 }
 
 impl CenterLayout {
@@ -218,7 +223,8 @@ impl CenterLayout {
         qs::RELATED_GAP + self.actions.height + qs::PANEL_PAD
     }
 
-    fn header_height(&self) -> f64 {
+    /// The header's controls and title, without the quiet status line.
+    fn controls_height(&self) -> f64 {
         self.actions.height
             + 2.0 * qs::RELATED_GAP
             + if self.wrapped_header() {
@@ -226,6 +232,28 @@ impl CenterLayout {
             } else {
                 0.0
             }
+    }
+
+    fn header_height(&self) -> f64 {
+        self.controls_height()
+            + if self.quiet {
+                self.caption_lh + qs::RELATED_GAP
+            } else {
+                0.0
+            }
+    }
+
+    /// The quiet status line under the header's controls; zero height when
+    /// banners show normally.
+    pub fn quiet_rect(&self) -> Rect {
+        let y0 = self.panel.y0 + self.controls_height();
+        let height = if self.quiet { self.caption_lh } else { 0.0 };
+        Rect::new(
+            self.panel.x0 + qs::PANEL_PAD,
+            y0,
+            self.panel.x1 - qs::PANEL_PAD,
+            y0 + height,
+        )
     }
 
     fn wrapped_header(&self) -> bool {
@@ -251,7 +279,7 @@ impl CenterLayout {
                 self.back().x1 + qs::RELATED_GAP,
                 self.panel.y0,
                 self.clear().x0 - qs::RELATED_GAP,
-                self.panel.y0 + self.header_height(),
+                self.panel.y0 + self.controls_height(),
             )
         }
     }
@@ -323,7 +351,15 @@ impl CenterLayout {
             label_lh: actions.lines.1,
             actions,
             drill_in: false,
+            quiet: false,
         }
+    }
+    /// Fresh banners are being held: the header says so on a status line
+    /// ([`NotificationHost::quiet_status`]).
+    #[must_use]
+    pub fn quiet(mut self, quiet: bool) -> Self {
+        self.quiet = quiet;
+        self
     }
     /// This centre is a level of a drill-in panel: its leading control
     /// reads "Back" and returns there, instead of closing the centre.
@@ -879,7 +915,10 @@ impl NotificationCenter {
         host: &dyn NotificationHost,
         metrics: impl Into<CenterMetrics>,
     ) -> f64 {
-        self.preferred_height_in(host, &CenterLayout::new(Rect::ZERO, metrics))
+        self.preferred_height_in(
+            host,
+            &CenterLayout::new(Rect::ZERO, metrics).quiet(host.quiet_status().is_some()),
+        )
     }
 
     /// The panel height the centre asks for at the host's actual width,
@@ -890,7 +929,8 @@ impl NotificationCenter {
         metrics: impl Into<CenterMetrics>,
         width: f64,
     ) -> f64 {
-        let layout = CenterLayout::new(Rect::new(0.0, 0.0, width, 0.0), metrics);
+        let layout = CenterLayout::new(Rect::new(0.0, 0.0, width, 0.0), metrics)
+            .quiet(host.quiet_status().is_some());
         self.preferred_height_in(host, &layout)
             + if host.log().can_undo_clear() {
                 layout.cleared_extra_height()
@@ -915,7 +955,8 @@ impl NotificationCenter {
         if wanted <= max || self.is_reading() || host.log().can_undo_clear() {
             return wanted.min(max);
         }
-        let layout = CenterLayout::new(Rect::new(0.0, 0.0, width, max), metrics);
+        let layout = CenterLayout::new(Rect::new(0.0, 0.0, width, max), metrics)
+            .quiet(host.quiet_status().is_some());
         let (_, shapes, start, shown) = self.window(host, &layout);
         let Some(last) = shown.checked_sub(1) else {
             return max;
@@ -1669,6 +1710,32 @@ impl NotificationCenter {
         out
     }
 
+    /// What the centre says about itself: why nothing pops up (the
+    /// header's quiet status line, read first), then which rows show.
+    fn description(
+        host: &dyn NotificationHost,
+        start: usize,
+        shown: usize,
+        total: usize,
+    ) -> String {
+        let rows = if total == 0 {
+            t("a11y-notifications-none")
+        } else {
+            t_args(
+                "a11y-notifications-description",
+                &[
+                    ("first", start.saturating_add(1).into()),
+                    ("last", start.saturating_add(shown).into()),
+                    ("total", total.into()),
+                ],
+            )
+        };
+        match host.quiet_status() {
+            Some(status) => format!("{status}. {rows}"),
+            None => rows,
+        }
+    }
+
     /// The centre as one modal dialog: the row list, Clear all, and while
     /// it can still be undone, the cleared status and Undo. `now` is one
     /// clock edge for every row, so adjacent rows cannot label their ages
@@ -1686,18 +1753,7 @@ impl NotificationCenter {
         }
         let (rows, _, start, shown) = self.window(host, layout);
         let total = rows.len();
-        let description = if total == 0 {
-            t("a11y-notifications-none")
-        } else {
-            t_args(
-                "a11y-notifications-description",
-                &[
-                    ("first", start.saturating_add(1).into()),
-                    ("last", start.saturating_add(shown).into()),
-                    ("total", total.into()),
-                ],
-            )
-        };
+        let description = Self::description(host, start, shown, total);
         let history = AccessNode::new(Role::List)
             .with_name(t("a11y-notifications-list"))
             .with_children(self.accessibility_rows(host, layout, now));
@@ -2156,6 +2212,23 @@ impl NotificationCenter {
             Some(title_width),
             &title_style,
         );
+        let quiet = layout.quiet_rect();
+        if quiet.height() > 0.0
+            && let Some(status) = host.quiet_status()
+        {
+            let width = f32_of_f64(quiet.width().max(1.0));
+            let status = preview_line(text_renderer, &status, width, &caption_style);
+            let (status_w, _) = text_renderer.measure_style(&status, None, &caption_style);
+            text_renderer.draw_style(
+                scene,
+                &status,
+                colors.text_dim,
+                transform
+                    .pre_translate((quiet.center().x - f64::from(status_w) / 2.0, quiet.y0).into()),
+                Some(width),
+                &caption_style,
+            );
+        }
         let rows = self.rows(host);
         let log = host.log();
         let history = log.history();

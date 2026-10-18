@@ -93,6 +93,10 @@ profile-name-placeholder = Your name
 profile-name-hint = How everyone here sees you
 profile-section-identity = Your identity
 profile-section-devices = Devices
+profile-section-linked = Linked accounts
+profile-link = Link { $service } account
+profile-unlink = Unlink
+profile-copy = Copy
 
 # Workspace activity
 a11y-shell-workspace-activity = Workspace activity
@@ -503,11 +507,11 @@ desktop-view-replay-activity = Replay workspace activity
 
 ## Desktop window search
 search-provider-desktop-windows = Desktop windows
-search-badge-tab = Tab
-search-badge-window-group = Window group
 search-window-move-tab = Move tab “{ $tab }” to workspace “{ $workspace }”
 search-window-move-tab-detail = From workspace “{ $workspace }”
 search-window-copy-tab = Copy tab “{ $tab }” to workspace “{ $workspace }”
+search-window-move-tab-to = Move “{ $tab }” to another workspace
+search-window-copy-tab-to = Copy “{ $tab }” to another workspace
 search-window-group-untitled = Untitled window
 search-window-close-group = Close window group “{ $group }”
 search-window-close-group-detail = Workspace “{ $workspace }” · strip “{ $strip }” · { $count ->
@@ -516,12 +520,7 @@ search-window-close-group-detail = Workspace “{ $workspace }” · strip “{ 
 }
 search-window-close-tab = Close tab “{ $tab }”
 search-window-close-tab-detail = Workspace “{ $workspace }” · strip “{ $strip }”
-search-window-focus-place = Open in this workspace
-search-window-focus-place-strip = Open in strip “{ $strip }”
-search-window-focus-detail-shared = { $place } · { $count ->
-    [one] 1 tab
-   *[other] { $count } tabs
-}
+search-window-focus-place-strip = Strip “{ $strip }”
 # Words that ask for a window's close or move/copy rows; a search for a
 # window by name only offers going to it. Space-separated, lowercase.
 search-window-verb-close = close quit
@@ -575,7 +574,7 @@ notification-lock-count = { $count ->
     [one] 1 notification
    *[other] { $count } notifications
 }
-notification-dnd-held = { $status } · { $count } held
+notification-more = { $count } more
 notification-stack-a11y = Notifications
 notification-group-system = System
 notification-center-undo = Undo

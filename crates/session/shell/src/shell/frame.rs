@@ -1546,10 +1546,13 @@ impl FrameBuilder {
         })
     }
 
-    /// Match `ui::App` for an app hosted in this process: Ctrl+T, Ctrl+W and
-    /// Ctrl+Shift+T that the app left unhandled are the desktop's tab chords —
-    /// another instance beside it, close its tab, reopen the last closed one.
-    /// Never while chrome (a palette, a menu, a dialog) holds the keyboard.
+    /// Match `ui::App` for an app hosted in this process: Ctrl+T, Ctrl+W,
+    /// Ctrl+Shift+T, Ctrl+Tab and Ctrl+Shift+Tab that the app left unhandled
+    /// are the desktop's tab chords — another instance beside it, close its
+    /// tab, reopen the last closed one, the next or previous tab of the
+    /// group. Never while chrome (a palette, a menu, a dialog) holds the
+    /// keyboard. Stepping through tabs and reopening one need no hosted app:
+    /// any tile the shell draws itself leaves those chords to the desktop.
     fn apply_hosted_tab_chord(&mut self, event: &WindowEvent, modifiers: Modifiers) -> bool {
         use crate::shell::state::TileContent;
         use ui::shell_tabs::TabRequest;
@@ -1570,6 +1573,21 @@ impl FrameBuilder {
         };
         if self.host.modal_capture().is_some() {
             return false;
+        }
+        match request {
+            TabRequest::CycleTab { forward } => {
+                let _ = self.host.cycle_focused_tab(if forward { 1 } else { -1 });
+                return true;
+            }
+            TabRequest::ReopenClosed => {
+                self.with_chrome(|st| {
+                    st.reopen_closed_tab();
+                });
+                return true;
+            }
+            TabRequest::OpenBeside { .. }
+            | TabRequest::CloseThis
+            | TabRequest::PlaceNextWindowBeside { .. } => {}
         }
         let hosted = {
             let chrome = self.chrome();
@@ -1600,10 +1618,9 @@ impl FrameBuilder {
                     tracing::debug!(?error, "hosted tab not closed");
                 }
             }
-            TabRequest::ReopenClosed => {
-                st.reopen_closed_tab();
-            }
-            TabRequest::PlaceNextWindowBeside { .. } => {}
+            TabRequest::ReopenClosed
+            | TabRequest::CycleTab { .. }
+            | TabRequest::PlaceNextWindowBeside { .. } => {}
         });
         true
     }
@@ -5599,8 +5616,8 @@ impl FrameBuilder {
         // Match `ui::App`: unmodified Tab advances the global DFS focus order
         // only when the focused widget did not claim it. A terminal and a
         // multiline editor legitimately consume Tab as input; intercepting it
-        // before dispatch made completion/indentation impossible. Ctrl+Tab and
-        // other modified chords remain shell shortcuts.
+        // before dispatch made completion/indentation impossible. Ctrl+Tab is
+        // the desktop's tab chord above, also only when nothing claimed it.
         if !handled
             && let WindowEvent::KeyboardInput { event, .. } = event
             && event.state == winit::event::ElementState::Pressed
@@ -6734,13 +6751,16 @@ mod tests {
             // Rebuild through the actual viewport path while search owns focus.
             frame.set_viewport(viewport);
             frame.relayout();
-            assert!(frame.dispatch_event(
-                &key_press(Key::Named(NamedKey::Escape)),
-                &Modifiers::default(),
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &mut focus
-            ));
+            // The first Escape clears what was typed; the second closes.
+            for _ in 0..2 {
+                assert!(frame.dispatch_event(
+                    &key_press(Key::Named(NamedKey::Escape)),
+                    &Modifiers::default(),
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &automerge::ROOT,
+                    &mut focus
+                ));
+            }
             assert!(!frame.host.palette_visible());
             let _ = frame.paint_settled();
             frame.reconcile_native_focus(&mut focus);

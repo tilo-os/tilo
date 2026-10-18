@@ -245,6 +245,9 @@ const fn setting(id: &'static str) -> Expect {
 const fn not_app(id: &'static str) -> Expect {
     Expect::Not(APP, id)
 }
+const fn in_place(id: &'static str) -> Expect {
+    Expect::Top("system-settings", id)
+}
 const fn session(id: &'static str) -> Expect {
     Expect::Top(SESSION, id)
 }
@@ -358,6 +361,8 @@ fn typos_actions_pages_and_session() -> Vec<(&'static str, Expect)> {
         ("calender", app("so.tilo.calendar")),
         ("terminl", app("so.tilo.terminal")),
         ("kalendar", app("so.tilo.calendar")),
+        // A four-letter word with a letter dropped.
+        ("nots", app("so.tilo.notes")),
         // Initials.
         ("wp", app("so.tilo.word-processor")),
         ("pv", app("so.tilo.pdf-viewer")),
@@ -397,10 +402,19 @@ fn typos_actions_pages_and_session() -> Vec<(&'static str, Expect)> {
         ),
         ("flugmodus", action("quick-settings.airplane-mode.toggle")),
         // Settings pages: by name and by what is on them.
-        ("bluetooth", page("page:bluetooth")),
-        ("keyboard layout", setting("setting:keyboard.layout")),
-        ("tastaturbelegung", setting("setting:keyboard.layout")),
-        ("qwertz", setting("setting:keyboard.layout")),
+        // The switch itself, its state on the row, or the page.
+        (
+            "bluetooth",
+            Expect::OneOf(&[
+                (ACTION, "quick-settings.bluetooth.toggle"),
+                (PAGE, "page:bluetooth"),
+            ]),
+        ),
+        // The layout in place, its value on the row; one row, not also a
+        // link to the same setting on its page.
+        ("keyboard layout", in_place("keyboard.layout.set")),
+        ("tastaturbelegung", in_place("keyboard.layout.set")),
+        ("qwertz", in_place("keyboard.layout.set")),
         ("tastatur", page("page:keyboard")),
         ("touchpad", page("page:pointing")),
         ("night light", setting("setting:display.night_light")),
@@ -429,6 +443,14 @@ fn typos_actions_pages_and_session() -> Vec<(&'static str, Expect)> {
         ("log out", session("logout")),
         ("abmelden", session("logout")),
         ("sleep", session("suspend")),
+        // A phrase keyword is not its first word: "rechner" is the
+        // calculator, never Restart ("rechner neu starten"), and
+        // "bildschirm" is the screen, not Lock ("bildschirm sperren").
+        ("rechner neu starten", session("restart")),
+        ("bildschirm", Expect::Not(SESSION, "lock")),
+        // Everyday German for the sound.
+        ("lauter", action("quick-settings.volume.set")),
+        ("leiser", action("quick-settings.volume.set")),
     ]
 }
 
@@ -477,6 +499,22 @@ fn the_palette_finds_what_people_type() {
         failures.len(),
         table().len()
     );
+}
+
+#[test]
+fn an_innocent_word_never_offers_to_restart() {
+    let palette = Palette::new();
+    for query in ["rechner", "Rechner", "bildschirm"] {
+        let rows = palette.ask(query);
+        assert!(
+            !rows.iter().any(|row| row.provider_id == SESSION
+                && matches!(row.id.as_str(), "restart" | "shut-down" | "logout")),
+            "{query} offered to end the session: {:?}",
+            rows.iter()
+                .map(|row| format!("{}/{}", row.provider_id, row.id))
+                .collect::<Vec<_>>()
+        );
+    }
 }
 
 #[test]

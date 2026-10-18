@@ -355,6 +355,7 @@ impl NativeFileClipboard {
             receipt: std::sync::OnceLock::new(),
             destination_name: Some(name),
             restore_info: Some(info),
+            conflict: Conflict::KeepBoth,
         }))
     }
 }

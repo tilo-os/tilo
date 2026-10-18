@@ -324,6 +324,7 @@ struct CacheFingerprint {
     media_key: Vec<(u32, u8, String)>,
     media_expanded: bool,
     notification_badge: u32,
+    notifications_quiet: bool,
     workspace_lens_open: bool,
     focused: bool,
     focused_control: Option<String>,
@@ -620,6 +621,16 @@ enum FocusOrigin {
     Pointer,
 }
 
+/// The bell in the bar's status cluster.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct TrayBell {
+    /// Unread notifications, counted beside the bell.
+    unread: u32,
+    /// Fresh banners are held (Do Not Disturb, presenting, a focus
+    /// schedule): the bell is silenced.
+    quiet: bool,
+}
+
 /// `DesktopTree`, not `TopBar`, lets `build_tilo_root` stay a pure
 /// function of the tree and avoids a circular borrow against the
 /// shell's owned logical `TopBar`.
@@ -689,7 +700,9 @@ pub struct TopBarChrome {
     media_signature: Vec<(u32, u8, String)>,
     media_started: Option<Instant>,
     media_expanded: bool,
-    notification_badge: u32,
+    /// The bell in the status cluster: the unread count beside it, and
+    /// whether fresh banners are held (silenced).
+    bell: TrayBell,
     clock_overlay_pos: Option<Point>,
     clock_overlay_rect: Rect,
     clock_pause_rect: Rect,
@@ -1069,7 +1082,7 @@ impl TopBarChrome {
             media_signature: Vec::new(),
             media_started: None,
             media_expanded: false,
-            notification_badge: 0,
+            bell: TrayBell::default(),
             clock_overlay_pos: None,
             clock_overlay_rect: Rect::ZERO,
             clock_pause_rect: Rect::ZERO,
@@ -1144,7 +1157,8 @@ impl TopBarChrome {
             status_key: self.status_key(),
             media_key: self.media_signature.clone(),
             media_expanded: self.media_expanded,
-            notification_badge: self.notification_badge,
+            notification_badge: self.bell.unread,
+            notifications_quiet: self.bell.quiet,
             workspace_lens_open: self
                 .chrome
                 .as_ref()
@@ -3362,8 +3376,8 @@ impl TopBarChrome {
         let pct_style = tokens.typography.style(TextRole::Caption);
         // The unread count rides beside the bell; its width is measured
         // here so the pill is sized for it before anything is painted.
-        let badge_w = if self.notification_badge > 0 {
-            let label = Self::notification_badge_label(self.notification_badge);
+        let badge_w = if self.bell.unread > 0 {
+            let label = Self::notification_badge_label(self.bell.unread);
             let (w, h) = text_renderer.measure_style(&label, None, &pct_style);
             Self::notification_badge_size(w, h, theme).0
         } else {
@@ -3388,7 +3402,9 @@ impl TopBarChrome {
         if battery_pct.is_some() {
             slots = slots.saturating_add(1);
         }
-        if self.notification_badge > 0 {
+        // One bell slot: the unread count rides beside it, and quiet mode
+        // silences it.
+        if self.bell.unread > 0 || self.bell.quiet {
             slots = slots.saturating_add(1);
         }
         let mut tray_w = if slots == 0 {
@@ -3403,7 +3419,7 @@ impl TopBarChrome {
         if pct_w > 0.0 {
             tray_w += 3.0 + pct_w;
         }
-        if self.notification_badge > 0 {
+        if self.bell.unread > 0 {
             // Bell plus a compact exact count (`99+` once the number no longer
             // fits); the base slot calculation already paid for the bell.
             tray_w += badge_w + tray_gap;
@@ -3475,8 +3491,10 @@ impl TopBarChrome {
     }
 
     /// Draws the bell + compact unread count if there are unread
-    /// notifications. Returns the x cursor position for the next slot
-    /// (unchanged if not drawn).
+    /// notifications, and the silenced bell while fresh banners are held
+    /// (Do Not Disturb): the state lives in the status cluster, not in a
+    /// card over the person's work. Returns the x cursor position for the
+    /// next slot (unchanged if not drawn).
     fn draw_tray_notification_badge(
         &self,
         scene: &mut Scene,
@@ -3486,18 +3504,25 @@ impl TopBarChrome {
         layout: &TrayLayout,
         sx: f64,
     ) -> f64 {
-        if self.notification_badge == 0 {
+        if self.bell.unread == 0 && !self.bell.quiet {
             return sx;
         }
         ui::icons::draw_icon(
             scene,
             transform,
             layout.slot_rect(sx),
-            ui::icons::Icon::Bell,
+            if self.bell.quiet {
+                ui::icons::Icon::BellOff
+            } else {
+                ui::icons::Icon::Bell
+            },
             layout.bright,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        let label = Self::notification_badge_label(self.notification_badge);
+        if self.bell.unread == 0 {
+            return sx + layout.tray_slot + layout.tray_gap;
+        }
+        let label = Self::notification_badge_label(self.bell.unread);
         // The count is set at the chrome's numeric-readout size, so it
         // follows the person's text scale like every other bar label.
         let label_style = &layout.pct_style;
@@ -4294,10 +4319,13 @@ impl TopBarChrome {
                 self.cache_fp = CacheFingerprint::default();
             }
         }
-        self.notification_badge = self
+        self.bell.unread = self
             .chrome
             .as_ref()
             .map_or(0, |chrome| chrome.snapshot().notification_badge);
+        if let Some(chrome) = self.chrome.as_ref() {
+            self.bell.quiet = chrome.snapshot().notifications_quiet;
+        }
         if let Some(chrome) = self.chrome.as_ref() {
             let glance = chrome.snapshot().activity_glance;
             if glance.pulse != self.activity_pulse {
@@ -6545,6 +6573,28 @@ mod tests {
         chrome.borrow_mut().top_bar = TopBarPresence::Hidden;
         assert!(bar.needs_redraw(), "hiding again clears it from the screen");
         assert!(!painted(&mut bar));
+    }
+
+    /// Do Not Disturb is shown in the status cluster, as a silenced bell in
+    /// its own slot, not as a card over the person's work.
+    #[test]
+    fn quiet_mode_adds_a_silenced_bell_to_the_status_cluster() {
+        let mut bar = sample_chrome();
+        bar.status.link = Some(crate::chrome::LinkStatus {
+            kind: crate::chrome::LinkKind::Wired,
+            name: None,
+            signal: 0,
+        });
+        lay_out_and_draw(&mut bar, 1280.0);
+        let loud = bar.tray_pill_rect;
+        bar.bell.quiet = true;
+        lay_out_and_draw(&mut bar, 1280.0);
+        let quiet = bar.tray_pill_rect;
+        assert!(
+            (quiet.width() - loud.width() - BAR_CONTROL_PX).abs() < 1e-6,
+            "one glyph slot more: {loud:?} -> {quiet:?}"
+        );
+        assert_eq!(quiet.x1, loud.x1, "the cluster keeps its right edge");
     }
 
     #[test]

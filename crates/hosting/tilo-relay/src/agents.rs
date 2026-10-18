@@ -119,6 +119,7 @@ impl AgentHostLink for RelayAgentLink {
                 can_administer_devices: false,
             },
             nonce,
+            invite: [0; 16],
             issued_at_ns: now,
             expires_at_ns: now.saturating_add(APPROVAL_WAIT_NS),
             signature: [0; 64],

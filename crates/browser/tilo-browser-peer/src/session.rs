@@ -27,12 +27,12 @@ use tilo_relay_protocol::Envelope;
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
-use crate::carrier::{HttpClient, HttpsLink, LinkError};
 use crate::custody::{OutboxEntry, PeerRecord, PeerStore};
 use crate::document::{
     Ciphers, ContentCipher, DocumentRoute, OpenedDocument, Reassembly, open_frame, sign_frame,
 };
 use tilo_lock::MutexRecover as _;
+use tilo_relay_client::https::{HttpClient, HttpsLink, LinkError};
 
 /// Longest wait between reconnect attempts.
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
@@ -130,7 +130,7 @@ pub struct PeerConfig {
     /// compaction or presence of its own, no live join, and no channel
     /// governance, so it never asks a channel for access. It takes the
     /// content keys of the records it opens from the room's steward over
-    /// HTTPS instead ([`crate::carrier::channel_keys`]).
+    /// HTTPS instead ([`tilo_relay_client::https::channel_keys`]).
     pub watching: bool,
 }
 
@@ -900,7 +900,7 @@ impl PeerHandle {
     }
 
     /// Send input for a legacy window a member streams
-    /// ([`crate::carrier::legacy_input`]) over the current HTTPS session.
+    /// ([`tilo_relay_client::https::legacy_input`]) over the current HTTPS session.
     ///
     /// # Errors
     ///
@@ -914,7 +914,7 @@ impl PeerHandle {
     }
 
     /// Tell the host which video codecs this page decodes
-    /// ([`crate::carrier::legacy_codecs`]) over the current HTTPS session;
+    /// ([`tilo_relay_client::https::legacy_codecs`]) over the current HTTPS session;
     /// `done` receives whether the host took the advert.
     ///
     /// # Errors
@@ -928,7 +928,7 @@ impl PeerHandle {
         self.send(Command::LegacyCodecs(request, done))
     }
 
-    /// Post this person's own recent actions ([`crate::carrier::here`]) over
+    /// Post this person's own recent actions ([`tilo_relay_client::https::here`]) over
     /// the current HTTPS session; `done` receives who is here.
     ///
     /// # Errors
@@ -1965,7 +1965,8 @@ impl Task {
                 let session = link.session().to_owned();
                 n0_future::task::spawn(async move {
                     let sent =
-                        crate::carrier::legacy_input(http.as_ref(), &session, &request).await;
+                        tilo_relay_client::https::legacy_input(http.as_ref(), &session, &request)
+                            .await;
                     done(sent.map_err(|error| error.to_string()));
                 });
             }
@@ -1999,9 +2000,14 @@ impl Task {
                     room: route.cluster_id.clone(),
                     record: route.record.clone(),
                 };
-                let keys = crate::carrier::channel_keys(http.as_ref(), &session, &request)
-                    .await
-                    .map_err(|error| error.to_string());
+                let keys =
+                    tilo_relay_client::https::channel_keys(http.as_ref(), &session, &request)
+                        .await
+                        .map_err(|error| error.to_string())
+                        .and_then(|reply| {
+                            channel_crypto::ChannelContentKeys::from_bytes(&reply.keys)
+                                .map_err(|error| error.to_string())
+                        });
                 if let Some(commands) = commands.upgrade() {
                     let _ = commands.send(Command::WatchedKeys(route, keys));
                 }
@@ -2021,7 +2027,8 @@ impl Task {
                 let session = link.session().to_owned();
                 n0_future::task::spawn(async move {
                     let taken =
-                        crate::carrier::legacy_codecs(http.as_ref(), &session, &request).await;
+                        tilo_relay_client::https::legacy_codecs(http.as_ref(), &session, &request)
+                            .await;
                     done(taken.map_err(|error| error.to_string()));
                 });
             }
@@ -2043,7 +2050,8 @@ impl Task {
                 let http = link.client().clone();
                 let session = link.session().to_owned();
                 n0_future::task::spawn(async move {
-                    let reply = crate::carrier::here(http.as_ref(), &session, &request).await;
+                    let reply =
+                        tilo_relay_client::https::here(http.as_ref(), &session, &request).await;
                     done(reply.map_err(|error| error.to_string()));
                 });
             }
@@ -2064,7 +2072,8 @@ impl Task {
                 let http = link.client().clone();
                 let session = link.session().to_owned();
                 n0_future::task::spawn(async move {
-                    let reply = crate::carrier::rooms(http.as_ref(), &session, &request).await;
+                    let reply =
+                        tilo_relay_client::https::rooms(http.as_ref(), &session, &request).await;
                     done(reply.map_err(|error| error.to_string()));
                 });
             }
@@ -2081,7 +2090,7 @@ impl Task {
                 let session = link.session().to_owned();
                 n0_future::task::spawn(async move {
                     // A host that answers no `/node` runs nothing beside it.
-                    let info = crate::carrier::node(http.as_ref(), &session).await;
+                    let info = tilo_relay_client::https::node(http.as_ref(), &session).await;
                     done(Ok(info.ok().and_then(|info| info.session)));
                 });
             }
@@ -3115,6 +3124,8 @@ fn iroh_link_error(error: tilo_relay_session::ClientError) -> LinkError {
             LinkError::Unavailable("host does not speak tilo-relay/1".into())
         }
         ClientError::Iroh(reason) => LinkError::Unavailable(reason),
+        // An iroh dial never produces it; the HTTPS carrier's own reason.
+        ClientError::Https(error) => error,
         // Only the v2 private channel closes this way; a v1 dial never
         // produces it, and if one did the transport is simply gone.
         ClientError::PrivateTransportClosed => {
@@ -3137,10 +3148,12 @@ async fn live_grant(
     session: &str,
     workspace_id: u64,
     agent: Option<String>,
-) -> Result<tilo_relay_protocol::web::LiveGrant, crate::carrier::LinkError> {
+) -> Result<tilo_relay_protocol::web::LiveGrant, tilo_relay_client::https::LinkError> {
     match agent {
-        None => crate::carrier::live_grant(http, session, workspace_id).await,
-        Some(agent) => crate::carrier::agent_live_grant(http, session, workspace_id, agent).await,
+        None => tilo_relay_client::https::live_grant(http, session, workspace_id).await,
+        Some(agent) => {
+            tilo_relay_client::https::agent_live_grant(http, session, workspace_id, agent).await
+        }
     }
 }
 

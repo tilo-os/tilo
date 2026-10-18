@@ -151,6 +151,7 @@ pub struct SetupApp {
     guided_mode: bool,
     guided_navigation: LocalState<bool>,
     guided_desktop: Option<guided_desktop::DesktopPreparation>,
+    desktop_only: bool,
     desktop_flow: DesktopFlow,
     desktop_revision: u64,
     review_saver: fn(&[super::controller::FolderChoice]) -> Result<(), String>,
@@ -258,6 +259,20 @@ impl SetupApp {
         app
     }
 
+    /// Review native packages for the existing Linux account. No identity,
+    /// migration, familiar-folder lookup or disk probing belongs to this route.
+    #[must_use]
+    pub fn for_desktop() -> Self {
+        let mut app = Self::new();
+        app.desktop_only = true;
+        app.guided_mode = true;
+        app.controller.borrow_mut().review_desktop();
+        app.chosen_experience = Some(Experience::Desktop);
+        app.refresh_guided_navigation();
+        app.status.clear();
+        app
+    }
+
     /// Start what live setup reads from this computer: the Desktop host
     /// check, the familiar-folder lookup and the Full Tilo host probe.
     pub fn start_live(&mut self) {
@@ -271,8 +286,11 @@ impl SetupApp {
             self.refresh_guided_navigation();
             return;
         }
-        self.start_known_folder_lookup();
-        self.start_host_probe();
+        if !self.desktop_only {
+            self.start_known_folder_lookup();
+            self.start_host_probe();
+        }
+        self.refresh_guided_navigation();
     }
 
     /// Deterministic constructor for tests and screenshot fixtures.
@@ -337,6 +355,7 @@ impl SetupApp {
             guided_mode: false,
             guided_navigation: LocalState::new(false),
             guided_desktop: None,
+            desktop_only: false,
             desktop_flow,
             desktop_revision: 0,
             review_saver: super::desktop_continuation::persist_review,
@@ -1829,15 +1848,24 @@ impl SetupApp {
                     DesktopFailureKind::Download => "The download failed.",
                     DesktopFailureKind::NativeTransaction => "The installation failed.",
                 };
-                format!("{what} {message} Your folder choices are kept; check again to retry.")
+                if self.desktop_only {
+                    format!("{what} {message}")
+                } else {
+                    format!("{what} {message} Your folder choices are kept; check again to retry.")
+                }
             }
         };
-        let retained = match self.capabilities.platform.host {
-            HostOs::Windows => "Windows stays installed and remains the startup default.",
-            HostOs::Linux => {
-                "Your Linux installation stays as it is and remains the default session."
+        let retained = if self.desktop_only {
+            super::strings::t("installer-desktop-keep-existing")
+        } else {
+            match self.capabilities.platform.host {
+                HostOs::Windows => "Windows stays installed and remains the startup default.",
+                HostOs::Linux => {
+                    "Your Linux installation stays as it is and remains the default session."
+                }
+                HostOs::Other => "Your current system stays installed and remains the default.",
             }
-            HostOs::Other => "Your current system stays installed and remains the default.",
+            .to_owned()
         };
         Section::new(vec![Box::new(
             page::related()
@@ -1846,7 +1874,7 @@ impl SetupApp {
                         .with_id("setup.desktop.status")
                         .with_live(Politeness::Polite),
                 ))
-                .push(Box::new(Text::new(retained).dimmed())),
+                .push(Box::new(Text::new(&retained).dimmed())),
         )])
         .with_header(SectionHeader::heading("Tilo Desktop"))
     }

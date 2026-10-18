@@ -1046,6 +1046,11 @@ impl Widget for SettingsApp {
             reason = "shell was just set unconditionally above; nothing between there and here can clear it"
         )]
         let shell = self.shell.as_mut().expect("just set above");
+        // Composed panes recreate their controls on layout, including the
+        // follow-up layout that scrolling a revealed control can request.
+        // Preserve the current control's identity, not the old focus ordinal
+        // or the last reveal request: either could steal focus after a move.
+        let focused = focused_control_id(shell).map(str::to_owned);
         let shell_node = shell.build_layout(taffy, theme, node_map);
         // The pane asked to show a setting is built: its control takes the
         // keyboard, which the rebuild keeps on it. A pane still being read
@@ -1055,9 +1060,12 @@ impl Widget for SettingsApp {
             && !self.pane_waits.get()
         {
             self.reveal = None;
-            if focus_control(shell, setting) {
+            clear_control_focus(shell);
+            if focus_control(shell, &|id| setting.is_control(id)) {
                 self.reveal_scroll = Some(setting);
             }
+        } else if let Some(id) = focused {
+            focus_control(shell, &|control| control == id);
         }
 
         let style = taffy::Style {
@@ -1411,16 +1419,37 @@ fn setting_and_pane(id: &str) -> Option<(Category, &'static settings_store::inde
     Some((Category::from_slug(setting.page)?, setting))
 }
 
-/// Put the keyboard on the first control of `setting` under `widget`;
+/// The identity of the current keyboard control, before a pane rebuilds it.
+fn focused_control_id(widget: &dyn Widget) -> Option<&str> {
+    if widget.is_focusable()
+        && widget.is_focused()
+        && let Some(id) = widget.test_id()
+    {
+        return Some(id);
+    }
+    widget.children().into_iter().find_map(focused_control_id)
+}
+
+/// A reveal transfers the keyboard rather than leaving two focused controls.
+fn clear_control_focus(widget: &mut dyn Widget) {
+    if widget.is_focusable() && widget.is_focused() {
+        widget.set_focus(false);
+    }
+    for child in widget.children_mut() {
+        clear_control_focus(child);
+    }
+}
+
+/// Put the keyboard on the first matching control under `widget`;
 /// whether there was one.
-fn focus_control(widget: &mut dyn Widget, setting: &settings_store::index::Setting) -> bool {
+fn focus_control(widget: &mut dyn Widget, matches: &dyn Fn(&str) -> bool) -> bool {
     fn first_focusable(widget: &mut dyn Widget) -> Option<&mut dyn Widget> {
         if widget.is_focusable() {
             return Some(widget);
         }
         widget.children_mut().into_iter().find_map(first_focusable)
     }
-    if widget.test_id().is_some_and(|id| setting.is_control(id)) {
+    if widget.test_id().is_some_and(matches) {
         return match first_focusable(widget) {
             Some(control) => {
                 control.set_focus(true);
@@ -1432,7 +1461,7 @@ fn focus_control(widget: &mut dyn Widget, setting: &settings_store::index::Setti
     widget
         .children_mut()
         .into_iter()
-        .any(|child| focus_control(child, setting))
+        .any(|child| focus_control(child, matches))
 }
 
 /// The page shown, kept with the window: a reopened Settings window shows

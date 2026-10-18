@@ -318,6 +318,7 @@ impl DesktopChromeSource for NativeChrome {
             // keeps the bar.
             fullscreen: state.fullscreen_covers_primary(),
             notification_badge: state.notification_badge_total(),
+            notifications_quiet: state.quiet_status_now().is_some(),
             activity_glance: state.activity_glance.clone(),
             viewport_size: state.viewport_size(),
             clock_activity: state.clock_activity.as_ref().map(|activity| ClockActivity {

@@ -91,6 +91,13 @@ impl RiskLevel {
     }
 }
 
+/// [`ActionContract::tags`] entry of an action any member of a room may ask
+/// the room's host to run for themselves on a record of the room (linking
+/// their own account elsewhere). The host runs it as that member, under
+/// their own standing, so the action's door and its own checks decide what
+/// it may do; its answer goes back to the asking device alone.
+pub const MEMBER_OWN_TAG: &str = "host:member-own";
+
 /// [`ActionContract::tags`] entry of an action offered only to programmatic
 /// callers — agents, scripts and the controls or surfaces that submit it —
 /// and never listed for a person to pick (the action palette, menus).

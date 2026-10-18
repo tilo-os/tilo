@@ -319,6 +319,9 @@ impl ShellDriver {
     /// `Key(Tab)` then sees `is_mod = true` inside the host.
     pub fn set_modifiers(&mut self, state: ModifiersState) {
         self.modifiers = Modifiers::from(state);
+        // As the compositor does on `ModifiersChanged`: an open search
+        // previews what Enter does with the modifier held.
+        let _ = self.host_mut().note_held_modifiers(state);
     }
 
     /// Dispatch a single `WindowEvent` through the host's `handle_event`
@@ -1563,6 +1566,10 @@ impl ShellDriver {
             "palette_records" => self.scene_palette_records(),
             "palette_no_results" => self.scene_palette_no_results(),
             "palette_typed" => self.scene_palette_typed(),
+            "palette_rechner" => self.scene_palette_query("rechner"),
+            "palette_sum" => self.scene_palette_query("2+2"),
+            "palette_move" => self.scene_palette_query("move"),
+            "palette_files" => self.scene_palette_query("files"),
             "topbar-edit" => self.scene_topbar_edit(),
             "quick-settings" => self.scene_quick_settings(),
             "qs-edit" => self.scene_qs_edit(false),
@@ -1724,6 +1731,20 @@ impl ShellDriver {
         self.fb
             .host_mut()
             .set_palette_query("zzzz-nothing-matches-this");
+        let root = self.root_obj.clone();
+        self.fb
+            .host_mut()
+            .refresh_search_results_for_shots(&mut self.state, &root);
+    }
+
+    /// Search answering one typed query, for the queries search used to get
+    /// wrong: a German word that offered Restart, arithmetic, the move verb
+    /// and an open app's name.
+    fn scene_palette_query(&mut self, query: &str) {
+        self.fb.host_mut().set_palette_visible(true);
+        self.fb.host_mut().set_palette_focus(true);
+        self.fb.host_mut().force_palette_settled();
+        self.fb.host_mut().set_palette_query(query);
         let root = self.root_obj.clone();
         self.fb
             .host_mut()
@@ -2594,9 +2615,9 @@ impl ShellDriver {
 
     fn scene_notifications(&mut self) {
         use tilo_desktop::notifications::{Notification, NotificationSeverity};
-        // Backdate `created_at` past the slide-in window: at t=0 a
-        // toast's `enter` progress is ~0 and `slide_dx == TOAST_WIDTH`
-        // pushes it entirely off-screen-right.
+        // On screen since past the slide-in window: at t=0 a toast's
+        // `enter` progress is ~0 and `slide_dx == TOAST_WIDTH` pushes it
+        // entirely off-screen-right.
         let settled_at = Instant::now()
             .checked_sub(Duration::from_secs(1))
             .unwrap_or_else(Instant::now);
@@ -2613,14 +2634,14 @@ impl ShellDriver {
                     .with_app_name("Chat")
                     .with_from("Ada", "peer:ada")
                     .with_dismiss_after(Duration::from_secs(60))
-                    .with_created_at(settled_at),
+                    .with_shown_at(settled_at),
             );
             st.push_notification_full(
                 Notification::new("Lena shared “Q3 plan”", "You can edit it.")
                     .with_app_name("Files")
                     .with_from("Lena", "peer:lena")
                     .with_dismiss_after(Duration::from_secs(60))
-                    .with_created_at(settled_at),
+                    .with_shown_at(settled_at),
             );
             st.push_notification_full(
                 Notification::new(
@@ -2630,7 +2651,7 @@ impl ShellDriver {
                 .with_app_name("Backups")
                 .with_severity(NotificationSeverity::Warning)
                 .with_dismiss_after(Duration::from_secs(60))
-                .with_created_at(settled_at),
+                .with_shown_at(settled_at),
             );
         });
     }
@@ -2645,7 +2666,7 @@ impl ShellDriver {
                 Notification::new("Build finished", "All 524 tests passed")
                     .with_severity(NotificationSeverity::Info)
                     .with_dismiss_after(Duration::from_secs(60))
-                    .with_created_at(settled_at),
+                    .with_shown_at(settled_at),
             );
         });
     }
@@ -2662,11 +2683,11 @@ impl ShellDriver {
                 Notification::new("Meeting in 10 minutes", "Standup — Research workspace")
                     .with_severity(NotificationSeverity::Info)
                     .with_dismiss_after(Duration::from_secs(60))
-                    .with_created_at(settled_at),
+                    .with_shown_at(settled_at),
             );
             // Engage Do-Not-Disturb, then post two more — these are
-            // suppressed from the banner surface and held in
-            // history, so the DND pill reads "… · 2 held".
+            // suppressed from the banner surface and held in history.
+            // No card says so over the work: the bar's bell is silenced.
             st.set_dnd(true);
             st.push_notification_full(
                 Notification::new("Slow network", "Peer sync delayed")
@@ -2887,6 +2908,10 @@ impl ShellDriver {
         "palette_app_query",
         "palette_records",
         "palette_no_results",
+        "palette_rechner",
+        "palette_sum",
+        "palette_move",
+        "palette_files",
         "topbar-edit",
         "quick-settings",
         "qs-edit",

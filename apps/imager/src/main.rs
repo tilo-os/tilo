@@ -3,7 +3,7 @@
 //! The binary is the framework app [`imager::ImagerShell`]: the write wizard,
 //! the guided setup with `--setup`, the folder imports with
 //! `--import-folders`, the guided `--installer` (`--installer-preview` alias),
-//! and the standard `--shots`, `--shots-dir` and
+//! the interactive fixture-only `--demo`, and the standard `--shots`, `--shots-dir` and
 //! `--headless-drive` semantic actions on the production app. Shots render its
 //! scenarios. Started with a helper's own command
 //! line it is that helper instead (the privileged writer, the staging steps,
@@ -25,8 +25,12 @@ fn main() {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn guided_installer(args: impl IntoIterator<Item = String>) -> bool {
-    args.into_iter()
-        .any(|arg| matches!(arg.as_str(), "--installer" | "--installer-preview"))
+    args.into_iter().any(|arg| {
+        matches!(
+            arg.as_str(),
+            "--installer" | "--installer-preview" | "--demo"
+        )
+    })
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -35,6 +39,7 @@ mod tests {
     fn only_guided_installation_switches_choose_the_installer_presentation() {
         for args in [
             vec!["--installer"],
+            vec!["--demo"],
             vec!["--installer-preview", "--headless"],
         ] {
             assert!(super::guided_installer(args.into_iter().map(str::to_owned)));

@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use discord_wire::event::{
     AttachmentInfo, Author, ChannelInfo, Command, LayoutChanged, MemberChanged, MessageCreated,
-    MessageDeleted, MessageUpdated, OverwriteInfo, ReactionChanged, RoleInfo, ThreadRef,
+    MessageDeleted, MessageUpdated, OverwriteInfo, ReactionChanged, RoleInfo, ThreadRef, UserName,
     code_sha256, event_id, source,
 };
 use discord_wire::op::ChannelKind;
@@ -494,6 +494,7 @@ impl Guild {
             roles,
             banned: kind == "GUILD_BAN_ADD",
             left: kind == "GUILD_MEMBER_REMOVE",
+            user: UserName::of_member(data),
         };
         Some(Emit::new(
             source::MEMBER_CHANGED,
@@ -532,6 +533,7 @@ impl Guild {
             user_id: user,
             name: name.to_owned(),
             code_sha256,
+            user: UserName::of_member(&data["member"]),
         };
         Some(Emit::new(
             source::COMMAND,

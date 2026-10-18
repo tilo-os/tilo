@@ -459,8 +459,9 @@ export const doorRefused = name => `${name || 'This workspace'} couldn’t let y
 /**
  * Become a new device of `userPublicKey` (hex), the person whose root
  * approves it on another of their devices, in `room` at the host at
- * `origin`. `onPairingCode(code)` is called with the code that device
- * shows the person; resolves to the peer once approved. Where that host
+ * `origin`, answering the pairing link's `invite` (hex, or `null`).
+ * `onPairingCode(code)` is called with the code that device shows the
+ * person; resolves to the peer once approved. Where that host
  * lets people in through its door (`workspace.admission`), the new device
  * joins the person's workspace there as theirs. The host is remembered as
  * joined, paired, for the next visit (`joinViaHost`).
@@ -470,6 +471,9 @@ export async function pairViaHost({
   memberships = globalThis.localStorage, fetch = globalThis.fetch, pair = pairDevice, ...connectOptions
 }) {
   if (!/^[0-9a-f]{64}$/.test(userPublicKey ?? '')) throw new HostAdmissionError('invalid', 'This pairing link names no person');
+  if (connectOptions.invite != null && !/^[0-9a-f]{32}$/.test(connectOptions.invite)) {
+    throw new HostAdmissionError('invalid', 'This pairing link is damaged');
+  }
   const admission = workspace?.admission
     ? () => ask({workspace, path: 'join', fetch, body: {userPublicKey, displayName: fitDisplayName(displayName)}})
     : undefined;

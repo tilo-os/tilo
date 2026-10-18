@@ -15,17 +15,8 @@ impl SetupApp {
         home: PathBuf,
     ) -> Result<Self, String> {
         let mut app = Self::new();
-        let mut platform = app.capabilities.platform;
-        platform.desktop_session = true;
-        app.controller.borrow_mut().set_capabilities(platform);
-        {
-            let mut controller = app.controller.borrow_mut();
-            if !controller.choose_experience(Experience::Desktop) {
-                return Err(super::super::strings::t("installer-desktop-unavailable"));
-            }
-            controller.next()?;
-            controller.next()?;
-        }
+        app.controller.borrow_mut().review_desktop();
+        app.desktop_only = true;
         app.chosen_experience = Some(Experience::Desktop);
         app.guided_mode = true;
         app.desktop_flow
@@ -139,6 +130,52 @@ impl SetupApp {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+    #[test]
+    fn desktop_only_records_intent_without_inventing_support_or_preparation() {
+        let app = SetupApp::for_desktop();
+        assert_eq!(app.controller().page(), SetupPage::Review);
+        assert_eq!(
+            app.controller().chosen_experience(),
+            Some(Experience::Desktop)
+        );
+        assert!(!app.capabilities.platform.desktop_session);
+        assert!(!app.known_folder_lookup_pending);
+        assert!(!app.internal_install.is_probing());
+        assert!(app.guided_desktop.is_none());
+        assert!(!app.setup_projection().desktop.actions.install);
+    }
+
+    #[test]
+    fn desktop_only_install_checks_packages_and_blocks_navigation_without_identity() {
+        let mut app = SetupApp::for_desktop();
+        app.desktop_flow = DesktopFlow::with_runtime_and_state(
+            crate::setup::desktop_flow::DesktopRuntime {
+                launch_probe: || {
+                    let (_sender, receiver) = mpsc::channel();
+                    Ok(receiver)
+                },
+                launch_download: |_, _| Err("unexpected download".into()),
+                launch_install: |_| Err("unexpected native install".into()),
+            },
+            DesktopFlowState::Ready(fixture_desktop_selection(false)),
+        );
+        assert!(!app.capabilities.platform.desktop_session);
+        assert!(app.setup_projection().desktop.actions.install);
+        app.answer(SetupEffect::InstallDesktop).unwrap();
+        assert!(app.desktop_flow.has_pending_operation());
+        assert!(matches!(
+            app.desktop_flow.state(),
+            DesktopFlowState::Checking
+        ));
+        assert!(!app.guided_navigation.get());
+        assert!(app.answer(SetupEffect::GoBackInSetup).is_err());
+        assert!(app.answer(SetupEffect::InstallDesktop).is_err());
+        assert!(app.guided_desktop.is_none());
+        assert!(app.controller().folders().is_empty());
+        assert!(!app.known_folder_lookup_pending);
+        assert!(!app.internal_install.is_probing());
+    }
+
     fn prepared(root: &Path) -> Arc<PreparedMedia> {
         let identity = crate::setup::prepared_identity::PreparedIdentity::create(
             &root.join("identity"),

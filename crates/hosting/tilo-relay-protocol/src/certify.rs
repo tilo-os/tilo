@@ -109,6 +109,12 @@ pub struct PendingCertification {
     pub request_digest: [u8; 32],
     /// The code the requester displays.
     pub pairing_code: String,
+    /// When the host received the request, Unix-epoch nanoseconds.
+    pub requested_at_ns: u64,
+    /// The country the request came from (ISO 3166-1 alpha-2), when a
+    /// proxy in front of the host that it trusts says so; the host looks
+    /// nothing up itself.
+    pub country: Option<String>,
 }
 
 /// An approver's answer to one request.

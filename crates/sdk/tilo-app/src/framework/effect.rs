@@ -738,6 +738,20 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         self.env.dispatch.clone()
     }
 
+    /// The person this invocation runs for: its invoker, when a host
+    /// delivered it for someone, else the participant the view is for.
+    /// `None` for a bot, an agent or an app acting, and in a past version.
+    /// An effect that answers or changes what is someone's own ("my link")
+    /// reads whose it is here, never from the view.
+    pub fn person(&self) -> Option<String> {
+        match ui_core::invocation_scope::current_invoker() {
+            Some(invoker) => {
+                (invoker.kind == tilo_actions::ActorKind::Person).then_some(invoker.actor)
+            }
+            None => self.env.dispatch.me().map(str::to_owned),
+        }
+    }
+
     /// Submit one typed action, as [`Dispatcher::apply`].
     pub fn apply(&self, action: &R::Action) {
         self.env.dispatch.apply(action);

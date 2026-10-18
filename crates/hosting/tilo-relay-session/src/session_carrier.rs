@@ -2,7 +2,10 @@
 //!
 //! This module does not authenticate peers or construct certified evidence.
 //! Callers assemble a client only after the protocol-specific mutual proof.
-//! The only production carrier here remains the existing Iroh transport.
+//! Two carriers: the Iroh transport, and a host's HTTPS routes
+//! ([`tilo_relay_client::https::HttpsLink`]) for a host that publishes no
+//! iroh address. Both carry the same state envelopes; only Iroh carries the
+//! private v2 action channel.
 
 use iroh::endpoint::{Connection, ConnectionStats, Endpoint};
 use n0_future::boxed::BoxFuture;
@@ -90,5 +93,71 @@ impl SessionCarrier for IrohCarrier {
 
     fn transport_stats(&self) -> Option<ConnectionStats> {
         Some(self.connection.stats())
+    }
+}
+
+/// Owns the pump between a session's channels and an HTTPS link to its host.
+pub(crate) struct HttpsCarrier {
+    stop: tokio::sync::watch::Sender<bool>,
+}
+
+impl HttpsCarrier {
+    /// Pump `link` into fresh state channels until either side ends or the
+    /// carrier stops. The link carries state only: the private channel
+    /// stays absent.
+    pub(crate) fn start(mut link: tilo_relay_client::HttpsLink) -> (Self, SessionChannels) {
+        let (outbound, mut outgoing) = mpsc::channel::<Envelope>(256);
+        let (incoming, inbound) = mpsc::channel::<Envelope>(256);
+        let (_, action_inbound) = mpsc::channel::<EnvelopeV2>(1);
+        let (stop, mut stopped) = tokio::sync::watch::channel(false);
+        n0_future::task::spawn(async move {
+            loop {
+                tokio::select! {
+                    biased;
+                    // Only `stop` sends, and only `true`.
+                    _ = stopped.changed() => break,
+                    envelope = outgoing.recv() => {
+                        // The client is gone, or the link ended: the host
+                        // ends the session once its polls stop.
+                        let Some(envelope) = envelope else { break };
+                        if link.send(envelope).is_err() {
+                            break;
+                        }
+                    }
+                    envelope = link.recv() => {
+                        let Some(envelope) = envelope else { break };
+                        if incoming.send(envelope).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+            link.close();
+        });
+        (
+            Self { stop },
+            SessionChannels {
+                outbound,
+                inbound,
+                action_outbound: None,
+                action_inbound,
+            },
+        )
+    }
+}
+
+impl SessionCarrier for HttpsCarrier {
+    fn abort(&self, _reason: &'static [u8]) {
+        self.stop.send_replace(true);
+    }
+
+    fn disconnect(&self) -> BoxFuture<()> {
+        self.stop.send_replace(true);
+        Box::pin(async {})
+    }
+
+    fn close_owned(&self) -> BoxFuture<()> {
+        // The host ends the session once its polls stop.
+        self.disconnect()
     }
 }

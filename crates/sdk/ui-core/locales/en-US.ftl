@@ -424,18 +424,9 @@ history-action-invalid = That History request isn't valid.
 palette-name = Command palette
 palette-results = Results
 palette-placeholder = Search…
-palette-hint-navigate = Navigate
-palette-hint-select = Select
-palette-hint-open = Open
-palette-hint-run = Run
-palette-hint-close = Close
-palette-result-count = { $count ->
-    [one] 1 result
-   *[other] { $count } results
-}
 palette-empty = Nothing to show
 palette-no-results = No results for “{ $query }”
-palette-no-results-hint = Try fewer words, or widen the scope
+palette-no-results-hint = Check the spelling, or try another word
 palette-searching = Searching…
 
 # Calendar section headings in the workspace activity timeline.
@@ -472,6 +463,11 @@ find-bar-replace = Replace
 find-bar-replace-all = Replace all
 find-bar-position = { $current } of { $total }
 find-bar-no-matches = No matches
+widget-mention-agent = Agent
+widget-mention-shortcut = Shortcut
+widget-mention-app = App
+widget-mention-bot = Bot
+widget-mention-list = People to mention
 widget-block-duplicate = Duplicate block and children
 
 widget-block-duplicate-selection = Duplicate selected or focused blocks

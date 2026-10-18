@@ -1828,12 +1828,32 @@ fn secret_input_masks_rendering_and_accessibility_but_keeps_the_value() {
         let mut input = TextInput::local()
             .with_external_buffer(Arc::clone(&buffer))
             .with_secret(true);
+        input.rect = Rect::new(0.0, 0.0, 200.0, 40.0);
         input.text = "correct horse battery staple".into();
         input.dirty = true;
         let document = AutoCommit::new();
         input.sync(&document, &automerge::ROOT);
 
         assert_eq!(&*buffer.lock().unwrap(), "correct horse battery staple");
+        assert!(
+            input.layout_needs_measure(),
+            "publication must not consume layout invalidation"
+        );
+        buffer.lock().unwrap().clear();
+        input.sync(&document, &automerge::ROOT);
+        assert!(
+            buffer.lock().unwrap().is_empty(),
+            "an acknowledged secret must not be republished"
+        );
+        input.core.set_caret(input.text.len());
+        input.insert_at_cursor("new draft");
+        input.sync(&document, &automerge::ROOT);
+        assert_eq!(
+            &*buffer.lock().unwrap(),
+            input.value(),
+            "subsequent edits still publish"
+        );
+        assert!(buffer.lock().unwrap().ends_with("new draft"));
         assert!(document.keys(&automerge::ROOT).next().is_none());
     }
 

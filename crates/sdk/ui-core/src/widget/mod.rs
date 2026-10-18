@@ -3134,7 +3134,11 @@ mod editable_label;
 pub use editable_label::{EditOutcome, EditableLabel};
 pub mod acknowledgement;
 pub mod autocomplete;
-pub use autocomplete::{Autocomplete, AutocompleteOutcome, Suggester, Suggestion, SuggestionList};
+pub use autocomplete::{
+    Autocomplete, AutocompleteOutcome, Suggester, Suggestion, SuggestionList, SuggestionPerson,
+};
+pub mod mention_picker;
+pub use mention_picker::{MentionCandidate, MentionQuery};
 mod number_input;
 pub use number_input::{NumberInput, NumberStepperFace, StepperPart};
 pub mod marks;

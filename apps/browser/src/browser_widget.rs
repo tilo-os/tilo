@@ -3132,7 +3132,8 @@ impl BrowserWidget {
                 | WebViewEvent::TitleChanged(_)
                 | WebViewEvent::LoadProgress(_)
                 | WebViewEvent::PaintSnapshot { .. }
-                | WebViewEvent::PaintResource { .. } => {}
+                | WebViewEvent::PaintResource { .. }
+                | WebViewEvent::DocumentSize { .. } => {}
                 WebViewEvent::LoadFinished => {
                     if self.load_error.is_some() {
                         continue;
@@ -3989,7 +3990,7 @@ pub(crate) enum EngineProblem {
 /// installed Browser root and reviews its exact declared optional component;
 /// opening this handoff never consents to a payload download.
 pub(crate) const ENGINE_INSTALL_URI: &str =
-    "tilo-store:runtime/so.tilo.browser/tilo-runtime/2026.10.10-chromium";
+    "tilo-store:runtime/so.tilo.browser/tilo-runtime/2026.10.17-chromium";
 
 /// Live browsing runs the Chromium engine runtime
 /// ([`ui::webview::chromium::runtime`]); there is no other engine and no
@@ -9658,7 +9659,7 @@ mod tests {
         {
             assert_eq!(
                 ENGINE_INSTALL_URI,
-                "tilo-store:runtime/so.tilo.browser/tilo-runtime/2026.10.9-chromium",
+                "tilo-store:runtime/so.tilo.browser/tilo-runtime/2026.10.17-chromium",
                 "repair names the consuming app and exact declaration, not a catalogue alias"
             );
             let engine = unavailable_engine(BrowsingMode::Normal, EngineProblem::NotInstalled);

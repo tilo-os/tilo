@@ -1080,6 +1080,13 @@ const WINDOW_FOCUS_NTH_PARAMS: &[ActionParam] = &[ActionParam::required(
     "Which window group of the focused strip, counting from 1 (1 to 9).",
 )];
 
+/// Parameters of `strip.focus-nth`.
+const STRIP_FOCUS_NTH_PARAMS: &[ActionParam] = &[ActionParam::required(
+    "index",
+    ParamType::Integer,
+    "Which strip of the active workspace, counting from 1 at the top (1 to 9).",
+)];
+
 /// Relative window-management actions that move focus or the view.
 const WINDOW_FOCUS_ACTION_IDS: &[&str] = &[
     "window.focus-previous",
@@ -1091,6 +1098,7 @@ const WINDOW_FOCUS_ACTION_IDS: &[&str] = &[
     "tab.previous",
     "tab.next",
     "window.focus-nth",
+    "strip.focus-nth",
 ];
 
 /// Relative window-management actions that rearrange the desk.
@@ -1102,6 +1110,7 @@ const WINDOW_LAYOUT_ACTION_IDS: &[&str] = &[
     "group.move-to-display-previous",
     "group.move-to-display-next",
     "group.maximize",
+    "group.restore",
     "group.fullscreen",
     "group.narrower",
     "group.wider",
@@ -1219,6 +1228,13 @@ impl Action {
             "shortcut-name-dictation-cancel",
             "dictation-action-cancel-detail",
             |st, _| request_window_shortcut(st, ShortcutAction::DictationCancel),
+        ),
+        // "emoji" or a lone ":" in search: the same picker Super+. opens.
+        chrome(
+            "emoji.picker",
+            "search-action-emoji-picker",
+            "search-action-emoji-picker-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::EmojiPicker),
         ),
         chrome(
             "navigation.axis.enable",
@@ -2234,6 +2250,12 @@ impl Action {
             |st, _| request_window_shortcut(st, ShortcutAction::ToggleMaximize),
         ),
         chrome(
+            "group.restore",
+            "search-action-group-restore",
+            "search-action-group-restore-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::RestoreWindow),
+        ),
+        chrome(
             "group.fullscreen",
             "search-action-group-fullscreen",
             "search-action-group-fullscreen-subtitle",
@@ -2276,6 +2298,24 @@ impl Action {
                         ShortcutAction::ALL
                             .into_iter()
                             .find(|action| action.focus_group_index() == Some(index))
+                    })
+                    .ok_or_else(|| ActionError::Refused("index must be 1 to 9".into()))?;
+                request_window_shortcut(st, action)
+            },
+        },
+        Action {
+            id: "strip.focus-nth",
+            label: "search-action-strip-focus-nth",
+            subtitle: "search-action-strip-focus-nth-subtitle",
+            params: STRIP_FOCUS_NTH_PARAMS,
+            apply: |st, args| {
+                let action = args
+                    .integer("index")
+                    .and_then(|index| usize::try_from(index).ok()?.checked_sub(1))
+                    .and_then(|index| {
+                        ShortcutAction::ALL
+                            .into_iter()
+                            .find(|action| action.focus_strip_index() == Some(index))
                     })
                     .ok_or_else(|| ActionError::Refused("index must be 1 to 9".into()))?;
                 request_window_shortcut(st, action)
@@ -2809,6 +2849,19 @@ pub(crate) const DISPLAY_REVERT_ID: &str = "display.change.revert";
 pub(crate) const DISPLAY_OUTPUTS_INSPECT_ID: &str = "display.outputs.inspect";
 pub(crate) const BLUETOOTH_PAIRING_DECLINE_ID: &str = "bluetooth.pairing.decline";
 
+/// Whether the action `id` has something to act on now. Most always do;
+/// these act on something that comes and goes.
+fn action_available(id: &str, chrome: &ChromeState) -> bool {
+    match id {
+        "projection.close" => chrome.overlays.projection,
+        "presence.follow.stop" => chrome.following,
+        BLUETOOTH_PAIRING_DECLINE_ID => crate::bluetooth::PairingPromptHandle::global()
+            .current()
+            .is_some(),
+        _ => true,
+    }
+}
+
 /// Decline the Bluetooth pairing question on screen, or stop the pairing
 /// whose code it displays.
 ///
@@ -3117,6 +3170,9 @@ impl Default for ActionsProvider {
 pub(crate) const PROVIDER_ID: &str = "actions";
 
 impl SearchProvider for ActionsProvider {
+    fn row_icon(&self, result: &SearchResult) -> Option<ui::icons::Icon> {
+        action_icon(&result.id)
+    }
     fn id(&self) -> &'static str {
         PROVIDER_ID
     }
@@ -3128,6 +3184,27 @@ impl SearchProvider for ActionsProvider {
     }
     fn available_in_active_app_scope(&self) -> bool {
         true
+    }
+    /// A radio's set-enabled form is for agents: a person flips the switch
+    /// row beside it, which already shows whether it is on. And an action
+    /// with nothing to act on (closing a sheet that is not open, declining a
+    /// pairing nobody asked for, stopping a follow that is not happening)
+    /// only takes a row from one that would do something: it is offered
+    /// only when the query names it exactly, where running it says why not.
+    fn hidden_from_people(
+        &self,
+        result: &SearchResult,
+        needle: &str,
+        chrome: &ChromeState,
+    ) -> bool {
+        if QS_TOGGLES
+            .iter()
+            .any(|toggle| toggle.set_enabled == result.id)
+        {
+            return true;
+        }
+        !action_available(&result.id, chrome)
+            && tilo_search::fold(needle.trim()) != tilo_search::fold(&result.title)
     }
     /// An address is looked up in the whole table. The shell offers more
     /// actions than one palette page shows, so the first page of an empty
@@ -4121,7 +4198,7 @@ impl ActionsProvider {
                 on_begin_invoke,
             });
         }
-        // One-step switches for the radios: "wifi" finds "Wi-Fi: turn off", not a
+        // One-step switches for the radios: "wifi" finds the Wi-Fi switch, not a
         // form asking for `enabled`, and the row says what it is now. They run
         // the same set-enabled action with the opposite of the live state.
         for toggle in QS_TOGGLES {
@@ -4133,7 +4210,8 @@ impl ActionsProvider {
                 continue;
             }
             let on = radio_is_on(ctx.chrome, set_enabled_id);
-            let title = t(if on { toggle.turn_off } else { toggle.turn_on });
+            // A switch is its noun; the pill says whether it is on.
+            let title = t(toggle.name);
             let subtitle = t(toggle.subtitle);
             let params = base.params.clone();
             let opposite = move |chrome: &Chrome| -> Result<ActionArgs, ActionError> {
@@ -4472,6 +4550,69 @@ pub(crate) fn action_keywords(id: &str) -> Vec<String> {
 /// Actions that change a setting the row itself shows, so choosing one
 /// leaves the palette open on the row's new state: a person flipping Wi-Fi
 /// or Do Not Disturb wants to see it flip, not lose the palette.
+/// The picture of an action, by what it acts on: the most specific family
+/// its id names (`appearance.theme.dark` before `appearance`). Families
+/// are whole id segments, so `tab` never claims `table.*`.
+pub(crate) fn action_icon(id: &str) -> Option<ui::icons::Icon> {
+    use ui::icons::Icon;
+    const FAMILIES: &[(&str, Icon)] = &[
+        ("quick-settings.wifi", Icon::Wifi),
+        ("quick-settings.network", Icon::Wifi),
+        ("quick-settings.bluetooth", Icon::Bluetooth),
+        ("quick-settings.airplane-mode", Icon::Plane),
+        ("quick-settings.devices", Icon::MonitorSmartphone),
+        ("quick-settings.clipboard", Icon::ClipboardPaste),
+        ("quick-settings", Icon::Settings2),
+        ("appearance.theme.dark", Icon::Moon),
+        ("appearance.theme.light", Icon::Sun),
+        ("appearance.high-contrast", Icon::Contrast),
+        ("appearance.language", Icon::Globe),
+        ("appearance", Icon::Palette),
+        ("notifications", Icon::Bell),
+        ("capture", Icon::Camera),
+        ("dictation", Icon::Mic),
+        ("presence.follow", Icon::Eye),
+        ("presence", Icon::User),
+        ("peer", Icon::UserPlus),
+        ("agent", Icon::Bot),
+        ("invitation", Icon::Send),
+        ("identity", Icon::Fingerprint),
+        ("ownership", Icon::Shield),
+        ("collaborators", Icon::Users),
+        ("history.undo", Icon::Undo2),
+        ("history", Icon::History),
+        ("room.activity", Icon::History),
+        ("record", Icon::FileText),
+        ("tab.close", Icon::Trash2),
+        ("tab.reopen", Icon::RotateCcw),
+        ("tab.split-right", Icon::Columns2),
+        ("tab.new.terminal", Icon::SquareTerminal),
+        ("window.new.terminal", Icon::SquareTerminal),
+        ("group.fullscreen", Icon::Maximize2),
+        ("group.maximize", Icon::Maximize2),
+        ("tab", Icon::AppWindow),
+        ("window", Icon::AppWindow),
+        ("group", Icon::AppWindow),
+        ("strip", Icon::Layers),
+        ("workspace", Icon::Layers),
+        ("overview", Icon::LayoutGrid),
+        ("projection", Icon::ScreenShare),
+        ("navigation", Icon::Navigation),
+        ("settings", Icon::Settings),
+        ("feedback", Icon::MessageSquare),
+        ("desktop-tour", Icon::Info),
+        ("shortcut-help", Icon::Keyboard),
+        ("topbar", Icon::Menu),
+    ];
+    FAMILIES
+        .iter()
+        .find(|(family, _)| {
+            id.strip_prefix(family)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+        })
+        .map(|(_, icon)| *icon)
+}
+
 pub(crate) fn toggles_in_place(id: &str) -> bool {
     matches!(
         id,
@@ -4515,6 +4656,7 @@ const ACTION_SHORTCUTS: &[(&str, &str)] = &[
     ),
     ("group.move-to-display-next", "move-group-to-next-display"),
     ("group.maximize", "toggle-maximize"),
+    ("group.restore", "restore-window"),
     ("group.fullscreen", "toggle-fullscreen"),
     ("group.narrower", "resize-narrower"),
     ("group.wider", "resize-wider"),
@@ -4566,12 +4708,12 @@ pub(crate) fn action_shortcut(
 
 /// A Quick Settings radio offered as a one-step toggle: the set-enabled
 /// action it drives, its own id, and the catalogue keys of its row's title
-/// (to turn the radio on, or off) and subtitle.
+/// and subtitle.
 struct QsToggle {
     set_enabled: &'static str,
     id: &'static str,
-    turn_on: &'static str,
-    turn_off: &'static str,
+    /// The switch's name; its state is the row's pill.
+    name: &'static str,
     subtitle: &'static str,
 }
 
@@ -4580,22 +4722,19 @@ const QS_TOGGLES: &[QsToggle] = &[
     QsToggle {
         set_enabled: QS_WIFI_ID,
         id: "quick-settings.wifi.toggle",
-        turn_on: "search-toggle-wifi-on",
-        turn_off: "search-toggle-wifi-off",
+        name: "search-toggle-wifi",
         subtitle: "search-toggle-wifi-subtitle",
     },
     QsToggle {
         set_enabled: QS_BLUETOOTH_ID,
         id: "quick-settings.bluetooth.toggle",
-        turn_on: "search-toggle-bluetooth-on",
-        turn_off: "search-toggle-bluetooth-off",
+        name: "search-toggle-bluetooth",
         subtitle: "search-toggle-bluetooth-subtitle",
     },
     QsToggle {
         set_enabled: QS_AIRPLANE_ID,
         id: "quick-settings.airplane-mode.toggle",
-        turn_on: "search-toggle-airplane-mode-on",
-        turn_off: "search-toggle-airplane-mode-off",
+        name: "search-toggle-airplane-mode",
         subtitle: "search-toggle-airplane-mode-subtitle",
     },
 ];
@@ -6019,13 +6158,13 @@ mod tests {
         };
 
         // Locale.
-        assert_eq!(language(&provider).as_deref(), Some("Set language"));
+        assert_eq!(language(&provider).as_deref(), Some("Change language"));
         let _restore = RestoreLocale;
         ui::i18n::I18nManager::set_locale("de-DE");
         assert_eq!(crate::shell::i18n::current_locale(), "de-DE");
-        assert_eq!(language(&provider).as_deref(), Some("Sprache festlegen"));
+        assert_eq!(language(&provider).as_deref(), Some("Sprache ändern"));
         ui::i18n::I18nManager::set_locale("en-US");
-        assert_eq!(language(&provider).as_deref(), Some("Set language"));
+        assert_eq!(language(&provider).as_deref(), Some("Change language"));
 
         // Active workspace: governance rows address the workspace now active.
         let (first_room, second, second_room) = {
@@ -6935,7 +7074,7 @@ mod tests {
             "writing the store without selecting the live catalogue leaves chrome English"
         );
         assert_eq!(t("tab-closed-undo"), "Rückgängig");
-        assert_eq!(t("search-action-appearance-language"), "Sprache festlegen");
+        assert_eq!(t("search-action-appearance-language"), "Sprache ändern");
     }
 
     #[test]

@@ -40,7 +40,7 @@ use ui::record::{RecordCheckout, RecordId, RecordStore};
 use ui::state::{DocumentFrontier, DocumentReplica};
 
 /// The desktop document's route. Changing it splits rooms by build.
-const DESKTOP_APP: &str = "so.tilo.browser-desktop";
+pub(crate) const DESKTOP_APP: &str = "so.tilo.browser-desktop";
 pub(crate) const DESKTOP_RECORD: &str = "desktop";
 /// How often a page asks again whether the room lets its person moderate
 /// the shared desktop: a role the room grants while they are in it reaches
@@ -300,7 +300,7 @@ impl Room {
     /// Ask the room, at most every [`MODERATION_ASK_EVERY_MS`], whether it
     /// lets this page's person close and move what others made on its
     /// shared desktop; the answer sets the desktop's flag and wakes it.
-    fn ask_moderation_when_due(&mut self) {
+    fn ask_moderation_when_due(&self) {
         if !self.ready
             || !self
                 .mounts

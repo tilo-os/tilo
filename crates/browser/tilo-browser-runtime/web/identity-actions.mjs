@@ -23,18 +23,20 @@
  * - `set-name`: the name others see, in history and presence; once set,
  *   a banner offers to keep the person it names. Asked in a form, or taken
  *   as typed where the desktop already asked (the profile card's field).
- * - `pair-device`: let another device of the person in. Copies a link that
- *   opens this workspace there as a new device of this person (the action
- *   itself then says so in search; the link is shown only when it could
- *   not be copied); that device shows a pairing code, and a banner here
- *   offers to approve the device showing it. Approving signs its certificate with the root held here;
- *   the host the two share only relays the request and the certificate.
+ * - `pair-device`: let another device of the person in. Shows a sheet
+ *   with a link, and its QR code, that opens this workspace there as a new
+ *   device of this person. Each link names a fresh invite (`pairing.mjs`):
+ *   it works once, for ten minutes, and only this page asks about a device
+ *   that answers it, with what the host saw of that device and the code it
+ *   shows. Approving signs its certificate with the root held here; the
+ *   host the two share only relays the request and the certificate.
  *
  * Each change to the envelope goes to every host this person joined through,
  * so a new browser finds it wherever it asks. So does the name the person
  * chooses (their profile, signed by the root): each of their devices, paired
  * or signed in, comes up with it (`syncProfile`).
  */
+import {forInvites, openInvites} from './pairing.mjs';
 import {
   fetchEnvelope, fetchProfile, fitDisplayName, IdentityError, publishEnvelope, publishProfile, signInWithPasskey,
 } from './root-identity.mjs';
@@ -48,12 +50,7 @@ export const SIGN_IN = Object.freeze({id: 'sign-in-passkey', title: 'Sign in wit
 export const NAME = Object.freeze({id: 'set-name', title: 'Set your name',
   subtitle: 'How others see you in this workspace', source: 'identity'});
 export const PAIR = Object.freeze({id: 'pair-device', title: 'Pair a new device',
-  subtitle: 'Copy a link that opens this workspace there as you', source: 'devices'});
-/** Offered only while a pairing link could not be copied: copying it again. */
-export const COPY_PAIR = Object.freeze({id: 'copy-pair-link', title: 'Copy link',
-  subtitle: 'The link that pairs your new device', source: 'devices'});
-const PAIR_COPIED = 'Link copied: open it on the new device';
-const APPROVE = 'approve-pairing:';
+  subtitle: 'A code or link that opens this workspace there as you', source: 'devices'});
 /**
  * How many actions make an identity worth keeping. One post or one moved
  * window is a visitor trying things; five separate ones (writing, sending,
@@ -67,9 +64,8 @@ export const ACTION_GAP_MS = 2000;
 const PAUSE_POLL_MS = 1000;
 /** Where this browser session remembers that it asked. */
 const ASKED_KEY = 'tilo.identity.asked';
-/** How often, and for how long after `pair-device`, to ask for devices waiting. */
+/** How often, while a pairing link is open, to ask for devices waiting. */
 const PAIR_POLL_MS = 3000;
-const PAIR_WINDOW_MS = 10 * 60 * 1000;
 
 /** Hand `recoveryKey` to the browser's password manager, else save a file. */
 export async function saveRecoveryKey(recoveryKey, {userPublicKey, name = 'Tilo', window = globalThis} = {}) {
@@ -110,9 +106,13 @@ export async function saveRecoveryKey(recoveryKey, {userPublicKey, name = 'Tilo'
  * between things (no input for a moment, nothing held down), so the ask
  * never lands mid-sentence or mid-drag. `searchChord` is how this page
  * opens search, said in the ask so the person can find it later.
- * `revealLink(link, copied)` puts a pairing link the clipboard refused
- * twice where the person can copy it themselves, calling `copied()` once
- * they have.
+ * `pairing` is the host side of pairing: `link(invite)`, `pending()` and
+ * `answer(digest, approved)`. `showPairLink({link, expiresAt, copy})` shows
+ * a new pairing link (`copy()` puts it on the clipboard, resolving whether
+ * it could); `askPairing(request, decide)` asks the person about a device
+ * that answered it, and `decide(approved)` answers, resolving to
+ * `{approved, label}`. Both return `{close()}`, called once the link is
+ * spent or expired.
  */
 export function createIdentityActions({
   identity, hosts = () => [], lookups = hosts, rpId = globalThis.location?.hostname, name = () => undefined,
@@ -122,14 +122,13 @@ export function createIdentityActions({
   naming = null, pairing = null, copy = text => globalThis.navigator?.clipboard?.writeText(text), now = () => Date.now(),
   every = (run, ms) => { const timer = setInterval(run, ms); return () => clearInterval(timer); },
   pause = () => true, later = (run, ms) => setTimeout(run, ms), session = globalThis.sessionStorage,
-  searchChord = 'Ctrl+K', revealLink = () => {},
+  searchChord = 'Ctrl+K', showPairLink = () => ({close() {}}), askPairing = () => ({close() {}}),
+  invites = openInvites({now}),
 }) {
   let mount;
   const offered = new Set();
-  // A pairing link the clipboard refused, until it is copied.
-  let uncopied = null;
   const actions = () => [...(naming ? [NAME] : []), ...(identity.kept ? [RECOVERY] : [KEEP, RECOVERY, SIGN_IN]),
-    ...(pairing ? [PAIR] : []), ...(uncopied ? [COPY_PAIR] : [])];
+    ...(pairing ? [PAIR] : [])];
   const refresh = () => mount?.setHostActions(actions());
   // Each moment offers once per page: `moment` defaults to the action.
   const offer = (action, title, body, moment = action.id) => {
@@ -142,27 +141,37 @@ export function createIdentityActions({
     for (const result of results) if (result.status === 'rejected') onError(result.reason);
   };
   const tryCopy = link => Promise.resolve().then(() => copy(link)).then(() => true, () => false);
-  // The link is on the clipboard: said in passing, and no longer offered,
-  // which withdraws the banner that held it.
-  const pairLinkCopied = () => {
-    uncopied = null;
-    refresh();
-    mount?.acknowledge?.(PAIR_COPIED);
+  // What shows each open invite: its sheet, then the ask about the device
+  // that answered it. Either closes once the invite is spent or expired.
+  const shown = new Map();
+  const asked = new Set();
+  const closeInvite = id => {
+    shown.get(id)?.close();
+    shown.delete(id);
+    asked.delete(id);
   };
-  // Devices waiting to be paired, asked for while a pairing link is fresh.
-  let pairUntil = 0;
   let stopPairing = null;
-  const waiting = new Map();
+  // An answer spends the invite, approved or not: the host takes no second
+  // request naming it.
+  const decide = request => async approved => {
+    await pairing.answer(request.digest, approved);
+    invites.spend(request.invite);
+    shown.delete(request.invite);
+    asked.delete(request.invite);
+    return {approved, label: request.label};
+  };
+  // Devices waiting to be paired, asked for while one of this page's
+  // invites is open; only one that answers such an invite is asked about.
   const askPending = async () => {
-    if (now() > pairUntil) { stopPairing?.(); stopPairing = null; return; }
+    for (const id of invites.prune()) closeInvite(id);
+    if (!invites.size) { stopPairing?.(); stopPairing = null; return; }
     let pending;
     try { pending = await pairing.pending(); } catch (error) { onError(error); return; }
-    for (const device of pending) {
-      waiting.set(device.digest, device);
-      offer({id: `${APPROVE}${device.digest}`, title: `Approve ${device.pairingCode}`,
-        subtitle: `Pair “${device.label}” as you`, source: 'devices'},
-      `Pair “${device.label}”?`,
-      `A device asks to be you. Approve only if it shows ${device.pairingCode}.`);
+    for (const request of forInvites(pending, invites)) {
+      if (asked.has(request.invite)) continue;
+      asked.add(request.invite);
+      shown.get(request.invite)?.close();
+      shown.set(request.invite, askPairing(request, decide(request)));
     }
   };
   // What the person did: separate actions, and the name they chose.
@@ -247,34 +256,16 @@ export function createIdentityActions({
             controller.named(typeof set === 'string' && set ? set : chosen);
           }
         } else if (id === PAIR.id && pairing) {
-          const link = pairing.link();
-          if (!link) throw new IdentityError('no-workspace', 'Join a workspace before pairing a device to it');
-          if (await tryCopy(link)) {
-            // The clipboard is out of sight: said in passing, not kept.
-            mount?.acknowledge?.(PAIR_COPIED);
-          } else {
-            // Search has closed, so the link is said in a banner that can
-            // copy it again: that click is a gesture the browser may honour.
-            uncopied = link;
-            refresh();
-            offered.delete(COPY_PAIR.id);
-            offer(COPY_PAIR, 'Open this link on your new device', link);
+          const invite = invites.open();
+          const link = pairing.link(invite.id);
+          if (!link) {
+            invites.spend(invite.id);
+            throw new IdentityError('no-workspace', 'Join a workspace before pairing a device to it');
           }
-          pairUntil = now() + PAIR_WINDOW_MS;
+          // The sheet's Copy is a click, a gesture the clipboard honours.
+          shown.set(invite.id, showPairLink({link, expiresAt: invite.expiresAt, copy: () => tryCopy(link)}));
           stopPairing ??= every(() => { void askPending(); }, PAIR_POLL_MS);
           await askPending();
-        } else if (id === COPY_PAIR.id && uncopied) {
-          const link = uncopied;
-          if (await tryCopy(link)) pairLinkCopied();
-          // Refused again, and a banner's text cannot be selected: the link
-          // goes where the person can copy it themselves. The banner stays.
-          else revealLink(link, () => { if (uncopied === link) pairLinkCopied(); });
-        } else if (id.startsWith(APPROVE) && pairing) {
-          const digest = id.slice(APPROVE.length);
-          // The approved device joins as this person, where everyone in
-          // the workspace is shown; its ask leaving is the answer here.
-          await pairing.answer(digest, true);
-          waiting.delete(digest);
         } else if (id === SIGN_IN.id) {
           const origins = [...new Set(lookups())];
           await signIn({rpId, fetchEnvelope: root => find(root, origins)});

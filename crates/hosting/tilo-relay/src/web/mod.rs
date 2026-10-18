@@ -91,6 +91,21 @@ pub struct WebConfig {
     pub live_origin: Option<String>,
     /// How many browsers the listener serves at once.
     pub limits: WebLimits,
+    /// Where the proxy in front of the host names a client's country. The
+    /// host shows it to a person approving a new device and looks nothing up
+    /// itself.
+    pub country: Option<CountryHeader>,
+}
+
+/// The request header a proxy in front of the host names the client's
+/// country in (such as a CDN's `CF-IPCountry`), and the peers it is
+/// believed from: that proxy, never the open internet.
+#[derive(Clone, Debug)]
+pub struct CountryHeader {
+    /// The header's name.
+    pub name: String,
+    /// The peers whose header is believed.
+    pub proxies: tilo_relay_protocol::proxies::TrustedProxies,
 }
 
 /// Caps on concurrent browser state. A public room expects hundreds of
@@ -179,6 +194,11 @@ struct Web {
     profiles: envelopes::Envelopes,
     /// Who is here and what they are doing, for `/here`.
     here: Arc<here::Here>,
+    /// [`WebConfig::country`], its header name parsed.
+    country: Option<(
+        hyper::header::HeaderName,
+        tilo_relay_protocol::proxies::TrustedProxies,
+    )>,
 }
 
 /// Checks the published origins against the listeners they front, and
@@ -350,6 +370,7 @@ impl Relay {
                 self.state_root().join("profiles"),
             ),
             here: Arc::new(here::Here::new(here::from_env())),
+            country: config.country.and_then(country_header),
         });
         let mut tasks = vec![tasks_bridge, tasks_legacy];
         let live = web.live.clone();
@@ -817,7 +838,7 @@ async fn accept_loop(
 ) {
     let mut connections = tokio::task::JoinSet::new();
     loop {
-        let Ok((stream, _)) = tcp.accept().await else {
+        let Ok((stream, peer)) = tcp.accept().await else {
             continue;
         };
         while connections.try_join_next().is_some() {}
@@ -829,7 +850,7 @@ async fn accept_loop(
             else {
                 return;
             };
-            serve_connection(tls, web).await;
+            serve_connection(tls, web, peer).await;
         });
     }
 }
@@ -838,20 +859,25 @@ async fn accept_loop(
 async fn plain_accept_loop(tcp: tokio::net::TcpListener, web: Arc<Web>) {
     let mut connections = tokio::task::JoinSet::new();
     loop {
-        let Ok((stream, _)) = tcp.accept().await else {
+        let Ok((stream, peer)) = tcp.accept().await else {
             continue;
         };
         while connections.try_join_next().is_some() {}
-        connections.spawn(serve_connection(stream, web.clone()));
+        connections.spawn(serve_connection(stream, web.clone(), peer));
     }
 }
 
-async fn serve_connection<Io>(io: Io, web: Arc<Web>)
+/// The TCP peer a request arrived from.
+#[derive(Clone, Copy)]
+struct Peer(SocketAddr);
+
+async fn serve_connection<Io>(io: Io, web: Arc<Web>, peer: SocketAddr)
 where
     Io: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    let service = hyper::service::service_fn(move |request| {
+    let service = hyper::service::service_fn(move |mut request: Request<hyper::body::Incoming>| {
         let web = web.clone();
+        request.extensions_mut().insert(Peer(peer));
         async move { Ok::<_, Infallible>(handle(&web, request).await) }
     });
     let _ = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
@@ -934,6 +960,36 @@ fn fallback_status(error: FallbackError) -> Response<Body> {
 )]
 fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, Response<Body>> {
     postcard::from_bytes(bytes).map_err(|_| status(StatusCode::BAD_REQUEST, "malformed body"))
+}
+
+/// The device a workspace join request over HTTPS is bound to: the one it
+/// names, whose signature its proof carries. The iroh exchange binds the
+/// device its transport authenticated; an inspection binds none.
+fn joining_device(request: &tilo_peer_state::join::JoinTransportRequest) -> [u8; 32] {
+    use tilo_peer_state::join::JoinTransportRequest;
+    match request {
+        JoinTransportRequest::Inspect { .. } => [0; 32],
+        JoinTransportRequest::Challenge(request) => request.device_cert.device_public_key,
+        JoinTransportRequest::Complete(request) => request.proof.challenge.device_public_key,
+        JoinTransportRequest::MembershipChallenge(request) => request.device_cert.device_public_key,
+        JoinTransportRequest::MembershipComplete(request) => {
+            request.proof.challenge.device_public_key
+        }
+    }
+}
+
+/// The client's country as the proxy in front of the host names it
+/// ([`WebConfig::country`]): from a trusted peer only, and only a two-letter
+/// code.
+fn country(web: &Web, request: &Request<hyper::body::Incoming>) -> Option<String> {
+    let (header, proxies) = web.country.as_ref()?;
+    let peer = request.extensions().get::<Peer>()?;
+    if !proxies.contains(peer.0.ip()) {
+        return None;
+    }
+    let value = request.headers().get(header)?.to_str().ok()?.trim();
+    (value.len() == 2 && value.bytes().all(|byte| byte.is_ascii_uppercase()) && value != "XX")
+        .then(|| value.to_owned())
 }
 
 fn token(request: &Request<hyper::body::Incoming>) -> Option<[u8; 32]> {
@@ -1058,6 +1114,7 @@ async fn route(
         return Err(status(StatusCode::NOT_FOUND, "not found"));
     };
     let session = token(&request);
+    let country = country(web, &request);
     let live_session = request
         .headers()
         .get(FALLBACK_SESSION_HEADER)
@@ -1097,6 +1154,7 @@ async fn route(
                 request,
                 tilo_clock::unix_now_ns(),
                 member,
+                country,
             ) {
                 Ok((_, pairing_code, _)) => CertifyReply::Pending { pairing_code },
                 Err(reason) => CertifyReply::Denied { reason },
@@ -1284,6 +1342,24 @@ async fn route(
             let step = decode(&bytes)?;
             Ok(encoded(&rooms.page_join(step).await))
         }
+        protocol::WORKSPACE_JOIN_PATH => {
+            use tilo_delivery_protocol::workspace_join::{
+                MAX_WORKSPACE_JOIN_REQUEST_BYTES, WorkspaceJoinService as _,
+            };
+            let rooms = web
+                .rooms
+                .as_ref()
+                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no rooms"))?;
+            if bytes.len() > MAX_WORKSPACE_JOIN_REQUEST_BYTES {
+                return Err(status(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "workspace join request exceeds the wire limit",
+                ));
+            }
+            let request = decode(&bytes)?;
+            let device = joining_device(&request);
+            Ok(encoded(&rooms.join_service().handle(device, request).await))
+        }
         "/envelope" | "/profile" => {
             let now_ms = tilo_clock::unix_now_ms();
             let kept = if route == "/profile" {
@@ -1351,4 +1427,17 @@ async fn route(
         }
         _ => Err(status(StatusCode::NOT_FOUND, "not found")),
     }
+}
+
+/// The configured country header as the listener reads it; a name that is not
+/// a valid header name is no header.
+fn country_header(
+    country: CountryHeader,
+) -> Option<(
+    hyper::header::HeaderName,
+    tilo_relay_protocol::proxies::TrustedProxies,
+)> {
+    hyper::header::HeaderName::try_from(country.name.as_str())
+        .ok()
+        .map(|name| (name, country.proxies))
 }

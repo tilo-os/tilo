@@ -26,8 +26,9 @@ use crate::revocation::RevocationList;
 
 /// Signing-domain tag for [`CertificationRequest`]. Frozen wire ABI.
 pub const CERTIFICATION_REQUEST_TAG: &[u8] = b"tilo-device-certification-request-v1\0";
-/// Wire schema of [`CertificationRequest`] understood by this build.
-pub const CERTIFICATION_SCHEMA_VERSION: u16 = 1;
+/// Wire schema of [`CertificationRequest`] understood by this build: 2
+/// carries the pairing invite a request answers.
+pub const CERTIFICATION_SCHEMA_VERSION: u16 = 2;
 /// Longest a request stays answerable.
 pub const MAX_CERTIFICATION_REQUEST_LIFETIME_NS: u64 = 10 * 60 * 1_000_000_000;
 /// Longest device label a request may carry, in bytes.
@@ -49,6 +50,10 @@ pub struct CertificationRequest {
     pub requested: DeviceCapabilities,
     /// Random single-use request identifier.
     pub nonce: [u8; 16],
+    /// The pairing invite this request answers, as the link the person's
+    /// inviting device made names it, so that device knows the request is
+    /// the one it invited; zeros when no invite asked for it.
+    pub invite: [u8; 16],
     /// Earliest time the request is valid, Unix-epoch nanoseconds.
     pub issued_at_ns: u64,
     /// Exclusive expiry, Unix-epoch nanoseconds.
@@ -66,6 +71,7 @@ struct CertificationRequestView<'a> {
     device_label: &'a str,
     requested: &'a DeviceCapabilities,
     nonce: &'a [u8; 16],
+    invite: &'a [u8; 16],
     issued_at_ns: u64,
     expires_at_ns: u64,
 }
@@ -79,6 +85,7 @@ impl CertificationRequest {
             device_label: &self.device_label,
             requested: &self.requested,
             nonce: &self.nonce,
+            invite: &self.invite,
             issued_at_ns: self.issued_at_ns,
             expires_at_ns: self.expires_at_ns,
         }
@@ -414,6 +421,7 @@ mod tests {
             device_label: "Browser on Cloud".into(),
             requested: DeviceCapabilities::primary(),
             nonce: [7; 16],
+            invite: [0; 16],
             issued_at_ns: NOW,
             expires_at_ns: NOW + 60_000_000_000,
             signature: [0; 64],

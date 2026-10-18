@@ -55,6 +55,20 @@ pub struct Suggestion {
     pub detail: Option<String>,
     /// Optional leading glyph.
     pub icon: Option<Icon>,
+    /// A participant this row names: painted as their avatar (or, for
+    /// software acting in the room, the agent mark) in place of an icon.
+    pub person: Option<SuggestionPerson>,
+}
+
+/// Who a [`Suggestion`] names, for its leading avatar.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SuggestionPerson {
+    /// Their stable id, which also picks the avatar's hue.
+    pub identity: String,
+    /// The colour the room gives them.
+    pub color: (u8, u8, u8),
+    /// Software acting in the room rather than a person.
+    pub agent: bool,
 }
 
 impl Suggestion {
@@ -66,6 +80,7 @@ impl Suggestion {
             value,
             detail: None,
             icon: None,
+            person: None,
         }
     }
 
@@ -76,6 +91,7 @@ impl Suggestion {
             label: label.into(),
             detail: None,
             icon: None,
+            person: None,
         }
     }
 
@@ -88,6 +104,13 @@ impl Suggestion {
     #[must_use]
     pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = Some(detail.into());
+        self
+    }
+
+    /// Lead the row with `person`'s avatar.
+    #[must_use]
+    pub fn with_person(mut self, person: SuggestionPerson) -> Self {
+        self.person = Some(person);
         self
     }
 }
@@ -139,6 +162,11 @@ impl ListMetrics {
             icon: f64::from(tokens.metrics.icon_sm).max(line.round() - 2.0),
             spacing: f64::from(tokens.spacing.s2),
         }
+    }
+
+    /// A participant's avatar: a little larger than an icon, inside the row.
+    fn avatar(&self) -> f64 {
+        (self.icon + 4.0).min(self.row - 2.0 * self.inset.min(4.0))
     }
 
     /// The stock geometry, for hit-testing before the first paint.
@@ -436,7 +464,9 @@ impl SuggestionList {
             .iter()
             .map(|s| {
                 let mut w = f64::from(text.measure_style(&s.label, None, &label_style).0);
-                if s.icon.is_some() {
+                if s.person.is_some() {
+                    w += m.avatar() + m.spacing;
+                } else if s.icon.is_some() {
                     w += m.icon + m.spacing;
                 }
                 if let Some(detail) = &s.detail {
@@ -562,7 +592,31 @@ impl SuggestionList {
         let label_style = theme.text(self.role);
         let detail_style = theme.text(TextRole::Caption);
         let mut x = row.x0 + m.pad;
-        if let Some(icon) = s.icon {
+        if let Some(person) = &s.person {
+            let side = m.avatar();
+            let mark = Rect::new(
+                x,
+                row.center().y - side / 2.0,
+                x + side,
+                row.center().y + side / 2.0,
+            );
+            let colour = theme.tokens.colors.presence.of_rgb(person.color);
+            if person.agent {
+                crate::agent_identity::draw_agent_identity_mark(
+                    scene,
+                    transform,
+                    mark,
+                    colour,
+                    theme,
+                    crate::agent_identity::AgentIdentityStyle::Solid,
+                );
+            } else {
+                crate::widget::AvatarFace::new(&s.label, &person.identity)
+                    .presence(colour)
+                    .paint(&mut PaintCtx::new(scene, transform, text, theme), mark);
+            }
+            x += side + m.spacing;
+        } else if let Some(icon) = s.icon {
             let iy = row.center().y - m.icon / 2.0;
             draw_icon(
                 scene,
@@ -606,7 +660,10 @@ impl SuggestionList {
     }
 
     /// Accessibility rows for the suggestions in view, keyed by `key`.
-    fn access_rows(&self, key: impl Fn(&Suggestion) -> u64) -> Vec<crate::a11y::AccessNode> {
+    pub(crate) fn access_rows(
+        &self,
+        key: impl Fn(&Suggestion) -> u64,
+    ) -> Vec<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Politeness, Role};
         let Some(panel) = self.rect() else {
             return Vec::new();

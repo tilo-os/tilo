@@ -2,13 +2,17 @@
 //! Replace, and ordinary Home rights are never widened.
 use super::{
     Arc, DirectoryGrant, EntryName, FsError, FsRight, FsSession, GrantLease, GrantedEntry,
-    MetadataExt, Mutex, NativeFileAccess, NativeObject, OsString, Weak, io_error, lock,
+    MetadataExt, Mutex, NativeFileAccess, NativeObject, Weak, io_error, lock,
 };
-use runtime_portal::retained_replacement::{MAX_PERMIT_BYTES, SelectedReplacementPermitRecord};
-use std::io::{Read, Seek};
-use std::os::fd::AsRawFd;
-use std::os::unix::ffi::OsStringExt;
-use std::os::unix::fs::MetadataExt as StdMetadataExt;
+use runtime_portal::retained_replacement::SelectedReplacementPermitRecord;
+#[cfg(target_os = "linux")]
+use {
+    super::OsString,
+    runtime_portal::retained_replacement::MAX_PERMIT_BYTES,
+    std::io::{Read, Seek},
+    std::os::fd::AsRawFd,
+    std::os::unix::{ffi::OsStringExt, fs::MetadataExt as StdMetadataExt},
+};
 
 pub(super) struct SelectedPermit {
     pub(super) root: GrantLease,
@@ -161,6 +165,9 @@ impl FsSession {
         drop(table);
         Ok(authority)
     }
+    /// Bind selected replacement authority only on supported hosts.
+    /// # Errors
+    /// Always returns an unsupported-platform error outside Linux.
     #[cfg(not(target_os = "linux"))]
     pub fn bind_selected_replace_authority(
         &self,

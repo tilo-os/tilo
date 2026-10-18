@@ -57,7 +57,15 @@ pub enum WindowAction {
         tab: TabId,
         workspace: WorkspaceId,
     },
+    /// [`Self::MoveTab`] to the workspace the invocation names in its
+    /// [`DESTINATION_PARAM`]: the one row a search for "move" offers.
+    MoveTabTo { group: GroupId, tab: TabId },
+    /// [`Self::CopyTab`] to the workspace named in [`DESTINATION_PARAM`].
+    CopyTabTo { group: GroupId, tab: TabId },
 }
+
+/// The parameter naming the workspace a chosen move or copy goes to.
+pub const DESTINATION_PARAM: &str = "workspace";
 
 /// One window row with its localized copy and the names it answers to.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -65,8 +73,13 @@ pub struct WindowRow {
     pub kind: WindowRowKind,
     pub id: String,
     pub title: String,
-    pub subtitle: String,
-    pub badge: String,
+    /// What tells this row apart beyond its title: the strip a window is on
+    /// once there are several, the workspace a move starts from. Never the
+    /// kind of row or a count.
+    pub subtitle: Option<String>,
+    /// The workspaces a chosen move or copy may go to, by name; empty for
+    /// every other row.
+    pub destinations: Vec<String>,
     /// What a person calls this row: its visible names and verb, never an
     /// internal id. A host ranks these as titles.
     pub names: Vec<String>,
@@ -149,6 +162,18 @@ pub fn tab_move_id(group: GroupId, tab: TabId, workspace: WorkspaceId) -> String
     format!("tab.move:{group}:{tab}:{}", workspace.raw())
 }
 
+/// The exact address of moving `tab` out of `group` to a workspace the
+/// invocation names.
+pub fn tab_move_to_id(group: GroupId, tab: TabId) -> String {
+    format!("tab.move:{group}:{tab}")
+}
+
+/// The exact address of copying `tab`'s document in `group` into a
+/// workspace the invocation names.
+pub fn tab_copy_to_id(group: GroupId, tab: TabId) -> String {
+    format!("tab.copy:{group}:{tab}")
+}
+
 /// The exact address of copying `tab`'s document in `group` into `workspace`.
 pub fn tab_copy_id(group: GroupId, tab: TabId, workspace: WorkspaceId) -> String {
     format!("tab.copy:{group}:{tab}:{}", workspace.raw())
@@ -163,6 +188,19 @@ fn app_id(tile: &TileContent) -> Option<&str> {
         TileContent::AppPlaceholder { .. }
         | TileContent::Stub { .. }
         | TileContent::WorkspaceActivity => None,
+    }
+}
+
+/// The app a window row's tab belongs to, as an app id: what the window
+/// announces, or for a built-in the package it is (`so.tilo.file-explorer`).
+/// Search shows one row per app, so it needs to know which app row a window
+/// row is the same thing as.
+pub fn window_row_app_id(tree: &DesktopTree, id: &str) -> Option<String> {
+    match window_row_tile(tree, id)? {
+        TileContent::AppPlaceholder { kind, .. } | TileContent::Stub { kind, .. } => {
+            Some(kind.app_id())
+        }
+        tile => app_id(tile).map(str::to_owned),
     }
 }
 
@@ -233,18 +271,36 @@ fn focused_tab(tree: &DesktopTree, workspace: &Workspace) -> Option<TabId> {
         .then_some(group.active_tab)
 }
 
-/// One "move to workspace" row per other workspace `tab` may go to, and a
-/// "copy to workspace" row for a client window. A workspace's own history
+/// Where one tab may be moved or copied: the tab and the other workspaces.
+struct Relocation<'a> {
+    workspaces: &'a [Workspace],
+    workspace: &'a Workspace,
+    group: GroupId,
+    tab: &'a Tab,
+    /// Whether to offer the rows that ask where: in a listing, for their
+    /// exact address, or when a search names the move verbs and this is the
+    /// focused tab, the one tab a typed "move" is about.
+    offered: bool,
+}
+
+/// The move and copy rows of one tab. A search for "move" offers one row per
+/// verb, on the focused tab, that asks where ([`DESTINATION_PARAM`]); a list
+/// of every tab times every workspace buries everything else. The listing
+/// (an empty query, for agents) still names each destination, and each
+/// destination's exact address always resolves. A workspace's own history
 /// and a collaborator's window stay where they are.
 fn move_rows(
     rows: &mut Vec<WindowRow>,
     admit: &impl Fn(&str, bool) -> bool,
-    verbs: Verbs,
-    workspaces: &[Workspace],
-    workspace: &Workspace,
-    group: GroupId,
-    tab: &Tab,
+    place: &Relocation<'_>,
 ) {
+    let Relocation {
+        workspaces,
+        workspace,
+        group,
+        tab,
+        offered,
+    } = *place;
     if matches!(
         tab.tile,
         TileContent::WorkspaceActivity
@@ -258,15 +314,26 @@ fn move_rows(
         tab.tile,
         TileContent::Foreign { .. } | TileContent::LocalApp { .. }
     );
+    let others: Vec<&Workspace> = workspaces
+        .iter()
+        .filter(|other| other.id != workspace.id)
+        .collect();
+    if others.is_empty() {
+        return;
+    }
+    if offered {
+        let destinations = others.iter().map(|other| other.name.clone()).collect();
+        chosen_destination_rows(rows, group, tab, copyable, destinations);
+    }
     let detail = || {
-        t_args(
+        Some(t_args(
             "search-window-move-tab-detail",
             &[("workspace", workspace.name.as_str().into())],
-        )
+        ))
     };
-    for other in workspaces.iter().filter(|other| other.id != workspace.id) {
+    for other in others {
         let id = tab_move_id(group, tab.id, other.id);
-        if admit(&id, verbs.relocate) {
+        if admit(&id, false) {
             let label = t_args(
                 "search-window-move-tab",
                 &[
@@ -280,7 +347,7 @@ fn move_rows(
                 names: vec![label.clone()],
                 title: label,
                 subtitle: detail(),
-                badge: t("search-badge-tab"),
+                destinations: Vec::new(),
                 hint: app_hint(&tab.tile),
                 action: WindowAction::MoveTab {
                     group,
@@ -290,7 +357,7 @@ fn move_rows(
             });
         }
         let id = tab_copy_id(group, tab.id, other.id);
-        if copyable && admit(&id, verbs.relocate) {
+        if copyable && admit(&id, false) {
             let label = t_args(
                 "search-window-copy-tab",
                 &[
@@ -304,7 +371,7 @@ fn move_rows(
                 names: vec![label.clone()],
                 title: label,
                 subtitle: detail(),
-                badge: t("search-badge-tab"),
+                destinations: Vec::new(),
                 hint: app_hint(&tab.tile),
                 action: WindowAction::CopyTab {
                     group,
@@ -313,6 +380,48 @@ fn move_rows(
                 },
             });
         }
+    }
+}
+
+/// The "Move … to another workspace" row, and the copy row for a window
+/// whose document can be copied, each asking which of `destinations`.
+fn chosen_destination_rows(
+    rows: &mut Vec<WindowRow>,
+    group: GroupId,
+    tab: &Tab,
+    copyable: bool,
+    destinations: Vec<String>,
+) {
+    let title = &tab.title;
+    let label = t_args(
+        "search-window-move-tab-to",
+        &[("tab", title.as_str().into())],
+    );
+    rows.push(WindowRow {
+        kind: WindowRowKind::Tab,
+        id: tab_move_to_id(group, tab.id),
+        names: vec![label.clone()],
+        title: label,
+        subtitle: None,
+        destinations: destinations.clone(),
+        hint: app_hint(&tab.tile),
+        action: WindowAction::MoveTabTo { group, tab: tab.id },
+    });
+    if copyable {
+        let label = t_args(
+            "search-window-copy-tab-to",
+            &[("tab", title.as_str().into())],
+        );
+        rows.push(WindowRow {
+            kind: WindowRowKind::Tab,
+            id: tab_copy_to_id(group, tab.id),
+            names: vec![label.clone()],
+            title: label,
+            subtitle: None,
+            destinations,
+            hint: app_hint(&tab.tile),
+            action: WindowAction::CopyTabTo { group, tab: tab.id },
+        });
     }
 }
 
@@ -347,15 +456,15 @@ fn close_rows(
             id,
             names: vec![label.clone()],
             title: label,
-            subtitle: t_args(
+            subtitle: Some(t_args(
                 "search-window-close-group-detail",
                 &[
                     ("workspace", workspace.name.as_str().into()),
                     ("strip", strip.name.as_str().into()),
                     ("count", group.tabs.len().into()),
                 ],
-            ),
-            badge: t("search-badge-window-group"),
+            )),
+            destinations: Vec::new(),
             hint: None,
             action: WindowAction::CloseGroup { group: group_id },
         });
@@ -372,14 +481,14 @@ fn close_rows(
                 id,
                 names: vec![label.clone()],
                 title: label,
-                subtitle: t_args(
+                subtitle: Some(t_args(
                     "search-window-close-tab-detail",
                     &[
                         ("workspace", workspace.name.as_str().into()),
                         ("strip", strip.name.as_str().into()),
                     ],
-                ),
-                badge: t("search-badge-tab"),
+                )),
+                destinations: Vec::new(),
                 hint: app_hint(&tab.tile),
                 action: WindowAction::CloseTab {
                     group: group_id,
@@ -419,8 +528,13 @@ pub fn window_rows(tree: &DesktopTree, needle: &str) -> Vec<WindowRow> {
                         kind: WindowRowKind::Tab,
                         id,
                         title: tab.title.clone(),
-                        subtitle: focus_detail(strip, group.tabs.len(), multi_strip),
-                        badge: t("search-badge-tab"),
+                        subtitle: multi_strip.then(|| {
+                            t_args(
+                                "search-window-focus-place-strip",
+                                &[("strip", strip.name.as_str().into())],
+                            )
+                        }),
+                        destinations: Vec::new(),
                         names: vec![tab.title.clone()],
                         hint: app_hint(&tab.tile),
                         action: WindowAction::FocusTab {
@@ -436,12 +550,17 @@ pub fn window_rows(tree: &DesktopTree, needle: &str) -> Vec<WindowRow> {
             for tab in &group.tabs {
                 move_rows(
                     &mut rows,
-                    &admit,
-                    verbs,
-                    &tree.workspaces,
-                    workspace,
-                    group_id,
-                    tab,
+                    &|id: &str, _| !searching || exact == id,
+                    &Relocation {
+                        workspaces: &tree.workspaces,
+                        workspace,
+                        group: group_id,
+                        tab,
+                        offered: !searching
+                            || (verbs.relocate && focused == Some(tab.id))
+                            || exact == tab_move_to_id(group_id, tab.id)
+                            || exact == tab_copy_to_id(group_id, tab.id),
+                    },
                 );
             }
         }
@@ -461,27 +580,6 @@ pub fn window_rows(tree: &DesktopTree, needle: &str) -> Vec<WindowRow> {
         }
     }
     rows
-}
-
-/// Where a window is, in the words a person uses for it: the strip only
-/// once there is more than one, the tab count only once it is shared.
-fn focus_detail(strip: &Strip, tabs: usize, multi_strip: bool) -> String {
-    let place = if multi_strip {
-        t_args(
-            "search-window-focus-place-strip",
-            &[("strip", strip.name.as_str().into())],
-        )
-    } else {
-        t("search-window-focus-place")
-    };
-    if tabs > 1 {
-        t_args(
-            "search-window-focus-detail-shared",
-            &[("place", place.into()), ("count", tabs.into())],
-        )
-    } else {
-        place
-    }
 }
 
 /// Changes exactly when the set of window rows can change: the active

@@ -84,4 +84,8 @@ fn migration_still_follows_purpose_and_desktop_has_no_os_purpose_page() {
     journey.migrate = Some(false);
     journey.next().unwrap();
     assert_eq!(journey.page, Page::Storage);
+    journey.page = Page::Destination;
+    journey.next().unwrap();
+    assert_eq!(journey.page, Page::Review);
+    assert_eq!(journey.history, vec![Page::Destination]);
 }

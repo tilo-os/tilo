@@ -88,6 +88,14 @@ impl SetupController {
         }
     }
 
+    /// Record explicit Desktop intent without asserting host support. The live
+    /// Desktop flow remains the authority for release and install availability.
+    pub(crate) fn review_desktop(&mut self) {
+        self.chosen_experience = Some(Experience::Desktop);
+        self.plan.experience = Experience::Desktop;
+        self.page = SetupPage::Review;
+    }
+
     /// Select an experience only when the probed capabilities support it.
     /// Returns whether the choice was accepted.
     pub fn choose_experience(&mut self, experience: Experience) -> bool {

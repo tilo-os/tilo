@@ -11,6 +11,7 @@
 #include "page_automation.h"
 #include "agent_log.h"
 #include "paint_snapshot.h"
+#include "document_size.h"
 #include "fullscreen_state.h"
 #include "audio_pcm.h"
 #include "credential_document.h"
@@ -339,7 +340,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     agent_log_->Attach();
     paint_snapshot_=new tilo::PaintSnapshot(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});
     paint_snapshot_->Attach();
-    auto d=CefDictionaryValue::Create();d->SetBool("native_edit_history",true);d->SetBool("guarded_edit_history",true);d->SetBool("native_caret_text_input",true);d->SetInt("frame_rate",kOffscreenFrameRate);d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event(id_==1?"ready":"tab_ready",d);
+    document_size_=new tilo::DocumentSize(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});
+    document_size_->Attach();
+    auto d=CefDictionaryValue::Create();d->SetBool("native_edit_history",true);d->SetBool("guarded_edit_history",true);d->SetBool("native_caret_text_input",true);d->SetBool("document_size",true);d->SetInt("frame_rate",kOffscreenFrameRate);d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event(id_==1?"ready":"tab_ready",d);
     TraceGeometry("ready",id_);
     browser_->GetHost()->WasHidden(!visible_);
     if(closing) browser_->GetHost()->CloseBrowser(true);
@@ -361,6 +364,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     agent_log_=nullptr;
     if(paint_snapshot_)paint_snapshot_->Detach();
     paint_snapshot_=nullptr;
+    if(document_size_)document_size_->Detach();
+    document_size_=nullptr;
     if(startup_diagnostics_)startup_diagnostics_->Detach();
     startup_diagnostics_=nullptr;
     if(document_scripts_)document_scripts_->Detach();
@@ -455,7 +460,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       }
       return;
     }
-    if(type==PET_VIEW) { stale_paint_recovery_pending_=false;pixels_.assign(static_cast<const char*>(buffer),size);pixel_width_=width;pixel_height_=height; }
+    if(type==PET_VIEW) { stale_paint_recovery_pending_=false;pixels_.assign(static_cast<const char*>(buffer),size);pixel_width_=width;pixel_height_=height;if(document_size_)document_size_->Painted(); }
     else { popup_.assign(static_cast<const char*>(buffer),size);popup_width_=width;popup_height_=height; }
     EmitFrame();
   }
@@ -690,6 +695,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     }
     else if(op=="paint_capture") paint_snapshot_->Capture(d);
     else if(op=="paint_resource") paint_snapshot_->Resource(d);
+    else if(op=="document_size") document_size_->Enable(d->GetBool("enabled"));
     else if(op=="try_close_tab") {DetachVisible();}
     else if(op=="close_tab") {CloseNative();}
     else if(op=="navigate") {TraceGeometry("navigate-load-url",id_);frame->LoadURL(d->GetString("url"));}
@@ -1123,6 +1129,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   CefRefPtr<tilo::PageAutomation> page_automation_;
   CefRefPtr<tilo::AgentLog> agent_log_;
   CefRefPtr<tilo::PaintSnapshot> paint_snapshot_;
+  CefRefPtr<tilo::DocumentSize> document_size_;
   CefRefPtr<tilo::Capabilities> capabilities_;
   CefRefPtr<tilo::StartupDiagnostics> startup_diagnostics_;
   CefRefPtr<tilo::DocumentScripts> document_scripts_,composition_scripts_;std::vector<CefRefPtr<CefDictionaryValue>> pending_navigation_;
@@ -1386,6 +1393,11 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     auto styles=d->GetList("styles");if(!styles->GetSize() || styles->GetSize()>64)return false;
     for(size_t i=0;i<styles->GetSize();++i)if(styles->GetType(i)!=VTYPE_STRING || styles->GetString(i).empty() || styles->GetString(i).length()>64)return false;
     return true;
+  }
+  if(op=="document_size") {
+    CefDictionaryValue::KeyList keys;d->GetKeys(keys);
+    for(const auto& key:keys)if(key!="op" && key!="tab" && key!="enabled")return false;
+    return type("enabled",VTYPE_BOOL);
   }
   if(op=="paint_resource") return type("request_id",VTYPE_INT) && d->GetInt("request_id")>0 && type("url",VTYPE_STRING) && !d->GetString("url").empty() && d->GetString("url").length()<=1048576;
   if(op=="devtools_call") {

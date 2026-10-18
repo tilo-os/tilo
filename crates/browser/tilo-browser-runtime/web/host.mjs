@@ -18,7 +18,7 @@ import {createSemanticPresentation} from './semantic-presentation.mjs';
 export {createPanorama} from './panorama.mjs';
 import {createLegacyWindows} from './legacy-windows.mjs';
 import {createNodeApps} from './node-apps.mjs';
-import {createNativeCatalogueBridge, invokeRoomMembership} from './native-catalogue.mjs';
+import {createNativeCatalogueBridge, invokeRoomMembership, runRoomAction} from './native-catalogue.mjs';
 import {isWebKit,webgpuRefusal} from './webgpu-safety.mjs';
 import {browserSettings} from './browser-locale.mjs';
 // Page host for the Tilo browser runtime. Ported from the Tilo browser runtime
@@ -187,7 +187,7 @@ export async function mountDesktop(target,options={}) {
     if(closed||crashed||!registry.current(token))return;
     const state=JSON.parse(raw);if(state.clipboard){report(state);return;}
     nativeCatalogue.pump();
-    for(const request of state.hostRequests??[]){if(request==='invite')options.onInvite?.();else if(request?.action)options.onHostAction?.(request.action);else if(typeof request?.named==='string')options.onHostAction?.('set-name',request.named);}
+    for(const request of state.hostRequests??[]){if(request==='invite')options.onInvite?.();else if(request?.action)options.onHostAction?.(request.action);else if(typeof request?.named==='string')options.onHostAction?.('set-name',request.named);else if(request?.['room-action']){const asked=request['room-action'];void runRoomAction(options.peer?.actions,asked).then(answer=>{if(active())runtime.desktop_room_action_answer(id,asked.id,JSON.stringify(answer));});}}
     if('focusPresence' in state)liveLayer()?.publishPresence({selection:state.focusPresence});
     if('livePlace' in state){livePlace=state.livePlace;liveLayer()?.publishPresence({focus:livePlace?.focus??null,place:livePlace?.place??null});}
     if(!runtimeReady&&['gpu-pending','presented'].includes(state.phase)){

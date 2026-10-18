@@ -28,7 +28,7 @@ fn shot(out: &Path, width: u32, height: u32) {
         )
         .with_app_name("Applications")
         .with_severity(NotificationSeverity::Error)
-        .with_created_at(
+        .with_shown_at(
             Instant::now()
                 .checked_sub(Duration::from_secs(1))
                 .unwrap_or_else(Instant::now),

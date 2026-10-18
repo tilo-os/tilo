@@ -57,6 +57,9 @@ pub struct Breadcrumb {
     last_cursor: Option<Point>,
     /// A click on the trail's empty space asks to edit the path.
     on_edit_requested: Option<Box<dyn FnMut()>>,
+    /// A click on the `…` hands the hidden segments and the `…`'s rect to
+    /// the host, to offer them in a menu.
+    on_overflow: Option<Box<dyn FnMut(Vec<usize>, Rect)>>,
     rect: Rect,
 }
 
@@ -74,8 +77,18 @@ impl Breadcrumb {
             root_icon: None,
             last_cursor: None,
             on_edit_requested: None,
+            on_overflow: None,
             rect: Rect::ZERO,
         }
+    }
+
+    /// Called with the indices of the segments the `…` stands for, and its
+    /// rect, when the person clicks it: the host offers them in a menu, so
+    /// no ancestor of a deep path is out of reach.
+    #[must_use]
+    pub fn on_overflow<F: FnMut(Vec<usize>, Rect) + 'static>(mut self, f: F) -> Self {
+        self.on_overflow = Some(Box::new(f));
+        self
     }
 
     /// Lead the first segment with `icon` (a drive, Home). It belongs to
@@ -206,6 +219,17 @@ impl Breadcrumb {
         self.cached_visible = labels;
         self.segment_rects = rects;
         self.visible_origin = origin;
+    }
+
+    /// Each painted segment's rect with the index of the segment it shows,
+    /// as laid out at the last paint; the inert `…` is left out. For a host
+    /// that makes the trail a drop target.
+    pub fn segment_rects(&self) -> Vec<(usize, Rect)> {
+        self.visible_origin
+            .iter()
+            .zip(self.segment_rects.iter())
+            .filter_map(|(origin, rect)| origin.map(|index| (index, *rect)))
+            .collect()
     }
 
     /// The room the root icon takes before the first label, with its gap.
@@ -339,10 +363,11 @@ impl Widget for Breadcrumb {
             .zip(self.visible_origin.iter())
             .enumerate()
         {
-            // Ellipsis (orig == None) is treated as dim/idle.
+            // The ellipsis lights up under the pointer only when it opens a
+            // menu (it latches hover only then).
             let color = match orig {
                 Some(idx) if idx == active_origin => text_primary,
-                Some(_) if Some(i) == self.hover_idx => accent,
+                _ if Some(i) == self.hover_idx => accent,
                 _ => text_dim,
             };
             if orig.is_none() {
@@ -400,8 +425,13 @@ impl Widget for Breadcrumb {
                     }
                     // Only clickable segments latch hover — the active
                     // segment and the ellipsis are inert.
-                    match self.visible_origin.get(i).copied().flatten() {
-                        Some(idx) if idx != active_origin => {
+                    match self.visible_origin.get(i).copied() {
+                        Some(Some(idx)) if idx != active_origin => {
+                            new_hover = Some(i);
+                            break;
+                        }
+                        // The `…` is a control when the host offers a menu.
+                        Some(None) if self.on_overflow.is_some() => {
                             new_hover = Some(i);
                             break;
                         }
@@ -424,6 +454,17 @@ impl Widget for Breadcrumb {
                     if let Some(cb) = self.on_navigate.as_mut() {
                         cb(orig);
                     }
+                    *ctx.handled = true;
+                } else if let Some(hover_idx) = self.hover_idx
+                    && self.visible_origin.get(hover_idx).copied() == Some(None)
+                    && let Some(rect) = self.segment_rects.get(hover_idx).copied()
+                    && let Some(cb) = self.on_overflow.as_mut()
+                {
+                    let shown: Vec<usize> = self.visible_origin.iter().flatten().copied().collect();
+                    let hidden = (0..self.segments.len())
+                        .filter(|index| !shown.contains(index))
+                        .collect();
+                    cb(hidden, rect);
                     *ctx.handled = true;
                 } else if let Some(point) = self.last_cursor
                     && self.in_empty_space(point)

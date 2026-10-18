@@ -284,6 +284,20 @@ fn child_command(config: &Config, dir: &Path) -> Result<Command> {
     if let Some(entry) = &persistent.web_entry {
         command.arg("--web-entry").arg(entry);
     }
+    if let Some(header) = &persistent.country_header {
+        // The relay's peers are the ingress (the trusted proxies) or, behind
+        // this service's TLS front, this machine.
+        let mut proxies = persistent.trusted_proxies.to_string();
+        if !proxies.is_empty() {
+            proxies.push(',');
+        }
+        proxies.push_str("127.0.0.0/8,::1");
+        command
+            .arg("--country-header")
+            .arg(header)
+            .arg("--country-proxies")
+            .arg(proxies);
+    }
     command
         .arg("--persistent")
         .arg(&persistent.name)
@@ -618,6 +632,11 @@ impl Persistent {
         Err(JoinRefusal::Unavailable)
     }
 
+    /// Whether a relay child is running and has announced itself.
+    pub async fn relay_up(&self) -> bool {
+        self.child.lock().await.is_some()
+    }
+
     pub fn online(&self) -> u32 {
         Self::counted(&self.shared.seats)
     }
@@ -930,6 +949,20 @@ mod tests {
         assert_eq!(answer.invitation, "INV");
         assert_eq!(answer.origin, "https://rooms.example");
         assert_eq!(token_digest(&answer.admission_token), token_sha256);
+    }
+
+    #[tokio::test]
+    async fn the_relay_is_up_while_its_child_serves_and_not_once_it_ends() {
+        let (persistent, relay, _dir) = persistent(200, 1000).await;
+        assert!(persistent.relay_up().await);
+        drop(relay);
+        for _ in 0..500 {
+            if !persistent.relay_up().await {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("the relay still counts as up after its child ended");
     }
 
     #[tokio::test]

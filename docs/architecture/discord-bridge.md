@@ -266,6 +266,25 @@ Discord.
 of that hour. With 60 bits and a 10-minute window, guessing a code is not
 practical. The limit keeps the log quiet.
 
+The person does this from their profile card or from Settings → External
+Accounts, without opening the connector's window. Both list "Linked accounts"
+for every service the room is connected to (`tilo_app::linked_accounts`).
+The connector's code stays on the room's host: `my-link`, `link-account` and
+`unlink-mine` are effects any member may ask the host to run for themselves
+(`#[effect(member)]`). The host runs them as that member, and the page needs
+none of the connector's code. `my-link` answers whether the record is
+connected to a server, the reader's linked account by name (username, and
+display name when it differs), and the actions that link and unlink it.
+`link-account` makes the code on the host, records only its hash with
+`begin-link` and answers the code to the asking device alone, which shows it
+in a monospace chip with a Copy button under "In Discord, type /link with this
+code. It works for 10 minutes." `unlink-mine` unlinks the invoker's own
+account.
+
+The worker reads each `/link` author's username and display name off the
+interaction. `complete-link` records them in the `Link`, and `rename-link`
+updates them when a member event shows newer ones.
+
 ### Roles
 
 By default the bridge touches no role and no permission. With `map_roles`,

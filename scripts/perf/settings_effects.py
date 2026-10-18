@@ -3,18 +3,20 @@
 Contract: settled normal Network pane, wide visible sidebar, empty initial
 search. Warmup may focus by clicking the actual field or hover it. All edits
 alternate 'z'/Backspace. Results below are a fixed fixture contract sourced from
-apps/settings/src/categories.rs (ALL, slug, keywords, subtitle) and sidebar.rs.
+crates/system/settings-store/src/index.rs and its Fluent catalogues, through
+apps/settings/src/sidebar.rs and NavList's word-start search.
 Changing the catalogue requires explicitly reviewing this contract.
 """
 import json
 import math
 import re
 
-ALL_CATEGORIES = ('network','bluetooth','devices_sync','sound','speakers','displays','keyboard',
-    'keyboard_shortcuts','printers','appearance','accessibility','pointing','spelling','notifications','default-apps',
-    'storage','power','time_date','users','region_formats','external_accounts','agent_models',
-    'permissions','updates','about')
-Z_CATEGORIES = ('keyboard','appearance','accessibility','time_date')
+ALL_CATEGORIES = ('network','bluetooth','devices_sync','appearance','accessibility',
+    'notifications','default-apps','spelling','region_formats','time_date','displays','sound',
+    'speakers','keyboard','pointing','keyboard_shortcuts','printers','power','users',
+    'external_accounts','agent_models','permissions','storage','updates','about')
+Z_CATEGORIES = ('devices_sync','appearance','accessibility','notifications','default-apps',
+    'region_formats','time_date','displays','pointing','power')
 _STABLE = ('app','search_id','ready','search_rect','root_rect','selected_category','narrow',
            'sidebar_open','document_root','document_actor','document_witness_kind','effective_document_heads')
 
@@ -36,7 +38,7 @@ def _number(value):
 
 def _state(state):
     if (not isinstance(state,dict) or any(k not in state for k in _STABLE)
-        or state['app']!='dev.tilo.settings' or state['search_id']!='settings.search'
+        or state['app']!='so.tilo.settings' or state['search_id']!='settings.search'
         or state['ready'] is not True or state['selected_category']!='network'
         or state['narrow'] is not False or state['sidebar_open'] is not True
         or state['document_witness_kind']!='effective_heads_on_disposable_clone'

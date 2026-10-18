@@ -5,11 +5,16 @@
 //! the program loops over, one per verb to invoke. `link-account` and `set-bot-token` are a person's:
 //! the first makes a code for `/link` on this device and stores only its
 //! hash, the second keeps the bot token in the host's secret store.
+//! `my-link` tells the person reading it whether they linked their account,
+//! which the profile card and Settings show
+//! ([`ui::linked_accounts`]).
 
 use serde_json::{Value, json};
 use ui::framework::{EffectAnswer, EffectCx, Effected};
-use ui::tilo_resource::{self, Effect};
+use ui::linked_accounts::{AccountName, LinkCode, Reading};
+use ui::tilo_resource::{self, Effect, Id};
 
+use crate::locales::CATALOG;
 use crate::outbound::Context;
 use crate::record::Guild;
 use crate::{bridge, link};
@@ -21,9 +26,22 @@ pub enum DiscordEffect {
     /// Link my Discord account
     ///
     /// Makes a one-time code to send to the bridge with `/link` in Discord.
-    /// Only the code's hash is kept; it expires after ten minutes.
-    #[effect(returns)]
+    /// Only the code's hash is kept; it expires after ten minutes. Any
+    /// member may ask the room's host to make it for them: the code comes
+    /// back to the asking device alone.
+    #[effect(returns, kind = "undoable", member)]
     LinkAccount,
+    /// Read my linked account
+    ///
+    /// Whether this room is bridged to a Discord server, and the Discord
+    /// account the reader linked, if any.
+    #[effect(kind = "read", returns, programmatic, member)]
+    MyLink,
+    /// Unlink my Discord account
+    ///
+    /// Unlinks the Discord account the invoker linked, if any.
+    #[effect(kind = "undoable", member)]
+    UnlinkMine,
     /// Set the bot token
     ///
     /// Keeps the Discord bot token in this host's secret store, where the
@@ -60,7 +78,10 @@ pub enum DiscordEffect {
 #[must_use]
 pub fn plan(guild: &Guild, effect: &DiscordEffect) -> Option<Value> {
     match effect {
-        DiscordEffect::LinkAccount | DiscordEffect::SetBotToken { .. } => None,
+        DiscordEffect::LinkAccount
+        | DiscordEffect::MyLink
+        | DiscordEffect::UnlinkMine
+        | DiscordEffect::SetBotToken { .. } => None,
         DiscordEffect::PlanRoute { event } => Some(json!({
             "message": bridge::route(guild, event),
             "channel": bridge::route_channel(event),
@@ -84,6 +105,35 @@ pub fn plan(guild: &Guild, effect: &DiscordEffect) -> Option<Value> {
     }
 }
 
+/// What [`DiscordEffect::MyLink`] answers `me` at `now_ms`.
+#[must_use]
+pub fn my_link(guild: &Guild, me: Option<&str>, now_ms: i64) -> Reading {
+    let link = me.and_then(|me| guild.links.iter().find(|link| link.person == me));
+    let pending = me
+        .and_then(|me| guild.pending_links.find(&Id::from_raw(me)))
+        .is_some_and(|pending| now_ms <= pending.expires_ms);
+    Reading {
+        service: "Discord".into(),
+        connected: !guild.guild_id.is_empty(),
+        account: link.map(|link| AccountName {
+            user_name: link.user_name.clone(),
+            display_name: link.display_name.clone(),
+        }),
+        pending,
+        link: DiscordEffect::LinkAccount.id().to_owned(),
+        unlink: link.map(|_| DiscordEffect::UnlinkMine.id().to_owned()),
+    }
+}
+
+/// The code `/link` takes, with the line saying what to do with it.
+#[must_use]
+pub fn link_code(code: String) -> LinkCode {
+    LinkCode {
+        instruction: CATALOG.t("discord-link-code"),
+        code,
+    }
+}
+
 /// Answer `effect` for the guild the view shows.
 ///
 /// # Errors
@@ -101,7 +151,31 @@ pub fn answer(effect: DiscordEffect, cx: &mut EffectCx<Guild>) -> EffectAnswer {
             let code = link::new_code();
             cx.dispatcher()
                 .submit(Guild::BEGIN_LINK.with(link::hash(&code)));
-            Ok(Effected::value(serde_json::json!({ "code": code })))
+            Ok(Effected::value(
+                serde_json::to_value(link_code(code)).map_err(|error| error.to_string())?,
+            ))
+        }
+        DiscordEffect::MyLink => {
+            let reading = my_link(
+                &guild,
+                cx.person().as_deref(),
+                tilo_resource::origin_now_ms(),
+            );
+            Ok(Effected::value(
+                serde_json::to_value(reading).map_err(|error| error.to_string())?,
+            ))
+        }
+        DiscordEffect::UnlinkMine => {
+            let me = cx.person();
+            if let Some(link) = guild
+                .links
+                .iter()
+                .find(|link| Some(link.person.as_str()) == me.as_deref())
+            {
+                cx.dispatcher()
+                    .submit(Guild::UNLINK.with(link.discord_user.clone()));
+            }
+            Ok(Effected::done())
         }
         DiscordEffect::SetBotToken { token } => set_bot_token(&token),
         _ => Ok(Effected::done()),

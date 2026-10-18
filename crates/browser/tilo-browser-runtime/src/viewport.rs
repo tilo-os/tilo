@@ -26,7 +26,7 @@ impl SurfaceCaps {
     /// `WebKit`'s GPU process holds every surface and binding of a frame
     /// resident on top of a large fixed cost, under Safari's 600 MB limit.
     /// The scratch and atlas budgets carry most of that saving
-    /// (`conservative_gpu`); the canvas keeps a MacBook's full-screen window
+    /// (`conservative_gpu`); the canvas keeps a laptop's full-screen window
     /// sharp at its Retina scale (a 14-inch panel is 3024 x 1964), and only
     /// larger external displays draw below it.
     pub const CONSERVATIVE: Self = Self {

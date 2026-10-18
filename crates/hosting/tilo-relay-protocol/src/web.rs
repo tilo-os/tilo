@@ -28,6 +28,15 @@
 //! | `/join` | [`JoinStep`](crate::rooms::JoinStep) | [`JoinReply`](crate::rooms::JoinReply) |
 //! | `/here` ([`HERE_PATH`]) | [`HereRequest`] | [`HereReply`]; `400` out of bounds, `403` when not admitted |
 //! | `/channel-keys` ([`CHANNEL_KEYS_PATH`]) | [`ChannelKeysRequest`] | [`ChannelKeys`]; `403` when not admitted |
+//! | `/workspace-join` ([`WORKSPACE_JOIN_PATH`]) | `tilo_workspace_join::JoinTransportRequest` | `JoinTransportResponse` |
+//!
+//! `/workspace-join` is the host's workspace join exchange, the one its
+//! iroh endpoint serves on the workspace-join ALPN, for a native device that
+//! reaches the host over HTTPS only: it takes and answers exactly the
+//! requests and responses the iroh exchange does. Over iroh the transport
+//! authenticates the requesting device; here each request is bound to the
+//! device it names, whose signature its proof carries, as `/join` binds a
+//! page's steps.
 //!
 //! A host started without a certificate serves only `/install` until it has
 //! one: the body is the root-signed `DeviceCert` for its device key as JSON
@@ -39,8 +48,9 @@
 //! node, the key of the session beside it, which the root certifies at the
 //! same time as one of the person's devices.
 //!
-//! `/join` is the one route after `/certify` a device calls without a
-//! session: a person a host does not know yet joins through it. Routes after
+//! `/join` and `/workspace-join` are the routes after `/certify` a device
+//! calls without a session: a person a host does not know yet joins through
+//! them. Routes after
 //! the handshake carry the session token in
 //! [`SESSION_HEADER`] (lowercase hex). A `401` means the session is gone:
 //! the device runs the handshake again, resubscribes and resends its outbox.
@@ -399,6 +409,9 @@ pub fn live_room(workspace_id: u64) -> String {
 /// spectator person is answered, only in a public room and only while it is
 /// subscribed; a member is admitted to a channel by its steward instead.
 pub const CHANNEL_KEYS_PATH: &str = "/channel-keys";
+
+/// The route of the host's workspace join exchange over HTTPS.
+pub const WORKSPACE_JOIN_PATH: &str = "/workspace-join";
 
 /// The record whose channel's content keys a spectator asks for.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
