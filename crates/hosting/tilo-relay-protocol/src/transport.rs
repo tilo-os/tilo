@@ -18,10 +18,10 @@
 use iroh_base::EndpointAddr;
 use serde::{Deserialize, Serialize};
 
-/// ALPN identifier for the relay protocol. Frozen wire ABI —
-/// bumping this string means every already-deployed relay + client
-/// stops talking to the new version. Change only via a v2 side-by-
-/// side rollout.
+/// ALPN of the relay stream. It never changes: the peer protocol version
+/// is the handshake's first field, so a device at another version is told so
+/// there, and there is one framing per version
+/// (docs/architecture/compatibility.md).
 pub const ALPN: &[u8] = b"tilo-relay/1";
 /// Authenticated one-shot discovery of direct filesystem endpoints.
 pub const DISCOVERY_ALPN: &[u8] = b"tilo-relay-discovery/2";

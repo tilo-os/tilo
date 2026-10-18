@@ -2,7 +2,7 @@
 //!
 //! After the same [`auth`](crate::auth) handshake an iroh peer runs, the
 //! host starts [`run_peer_until`](crate::peer::run_peer_until) over an in-process duplex
-//! stream, exactly as for a `tilo-relay/1` stream. `/send` writes the
+//! stream, framed exactly as a relay stream. `/send` writes the
 //! browser's envelopes into that stream; a pump reads the host's envelopes
 //! out into an event log that `/events` serves from a host-MAC'd cursor and
 //! trims on acknowledgement. Subscribe, commit ordering, store-and-forward,
@@ -266,9 +266,14 @@ impl Sessions {
             }
         });
         tokio::spawn(async move {
-            let mut reader = crate::frame::FrameReader::new(browser_read);
-            while let Ok(Some(envelope)) = reader.read_next().await {
-                let mut envelope = envelope;
+            let mut reader = tilo_delivery_protocol::transport_v2::SessionReader::new(browser_read);
+            while let Ok(Some(frame)) = reader.read_next().await {
+                // The browser's carrier takes state; a private frame never
+                // reaches it, because it never enables actions.
+                let tilo_delivery_protocol::transport_v2::EnvelopeV2::State(mut envelope) = frame
+                else {
+                    continue;
+                };
                 loop {
                     let drained = pumped.drained.notified();
                     match pumped.admit(envelope) {
@@ -312,7 +317,7 @@ impl Sessions {
         let mut bytes = Vec::new();
         for envelope in &envelopes {
             bytes.extend(
-                crate::frame::encode(envelope)
+                tilo_delivery_protocol::transport_v2::encode_state(envelope)
                     .map_err(|error| SessionError::Refused(error.to_string()))?,
             );
         }

@@ -229,7 +229,7 @@ impl Recovery {
             let expected = (*delivery.envelope).clone();
             let mut wire = Vec::new();
             self.fixture.write(delivery, &mut wire).await;
-            let mut reader = SessionReader::new(wire.as_slice(), true);
+            let mut reader = SessionReader::new(wire.as_slice());
             assert_eq!(
                 reader.read_next().await.unwrap(),
                 Some(EnvelopeV2::State(expected.clone()))
@@ -424,7 +424,7 @@ async fn partial_recovery_failure(invalidate_source: bool, count: usize) {
     );
     let mut wire = Vec::new();
     Box::pin(case.fixture.replay_to(&mut wire)).await.unwrap();
-    let mut reader = SessionReader::new(wire.as_slice(), true);
+    let mut reader = SessionReader::new(wire.as_slice());
     let mut frames = Vec::new();
     let mut ready = 0_u32;
     while let Some(frame) = reader.read_next().await.unwrap() {
@@ -506,7 +506,7 @@ async fn recovery_gc(count: usize) {
         let expected = (*delivery.envelope).clone();
         let mut wire = Vec::new();
         case.fixture.write(delivery, &mut wire).await;
-        let mut reader = SessionReader::new(wire.as_slice(), true);
+        let mut reader = SessionReader::new(wire.as_slice());
         assert_eq!(
             reader.read_next().await.unwrap(),
             Some(EnvelopeV2::State(expected.clone()))
@@ -608,7 +608,7 @@ async fn active_recovery(count: usize) {
     drop(ready_release);
     let (rx, wire) = replay.await.unwrap();
     let mut rx = rx.unwrap();
-    let mut reader = SessionReader::new(wire.as_slice(), true);
+    let mut reader = SessionReader::new(wire.as_slice());
     let mut frames = Vec::new();
     let mut ready = 0_u32;
     while let Some(frame) = reader.read_next().await.unwrap() {

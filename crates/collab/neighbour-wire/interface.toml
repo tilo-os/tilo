@@ -5,7 +5,7 @@
 # Device ↔ device: the certified handshake, the relay session's frames and
 # the peer-sync messages they carry between two devices and their hosts.
 name = "peer"
-version = 2
+version = 3
 version_const = "crates/collab/neighbour-wire/src/lib.rs:PEER_PROTOCOL_VERSION"
 encoding = "postcard"
 served_to_apps = false

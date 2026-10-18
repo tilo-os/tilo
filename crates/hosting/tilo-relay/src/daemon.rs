@@ -31,7 +31,7 @@ use crate::config::{PeerRelayConfig, RelayConfig, WorkspaceBinding};
 use crate::handshake::{EndpointTrust, HandshakeError, LiveIdentity};
 use crate::metrics::Metrics;
 use crate::peer::{
-    PeerContext, WorkspaceAutobind, WorkspaceRegistry, get_or_autobind_workspace, run_peer_version,
+    PeerContext, WorkspaceAutobind, WorkspaceRegistry, get_or_autobind_workspace, run_peer,
 };
 use crate::policy::TrustPolicy;
 use crate::transport::{
@@ -823,7 +823,6 @@ impl Relay {
             app_serving
         };
         let handler = RelayProtocol {
-            protocol: crate::peer::SessionProtocol::V1,
             workspaces: workspaces.clone(),
             trust_policy: live_trust_policy.clone(),
             identity: live.clone(),
@@ -934,41 +933,6 @@ impl Relay {
             handler.compactor.steward_with(Arc::new(rooms.clone()));
         }
         let mut router = Router::builder(endpoint.clone())
-            .accept(
-                tilo_delivery_protocol::transport_v2::ALPN_CODED_DELTA_V1,
-                RelayProtocol {
-                    protocol: crate::peer::SessionProtocol::CODED_DELTA,
-                    ..handler.clone()
-                },
-            )
-            .accept(
-                tilo_delivery_protocol::transport_v2::ALPN_PRESENCE_BATCH_V1,
-                RelayProtocol {
-                    protocol: crate::peer::SessionProtocol::PRESENCE_BATCH,
-                    ..handler.clone()
-                },
-            )
-            .accept(
-                tilo_delivery_protocol::transport_v2::ALPN_COMPACT_STATE_V1,
-                RelayProtocol {
-                    protocol: crate::peer::SessionProtocol::COMPACT_STATE,
-                    ..handler.clone()
-                },
-            )
-            .accept(
-                tilo_delivery_protocol::transport_v2::ALPN_SIGNED_ACTIONS_V1,
-                RelayProtocol {
-                    protocol: crate::peer::SessionProtocol::SIGNED_ACTIONS,
-                    ..handler.clone()
-                },
-            )
-            .accept(
-                tilo_delivery_protocol::transport_v2::ALPN_AGENT_READS_V1,
-                RelayProtocol {
-                    protocol: crate::peer::SessionProtocol::V2,
-                    ..handler.clone()
-                },
-            )
             .accept(ALPN, handler)
             .accept(crate::certify::CERTIFY_ALPN, certification);
         if startup_mode == RelayStartupMode::CertifiedHost {
@@ -1599,17 +1563,7 @@ async fn bind_endpoint(
 }
 
 fn validate_additional_alpn(alpn: &[u8]) -> Result<(), RelayError> {
-    let reserved: &[&[u8]] = &[
-        ALPN,
-        tilo_delivery_protocol::transport_v2::ALPN_AGENT_READS_V1,
-        tilo_delivery_protocol::transport_v2::ALPN_SIGNED_ACTIONS_V1,
-        tilo_delivery_protocol::transport_v2::ALPN_COMPACT_STATE_V1,
-        tilo_delivery_protocol::transport_v2::ALPN_PRESENCE_BATCH_V1,
-        tilo_delivery_protocol::transport_v2::ALPN_CODED_DELTA_V1,
-        DISCOVERY_ALPN,
-        MANAGEMENT_ALPN,
-        COMPUTE_ALPN,
-    ];
+    let reserved: &[&[u8]] = &[ALPN, DISCOVERY_ALPN, MANAGEMENT_ALPN, COMPUTE_ALPN];
     if alpn.is_empty() {
         return Err(RelayError::ProtocolRegistration(
             "additional ALPN must not be empty".into(),
@@ -2283,8 +2237,6 @@ fn validate_native_interactive_workspace_identity(
 /// The `ProtocolHandler` iroh wires to the ALPN.
 #[derive(Clone)]
 pub(crate) struct RelayProtocol {
-    /// What sessions on this ALPN negotiated.
-    pub(crate) protocol: crate::peer::SessionProtocol,
     pub(crate) workspaces: WorkspaceRegistry,
     pub(crate) trust_policy: Arc<std::sync::RwLock<TrustPolicy>>,
     pub(crate) identity: LiveIdentity,
@@ -2705,13 +2657,12 @@ async fn handle_conn(
     ctx.metrics.inc_conns_authed();
 
     // 2. Hand off to the peer loop.
-    let peer_result = Box::pin(run_peer_version(
+    let peer_result = Box::pin(run_peer(
         client_peer,
         connection.clone(),
         recv,
         send,
         ctx.peer_context(),
-        ctx.protocol,
     ))
     .await;
     if let Err(e) = peer_result {
@@ -4175,17 +4126,7 @@ mod tests {
 
     #[test]
     fn additional_protocol_rejects_relay_owned_alpns() {
-        for alpn in [
-            ALPN,
-            tilo_delivery_protocol::transport_v2::ALPN_AGENT_READS_V1,
-            tilo_delivery_protocol::transport_v2::ALPN_SIGNED_ACTIONS_V1,
-            tilo_delivery_protocol::transport_v2::ALPN_COMPACT_STATE_V1,
-            tilo_delivery_protocol::transport_v2::ALPN_PRESENCE_BATCH_V1,
-            tilo_delivery_protocol::transport_v2::ALPN_CODED_DELTA_V1,
-            DISCOVERY_ALPN,
-            MANAGEMENT_ALPN,
-            COMPUTE_ALPN,
-        ] {
+        for alpn in [ALPN, DISCOVERY_ALPN, MANAGEMENT_ALPN, COMPUTE_ALPN] {
             assert!(matches!(
                 validate_additional_alpn(alpn),
                 Err(RelayError::ProtocolRegistration(_))

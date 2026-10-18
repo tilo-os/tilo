@@ -224,7 +224,7 @@ impl<'s, W: tokio::io::AsyncWrite + Unpin> SessionWriter<'s, W> {
         tokio::select! {
             biased;
             batch = self.reply_rx.recv() => { self.active = batch; }
-            private = self.private_rx.recv(), if cx.v2 => {
+            private = self.private_rx.recv() => {
                 if let Some(private) = private { write_private(private, cx.peer, cx.session, self.write).await?; self.private_burst = 1; }
             }
             state = self.state_rx.recv(), if live => {

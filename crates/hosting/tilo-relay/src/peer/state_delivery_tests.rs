@@ -116,9 +116,7 @@ async fn writer_boundary(
         metrics: &metrics,
         trust_policy: &policy,
         disconnect: &disconnect,
-        framing: tilo_delivery_protocol::transport_v2::StateFraming::V1,
         presence: None,
-        signed_actions: false,
         private_tx: &private,
         revocations: &revocations,
         live_bridge: None,
@@ -413,9 +411,7 @@ async fn replay_catchup_keeps_selected_activation_pair_without_repeating_baselin
         metrics: &metrics,
         trust_policy: &policy,
         disconnect: &disconnect,
-        framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
         presence: None,
-        signed_actions: false,
         private_tx: &private,
         revocations: &revocations,
         live_bridge: None,
@@ -494,8 +490,7 @@ async fn replay_catchup_keeps_selected_activation_pair_without_repeating_baselin
     ))
     .await
     .unwrap();
-    let mut reader =
-        tilo_delivery_protocol::transport_v2::SessionReader::new(wire.as_slice(), true);
+    let mut reader = tilo_delivery_protocol::transport_v2::SessionReader::new(wire.as_slice());
     let mut frames = Vec::new();
     let ready = loop {
         match reader.read_next().await.unwrap() {
@@ -664,9 +659,7 @@ async fn a_fanned_delivery_skips_the_rooms_lock_until_authority_moves() {
         metrics: &metrics,
         trust_policy: &policy,
         disconnect: &disconnect,
-        framing: tilo_delivery_protocol::transport_v2::StateFraming::V1,
         presence: None,
-        signed_actions: false,
         private_tx: &private,
         revocations: &revocations,
         live_bridge: None,
