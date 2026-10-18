@@ -4589,6 +4589,23 @@ fn post_drive_events(frame_builder: &mut FrameBuilder) -> bool {
     true
 }
 
+/// A staged system update asks for a restart, at most every two days
+/// ([`crate::shell::system_update`]).
+fn post_system_update_asks(frame_builder: &mut FrameBuilder) -> bool {
+    crate::shell::system_update::start();
+    let asks = crate::shell::system_update::drain();
+    if asks.is_empty() {
+        return false;
+    }
+    frame_builder.with_chrome(|chrome| {
+        for ask in asks {
+            chrome.push_notification_full(ask);
+        }
+        chrome.bump();
+    });
+    true
+}
+
 fn post_storage_notices(frame_builder: &mut FrameBuilder) -> bool {
     let notices = crate::shell::storage_notice::drain();
     if notices.is_empty() {
@@ -11800,6 +11817,7 @@ pub fn run() {
         session_changed |= launch_queued_host_apps(&mut state, &mut frame_builder, &session_wake);
         session_changed |= post_codec_pack_notices(&mut frame_builder);
         session_changed |= post_storage_notices(&mut frame_builder);
+        session_changed |= post_system_update_asks(&mut frame_builder);
         session_changed |= post_drive_events(&mut frame_builder);
         run_autostart_once(&frame_builder);
         if let Some(published) = published_room.as_mut() {

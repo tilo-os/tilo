@@ -1,0 +1,15 @@
+[Unit]
+Description=Keep your apps on their newest builds
+
+# Apps update in the background, without a restart: an app that is running
+# keeps its build until it next starts. Hourly, so a build that fits a newly
+# updated system is there soon after the system is.
+[Timer]
+OnStartupSec=15min
+OnUnitInactiveSec=1h
+RandomizedDelaySec=10min
+Persistent=yes
+Unit=tilo-app-update.service
+
+[Install]
+WantedBy=timers.target

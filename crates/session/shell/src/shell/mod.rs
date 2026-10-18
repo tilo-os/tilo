@@ -177,6 +177,7 @@ pub mod state;
 pub mod status;
 pub mod storage_notice;
 pub mod system_sounds;
+pub(crate) mod system_update;
 pub mod tab_binding;
 pub mod tab_documents;
 pub(crate) mod task_review;
