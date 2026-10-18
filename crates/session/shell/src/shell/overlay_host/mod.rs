@@ -442,6 +442,28 @@ struct OverlayInputs {
 
 /// How long a launchpad app card waits for the Applications index to take
 /// in the installed apps after boot before falling back to the launcher.
+/// Whether the focused window is a Wayland client's (a paste reaches it
+/// through the seat) rather than an app running inside the shell.
+fn focused_tab_is_wayland_window(state: &crate::shell::chrome_state::ChromeState) -> bool {
+    let Some(tab) = crate::shell::window_actions::active_tab_id(state) else {
+        return true;
+    };
+    let tree = state.tree();
+    tree.desktop
+        .workspaces
+        .iter()
+        .flat_map(|ws| ws.strips.iter())
+        .flat_map(|strip| strip.window_groups.iter())
+        .flat_map(|group| group.tabs.iter())
+        .find(|candidate| candidate.id == tab)
+        .is_none_or(|tab| {
+            !matches!(
+                tab.tile,
+                crate::shell::state::TileContent::AppPlaceholder { .. }
+            )
+        })
+}
+
 /// Narrowest the permission prompt is drawn over the window that asks: its
 /// label and four answers in one row.
 const PROMPT_MIN_WIDTH: f64 = 640.0;
@@ -1025,6 +1047,10 @@ pub struct ShellOverlayHost {
     /// Clipboard history items chosen to paste since the compositor last
     /// asked ([`Self::take_clipboard_pastes`]).
     clipboard_pastes: Vec<[u8; 32]>,
+    /// Clipboard history choices to paste into an app running inside the
+    /// shell: queued this frame, and ready since the last one
+    /// ([`Self::take_in_process_pastes`]).
+    in_process_pastes: (usize, usize),
     /// A Bluetooth pairing question from the compositor's agent, modal
     /// above the desktop while it waits for the person.
     pairing: crate::bluetooth_prompt::PairingOverlay,
@@ -2569,6 +2595,7 @@ impl ShellOverlayHost {
             window_previews: crate::shell::window_previews::WindowPreviews::default(),
             text_caret: None,
             clipboard_pastes: Vec::new(),
+            in_process_pastes: (0, 0),
             pairing: crate::bluetooth_prompt::PairingOverlay::default(),
             expanded_collaborator: None,
             followed_peer: None,
@@ -3567,6 +3594,16 @@ impl ShellOverlayHost {
         std::mem::take(&mut self.clipboard_pastes)
     }
 
+    /// Clipboard history choices to paste into an app that runs inside the
+    /// shell, ready now: chosen one frame earlier, so the app has the
+    /// keyboard back. The frame loop sends each that app's own paste
+    /// (Ctrl+V), which reads the clipboard the choice just set.
+    pub fn take_in_process_pastes(&mut self) -> usize {
+        let (queued, ready) = self.in_process_pastes;
+        self.in_process_pastes = (0, queued);
+        ready
+    }
+
     /// Make history item `id` the clipboard and close Quick Settings. Opened
     /// to paste (Super+V), the item also goes into the field history was
     /// summoned from, the way choosing it in any clipboard manager does;
@@ -3579,7 +3616,13 @@ impl ShellOverlayHost {
         };
         let mut state = chrome.borrow_mut();
         if state.quick_settings.paste_origin.take().is_some() {
-            self.clipboard_pastes.push(id);
+            if focused_tab_is_wayland_window(&state) {
+                self.clipboard_pastes.push(id);
+            } else {
+                // An app linked into the shell has no Wayland window to
+                // receive a paste; its own paste path is called directly.
+                self.in_process_pastes.0 = self.in_process_pastes.0.saturating_add(1);
+            }
         }
         state.overlays.quick_settings = false;
         state.quick_settings.nav_stack = vec![crate::shell::quick_settings::QsLevel::Root];
