@@ -1373,10 +1373,15 @@ mod predictive_tests {
             acl.grant_read(ME, "/folder/visible.txt");
             let fs = fs.with_acl(acl, ME);
 
-            let bytes = fs.record_index_projection().expect("root record catalog");
-            let projection: fs_protocol::projection::RecordIndexProjectionV1 =
-                serde_json::from_slice(&bytes).unwrap();
-            projection.validate().unwrap();
+            let manifest: fs_protocol::projection::RecordIndexManifestV3 = serde_json::from_slice(
+                &fs.record_index_manifest_v3().expect("root record catalog"),
+            )
+            .unwrap();
+            let projection: fs_protocol::projection::RecordIndexPageV3 = serde_json::from_slice(
+                &fs.record_index_page_v3(&manifest.revision, &manifest.initial_cursor)
+                    .expect("the first page"),
+            )
+            .unwrap();
             assert!(projection.records.iter().any(|entry| {
                 entry.record_id == visible_record && entry.path == "/folder/visible.txt"
             }));
@@ -1422,9 +1427,6 @@ mod predictive_tests {
             )
             .unwrap();
             assert_eq!(second.records.len(), 1);
-            assert!(fs.record_index_projection().is_some_and(
-                |legacy| legacy.len() <= fs_protocol::projection::MAX_RECORD_INDEX_XATTR_BYTES
-            ));
 
             namespace
                 .lock_recover()
