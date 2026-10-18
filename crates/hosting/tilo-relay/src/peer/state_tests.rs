@@ -251,9 +251,7 @@ impl Fixture {
             metrics: &self.metrics,
             trust_policy: &self.source.policy,
             disconnect: &self.recipient_disconnect,
-            framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
             presence: None,
-            signed_actions: false,
             private_tx: &self.private,
             revocations: &self.source.revocations,
             live_bridge: None,
@@ -390,7 +388,7 @@ impl Fixture {
             .expect("checkpoint not delivered");
         let mut wire = Vec::new();
         self.write(delivery, &mut wire).await;
-        let mut reader = SessionReader::new(wire.as_slice(), true);
+        let mut reader = SessionReader::new(wire.as_slice());
         assert_eq!(
             reader.read_next().await.unwrap(),
             Some(EnvelopeV2::State(expected.clone()))
@@ -454,7 +452,7 @@ async fn personal_continuity_latest_only_replay_uses_both_publishers() {
             .remove_subscriber(&fixture.recipient.device_public_key);
         let mut wire = Vec::new();
         Box::pin(fixture.replay_to(&mut wire)).await.unwrap();
-        let mut reader = SessionReader::new(wire.as_slice(), true);
+        let mut reader = SessionReader::new(wire.as_slice());
         let mut checkpoints = Vec::new();
         let mut ready = false;
         while let Some(frame) = reader.read_next().await.unwrap() {
@@ -499,7 +497,7 @@ async fn personal_continuity_newest_replay_preserves_all_retained_receipts() {
         );
         let mut wire = Vec::new();
         Box::pin(fixture.replay_to(&mut wire)).await.unwrap();
-        let mut reader = SessionReader::new(wire.as_slice(), true);
+        let mut reader = SessionReader::new(wire.as_slice());
         let mut replayed = Vec::new();
         while let Some(frame) = reader.read_next().await.unwrap() {
             match frame {
@@ -587,7 +585,7 @@ async fn personal_continuity_unmarked_identical_frame_cannot_replace_marked_succ
     );
     let mut wire = Vec::new();
     Box::pin(fixture.replay_to(&mut wire)).await.unwrap();
-    let mut reader = SessionReader::new(wire.as_slice(), true);
+    let mut reader = SessionReader::new(wire.as_slice());
     let mut replayed = Vec::new();
     while let Some(frame) = reader.read_next().await.unwrap() {
         match frame {
@@ -626,7 +624,7 @@ async fn personal_continuity_unmarked_historical_checkpoint_remains_in_replay() 
     fixture.drained_wait().await;
     let mut wire = Vec::new();
     Box::pin(fixture.replay_to(&mut wire)).await.unwrap();
-    let mut reader = SessionReader::new(wire.as_slice(), true);
+    let mut reader = SessionReader::new(wire.as_slice());
     let mut replayed = Vec::new();
     while let Some(frame) = reader.read_next().await.unwrap() {
         match frame {
@@ -696,7 +694,7 @@ async fn personal_continuity_aborted_replay_selects_newest_pending_receipt() {
         );
         let mut wire = Vec::new();
         Box::pin(fixture.replay_to(&mut wire)).await.unwrap();
-        let mut reader = SessionReader::new(wire.as_slice(), true);
+        let mut reader = SessionReader::new(wire.as_slice());
         let mut replayed = Vec::new();
         while let Some(frame) = reader.read_next().await.unwrap() {
             match frame {
@@ -869,7 +867,7 @@ async fn personal_continuity_caller_cancellation_after_admission_preserves_accep
         fixture.assert_checkpoint_written(&closed).await;
         let mut wire = Vec::new();
         Box::pin(fixture.replay_to(&mut wire)).await.unwrap();
-        let mut reader = SessionReader::new(wire.as_slice(), true);
+        let mut reader = SessionReader::new(wire.as_slice());
         assert_eq!(
             reader.read_next().await.unwrap(),
             Some(EnvelopeV2::State(closed))
@@ -971,7 +969,7 @@ async fn personal_continuity_prefix_revocation_before_promotion_keeps_prior_curr
     );
     let mut wire = Vec::new();
     Box::pin(fixture.replay_to(&mut wire)).await.unwrap();
-    let mut reader = SessionReader::new(wire.as_slice(), true);
+    let mut reader = SessionReader::new(wire.as_slice());
     assert_eq!(
         reader.read_next().await.unwrap(),
         Some(EnvelopeV2::State(initial))
@@ -1257,9 +1255,7 @@ async fn a_commit_is_acknowledged_only_once_it_is_retained() {
         metrics: &fixture.metrics,
         trust_policy: &fixture.source.policy,
         disconnect: &fixture.source.disconnect,
-        framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
         presence: None,
-        signed_actions: false,
         private_tx: &fixture.private,
         revocations: &fixture.source.revocations,
         live_bridge: None,
@@ -1317,9 +1313,7 @@ async fn a_copy_of_a_commit_in_flight_waits_for_it_and_is_not_admitted_again() {
         metrics: &fixture.metrics,
         trust_policy: &fixture.source.policy,
         disconnect: &fixture.source.disconnect,
-        framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
         presence: None,
-        signed_actions: false,
         private_tx: &fixture.private,
         revocations: &fixture.source.revocations,
         live_bridge: None,
@@ -1395,9 +1389,7 @@ async fn two_commits_with_a_burst_of_one(stranger: Option<[u8; 32]>) -> Vec<Opti
         metrics: &fixture.metrics,
         trust_policy: &fixture.source.policy,
         disconnect: &fixture.source.disconnect,
-        framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
         presence: None,
-        signed_actions: false,
         private_tx: &fixture.private,
         revocations: &fixture.source.revocations,
         live_bridge: None,
@@ -1952,9 +1944,7 @@ async fn sync_request_waits_for_owner_capacity_and_rechecks_source() {
                 metrics: &metrics,
                 trust_policy: &source.policy,
                 disconnect: &source.disconnect,
-                framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
                 presence: None,
-                signed_actions: false,
                 private_tx: &private,
                 revocations: &source.revocations,
                 live_bridge: None,
@@ -2061,9 +2051,7 @@ async fn unsubscribed_sync_request_cannot_publish_after_a_replacement_subscribes
         metrics: &fixture.metrics,
         trust_policy: &fixture.source.policy,
         disconnect: &fixture.source.disconnect,
-        framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
         presence: None,
-        signed_actions: false,
         private_tx: &fixture.private,
         revocations: &fixture.source.revocations,
         live_bridge: None,
@@ -2194,9 +2182,7 @@ impl Fixture {
             metrics: &self.metrics,
             trust_policy: &self.source.policy,
             disconnect: &self.recipient_disconnect,
-            framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
             presence: None,
-            signed_actions: false,
             private_tx: &self.private,
             revocations: &self.source.revocations,
             live_bridge: None,
@@ -2505,9 +2491,7 @@ async fn replay_owner_wait_drains_private_replies_and_rechecks_authority() {
                 metrics: &writer.metrics,
                 trust_policy: &writer.source.policy,
                 disconnect: &writer.source.disconnect,
-                framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
                 presence: None,
-                signed_actions: false,
                 private_tx: &writer.private,
                 revocations: &writer.source.revocations,
                 live_bridge: None,
@@ -2532,7 +2516,7 @@ async fn replay_owner_wait_drains_private_replies_and_rechecks_authority() {
             ))
             .await
         });
-        let mut reader = tilo_delivery_protocol::transport_v2::SessionReader::new(read, true);
+        let mut reader = tilo_delivery_protocol::transport_v2::SessionReader::new(read);
         assert_eq!(
             tilo_test_env::within(
                 "private reply stalled behind replay owner capacity",
@@ -2660,9 +2644,7 @@ async fn replay_direct_wait_keeps_replay_live_while_private_delivery_waits_for_i
             metrics: &writer.metrics,
             trust_policy: &writer.source.policy,
             disconnect: &writer.source.disconnect,
-            framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
             presence: None,
-            signed_actions: false,
             private_tx: &writer.private,
             revocations: &writer.source.revocations,
             live_bridge: None,
@@ -2710,7 +2692,7 @@ async fn replay_direct_wait_keeps_replay_live_while_private_delivery_waits_for_i
         panic!("private delivery stopped replay from releasing its authorization lane");
     };
     result.unwrap();
-    let mut reader = SessionReader::new(wire.as_slice(), true);
+    let mut reader = SessionReader::new(wire.as_slice());
     assert!(matches!(
         reader.read_next().await.unwrap(),
         Some(EnvelopeV2::Delivered {
@@ -2797,9 +2779,7 @@ async fn replay_direct_wait_finishes_active_private_frame_before_replay_error() 
             metrics: &writer.metrics,
             trust_policy: &writer.source.policy,
             disconnect: &writer.source.disconnect,
-            framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
             presence: None,
-            signed_actions: false,
             private_tx: &writer.private,
             revocations: &writer.source.revocations,
             live_bridge: None,
@@ -2841,7 +2821,7 @@ async fn replay_direct_wait_finishes_active_private_frame_before_replay_error() 
     release_tx.send(()).unwrap();
     let (result, bytes) = task.await.unwrap();
     assert!(result.is_err());
-    let mut reader = SessionReader::new(bytes.as_slice(), true);
+    let mut reader = SessionReader::new(bytes.as_slice());
     assert_eq!(reader.read_next().await.unwrap(), Some(frame));
     assert!(reader.read_next().await.unwrap().is_none());
 }
@@ -2886,7 +2866,7 @@ async fn detached_replay_catches_up_pending_without_replaying_selected_baseline(
     fixture.drained_wait().await;
     drop(ready_release);
 
-    let mut reader = tilo_delivery_protocol::transport_v2::SessionReader::new(read, true);
+    let mut reader = tilo_delivery_protocol::transport_v2::SessionReader::new(read);
     let mut deltas = Vec::new();
     let ready = loop {
         match reader.read_next().await.unwrap() {
@@ -2979,8 +2959,7 @@ async fn cancelled_before_pending_catchup_preserves_semantic_update_for_reconnec
 
     let mut wire = Vec::new();
     Box::pin(fixture.replay_to(&mut wire)).await.unwrap();
-    let mut reader =
-        tilo_delivery_protocol::transport_v2::SessionReader::new(wire.as_slice(), true);
+    let mut reader = tilo_delivery_protocol::transport_v2::SessionReader::new(wire.as_slice());
     let mut tail = 0;
     loop {
         match reader.read_next().await.unwrap() {
@@ -3141,7 +3120,7 @@ async fn replay_fenced_before_final_ready_never_writes_ready() {
     drop(release);
     let (result, wire) = task.await.unwrap();
     assert!(result.is_err());
-    let mut reader = SessionReader::new(wire.as_slice(), true);
+    let mut reader = SessionReader::new(wire.as_slice());
     while let Some(frame) = reader.read_next().await.unwrap() {
         assert!(
             !matches!(frame, EnvelopeV2::State(Envelope::Ready { .. })),
@@ -3235,9 +3214,7 @@ impl Fixture {
             metrics: &self.metrics,
             trust_policy: &self.source.policy,
             disconnect: &self.recipient_disconnect,
-            framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
             presence: None,
-            signed_actions: false,
             private_tx: &self.private,
             revocations: &self.source.revocations,
             live_bridge: None,
@@ -3458,7 +3435,7 @@ async fn interrupted_second_batch_preserves_entire_replay_until_reconnect() {
     }
     let first_batch_bytes: usize = (0..8)
         .map(|i| {
-            tilo_delivery_protocol::transport_v2::encode_state(&fixture.envelope(i), true)
+            tilo_delivery_protocol::transport_v2::encode_state(&fixture.envelope(i))
                 .unwrap()
                 .len()
         })
@@ -3479,7 +3456,7 @@ async fn interrupted_second_batch_preserves_entire_replay_until_reconnect() {
     );
     let mut wire = Vec::new();
     Box::pin(fixture.replay_to(&mut wire)).await.unwrap();
-    let mut reader = SessionReader::new(wire.as_slice(), true);
+    let mut reader = SessionReader::new(wire.as_slice());
     for i in 0..25 {
         assert_eq!(
             reader.read_next().await.unwrap(),
@@ -3595,9 +3572,7 @@ async fn native_sync_refresh_uses_live_subscribed_source_and_rechecks_execution(
             metrics: &fixture.metrics,
             trust_policy: &source.policy,
             disconnect: &source.disconnect,
-            framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
             presence: None,
-            signed_actions: false,
             private_tx: &fixture.private,
             revocations: &source.revocations,
             live_bridge: None,

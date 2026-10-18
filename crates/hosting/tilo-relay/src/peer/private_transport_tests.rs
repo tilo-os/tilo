@@ -1022,17 +1022,15 @@ async fn reader_buffers_authenticated_checkpoint_suffix_into_one_owner_batch() {
             compactor: None,
             member_limits: None,
         },
-        SessionProtocol::V2,
         std::future::pending::<()>(),
     ));
     let (client_read, mut client_write) = tokio::io::split(client);
-    let mut client_reader = SessionReader::new(client_read, true);
+    let mut client_reader = SessionReader::new(client_read);
     client_write
         .write_all(
-            &tilo_delivery_protocol::transport_v2::encode_state(
-                &Envelope::Subscribe { workspace_id: id },
-                true,
-            )
+            &tilo_delivery_protocol::transport_v2::encode_state(&Envelope::Subscribe {
+                workspace_id: id,
+            })
             .unwrap(),
         )
         .await
@@ -1086,12 +1084,12 @@ async fn reader_buffers_authenticated_checkpoint_suffix_into_one_owner_batch() {
         })
         .collect::<Vec<_>>();
     client_write
-        .write_all(&tilo_delivery_protocol::transport_v2::encode_state(&blocker, true).unwrap())
+        .write_all(&tilo_delivery_protocol::transport_v2::encode_state(&blocker).unwrap())
         .await
         .unwrap();
     for envelope in &envelopes {
         client_write
-            .write_all(&tilo_delivery_protocol::transport_v2::encode_state(envelope, true).unwrap())
+            .write_all(&tilo_delivery_protocol::transport_v2::encode_state(envelope).unwrap())
             .await
             .unwrap();
     }
@@ -1932,16 +1930,14 @@ async fn pipelined_private_requests_backpressure_instead_of_disconnecting() {
         server_read,
         server_write,
         ctx,
-        SessionProtocol::V2,
         std::future::pending::<()>(),
     ));
-    let mut reader = SessionReader::new(replies, true);
+    let mut reader = SessionReader::new(replies);
     requests
         .write_all(
-            &tilo_delivery_protocol::transport_v2::encode_state(
-                &Envelope::Subscribe { workspace_id: id },
-                true,
-            )
+            &tilo_delivery_protocol::transport_v2::encode_state(&Envelope::Subscribe {
+                workspace_id: id,
+            })
             .unwrap(),
         )
         .await
@@ -2067,17 +2063,15 @@ async fn paused_state_private_roundtrip(
             read,
             write,
             ctx,
-            SessionProtocol::V2,
             std::future::pending::<()>(),
         )));
         let (read, mut write) = tokio::io::split(client);
-        let mut reader = SessionReader::new(read, true);
+        let mut reader = SessionReader::new(read);
         write
             .write_all(
-                &tilo_delivery_protocol::transport_v2::encode_state(
-                    &Envelope::Subscribe { workspace_id: id },
-                    true,
-                )
+                &tilo_delivery_protocol::transport_v2::encode_state(&Envelope::Subscribe {
+                    workspace_id: id,
+                })
                 .unwrap(),
             )
             .await
@@ -2124,7 +2118,7 @@ async fn paused_state_private_roundtrip(
             crate::store::test_barrier::install(store.root(), "live-publication-complete");
         let (release, reached) =
             crate::store::test_barrier::install(store.root(), "live-delivery-budget");
-        aw.write_all(&tilo_delivery_protocol::transport_v2::encode_state(&envelope, true).unwrap())
+        aw.write_all(&tilo_delivery_protocol::transport_v2::encode_state(&envelope).unwrap())
             .await
             .unwrap();
         tilo_test_env::within("the retained publication to reach its live budget", reached)
@@ -2151,11 +2145,9 @@ async fn paused_state_private_roundtrip(
         let unsubscribed = matches!(boundary, LagBoundary::Unsubscribed);
         if unsubscribed {
             for frame in [Envelope::Unsubscribe { workspace_id: id }, Envelope::Ping] {
-                bw.write_all(
-                    &tilo_delivery_protocol::transport_v2::encode_state(&frame, true).unwrap(),
-                )
-                .await
-                .unwrap();
+                bw.write_all(&tilo_delivery_protocol::transport_v2::encode_state(&frame).unwrap())
+                    .await
+                    .unwrap();
             }
             tilo_test_env::within("the explicit unsubscribe to complete", async {
                 loop {
@@ -2188,11 +2180,9 @@ async fn paused_state_private_roundtrip(
             }
         })
         .await;
-        bw.write_all(
-            &tilo_delivery_protocol::transport_v2::encode_state(&Envelope::Ping, true).unwrap(),
-        )
-        .await
-        .unwrap();
+        bw.write_all(&tilo_delivery_protocol::transport_v2::encode_state(&Envelope::Ping).unwrap())
+            .await
+            .unwrap();
         let mut frames = Vec::new();
         let mut ready = 0_usize;
         tilo_test_env::within("retained catch-up before the next peer reply", async {
@@ -2289,10 +2279,9 @@ async fn paused_state_private_roundtrip(
             )
             .unwrap();
         aw.write_all(
-            &tilo_delivery_protocol::transport_v2::encode_state(
-                &Envelope::Subscribe { workspace_id: id },
-                true,
-            )
+            &tilo_delivery_protocol::transport_v2::encode_state(&Envelope::Subscribe {
+                workspace_id: id,
+            })
             .unwrap(),
         )
         .await
@@ -2302,7 +2291,7 @@ async fn paused_state_private_roundtrip(
             Some(EnvelopeV2::State(pending))
         );
     } else {
-        aw.write_all(&tilo_delivery_protocol::transport_v2::encode_state(&envelope, true).unwrap())
+        aw.write_all(&tilo_delivery_protocol::transport_v2::encode_state(&envelope).unwrap())
             .await
             .unwrap();
     }
@@ -2310,7 +2299,7 @@ async fn paused_state_private_roundtrip(
     if held_cleanup {
         for _ in 0..if full_backlog { 64 } else { 12 } {
             aw.write_all(
-                &tilo_delivery_protocol::transport_v2::encode_state(&Envelope::Ping, true).unwrap(),
+                &tilo_delivery_protocol::transport_v2::encode_state(&Envelope::Ping).unwrap(),
             )
             .await
             .unwrap();
@@ -2552,20 +2541,16 @@ async fn capability_control_lookahead(reply_wait: bool, control: u8) {
                 compactor: None,
                 member_limits: None,
             },
-            SessionProtocol::V2,
             std::future::pending::<()>(),
         )));
         let (read, mut write) = tokio::io::split(client);
-        let mut reader = SessionReader::new(read, true);
+        let mut reader = SessionReader::new(read);
         for (position, room) in rooms.iter().enumerate() {
             write
                 .write_all(
-                    &tilo_delivery_protocol::transport_v2::encode_state(
-                        &Envelope::Subscribe {
-                            workspace_id: ids[position],
-                        },
-                        true,
-                    )
+                    &tilo_delivery_protocol::transport_v2::encode_state(&Envelope::Subscribe {
+                        workspace_id: ids[position],
+                    })
                     .unwrap(),
                 )
                 .await
@@ -2626,7 +2611,7 @@ async fn capability_control_lookahead(reply_wait: bool, control: u8) {
             .encode()
             .unwrap(),
         };
-        aw.write_all(&tilo_delivery_protocol::transport_v2::encode_state(&envelope, true).unwrap())
+        aw.write_all(&tilo_delivery_protocol::transport_v2::encode_state(&envelope).unwrap())
             .await
             .unwrap();
         tilo_test_env::within("the state admission membership read", reached)
@@ -2766,12 +2751,9 @@ async fn capability_control_lookahead(reply_wait: bool, control: u8) {
             .unwrap();
     }
     aw.write_all(
-        &tilo_delivery_protocol::transport_v2::encode_state(
-            &Envelope::Subscribe {
-                workspace_id: ids[2],
-            },
-            true,
-        )
+        &tilo_delivery_protocol::transport_v2::encode_state(&Envelope::Subscribe {
+            workspace_id: ids[2],
+        })
         .unwrap(),
     )
     .await
@@ -2786,7 +2768,7 @@ async fn capability_control_lookahead(reply_wait: bool, control: u8) {
     if reply_wait {
         for _ in 0..12 {
             aw.write_all(
-                &tilo_delivery_protocol::transport_v2::encode_state(&Envelope::Ping, true).unwrap(),
+                &tilo_delivery_protocol::transport_v2::encode_state(&Envelope::Ping).unwrap(),
             )
             .await
             .unwrap();
@@ -2959,9 +2941,7 @@ async fn retained_replay_failure_and_duplicate_retirement_are_recoverable() {
         metrics: &metrics,
         trust_policy: &trust,
         disconnect: &disconnect,
-        framing: tilo_delivery_protocol::transport_v2::StateFraming::V1,
         presence: None,
-        signed_actions: false,
         private_tx: &private,
         revocations: &revocations,
         live_bridge: None,
@@ -3085,11 +3065,12 @@ async fn retained_replay_failure_and_duplicate_retirement_are_recoverable() {
     .await
     .unwrap();
     let mut decoded = Vec::new();
-    let mut remaining = wire.as_slice();
-    while !remaining.is_empty() {
-        let length = u32::from_le_bytes(remaining[..4].try_into().unwrap()) as usize;
-        decoded.push(crate::transport::decode(&remaining[4..4 + length]).unwrap());
-        remaining = &remaining[4 + length..];
+    let mut reader = SessionReader::new(wire.as_slice());
+    while let Some(frame) = reader.read_next().await.unwrap() {
+        let EnvelopeV2::State(envelope) = frame else {
+            panic!("a replay carried {frame:?}");
+        };
+        decoded.push(envelope);
     }
     assert_eq!(
         decoded,
@@ -3182,9 +3163,7 @@ async fn fresh_membership_read_releases_routing_lock_and_fences_replaced_session
         metrics: &metrics,
         trust_policy: &trust,
         disconnect: &disconnect,
-        framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
         presence: None,
-        signed_actions: false,
         private_tx: &ap,
         revocations: &revocations,
         live_bridge: None,
@@ -3310,9 +3289,7 @@ async fn authorization_rechecks_certificates_after_blocking_membership_read() {
         metrics: &metrics,
         trust_policy: &trust,
         disconnect: &disconnect,
-        framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
         presence: None,
-        signed_actions: false,
         private_tx: &ap,
         revocations: &revocations,
         live_bridge: None,
@@ -3461,9 +3438,7 @@ async fn revoked_device_remote_action_is_refused() {
         metrics: &metrics,
         trust_policy: &trust,
         disconnect: &disconnect,
-        framing: tilo_delivery_protocol::transport_v2::StateFraming::V1,
         presence: None,
-        signed_actions: false,
         private_tx: &ap,
         revocations: &revocations,
         live_bridge: None,
@@ -3581,9 +3556,7 @@ async fn a_members_actions_served_by_the_host_spend_their_change_budget() {
         metrics: &metrics,
         trust_policy: &trust,
         disconnect: &disconnect,
-        framing: tilo_delivery_protocol::transport_v2::StateFraming::V1,
         presence: None,
-        signed_actions: false,
         private_tx: &ap,
         revocations: &revocations,
         live_bridge: None,
@@ -3721,9 +3694,7 @@ async fn route_private_refuses_an_agent_whose_delegation_expired() {
         metrics: &metrics,
         trust_policy: &trust,
         disconnect: &disconnect,
-        framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
         presence: None,
-        signed_actions: false,
         private_tx: &ap,
         revocations: &revocations,
         live_bridge: None,
@@ -3834,9 +3805,7 @@ async fn replacement_action_capability_requires_enable_then_durable_registration
         metrics: &metrics,
         trust_policy: &trust,
         disconnect: &source_disconnect,
-        framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
         presence: None,
-        signed_actions: false,
         private_tx: &source_private,
         revocations: &revocations,
         live_bridge: None,
@@ -4050,9 +4019,7 @@ async fn bounded_private_queue_for_room_namespace() {
         metrics: &metrics,
         trust_policy: &trust,
         disconnect: &disconnect,
-        framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
         presence: None,
-        signed_actions: false,
         private_tx: &ap,
         revocations: &revocations,
         live_bridge: None,
@@ -4419,9 +4386,7 @@ async fn a_device_presence_frame_rearms_its_live_checkpoint() {
         metrics: &metrics,
         trust_policy: &trust,
         disconnect: &bdis,
-        framing: tilo_delivery_protocol::transport_v2::StateFraming::V1,
         presence: None,
-        signed_actions: false,
         private_tx: &ptx,
         revocations: &revocations,
         live_bridge: None,

@@ -1,4 +1,4 @@
-//! Presence slot coding for [`super::ALPN_PRESENCE_BATCH_V1`].
+//! Presence slot coding for [`super::EnvelopeV2::PresenceBatch`].
 //!
 //! Successive presence messages in one slot — a pointer's moves, a caret's
 //! positions — repeat almost all of their bytes: the author key, the user

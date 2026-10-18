@@ -62,7 +62,6 @@ use replay::{
 #[cfg(test)]
 use replay::{authorize_replay, replay_direct_wait};
 use session::inbound_bytes;
-pub(crate) use session::{SessionProtocol, run_peer_version};
 #[cfg(test)]
 use session::{finish_peer_outcome, private_may_overtake, run_peer_stream};
 pub use session::{run_peer, run_peer_until};
@@ -265,11 +264,6 @@ struct SessionCtx<'a> {
     disconnect: &'a mpsc::Sender<()>,
     own_device_public_key: &'a [u8; 32],
     app_serving: Option<&'a Arc<dyn crate::app_serving::AppServingPlane>>,
-    /// The state-lane framing the session's protocol fixed.
-    framing: tilo_delivery_protocol::transport_v2::StateFraming,
-    /// The session negotiated `ALPN_SIGNED_ACTIONS_V1`: it may receive
-    /// `CertifiedSignedDelivered`. Older sessions never see that variant.
-    signed_actions: bool,
     private_tx: &'a mpsc::Sender<PrivateOutbound>,
     revocations: &'a Arc<std::sync::RwLock<tilo_user_identity::RevocationList>>,
     live_bridge: Option<&'a LiveBridge>,

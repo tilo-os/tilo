@@ -23,8 +23,6 @@ struct SessionLoop<'s, 'a> {
     /// Subscribe replays the reader has handed to the writer and the writer
     /// has not finished; live frames wait while any is pending.
     pending_replays: &'s std::sync::atomic::AtomicUsize,
-    /// The session's state lane is framed v2.
-    v2: bool,
 }
 
 impl<'s, 'a> SessionLoop<'s, 'a> {
@@ -37,7 +35,6 @@ impl<'s, 'a> SessionLoop<'s, 'a> {
             peer,
             session,
             pending_replays,
-            v2: session.framing.is_v2(),
         }
     }
 }
@@ -65,53 +62,7 @@ where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    run_peer_version(peer, connection, read, write, ctx, SessionProtocol::V1).await
-}
-
-/// What a session negotiated through its ALPN.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct SessionProtocol {
-    /// How its state lane is framed.
-    pub(crate) framing: tilo_delivery_protocol::transport_v2::StateFraming,
-    /// It may send device-signed actions and receive them certified.
-    pub(crate) signed_actions: bool,
-}
-
-impl SessionProtocol {
-    /// `tilo-relay/1`.
-    pub(crate) const V1: Self = Self {
-        framing: tilo_delivery_protocol::transport_v2::StateFraming::V1,
-        signed_actions: false,
-    };
-    /// `ALPN_AGENT_READS_V1`.
-    pub(crate) const V2: Self = Self {
-        framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
-        signed_actions: false,
-    };
-    /// `ALPN_SIGNED_ACTIONS_V1`.
-    pub(crate) const SIGNED_ACTIONS: Self = Self {
-        framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
-        signed_actions: true,
-    };
-    /// `ALPN_COMPACT_STATE_V1`: signed actions, and zero-signature deltas
-    /// without their signature.
-    pub(crate) const COMPACT_STATE: Self = Self {
-        framing: tilo_delivery_protocol::transport_v2::StateFraming::Compact,
-        signed_actions: true,
-    };
-    /// `ALPN_PRESENCE_BATCH_V1`: [`Self::COMPACT_STATE`] whose presence may
-    /// arrive slotted and is written batched and slot-coded.
-    pub(crate) const PRESENCE_BATCH: Self = Self {
-        framing: tilo_delivery_protocol::transport_v2::StateFraming::Presence,
-        signed_actions: true,
-    };
-    /// `ALPN_CODED_DELTA_V1`: [`Self::PRESENCE_BATCH`] whose live deltas are
-    /// written coded against the session's previous delta from the same
-    /// author.
-    pub(crate) const CODED_DELTA: Self = Self {
-        framing: tilo_delivery_protocol::transport_v2::StateFraming::CodedDelta,
-        signed_actions: true,
-    };
+    run_peer_stream(peer, read, write, ctx, connection.closed()).await
 }
 
 /// [`run_peer`] over a carrier other than an iroh connection (a browser's
@@ -131,22 +82,7 @@ where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    run_peer_stream(peer, read, write, ctx, SessionProtocol::V1, closed).await
-}
-
-pub(crate) async fn run_peer_version<R, W>(
-    peer: AuthenticatedPeer,
-    connection: iroh::endpoint::Connection,
-    read: R,
-    write: W,
-    ctx: PeerContext,
-    protocol: SessionProtocol,
-) -> Result<(), PeerError>
-where
-    R: tokio::io::AsyncRead + Unpin + Send + 'static,
-    W: tokio::io::AsyncWrite + Unpin + Send + 'static,
-{
-    run_peer_stream(peer, read, write, ctx, protocol, connection.closed()).await
+    run_peer_stream(peer, read, write, ctx, closed).await
 }
 
 // Shared stream driver also exercised with a deterministic in-memory wire.
@@ -159,7 +95,6 @@ pub(super) async fn run_peer_stream<R, W>(
     read: R,
     write: W,
     ctx: PeerContext,
-    protocol: SessionProtocol,
     closed: impl std::future::Future,
 ) -> Result<(), PeerError>
 where
@@ -167,10 +102,6 @@ where
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     tokio::pin!(closed);
-    let SessionProtocol {
-        framing,
-        signed_actions,
-    } = protocol;
     let PeerContext {
         workspaces,
         autobind,
@@ -198,7 +129,7 @@ where
     let (tx, mut rx) = mpsc::channel::<Envelope>(PEER_OUTBOUND_CAPACITY);
     let (state_tx, mut state_rx) = mpsc::channel::<StateDelivery>(PEER_OUTBOUND_CAPACITY);
     let (disconnect_tx, mut disconnect_rx) = mpsc::channel::<()>(1);
-    let mut reader = SessionReader::framed(read, framing);
+    let mut reader = SessionReader::new(read);
     let (private_tx, mut private_rx) = mpsc::channel(PEER_OUTBOUND_CAPACITY);
     // Track our subscriptions so we can unregister on disconnect.
     let mut subscribed: Vec<u64> = Vec::new();
@@ -207,8 +138,7 @@ where
     let mut access_audit = AccessAudit::new();
 
     let connection_live = ConnectionLease(Arc::new(std::sync::atomic::AtomicBool::new(true)));
-    // Every protocol gets its presence coalesced and paced; only a
-    // `tilo-relay/6` session gets it batched and slot-coded.
+    // Presence is coalesced, paced, batched and slot-coded.
     let presence = Arc::new(crate::presence_mailbox::PresenceMailbox::default());
     let session = SessionCtx {
         workspaces: &workspaces,
@@ -223,8 +153,6 @@ where
         disconnect: &disconnect_tx,
         own_device_public_key: &own_device_public_key,
         app_serving: app_serving.as_ref(),
-        framing,
-        signed_actions,
         private_tx: &private_tx,
         revocations: &revocations,
         live_bridge: live_bridge.as_ref(),

@@ -577,15 +577,11 @@ pub(super) async fn write_private_delivery<W: tokio::io::AsyncWrite + Unpin>(
                 let source_certificate = serde_json::to_vec(&delivery.source.cert)
                     .map_err(|_| PeerError::Protocol("certificate encoding failed".into()))?;
                 match &delivery.signed {
-                    // Only a session that negotiated signed actions can decode
-                    // them; an older target gets the unsigned frame it knows.
-                    Some(signed) if session.signed_actions => {
-                        EnvelopeV2::CertifiedSignedDelivered {
-                            action: SignedDirectedAction::clone(signed),
-                            source_certificate,
-                        }
-                    }
-                    _ => EnvelopeV2::CertifiedDelivered {
+                    Some(signed) => EnvelopeV2::CertifiedSignedDelivered {
+                        action: SignedDirectedAction::clone(signed),
+                        source_certificate,
+                    },
+                    None => EnvelopeV2::CertifiedDelivered {
                         action: delivery.action.clone(),
                         source_certificate,
                     },

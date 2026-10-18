@@ -51,9 +51,7 @@ static DEDICATED_SURFACE_FRAMES_RECEIVED: std::sync::atomic::AtomicUsize =
 /// How often the actor retries what is missing (a topic subscription, a
 /// direct peer, a workspace host) and re-reads this device's identity
 /// material and codecs, to announce a change the tick it lands. Local work: a
-/// converged, idle desktop sends nothing on it. Also the cadence of the
-/// heartbeat still sent where an older build listens for one
-/// ([`LEGACY_PEER_WINDOW`]). Armed only while there is something to retry
+/// converged, idle desktop sends nothing on it. Armed only while there is something to retry
 /// or someone to tell ([`ActorState::needs_upkeep`]): a desktop alone with
 /// its rooms never wakes for it.
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
@@ -73,12 +71,6 @@ const PEER_TIMEOUT: Duration = Duration::from_secs(15);
 /// hold with no application message sent while idle; before the transport
 /// carried liveness, both were 15 to 16 s after the last 5 s heartbeat.
 const DEPARTURE_GRACE: Duration = Duration::from_secs(5);
-/// How long after an older, heartbeat-keeping build was last heard on a
-/// topic this device keeps sending it heartbeats, identity and codecs every
-/// [`HEARTBEAT_INTERVAL`]: such a build evicts a peer silent for
-/// [`PEER_TIMEOUT`], and beats every 5 s itself, so three missed beats and
-/// one more mean it is gone. A topic of current builds only is silent.
-const LEGACY_PEER_WINDOW: Duration = Duration::from_secs(20);
 /// How often each workspace host session is asked for a fresh checkpoint
 /// ([`ActorState::run_host_checkpoint_tick`]); armed only while there is a
 /// host session to ask.
@@ -751,9 +743,6 @@ enum HostEvent {
 struct TopicRuntime {
     sender: GossipSender,
     pump: tokio::task::JoinHandle<()>,
-    /// When a build that keeps liveness by heartbeat was last heard on the
-    /// topic (see [`ActorState::run_heartbeat_tick`]).
-    legacy_heard: Option<Instant>,
     /// Fingerprint of the identity material last announced on the topic, so
     /// a renewed certificate or a new revocation goes out the tick it lands
     /// and an unchanged one never does.
@@ -769,17 +758,9 @@ impl TopicRuntime {
         Self {
             sender,
             pump,
-            legacy_heard: None,
             identity_sent: None,
             linked: false,
         }
-    }
-
-    /// Whether a heartbeat-keeping build was heard here recently enough
-    /// that it may still be listening for this device's heartbeat.
-    fn hears_legacy(&self, now: Instant) -> bool {
-        self.legacy_heard
-            .is_some_and(|heard| now.saturating_duration_since(heard) < LEGACY_PEER_WINDOW)
     }
 
     /// Broadcast `bytes` to the topic's swarm, once it has had a neighbour.
@@ -1194,9 +1175,6 @@ struct ActorState {
     /// Fingerprint of the codec advert last announced, so a change goes out
     /// and an unchanged advert never does.
     caps_sent: Option<[u8; 32]>,
-    /// Number of the last heartbeat sent for an older build's sake (see
-    /// [`ActorState::legacy_beat`]).
-    compat_beats: u64,
     /// Remote-action requests that found neither a direct nor a relayed
     /// route. Sent when that peer is next seen on the workspace.
     pending_remote_actions: PendingRemoteActions,
@@ -2029,7 +2007,8 @@ impl ActorState {
                 )
                 .await
                 else {
-                    // An older Tilo peer simply does not negotiate this ALPN.
+                    // A device that does not answer in time is skipped; the
+                    // next snapshot tries it again.
                     continue;
                 };
                 self.personal_fabric_connections
@@ -3089,10 +3068,9 @@ impl ActorState {
                     return;
                 }
                 match decoded {
-                    Ok(beat @ NeighbourMsg::Heartbeat { .. }) => {
-                        if beat.is_timed_heartbeat() {
-                            self.note_legacy_peer(ws).await;
-                        }
+                    // Liveness is the transport's: a heartbeat says only that
+                    // its sender is here.
+                    Ok(NeighbourMsg::Heartbeat { .. }) => {
                         rediscovered.then_some(NetEvent::PeerJoined {
                             ws,
                             peer,
@@ -3509,7 +3487,7 @@ impl ActorState {
 
     /// Retry any topic subscription, direct peer or workspace host not yet
     /// connected, and announce this device's identity and codecs where they
-    /// changed (plus a heartbeat where an older build listens for one).
+    /// changed.
     /// Runs every [`HEARTBEAT_INTERVAL`] while [`Self::needs_upkeep`].
     async fn run_heartbeat_tick(&mut self) {
         for (ws, peer) in self.pending_remote_actions.targets() {
@@ -3555,61 +3533,10 @@ impl ActorState {
         // (a renewed certificate, a new revocation, an H.264-only viewer
         // opening). A converged, idle desktop says nothing.
         let workspaces: Vec<_> = self.topics.keys().copied().collect();
-        for &ws in &workspaces {
+        for ws in workspaces {
             self.announce_identity_if_changed(ws).await;
         }
         self.announce_media_caps_if_changed().await;
-        let now = Instant::now();
-        for ws in workspaces {
-            if self
-                .topics
-                .get(&ws)
-                .is_some_and(|topic| topic.hears_legacy(now))
-            {
-                self.legacy_beat(ws).await;
-            }
-        }
-    }
-
-    /// What an older build on `ws` needs to keep this device a member and
-    /// know what it is: a heartbeat, its identity and its codecs, every
-    /// [`HEARTBEAT_INTERVAL`], as every build once sent everyone. Neighbour
-    /// scoped, since such a build evicts by the link a message arrives over,
-    /// and numbered so that it neither looks like an older build's own beat
-    /// nor repeats bytes gossip would drop as already seen.
-    async fn legacy_beat(&mut self, ws: WorkspaceId) {
-        self.announce_identity(ws).await;
-        self.announce_media_caps(ws).await;
-        self.compat_beats =
-            if self.compat_beats >= NeighbourMsg::COMPAT_HEARTBEAT_TS_LIMIT.saturating_sub(1) {
-                1
-            } else {
-                self.compat_beats.saturating_add(1)
-            };
-        let beat = NeighbourMsg::Heartbeat {
-            peer: crate::network::behaviour::peer_liveness_handle(&self.endpoint.id()),
-            ts: self.compat_beats,
-        };
-        if let (Some(topic), Ok(bytes)) = (self.topics.get(&ws), postcard::to_allocvec(&beat)) {
-            let _ = topic.broadcast_neighbors(Bytes::from(bytes)).await;
-        }
-    }
-
-    /// An older, heartbeat-keeping build beat on `ws`. The first such beat
-    /// in a while answers at once rather than at the next tick: that build
-    /// heard this device last when the link came up, and evicts it after
-    /// [`PEER_TIMEOUT`] of silence.
-    async fn note_legacy_peer(&mut self, ws: WorkspaceId) {
-        let now = Instant::now();
-        let Some(topic) = self.topics.get_mut(&ws) else {
-            return;
-        };
-        let answering = topic.hears_legacy(now);
-        topic.legacy_heard = Some(now);
-        if !answering {
-            tracing::debug!(ws, "an older build beats here; heartbeating for it");
-            self.legacy_beat(ws).await;
-        }
     }
 
     /// The identity announcement this device makes on `ws`: its certificate
@@ -4115,7 +4042,6 @@ async fn run(
         next_personal_transfer_generation: 0,
         tally: Arc::default(),
         caps_sent: None,
-        compat_beats: 0,
         pending_remote_actions: PendingRemoteActions::default(),
         gossip_pointers: PointerPacer::default(),
     };

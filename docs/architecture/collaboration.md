@@ -264,8 +264,8 @@ ledger keeps each receipt as received, never re-encoded.
 
 `crates/hosting/tilo-relay` is the persistent server tier. Despite the retained
 binary name, it is an authenticated Iroh workspace host, not a transport
-relay. Peers prove possession of certified device keys on the `tilo-relay/1`
-ALPN before subscribing.
+relay. Peers prove possession of certified device keys on the relay ALPN
+(`tilo-relay/1`) before subscribing.
 
 Devices talk to a host through `crates/hosting/tilo-relay-session`: the
 session client (`RelayClient`), the co-edit session (`RelayCoeditSession`),
@@ -299,23 +299,23 @@ This gives three deployments without three protocols:
 ## Wire boundaries
 
 - Direct fan-out: deterministic `iroh-gossip` topic derived from workspace id.
-- Persistent host: `tilo-relay/1`, mutually authenticated with device certs.
+- Persistent host: the relay stream, ALPN `tilo-relay/1`, mutually
+  authenticated with device certs. There is one framing on it, at the peer
+  protocol version the handshake's first field names
+  (docs/architecture/compatibility.md); the ALPN never changes, and a device
+  at another version is told so in the handshake.
 - Content: `iroh-blobs` on the filesystem endpoint.
 - Messages: postcard-encoded `NeighbourMsg`; non-ephemeral messages are stored
   by the host as opaque co-edit deltas.
-- Private actions: the v2 envelope (`tilo_delivery_protocol::transport_v2`)
-  on `tilo-relay/3`, and on `tilo-relay/4`, where each action is signed by the
-  device that sends it (below).
-- Compact state: `tilo-relay/5` (`ALPN_COMPACT_STATE_V1`) is `tilo-relay/4`
-  whose co-edit deltas travel as `EnvelopeV2::UnsignedDelta`. A co-edit
-  publisher leaves the outer `Envelope::Delta::signature` all zero, because the
-  session and the payload's own signed op authenticate it, so the field is
-  dropped on the wire: 66 bytes less per keystroke frame and per recipient. Each
-  session's reader restores the same `Envelope::Delta`, so the host stores and
-  routes one value whatever the wire was. A client dials `tilo-relay/5` first and
-  falls back to `/4`, then `/3`, on `no_application_protocol`. A host writes
-  `UnsignedDelta` only to `/5` sessions; older ones get the full envelope they
-  know.
+- Frames: `tilo_delivery_protocol::transport_v2::EnvelopeV2`, state and
+  private actions on one stream, each private action signed by the device
+  that sends it (below).
+- Compact state: a co-edit publisher leaves the outer
+  `Envelope::Delta::signature` all zero, because the session and the
+  payload's own signed op authenticate it, so such a delta travels as
+  `EnvelopeV2::UnsignedDelta`: 66 bytes less per keystroke frame and per
+  recipient. The session reader restores the same `Envelope::Delta`, so the
+  host stores and routes one value whatever the wire was.
 - Presence: the host coalesces, paces and batches the presence it
   forwards, per receiving connection (`tilo_relay::presence_mailbox`).
   Latest-state presence — a pointer, a caret, a selection, the range being
@@ -329,18 +329,16 @@ This gives three deployments without three protocols:
   every change, after a 5 ms batching window; unslotted presence (heartbeats,
   `SyncReq`, arrivals) never coalesced, in order, and never overtaking
   presence posted before it. Deltas never wait for presence. Every presence
-  still travels the state lane it always did, so a client's presence keeps
-  its order. `tilo-relay/6` (`ALPN_PRESENCE_BATCH_V1`) is `/5` on which the
-  host writes each flush as one `EnvelopeV2::PresenceBatch` per room, every
+  travels the state lane, so a client's presence keeps its order. The host
+  writes each flush as one `EnvelopeV2::PresenceBatch` per room, every
   item coded against what that
   session last received in the same slot (kept prefix and suffix, changed
   bytes between): a pointer move costs a few dozen bytes instead of ~236. The
   session reader expands a batch into ordinary `Envelope::Presence` values.
-  Clients dial `/6` first and fall back to `/5`; older sessions get the same
-  coalesced presence, one frame each. A slot can only supersede the same
+  A slot can only supersede the same
   authenticated author's presence, and the host forwards the bytes unchanged.
-- Coded deltas: `tilo-relay/7` (`ALPN_CODED_DELTA_V1`) is `/6` on
-  which the host writes each live zero-signature delta of at most 4 KiB as an
+- Coded deltas: the host writes each live zero-signature delta of at most
+  4 KiB as an
   `EnvelopeV2::CodedDelta`: ranges copied from the last delta that session
   received from the same author on the same route (the delta's leading kind
   and channel bytes) in the same room, and the bytes in between. Two
@@ -350,8 +348,7 @@ This gives three deployments without three protocols:
   `UnsignedDelta` byte for byte and returns the same `Envelope::Delta`;
   signatures inside it verify as before, and the host decodes nothing new.
   Both halves keep at most 64 slots of at most 4 KiB per session. Deltas are
-  never delayed for it. Clients dial `/7` first and fall back to `/6`; older
-  sessions, replays and positions get the frames they always did.
+  never delayed for it. Replays and positions go uncoded.
 - Packets, not frames: a 27 B presence batch costs about 35 B of
   QUIC packet on top, so the host writes whatever goes to one connection
   together in one write where it can. A live delta's write carries its
@@ -413,8 +410,7 @@ action proves nothing: a host that has seen a member's certificate could name
 that member as the source of an action it made up. The hop is authenticated;
 the call must be too.
 
-So on `tilo-relay/4` (`ALPN_SIGNED_ACTIONS_V1`) the sending device's
-`RelayClient` signs every action it sends as itself
+So the sending device's `RelayClient` signs every action it sends as itself
 (`SignedDirectedAction`): domain `tilo-peer-action-v1\0`, its issue time, and
 the exact encoded action (room, request id, source, target, message), with
 the key its certificate names. The host verifies the signature against the
@@ -438,11 +434,8 @@ Refusals carry typed codes (`action_not_authorised`, `unknown_action`,
 `action_confirmation_required`, `invocation_conflict`, …), not one opaque
 string.
 
-Older peers degrade explicitly. A client dials `tilo-relay/4` first and falls
-back to `tilo-relay/3` only on `no_application_protocol`; there it cannot sign,
-so current brokers serve it reads and refuse its effects. A host writes the
-signed variants only to sessions that negotiated `tilo-relay/4` and gives an
-older broker the unsigned frame it knows. Replies from the broker to the caller
+A session that holds no device key (a state-only client) cannot sign, so
+brokers serve it reads and refuse its effects. Replies from the broker to the caller
 are not yet signed end to end: a host can still forge an observation or a
 refusal to the caller, though not an effect at the target.
 

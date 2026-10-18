@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 /// [`NeighbourMsg::IdentityHello`] carries it first, at a variant index that
 /// never changes ([`IDENTITY_HELLO_INDEX`]), so every version reads another
 /// device's number before anything else it says.
-pub const PEER_PROTOCOL_VERSION: u32 = 2;
+pub const PEER_PROTOCOL_VERSION: u32 = 3;
 
 /// [`NeighbourMsg::IdentityHello`]'s postcard variant index, frozen: the one
 /// message every version decodes far enough to learn the sender's
@@ -250,13 +250,9 @@ pub enum NeighbourMsg {
     PermissionRequest { peer: PeerId, capability: String },
     /// `peer` was granted permission `capability`.
     PermissionGrant { peer: PeerId, capability: String },
-    /// Liveness beacon of builds that evict a direct peer after 15 s without
-    /// traffic and beat every 5 s on every joined workspace; `ts` is their
-    /// unix-millis. Current builds keep liveness on the transport and send
-    /// one only to a neighbour of such a build, numbering it with a `ts`
-    /// below [`Self::COMPAT_HEARTBEAT_TS_LIMIT`] so that it is not mistaken
-    /// for one (see [`Self::is_timed_heartbeat`]). `peer` is the hashed Iroh
-    /// `PeerId`.
+    /// A liveness beacon. Liveness is the transport's, so no build sends one
+    /// on its own; a receiver reads one only as a sign that its sender is
+    /// here. `peer` is the hashed Iroh `PeerId`.
     Heartbeat { peer: PeerId, ts: u64 },
     /// Authenticated identity chain for the transport peer on this workspace.
     ///
@@ -573,19 +569,6 @@ impl NeighbourMsg {
             | Self::RecordContentPiece { .. }
             | Self::SurfaceKeyframeRequest { .. } => false,
         }
-    }
-
-    /// A [`Self::Heartbeat`] `ts` below this (September 2001 in unix
-    /// milliseconds) is no time: it numbers a heartbeat a transport-liveness
-    /// build sends only for an older neighbour's sake. No build ever sent a
-    /// real time this early, and none read the field.
-    pub const COMPAT_HEARTBEAT_TS_LIMIT: u64 = 1_000_000_000_000;
-
-    /// Whether this is the timed heartbeat of a build that keeps liveness by
-    /// heartbeat and evicts a peer that stops beating: the sign that its
-    /// neighbours must keep beating too.
-    pub fn is_timed_heartbeat(&self) -> bool {
-        matches!(self, Self::Heartbeat { ts, .. } if *ts >= Self::COMPAT_HEARTBEAT_TS_LIMIT)
     }
 
     /// The variant's name, for diagnostics and traffic tallies. Never a
@@ -1113,23 +1096,6 @@ mod tests {
         message.kind()
     }
 
-    #[test]
-    fn only_a_wall_clock_heartbeat_asks_its_neighbours_to_keep_beating() {
-        let beat = |ts| NeighbourMsg::Heartbeat { peer: 9, ts };
-        // What a heartbeat-keeping build sends: unix milliseconds, October 2026.
-        assert!(beat(1_791_500_000_000).is_timed_heartbeat());
-        // What a transport-liveness build sends such a neighbour: a number.
-        assert!(!beat(1).is_timed_heartbeat());
-        assert!(!beat(NeighbourMsg::COMPAT_HEARTBEAT_TS_LIMIT - 1).is_timed_heartbeat());
-        assert!(
-            !NeighbourMsg::PresenceCleared {
-                peer: 9,
-                key: String::new()
-            }
-            .is_timed_heartbeat()
-        );
-    }
-
     const VARIANT_COUNT: usize = 30;
 
     /// Postcard encodings pinned byte for byte. Peers running older builds
@@ -1184,7 +1150,7 @@ mod tests {
             "identity hello",
             concat!(
                 // The variant index and the sender's peer protocol version.
-                "0b02",
+                "0b03",
                 "01010101010101010101010101010101010101010101010101010101010101",
                 "0102020202020202020202020202020202020202020202020202020202020202",
                 "02064c6170746f70010000000a00400303030303030303030303030303030303",

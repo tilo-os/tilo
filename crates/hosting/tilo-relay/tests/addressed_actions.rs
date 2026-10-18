@@ -1,4 +1,4 @@
-//! Certified relay v2 transport tests. No action executor is installed here.
+//! Certified relay transport tests. No action executor is installed here.
 #![allow(
     clippy::significant_drop_tightening,
     reason = "relays, fixtures and guards deliberately stay alive until each test ends"
@@ -14,9 +14,10 @@
 use crate::common::{TestUser, client_endpoint, spawn_relay};
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
+// USER REQUIREMENT (2026-10-18): "it's fine if we break compat with old versions every few days, people just need to update"
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn v2_alpn_is_explicitly_served() {
-    let user = TestUser::fresh("Relay v2");
+async fn the_relay_stream_has_one_alpn_and_no_older_ones() {
+    let user = TestUser::fresh("Relay");
     let relay = Box::pin(spawn_relay(
         &user,
         user.enrol("relay", DeviceCapabilities::host()),
@@ -24,16 +25,23 @@ async fn v2_alpn_is_explicitly_served() {
         &[],
     ))
     .await;
-    let endpoint = client_endpoint().await;
-    let connection = endpoint
-        .connect(relay.relay.node_addr(), b"tilo-relay/3")
-        .await;
-    assert!(
-        connection.is_ok(),
-        "the v2 carrier requires explicit negotiation: {connection:?}"
-    );
-    endpoint.close().await;
-    let device = user.enrol("negotiated caller", DeviceCapabilities::primary());
+    for retired in [
+        &b"tilo-relay/3"[..],
+        b"tilo-relay/4",
+        b"tilo-relay/5",
+        b"tilo-relay/6",
+        b"tilo-relay/7",
+    ] {
+        let endpoint = client_endpoint().await;
+        let connection = endpoint.connect(relay.relay.node_addr(), retired).await;
+        assert!(
+            connection.is_err(),
+            "{} is not served: a peer at another version is told so in the handshake",
+            String::from_utf8_lossy(retired)
+        );
+        endpoint.close().await;
+    }
+    let device = user.enrol("caller", DeviceCapabilities::primary());
     let client = RelayClient::connect_v2_to_enrolled_home_peer(
         client_endpoint().await,
         relay.relay.node_addr(),
@@ -49,30 +57,6 @@ async fn v2_alpn_is_explicitly_served() {
     assert_eq!(next_state(&client).await, Envelope::Pong);
     client.close().await;
     relay.relay.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn addressed_actions_alpn_is_served_by_the_existing_relay() {
-    let user = TestUser::fresh("Alice");
-    let relay = Box::pin(spawn_relay(
-        &user,
-        user.enrol("relay", DeviceCapabilities::host()),
-        &[7],
-        &[],
-    ))
-    .await;
-    let endpoint = client_endpoint().await;
-    let connection = endpoint
-        .connect(
-            relay.relay.node_addr(),
-            tilo_delivery_protocol::transport_v2::ALPN_AGENT_READS_V1,
-        )
-        .await;
-    assert!(
-        connection.is_ok(),
-        "same relay must serve the private v2 lane: {connection:?}"
-    );
-    endpoint.close().await;
 }
 
 use crate::common::{TestDevice, TestRelay};

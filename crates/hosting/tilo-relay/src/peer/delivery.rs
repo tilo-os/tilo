@@ -7,16 +7,8 @@ use super::{
     trace_native_publication, unix_now_ns,
 };
 
-/// `envelope` in the framing `session` negotiated: on the compact protocol a
-/// zero-signature delta goes without its signature.
-fn encode_for_session(
-    envelope: &Envelope,
-    session: &SessionCtx<'_>,
-) -> Result<Vec<u8>, postcard::Error> {
-    tilo_delivery_protocol::transport_v2::encode_state_framed(envelope, session.framing)
-}
-
-/// [`encode_for_session`] for a frame about to be written, charged to its
+/// `envelope` as the relay stream carries it (a zero-signature delta goes
+/// without its signature), for a frame about to be written, charged to its
 /// room's egress. `live` marks live fan-out (a delta or presence forwarded as
 /// it arrived), as opposed to replay, replies and positions.
 pub(super) fn encode_charged(
@@ -24,7 +16,7 @@ pub(super) fn encode_charged(
     session: &SessionCtx<'_>,
     live: bool,
 ) -> Result<Vec<u8>, postcard::Error> {
-    let frame = encode_for_session(envelope, session)?;
+    let frame = tilo_delivery_protocol::transport_v2::encode_state(envelope)?;
     if let Some(room) = envelope.workspace_id() {
         session
             .metrics
@@ -33,19 +25,17 @@ pub(super) fn encode_charged(
     Ok(frame)
 }
 
-/// A live delta about to be written, charged to its room's live egress: on
-/// `tilo-relay/7` coded against what the session last received from the
-/// same author in the same room (`DeltaEncoder`), otherwise as
-/// [`encode_charged`] writes it. A delta the encoder does not code (signed,
-/// or larger than it keeps) goes whole and changes no slot.
+/// A live delta about to be written, charged to its room's live egress:
+/// coded against what the session last received from the same author in the
+/// same room (`DeltaEncoder`). A delta the encoder does not code (signed, or
+/// larger than it keeps) goes as [`encode_charged`] writes it and changes no
+/// slot.
 fn encode_delta_charged(
     envelope: &Envelope,
     session: &SessionCtx<'_>,
     deltas: &mut tilo_delivery_protocol::transport_v2::DeltaEncoder,
 ) -> Result<Vec<u8>, postcard::Error> {
-    if session.framing.codes_deltas()
-        && let Some(frame) = deltas.encode(envelope)?
-    {
+    if let Some(frame) = deltas.encode(envelope)? {
         if let Some(room) = envelope.workspace_id() {
             session.metrics.add_room_egress(
                 room,
@@ -65,9 +55,9 @@ const PRESENCE_BATCH_ITEMS: usize = 64;
 /// its kind the writer writes, in order, as the reader's half does.
 #[derive(Default)]
 pub(super) struct SessionCoding {
-    /// Presence batches (`tilo-relay/6`, #4006).
+    /// Presence batches.
     pub(super) presence: tilo_delivery_protocol::transport_v2::PresenceEncoder,
-    /// Live deltas (`tilo-relay/7`, #4157).
+    /// Live deltas.
     deltas: tilo_delivery_protocol::transport_v2::DeltaEncoder,
 }
 
@@ -93,10 +83,8 @@ pub(super) async fn write_presence<W: tokio::io::AsyncWrite + Unpin>(
     Ok(())
 }
 
-/// Encode `due` presence for this connection, each room's authorised once:
-/// on `tilo-relay/6` as slot-coded `PresenceBatch` frames, on older
-/// protocols as one `Presence` frame per payload. Charged to each room's
-/// live egress.
+/// Encode `due` presence for this connection, each room's authorised once,
+/// as slot-coded `PresenceBatch` frames. Charged to each room's live egress.
 async fn encode_presence(
     due: Vec<crate::presence_mailbox::DuePresence>,
     slots: &mut tilo_delivery_protocol::transport_v2::PresenceEncoder,
@@ -110,24 +98,14 @@ async fn encode_presence(
         };
         authorize_state_recipient(room, true, peer, session).await?;
         let before = out.len();
-        if session.framing.batches_presence() {
-            for chunk in run.chunks(PRESENCE_BATCH_ITEMS) {
-                let items: Vec<_> = chunk
-                    .iter()
-                    .map(|presence| slots.item(presence.key, &presence.payload))
-                    .collect();
-                out.extend(tilo_delivery_protocol::transport_v2::encode_presence_batch(
-                    room, &items,
-                )?);
-            }
-        } else {
-            for presence in run {
-                let frame = Envelope::Presence {
-                    workspace_id: room,
-                    payload: presence.payload.to_vec(),
-                };
-                out.extend(encode_for_session(&frame, session)?);
-            }
+        for chunk in run.chunks(PRESENCE_BATCH_ITEMS) {
+            let items: Vec<_> = chunk
+                .iter()
+                .map(|presence| slots.item(presence.key, &presence.payload))
+                .collect();
+            out.extend(tilo_delivery_protocol::transport_v2::encode_presence_batch(
+                room, &items,
+            )?);
         }
         let bytes = u64::try_from(out.len().saturating_sub(before)).unwrap_or(u64::MAX);
         session.metrics.add_room_egress(room, bytes, true);

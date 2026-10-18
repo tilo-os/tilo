@@ -32,9 +32,7 @@ use std::time::{Duration, SystemTime};
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, transaction::Transactable};
 use collab_types::{CommitNamed as _, PeerPresence, PeerPresencePayload};
 use neighbour_wire::NeighbourMsg;
-use tilo_delivery_protocol::transport_v2::{
-    ALPN_CODED_DELTA_V1, EnvelopeV2, SessionReader, StateFraming, encode_state,
-};
+use tilo_delivery_protocol::transport_v2::{EnvelopeV2, SessionReader, encode_state};
 use tilo_peer_state::{SeedDocument, SeedState, StatePeer, seed_room};
 use tilo_relay::{AttributedPresence, Envelope, Inbound, RelayClient, RelayCoeditSession};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
@@ -52,15 +50,10 @@ struct Member {
 }
 
 impl Member {
-    async fn open(
-        relay: &TestRelay,
-        device: &TestDevice,
-        alpn: &[u8],
-        framing: StateFraming,
-    ) -> Self {
+    async fn open(relay: &TestRelay, device: &TestDevice) -> Self {
         let endpoint = client_endpoint().await;
         let connection = endpoint
-            .connect(relay.relay.node_addr(), alpn)
+            .connect(relay.relay.node_addr(), tilo_relay::ALPN)
             .await
             .unwrap();
         let (mut send, mut recv) = connection.open_bi().await.unwrap();
@@ -79,12 +72,9 @@ impl Member {
             .await
             .unwrap();
         send.write_all(
-            &encode_state(
-                &Envelope::Subscribe {
-                    workspace_id: WORKSPACE,
-                },
-                true,
-            )
+            &encode_state(&Envelope::Subscribe {
+                workspace_id: WORKSPACE,
+            })
             .unwrap(),
         )
         .await
@@ -93,7 +83,7 @@ impl Member {
             _endpoint: endpoint,
             _connection: connection,
             _send: send,
-            reader: SessionReader::framed(recv, framing),
+            reader: SessionReader::new(recv),
         };
         tilo_test_env::within("the subscription to be ready", async {
             while !matches!(
@@ -241,13 +231,7 @@ async fn run() {
     let (mut owner, mut doc) = seeded_room(&author, &reader);
     let body = doc.get(ROOT, "body").unwrap().unwrap().1;
 
-    let mut member = Member::open(
-        &relay,
-        &reader,
-        ALPN_CODED_DELTA_V1,
-        StateFraming::CodedDelta,
-    )
-    .await;
+    let mut member = Member::open(&relay, &reader).await;
     let publisher = RelayCoeditSession::join(
         RelayClient::connect_v2_to_enrolled_home_peer(
             client_endpoint().await,

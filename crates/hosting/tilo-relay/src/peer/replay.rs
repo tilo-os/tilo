@@ -674,7 +674,7 @@ pub(super) async fn replay_direct_wait<T, W: tokio::io::AsyncWrite + Unpin>(
     write: &mut W,
 ) -> Result<T, PeerError> {
     tokio::pin!(operation);
-    let mut private_open = session.framing.is_v2();
+    let mut private_open = true;
     loop {
         tokio::select! {
             biased;
