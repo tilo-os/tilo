@@ -983,7 +983,9 @@ fn app_tab(id: TabId, app: &str, title: &str) -> Tab {
 }
 
 /// This device's share of the desktop id space, so ids it mints never
-/// collide with another device's once trees merge.
+/// collide with another device's once trees merge, and never fall in the
+/// namespace every member shares (the Lounge's,
+/// [`tilo_desktop_model::ids::SHARED_SALT`]) or in salt `0`, which has none.
 fn peer_salt(device: &str) -> u16 {
     // FNV-1a folded to 16 bits: stable across builds and platforms.
     let mut hash: u32 = 0x811c_9dc5;
@@ -992,7 +994,7 @@ fn peer_salt(device: &str) -> u16 {
         hash = hash.wrapping_mul(0x0100_0193);
     }
     let folded = (hash >> 16) ^ (hash & 0xffff);
-    u16::try_from(folded).unwrap_or(u16::MAX)
+    tilo_desktop_model::ids::device_salt(u16::try_from(folded).unwrap_or(u16::MAX))
 }
 
 /// Where a room's desktop lives in the profile. Changing it orphans stored

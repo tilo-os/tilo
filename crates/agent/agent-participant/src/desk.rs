@@ -101,7 +101,8 @@ fn add_tab(desktop: &mut SharedDesktop, author: &str, view: &View<'_>) -> Option
     opened
 }
 
-/// `author`'s share of the desktop id space: FNV-1a folded to 16 bits, never 0.
+/// `author`'s share of the desktop id space: FNV-1a folded to 16 bits, never
+/// `0` or the shared namespace.
 fn salt_of(author: &str) -> u16 {
     let mut hash: u32 = 0x811c_9dc5;
     for byte in author.bytes() {
@@ -109,10 +110,7 @@ fn salt_of(author: &str) -> u16 {
         hash = hash.wrapping_mul(0x0100_0193);
     }
     let folded = (hash >> 16) ^ (hash & 0xffff);
-    u16::try_from(folded)
-        .ok()
-        .filter(|salt| *salt != 0)
-        .unwrap_or(1)
+    tilo_desktop_model::ids::device_salt(u16::try_from(folded).unwrap_or(1))
 }
 
 #[cfg(test)]

@@ -178,6 +178,8 @@ pub(crate) struct DurableRest {
         std::collections::BTreeMap<String, crate::shell::state::GovernedPeerIdentity>,
     >,
     room_share_floor: std::collections::HashMap<RoomId, u64>,
+    #[serde(skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    strips_to_retain: std::collections::BTreeSet<crate::shell::state::StripId>,
     continuation_tabs: std::collections::BTreeSet<TabId>,
     continuation_rooms: std::collections::BTreeSet<RoomId>,
     continuation_owned_tabs: std::collections::HashMap<TabId, RoomId>,
@@ -217,6 +219,7 @@ impl DurableTree {
                 room_peer_names: tree.room_peer_names.clone(),
                 room_peer_identities: tree.room_peer_identities.clone(),
                 room_share_floor: tree.room_share_floor.clone(),
+                strips_to_retain: tree.strips_to_retain.clone(),
                 continuation_tabs: tree.continuation_tabs.clone(),
                 continuation_rooms: tree.continuation_rooms.clone(),
                 continuation_owned_tabs: tree.continuation_owned_tabs.clone(),
@@ -1716,6 +1719,8 @@ mod tests {
             .or_default()
             .insert("peer".into(), "Ada".into());
         tree.room_share_floor.insert(room, 41);
+        tree.strips_to_retain
+            .insert(crate::shell::state::StripId(93_010));
         tree.continuation_tabs.insert(93_003);
         tree.continuation_rooms.insert(room);
         tree.continuation_owned_tabs.insert(93_003, room);

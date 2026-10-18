@@ -848,6 +848,38 @@ pub fn project_owned_contents(
     Ok(())
 }
 
+/// Publish `strip`, at position `order`, as a strip kept while empty
+/// ([`STRIP_RETAINED_EMPTY_KEY`]): a person made it to put windows in, so
+/// it reaches the others now, not once the first window does. Ordinary
+/// projections keep it from then on. Only a strip in `local_salt`'s
+/// namespace is written.
+///
+/// # Errors
+///
+/// The document's error when the root `contents` map or the strip's entry
+/// cannot be created.
+pub fn retain_owned_strip(
+    doc: &mut AutoCommit,
+    strip: &Strip,
+    order: u64,
+    local_salt: u16,
+) -> Result<bool, automerge::AutomergeError> {
+    use automerge::ROOT;
+    if local_salt == 0 || peer_salt_of(strip.id.raw()) != local_salt {
+        return Ok(false);
+    }
+    let contents_all = map_candidates(doc, &ROOT, ROOM_CONTENTS_KEY);
+    let contents_id = winner_or_create(doc, &contents_all, &ROOT, ROOM_CONTENTS_KEY)?;
+    let contents_all = or_created(contents_all, &contents_id);
+    let key = contents_key(strip.id.raw());
+    let strip_all = child_candidates(doc, &contents_all, key.as_str());
+    let entry = winner_or_create(doc, &strip_all, &contents_id, key.as_str())?;
+    let _ = doc.put_uint_if_changed(&entry, STRIP_RETAINED_EMPTY_KEY, 1);
+    let _ = doc.put_str_if_changed(&entry, "name", &strip.name);
+    let _ = doc.put_uint_if_changed(&entry, "order", order);
+    Ok(true)
+}
+
 /// [`project_owned_contents`]'s per-strip pass: get-or-create
 /// `strip_entry`'s `groups` map, project every group this machine owns
 /// (or owns a tab within), then sweep group keys this machine owns
@@ -1126,7 +1158,11 @@ pub fn merge_strip(
                 let order = if is_local(gid) { i as u64 } else { rep.order };
                 out.push((order, gid, merge_group(group, rep, is_local, changed)));
             }
-            None if is_local(gid) => out.push((i as u64, gid, group)),
+            // Ours, or everyone's (the Lounge's first windows, which nobody
+            // publishes): the document has no say over it.
+            None if is_local(gid) || crate::ids::is_shared(gid) => {
+                out.push((i as u64, gid, group));
+            }
             None => *changed = true,
         }
     }
@@ -1182,7 +1218,7 @@ pub fn merge_group(
                 }
                 out.push((order, tid, tab));
             }
-            None if is_local(tid) => out.push((i as u64, tid, tab)),
+            None if is_local(tid) || crate::ids::is_shared(tid) => out.push((i as u64, tid, tab)),
             None => *changed = true,
         }
     }
@@ -1442,52 +1478,77 @@ pub fn merge_room_contents(
     let mut by_strip: std::collections::BTreeMap<u64, ReplicatedStrip> =
         replicated.into_iter().map(|s| (s.id, s)).collect();
 
-    // `(order, id, strip)` so local-only strips keep a position too.
-    let mut out: Vec<(u64, u64, Strip)> = Vec::new();
-    // Old strip ids that don't make it into `out` below — collected
+    // The order is canonical: every member computes the same one from the
+    // same document, and merging a document again changes nothing. The
+    // Lounge comes first; every strip the document carries follows at the
+    // position it was published at, `(order, id)`, ours included (it is
+    // where our last projection put it, and no command reorders strips);
+    // and a strip the document does not carry (ours, not published yet)
+    // goes back to the index it stood at. Mixing our cache's indices with
+    // published positions instead re-sorted the strips on every merge of
+    // an unchanged document, and each re-sort re-projected our positions
+    // for the others to re-sort again.
+    let mut shared: Vec<Strip> = Vec::new();
+    let mut published: Vec<(u64, u64, Strip)> = Vec::new();
+    let mut kept: Vec<(usize, Strip)> = Vec::new();
+    // Old strip ids that don't make it into the result below — collected
     // as the loop drops them rather than diffed afterward against a
     // snapshot, since `ws.strips` is about to be overwritten with the
     // merged result.
     let mut vanished: Vec<StripId> = Vec::new();
     for (i, strip) in std::mem::take(&mut ws.strips).into_iter().enumerate() {
         let sid = strip.id.raw();
-        let published = by_strip.remove(&sid);
-        if published.is_none() {
-            if is_local(sid) {
-                // Ours and simply not published; the document has
-                // no say over it.
-                out.push((i as u64, sid, strip));
-            } else {
-                // A foreign strip no longer being merged in — drop it.
+        match by_strip.remove(&sid) {
+            // The Lounge, which nobody publishes as a strip: the document
+            // has no say over it.
+            None if crate::ids::is_shared(sid) => shared.push(strip),
+            // Ours and simply not published: the document has no say over
+            // it either.
+            None if is_local(sid) => kept.push((i, strip)),
+            // A foreign strip no longer being merged in — drop it.
+            None => {
                 changed = true;
                 vanished.push(StripId::from(sid));
             }
-            continue;
+            Some(rep) => {
+                let order = rep.order;
+                let merged = merge_strip(strip, rep, &is_local, &mut changed);
+                if crate::ids::is_shared(sid) {
+                    shared.push(merged);
+                } else {
+                    published.push((order, sid, merged));
+                }
+            }
         }
-        let rep = published.unwrap_or_else(|| ReplicatedStrip {
-            id: sid,
-            order: i as u64,
-            name: None,
-            groups: Vec::new(),
-        });
-        // Ours keeps our cache's position — taking it from the
-        // document would undo a local reorder until re-projected.
-        let order = if is_local(sid) { i as u64 } else { rep.order };
-        out.push((order, sid, merge_strip(strip, rep, &is_local, &mut changed)));
     }
     for (sid, rep) in by_strip {
-        out.push((rep.order, sid, hydrate_strip(rep)));
+        let order = rep.order;
+        let strip = hydrate_strip(rep);
+        if crate::ids::is_shared(sid) {
+            shared.push(strip);
+        } else {
+            published.push((order, sid, strip));
+        }
         changed = true;
     }
-    out.sort_by_key(|(order, id, _)| (*order, *id));
+    published.sort_by_key(|(order, id, _)| (*order, *id));
+    let mut strips: Vec<Strip> = shared
+        .into_iter()
+        .chain(published.into_iter().map(|(_, _, strip)| strip))
+        .collect();
+    // In ascending index order, so each lands where it stood (or at the
+    // end, when fewer strips precede it now) without moving one before it.
+    for (index, strip) in kept {
+        strips.insert(index.min(strips.len()), strip);
+    }
     if !prior_strip_order
         .iter()
         .copied()
-        .eq(out.iter().map(|(_, _, strip)| strip.id))
+        .eq(strips.iter().map(|strip| strip.id))
     {
         changed = true;
     }
-    ws.strips = out.into_iter().map(|(_, _, s)| s).collect();
+    ws.strips = strips;
 
     let ws_id = ws.id;
     let live: Vec<StripId> = ws.strips.iter().map(|s| s.id).collect();

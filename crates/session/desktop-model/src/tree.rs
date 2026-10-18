@@ -102,6 +102,51 @@ impl Default for DesktopTree {
 }
 
 impl DesktopTree {
+    /// Give every workspace its Lounge, first ([`crate::lounge::ensure`]).
+    /// Returns whether anything changed.
+    pub fn ensure_lounges(&mut self) -> bool {
+        let mut changed = false;
+        for index in 0..self.workspaces.len() {
+            changed |= self.ensure_lounge_at(index);
+        }
+        changed
+    }
+
+    /// [`Self::ensure_lounges`] for the workspace of `room` alone.
+    pub fn ensure_lounge_in(&mut self, room: RoomId) -> bool {
+        self.workspaces
+            .iter()
+            .position(|workspace| workspace.room == room)
+            .is_some_and(|index| self.ensure_lounge_at(index))
+    }
+
+    /// The Lounge of the workspace at `index`, carrying the focus remembered
+    /// for a Lounge whose id moved (its workspace joined a room).
+    fn ensure_lounge_at(&mut self, index: usize) -> bool {
+        let Some(workspace) = self.workspaces.get_mut(index) else {
+            return false;
+        };
+        let before = workspace
+            .strips
+            .iter()
+            .find(|strip| crate::ids::is_shared(strip.id.raw()))
+            .map(|strip| strip.id);
+        if !crate::lounge::ensure(workspace) {
+            return false;
+        }
+        let after = crate::lounge::strip_id(workspace);
+        let workspace_id = workspace.id;
+        if let Some(before) = before.filter(|before| *before != after) {
+            if self.active_strip.get(&workspace_id) == Some(&before) {
+                self.active_strip.insert(workspace_id, after);
+            }
+            if let Some(group) = self.active_group.remove(&before) {
+                self.active_group.insert(after, group);
+            }
+        }
+        true
+    }
+
     /// Read a tree from its JSON value.
     ///
     /// Readers in other crates go through this function instead of calling

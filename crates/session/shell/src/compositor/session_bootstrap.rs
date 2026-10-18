@@ -79,6 +79,9 @@ pub(crate) fn load_session_tree(enable_peer_sync: bool) -> LoadedSession {
     // the latter retry forever.
     let recovered_host_apps =
         crate::shell::peer_windows::retry_resolvable_host_app_errors(&mut tree);
+    // Every workspace has its Lounge, the shared strip its people meet in,
+    // including ones saved before Lounges existed.
+    tree.desktop.ensure_lounges();
     // Past every id already in the tree, so a restart won't re-mint one in use. No-op on a first boot.
     tree.seed_next_id_from_self();
 

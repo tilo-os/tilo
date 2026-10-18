@@ -874,24 +874,41 @@ pub fn apply_command(
             window_groups: vec![],
         }),
         DesktopCommand::RenameStrip { strip, name: label } => {
-            let strip = strip_index(workspace, *strip)?;
-            strip_at_mut(workspace, strip)?.name = name(label)?;
+            rename_strip(workspace, *strip, label)?;
         }
-        DesktopCommand::RemoveStrip { strip } => {
-            let strip = strip_index(workspace, *strip)?;
-            if !strip_at(workspace, strip)?.window_groups.is_empty() {
-                return Err("strip must be empty before removal".into());
-            }
-            if workspace.strips.len() == 1 {
-                return Err("cannot remove the last strip".into());
-            }
-            workspace.strips.remove(strip);
-        }
+        DesktopCommand::RemoveStrip { strip } => remove_strip(workspace, *strip)?,
         DesktopCommand::RenameWorkspace { name: label } => workspace.name = name(label)?,
         DesktopCommand::ClaimNamespace { .. } => {
             return Err("a namespace claim changes the room's registry, not a workspace".into());
         }
     }
+    Ok(())
+}
+
+/// Name `strip`; the Lounge keeps its name.
+fn rename_strip(workspace: &mut Workspace, strip: u64, label: &str) -> Result<(), String> {
+    if crate::ids::is_shared(strip) {
+        return Err("the Lounge belongs to the room and keeps its name".into());
+    }
+    let strip = strip_index(workspace, strip)?;
+    strip_at_mut(workspace, strip)?.name = name(label)?;
+    Ok(())
+}
+
+/// Remove an empty `strip`; the Lounge and a workspace's last strip of its
+/// own (the Lounge aside) stay.
+fn remove_strip(workspace: &mut Workspace, strip: u64) -> Result<(), String> {
+    if crate::ids::is_shared(strip) {
+        return Err("the Lounge stays in every workspace".into());
+    }
+    let strip = strip_index(workspace, strip)?;
+    if !strip_at(workspace, strip)?.window_groups.is_empty() {
+        return Err("strip must be empty before removal".into());
+    }
+    if workspace.regular_strip_count() <= 1 {
+        return Err("cannot remove the last strip".into());
+    }
+    workspace.strips.remove(strip);
     Ok(())
 }
 

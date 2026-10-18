@@ -2117,7 +2117,7 @@ search-action-strip-create = Leiste erstellen
 search-action-strip-create-subtitle = Eine benannte Leiste zu diesem Arbeitsbereich hinzufügen und dorthin wechseln
 search-action-strip-create-default-name = Neue Leiste
 search-action-strip-rename = Diese Leiste umbenennen
-search-action-strip-rename-subtitle = Der Leiste mit dem Fokus einen Namen geben, etwa Lounge
+search-action-strip-rename-subtitle = Der Leiste mit dem Fokus einen Namen geben
 search-action-strip-invalid-name = Gib einen Leistennamen mit 1 bis 48 Zeichen ohne Steuerzeichen ein.
 search-action-strip-rename-missing = Diese Leiste gibt es in diesem Arbeitsbereich nicht.
 
@@ -2846,7 +2846,7 @@ search-kw-strip-focus-next = nach unten, leiste darunter, zeile darunter, nächs
 search-kw-workspace-previous = vorheriger arbeitsbereich, arbeitsbereich wechseln, desktop wechseln
 search-kw-workspace-next = nächster arbeitsbereich, arbeitsbereich wechseln, desktop wechseln
 search-kw-strip-create = neue leiste, leiste hinzufügen, zeile hinzufügen, leiste erstellen, streifen
-search-kw-strip-rename = leiste umbenennen, leiste benennen, leistenname, lounge, zeile benennen
+search-kw-strip-rename = leiste umbenennen, leiste benennen, leistenname, zeile benennen
 search-kw-tab-previous = vorheriger tab, linker tab, zurück
 search-kw-tab-next = nächster tab, rechter tab, weiter
 search-kw-group-move-left = fenster verschieben, anordnen, links
@@ -2942,7 +2942,6 @@ strip-switcher-new-strip = Neue Leiste
 strip-switcher-new-workspace = Neuer Arbeitsbereich
 strip-switcher-rename = Leiste umbenennen
 strip-switcher-name-placeholder = Name der Leiste
-strip-switcher-lounge-placeholder = Lounge
 strip-switcher-refused = Die Leiste konnte nicht geändert werden
 
 
@@ -2995,3 +2994,6 @@ desk-monitor-memory = Arbeitsspeicher
 desk-monitor-temperature = Temperatur
 desk-monitor-cpu-short = CPU
 desk-monitor-memory-short = RAM
+
+# The shared strip every workspace has: chat, tasks and notes.
+strip-lounge = Lounge

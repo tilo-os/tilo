@@ -55,7 +55,9 @@ fn read_workspace_salt(path: &Path) -> std::io::Result<u16> {
             "workspace peer salt must be non-zero",
         ));
     }
-    Ok(salt)
+    // A salt stored before the shared namespace was reserved may be that
+    // namespace; this device mints beside it, never in it.
+    Ok(tilo_desktop_model::ids::device_salt(salt))
 }
 
 /// Load the namespace salt used for durable workspace object ids, creating a
@@ -77,10 +79,11 @@ pub fn load_or_create_workspace_salt(
 
     let salt = if peer_key_path.try_exists()? {
         let key = crate::network::behaviour::load_or_create_keypair(peer_key_path)?;
-        crate::network::behaviour::peer_salt_from_keypair(&key).max(1)
+        crate::network::behaviour::peer_salt_from_keypair(&key)
     } else {
         let bytes = crate::random::bytes::<2>();
-        u16::from_be_bytes(bytes).max(1)
+        // Never `0` (no id space) or the namespace every member shares.
+        tilo_desktop_model::ids::device_salt(u16::from_be_bytes(bytes))
     };
 
     for _ in 0..16 {

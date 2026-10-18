@@ -83,8 +83,8 @@ impl Minter {
     fn new(room: &str, tree: &DesktopTree) -> Self {
         let hash = blake3::hash(format!("room strips {room}").as_bytes());
         let [a, b, ..] = *hash.as_bytes();
-        // Salt 0 is no namespace at all.
-        let salt = u16::from_le_bytes([a, b]).max(1);
+        // Salt 0 is no namespace at all, and the shared one is the Lounge's.
+        let salt = tilo_desktop_model::ids::device_salt(u16::from_le_bytes([a, b]));
         let mut taken = std::collections::HashSet::new();
         for workspace in &tree.workspaces {
             taken.insert(workspace.id.0);

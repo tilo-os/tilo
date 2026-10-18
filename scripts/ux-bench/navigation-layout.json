@@ -9,6 +9,6 @@
     {"kind":"target_size","target":"semantic:topbar:profile","min":[24,24]},
     {"kind":"aligned","first":"semantic:topbar:profile","second":"semantic:topbar:workspace-settings","axis":"y","tolerance":1},
     {"kind":"no_overlap","first":"semantic:topbar:workspace-settings","second":"semantic:topbar:center:clock"},
-    {"kind":"contrast","label":"App shortcut hint glyph and nearby desktop background, 1280 dark 100% text","foreground":[553,599],"background":[330,591],"min":4.5}
+    {"kind":"contrast","label":"App shortcut hint glyph and nearby desktop background, 1280 dark 100% text","foreground":[427,599],"background":[204,591],"min":4.5}
   ]}]
 }
