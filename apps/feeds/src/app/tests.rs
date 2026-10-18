@@ -176,7 +176,6 @@ fn startup_is_empty_live_and_populated_only_in_demo() {
             .article(&selected)
             .expect("the open article")
             .blocks
-            .0
             .is_empty()
     );
     let doc = synced(&mut demo);

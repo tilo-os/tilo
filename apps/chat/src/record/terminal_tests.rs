@@ -50,15 +50,7 @@ fn provider_terminal_state_and_accessibility_report_output_not_applied_actions()
         let record = held.get(&id("terminal_reply")).unwrap().clone();
         let expected = AgentWorkState::ProviderFinished { outcome };
         assert_eq!(
-            record
-                .work
-                .as_ref()
-                .unwrap()
-                .state
-                .0
-                .as_ref()
-                .unwrap()
-                .state,
+            record.work.as_ref().unwrap().state.as_ref().unwrap().state,
             expected
         );
         let reply = chat.message_row(&held, "terminal_reply").unwrap();
@@ -81,15 +73,7 @@ fn provider_terminal_state_and_accessibility_report_output_not_applied_actions()
         // A saved record from before terminal states were added still projects
         // its received outcome, without requiring a document migration.
         let mut legacy = record.clone();
-        legacy
-            .work
-            .as_mut()
-            .unwrap()
-            .state
-            .0
-            .as_mut()
-            .unwrap()
-            .state = AgentWorkState::Taken;
+        legacy.work.as_mut().unwrap().state.as_mut().unwrap().state = AgentWorkState::Taken;
         let projected = crate::projection::message_row(&id("terminal_reply"), &legacy);
         assert_eq!(projected.work.unwrap().state, expected);
     }

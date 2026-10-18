@@ -45,7 +45,7 @@ impl Chat {
             SearchEntry::new(&category.name, "Category").anchored(anchor("categories", id))
         });
         let feedback = self.feedback.iter().filter_map(|(id, report)| {
-            let submission = report.submission.0.as_ref()?;
+            let submission = report.submission.as_ref()?;
             Some(
                 SearchEntry::new(&submission.feedback.text, "Feedback")
                     .anchored(anchor("feedback", id)),
@@ -406,12 +406,12 @@ fn mention_post() -> ui::tilo_resource::Edit<ChatPart> {
         author: ui::tilo_resource::Atom("u_aria".to_owned()),
         ts: crate::demo::NOW - 30,
         text: text.into(),
-        mentions: ui::tilo_resource::Json(vec![crate::mention::Mention {
+        mentions: vec![crate::mention::Mention {
             user: crate::model::ME.into(),
             start: 0,
             len: "@You".len(),
             is_agent: false,
-        }]),
+        }],
         ..crate::record::Message::default()
     };
     let at = crate::demo::demo_part(crate::model::ME).messages.len();
@@ -431,14 +431,14 @@ fn bridged_post() -> ui::tilo_resource::Edit<ChatPart> {
         author: ui::tilo_resource::Atom(DEMO_BRIDGE.to_owned()),
         ts: crate::demo::NOW - 60,
         text: "Joining from Discord: the warmer palette reads much better on my phone.".into(),
-        appearance: ui::tilo_resource::Json(Some(tilo_actions::Appearance {
+        appearance: Some(crate::record::ShownAs {
             name: "Bo".into(),
             avatar: Some("tilo-demo://avatar-bo".into()),
-            persona: Some(tilo_actions::Persona {
+            persona: Some(crate::record::ShownPersona {
                 service: "discord".into(),
                 account: "80351110224678912".into(),
             }),
-        })),
+        }),
         ..crate::record::Message::default()
     };
     let at = crate::demo::demo_part(crate::model::ME).messages.len();
@@ -496,12 +496,12 @@ pub(crate) fn agent_work_part_steps() -> Vec<(&'static str, Invoke<ChatPart>)> {
         author: ui::tilo_resource::Atom(me.to_owned()),
         ts: crate::demo::NOW - 120,
         text: "@Tide add the revenue curve to Calculator and keep the current bounds.".into(),
-        mentions: ui::tilo_resource::Json(vec![crate::mention::Mention {
+        mentions: vec![crate::mention::Mention {
             user: DEMO_AGENT.into(),
             start: 0,
             len: "@Tide".len(),
             is_agent: true,
-        }]),
+        }],
         ..crate::record::Message::default()
     };
     let at = crate::demo::demo_part(me).messages.len();

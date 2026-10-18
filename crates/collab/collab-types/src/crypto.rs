@@ -39,7 +39,9 @@ use crate::op::SignedOp;
 /// Wrapped as `[u8; 32]` (not `ed25519_dalek::VerifyingKey`) so equality
 /// and hashing are byte-exact and free; conversion to the dalek type
 /// happens at verify time.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, tilo_resource::Model,
+)]
 #[serde(transparent)]
 pub struct Ed25519PublicKey(pub [u8; 32]);
 

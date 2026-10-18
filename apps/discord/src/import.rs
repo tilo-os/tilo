@@ -85,7 +85,7 @@ fn ordered<'g>(guild: &'g Guild, kinds: &[ChannelKind]) -> Vec<&'g DChannel> {
     let mut channels: Vec<&DChannel> = guild
         .channels
         .iter()
-        .filter(|c| kinds.contains(&c.kind.0))
+        .filter(|c| kinds.contains(&c.kind))
         .filter(|c| guild.only_channel.as_ref().is_none_or(|only| *only == c.id))
         .filter(|c| !guild.discord_only.contains(&c.id) && !made_by_bridge(guild, &c.id))
         .collect();
@@ -242,7 +242,7 @@ pub fn plan(guild: &Guild, room: &RoomChat) -> ImportPlan {
             None => None,
         };
         pending = true;
-        let voice = channel.kind.0 == ChannelKind::Voice;
+        let voice = channel.kind == ChannelKind::Voice;
         let free = |c: &&Channel| {
             guild.mapping(MappedKind::Channel, &c.id).is_none()
                 && !claimed.contains(c.id.as_str())

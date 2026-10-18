@@ -51,10 +51,11 @@ use crate::model::Id;
 ///
 /// See the [module docs](self) for the full contract. `user` is authoritative;
 /// `start`/`len` locate the run inside [`crate::model::Message::text`].
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, tilo_resource::Model)]
 pub struct Mention {
     /// The participant referred to — the same id used for message attribution,
     /// the room roster and presence.
+    #[model(atom)]
     pub user: Id,
     /// Byte offset of the `@` that opens the mention within the message text.
     pub start: usize,

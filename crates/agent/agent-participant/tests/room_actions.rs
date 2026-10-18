@@ -167,10 +167,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
         .find(|(message, _)| message.as_str() == shared)
         .map(|(_, message)| message.clone())
         .unwrap();
-    assert_eq!(
-        serde_json::to_value(&shared.reference.0).unwrap(),
-        reference
-    );
+    assert_eq!(serde_json::to_value(&shared.reference).unwrap(), reference);
     let record = DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: room.room.clone(),

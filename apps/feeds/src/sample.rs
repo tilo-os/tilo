@@ -7,8 +7,6 @@
 //! live app never seeds this — it starts empty on the user's persisted
 //! subscriptions and fetches real feeds over HTTP once the user adds one.
 
-use ui::tilo_resource::Json;
-
 use crate::gemtext;
 use crate::model::{Article, BlockKind, ContentBlock, Feed, FeedKind, Folder, Id, Library};
 
@@ -514,7 +512,7 @@ fn article(s: &mut Library, fixture: SampleArticle<'_>) {
             url: fixture.url.into(),
             published: fixture.published,
             summary: fixture.summary.into(),
-            blocks: Json(fixture.blocks),
+            blocks: fixture.blocks,
             read: fixture.read,
             starred: fixture.starred,
             tags,
@@ -544,7 +542,7 @@ mod tests {
                 .values()
                 .find(|a| &a.feed_id == gem_feed.id)
                 .unwrap();
-            assert!(gem_art.blocks.0.iter().any(|b| b.kind == BlockKind::Link));
+            assert!(gem_art.blocks.iter().any(|b| b.kind == BlockKind::Link));
         }
 
         // --- phase: sample_article_states_and_inferred_tags_are_preserved ---

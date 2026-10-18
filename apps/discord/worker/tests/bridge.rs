@@ -815,7 +815,7 @@ async fn what_bo_does_to_his_messages_in_discord_follows_in_chat() {
         bridge.chat_message("Bo's notes").await
     })
     .await;
-    let attachment = format!("{:?}", file.attachment.0);
+    let attachment = format!("{:?}", file.attachment);
     assert!(attachment.contains("notes.txt"), "{attachment}");
 
     bridge.fake.delete(&posted, None);
@@ -1017,7 +1017,7 @@ async fn a_new_room_takes_on_its_servers_layout_and_history() {
         "shown when it was written in Discord"
     );
     assert_eq!(
-        hi.1.appearance.0.as_ref().map(|a| a.name.as_str()),
+        hi.1.appearance.as_ref().map(|a| a.name.as_str()),
         Some("Bo")
     );
 

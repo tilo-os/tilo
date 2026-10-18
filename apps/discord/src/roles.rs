@@ -246,7 +246,6 @@ pub fn linked_accounts(guild: &Guild, person: &str) -> Vec<String> {
 mod tests {
     use discord_wire::event::OverwriteInfo;
     use discord_wire::op::ChannelKind;
-    use ui::tilo_resource::Json;
 
     use super::*;
     use crate::layout::tests::{dchan, mapping};
@@ -288,7 +287,7 @@ mod tests {
         g.roles = roles.into_iter().collect();
         g.map.push(mapping(MappedKind::Channel, "c1", "d1"));
         let mut d1 = dchan("d1", ChannelKind::Text, "general", None, 0);
-        d1.overwrites = Json(vec![
+        d1.overwrites = vec![
             OverwriteInfo {
                 id: "r0".into(),
                 kind: 0,
@@ -301,7 +300,7 @@ mod tests {
                 allow: "0".into(),
                 deny: perm::bits(channel_deny("commenter")),
             },
-        ]);
+        ];
         g.channels.push(d1);
         g
     }
@@ -455,12 +454,12 @@ mod tests {
             .iter()
             .map(|c| discord_wire::event::ChannelInfo {
                 id: c.id.clone(),
-                kind: c.kind.0,
+                kind: c.kind,
                 name: c.name.clone(),
                 parent: c.parent.clone(),
                 position: c.position,
                 topic: c.topic.clone(),
-                overwrites: c.overwrites.0.clone(),
+                overwrites: c.overwrites.clone(),
             })
             .collect()
     }

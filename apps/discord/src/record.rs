@@ -158,12 +158,12 @@ pub enum Origin {
 pub struct DChannel {
     #[model(readonly)]
     pub id: String,
-    pub kind: Json<ChannelKind>,
+    pub kind: ChannelKind,
     pub name: String,
     pub parent: Option<String>,
     pub position: i64,
     pub topic: String,
-    pub overwrites: Json<Vec<OverwriteInfo>>,
+    pub overwrites: Vec<OverwriteInfo>,
 }
 
 impl Identified for DChannel {
@@ -362,7 +362,7 @@ impl Guild {
                 let before = self
                     .channels
                     .find(&Id::from_raw(op.channel.as_str()))
-                    .map(|c| &c.overwrites.0);
+                    .map(|c| &c.overwrites);
                 let after = channels
                     .iter()
                     .find(|c| c.id == op.channel)
@@ -378,12 +378,12 @@ impl Guild {
             .into_iter()
             .map(|c| DChannel {
                 id: c.id,
-                kind: Json(c.kind),
+                kind: c.kind,
                 name: c.name,
                 parent: c.parent,
                 position: c.position,
                 topic: c.topic,
-                overwrites: Json(c.overwrites),
+                overwrites: c.overwrites,
             })
             .collect();
         self.roles = roles

@@ -189,8 +189,15 @@ fn reactions(value: &Value) -> Vec<Reaction> {
 
 fn attachment(value: &Value) -> Option<Attachment> {
     let attachment = json_field(value, "attachment");
-    // `Attachment` is an externally tagged enum: `{"Image": {...}}`.
-    let (_, inner) = attachment.as_object()?.iter().next()?;
+    let object = attachment.as_object()?;
+    // A stored data enum names its variant beside its fields
+    // (`{"$variant": "image", "blob": …}`); a record from before kept serde's
+    // externally tagged form (`{"Image": {…}}`) as JSON text.
+    let inner = if object.contains_key("$variant") {
+        &attachment
+    } else {
+        object.values().next()?
+    };
     Some(Attachment {
         blob: text(inner, "blob"),
         name: text(inner, "name"),
@@ -328,6 +335,26 @@ mod tests {
             person(&chat(), "u_ada").unwrap().avatar.as_deref(),
             Some("aa")
         );
+    }
+
+    /// A message as the chat stores it now: its mentions, attachment and
+    /// shown name as values, the attachment naming its variant.
+    #[test]
+    fn reads_a_message_with_model_fields() {
+        let chat = json!({
+            "messages": [
+                {"id": "m2", "value": {"channel": "c_general", "author": "bot:i", "text": "hi @Bo", "parent": null,
+                  "reactions": [],
+                  "mentions": [{"user": "u_bo", "start": 3, "len": 3, "is_agent": false}],
+                  "attachment": {"$variant": "file", "name": "a.txt", "blob": "ff", "size": 5},
+                  "appearance": {"name": "Bo"}}}
+            ]
+        });
+        let m = message(&chat, "m2").unwrap();
+        assert_eq!(m.mentions, [("u_bo".to_owned(), 3, 3)]);
+        let attachment = m.attachment.unwrap();
+        assert_eq!((attachment.blob.as_str(), attachment.size), ("ff", Some(5)));
+        assert_eq!(m.appearance_name.as_deref(), Some("Bo"));
     }
 
     #[test]

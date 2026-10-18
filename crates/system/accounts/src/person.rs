@@ -57,7 +57,9 @@ pub struct PersonAccount {
     pub type_id: String,
     /// The name shown for it ("Work — Fastmail").
     pub display_name: String,
-    /// Type-specific connection settings. Never a secret.
+    /// Type-specific connection settings. Never a secret. Each account type
+    /// shapes its own, so to this record they are one opaque value (`Json`),
+    /// written whole by the account's editor.
     pub config: Json<serde_json::Value>,
     /// Whether the person uses it now.
     pub enabled: bool,

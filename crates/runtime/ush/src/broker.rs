@@ -384,7 +384,7 @@ impl EnvironmentHandle {
     }
 
     fn policy(&self) -> Policy {
-        Policy::new(self.current().grants.0)
+        Policy::new(self.current().grants)
     }
 }
 
@@ -658,7 +658,6 @@ impl BrokerState {
             .environment
             .current()
             .grants
-            .0
             .iter()
             .any(|c| c.id == id && matches!(c.scope, collab_types::caps::Scope::NetHost(_)));
         if let Err(reason) = self.apply("revoke", id, Environment::REVOKE_GRANT.with(id.to_owned()))
@@ -816,7 +815,6 @@ impl BrokerState {
         self.environment
             .current()
             .grants
-            .0
             .iter()
             .map(|c| PermEntry {
                 id: c.id.clone(),
@@ -846,7 +844,7 @@ impl BrokerState {
     fn status(&self) -> SessionStatus {
         let now = Some(unix_now());
         let env = self.environment.current();
-        let policy = Policy::new(env.grants.0.clone());
+        let policy = Policy::new(env.grants.clone());
         SessionStatus {
             session: self.session_id.clone(),
             environment: env.name.clone(),
@@ -1882,7 +1880,7 @@ mod tests {
     }
 
     fn trusted(s: &BrokerState) -> Vec<PathBuf> {
-        Policy::new(s.environment.current().grants.0).trusted_dirs(Some(1_000))
+        Policy::new(s.environment.current().grants).trusted_dirs(Some(1_000))
     }
 
     #[test]
@@ -2466,7 +2464,7 @@ mod tests {
                 path: PathBuf::from("/usr"),
             });
             assert!(matches!(resp, Response::Denied { .. }), "{resp:?}");
-            assert!(s.environment.current().grants.0.is_empty());
+            assert!(s.environment.current().grants.is_empty());
 
             let log = s.audit.read_all();
             assert_eq!(log.len(), 1);

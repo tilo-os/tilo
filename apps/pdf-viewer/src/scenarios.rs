@@ -8,7 +8,7 @@
 //! reader itself once these have applied ([`crate::PdfApp::stage`]).
 
 use ui::framework::Fixture;
-use ui::tilo_resource::{Collection, Edit, Id, Invoke, Json};
+use ui::tilo_resource::{Collection, Edit, Id, Invoke};
 
 use crate::markup::{PdfMarkup, StoredAnnotation, StoredComment, StoredReply, StoredSignature};
 use crate::model::{AnnoKind, GeomSpace, PtRect, SignatureInk, Swatch};
@@ -124,7 +124,7 @@ pub fn sample_review() -> Vec<Edit<PdfMarkup>> {
                 StoredReply {
                     author: (*author).into(),
                     text: (*body).into(),
-                    rich: Json(Vec::new()),
+                    rich: Vec::new(),
                 },
             );
         }
@@ -134,7 +134,7 @@ pub fn sample_review() -> Vec<Edit<PdfMarkup>> {
             page_id: "source-1".into(),
             author: author.into(),
             text: body.into(),
-            rich: Json(Vec::new()),
+            rich: Vec::new(),
             created,
             resolved,
             replies: thread,

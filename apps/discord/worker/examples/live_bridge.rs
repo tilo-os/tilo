@@ -891,7 +891,7 @@ async fn live(token: String, guild_id: String) -> usize {
         room.message("notes from Discord").await
     })
     .await;
-    let attachment = file.map(|(_, m)| format!("{:?}", m.attachment.0));
+    let attachment = file.map(|(_, m)| format!("{:?}", m.attachment));
     report.case(
         "Discord->Tilo file",
         attachment

@@ -123,13 +123,13 @@ impl ChatPart {
                 author: Atom(author),
                 ts,
                 text: posting.text,
-                body: Json(posting.body),
+                body: posting.body,
                 parent: posting.parent,
-                mentions: Json(posting.mentions),
-                reference: Json(posting.reference),
+                mentions: posting.mentions,
+                reference: posting.reference,
                 source_provider: posting.source_provider.map(Atom),
-                attachment: Json(posting.attachment),
-                appearance: Json(posting.appearance),
+                attachment: posting.attachment,
+                appearance: posting.appearance.map(Into::into),
                 ..Message::default()
             },
         );
@@ -170,6 +170,8 @@ pub struct NewMessage {
     params = chat_part,
     effects = crate::effects::ChatEffect,
     item_views = crate::effects::item_views,
+    version = 2,
+    migrate = crate::record::upgrade_part,
 )]
 impl ChatPart {
     /// Post a message.
@@ -334,18 +336,18 @@ impl ChatPart {
             .get_mut(message)
             .ok_or_else(|| Refusal::new("there is no such message"))?;
         own(cx, row)?;
-        if row.text == text && row.body.0 == body {
+        if row.text == text && row.body == body {
             return Ok(());
         }
         if row.text != text {
-            row.history.0.push(Revision {
+            row.history.push(Revision {
                 ts,
                 text: std::mem::take(&mut row.text),
             });
-            row.mentions = Json(mentions.unwrap_or_default());
+            row.mentions = mentions.unwrap_or_default();
             row.text = text;
         }
-        row.body = Json(body);
+        row.body = body;
         row.edited = true;
         Ok(())
     }
@@ -476,14 +478,13 @@ impl ChatPart {
         let record = row.work.get_or_insert_with(Work::default);
         let unchanged = record
             .state
-            .0
             .as_ref()
             .is_some_and(|transition| transition.state == state);
         if !unchanged {
-            record.state = Json(Some(Transition { state, since }));
+            record.state = Some(Transition { state, since });
         }
         // Each update says why, or that no reason is on record now.
-        record.reasoning = Json(reasoning);
+        record.reasoning = reasoning;
         for step in trace {
             let id = Id::from_raw(step.id.clone());
             let row = Step {
@@ -491,7 +492,7 @@ impl ChatPart {
                 sequence: step.sequence,
                 resource: Atom(step.resource),
                 label: step.label,
-                outcome: Json(Some(step.outcome)),
+                outcome: Some(step.outcome),
             };
             if let Some(known) = record.trace.find_mut(&id) {
                 *known = row;
@@ -571,11 +572,11 @@ impl ChatPart {
             .get_mut(&id)
             .ok_or_else(|| Refusal::new("there is no such reply"))?;
         let work = row.work.get_or_insert_with(Work::default);
-        if work.state.0.is_none() {
-            work.state = Json(Some(Transition {
+        if work.state.is_none() {
+            work.state = Some(Transition {
                 state: crate::model::AgentWorkState::Taken,
                 since: seconds(cx),
-            }));
+            });
         }
         let record = work.stream.get_or_insert_with(|| ProviderStream {
             run: event.run.clone(),
@@ -586,12 +587,12 @@ impl ChatPart {
             AgentOutput::ReasoningDelta { text } => record.reasoning.push_str(text),
             AgentOutput::Progress { label } => record.progress.clone_from(label),
             AgentOutput::Finished { outcome, detail } => {
-                record.finish = Json(Some(*outcome));
+                record.finish = Some(*outcome);
                 record.detail.clone_from(detail);
-                work.state = Json(Some(Transition {
+                work.state = Some(Transition {
                     state: crate::model::AgentWorkState::ProviderFinished { outcome: *outcome },
                     since: seconds(cx),
-                }));
+                });
             }
         }
         record.sequence = event.sequence;

@@ -35,7 +35,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{
-    self, Bytes, Collection, Id, Identified, Json, JsonSchema, Keyed, Model, Refusal,
+    self, Bytes, Collection, Id, Identified, JsonSchema, Keyed, Model, Refusal,
 };
 
 use crate::adopt::AdoptedEntry;
@@ -203,7 +203,7 @@ pub struct StoredReply {
     pub text: String,
     /// Its paragraphs as written, with their formatting; empty when it is
     /// plain text.
-    pub rich: Json<Vec<tilo_document::ClipBlock>>,
+    pub rich: Vec<tilo_document::ClipBlock>,
 }
 
 /// One comment thread as stored: free on a page, or pinned to an
@@ -226,7 +226,7 @@ pub struct StoredComment {
     pub text: String,
     /// Its paragraphs as written, with their formatting; empty when it is
     /// plain text.
-    pub rich: Json<Vec<tilo_document::ClipBlock>>,
+    pub rich: Vec<tilo_document::ClipBlock>,
     /// Ordinal for a stable order: creation order.
     #[model(readonly)]
     pub created: i64,
@@ -488,10 +488,10 @@ impl PdfMarkup {
                             id: id.as_str().to_owned(),
                             author: reply.author.clone(),
                             body: reply.text.clone(),
-                            blocks: blocks_of(&reply.text, &reply.rich.0),
+                            blocks: blocks_of(&reply.text, &reply.rich),
                         })
                         .collect(),
-                    blocks: blocks_of(&stored.text, &stored.rich.0),
+                    blocks: blocks_of(&stored.text, &stored.rich),
                 })
             })
             .collect::<Vec<_>>();

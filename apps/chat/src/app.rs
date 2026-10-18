@@ -2990,7 +2990,7 @@ impl ChatApp {
             .feedback
             .iter()
             .filter_map(|(id, report)| {
-                let submission = report.submission.0.as_ref()?;
+                let submission = report.submission.as_ref()?;
                 Some((id.to_string(), submission.feedback.text.clone()))
             })
             .collect();

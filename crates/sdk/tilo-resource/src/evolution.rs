@@ -127,6 +127,34 @@ fn migrate_with(
     Ok(true)
 }
 
+/// The value stored under `key` of the map `obj` as one JSON string (an old
+/// whole-value field), read with `T`'s serde form: `None` when the key holds
+/// no JSON string (absent, or already an object), `Some(None)` for JSON
+/// `null`. What a migration reads an old field with when its new type is not
+/// the old one's serde form.
+///
+/// # Errors
+/// Returns why the text does not read as `T`, or the document's error.
+pub fn read_json<T>(doc: &Doc, obj: &ObjId, key: &str) -> Result<Option<Option<T>>, ModelError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let text = match doc.get(obj, key)? {
+        Some((Value::Scalar(scalar), _)) => match scalar.as_ref() {
+            ScalarValue::Str(text) => text.to_string(),
+            ScalarValue::Null => return Ok(Some(None)),
+            _ => return Ok(None),
+        },
+        _ => return Ok(None),
+    };
+    if text == "null" {
+        return Ok(Some(None));
+    }
+    serde_json::from_str(&text)
+        .map(|value| Some(Some(value)))
+        .map_err(|error| ModelError::invalid(error.to_string()).at(key))
+}
+
 /// Rewrite the value stored under `key` of the map `obj` as one JSON string
 /// (an old whole-value field, last writer wins) as the model type `T` stores
 /// it: the migration of a field whose type became a real model type. `T`
@@ -142,18 +170,12 @@ pub fn retype_json<T>(doc: &mut Doc, obj: &ObjId, key: &str) -> Result<bool, Mod
 where
     T: crate::Model + serde::de::DeserializeOwned,
 {
-    let text = match doc.get(obj, key)? {
-        Some((Value::Scalar(scalar), _)) => match scalar.as_ref() {
-            ScalarValue::Str(text) => Some(text.to_string()),
-            ScalarValue::Null => None,
-            _ => return Ok(false),
-        },
-        _ => return Ok(false),
+    let Some(read) = read_json::<T>(doc, obj, key)? else {
+        return Ok(false);
     };
-    let value: T = match text.as_deref() {
-        Some(text) if text != "null" => serde_json::from_str(text)
-            .map_err(|error| ModelError::invalid(error.to_string()).at(key))?,
-        _ => T::missing().map_err(|error| error.at(key))?,
+    let value = match read {
+        Some(value) => value,
+        None => T::missing().map_err(|error| error.at(key))?,
     };
     // A scalar is replaced in place; the value's own store writes the shape.
     doc.delete(obj, key)?;
@@ -220,6 +242,18 @@ fn fixture_value(
         ),
         Json::Null => slot.put_scalar(doc, ScalarValue::Null),
     }
+}
+
+/// The map stored under `key` of `obj`, when it holds one: a nested record
+/// or a present `Option` of one, which a migration rewrites inside.
+///
+/// # Errors
+/// Returns the document's read error.
+pub fn map_at(doc: &Doc, obj: &ObjId, key: &str) -> Result<Option<ObjId>, ModelError> {
+    Ok(match doc.get(obj, key)? {
+        Some((Value::Object(automerge::ObjType::Map), map)) => Some(map),
+        _ => None,
+    })
 }
 
 /// The value maps of the items of the [`Collection`](crate::Collection)

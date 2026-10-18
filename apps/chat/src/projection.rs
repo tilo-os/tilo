@@ -132,7 +132,7 @@ impl Chat {
         self.feedback
             .iter()
             .filter_map(|(id, report)| {
-                let submission = report.submission.0.as_ref()?;
+                let submission = report.submission.as_ref()?;
                 (submission.destination.channel == channel).then(|| {
                     message_row(
                         &Id::from_raw(crate::feedback::message_id(id.as_str())),
@@ -159,7 +159,7 @@ impl Chat {
             .map(|message| message_row(&key, message))
             .or_else(|| {
                 self.feedback.iter().find_map(|(report, filed)| {
-                    let submission = filed.submission.0.as_ref()?;
+                    let submission = filed.submission.as_ref()?;
                     (crate::feedback::message_id(report.as_str()) == id)
                         .then(|| self.feedback_rows(&submission.destination.channel))?
                         .into_iter()
@@ -216,14 +216,12 @@ pub fn message_row(id: &Id, message: &crate::record::Message) -> Message {
         text: message.text.clone(),
         body: message
             .body
-            .0
             .iter()
             .map(tilo_rich_text::content_of_clip)
             .collect(),
         edited: message.edited,
         history: message
             .history
-            .0
             .iter()
             .map(|revision| EditRecord {
                 ts: revision.ts,
@@ -232,22 +230,22 @@ pub fn message_row(id: &Id, message: &crate::record::Message) -> Message {
             .collect(),
         parent: message.parent.as_ref().map(ToString::to_string),
         reactions,
-        mentions: message.mentions.0.clone(),
-        reference: message.reference.0.clone(),
+        mentions: message.mentions.clone(),
+        reference: message.reference.clone(),
         source_provider: message
             .source_provider
             .as_ref()
             .map(|provider| provider.0.clone()),
-        attachment: message.attachment.0.clone(),
+        attachment: message.attachment.clone(),
         pinned: message.pinned,
         work: message.work.as_ref().and_then(work_row),
-        appearance: message.appearance.0.clone(),
+        appearance: message.appearance.clone().map(Into::into),
     }
 }
 
 /// An agent's record of its work, as the reply card draws it.
 fn work_row(work: &crate::record::Work) -> Option<AgentWork> {
-    let transition = work.state.0.as_ref()?;
+    let transition = work.state.as_ref()?;
     let mut trace: Vec<AgentStep> = work
         .trace
         .iter()
@@ -257,7 +255,7 @@ fn work_row(work: &crate::record::Work) -> Option<AgentWork> {
                 sequence: step.sequence,
                 resource: step.resource.0.clone(),
                 label: step.label.clone(),
-                outcome: step.outcome.0.clone()?,
+                outcome: step.outcome.clone()?,
             })
         })
         .collect();
@@ -272,13 +270,13 @@ fn work_row(work: &crate::record::Work) -> Option<AgentWork> {
         state: work
             .stream
             .as_ref()
-            .and_then(|stream| stream.finish.0)
+            .and_then(|stream| stream.finish)
             .map_or_else(
                 || transition.state.clone(),
                 |outcome| crate::model::AgentWorkState::ProviderFinished { outcome },
             ),
         since: transition.since,
-        reasoning: work.reasoning.0.clone(),
+        reasoning: work.reasoning.clone(),
         trace,
     })
 }

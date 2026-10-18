@@ -7,13 +7,13 @@
 use serde::{Deserialize, Serialize};
 use tilo_actions::{ActionError, Doc};
 use ui::feedback::{Destination, Receipt};
-use ui::tilo_resource::Id;
+use ui::tilo_resource::{self, Id};
 
 pub(crate) mod destination_read;
 pub(crate) mod receipt_read;
 pub(crate) mod status_read;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model)]
 #[serde(tag = "status", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum TriageUpdate {
     Investigating,
@@ -58,7 +58,6 @@ pub fn message_id(report: &str) -> String {
 fn report_of(id: &Id, report: &crate::record::FeedbackReport) -> Result<Report, ActionError> {
     let submission = report
         .submission
-        .0
         .clone()
         .ok_or_else(|| refused("invalid feedback report"))?;
     submission
@@ -74,7 +73,7 @@ fn report_of(id: &Id, report: &crate::record::FeedbackReport) -> Result<Report, 
             Some(TriageEntry {
                 author: entry.author.0.clone(),
                 ts: entry.ts,
-                update: entry.update.0.clone()?,
+                update: entry.update.clone()?,
             })
         })
         .collect();

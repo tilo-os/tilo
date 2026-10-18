@@ -1310,7 +1310,7 @@ impl PdfApp {
         if !kept.signer.is_empty() {
             self.signer_name.clone_from(&kept.signer);
         }
-        self.sig_strokes.clone_from(&kept.strokes.0);
+        self.sig_strokes = crate::signature::point_lists(&kept);
         self.dirty = true;
     }
 
@@ -8075,7 +8075,7 @@ mod tests {
             app.keep_strokes();
             assert_eq!(record.get().signer, "Ada Lovelace", "the signer is kept");
             assert_eq!(
-                record.get().strokes.0,
+                crate::signature::point_lists(&record.get()),
                 app.sig_strokes,
                 "the strokes are kept"
             );

@@ -18,7 +18,7 @@ use ui::framework::{
 };
 use ui::record::RecordId;
 use ui::tilo_resource::{
-    self, ActionCx, Bytes, Id, Invoke, Json, JsonSchema, Refusal, SearchEntry, resource,
+    self, ActionCx, Bytes, Id, Invoke, JsonSchema, ModelError, Refusal, SearchEntry, resource,
 };
 use ui::widget::Element;
 
@@ -145,10 +145,30 @@ pub struct ExistingMarkup {
 
 ui::embedded_catalog!(static CATALOG, ["en-US"]);
 
+/// Bring a PDF's markup of version 1 up to this one: a comment's and a
+/// reply's formatted paragraphs were one JSON string, and are a list of
+/// paragraphs now.
+fn upgrade_markup(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
+    use tilo_document::ClipBlock;
+    use tilo_resource::evolution::{collection_items, map_values, retype_json};
+    if from != 1 {
+        return Err(ModelError::invalid(format!("no PDF migration from {from}")));
+    }
+    for (_, comment) in map_values(doc, &ui::automerge::ROOT, "comments")? {
+        retype_json::<Vec<ClipBlock>>(doc, &comment, "rich")?;
+        for reply in collection_items(doc, &comment, "replies")? {
+            retype_json::<Vec<ClipBlock>>(doc, &reply, "rich")?;
+        }
+    }
+    Ok(())
+}
+
 #[resource(
     kind = "pdf.document",
     label = "PDF",
-    search = PdfMarkup::entries
+    search = PdfMarkup::entries,
+    version = 2,
+    migrate = upgrade_markup
 )]
 impl PdfMarkup {
     /// Make the page plan.
@@ -256,7 +276,7 @@ impl PdfMarkup {
                     StoredReply {
                         author: reply.author,
                         text: reply.text,
-                        rich: Json(Vec::new()),
+                        rich: Vec::new(),
                     },
                 );
             }
@@ -266,7 +286,7 @@ impl PdfMarkup {
                 page_id: thread.page_id,
                 author: thread.author,
                 text: thread.text,
-                rich: Json(Vec::new()),
+                rich: Vec::new(),
                 created: thread.created,
                 resolved: false,
                 replies,
@@ -480,7 +500,7 @@ impl PdfMarkup {
             page_id: note.page_id,
             author,
             text: note.text,
-            rich: Json(Vec::new()),
+            rich: Vec::new(),
             created: now,
             resolved: false,
             replies: tilo_resource::Collection::new(),
@@ -550,7 +570,7 @@ impl PdfMarkup {
             page_id,
             author: cx.author().unwrap_or_default().to_owned(),
             text: comment.text,
-            rich: Json(comment.rich),
+            rich: comment.rich,
             created: cx.now_ms(),
             resolved: false,
             replies: tilo_resource::Collection::new(),
@@ -589,7 +609,7 @@ impl PdfMarkup {
                 StoredReply {
                     author,
                     text,
-                    rich: Json(rich),
+                    rich: rich,
                 },
             );
         }

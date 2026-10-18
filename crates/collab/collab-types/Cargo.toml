@@ -45,6 +45,8 @@ tracing.workspace = true
 uuid.workspace = true
 # The action a change claims, named as the executor names it.
 tilo-actions = { version = "0.1.0", path = "../actions" }
+# A capability is a stored value of the records that keep grants.
+tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
 automerge.workspace = true
 tilo-automerge.workspace = true
 # The app surface a receiver decides claims against, read from surface.toml.

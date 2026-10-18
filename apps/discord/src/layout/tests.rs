@@ -1,5 +1,4 @@
 use discord_wire::op::{DiscordResult, Queued};
-use ui::tilo_resource::Json;
 
 use super::*;
 use crate::record::{Mapping, Origin, map_key};
@@ -14,12 +13,12 @@ pub(crate) fn dchan(
 ) -> DChannel {
     DChannel {
         id: id.into(),
-        kind: Json(kind),
+        kind,
         name: name.into(),
         parent: parent.map(Into::into),
         position,
         topic: String::new(),
-        overwrites: Json(Vec::new()),
+        overwrites: Vec::new(),
     }
 }
 

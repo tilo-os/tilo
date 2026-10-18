@@ -33,7 +33,13 @@ ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
 /// How many tags the library publishes as places.
 pub const MAX_TAG_PLACES: usize = 32;
 
-#[resource(kind = "feeds.library", label = "Feeds", children = Library::places)]
+#[resource(
+    kind = "feeds.library",
+    label = "Feeds",
+    children = Library::places,
+    version = 2,
+    migrate = crate::model::upgrade
+)]
 impl Library {
     /// Add a subscription.
     ///
