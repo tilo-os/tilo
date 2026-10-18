@@ -102,6 +102,8 @@ def suite_checks(manifest: suites.Manifest) -> str:
             f"image = {json.dumps(SUITE_IMAGE)}",
             f"env = {{ PATH = {json.dumps(SUITE_PATH)} }}",
             'requires = ["arch=x86_64"]',
+            *([f"requirement = {{ cores = {group.requirement[0]}, memory = {json.dumps(group.requirement[1])} }}"]
+              if group.requirement else []),
             *(["writable_sources = true"] if fields.get("writable_sources") else []),
             *(["git = true"] if fields.get("git") else []),
             *([f"isolation = {json.dumps(fields['isolation'])}"] if "isolation" in fields else []),
@@ -130,6 +132,9 @@ def goldens(image: str) -> str:
         'inputs = [".config/nextest.toml", ".config/nextest-filters.toml", ".config/visual-goldens-image", '
         '"tools/test-env.sh", "tools/with-test-environment.sh", "tools/with-headless-audio.sh"]',
         'env = { TILO_REQUIRE_GPU = "1", TILO_TEST_NTFS_FIXTURES = "0" }',
+        # Measured over its runs: the 99th-percentile peak memory with half again as much room, and
+        # the 90th-percentile peak cores, at most 16. Batches of its packages run as one job.
+        'requirement = { cores = 16, memory = "48GiB" }',
         'cost = "minutes"',
     ]) + "\n"
 
