@@ -517,14 +517,13 @@ async fn nested_steps_keep_original_owner_and_sign_each_steps_own_uuid() {
             .unwrap()
             .unwrap();
         assert_eq!(record.key.owner, fixture.key.owner);
-        assert_eq!(
-            record.intent["request"]["invocation"],
-            serde_json::to_value(key.invocation).unwrap()
-        );
         let evidence = record
             .admission
             .as_ref()
             .expect("each step has signed custody");
+        // Guarded history retains a request digest, not the private request.
+        // The signed receipt must still identify this step's own UUID.
+        assert_eq!(evidence.public_receipt().facts.invocation, key.invocation);
         crate::action_evidence::verify(evidence.public_receipt(), &evidence.public_receipt().facts)
             .unwrap();
         assert!(record.terminal.is_some());
