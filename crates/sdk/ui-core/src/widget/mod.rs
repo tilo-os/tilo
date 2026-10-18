@@ -3230,10 +3230,10 @@ pub use window_group::{
     WindowGroup, WindowGroupBounds, WindowWidth, max_group_px, maximized_chrome_height,
     merged_controls_width, min_group_px, permille_for_px,
 };
+pub mod edge_resize;
+pub use edge_resize::{EdgeGrab, ResizeMode, WidthLimits, WindowEdge};
 mod resize_handle;
-pub use resize_handle::{
-    HANDLE_HIT_HALF_PX, HANDLE_HOVER_PX, HANDLE_SLOT_PX, HANDLE_VISIBLE_PX, ResizeHandle,
-};
+pub use resize_handle::{HANDLE_HIT_HALF_PX, HANDLE_SLOT_PX, HANDLE_VISIBLE_PX, ResizeHandle};
 mod group_row;
 pub use group_row::{
     CrossStripDetach, GroupRow, GroupTopology, JUMP_PX_PER_DETENT, OutputSpan, Pan, StripLane,

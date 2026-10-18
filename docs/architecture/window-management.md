@@ -113,7 +113,7 @@ would show it; a chord opens the sheet and never bypasses it.
 |---|---|---|---|---|
 | Maximize, restore | `group.maximize` (toggle), `group.restore` | Super+↑ maximizes, Super+↓ restores (on any strip); Super+M toggles | double-click or double-tap the tab-bar ground; frame button | today; the maximize animation planned |
 | Full screen / restore | `group.fullscreen` | Super+F | — | today |
-| Narrower / wider, 5 % steps | `group.narrower` / `-wider` | Super+- / = | drag the right-edge handle; double-click it cycles ⅓, ½, ⅔ | steps today |
+| Narrower / wider, 5 % steps | `group.narrower` / `-wider` | Super+- / = | drag either edge ([Resizing a window](#resizing-a-window)) | steps and edge drags today |
 | Previous / next tab | `tab.previous` / `-next` | Super+Ctrl+Shift+Tab / Super+Ctrl+Tab (Ctrl+Shift+Tab / Ctrl+Tab where the app leaves them unhandled) | click a tab | today |
 | Tab into the neighbouring group | `tab.move-to-group-previous` / `-next` | Super+[ / ] | drag the tab onto the group | today |
 | Tab into a new group | `tab.move-to-new-group` | Super+Shift+Enter | drag the tab into a gap | today |
@@ -151,8 +151,9 @@ A touchscreen gets the same table. The compositor claims a touch sequence as a
 gesture when a third contact lands within 250 ms of the first, and cancels it
 for the client (`wl_touch.cancel`), so an app's two-finger scroll is never
 taken. One finger stays direct: on a window it is the app's; on a tab it drags
-the tab; on the tab-bar ground it drags the group; on a group's right edge it
-resizes, with a hit area at least 24 px wide under touch.
+the tab; on the tab-bar ground it drags the group; on a window's edge it resizes it
+as a pointer would (planned: today edge resizing is pointer-only), with a hit
+area at least 24 px wide under touch.
 
 ## Pointer
 
@@ -160,8 +161,9 @@ resizes, with a hit area at least 24 px wide under touch.
   group, onto another strip, display or overview preview.
 - **Tab-bar ground** (the empty part of the bar): drag moves the whole group to
   the same targets; double-click maximizes.
-- **Right edge of a group**: drag resizes; the width snaps to ⅓, ½ and ⅔ of
-  the display within 12 px of one.
+- **Either edge of a window**: drag resizes that window, and only it; Shift
+  trades width with the window across the seam. See
+  [Resizing a window](#resizing-a-window).
 - **Super + drag** anywhere on a window moves its group; Super + right-drag
   resizes it. Super chords are shell-owned, so no app loses a binding.
 - **Wheel**: over the tab bar it pans the strip; Super+wheel steps windows.
@@ -170,6 +172,78 @@ resizes, with a hit area at least 24 px wide under touch.
   display's outline. Dragging against a display's outer
   edge scrolls that lane, faster the closer to the edge; resting a drag on a
   background tab for half a second brings that tab to the front.
+
+## Resizing a window
+
+The strip is infinitely wide, so resizing is never zero-sum unless the person
+asks for it. One rule decides every case, and the code holds it in one place,
+`crates/sdk/ui-core/src/widget/edge_resize.rs`: `seam_owner` says whose edge a
+point is, `EdgeDrag::resize` says what a drag sets. The row
+(`group_row_edges.rs`) only feeds them geometry: the hover highlight, the press
+and every frame of the drag ask the same two functions.
+
+- **You resize the window whose edge you grab, and only that window.** Every
+  window owns both of its edges. The seam between two windows (each one's
+  6 px grip plus the 8 px gap) is split down the middle, each half being the
+  edge of the window it touches, except that **the focused window owns the
+  whole seam**: the seam is too small to aim at halves, and the window you are
+  working in is the one you mean. Grabbing Files' left edge, where it meets a
+  terminal, resizes Files when Files is the window in use, wherever on the
+  seam the press lands.
+- **Before pressing**, the edge of the window that will change shows its grip
+  (with Shift held, both windows' grips at that seam), and the pointer shows
+  the resize cursor. The seam's own rule never lights up, so it never suggests
+  that the gap or both windows move.
+- **A plain drag** changes only the grabbed window. Its width follows the
+  pointer 1:1, in whole pixels, and its *opposite* edge holds still on screen.
+  Everything beyond the dragged edge moves with it at its own width: dragging
+  a left edge left pans the strip by what the window grew, so the windows
+  before it slide away and its right edge stays put. No other window changes
+  size.
+- **Shift+drag** is zero-sum between the two windows at that seam: what one
+  gains the other loses, both outer edges stay put. On an outer edge there is
+  no one to trade with, and it is a plain drag. Shift is read at the press.
+- **Limits stop the edge** and nothing else makes up for it. The narrowest a
+  window goes is its app's real minimum (`AppWidget::min_window_width`): a
+  Tilo app's compact layout (`metrics.window_min_width`, 320 px), a client's
+  `xdg_toplevel` min-size hint, and for an app that states nothing the
+  strip's floor (`WIDTH_FLOOR_PX`, 160 px, which also bounds the others from
+  below, since the window's own chrome needs it). A client's max-size hint
+  stops it the other way. Ours is only the storable maximum, ten strips
+  (`WIDTH_MAX_PERMILLE`), which an edge drag that auto-scrolls can reach;
+  removing it (wider storage) is pending.
+- **The pointer stays on the edge**: the drag is anchored where it was
+  pressed (no jump), and a pointer resting at a display edge auto-scrolls the
+  strip, so a window can grow past the screen while its edge stays under the
+  pointer. The scroll only runs while it still changes a width.
+- **Live**: Tilo apps lay out again every frame of the drag. A client is sent
+  a configure each frame its size changes; until it answers, its last buffer
+  is drawn at the size it was drawn, against the fixed edge and clipped to the
+  tile, never stretched (`ForeignEntry::frame_rect`; input maps through the
+  same rect). The window's chrome follows the pointer at once.
+- **Release** stores the width as the share of the strip it landed on and
+  hands it to the shell to persist. Escape or losing focus cancels the drag:
+  both windows and the strip go back to where they were. While the pointer is
+  down the strip holds the fixed edge even if that cuts a window at the
+  screen edge; let go, it eases to where the strip rests by its framing rule.
+
+Pinned by `edge_resize.rs`'s unit tests (the rule), `group_row.rs`'s row
+tests (hover highlight, push, Shift, limits, cancel, auto-scroll) and the
+pointer tests in `crates/session/shell/tests/desktop_env_interactions.rs`.
+The tests that state the user's own words carry a `USER REQUIREMENT` marker
+and may not lose an assertion without their OK (`docs/policies.md`).
+
+**Why it kept regressing.** Seam ownership used to be nobody's decision. The
+seam handle was keyed to its left neighbour (its drag set "left width + dx"),
+so the infinite-strip change of 2026-09-20 kept only the left window moving,
+and the 2026-10-12 change that added leading edges wrote that down as the
+rule ("the seam is the first window's trailing edge") and pinned it in a test
+(`[40, 0, 0]` for the middle window's left edge). Each fix stacked another hit
+target (window grips, a leading grip only at a lane's start, the seam), and
+which window moved fell out of dispatch order. The same handle drag also left
+the strip's re-framing on, so the pan moved under the pointer. Now the owner
+is decided by a named function with tests per case, the seam widget resizes
+nothing, and the user's words are pinned.
 
 ## Where things open
 
@@ -256,7 +330,7 @@ shortcut) and `Motion::context` for what only says where something went
 | Open a window | its group's width grows from 0 at its slot while neighbours slide aside; the content fades in and scales 0.96 → 1 | the same: the window arrives when its app is ready, frames after the chord |
 | Close a window | the reverse, drawn from the last frame the client presented, so a dying client never flashes empty | the same, for the same reason |
 | Move a group (reorder, strip, display) | the group springs to its new rect; neighbours spring to close and open the gap | in its new slot on the next frame; the viewport slides (`fast`) only if the group left the screen |
-| Resize | the width springs; a client is configured once, at the final size, and its old buffer is scaled until it commits | the new width on the next frame |
+| Resize | an edge drag is direct manipulation: the width follows the pointer every frame, a Tilo app lays out again every frame, a client is configured at frame rate and its last buffer is shown unscaled against the fixed edge until it answers ([Resizing a window](#resizing-a-window)) | the new width on the next frame |
 | Maximize / restore | the group's rect springs between its tiled rect and the work area; siblings on that display fade (`fast`) rather than being squashed | the end state on the next frame, no fade |
 | Full screen | as maximize, and the chrome slides off that display's edges | as maximize |
 | Switch tab | the tab chips open and close (180 ms); the content is swapped, never crossfaded | the content and chips on the next frame |

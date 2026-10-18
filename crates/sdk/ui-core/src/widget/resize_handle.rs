@@ -1,13 +1,12 @@
-//! `ResizeHandle` — the visible, draggable handle that sits in the gap
-//! between two adjacent `WindowGroup`s inside a [`GroupRow`].
+//! `ResizeHandle` — the seam between two adjacent `WindowGroup`s inside a
+//! [`GroupRow`]: the slot that spaces them, and the thin rule painted in it.
 //!
-//! Paints a 2-px accent rule centred on the gap (3 px hovered/dragged),
-//! backed by a ~16-px invisible hit area straddling it. On drag it drives
-//! width updates for the groups adjoining the gap. A normal drag changes
-//! only the group on the handle's left,
-//! extending or contracting the horizontally unbounded strip. Holding Shift
-//! opts into pairwise redistribution, changing both neighbours while their
-//! sum stays constant.
+//! It resizes nothing itself. Which window a press on a seam resizes, and
+//! how, is one rule in [`super::edge_resize`], applied by the row: the seam
+//! is split between the two windows (the focused one owning all of it), and
+//! the owner's own edge grip lights up under the pointer. A seam that drove
+//! its left neighbour's width was how "grabbing Files' left edge resized the
+//! terminal beside it" came about, so the seam no longer drives anything.
 //!
 //! The widget is a zero-width flex item so the row's Taffy gap absorbs its
 //! footprint; its geometry is computed in `apply_layout` from the two
@@ -17,18 +16,16 @@
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use vello::kurbo::{Affine, Rect, RoundedRect};
 
 use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
-use crate::widget::{DEFAULT_STRIP_USABLE_PX, Widget, max_group_px, min_group_px};
+use crate::widget::Widget;
 
 pub const HANDLE_VISIBLE_PX: f64 = 2.0;
-pub const HANDLE_HOVER_PX: f64 = 3.0;
 /// This is the strip's inter-group gap: the row declares no gap of its own
 /// and lets the handle supply the whole footprint, so anything that walks
 /// the strip's canvas (`GroupRow::usable_per_group`) has to step by this
@@ -39,54 +36,18 @@ pub const HANDLE_SLOT_PX: f64 = 8.0;
 /// outer, has the same size of target. Half of the 20 px total each side.
 pub const HANDLE_HIT_HALF_PX: f64 = HANDLE_SLOT_PX / 2.0 + crate::widget::RESIZE_HANDLE_PX;
 
-/// Captured-at-press snapshot of the two adjacent groups' widths and the
-/// cursor's x, so mid-drag each group's new width is offset by `cursor_x -
-/// origin_cursor_x` and the edge follows the cursor 1:1.
-#[derive(Clone, Copy, Debug)]
-struct DragOrigin {
-    cursor_x: f64,
-    left_w: f64,
-    right_w: f64,
-    /// Latched at press time so a modifier change cannot jump the geometry
-    /// between independent and pairwise resize halfway through a drag.
-    redistribute: bool,
-}
-
 /// The `GroupRow` constructs one per inter-group gap (N-1 handles for N
 /// groups) and refreshes the handle's `(left, right)` rect snapshot each
-/// layout pass. Width updates flow back through callbacks the row
-/// supplies, keeping the widget free of row/group-specific knowledge.
+/// layout pass.
 pub struct ResizeHandle {
     /// Rebuilt every layout pass — never trust this outside the current
     /// paint/event cycle.
     left_rect: Rect,
     right_rect: Rect,
-    /// Drives the "thicken to 3 px" paint branch; the OS `EwResize`
-    /// cursor hint is driven separately by [`Widget::cursor_shape`].
-    hover: bool,
-    /// Last pointer x, so a press anchors the drag where the pointer is.
-    last_cursor_x: f64,
-    /// `Some` once the user pressed inside the hit area. Carries the
-    /// press-time cursor x and both neighbours' press-time widths so the
-    /// per-frame update changes only the left width by default; Shift at
-    /// press time makes it symmetric (`left + dx`, `right - dx`).
-    drag: Option<DragOrigin>,
-    /// The hit area: the gap between neighbours, extended by
-    /// `HANDLE_HIT_HALF_PX` on each side.
+    /// The seam's grab zone: the gap between the neighbours, extended by
+    /// `HANDLE_HIT_HALF_PX` on each side, so it is exactly the two windows'
+    /// edge grips plus the gap.
     rect: Rect,
-    /// `(left_dx, right_dx)` written on each mid-drag `CursorMoved`; the
-    /// row drains it via [`Self::take_pending`] and applies it to the two
-    /// adjacent groups. A pulse rather than direct mutation keeps the
-    /// handle testable without a full group fixture.
-    pending: Option<(f64, f64)>,
-    /// Set on release after a drag was in flight; the row drains it via
-    /// [`Self::take_pending_commit`] to persist the final widths.
-    pending_commit: bool,
-    /// `(min, max)` logical px a neighbour width may take. Not constants:
-    /// a fixed 300..1200 was too coarse on a laptop panel and a hard
-    /// ceiling on a 4K one. Seeded from [`DEFAULT_STRIP_USABLE_PX`] so a
-    /// handle tested in isolation still has a definite range.
-    bounds: (f64, f64),
 }
 
 impl ResizeHandle {
@@ -106,27 +67,8 @@ impl ResizeHandle {
         Self {
             left_rect: Rect::ZERO,
             right_rect: Rect::ZERO,
-            hover: false,
-            last_cursor_x: 0.0,
-            drag: None,
             rect: Rect::ZERO,
-            pending: None,
-            pending_commit: false,
-            bounds: (
-                min_group_px(DEFAULT_STRIP_USABLE_PX),
-                max_group_px(DEFAULT_STRIP_USABLE_PX),
-            ),
         }
-    }
-
-    /// So its clamps track the display instead of a fixed pixel range.
-    /// Called by [`crate::widget::GroupRow::build_layout`].
-    pub fn set_strip_usable_px(&mut self, px: f64) {
-        self.bounds = (min_group_px(px), max_group_px(px));
-    }
-
-    pub fn bounds(&self) -> (f64, f64) {
-        self.bounds
     }
 
     /// Called by the row's `apply_layout` after `WindowGroup::apply_layout`
@@ -141,66 +83,6 @@ impl ResizeHandle {
             mid_x + HANDLE_HIT_HALF_PX,
             left.y1.max(right.y1),
         );
-    }
-
-    pub fn is_hovered(&self) -> bool {
-        self.hover
-    }
-
-    pub fn is_dragging(&self) -> bool {
-        self.drag.is_some()
-    }
-
-    /// Take-pattern so a subsequent poll without another drag tick
-    /// returns `None`.
-    pub fn take_pending(&mut self) -> Option<(f64, f64)> {
-        self.pending.take()
-    }
-
-    /// `true` exactly once per completed drag gesture.
-    pub fn take_pending_commit(&mut self) -> bool {
-        std::mem::take(&mut self.pending_commit)
-    }
-
-    /// Both widths stay inside `[min, max]` and their *sum* stays constant:
-    /// if pushing the left neighbour past its min would shrink it further,
-    /// the right neighbour absorbs the rest (by the actual amount left
-    /// moved, not the requested amount), and the inverse at the right
-    /// neighbour's bounds — so the gap stays centred at the cursor even when
-    /// one side is pinned. Pure function so tests can pin the math directly.
-    pub fn compute_widths(
-        left_origin: f64,
-        right_origin: f64,
-        dx: f64,
-        min: f64,
-        max: f64,
-    ) -> (f64, f64) {
-        let sum = left_origin + right_origin;
-        let raw_left = left_origin + dx;
-        let left_clamped = raw_left.clamp(min, max);
-        // The right neighbour absorbs whatever's left of the pair sum,
-        // then is itself clamped, feeding any further delta back to the
-        // left side so the pair sum is preserved.
-        let right_after = sum - left_clamped;
-        let right_clamped = right_after.clamp(min, max);
-        let final_left = sum - right_clamped;
-        // Defensive clamp covers degenerate cases where the press-time
-        // sum sat outside `[2*min, 2*max]`.
-        let final_left = final_left.clamp(min, max);
-        (final_left, right_clamped)
-    }
-
-    /// Default infinite-strip resizing: only the group whose trailing edge
-    /// owns this handle changes. The neighbour stays put in strip space and
-    /// is translated by layout rather than squeezed to preserve a viewport.
-    pub fn compute_independent_widths(
-        left_origin: f64,
-        right_origin: f64,
-        dx: f64,
-        min: f64,
-        max: f64,
-    ) -> (f64, f64) {
-        ((left_origin + dx).clamp(min, max), right_origin)
     }
 }
 
@@ -251,12 +133,10 @@ impl Widget for ResizeHandle {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        let active = self.hover || self.drag.is_some();
-        let thickness = if active {
-            HANDLE_HOVER_PX
-        } else {
-            HANDLE_VISIBLE_PX
-        };
+        // Always the idle rule: under the pointer it is the owning window's
+        // own edge grip that lights up, so the seam never suggests that
+        // the gap itself, or both windows, will move.
+        let thickness = HANDLE_VISIBLE_PX;
         let mid_x = f64::midpoint(self.left_rect.x1, self.right_rect.x0);
         let y0 = self.left_rect.y0.min(self.right_rect.y0);
         let y1 = self.left_rect.y1.max(self.right_rect.y1);
@@ -266,14 +146,9 @@ impl Widget for ResizeHandle {
         if y1 <= y0 {
             return;
         }
-        let colour = if active {
-            theme.tokens.colors.intent.inverted
-        } else {
-            // Neutral slate at ~0.35 alpha, matching the per-group
-            // right-edge grip's idle treatment. `accent[5] @ 0.45` read
-            // like every group had an "active outline" simultaneously.
-            theme.tokens.colors.text_dim.with_alpha_factor(0.35)
-        };
+        // Neutral slate at ~0.35 alpha. `accent[5] @ 0.45` read like every
+        // group had an "active outline" simultaneously.
+        let colour = theme.tokens.colors.text_dim.with_alpha_factor(0.35);
         let capsule = RoundedRect::from_rect(
             Rect::new(mid_x - thickness / 2.0, y0, mid_x + thickness / 2.0, y1),
             thickness / 2.0,
@@ -287,66 +162,6 @@ impl Widget for ResizeHandle {
         );
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                let pt = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-                self.last_cursor_x = pt.x;
-                self.hover = self.rect.contains(pt) && self.drag.is_none();
-                if let Some(origin) = self.drag {
-                    let dx = pt.x - origin.cursor_x;
-                    let (min, max) = self.bounds;
-                    let (new_left, new_right) = if origin.redistribute {
-                        Self::compute_widths(origin.left_w, origin.right_w, dx, min, max)
-                    } else {
-                        Self::compute_independent_widths(
-                            origin.left_w,
-                            origin.right_w,
-                            dx,
-                            min,
-                            max,
-                        )
-                    };
-                    self.pending = Some((new_left, new_right));
-                    *ctx.handled = true;
-                }
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } if self.hover => {
-                // Rect width rather than calling back into the groups
-                // keeps the handle independent of `WindowGroup`'s
-                // internal fraction representation.
-                let (min, max) = self.bounds;
-                let left_w = self.left_rect.width().max(0.0).clamp(min, max);
-                let right_w = self.right_rect.width().max(0.0).clamp(min, max);
-                // Anchor at the pointer, not the seam centre: the hit zone is
-                // wider than the gap, so the edge must not jump to the cursor.
-                let cursor_x = self.last_cursor_x;
-                self.drag = Some(DragOrigin {
-                    cursor_x,
-                    left_w,
-                    right_w,
-                    redistribute: ctx.modifiers.state().shift_key(),
-                });
-                self.hover = false;
-                *ctx.handled = true;
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } if self.drag.is_some() => {
-                self.drag = None;
-                self.pending_commit = true;
-                *ctx.handled = true;
-            }
-            _ => {}
-        }
-    }
-
     fn name(&self) -> &'static str {
         "ResizeHandle"
     }
@@ -355,309 +170,34 @@ impl Widget for ResizeHandle {
         self.rect
     }
 
-    /// `point` is in the same logical space as `self.rect`.
-    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        if self.drag.is_some() || self.rect.contains(point) {
-            Some(winit::window::CursorIcon::EwResize)
-        } else {
-            None
-        }
-    }
-
     fn needs_animation_frame(&self) -> bool {
-        // Hover thickening is event-driven and drag tracks the cursor
-        // 1:1 — no frame-driven curves to pump.
         false
-    }
-
-    fn needs_redraw(&self) -> bool {
-        // Default-truthful so a CursorMoved that flips `hover` produces
-        // a repaint; the cost is one capsule fill dominated by the rest
-        // of the scene.
-        true
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::dispatch;
-
-    /// A strip wide enough that the floor, not a share, is the minimum.
-    const USABLE: f64 = 2000.0;
-
-    fn bounds() -> (f64, f64) {
-        (min_group_px(USABLE), max_group_px(USABLE))
-    }
 
     #[test]
-    fn handle_bounds_follow_the_strip() {
-        // Case `bounds_track_the_strip_not_a_fixed_pixel_range`.
-        {
-            // The legal width range is a property of the display: a fixed
-            // `[300, 1200]` could not express a 3840-px output's ceiling.
-            assert_eq!(max_group_px(1600.0), 16_000.0);
-            assert_eq!(max_group_px(3840.0), 38_400.0);
-            // The only minimum is the absolute floor, whatever the display.
-            assert_eq!(min_group_px(3840.0), crate::widget::WIDTH_FLOOR_PX);
-            assert_eq!(min_group_px(1200.0), crate::widget::WIDTH_FLOOR_PX);
-        }
+    fn the_seam_zone_is_both_edge_grips_plus_the_gap() {
+        let mut h = ResizeHandle::new();
+        h.set_neighbour_rects(
+            Rect::new(0.0, 0.0, 600.0, 400.0),
+            Rect::new(608.0, 0.0, 1208.0, 400.0),
+        );
+        let r0 = h.get_rect();
+        // Gap centre (600 + 608) / 2 = 604; the zone extends 10 px each side
+        // (half the gap plus one grab zone) → x0=594, x1=614.
+        assert!((r0.x0 - 594.0).abs() < 0.1);
+        assert!((r0.x1 - 614.0).abs() < 0.1);
 
-        // Case `handle_adopts_the_strips_bounds`.
-        {
-            let mut h = ResizeHandle::new();
-            h.set_strip_usable_px(3840.0);
-            assert_eq!(h.bounds(), (min_group_px(3840.0), max_group_px(3840.0)));
-        }
-
-        // Case `set_neighbour_rects_recomputes_hit_area`.
-        {
-            let mut h = ResizeHandle::new();
-            h.set_neighbour_rects(
-                Rect::new(0.0, 0.0, 600.0, 400.0),
-                Rect::new(608.0, 0.0, 1208.0, 400.0),
-            );
-            let r0 = h.get_rect();
-            // Gap centre (600 + 608) / 2 = 604; hit area extends 10 px each
-            // side (half the gap plus one grab zone) → x0=594, x1=614.
-            assert!((r0.x0 - 594.0).abs() < 0.1);
-            assert!((r0.x1 - 614.0).abs() < 0.1);
-
-            h.set_neighbour_rects(
-                Rect::new(100.0, 0.0, 700.0, 400.0),
-                Rect::new(708.0, 0.0, 1308.0, 400.0),
-            );
-            let r1 = h.get_rect();
-            assert!((r1.x0 - 694.0).abs() < 0.1);
-            assert!((r1.x1 - 714.0).abs() < 0.1);
-        }
-    }
-
-    #[test]
-    fn compute_widths_moves_symmetrically_and_clamps_to_bounds() {
-        // Case `compute_widths_symmetric_drag_within_bounds`.
-        {
-            // Two 600-px groups; drag 100 px right → left 700, right 500.
-            let (min, max) = bounds();
-            let (l, r) = ResizeHandle::compute_widths(600.0, 600.0, 100.0, min, max);
-            assert_eq!(l, 700.0);
-            assert_eq!(r, 500.0);
-            assert_eq!(l + r, 1200.0);
-        }
-
-        // Case `compute_widths_clamps_left_at_min`.
-        {
-            // A leftward drag of 500 from left=400 would push it to -100; clamp
-            // pins it at min and right absorbs only the actual movement (100).
-            let (min, max) = bounds();
-            let (l, r) = ResizeHandle::compute_widths(400.0, 600.0, -500.0, min, max);
-            assert_eq!(l, min, "left pinned at the strip's min");
-            assert_eq!(r, 1000.0 - min, "right absorbs only the actual movement");
-            assert_eq!(l + r, 400.0 + 600.0, "pair sum is preserved");
-        }
-
-        // Case `compute_widths_clamps_right_at_min`.
-        {
-            // Symmetric of the above.
-            let (min, max) = bounds();
-            let (l, r) = ResizeHandle::compute_widths(600.0, 400.0, 500.0, min, max);
-            assert_eq!(r, min, "right pinned at the strip's min");
-            assert_eq!(l, 1000.0 - min, "left absorbs the actual movement");
-            assert_eq!(l + r, 600.0 + 400.0, "pair sum is preserved");
-        }
-
-        // Case `compute_widths_clamps_left_at_max`.
-        {
-            // Left starts 100 px short of max; a rightward drag of 500 pins
-            // it at the max, and right shrinks by the actual movement (100).
-            let (min, max) = bounds();
-            let (l, r) = ResizeHandle::compute_widths(max - 100.0, 600.0, 500.0, min, max);
-            assert_eq!(l, max, "left pinned at the strip's max");
-            assert_eq!(r, 500.0, "right shrinks by the actual movement (100)");
-            assert_eq!(l + r, max - 100.0 + 600.0, "pair sum is preserved");
-        }
-
-        // Case `compute_widths_zero_dx_is_identity`.
-        {
-            let (min, max) = bounds();
-            let (l, r) = ResizeHandle::compute_widths(450.0, 750.0, 0.0, min, max);
-            assert_eq!(l, 450.0);
-            assert_eq!(r, 750.0);
-        }
-
-        // Case `compute_widths_handles_extreme_negative_drag`.
-        {
-            let (min, max) = bounds();
-            let (l, r) = ResizeHandle::compute_widths(500.0, 500.0, -10_000.0, min, max);
-            assert_eq!(l, min);
-            assert!(r <= max);
-            assert!(r >= min);
-            assert_eq!(l + r, 1000.0, "pair sum preserved even at extreme drags");
-        }
-
-        // Case `independent_resize_grows_strip_without_squeezing_neighbour`.
-        {
-            let (min, max) = bounds();
-            let (left, right) =
-                ResizeHandle::compute_independent_widths(600.0, 750.0, 100.0, min, max);
-            assert_eq!(left, 700.0);
-            assert_eq!(right, 750.0, "ordinary resize must not touch the neighbour");
-            assert_eq!(
-                left + right,
-                1450.0,
-                "the infinite strip grows by the drag delta"
-            );
-        }
-
-        // Case `shift_resize_is_zero_sum_and_plain_resize_moves_only_one_edge`.
-        {
-            let (min, max) = bounds();
-            // Shift: what the left window gains the right one loses.
-            let (l, r) = ResizeHandle::compute_widths(800.0, 700.0, 120.0, min, max);
-            assert_eq!((l, r), (920.0, 580.0));
-            assert_eq!(l + r, 1500.0);
-            // No shift: only the dragged window changes, the strip grows.
-            let (l, r) = ResizeHandle::compute_independent_widths(800.0, 700.0, 120.0, min, max);
-            assert_eq!((l, r), (920.0, 700.0));
-        }
-
-        // Case `windows_can_be_wider_than_the_strip_and_narrower_than_a_share`.
-        {
-            let (min, max) = bounds();
-            let (l, _) = ResizeHandle::compute_independent_widths(1000.0, 700.0, 3000.0, min, max);
-            assert_eq!(
-                l, 4000.0,
-                "past the 2000 px strip: no ceiling at the display"
-            );
-            let (l, _) = ResizeHandle::compute_independent_widths(1000.0, 700.0, -990.0, min, max);
-            assert_eq!(l, min, "only the floor stops a narrow window");
-            assert!(min < 0.1 * USABLE, "the floor is not a share of the strip");
-        }
-
-        // Case `independent_resize_clamps_only_the_resized_group`.
-        {
-            let (min, max) = bounds();
-            let (left, right) =
-                ResizeHandle::compute_independent_widths(400.0, 750.0, -10_000.0, min, max);
-            assert_eq!(left, min);
-            assert_eq!(right, 750.0);
-        }
-    }
-
-    #[test]
-    fn drag_gesture_starts_only_on_the_hit_area() {
-        // Case `drag_press_drag_release_flow`.
-        {
-            let mut h = ResizeHandle::new();
-            // Two 600-wide groups starting at x=0 and x=608 (with the row's
-            // 8 px gap). The handle's hit rect is centred on x=604.
-            h.set_neighbour_rects(
-                Rect::new(0.0, 0.0, 600.0, 400.0),
-                Rect::new(608.0, 0.0, 1208.0, 400.0),
-            );
-            let dev = winit::event::DeviceId::dummy();
-            let cx_hover = f64::midpoint(h.rect.x0, h.rect.x1);
-            dispatch(
-                &mut h,
-                &WindowEvent::CursorMoved {
-                    device_id: dev,
-                    position: winit::dpi::PhysicalPosition::new(cx_hover, 200.0),
-                },
-            );
-            assert!(h.is_hovered(), "cursor in hit area → hover");
-
-            dispatch(
-                &mut h,
-                &WindowEvent::MouseInput {
-                    device_id: dev,
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                },
-            );
-            assert!(h.is_dragging(), "press inside hit area → drag started");
-            assert!(!h.is_hovered(), "hover clears once drag begins");
-
-            dispatch(
-                &mut h,
-                &WindowEvent::CursorMoved {
-                    device_id: dev,
-                    position: winit::dpi::PhysicalPosition::new(cx_hover + 50.0, 200.0),
-                },
-            );
-            let pulse = h
-                .take_pending()
-                .expect("mid-drag must publish a width pulse");
-            assert_eq!(pulse.0, 650.0, "left grew by exactly dx");
-            assert_eq!(
-                pulse.1, 600.0,
-                "ordinary drag leaves the neighbour unchanged"
-            );
-            assert!(
-                h.take_pending().is_none(),
-                "take-pattern: second poll is None"
-            );
-
-            dispatch(
-                &mut h,
-                &WindowEvent::MouseInput {
-                    device_id: dev,
-                    state: ElementState::Released,
-                    button: MouseButton::Left,
-                },
-            );
-            assert!(!h.is_dragging(), "release ends drag");
-            assert!(h.take_pending_commit(), "release publishes a commit pulse");
-            assert!(!h.take_pending_commit(), "commit pulse is one-shot");
-        }
-
-        // Case `press_outside_hit_area_does_not_start_drag`.
-        {
-            let mut h = ResizeHandle::new();
-            h.set_neighbour_rects(
-                Rect::new(0.0, 0.0, 600.0, 400.0),
-                Rect::new(608.0, 0.0, 1208.0, 400.0),
-            );
-            let dev = winit::event::DeviceId::dummy();
-            // x=100 is well left of the gap centre (604).
-            dispatch(
-                &mut h,
-                &WindowEvent::CursorMoved {
-                    device_id: dev,
-                    position: winit::dpi::PhysicalPosition::new(100.0, 200.0),
-                },
-            );
-            assert!(!h.is_hovered(), "cursor outside hit area → no hover");
-            dispatch(
-                &mut h,
-                &WindowEvent::MouseInput {
-                    device_id: dev,
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                },
-            );
-            assert!(
-                !h.is_dragging(),
-                "press outside hit area must NOT start drag"
-            );
-        }
-
-        // Case `cursor_shape_is_ew_resize_over_hit_area`.
-        {
-            let mut h = ResizeHandle::new();
-            h.set_neighbour_rects(
-                Rect::new(0.0, 0.0, 600.0, 400.0),
-                Rect::new(608.0, 0.0, 1208.0, 400.0),
-            );
-            assert_eq!(
-                Widget::cursor_shape(&h, Point::new(604.0, 200.0)),
-                Some(winit::window::CursorIcon::EwResize),
-                "pointer over the handle hit area requests an east-west resize cursor",
-            );
-            assert_eq!(
-                Widget::cursor_shape(&h, Point::new(100.0, 200.0)),
-                None,
-                "pointer well outside the handle defers (no cursor claim)",
-            );
-        }
+        h.set_neighbour_rects(
+            Rect::new(100.0, 0.0, 700.0, 400.0),
+            Rect::new(708.0, 0.0, 1308.0, 400.0),
+        );
+        let r1 = h.get_rect();
+        assert!((r1.x0 - 694.0).abs() < 0.1);
+        assert!((r1.x1 - 714.0).abs() < 0.1);
     }
 }
