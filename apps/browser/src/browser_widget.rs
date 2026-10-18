@@ -2771,15 +2771,9 @@ impl BrowserWidget {
         {
             notices.push(notice);
         }
-        if self.browsing_mode.is_private() {
-            notices.push(
-                crate::notice::Notice::neutral("Private window")
-                    .with_message(
-                        "Browsing data is removed when this window closes. Files you download remain.",
-                    )
-                    .with_id("browser.private-indicator"),
-            );
-        }
+        // A private window is marked by its tinted toolbar and the Private
+        // chip in it (`build_toolbar`, `draw`), not by a banner that would
+        // take a row from every page.
         if let Some(message) = &self.private_window_notice {
             notices.push(
                 crate::notice::Notice::warning("Couldn’t open a private window")
@@ -4542,6 +4536,20 @@ impl Widget for BrowserWidget {
         let scale = coefficients[0].hypot(coefficients[1]);
         if scale.is_finite() && scale > 0.0 {
             self.window_scale = scale as f32;
+        }
+        // A private window's toolbar is tinted, as Safari and Chrome mark
+        // theirs: under the controls, so they keep their own contrast. The
+        // directional veneer darkens a light ground and lightens a dark one.
+        if self.browsing_mode.is_private()
+            && let Some(rect) = self.find_rect("browser.toolbar")
+        {
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                theme.tokens.colors.overlay_medium,
+                None,
+                &rect,
+            );
         }
         if let Some(c) = self.composed.element_mut() {
             c.draw(scene, transform, text_renderer, theme, presence);
@@ -10454,6 +10462,15 @@ mod tests {
             layout_at(&mut widget, 390.0, 844.0);
             let indicator = widget.find_rect("browser.private-indicator").unwrap();
             assert!(indicator.width() > 0.0 && indicator.height() > 0.0);
+            // The mark lives in the tinted toolbar; no banner takes a row
+            // from the page.
+            let toolbar = widget.find_rect("browser.toolbar").unwrap();
+            assert_eq!(toolbar.intersect(indicator), indicator);
+            let surface = widget.find_rect("browser.surface").unwrap();
+            assert!(
+                (surface.y0 - toolbar.y1).abs() < 1.0,
+                "the page starts right under the toolbar: {toolbar:?} {surface:?}"
+            );
         }
 
         // Phase `private_discovery_failure_filter_worker_keeps_removed_root_absent`.

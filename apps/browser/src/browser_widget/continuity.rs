@@ -2,11 +2,7 @@
 use super::{BrowserOperation, BrowserWidget};
 use ui::tilo_resource::Effect as _;
 
-const CATALOG: ui::i18n::EmbeddedCatalog = ui::i18n::EmbeddedCatalog::new(
-    "en-US",
-    &[("en-US", include_str!("../../locales/en-US.ftl"))],
-)
-.with_system_locale();
+use crate::resource::CATALOG;
 
 impl BrowserWidget {
     #[cfg(test)]

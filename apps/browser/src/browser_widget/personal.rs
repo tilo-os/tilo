@@ -6,11 +6,7 @@ use std::rc::Rc;
 use ui::tilo_resource::Effect as _;
 use ui::widget::Element;
 
-const CATALOG: ui::i18n::EmbeddedCatalog = ui::i18n::EmbeddedCatalog::new(
-    "en-US",
-    &[("en-US", include_str!("../../locales/en-US.ftl"))],
-)
-.with_system_locale();
+use crate::resource::CATALOG;
 fn source(value: &str) -> Result<[u8; 32], String> {
     let hash = blake3::Hash::from_hex(value)
         .map_err(|_| "Invalid personal bookmark source".to_string())?;
