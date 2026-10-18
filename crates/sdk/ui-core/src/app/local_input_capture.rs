@@ -175,7 +175,13 @@ impl App {
 
     pub(super) fn drain_local_input_capture(&mut self) {
         let mut failures = Vec::new();
-        for (route, queue) in &self.local_input_capture.queues {
+        let queues: Vec<_> = self
+            .local_input_capture
+            .queues
+            .iter()
+            .map(|(route, queue)| (route.clone(), queue.clone()))
+            .collect();
+        for (route, queue) in queues {
             failures.extend(queue.take_refusals());
             for (capture, lease) in queue.drain_leased() {
                 let invocation = capture.invocation;
@@ -183,6 +189,9 @@ impl App {
                 if self.local_input_capture.pending.contains_key(&request_id) {
                     failures.push("local action observation replies are still pending".into());
                     continue;
+                }
+                if let Err(error) = self.stage_local_action_evidence(&route, &capture, None) {
+                    failures.push(error);
                 }
                 match self
                     .collaboration
@@ -274,6 +283,13 @@ impl App {
                     .pending
                     .remove(&request_id)
                     .unwrap();
+                if let Err(error) = self.stage_local_action_evidence(
+                    &pending._route,
+                    &pending.capture,
+                    Some(&admission),
+                ) {
+                    self.local_input_capture_failed(&error);
+                }
                 let history = &mut self.local_input_capture;
                 history.retained_bytes += retained_size(&pending.capture, &admission);
                 history.retained.push_back((pending.capture, admission));

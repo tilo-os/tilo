@@ -1423,6 +1423,30 @@ impl RecordSet {
         self.active.as_ref()
     }
 
+    pub(crate) fn record_active_private_action(
+        &mut self,
+        action: app_state::PrivateAction,
+    ) -> Result<(), String> {
+        let id = self.active.as_ref().ok_or("no active record")?;
+        let slot = self.open.get_mut(id).ok_or("active record is not open")?;
+        slot.autosave
+            .as_mut()
+            .ok_or("record has no private durable writer")?
+            .record_private_action(action)
+    }
+
+    pub(crate) fn active_private_actions(
+        &self,
+        doc: &AutoCommit,
+    ) -> Result<Vec<app_state::PrivateAction>, String> {
+        let id = self.active.as_ref().ok_or("no active record")?;
+        self.open
+            .get(id)
+            .and_then(|slot| slot.autosave.as_ref())
+            .ok_or("record has no private durable writer")?
+            .private_actions(doc)
+    }
+
     /// Every record this process has open, checked-out one included.
     pub fn open_records(&self) -> Vec<RecordCheckout> {
         let mut out: Vec<RecordCheckout> = self
@@ -3386,6 +3410,38 @@ impl RecordStore {
             .get(id)
             .and_then(|p| p.autosave.as_ref())
             .and_then(app_state::DocWriter::last_error)
+    }
+
+    /// Stage private evidence on the exact record owner, never its CRDT.
+    pub(crate) fn record_private_action(
+        &self,
+        id: &RecordId,
+        action: app_state::PrivateAction,
+    ) -> Result<(), String> {
+        let mut set = self
+            .0
+            .try_borrow_mut()
+            .map_err(|_| "record store is busy")?;
+        let slot = set.open.get_mut(id).ok_or("record is not open")?;
+        slot.autosave
+            .as_mut()
+            .ok_or("record has no private durable writer")?
+            .record_private_action(action)
+    }
+
+    /// Read bounded evidence against this owner's live history, without cloning
+    /// the document or opening a second owner.
+    pub(crate) fn private_actions(
+        &self,
+        id: &RecordId,
+    ) -> Result<Vec<app_state::PrivateAction>, String> {
+        let set = self.0.try_borrow().map_err(|_| "record store is busy")?;
+        let slot = set.open.get(id).ok_or("record is not open")?;
+        let doc = slot.doc.as_ref().ok_or("record document is lent")?;
+        slot.autosave
+            .as_ref()
+            .ok_or("record has no private durable writer")?
+            .private_actions(doc)
     }
 
     /// Offer one serviced canonical record without awaiting host ACK or
