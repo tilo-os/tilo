@@ -639,15 +639,13 @@ struct ExportedAction {
   # fact here, so there is no separate flag.
   description   @5 :Text;
   input         @6 :ActionInput;
-  # `document`, `effect`, or `view`. Empty from an older client means
-  # `document` for backwards compatibility.
+  # `document`, `effect`, or `view`.
   operationKind @7 :Text;
   # JSON encoding of `tilo_actions::ActionParam[]`. Kept as an opaque JSON
   # projection so Cap'n Proto clients can forward newer parameter vocabulary
-  # without a schema bump; empty means the legacy `input` projection.
+  # without a schema bump.
   paramsJson @8 :Text;
-  # Versioned JSON encoding of tilo_actions::ActionContract. Empty from an
-  # older client selects conservative compatibility defaults.
+  # Versioned JSON encoding of tilo_actions::ActionContract.
   contractJson @9 :Text;
   # Optional explicit resource-view metadata. Absence means this action is
   # invokable but is not advertised as a view for its resource.

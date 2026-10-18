@@ -385,10 +385,9 @@ mod codec {
         ResourceViewDescriptor, ResourceViewMountSpec, ResourceViewRangeSpec,
     };
 
-    /// Which reader an exported action reaches the decoder through. The
-    /// published surface has always accepted an older client's empty kind,
-    /// parameters and contract; a directory row has always required all
-    /// three, bounded, because its contract is what authorizes showing it.
+    /// Which reader an exported action reaches the decoder through. Both
+    /// require the kind, parameters and contract; a directory row's are
+    /// also bounded, because its contract is what authorizes showing it.
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum Source {
         Published,
@@ -446,11 +445,11 @@ mod codec {
     }
 
     fn operation_kind(address: &Address<'_>, wire: &str) -> Result<OperationKind, capnp::Error> {
-        match (wire, address.source) {
-            ("document", _) | ("", Source::Published) => Ok(OperationKind::Document),
-            ("effect", _) => Ok(OperationKind::Effect),
-            ("view", _) => Ok(OperationKind::View),
-            (other, _) => Err(address.error(format_args!("unknown operation kind `{other}`"))),
+        match wire {
+            "document" => Ok(OperationKind::Document),
+            "effect" => Ok(OperationKind::Effect),
+            "view" => Ok(OperationKind::View),
+            other => Err(address.error(format_args!("unknown operation kind `{other}`"))),
         }
     }
 
@@ -692,45 +691,16 @@ mod codec {
             operation_kind(&address, capnp_text(row.get_operation_kind()?)?.as_str())?;
         let params_json = capnp_text(row.get_params_json()?)?;
         let contract_json = capnp_text(row.get_contract_json()?)?;
-        let (params, contract) = match source {
-            Source::Published => (
-                if params_json.is_empty() {
-                    Vec::new()
-                } else {
-                    serde_json::from_str(&params_json).map_err(|error| {
-                        address.error(format_args!("invalid exported action parameters: {error}"))
-                    })?
-                },
-                if contract_json.is_empty() {
-                    // An older client sent no contract: select the
-                    // conservative defaults for its operation kind.
-                    match operation_kind {
-                        OperationKind::View => ActionContract::view(),
-                        OperationKind::Document | OperationKind::Effect => {
-                            ActionContract::default()
-                        }
-                    }
-                } else {
-                    serde_json::from_str(&contract_json).map_err(|error| {
-                        address.error(format_args!("invalid exported action contract: {error}"))
-                    })?
-                },
-            ),
+        let (params_bound, contract_bound) = match source {
+            Source::Published => (usize::MAX, usize::MAX),
             Source::Directory => (
-                decode_json(
-                    &address,
-                    &params_json,
-                    "parameters",
-                    MAX_DIRECTORY_PARAMS_WIRE_BYTES,
-                )?,
-                decode_json(
-                    &address,
-                    &contract_json,
-                    "contract",
-                    MAX_DIRECTORY_CONTRACT_WIRE_BYTES,
-                )?,
+                MAX_DIRECTORY_PARAMS_WIRE_BYTES,
+                MAX_DIRECTORY_CONTRACT_WIRE_BYTES,
             ),
         };
+        let params: Vec<_> = decode_json(&address, &params_json, "parameters", params_bound)?;
+        let contract: ActionContract =
+            decode_json(&address, &contract_json, "contract", contract_bound)?;
         let input = match row.get_input()?.which()? {
             collab_capnp::action_input::Which::None(()) => ExportedInput::None,
             collab_capnp::action_input::Which::Text(text) => ExportedInput::Text {
@@ -762,11 +732,8 @@ mod codec {
         })
     }
 
-    /// Decode one action from a published surface (`publishActions`).
-    ///
-    /// An older client's empty operation kind reads as a document edit, its
-    /// empty parameters as none, and its empty contract as the conservative
-    /// defaults for its kind. Anything present must parse.
+    /// Decode one action from a published surface (`publishActions`): its
+    /// operation kind, parameters and contract must all be present and parse.
     ///
     /// # Errors
     ///
