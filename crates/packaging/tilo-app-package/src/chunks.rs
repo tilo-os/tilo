@@ -42,8 +42,8 @@ pub const MAX_OBJECT_BYTES: u64 = 64 * 1024 * 1024;
 /// this describes blobs far beyond any payload limit.
 pub const MAX_CHUNK_LIST_BYTES: u64 = 1024 * 1024;
 
-/// Version of the [`ChunkList`] encoding.
-pub const CHUNK_LIST_FORMAT: u32 = 1;
+/// Version of the [`ChunkList`] encoding: the package format's.
+pub const CHUNK_LIST_FORMAT: u32 = crate::tapp::TAPP_FORMAT_VERSION;
 
 /// File-name suffix of a whole blob or a chunk.
 pub const BLOB_SUFFIX: &str = ".blob";

@@ -34,6 +34,13 @@ use tilo_user_identity::{DeviceCert, DeviceCertError, RevocationList, verify_dev
 
 use crate::policy::TrustPolicy;
 
+/// The device ↔ device interface's one version: the handshake, the relay
+/// session's frames and the peer-sync messages they carry. Two devices sync
+/// only when theirs are equal (docs/architecture/compatibility.md);
+/// `interface.toml` holds the schema, and the repository policy fails a
+/// change to it that keeps the number.
+pub const PEER_PROTOCOL_VERSION: u32 = 1;
+
 /// Domain tag bound into every mutual-authentication challenge signature.
 /// Domain tag under which the *server* signs the client's challenge.
 ///

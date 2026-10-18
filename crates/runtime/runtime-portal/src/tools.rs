@@ -16,7 +16,8 @@ use std::os::unix::net::UnixStream;
 
 use serde::{Deserialize, Serialize};
 
-pub const TOOL_PROTOCOL_VERSION: u32 = 1;
+/// The `tools` service is part of the runtime interface and speaks its version.
+pub const TOOL_PROTOCOL_VERSION: u32 = crate::RUNTIME_INTERFACE_VERSION;
 pub const TOOL_SERVICE_FD_ENV: &str = "TILO_SVC_TOOLS_FD";
 pub const TOOL_CONTEXT_ENV: &str = "TILO_TOOL_CONTEXT";
 const MAX_WIRE_BYTES: usize = 4 * 1024;
