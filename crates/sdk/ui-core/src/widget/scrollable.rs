@@ -3881,6 +3881,63 @@ mod tests {
         );
     }
     #[test]
+    fn persistent_overflow_bar_paints_before_input_and_after_idle_without_ticks() {
+        use crate::headless::FrameHarness;
+        use crate::widget::{Column, Text};
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let mut content = Column::new().with_no_padding().with_intrinsic_height();
+            for index in 0..71 {
+                content = content.push(Box::new(Text::new(&format!("Application {index}"))));
+            }
+            let mut host = FrameHarness::new_with_theme(
+                crate::State::new(),
+                Box::new(
+                    Scrollable::new_vertical()
+                        .always_visible()
+                        .with_child(Box::new(content)),
+                ),
+                (400, 300),
+                theme.clone(),
+            );
+            host.with_widget_mut(|scroll: &mut Scrollable| {
+                assert!(
+                    scroll.max_offset_y() > 0.0,
+                    "real laid-out content must overflow"
+                );
+                let track = scroll.vertical_track().unwrap();
+                assert!(
+                    scroll.child.as_ref().unwrap().get_rect().x1 <= track.x0,
+                    "the persistent bar must not cover content"
+                );
+                scroll.last_activity = None;
+                for activity in [None, Some(crate::time::now() - Duration::from_secs(30))] {
+                    scroll.last_activity = activity;
+                    let mut scene = Scene::new();
+                    scroll.draw_scrollbars(&mut scene, Affine::IDENTITY, &theme);
+                    assert!(
+                        !scene.encoding().path_tags.is_empty(),
+                        "overflow must paint without hover or input"
+                    );
+                    assert_eq!(scroll.bar_opacity(&theme), 1.0);
+                    assert!(
+                        !scroll.needs_animation_frame(),
+                        "persistent bars must not animate at rest"
+                    );
+                    assert!(scroll.next_wake_deadline().is_none(), "no idle fade wake");
+                }
+                scroll.set_content_size(100.0, 100.0);
+                let mut scene = Scene::new();
+                scroll.draw_scrollbars(&mut scene, Affine::IDENTITY, &theme);
+                assert!(
+                    scene.encoding().path_tags.is_empty(),
+                    "fitting content has no bar"
+                );
+            })
+            .unwrap();
+        }
+    }
+
+    #[test]
     fn stable_vertical_gutter_keeps_media_columns_across_overflow() {
         use crate::headless::FrameHarness;
         use crate::widget::{MediaAspect, MediaCard, MediaGrid, MediaSource};

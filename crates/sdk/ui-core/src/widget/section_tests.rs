@@ -61,6 +61,46 @@ fn items_sit_a_sibling_step_apart_and_the_header_closer() {
 }
 
 #[test]
+fn leading_identity_keeps_its_measured_size_beside_a_wrapping_heading() {
+    for (width, scale) in [(500, 1.0), (180, 2.0)] {
+        let image = crate::widget::Image::from_svg(
+            br##"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" fill="#f00"/></svg>"##,
+            32,
+            32,
+        ).unwrap().with_alt("Source logo");
+        let section = Section::new(vec![Box::new(Text::new("Content"))])
+            .with_header(SectionHeader::group("Browser personal profile").leading(Box::new(image)))
+            .collapsible();
+        let mut harness = FrameHarness::new_with_theme(
+            crate::State::new(),
+            Box::new(section),
+            (width, 500),
+            Theme::dark().with_text_scale(scale),
+        );
+        let root = harness.inspection().root;
+        let header = &root.children[0];
+        let image = rect(&header.children[0]);
+        let title = rect(&header.children[1]);
+        let chevron = rect(&header.children[2]);
+        assert_eq!(image.width(), 32.0);
+        assert_eq!(image.height(), 32.0);
+        assert!(image.x1 < title.x0);
+        assert!(title.x1 <= chevron.x0);
+        assert!(chevron.x1 <= f64::from(width));
+        assert!(rect(header).height() >= title.height().max(image.height()));
+        assert!(
+            harness
+                .a11y_nodes()
+                .iter()
+                .any(|(_, node)| node.role() == crate::accesskit::Role::Image
+                    && node.label() == Some("Source logo"))
+        );
+        harness.click_at(chevron.center().x, chevron.center().y);
+        assert_eq!(harness.inspection().root.children.len(), 1);
+    }
+}
+
+#[test]
 fn a_header_is_one_height_with_or_without_an_action() {
     let height = |header: SectionHeader| {
         let harness = FrameHarness::new_with_theme(
