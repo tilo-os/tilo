@@ -177,7 +177,36 @@ pub trait WindowExtWayland {
     /// `xdg-decoration` in the last configure. `None` before the first
     /// configure. An X11 window manager always decorates.
     fn server_side_decorations(&self) -> Option<bool>;
+
+    /// The (fourcc, modifier) pairs the compositor takes as dma-bufs; empty
+    /// on X11 or before the compositor announced them (Tilo).
+    fn client_buffer_formats(&self) -> Vec<(u32, u64)>;
+
+    /// A `wl_buffer` of pixels another process drew (Tilo's render
+    /// service), calling `on_release` whenever the compositor releases it.
+    /// `None` on X11, or for a buffer the compositor does not take.
+    #[cfg(wayland_platform)]
+    fn create_client_buffer(
+        &self,
+        source: ClientBufferSource<'_>,
+        on_release: Box<dyn Fn() + Send + Sync>,
+    ) -> Option<ClientBuffer>;
+
+    /// Attach `buffer` to this window's surface with `damage` (buffer
+    /// pixels: x, y, width, height; empty damages all of it) and commit,
+    /// observing the commit's presentation with `observer`. Returns whether
+    /// the presentation is observed (Tilo).
+    #[cfg(wayland_platform)]
+    fn attach_client_buffer(
+        &self,
+        buffer: &ClientBuffer,
+        damage: &[(i32, i32, i32, i32)],
+        observer: Option<WaylandPresentationObserver>,
+    ) -> bool;
 }
+
+#[cfg(wayland_platform)]
+pub use crate::platform_impl::wayland::{ClientBuffer, ClientBufferSource};
 
 impl WindowExtWayland for Window {
     fn set_ime_content_type(&self, content: Option<ImeContentType>) {
@@ -255,6 +284,46 @@ impl WindowExtWayland for Window {
             crate::platform_impl::Window::X(_) => Some(true),
             #[cfg(wayland_platform)]
             crate::platform_impl::Window::Wayland(window) => window.server_side_decorations(),
+        }
+    }
+
+    fn client_buffer_formats(&self) -> Vec<(u32, u64)> {
+        match &self.window {
+            #[cfg(x11_platform)]
+            crate::platform_impl::Window::X(_) => Vec::new(),
+            #[cfg(wayland_platform)]
+            crate::platform_impl::Window::Wayland(window) => window.client_buffer_formats(),
+        }
+    }
+
+    #[cfg(wayland_platform)]
+    fn create_client_buffer(
+        &self,
+        source: ClientBufferSource<'_>,
+        on_release: Box<dyn Fn() + Send + Sync>,
+    ) -> Option<ClientBuffer> {
+        match &self.window {
+            #[cfg(x11_platform)]
+            crate::platform_impl::Window::X(_) => None,
+            crate::platform_impl::Window::Wayland(window) => {
+                window.create_client_buffer(source, on_release)
+            }
+        }
+    }
+
+    #[cfg(wayland_platform)]
+    fn attach_client_buffer(
+        &self,
+        buffer: &ClientBuffer,
+        damage: &[(i32, i32, i32, i32)],
+        observer: Option<WaylandPresentationObserver>,
+    ) -> bool {
+        match &self.window {
+            #[cfg(x11_platform)]
+            crate::platform_impl::Window::X(_) => false,
+            crate::platform_impl::Window::Wayland(window) => {
+                window.attach_client_buffer(buffer, damage, observer)
+            }
         }
     }
 }

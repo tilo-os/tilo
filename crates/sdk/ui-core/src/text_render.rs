@@ -3196,9 +3196,20 @@ impl TextRenderer {
 
     /// Retain the exact face and shared bytes already used by shaping.
     fn vello_font(&mut self, face_id: cosmic_text::fontdb::ID, weight: Weight) -> Option<Font> {
-        self.font_system
+        let font = self
+            .font_system
             .get_font(face_id, weight)
-            .map(|font| font.as_peniko())
+            .map(|font| font.as_peniko())?;
+        // A render service maps the same file instead of receiving the bytes.
+        #[cfg(all(feature = "native", target_os = "linux"))]
+        if crate::render_thread::remote::active()
+            && let Some(face) = self.font_system.db().face(face_id)
+            && let cosmic_text::fontdb::Source::File(path)
+            | cosmic_text::fontdb::Source::SharedFile(path, _) = &face.source
+        {
+            crate::render_thread::remote::note_font_file(&font, path);
+        }
+        Some(font)
     }
 
     fn normalized_coords(

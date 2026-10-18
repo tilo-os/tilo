@@ -611,6 +611,21 @@ that `ImePurpose` stands for. It replaces the earlier multiline-only setter:
 multiline is one of the hints. Other platforms keep `set_ime_purpose`, and
 `None` returns Wayland to the purpose's own mapping.
 
+## `vendor/winit`: buffers another process drew
+
+A Tilo app's frames are drawn by its room's render service
+(`docs/architecture/app-rendering.md`), and the app attaches the service's
+buffers to its own window. `types/client_buffers.rs` binds
+`zwp_linux_dmabuf_v1` at version 3 and keeps the (format, modifier) pairs
+its `modifier` events announce; `WindowExtWayland::create_client_buffer`
+makes a `wl_buffer` of a dma-buf (only a pair the compositor announced, so
+asking is never a protocol error) or of `wl_shm` memory, calling its owner
+back on every `release`; `attach_client_buffer` attaches, damages and
+commits under the window state's lock, so no configure or input-method
+commit falls between attach and commit, with optional `wp_presentation`
+feedback, and flushes from the calling thread. `client_buffer_formats`
+reports the announced pairs. X11 windows report none and make no buffers.
+
 ## Build-script-generated protobuf descriptors
 
 `buffa-build` 0.9.2 is carried as verified registry source with a small

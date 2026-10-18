@@ -302,6 +302,11 @@ tilo-content = { version = "0.1.0", path = "../../system/content", optional = tr
 # Session-bus client for `priority-contacts`; runs on the workspace's tokio.
 zbus = { workspace = true, optional = true, features = ["p2p", "tokio"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# Frames drawn by the room's render service instead of a GPU in the app
+# (`render_thread::remote`).
+tilo-render-protocol = { version = "0.1.0", path = "../../platform/tilo-render-protocol" }
+
 [target.'cfg(windows)'.dependencies]
 # The menu bar and Jump List History and Search live in (`host_chrome/windows.rs`).
 windows = { version = "0.62.2", optional = true, features = [
