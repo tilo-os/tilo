@@ -44,6 +44,7 @@ pub mod ics;
 mod input_context;
 pub mod model;
 mod outbox;
+mod reminders;
 pub mod resource;
 pub mod setup;
 pub mod shown;

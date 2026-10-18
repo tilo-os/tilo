@@ -1209,6 +1209,9 @@ impl ResourceSurface<Calendar, CalendarEffect> for CalendarApp {
             accounts,
             cx.fixture::<SampleAccounts>().is_some(),
         );
+        if cx.mode().is_live() {
+            self.notify_with(ui::host::current().notifications, cx.waker());
+        }
         if cx.mode().is_live()
             && let Some(accounts) = cx.shared_person::<accounts::person::PersonAccounts>()
         {
