@@ -698,7 +698,7 @@ mod tests {
                 "a connection admitted to another room reaches nothing here"
             );
             assert_eq!(
-                now(host.invoke(&elsewhere, refresh(tilo_actions::InvocationId::new()))),
+                wait(host.invoke(&elsewhere, refresh(tilo_actions::InvocationId::new()))),
                 Err(ActionHostError::UnknownAction)
             );
         }
@@ -776,7 +776,8 @@ mod tests {
                 wait_ms: None,
                 appearance: None,
             };
-            match now(host.invoke(&caller, open)) {
+            // Native admission resolves on a worker, even without a seat service.
+            match wait(host.invoke(&caller, open)) {
                 Err(ActionHostError::Refused { reason }) => assert!(
                     reason.contains("launcher authenticated"),
                     "refused for its missing launch scope: {reason}"
