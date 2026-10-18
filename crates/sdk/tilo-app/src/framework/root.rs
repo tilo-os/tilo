@@ -62,6 +62,9 @@ pub(crate) struct ResourceRoot {
     _alive: Rc<()>,
     dispatch: DispatchCore,
     saved: LocalState<RecordSaveStatus>,
+    /// The window's save status over the view: the record's durability and
+    /// the app's own saves, silent unless a save stalls or fails.
+    save: super::saves::SaveIndicator,
     /// The participant's permissions, re-checked every sync so a role change
     /// while the app runs takes effect at once. `None` for a read-only view
     /// of a past version.
@@ -414,6 +417,7 @@ impl ResourceRoot {
                 alive,
                 dispatch,
                 saved: env.saved,
+                saves: env.saves,
                 stages,
                 feeds,
                 run: env.run,
@@ -436,6 +440,7 @@ impl ResourceRoot {
             alive,
             dispatch,
             saved,
+            saves,
             stages,
             feeds,
             run,
@@ -454,6 +459,7 @@ impl ResourceRoot {
             _alive: alive,
             dispatch,
             saved,
+            save: super::saves::SaveIndicator::new(saves),
             permissions: None,
             write: None,
             stages,
@@ -1034,6 +1040,7 @@ struct Parts {
     alive: Rc<()>,
     dispatch: DispatchCore,
     saved: LocalState<RecordSaveStatus>,
+    saves: super::saves::Saves,
     stages: Stages,
     feeds: super::history::HistoryFeeds,
     run: Run,
@@ -1891,10 +1898,23 @@ impl RootModel for ResourceRoot {
     ) {
         self.paint_ground(scene, transform, theme, presence);
         self.content.draw(scene, transform, text, theme, presence);
+        let area = self.content.get_rect();
+        self.save
+            .paint(scene, transform, text, theme, area, ui_core::time::now());
     }
 
     fn needs_redraw(&self) -> bool {
-        self.native_presentation.needs_redraw() || self.content.needs_redraw()
+        self.native_presentation.needs_redraw()
+            || self.content.needs_redraw()
+            || self.save.needs_redraw(ui_core::time::now())
+    }
+
+    fn save_indicator(&self) -> &super::saves::SaveIndicator {
+        &self.save
+    }
+
+    fn save_indicator_mut(&mut self) -> &mut super::saves::SaveIndicator {
+        &mut self.save
     }
 
     // A screenshot harness reaches the root to stage a scenario's view state
@@ -2677,10 +2697,12 @@ impl RootApp for ResourceRoot {
                 .into_iter()
                 .fold(own, |retry, child| take(child, resource) || retry)
         }
-        take(self.content.as_mut(), self.resource.id)
+        let asked = self.save.take_record_retry();
+        take(self.content.as_mut(), self.resource.id) || asked
     }
 
     fn record_save_status(&mut self, status: RecordSaveStatus) {
+        self.save.record(&status, ui_core::time::now());
         self.saved.set(status);
     }
 

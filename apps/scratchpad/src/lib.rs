@@ -69,12 +69,13 @@ impl ResourceApp for Scratchpad {
             .with_text_role(TextRole::Reading)
             .with_placeholder("Start writing…")
             .multiline(true);
-        // Saving is automatic and quick, so a save in flight is not worth
-        // announcing; say something only when the note is not being kept.
+        // Saving is the system's job: the window says when a save stalls or
+        // fails. Say only that the note is not kept on this device at all.
         let status = Text::from_state(&cx.save_status(), |status| match status {
-            RecordSaveStatus::Saved | RecordSaveStatus::Saving => String::new(),
             RecordSaveStatus::MemoryOnly => "Not saved on this device".to_owned(),
-            RecordSaveStatus::Failed(error) => format!("Save failed: {error}"),
+            RecordSaveStatus::Saved | RecordSaveStatus::Saving | RecordSaveStatus::Failed(_) => {
+                String::new()
+            }
         })
         .with_id("save-status")
         .with_role(TextRole::Caption)

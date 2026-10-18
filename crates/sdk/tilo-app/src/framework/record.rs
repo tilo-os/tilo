@@ -404,6 +404,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                 alive: self.alive.clone(),
                 dispatch,
                 saved: self.saved.clone(),
+                saves: self.saves.clone(),
                 run: self.run.clone(),
                 storage: Rc::clone(&self.storage),
                 effects: Effects::inert(),
