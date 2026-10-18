@@ -25,7 +25,7 @@ x86_64 = "v3"
 aarch64 = "aarch64"
 
 [capabilities]
-optional = ["files.open", "files.save", "files.paths", "app-files", "secrets", "network.http", "network.fetch-proxy"]
+optional = ["files.open", "files.save", "files.paths", "app-files", "secrets", "network.http", "network.fetch-proxy", "notifications"]
 
 [resources]
 kinds = ["calendar.calendar", "tilo.accounts", "tilo.rich-text"]

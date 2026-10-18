@@ -298,7 +298,7 @@ impl CollabClient {
     }
 
     /// [`Self::with_descriptors`] for a caller that only knows the lane
-    /// [`runtime_portal::descriptor_lane_stream`] handed it: on a host
+    /// [`runtime_portal::DescriptorStreamSource`] handed it: on a host
     /// without descriptors the lane is empty and the client stays as it was.
     #[must_use]
     pub fn with_optional_descriptors(mut self, lane: runtime_portal::DescriptorLane) -> Self {

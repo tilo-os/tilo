@@ -22,7 +22,7 @@ aarch64 = "aarch64"
 
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
-optional = ["open-uri", "clipboard", "files.paths", "app-files", "threads", "media.decode", "camera", "microphone", "screen-capture"]
+optional = ["open-uri", "clipboard", "files.open", "files.paths", "app-files", "threads", "media.decode", "camera", "microphone", "screen-capture", "notifications"]
 
 [resources]
 kinds = ["chat.workspace", "tilo.moderation", "tilo.rich-text"]
