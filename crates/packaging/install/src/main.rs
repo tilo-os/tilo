@@ -1578,6 +1578,11 @@ fn update_allowed(
         });
     }
 
+    // A package recorded at another package format was installed before the
+    // format changed: any build the store offers now replaces it.
+    if !package_store::integrity::record_current(entry) {
+        return Ok(None);
+    }
     // Is it actually newer? Non-semver versions are compared as strings
     // for equality only — not evidence of an upgrade.
     match compare_versions(&entry.version, checked.version()) {

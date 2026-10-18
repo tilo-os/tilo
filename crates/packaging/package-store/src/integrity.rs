@@ -130,6 +130,18 @@ pub fn record_dir(package: &InstalledPackage) -> PathBuf {
     legacy_record_dir(store, &package.id)
 }
 
+/// Whether `package`'s signed record is at the package format this build
+/// reads. One at another format was installed before the format changed:
+/// its next install replaces it whatever its version, and until then it is
+/// behind ([`crate::interfaces::unmet_at`]).
+#[must_use]
+pub fn record_current(package: &InstalledPackage) -> bool {
+    std::fs::read(record_dir(package).join(SIGNED_ROOT_FILE))
+        .ok()
+        .and_then(|bytes| SignedRoot::format_of(&bytes))
+        == Some(tilo_app_package::TAPP_FORMAT_VERSION)
+}
+
 /// The record directory the pre-content-store installer used.
 pub fn legacy_record_dir(store_root: &Path, app_id: &str) -> PathBuf {
     store_root.join("integrity").join(sanitise(app_id))
