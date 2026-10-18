@@ -117,16 +117,11 @@ impl Machine {
             .join("usr/share/tilo/system-interfaces.toml")
     }
 
-    /// The OS now serves exactly `system` of the system interface.
-    fn serve_system(&self, system: &[u32]) {
+    /// The OS now serves version `system` of the system interface.
+    fn serve_system(&self, system: u32) {
         let path = self.interfaces();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let versions: Vec<String> = system.iter().map(ToString::to_string).collect();
-        std::fs::write(
-            path,
-            format!("[interfaces]\nsystem = [{}]\n", versions.join(", ")),
-        )
-        .unwrap();
+        std::fs::write(path, format!("[interfaces]\nsystem = {system}\n")).unwrap();
     }
 
     fn run(mut command: Command, args: &[&str]) -> (bool, String) {
@@ -316,7 +311,7 @@ fn an_update_the_os_cannot_serve_is_refused_and_the_image_copy_is_the_fallback()
             .image_build(&["install", baked.to_str().unwrap(), "--allow-self-signed"])
             .0
     );
-    machine.serve_system(&[1]);
+    machine.serve_system(1);
     let update = |tapp: &PathBuf| {
         machine.session(&[
             "update",
@@ -340,13 +335,13 @@ fn an_update_the_os_cannot_serve_is_refused_and_the_image_copy_is_the_fallback()
     assert_eq!(machine.listed(), ("0.1.10".into(), "image".into()));
 
     // Phase `an_os_serving_it_installs_and_runs_it`.
-    machine.serve_system(&[1, 2]);
+    machine.serve_system(2);
     let (ok, out) = update(&for_newer_os);
     assert!(ok, "{out}");
     assert_eq!(machine.listed(), ("0.2.0".into(), "user".into()));
 
     // Phase `after_an_os_rollback_the_image_copy_runs`.
-    machine.serve_system(&[1]);
+    machine.serve_system(1);
     assert_eq!(machine.listed(), ("0.1.10".into(), "image".into()));
 
     // Phase `removing_the_update_keeps_the_image_copy`.

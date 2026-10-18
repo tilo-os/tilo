@@ -362,7 +362,8 @@ tar.workspace = true
 # Tilo's search layer: the providers' retained indexes, and the files
 # provider's on-disk content index.
 tilo-search = { path = "../../sdk/search", features = ["disk"] }
-# The `app list --json` wire types the catalogue reads.
+# The `app list --json` wire types the catalogue reads, and the interface
+# versions an app build speaks (shell/app_versions.rs).
 registry-types = { path = "../../packaging/registry-types" }
 workspace-hack = { version = "0.1" }
 

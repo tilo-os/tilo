@@ -2360,6 +2360,10 @@ impl AppHandler {
                 }
                 | crate::floating_surface::FloatingSurfaceHostMessage::HostShellAllowed {
                     ..
+                }
+                // Never delivered: the client's `pump` ends on it.
+                | crate::floating_surface::FloatingSurfaceHostMessage::VersionMismatch {
+                    ..
                 } => {}
             }
         }

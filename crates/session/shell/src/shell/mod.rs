@@ -14,6 +14,7 @@ pub mod app_action_consent;
 pub mod app_close;
 pub mod app_notice_card;
 pub mod app_tabs;
+pub(crate) mod app_versions;
 pub(crate) mod audio_output;
 pub(crate) mod audio_writer;
 pub mod automation_folders;
@@ -587,16 +588,20 @@ fn try_to_ui_tile_for_tab(
         }
         // Asked for (a launch, a restore) and not yet arrived: the place
         // it will open in, moving until it does.
-        ShellTile::LocalApp { label, note, .. }
-            if note.is_empty() || note == peer_windows::OPENING =>
-        {
+        ShellTile::LocalApp {
+            app_id,
+            label,
+            note,
+        } if note.is_empty() || note == peer_windows::OPENING => {
             let wait = if note.is_empty() {
                 opening_card::Wait::Restoring
             } else {
                 opening_card::Wait::Opening
             };
             UiTile::App(Box::new(
-                opening_card::OpeningCard::new(label, wait).for_tab(tab),
+                opening_card::OpeningCard::new(label, wait)
+                    .for_tab(tab)
+                    .for_package(app_id),
             ))
         }
         ShellTile::PeerWindow { label, note, .. } | ShellTile::LocalApp { label, note, .. } => {

@@ -905,6 +905,10 @@ pub enum LaunchError {
     /// The host entry exists but cannot be run as written (for example an
     /// unusable `Exec=` line).
     HostAppRefused { desktop_id: String, detail: String },
+    /// The app's build needs interface versions newer than this system
+    /// serves; the system's update has been started
+    /// ([`crate::shell::app_versions`]).
+    SystemBehind { package_id: String, unmet: String },
 }
 
 impl LaunchError {
@@ -955,6 +959,9 @@ impl LaunchError {
             LaunchError::HostAppRefused { desktop_id, detail } => {
                 format!("{desktop_id} cannot be started: {detail}")
             }
+            LaunchError::SystemBehind { package_id, unmet } => {
+                format!("{package_id} needs a newer system: {unmet}")
+            }
         }
     }
 
@@ -982,6 +989,7 @@ impl LaunchError {
             Self::IdentityUnavailable { .. } => t("launch-error-identity-unavailable"),
             Self::RegistryUnreadable { .. } => t("launch-error-registry-unreadable"),
             Self::HostAppRefused { .. } => t("launch-error-host-app-refused"),
+            Self::SystemBehind { .. } => t("launch-failed-system-behind"),
         }
     }
 }
@@ -1014,6 +1022,14 @@ pub enum LaunchFailure {
     SandboxSupervision,
     /// The previous copy of the app is still shutting down.
     PreviousInstanceBusy,
+    /// The app was behind this system's interfaces, and its update could not
+    /// be fetched.
+    UpdateFailed,
+    /// The app is behind this system's interfaces and its developer has not
+    /// published a build that fits yet.
+    WaitingForDeveloper,
+    /// The app needs a newer system, whose update has been started.
+    SystemBehind,
     /// Held launches released by a failed prerequisite and other causes with
     /// no more specific copy.
     Other,
@@ -1049,6 +1065,9 @@ impl LaunchFailure {
             Self::AuthorityTimedOut => "launch-failed-authority-timeout",
             Self::SandboxSupervision => "launch-error-sandbox-supervision",
             Self::PreviousInstanceBusy => "launch-failed-previous-instance",
+            Self::UpdateFailed => "launch-failed-update",
+            Self::WaitingForDeveloper => "launch-failed-waiting-for-developer",
+            Self::SystemBehind => "launch-failed-system-behind",
         }
     }
 }
@@ -1073,6 +1092,7 @@ impl LaunchError {
             Self::IdentityUnavailable { .. } => LaunchFailure::IdentityUnavailable,
             Self::RegistryUnreadable { .. } => LaunchFailure::RegistryUnreadable,
             Self::HostAppRefused { .. } => LaunchFailure::HostAppRefused,
+            Self::SystemBehind { .. } => LaunchFailure::SystemBehind,
         }
     }
 }
@@ -3414,6 +3434,127 @@ enum LaunchContext<'a> {
     Raw(String),
 }
 
+/// A launch to run again once its app is updated: everything
+/// [`execute_installed_inner`] was asked, owned.
+struct Replay {
+    room: RoomId,
+    document: Option<PathBuf>,
+    uri: Option<String>,
+    context: ReplayContext,
+    media_handoff: Option<MediaHandoffLaunch>,
+    capability_snapshot: Option<LaunchGrants>,
+    native_owner: Option<super::native_workspace_owner::NativeWorkspaceOwner>,
+}
+
+enum ReplayContext {
+    #[cfg(target_os = "linux")]
+    SelectedOpen(Arc<retained_home::selected_target::SelectedContinuation>),
+    None,
+    Tool(ToolIntent),
+    Raw(String),
+}
+
+impl ReplayContext {
+    fn of(context: &LaunchContext<'_>) -> Self {
+        match context {
+            #[cfg(target_os = "linux")]
+            LaunchContext::SelectedOpen(selected) => Self::SelectedOpen(Arc::clone(selected)),
+            LaunchContext::None => Self::None,
+            LaunchContext::Tool(intent) => Self::Tool((*intent).clone()),
+            LaunchContext::Raw(raw) => Self::Raw(raw.clone()),
+        }
+    }
+}
+
+impl Replay {
+    fn start(self, app: InstalledApp) -> Result<InstalledApp, LaunchError> {
+        let context = match &self.context {
+            #[cfg(target_os = "linux")]
+            ReplayContext::SelectedOpen(selected) => LaunchContext::SelectedOpen(selected),
+            ReplayContext::None => LaunchContext::None,
+            ReplayContext::Tool(intent) => LaunchContext::Tool(intent),
+            ReplayContext::Raw(raw) => LaunchContext::Raw(raw.clone()),
+        };
+        execute_installed_inner(
+            app,
+            self.room,
+            self.document.as_deref(),
+            self.uri.as_deref(),
+            context,
+            self.media_handoff,
+            self.capability_snapshot,
+            self.native_owner,
+        )
+    }
+}
+
+/// Update `app`, which is behind this system, then start `replay` with the
+/// build that fits. When the store has none yet, the app waits for its
+/// developer and does not start; when the update cannot be fetched, the
+/// place says so and offers to try again.
+fn update_then_start(app: InstalledApp, replay: Replay) {
+    let package_id = app.package_id.clone();
+    crate::shell::app_versions::update_then(&package_id, move |outcome| {
+        let fail = |reason: LaunchFailure, detail: String| {
+            push_event(LaunchEvent {
+                package_id: app.package_id.clone(),
+                display_name: app.display_name.clone(),
+                managed_agent_id: None,
+                managed_workspace_id: None,
+                kind: LaunchEventKind::SpawnFailed { reason, detail },
+            });
+        };
+        let fresh = match installed_apps() {
+            Ok(apps) => apps
+                .into_iter()
+                .find(|installed| installed.package_id == app.package_id),
+            Err(error) => {
+                fail(error.failure(), error.user_message());
+                return;
+            }
+        };
+        let Some(fresh) = fresh else {
+            fail(
+                LaunchFailure::NotInstalled,
+                format!("{} is no longer installed", app.package_id),
+            );
+            return;
+        };
+        match (
+            crate::shell::app_versions::fit(&fresh.manifest_path),
+            outcome,
+        ) {
+            (crate::shell::app_versions::Fit::Fits, _) => {
+                if let Err(error) = replay.start(fresh) {
+                    fail(error.failure(), error.user_message());
+                }
+            }
+            (
+                crate::shell::app_versions::Fit::AppBehind(unmet),
+                crate::shell::app_versions::UpdateOutcome::Updated,
+            ) => fail(
+                LaunchFailure::WaitingForDeveloper,
+                format!(
+                    "no build of {} fits this system yet: {}",
+                    app.package_id,
+                    registry_types::interfaces::describe_unmet(&unmet)
+                ),
+            ),
+            (
+                crate::shell::app_versions::Fit::AppBehind(_),
+                crate::shell::app_versions::UpdateOutcome::Failed(detail),
+            ) => fail(LaunchFailure::UpdateFailed, detail),
+            (crate::shell::app_versions::Fit::SystemBehind(unmet), _) => {
+                crate::shell::app_versions::update_system_now();
+                fail(
+                    LaunchFailure::SystemBehind,
+                    registry_types::interfaces::describe_unmet(&unmet),
+                );
+            }
+        }
+    });
+}
+
 fn execute_installed(
     app: InstalledApp,
     room: RoomId,
@@ -3489,6 +3630,37 @@ fn execute_installed_inner(
     capability_snapshot: Option<LaunchGrants>,
     native_owner: Option<super::native_workspace_owner::NativeWorkspaceOwner>,
 ) -> Result<InstalledApp, LaunchError> {
+    // A build speaks exactly the interface versions this system serves, or
+    // it does not start: one that is behind is updated first and starts
+    // after, in the place held for it now.
+    match crate::shell::app_versions::fit(&app.manifest_path) {
+        crate::shell::app_versions::Fit::Fits => {}
+        crate::shell::app_versions::Fit::AppBehind(unmet) => {
+            tracing::info!(
+                package_id = %app.package_id,
+                unmet = %registry_types::interfaces::describe_unmet(&unmet),
+                "updating an app that is behind this system before it starts"
+            );
+            let replay = Replay {
+                room,
+                document: document.map(Path::to_path_buf),
+                uri: uri.map(str::to_owned),
+                context: ReplayContext::of(&context),
+                media_handoff,
+                capability_snapshot,
+                native_owner,
+            };
+            update_then_start(app.clone(), replay);
+            return Ok(app);
+        }
+        crate::shell::app_versions::Fit::SystemBehind(unmet) => {
+            crate::shell::app_versions::update_system_now();
+            return Err(LaunchError::SystemBehind {
+                package_id: app.package_id,
+                unmet: registry_types::interfaces::describe_unmet(&unmet),
+            });
+        }
+    }
     #[cfg(target_os = "linux")]
     let retained = if document.is_none() && uri.is_none() && matches!(&context, LaunchContext::None)
     {

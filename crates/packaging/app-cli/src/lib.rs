@@ -705,11 +705,15 @@ mod tests {
                 .map(|version| version.version.clone())
                 .collect::<Vec<_>>()
         };
-        let old_os = registry_types::ProvidedInterfaces::new([("system", &[1][..])]);
-        let new_os = registry_types::ProvidedInterfaces::new([("system", &[1, 2][..])]);
-        let elsewhere = registry_types::ProvidedInterfaces::new([("collab", &[1][..])]);
+        let old_os = registry_types::ProvidedInterfaces::new([("system", 1)], []);
+        let new_os = registry_types::ProvidedInterfaces::new([("system", 2)], []);
+        let elsewhere = registry_types::ProvidedInterfaces::new([("runtime", 1)], ["collab"]);
         assert_eq!(offered(Some(&old_os)), ["2.0.0"]);
-        assert_eq!(offered(Some(&new_os)), ["2.0.0", "3.0.0"]);
+        assert_eq!(
+            offered(Some(&new_os)),
+            ["3.0.0"],
+            "a build for an older version is not offered either"
+        );
         assert!(offered(Some(&elsewhere)).is_empty());
         // A host that declares no interfaces judges none.
         assert_eq!(offered(None), ["2.0.0", "3.0.0"]);

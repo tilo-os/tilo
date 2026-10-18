@@ -106,12 +106,7 @@ struct Packed {
 /// newest it declares.
 fn unserved_system_version() -> u32 {
     package_store::interfaces::system_interfaces()
-        .and_then(|provided| {
-            provided
-                .versions(tilo_app_package::interfaces::SYSTEM_INTERFACE)
-                .last()
-                .copied()
-        })
+        .and_then(|provided| provided.version(tilo_app_package::interfaces::SYSTEM_INTERFACE))
         .unwrap_or(1)
         .saturating_add(1)
 }

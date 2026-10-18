@@ -63,15 +63,14 @@ fn an_app_in_its_own_process_steps_its_group_with_the_ctrl_tab_it_left_unused() 
     .unwrap();
     handshake.push(b'\n');
     socket.write_all(&handshake).unwrap();
+    // The app's side of the connection, which says its version first.
+    let mut app = FloatingSurfaceServiceClient::from_test_stream(socket).expect("app client");
     tilo_test_env::wait_until("the app connects", || {
         service
             .drain()
             .into_iter()
             .any(|event| matches!(event, FloatingServiceEvent::Connected { .. }))
     });
-
-    // The app's side of the connection.
-    let mut app = FloatingSurfaceServiceClient::from_test_stream(socket).expect("app client");
     let request = ui::shell_tabs::chord_request(&Key::Named(NamedKey::Tab), true, false, false)
         .expect("Ctrl+Tab no widget used is the desktop's next tab");
     let message = request.message(None);

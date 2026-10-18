@@ -520,6 +520,39 @@ pub fn install_and_launch(
     }
 }
 
+/// Update `package_id` to the newest build this system can run, reporting
+/// its download like an install's ([`install_progress`]). Blocks; call on a
+/// worker.
+pub(crate) fn update_package(package_id: &str) -> crate::shell::app_versions::UpdateOutcome {
+    use crate::shell::app_versions::UpdateOutcome;
+    let Some(bin) = resolve_catalogue_bin() else {
+        return UpdateOutcome::Failed(crate::shell::i18n::t("catalogue-error-missing"));
+    };
+    let mut command = std::process::Command::new(&bin);
+    command.args(["update", "--progress-lines", package_id]);
+    match run_install_reporting(command, package_id) {
+        Err(error) => UpdateOutcome::Failed(crate::shell::i18n::t_args(
+            "catalogue-error-run",
+            &[("error", error.to_string().into())],
+        )),
+        Ok(output) if output.status.success() => {
+            invalidate();
+            UpdateOutcome::Updated
+        }
+        Ok(output) => {
+            let detail = install_failure_detail(&output.stderr);
+            UpdateOutcome::Failed(if detail.is_empty() {
+                crate::shell::i18n::t_args(
+                    "catalogue-error-exited",
+                    &[("status", output.status.to_string().into())],
+                )
+            } else {
+                detail
+            })
+        }
+    }
+}
+
 fn push_failure(package_id: &str, display_name: &str, detail: String) {
     // Installation can fail after the search action has already reserved a
     // placement for the eventual window. Drop that reservation with the
