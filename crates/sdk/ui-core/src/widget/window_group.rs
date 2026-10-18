@@ -915,7 +915,7 @@ impl WindowGroup {
 
     /// Test and shot fixture: as if the person had reached for the bar
     /// (`true`) or left it (`false`).
-    #[cfg(any(test, debug_assertions))]
+    #[cfg(any(test, debug_assertions, feature = "test-support"))]
     pub fn set_maximized_chrome_shown_for_tests(&mut self, shown: bool) {
         self.top_edge.force_shown(shown);
         self.top_edge_changed();
