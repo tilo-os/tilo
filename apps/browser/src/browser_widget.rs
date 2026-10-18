@@ -41,7 +41,7 @@ use ui::webview::{
 };
 use ui::widget::{
     AppKind, AppWidget, Button, Column, Container, ContextMenu, Continuable, EmptyState,
-    FloatingSurfaceProvider, IconDescriptor, MenuItem, Popover, ProgressBar, WebView, Widget,
+    FloatingSurfaceProvider, IconDescriptor, MenuItem, Popover, WebView, Widget,
 };
 
 use crate::actions::history_resource_id;
@@ -305,6 +305,8 @@ pub(crate) enum BrowserOperation {
     ClearHistory,
     RequestWebsiteDataClear,
     TogglePictureInPicture,
+    /// Show the page's article in reader view, or the page again.
+    ToggleReaderView,
     ToggleHistoryPause,
     StartDownload {
         url: String,
@@ -448,8 +450,14 @@ pub struct BrowserWidget {
     can_go_back: bool,
     loading_stopped: bool,
     can_go_forward: bool,
-    /// `1.0` when idle; anything below shows the progress bar.
+    /// `1.0` when idle; anything below shows the loading line.
     progress: f64,
+    /// When the current load began, the loading line's sweep epoch.
+    loading_started: Option<ui::time::Instant>,
+    /// The page shows its article in reader view.
+    reader_view: bool,
+    /// The reader view a running page operation asked for.
+    reader_request: Option<bool>,
     title: String,
     favicon: Option<vello::peniko::ImageData>,
     audio_muted: bool,
@@ -1251,6 +1259,9 @@ impl BrowserWidget {
             loading_stopped: false,
             can_go_forward: false,
             progress: if headless { 1.0 } else { 0.0 },
+            loading_started: None,
+            reader_view: false,
+            reader_request: None,
             title: String::new(),
             favicon: None,
             audio_muted: false,
@@ -1456,6 +1467,7 @@ impl BrowserWidget {
             Some("history-paused") => self.debug_show_history_paused(),
             Some("loading") => self.debug_show_loading(),
             Some("error") => self.debug_show_load_error(),
+            Some("permission") => self.debug_request_permission(),
             Some("suggestions") => {
                 self.debug_force_suggestions(&crate::history::sample_entries());
                 self.suggestions.move_selection(1);
@@ -1541,15 +1553,28 @@ impl BrowserWidget {
     }
 
     pub fn debug_show_library(&mut self, section: &str) {
-        self.history
-            .record_at("https://www.rust-lang.org/learn", "Learn Rust", 3);
-        self.history.record_at(
-            "https://developer.mozilla.org/en-US/docs/Web",
-            "MDN Web Docs",
-            2,
-        );
-        self.history
-            .record_at("https://example.org/long-form", "Long-form reading", 1);
+        // Visits over the past days, so the history shows its day groups.
+        let now = u64::try_from(ui::clock::local_now().timestamp()).unwrap_or_default();
+        for (url, title, ago) in [
+            (
+                "https://en.wikipedia.org/wiki/Web_browser",
+                "Web browser - Wikipedia",
+                4 * 24 * 3600,
+            ),
+            ("https://www.rust-lang.org/learn", "Learn Rust", 26 * 3600),
+            (
+                "https://developer.mozilla.org/en-US/docs/Web",
+                "MDN Web Docs",
+                3 * 3600,
+            ),
+            (
+                "https://example.org/long-form",
+                "Long-form reading",
+                20 * 60,
+            ),
+        ] {
+            self.history.record_at(url, title, now.saturating_sub(ago));
+        }
         self.library_section = match section {
             "bookmarks" => LibrarySection::Bookmarks,
             "downloads" => LibrarySection::Downloads,
@@ -1668,8 +1693,34 @@ impl BrowserWidget {
         let progress = progress.clamp(0.0, 1.0);
         if (self.progress < 1.0) != (progress < 1.0) {
             self.structure_dirty = true;
+            self.loading_started = (progress < 1.0).then(ui::time::now);
         }
         self.progress = progress;
+    }
+
+    /// Whether the engine has not reported any progress for this load yet.
+    fn loading_indeterminate(&self) -> bool {
+        self.progress <= 0.0
+    }
+
+    /// The loading line under the toolbar, while a page shown in the
+    /// window loads.
+    fn loading_face(&self) -> Option<ui::widget::ProgressBarFace> {
+        if self.progress >= 1.0
+            || self.show_settings
+            || self.show_library
+            || self.load_error.is_some()
+            || self.engine_problem.is_some()
+        {
+            return None;
+        }
+        Some(if self.loading_indeterminate() {
+            ui::widget::ProgressBarFace::indeterminate(
+                self.loading_started.unwrap_or_else(ui::time::now),
+            )
+        } else {
+            ui::widget::ProgressBarFace::new(self.progress as f32)
+        })
     }
 
     fn perform_browser_operation(&mut self, operation: BrowserOperation) -> Result<(), String> {
@@ -1729,6 +1780,7 @@ impl BrowserWidget {
         ) {
             self.loading_stopped = false;
             self.structure_dirty |= self.daily.navigation_started(&self.engine);
+            self.reader_view = false;
         }
         match operation {
             BrowserOperation::OpenServiceSession | BrowserOperation::ForgetServiceSession => {
@@ -1847,6 +1899,9 @@ impl BrowserWidget {
                 self.engine.send(WebViewCommand::ClearWebsiteData);
             }
             BrowserOperation::TogglePictureInPicture => self.begin_pip_probe(),
+            BrowserOperation::ToggleReaderView => {
+                return Err("reader view reports its result; start it as an invocation".into());
+            }
             BrowserOperation::ToggleHistoryPause => {
                 self.history_paused
                     .fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
@@ -2016,6 +2071,7 @@ impl BrowserWidget {
         let Some(operation) = self.page_operation.take() else {
             return;
         };
+        self.reader_request = None;
         self.page_operation_result = Some(match operation.phase {
             PagePhase::Navigating { reply } => self.page_success(
                 operation.invocation,
@@ -2044,6 +2100,12 @@ impl BrowserWidget {
         }) else {
             return;
         };
+        if let Some(enabled) = self.reader_request.take()
+            && result.is_ok()
+        {
+            self.reader_view = enabled;
+            self.structure_dirty = true;
+        }
         if let (Ok(reply), Some(settled)) = (&result, &operation.settled_while_sent)
             && reply.loading
         {
@@ -2802,25 +2864,10 @@ impl BrowserWidget {
                     .with_test_id("browser.surface"),
             )
         };
-        // A percentage-height WebView cannot be a third direct flex child:
-        // with toolbar + progress it can claim the outer column's full
-        // height and paint over the chrome.  Give loading content its own
-        // remaining-height flex region so the fixed progress strip always
-        // sits beneath the toolbar, above the page.
-        let content = if !self.show_settings && self.progress < 1.0 {
-            Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_gap(theme.tokens.spacing.s0)
-                    .with_fill_remaining_height()
-                    .push(Box::new(
-                        ProgressBar::indeterminate().with_label("Page loading"),
-                    ))
-                    .push(content),
-            ) as Box<dyn Widget>
-        } else {
-            content
-        };
+        // Loading is drawn on the toolbar's bottom edge (`draw`), not as a
+        // band of its own: a band pushed the page down when a load began
+        // and pulled it back up when it ended, so every link moved the
+        // whole page twice.
         column = column.push(content);
         Box::new(column)
     }
@@ -2973,6 +3020,7 @@ impl BrowserWidget {
                         self.clear_address_error();
                         self.set_loading_progress(0.0);
                         self.structure_dirty |= self.daily.navigation_started(&self.engine);
+                        self.reader_view = false;
                     }
                 }
                 WebViewEvent::TabClosed | WebViewEvent::TabDetached => {
@@ -3039,6 +3087,7 @@ impl BrowserWidget {
                         self.title.clear();
                         self.loading_stopped = false;
                         self.structure_dirty |= self.daily.navigation_started(&self.engine);
+                        self.reader_view = false;
                     }
                     self.pending_history = None;
                     self.back_menu.close();
@@ -3852,6 +3901,14 @@ impl BrowserWidget {
             self.queue_unit_operation("browser.page", "stop");
             return true;
         }
+        // Reader view, on Firefox's key for it.
+        if platform
+            && modifiers.alt_key()
+            && matches!(&key.logical_key, WKey::Character(c) if c.eq_ignore_ascii_case("r"))
+        {
+            self.queue_unit_operation("browser.page", "reader-view");
+            return true;
+        }
         let alt_navigation =
             modifiers.alt_key() && !modifiers.control_key() && !modifiers.super_key();
         let reload = (modifiers.control_key() || modifiers.super_key())
@@ -4489,9 +4546,17 @@ impl Widget for BrowserWidget {
         if let Some(c) = self.composed.element_mut() {
             c.draw(scene, transform, text_renderer, theme, presence);
         }
-        // One hairline under the toolbar row separates it from the page.
+        // One hairline under the toolbar row separates it from the page;
+        // while the page loads, the loading line takes its place.
         if let Some(rect) = self.find_rect("browser.toolbar") {
             ui::widget::toolbar::paint_band(scene, transform, theme, rect);
+            if let Some(face) = self.loading_face() {
+                let height = f64::from(theme.tokens.metrics.chrome_rule_px.max(1.0)) * 2.0;
+                face.paint(
+                    &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                    Rect::new(rect.x0, rect.y1 - height, rect.x1, rect.y1),
+                );
+            }
         }
     }
 
@@ -4530,7 +4595,11 @@ impl Widget for BrowserWidget {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.navigation_hold.waiting()
+        // An indeterminate loading line sweeps; a determinate one moves
+        // only when the engine reports progress.
+        self.loading_face()
+            .is_some_and(|_| self.loading_indeterminate() && !self.motion_reduced)
+            || self.navigation_hold.waiting()
             || self.suggest_debounce.is_pending()
             || self.suggest_fetcher.in_flight()
             || self
@@ -5117,6 +5186,15 @@ impl BrowserWidget {
         }
         page.actions.push(pip);
         let web_page = is_supported_web_url(&self.current_uri);
+        let mut reader = E::ReaderView.bound();
+        if self.reader_view {
+            reader.label = "Close reader view".into();
+        }
+        page.actions.push(if web_page {
+            reader
+        } else {
+            reader.unavailable("no_web_page", "Open a web page first")
+        });
         let element = String::new();
         for (spec, asking) in [
             (E::ReadPage, &[][..]),
@@ -5610,6 +5688,15 @@ impl BrowserWidget {
         }
         if let BrowserOperation::Page(request) = operation {
             self.start_page_operation(invocation, request)?;
+            return Ok(ui::framework::Effected::Pending);
+        }
+        if matches!(&operation, BrowserOperation::ToggleReaderView) {
+            if !is_supported_web_url(&self.current_uri) {
+                return Err("Reader view needs a web page".into());
+            }
+            let enabled = !self.reader_view;
+            self.start_page_operation(invocation, PageRequest::Reader { enabled })?;
+            self.reader_request = Some(enabled);
             return Ok(ui::framework::Effected::Pending);
         }
         let is_navigation = matches!(
@@ -6377,18 +6464,12 @@ mod architecture_tests {
                     url: "https://a.test".into(),
                 })
                 .unwrap();
-            let mut composed = widget.build_composition(&Theme::dark());
-            composed.set_motion_reduced(true);
-            let mut theme = Theme::dark();
-            theme.reduce_motion = true;
-            composed.draw(
-                &mut Scene::new(),
-                Affine::IDENTITY,
-                &mut TextRenderer::new(),
-                &theme,
-                &PresenceCtx::default(),
+            assert!(widget.needs_animation_frame(), "the loading line sweeps");
+            widget.set_motion_reduced(true);
+            assert!(
+                !widget.needs_animation_frame(),
+                "under reduced motion the loading line holds still"
             );
-            assert!(!composed.needs_animation_frame());
             widget
                 .perform_browser_operation(BrowserOperation::Stop)
                 .unwrap();
@@ -6410,23 +6491,19 @@ mod architecture_tests {
                 widget.progress < 1.0,
                 "navigation must paint loading before callbacks"
             );
-            let composed = widget.build_composition(&Theme::dark());
             assert!(
-                composed.needs_animation_frame(),
+                widget.needs_animation_frame(),
                 "loading indicator animates immediately"
+            );
+            widget.set_loading_progress(0.4);
+            assert!(
+                !widget.needs_animation_frame(),
+                "a load with reported progress repaints only when progress moves"
             );
             widget.apply_engine_events();
             assert!((widget.progress - 1.0).abs() < f64::EPSILON);
-            // Paint the new engine frame once before checking idle scheduling.
-            let mut composed = widget.build_composition(&Theme::dark());
-            composed.draw(
-                &mut Scene::new(),
-                Affine::IDENTITY,
-                &mut TextRenderer::new(),
-                &Theme::dark(),
-                &PresenceCtx::default(),
-            );
-            assert!(!composed.needs_animation_frame());
+            assert!(widget.loading_face().is_none());
+            assert!(!widget.needs_animation_frame());
         }
 
         // Phase `fresh_live_surface_starts_loading_and_failure_stops_it`.
@@ -7416,6 +7493,51 @@ mod tests {
             );
         }
 
+        // Phase `reader_view_toggles_through_the_page_and_ends_with_its_document`.
+        {
+            let (engine, mut widget, mut doc, root) = page_on("https://news.test/story");
+            let toggle = |widget: &mut BrowserWidget, doc: &mut AutoCommit| {
+                let invocation =
+                    start(widget, doc, &root, "reader-view", &serde_json::json!({})).unwrap();
+                widget.sync(doc, &root);
+                assert!(matches!(
+                    widget.poll_invocation(invocation),
+                    Some(ui::tilo_actions::InvocationUpdate::Succeeded { .. })
+                ));
+            };
+            toggle(&mut widget, &mut doc);
+            assert_eq!(
+                page_requests(&engine),
+                vec![PageRequest::Reader { enabled: true }]
+            );
+            assert!(widget.reader_view);
+            assert_eq!(
+                page_action(&widget, &doc, "reader-view").label,
+                "Close reader view"
+            );
+            toggle(&mut widget, &mut doc);
+            assert_eq!(
+                page_requests(&engine).last(),
+                Some(&PageRequest::Reader { enabled: false })
+            );
+            assert!(!widget.reader_view);
+            toggle(&mut widget, &mut doc);
+            assert!(widget.reader_view);
+            widget
+                .perform_browser_operation(BrowserOperation::Navigate {
+                    url: "https://news.test/next".into(),
+                })
+                .unwrap();
+            assert!(!widget.reader_view, "the next page opens as itself");
+            let (_, blank, doc, _) = page_on("about:blank");
+            assert!(
+                !page_action(&blank, &doc, "reader-view")
+                    .contract
+                    .availability
+                    .is_available()
+            );
+        }
+
         // Phase `a_read_on_a_loading_page_waits_for_it_to_settle`.
         {
             let (engine, mut widget, mut doc, root) = page_on("https://shop.test/");
@@ -7691,6 +7813,27 @@ mod tests {
 
     fn layout_with_theme(widget: &mut BrowserWidget, width: f32, height: f32, theme: &Theme) {
         layout_keeping_tree(widget, width, height, theme);
+    }
+
+    #[test]
+    fn a_load_never_moves_the_page() {
+        let engine = TestEngine::new();
+        let mut widget = BrowserWidget::with_engine(engine, true);
+        layout_at(&mut widget, 1000.0, 700.0);
+        let idle = widget.find_rect("browser.surface").unwrap();
+        widget
+            .perform_browser_operation(BrowserOperation::Navigate {
+                url: "https://a.test".into(),
+            })
+            .unwrap();
+        assert!(widget.loading_face().is_some(), "the load is shown");
+        let _ = widget.take_structure_dirty();
+        layout_at(&mut widget, 1000.0, 700.0);
+        let loading = widget.find_rect("browser.surface").unwrap();
+        assert_eq!(
+            idle, loading,
+            "the loading line sits on the toolbar's edge; the page stays put"
+        );
     }
 
     /// Lay the widget out and hand back the tree and the widget's node, for

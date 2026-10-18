@@ -146,6 +146,12 @@ pub enum BrowserEffect {
     /// Floats the page's video, or closes the floating video.
     #[effect(row, job, returns)]
     PictureInPicture,
+    /// Reader view
+    ///
+    /// Shows the page's article alone in a calm reading layout, or the page
+    /// again.
+    #[effect(row, job, returns)]
+    ReaderView,
     /// Download address
     #[effect(row, returns)]
     StartDownload {
@@ -393,6 +399,7 @@ impl BrowserEffect {
             Self::RequestSiteDataClear => BrowserOperation::RequestWebsiteDataClear,
             Self::TogglePause => BrowserOperation::ToggleHistoryPause,
             Self::PictureInPicture => BrowserOperation::TogglePictureInPicture,
+            Self::ReaderView => BrowserOperation::ToggleReaderView,
             Self::StartDownload { url } => BrowserOperation::StartDownload { url },
             Self::CancelDownload { id } => BrowserOperation::CancelDownload { id },
             Self::RetryDownload { id } => BrowserOperation::RetryDownload { id },

@@ -572,6 +572,10 @@ chmod -R a+rX target/chromium apps/browser/chromium/tests
 mkdir -p -m 1777 /tmp/host-test
 HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- \
   python3 apps/browser/chromium/tests/document_size.py target/chromium/tilo-chromium-host
+HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- \
+  python3 apps/browser/chromium/tests/privacy_defaults.py target/chromium/tilo-chromium-host
+HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- \
+  python3 apps/browser/chromium/tests/page_actions.py target/chromium/tilo-chromium-host
 """
 inputs = ["apps/browser/chromium/**", "scripts/browser/build-host.py", "scripts/browser/cef-lock.json", "crates/**", "vendor/**", "Cargo.toml", "Cargo.lock", "tools/ci/ensure-browser-dependencies.sh"]
 writable_sources = true

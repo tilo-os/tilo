@@ -49,10 +49,24 @@ AGENT = b'''<!doctype html><title>Agent</title>
 '''
 
 
+PARAGRAPH = ('Reading on a screen is easiest when the line is short, the type is calm and nothing '
+             'else competes for attention. ') * 3
+ARTICLE = f'''<!doctype html><title>The long read</title>
+<style>p {{ color: red; font-size: 9px }}</style>
+<nav><a href="/pricing">Pricing</a> <a href="/login">Sign in</a></nav>
+<div class="layout"><article><h1>The long read</h1>
+<p>{PARAGRAPH}</p><p>{PARAGRAPH}</p><p>{PARAGRAPH}</p>
+<aside><a href="/related">Related story</a></aside>
+<p>{PARAGRAPH}</p></article>
+<div class="sidebar"><a href="/ad">Advertisement</a></div></div>
+<input id="kept" value="typed by the person">'''.encode()
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
-        body = FORM if path == '/form' else AGENT if path == '/agent' else b'{"ok":true}' if path == '/data.json' \
+        body = FORM if path == '/form' else AGENT if path == '/agent' else ARTICLE if path == '/article' \
+            else b'{"ok":true}' if path == '/data.json' \
             else f'<title>{path}</title><p>{path}</p>'.encode()
         self.send_response(200)
         self.send_header('Content-Type', 'application/json' if path == '/data.json' else 'text/html')
@@ -130,6 +144,30 @@ class PageActions(unittest.TestCase):
         self.assertNotIn('hunter2', again)
         self.assertEqual(self.main_world('typeof globalThis.__tiloPage'), 'undefined',
                          'page script must not reach the automation world')
+
+    def test_reader_view_shows_the_article_alone_and_puts_the_page_back(self):
+        self.h.navigate(self.url + '/article')
+        self.main_world('document.getElementById("kept").value = "typed later"')
+        shown = self.ok('reader', enabled=True)
+        self.assertTrue(shown['data']['reader'], shown)
+        self.assertGreater(shown['data']['words'], 100, shown)
+        outline = self.outline()
+        self.assertIn('heading "The long read" level=1', outline)
+        self.assertIn('Reading on a screen', outline)
+        for gone in ('Pricing', 'Related story', 'Advertisement'):
+            self.assertNotIn(gone, outline, f'{gone} is not part of the article')
+        self.assertEqual(self.main_world('getComputedStyle(document.body.firstElementChild.shadowRoot'
+                                         '.querySelector("p:not(.site)")).fontSize'), '20px',
+                         'the page\'s style sheets do not reach the reading layout')
+        closed = self.ok('reader', enabled=False)
+        self.assertFalse(closed['data']['reader'], closed)
+        outline = self.outline()
+        self.assertIn('Pricing', outline)
+        self.assertEqual(self.main_world('document.getElementById("kept").value'), 'typed later',
+                         'the page comes back as it was')
+        self.h.navigate(self.url + '/agent')
+        refused = self.page('reader', enabled=True)
+        self.assertEqual((refused['ok'], refused['code']), (False, 'no_article'), refused)
 
     def test_fill_select_and_click_operate_the_page_like_a_person(self):
         self.h.navigate(self.url + '/form')

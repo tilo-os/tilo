@@ -72,6 +72,9 @@ pub enum PageRequest {
     /// Network requests after sequence number `since`: method, URL, type,
     /// status and failure, never headers, bodies or cookies.
     Network { since: u64 },
+    /// Show the document's article alone in a reading layout (`enabled`), or
+    /// put the page back as it was. A page without an article is refused.
+    Reader { enabled: bool },
 }
 
 impl PageRequest {
@@ -88,6 +91,7 @@ impl PageRequest {
             Self::Settle { .. } => "settle",
             Self::Console { .. } => "console",
             Self::Network { .. } => "network",
+            Self::Reader { .. } => "reader",
         }
     }
 
@@ -99,7 +103,8 @@ impl PageRequest {
             | Self::At { .. }
             | Self::Settle { .. }
             | Self::Console { .. }
-            | Self::Network { .. } => None,
+            | Self::Network { .. }
+            | Self::Reader { .. } => None,
             Self::Click { element }
             | Self::Fill { element, .. }
             | Self::Select { element, .. }
@@ -144,7 +149,8 @@ impl PageRequest {
             | Self::Submit { .. }
             | Self::Changes
             | Self::Console { .. }
-            | Self::Network { .. } => true,
+            | Self::Network { .. }
+            | Self::Reader { .. } => true,
         }
     }
 }
@@ -323,6 +329,7 @@ pub(crate) fn encode_request(request_id: u32, request: &PageRequest) -> serde_js
         PageRequest::Console { since } | PageRequest::Network { since } => {
             command["since"] = (*since).into();
         }
+        PageRequest::Reader { enabled } => command["enabled"] = (*enabled).into(),
         PageRequest::Outline | PageRequest::Click { .. } | PageRequest::Changes => {}
     }
     command

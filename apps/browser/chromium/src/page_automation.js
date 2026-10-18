@@ -839,6 +839,100 @@ globalThis.__tiloPage ||= (() => {
     } finally { owned.observer.disconnect(); committingTextLease = null; nativeTextElement = null; nativeTextEditor = null; }
   }
 
+  // Reader view: the document's article alone, in a calm reading layout. The
+  // page's own body is set aside untouched and put back on leaving, so its
+  // scripts, state and scroll position survive. The article is shown in a
+  // shadow root, out of reach of the page's style sheets.
+  let readerSaved = null;
+  const READER_MIN_TEXT = 500;
+  const READER_DROP = 'script,style,link,noscript,template,iframe,object,embed,form,button,' +
+    'input,select,textarea,nav,aside,footer,dialog,[role=navigation],[role=complementary],' +
+    '[role=contentinfo],[role=dialog],[aria-hidden=true],[hidden]';
+  const READER_STYLE = `
+    :host { all: initial; display: block; color-scheme: light dark; }
+    .page { box-sizing: border-box; min-height: 100vh; padding: 56px 24px 96px;
+      background: light-dark(#fbfaf8, #1b1b1d); color: light-dark(#1d1d1f, #e8e8ea);
+      font: 20px/1.6 system-ui, sans-serif; }
+    .article { max-width: 38em; margin: 0 auto; overflow-wrap: break-word; }
+    .site { font-size: 15px; color: light-dark(#6e6e73, #98989d); margin: 0 0 8px; }
+    h1 { font-size: 1.9em; line-height: 1.2; margin: 0 0 1em; }
+    h2, h3, h4 { line-height: 1.3; margin: 1.6em 0 0.6em; }
+    p, ul, ol, blockquote, pre, figure, table { margin: 0 0 1em; }
+    img, video, picture, svg { max-width: 100%; height: auto; }
+    figure { margin-inline: 0; } figcaption { font-size: 0.8em; color: light-dark(#6e6e73, #98989d); }
+    a { color: light-dark(#0b57d0, #8ab4f8); }
+    blockquote { margin-inline: 0; padding-inline-start: 1em; border-inline-start: 3px solid light-dark(#d2d2d7, #3a3a3c); }
+    pre, code { font-family: ui-monospace, monospace; font-size: 0.85em; }
+    pre { overflow-x: auto; padding: 12px; border-radius: 8px; background: light-dark(#f0f0f2, #2a2a2d); }
+    table { border-collapse: collapse; display: block; overflow-x: auto; }
+    td, th { padding: 4px 8px; border-bottom: 1px solid light-dark(#e5e5ea, #3a3a3c); }`;
+  const paragraphText = element => {
+    let total = 0;
+    for (const p of element.querySelectorAll('p')) total += p.textContent.trim().length;
+    return total;
+  };
+  function articleRoot() {
+    let best = null, bestText = 0;
+    for (const candidate of document.querySelectorAll('article, main, [role=main], [itemprop=articleBody]')) {
+      const text = paragraphText(candidate);
+      if (text > bestText) { best = candidate; bestText = text; }
+    }
+    if (bestText < READER_MIN_TEXT) {
+      // No marked article: the block whose own paragraphs hold the most text.
+      const blocks = new Map();
+      for (const p of document.querySelectorAll('p')) {
+        const length = p.textContent.trim().length;
+        if (length >= 40 && p.parentElement) blocks.set(p.parentElement, (blocks.get(p.parentElement) || 0) + length);
+      }
+      for (const [block, text] of blocks) if (text > bestText) { best = block; bestText = text; }
+    }
+    return bestText >= READER_MIN_TEXT ? best : null;
+  }
+  function reader(enabled) {
+    if (!enabled) {
+      if (readerSaved) {
+        document.body.replaceWith(readerSaved.body);
+        window.scrollTo(0, readerSaved.scroll);
+        readerSaved = null;
+      }
+      return {ok: true, message: 'Reader view closed', data: {reader: false}};
+    }
+    if (readerSaved && document.body === readerSaved.shown) return {ok: true, message: 'Reader view', data: {reader: true}};
+    const root = articleRoot();
+    if (!root) throw failure('no_article', 'This page has no article to read');
+    const article = root.cloneNode(true);
+    for (const dropped of article.querySelectorAll(READER_DROP)) dropped.remove();
+    for (const element of [article, ...article.querySelectorAll('*')]) {
+      element.removeAttribute('style');
+      element.removeAttribute('class');
+      // Lazily loaded images keep their address in a data attribute.
+      if (element.localName === 'img' && !element.getAttribute('src')) {
+        const lazy = element.getAttribute('data-src') || element.getAttribute('data-lazy-src');
+        if (lazy) element.setAttribute('src', lazy);
+      }
+    }
+    const title = clean(document.title, 300);
+    const words = (article.textContent.match(/\S+/g) || []).length;
+    const body = document.createElement('body');
+    const host = body.appendChild(document.createElement('div'));
+    const shadow = host.attachShadow({mode: 'open'});
+    const style = shadow.appendChild(document.createElement('style'));
+    style.textContent = READER_STYLE;
+    const page = shadow.appendChild(document.createElement('div'));
+    page.className = 'page';
+    const column = page.appendChild(document.createElement('div'));
+    column.className = 'article';
+    const site = column.appendChild(document.createElement('p'));
+    site.className = 'site';
+    site.textContent = location.hostname.replace(/^www\./, '');
+    if (title && !article.querySelector('h1')) column.appendChild(document.createElement('h1')).textContent = title;
+    column.appendChild(article);
+    readerSaved = {body: document.body, shown: body, scroll: window.scrollY};
+    document.body.replaceWith(body);
+    window.scrollTo(0, 0);
+    return {ok: true, message: 'Reader view', data: {reader: true, title, words}};
+  }
+
   return {
     nativeTextInputElement, configureNativeTextEditor,
     run(command) {
@@ -856,6 +950,7 @@ globalThis.__tiloPage ||= (() => {
           case 'select': return select(command.element, command.values);
           case 'submit': return submit(command.element, command.cross_origin);
           case 'focus': return focus(command.element, command.key, command.cross_origin);
+          case 'reader': return reader(command.enabled === true);
         }
         return failure('invalid_request', 'Unknown page action');
       } catch (error) {

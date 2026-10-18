@@ -91,6 +91,39 @@ pub const DEFAULT_SEARCH_ENGINE: &str = "https://duckduckgo.com/?q=";
 /// Default homepage — matches the browser's startup URL.
 pub const DEFAULT_HOMEPAGE: &str = "https://duckduckgo.com";
 
+/// The search engines offered by name, each with its query template. A
+/// template set some other way (an agent, an older document) stays
+/// selected and is shown by its host.
+pub const SEARCH_ENGINES: &[(&str, &str)] = &[
+    ("DuckDuckGo", DEFAULT_SEARCH_ENGINE),
+    ("Google", "https://www.google.com/search?q="),
+    ("Bing", "https://www.bing.com/search?q="),
+    ("Brave Search", "https://search.brave.com/search?q="),
+    ("Ecosia", "https://www.ecosia.org/search?q="),
+    ("Startpage", "https://www.startpage.com/do/search?q="),
+    ("Kagi", "https://kagi.com/search?q="),
+];
+
+/// The search engine choices as (template, name), with `current` included
+/// when it is not one of the named engines.
+fn search_engine_choices(current: &str) -> Vec<(String, String)> {
+    let mut choices: Vec<(String, String)> = SEARCH_ENGINES
+        .iter()
+        .map(|(name, template)| ((*template).to_owned(), (*name).to_owned()))
+        .collect();
+    if !current.is_empty() && !choices.iter().any(|(template, _)| template == current) {
+        let name = url::Url::parse(current)
+            .ok()
+            .and_then(|url| {
+                url.host_str()
+                    .map(|host| host.trim_start_matches("www.").to_owned())
+            })
+            .unwrap_or_else(|| current.to_owned());
+        choices.push((current.to_owned(), name));
+    }
+    choices
+}
+
 // === Preferences ================================================
 
 /// Durable browser preferences, as the browser document holds them.
@@ -235,14 +268,7 @@ impl SettingsPane {
                     self.actions.edits.clone(),
                     Browser::paths().preferences.homepage,
                 ),
-                field_block(
-                    "Search engine",
-                    &self.presentation.search_engine,
-                    "settings.search_engine_input",
-                    DEFAULT_SEARCH_ENGINE,
-                    self.actions.edits.clone(),
-                    Browser::paths().preferences.search_engine,
-                ),
+                search_engine_row(&self.presentation.search_engine, self.actions.edits.clone()),
             ]),
         );
 
@@ -258,7 +284,6 @@ impl SettingsPane {
                     self.actions.edits.clone(),
                     Browser::paths().preferences.adblock_enabled,
                 )),
-                large_text,
             ),
             setting_row_described(
                 "Clear data when the browser closes",
@@ -270,30 +295,37 @@ impl SettingsPane {
                     self.actions.edits.clone(),
                     Browser::paths().preferences.clear_on_exit,
                 )),
-                large_text,
             ),
             setting_row_described(
                 "Browsing data",
-                "Clear stored history, or request a local engine site-data clear.",
+                "History, and the cookies and files sites keep on this device.",
                 browsing_controls,
-                large_text,
             ),
         ];
         if let Some(request) = &self.autofill_request {
-            for (id, label, addresses) in [
-                ("browser.credentials.open", "Passwords", false),
-                ("browser.address.open", "Address autofill", true),
+            for (id, label, description, addresses) in [
+                (
+                    "browser.credentials.open",
+                    "Passwords",
+                    "Sign-ins saved for sites on this device.",
+                    false,
+                ),
+                (
+                    "browser.address.open",
+                    "Address autofill",
+                    "Fill address forms from your saved addresses.",
+                    true,
+                ),
             ] {
                 let request = request.clone();
                 privacy_rows.push(setting_row_described(
                     label,
-                    "Manage filling on this device; opening does not enable it.",
+                    description,
                     Box::new(
                         Button::new(id, "Manage")
                             .with_accessible_name(label)
                             .on_view(move || request.set(Some(addresses))),
                     ),
-                    large_text,
                 ));
             }
         }
@@ -313,13 +345,12 @@ impl SettingsPane {
                 "Windows",
                 rows(vec![setting_row_described(
                     "Private browsing",
-                    "Open a separate private window with memory-only browsing state.",
+                    "Nothing from a private window is kept after it closes.",
                     Box::new(
-                        Button::new("settings.new_private_window", "New Private Window")
+                        Button::new("settings.new_private_window", "New private window")
                             .control_size(ui::widget::ControlSize::Regular)
                             .on_effect(move || request.set(true)),
                     ),
-                    large_text,
                 )]),
             ));
         }
@@ -359,36 +390,39 @@ fn rows(items: Vec<El>) -> El {
     Box::new(Section::new(items))
 }
 
-/// A label with a dim helper line beneath it, paired with a trailing
-/// control. The `Spacer` pushes the control to the trailing edge.
-fn setting_row_described(label: &str, description: &str, control: El, large_text: bool) -> El {
-    let text_block = Column::new()
-        .with_rhythm(ui::tokens::Rhythm::Tight)
-        .with_no_padding()
-        .with_intrinsic_height()
-        .push(Box::new(Text::new(label).with_role(ui::TextRole::Body)))
-        .push(Box::new(
-            Text::new(description)
-                .with_role(ui::TextRole::Caption)
-                .dimmed(),
-        ));
-    if large_text {
-        Box::new(
-            Column::new()
-                .with_rhythm(ui::tokens::Rhythm::Related)
-                .with_no_padding()
-                .with_intrinsic_height()
-                .push(Box::new(text_block))
-                .push(control),
-        )
-    } else {
-        Box::new(
-            Row::new()
-                .push(Box::new(text_block))
-                .push(Box::new(Spacer::new()))
-                .push(control),
-        )
-    }
+/// A label with a dim helper line beneath it, and its control at the
+/// trailing edge of the same row. The row moves the control under the text
+/// only when both do not fit (a narrow window, large text).
+fn setting_row_described(label: &str, description: &str, control: El) -> El {
+    let id = format!("settings.row.{}", label.to_lowercase().replace(' ', "-"));
+    Box::new(
+        ui::widget::ListRow::new(id, label)
+            .secondary(description)
+            .trailing(control),
+    )
+}
+
+/// The search engine, chosen by name.
+fn search_engine_row(
+    state: &ui::LocalState<String>,
+    edits: Option<ui::framework::Dispatcher<Browser>>,
+) -> El {
+    let mut chooser = ui::widget::Dropdown::from_state(Vec::new(), state)
+        .with_id("settings.search_engine")
+        .with_accessible_name("Search engine");
+    chooser.set_value_options(search_engine_choices(&state.with(Clone::clone)));
+    let path = Browser::paths().preferences.search_engine;
+    let chooser = match edits {
+        Some(edits) => {
+            chooser.on_change(move |template| edits.submit(path.replace(template.to_owned())))
+        }
+        None => chooser,
+    };
+    setting_row_described(
+        "Search engine",
+        "Searches from the address field go here.",
+        Box::new(chooser),
+    )
 }
 
 fn browsing_data_controls(actions: &SettingsActionBindings, large_text: bool) -> El {
@@ -398,7 +432,7 @@ fn browsing_data_controls(actions: &SettingsActionBindings, large_text: bool) ->
         actions.clear_history.clone(),
     ));
     let clear_site_data = Box::new(button_with_action(
-        Button::new("settings.clear_cookies", "Request site-data clear")
+        Button::new("settings.clear_cookies", "Clear site data")
             .control_size(ui::widget::ControlSize::Large),
         actions.clear_site_data.clone(),
     ));
@@ -515,6 +549,31 @@ mod tests {
     use automerge::ReadDoc;
     use std::collections::HashMap;
     use vello::kurbo::Point;
+
+    #[test]
+    fn search_engines_are_chosen_by_name_and_a_custom_template_stays() {
+        let named = search_engine_choices(DEFAULT_SEARCH_ENGINE);
+        assert_eq!(named.len(), SEARCH_ENGINES.len());
+        assert!(named.iter().all(|(template, name)| {
+            !name.contains("://") && template.starts_with("https://") && template.ends_with("q=")
+        }));
+        let custom = search_engine_choices("https://www.search.example/?q=");
+        assert_eq!(
+            custom.last(),
+            Some(&(
+                "https://www.search.example/?q=".to_owned(),
+                "search.example".to_owned()
+            )),
+            "a template from elsewhere is kept, named by its host"
+        );
+        for (_, template) in SEARCH_ENGINES {
+            let settings = Settings {
+                search_engine: (*template).to_owned(),
+                ..Settings::default()
+            };
+            assert!(settings.valid().is_ok(), "{template} is a valid engine");
+        }
+    }
 
     #[test]
     fn preference_defaults_are_sensible() {

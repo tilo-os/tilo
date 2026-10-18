@@ -10,8 +10,8 @@ use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    Button, Column, Element, EmptyState, ListRow, Row, Section, SegmentedStyle, Spacer, Text,
-    ToggleGroup, Widget,
+    Button, Column, Element, EmptyState, ListRow, Row, Section, SectionHeader, SegmentedStyle,
+    Spacer, Text, ToggleGroup, Widget,
 };
 
 use super::{BrowserWidget, LibrarySection, library_filter_matches};
@@ -36,29 +36,61 @@ const SECTIONS: [(LibrarySection, &str, &str); 4] = [
 ];
 
 impl BrowserWidget {
-    fn history_rows(&self) -> Vec<Element> {
-        self.history
+    /// The visited pages, newest first, in one group per day: Today,
+    /// Yesterday, the days of the past week by name, then dates. Each row
+    /// says where the page is and when it was last open.
+    fn history_groups(&self) -> Vec<Element> {
+        let today = ui::clock::today();
+        let mut entries: Vec<&crate::history::HistoryEntry> = self
+            .history
             .entries()
             .iter()
-            .rev()
             .filter(|entry| {
                 library_filter_matches(&self.library_filter.get(), &[&entry.title, &entry.url])
             })
-            .take(ROW_LIMIT)
-            .map(|entry| {
-                let id = history_resource_id(&entry.url);
-                let title = if entry.title.trim().is_empty() {
-                    entry.url.as_str()
+            .collect();
+        entries.sort_by_key(|entry| std::cmp::Reverse(entry.last_visit));
+        let mut groups: Vec<(String, Vec<Element>)> = Vec::new();
+        for entry in entries.into_iter().take(ROW_LIMIT) {
+            let when = visit_time(entry.last_visit);
+            let heading =
+                when.map_or_else(String::new, |when| day_heading(when.date_naive(), today));
+            let id = history_resource_id(&entry.url);
+            let site = crate::omnibox::display_url(&entry.url);
+            let host = site
+                .split(['/', '?', '#'])
+                .next()
+                .unwrap_or(&site)
+                .to_owned();
+            let title = if entry.title.trim().is_empty() {
+                site.as_str()
+            } else {
+                entry.title.as_str()
+            };
+            let detail = match when {
+                Some(when) => format!("{host} · {}", ui::clock::time_of_day(&when)),
+                None => host,
+            };
+            let mut row = ListRow::new(format!("{id}.open"), title)
+                .secondary(detail)
+                .disclosure();
+            if let Some(binding) = self.unit_binding(&id, "open") {
+                row = row.on_action(binding);
+            }
+            match groups.last_mut() {
+                Some((current, rows)) if *current == heading => rows.push(Box::new(row)),
+                _ => groups.push((heading, vec![Box::new(row) as Element])),
+            }
+        }
+        groups
+            .into_iter()
+            .map(|(heading, rows)| {
+                let section = Section::new(rows);
+                Box::new(if heading.is_empty() {
+                    section
                 } else {
-                    entry.title.as_str()
-                };
-                let mut row = ListRow::new(format!("{id}.open"), title)
-                    .secondary(&entry.url)
-                    .disclosure();
-                if let Some(binding) = self.unit_binding(&id, "open") {
-                    row = row.on_action(binding);
-                }
-                Box::new(row) as Element
+                    section.with_header(SectionHeader::group(heading))
+                }) as Element
             })
             .collect()
     }
@@ -240,8 +272,18 @@ impl BrowserWidget {
         }
         let list = match self.library_section {
             LibrarySection::History => {
-                let rows = self.history_rows();
-                (!rows.is_empty()).then(|| Box::new(Section::new(rows)) as Element)
+                let groups = self.history_groups();
+                (!groups.is_empty()).then(|| {
+                    Box::new(
+                        groups.into_iter().fold(
+                            Column::new()
+                                .with_no_padding()
+                                .with_intrinsic_height()
+                                .with_rhythm(ui::tokens::Rhythm::Group),
+                            Column::push,
+                        ),
+                    ) as Element
+                })
             }
             LibrarySection::Bookmarks => {
                 let rows = self.bookmark_rows();
@@ -352,5 +394,55 @@ impl BrowserWidget {
         }
         parts.push(self.library_body(theme));
         crate::settings::page(parts)
+    }
+}
+
+/// A visit's Unix time as the local date and time.
+fn visit_time(unix_secs: u64) -> Option<chrono::DateTime<chrono::Local>> {
+    let secs = i64::try_from(unix_secs).ok()?;
+    chrono::DateTime::from_timestamp(secs, 0).map(|utc| utc.with_timezone(&chrono::Local))
+}
+
+/// The heading of the day a visit falls on, seen from `today`: Today and
+/// Yesterday, a weekday within the past week, otherwise the date (with the
+/// year once it is not this year's).
+fn day_heading(day: chrono::NaiveDate, today: chrono::NaiveDate) -> String {
+    use chrono::Datelike as _;
+    let days = (day - today).num_days();
+    // A visit stamped ahead of this clock (another device's) is today's.
+    if days >= 0 {
+        return ui::format::near_day(0).unwrap_or_default();
+    }
+    if let Some(near) = ui::format::near_day(days) {
+        return near;
+    }
+    if days > -7 {
+        return day.format("%A").to_string();
+    }
+    if day.year() == today.year() {
+        day.format("%A %-d %B").to_string()
+    } else {
+        day.format("%-d %B %Y").to_string()
+    }
+}
+
+#[cfg(test)]
+mod history_day_tests {
+    use super::day_heading;
+    use chrono::NaiveDate;
+
+    #[test]
+    fn history_days_read_as_a_person_names_them() {
+        let today = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
+        let day = |m, d| NaiveDate::from_ymd_opt(2026, m, d).unwrap();
+        assert_eq!(day_heading(today, today), "Today");
+        assert_eq!(day_heading(day(7, 1), today), "Today");
+        assert_eq!(day_heading(day(6, 29), today), "Yesterday");
+        assert_eq!(day_heading(day(6, 26), today), "Friday");
+        assert_eq!(day_heading(day(6, 1), today), "Monday 1 June");
+        assert_eq!(
+            day_heading(NaiveDate::from_ymd_opt(2025, 12, 24).unwrap(), today),
+            "24 December 2025"
+        );
     }
 }

@@ -119,6 +119,11 @@ impl BrowserWidget {
             )
             .with_checked(self.active_pip),
             row(
+                "Reader view",
+                self.queue_command("browser.page", "reader-view"),
+            )
+            .with_checked(self.reader_view),
+            row(
                 "Pause history",
                 self.queue_command("browser.session", "toggle-pause"),
             )
