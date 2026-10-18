@@ -189,14 +189,16 @@ WORKSPACE_RATCHETS = {
         "ResourceSurface::effect (or ViewCx::effects) and offer item effects bound on their rows",
     ),
 }
-# The app-facing APIs the model replaced (docs/architecture/resources.md): an
-# app declares its record with `#[derive(Model)]` and `#[resource]`, its
-# operations as `#[action]` verbs with typed params, and changes its document
-# only through field edits and verbs. Counted over every line of the sources of
-# workspace apps and examples, tests included, so a test reaches an app the
-# way an agent does. Each count may only go down; lowering one is described in
-# docs/architecture/resources.md ("Leaving the old APIs").
-LEGACY_API_RATCHETS = {
+# The app-facing APIs the model replaced (docs/architecture/resources.md §8):
+# an app declares its record with `#[derive(Model)]` and `#[resource]`, its
+# operations as `#[action]` verbs with typed params and `#[derive(Effect)]`
+# vocabularies, and changes its document only through field edits, verbs and
+# (in migrations and old-shape fixtures) the model's storage helpers. None of
+# the old ways is left in an app or an example, so each is refused outright,
+# in every source file of an app crate (`src`, `tests`, `examples`, `benches`)
+# and of an example (`src`, `tests`): a test reaches an app the way an agent
+# does.
+LEGACY_API_BANS = {
     "hand_resource_impl": (
         re.compile(r"\bimpl\b(?:\s*<[^>{}]*>)?\s+(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*Resource\s+for\b"),
         "hand-written `impl Resource for`; derive the record with #[derive(Model)] and #[resource]",
@@ -207,23 +209,40 @@ LEGACY_API_RATCHETS = {
     ),
     "action_address_new": (
         re.compile(r"\bActionAddress\s*::\s*new\s*\("),
-        "hand-built ActionAddress; invoke a verb or field edit through the dispatcher "
-        "(`R::VERB.with(..)`, `Invoke::edit`) or a test app's typed calls",
+        "hand-built ActionAddress; name the action through its typed reference "
+        "(`R::VERB.on(..)`, `effect.address_on(..)`, `invoke.address()`), take it from "
+        "what is published (`resource.action_address(..)`, `door::published`), or invoke "
+        "it through the door (`call_on`)",
     ),
     "untyped_action_args": (
         re.compile(r"\bargs\s*\.\s*(?:text|get|boolean|integer|number|array)\s*\("),
-        "untyped argument parsing; give the verb typed params",
+        "untyped argument parsing; give the verb typed params, or read the bound "
+        "arguments into a serde struct",
     ),
     "action_spec": (
         re.compile(r"\bActionSpec\s*::"),
-        "hand-built ActionSpec; publish the operation as an #[action] verb or #[effect]",
+        "hand-built ActionSpec; publish the operation as an #[action] verb, an #[effect], "
+        "or a registered read (`semantic_document_read::read_action`)",
     ),
     "direct_automerge_write": (
         re.compile(
             r"\.\s*(?:put|put_object|insert_object|splice_text|update_text|increment)\s*\(",
         ),
-        "direct Automerge write; change the document with a field edit or a verb",
+        "direct Automerge write; change the document with a field edit or a verb, and write "
+        "a migration or an old-shape fixture with the model's helpers (`write_key`, `Slot`, "
+        "`evolution::fixture`)",
     ),
+}
+# The apps that act on other apps' published actions or publish their own to
+# the broker as data, not through a resource of their own: the agent plans and
+# invokes whatever the catalogue offers, Shortcuts stores and runs steps of
+# it, and the web search service publishes its two actions straight to the
+# broker. An address is their data, so they build one; every other old API is
+# refused for them as for any app.
+PROTOCOL_ENDPOINTS: dict[str, str] = {
+    "agent": "plans and invokes the actions the broker's catalogue offers",
+    "shortcuts": "stores and runs steps that name other apps' published actions",
+    "web-search": "a headless service that publishes its actions to the broker",
 }
 # Which matches of a legacy rule are the old API, given the file's code and
 # its raw text (same offsets): a `put` on a content store, a secret store or a
@@ -292,40 +311,42 @@ def receiver(code: str, dot: int) -> str:
 
 
 def document_writes(code: str, raw: str, matches: list[re.Match]) -> list[re.Match]:
-    """Automerge's own writers (`put_object`, `splice_text`, ...) in a file
-    that reaches Automerge; `put`, which stores and caches share, only into
-    `ROOT` or on a receiver this file types or names as a document."""
+    """Writes into `ROOT`, or on a receiver this file types or names as a
+    document, in a file that reaches Automerge. A content store's, a secret
+    store's or a cache's `put` is no document write, nor is an edit through
+    the rich-text model's own `DocMut` or an app's typed test builder."""
     if not matches or not AUTOMERGE_FILE.search(code):
         return []
     names = document_receivers(code)
     return [
         match
         for match in matches
-        if not re.fullmatch(r"\.\s*put\s*\(", match.group())
-        or AUTOMERGE_OBJECT_ARG.match(code, match.end()) is not None
+        if AUTOMERGE_OBJECT_ARG.match(code, match.end()) is not None
         or (name := receiver(code, match.start())) in names
         or re.fullmatch(r"(?:doc|document|transaction)\w*", name) is not None
     ]
 
 
 def action_arguments(code: str, raw: str, matches: list[re.Match]) -> list[re.Match]:
-    """Every ActionArgs accessor; `get` only by name (`args.get("title")`) or
-    on arguments declared as ActionArgs or JSON, not a command line's index."""
+    """Every ActionArgs accessor; `get` only on arguments declared as
+    ActionArgs or JSON, or by name in a file that reads ActionArgs: not a
+    command line's flags or index, nor a stored step's bindings."""
     if not matches:
         return matches
     typed = ACTION_ARGS_DECL.search(code) is not None
+    reads_action_args = re.search(r"\bActionArgs\b", code) is not None
     kept = []
     for match in matches:
         if not match.group().rstrip("( \t\n").endswith("get"):
             kept.append(match)
             continue
         after = raw[match.end() :].lstrip()
-        if typed or after.startswith('"'):
+        if typed or (reads_action_args and after.startswith('"')):
             kept.append(match)
     return kept
 
 
-LEGACY_API_FILTERS = {
+LEGACY_API_BAN_FILTERS = {
     "direct_automerge_write": document_writes,
     "untyped_action_args": action_arguments,
 }
@@ -335,7 +356,6 @@ RATCHET_REASONS = {
     **{rule: reason for rule, (_, reason) in RATCHETS.items()},
     **{rule: reason for rule, (_, reason) in MODEL_RATCHETS.items()},
     **{rule: reason for rule, (_, reason) in WORKSPACE_RATCHETS.items()},
-    **{rule: reason for rule, (_, reason) in LEGACY_API_RATCHETS.items()},
 }
 
 
@@ -485,26 +505,16 @@ def audit_ratchets(
     violations: list[Violation],
     *,
     workspace: bool | None = None,
-    legacy_only: bool = False,
 ) -> None:
     if workspace is None:
         workspace = root.resolve() == ROOT.resolve()
     for source, source_text in sources:
         relative = source.relative_to(root).as_posix()
         code = code_only(source_text)
-        rules = (
-            []
-            if legacy_only
-            else [(rule, pattern, reason, code) for rule, (pattern, reason) in RATCHETS.items()]
-        )
-        if workspace:
-            rules += [
-                (rule, pattern, reason, code)
-                for rule, (pattern, reason) in LEGACY_API_RATCHETS.items()
-            ]
+        rules = [(rule, pattern, reason, code) for rule, (pattern, reason) in RATCHETS.items()]
         # A Tilo workspace invariant, like the app host check in `audit`; the
         # miniature SDK apps the policy tests build are not held to it.
-        if workspace and not legacy_only:
+        if workspace:
             production = "" if is_test_source(relative) else production_code(source_text)
             rules += [
                 (rule, pattern, reason, production)
@@ -517,8 +527,6 @@ def audit_ratchets(
             ]
         for rule, pattern, reason, code in rules:
             matches = list(pattern.finditer(code))
-            if rule in LEGACY_API_FILTERS:
-                matches = LEGACY_API_FILTERS[rule](code, source_text, matches)
             limit = baseline.get(rule, {}).get(relative, 0)
             if len(matches) <= limit:
                 if len(matches) < limit:
@@ -538,6 +546,37 @@ def audit_ratchets(
                     f"{reason} ({len(matches)} found, audited ceiling {limit} in {baseline_file(relative)})",
                 )
             )
+
+
+def legacy_api_sources(owner: Path, directories: tuple[str, ...]) -> list[tuple[Path, str]]:
+    """Every Rust source under `directories` of the crate at `owner`."""
+    sources = []
+    for directory in directories:
+        for source in sorted((owner / directory).rglob("*.rs")):
+            sources.append((source, source.read_text(encoding="utf-8")))
+    return sources
+
+
+def audit_legacy_apis(
+    sources: list[tuple[Path, str]],
+    violations: list[Violation],
+    *,
+    endpoint: bool = False,
+) -> None:
+    """Refuse every use of an API the model replaced in `sources`; an
+    address in a protocol endpoint's (`endpoint`) is its data."""
+    for source, source_text in sources:
+        code = code_only(source_text)
+        for rule, (pattern, reason) in LEGACY_API_BANS.items():
+            if endpoint and rule == "action_address_new":
+                continue
+            matches = list(pattern.finditer(code))
+            if rule in LEGACY_API_BAN_FILTERS:
+                matches = LEGACY_API_BAN_FILTERS[rule](code, source_text, matches)
+            for match in matches:
+                violations.append(
+                    Violation(source, line_number(source_text, match.start()), reason)
+                )
 
 
 def brace_body(text: str, start: int) -> str | None:
@@ -953,6 +992,12 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
         main_raw = main_path.read_text(encoding="utf-8") if main_path.is_file() else ""
         main_code = code_only(live_launch_registration_code(main_raw))
         audit_ratchets(root, sources, ratchet_baseline, violations)
+        if root.resolve() == ROOT.resolve():
+            audit_legacy_apis(
+                legacy_api_sources(manifest_path.parent, ("src", "tests", "examples", "benches")),
+                violations,
+                endpoint=manifest_path.parent.name in PROTOCOL_ENDPOINTS,
+            )
         found_providers = audit_search_provider_limits(root, sources, violations)
         for key in SEARCH_LIMIT_EXEMPTIONS:
             if key.startswith(f"apps/{manifest_path.parent.name}/") and key not in found_providers:
@@ -1099,14 +1144,11 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                         Violation(source, line_number(text, match.start()), reason)
                     )
 
-    # The examples teach the app model: they are held to the same ratchets on
-    # the APIs it replaced.
-    for manifest_path in sorted((root / "examples" / "apps").glob("*/Cargo.toml")):
-        sources = [
-            (source, source.read_text(encoding="utf-8"))
-            for source in sorted((manifest_path.parent / "src").rglob("*.rs"))
-        ]
-        audit_ratchets(root, sources, ratchet_baseline, violations, legacy_only=True)
+    # The examples teach the app model: none of the APIs it replaced is in
+    # one.
+    if root.resolve() == ROOT.resolve():
+        for manifest_path in sorted((root / "examples" / "apps").glob("*/Cargo.toml")):
+            audit_legacy_apis(legacy_api_sources(manifest_path.parent, ("src", "tests")), violations)
 
     return violations, len(manifests)
 

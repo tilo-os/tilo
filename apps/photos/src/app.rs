@@ -25,7 +25,6 @@ use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{Receiver, SyncSender};
 
 use automerge::AutoCommit;
-use taffy::{NodeId, Style, TaffyTree};
 use tilo_content::ContentStore;
 
 use crate::actions::PhotosEffect;
@@ -1376,73 +1375,12 @@ impl PhotosApp {
         app
     }
 
-    /// Zoom the canvas, as the scroll wheel would. Lets a caller frame a crop
-    /// without simulating a chain of scroll events by hand.
-    ///
-    /// `ImageViewer` exposes no direct zoom setter to a widget that only
-    /// depends on it (only a `#[cfg(test)]` one, private to that crate), so
-    /// this drives the same `MouseWheel` path a real scroll takes: park the
-    /// cursor at the viewer's own centre — where the widget's screen-to-image
-    /// mapping is invariant under a zoom change, so pan stays exactly where it
-    /// was — then send one wheel notch sized to land on `zoom` exactly.
+    /// Zoom the canvas, as the scroll wheel turned at its centre would: the
+    /// pan stays. Lets a caller frame a crop.
     pub fn set_zoom(&mut self, zoom: f32) {
-        let Some(v) = self.viewer.as_mut() else {
-            return;
-        };
-        let rect = Widget::get_rect(v);
-        if rect.width() <= 0.0 || rect.height() <= 0.0 || v.zoom() <= 0.0 {
-            return;
+        if let Some(viewer) = self.viewer.as_mut() {
+            viewer.set_zoom(zoom);
         }
-        let center =
-            winit::dpi::PhysicalPosition::new((rect.x0 + rect.x1) * 0.5, (rect.y0 + rect.y1) * 0.5);
-        // Solves `v.zoom() * ZOOM_STEP.powf(scroll_y) == zoom` for the notch
-        // the widget's own wheel handler would need to see. `1.1` mirrors the
-        // private `ZOOM_STEP` constant in `ui::widget::image_viewer` — there is
-        // no public way to ask the widget for it.
-        let scroll_y = (zoom / v.zoom()).ln() / 1.1_f32.ln();
-        let mut doc = AutoCommit::new();
-        let mut handled = false;
-        let mut focus: Option<NodeId> = None;
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        // A fresh leaf on a fresh tree cannot fail; bail out rather than
-        // panic if it somehow does.
-        let Ok(node) = taffy.new_leaf(Style::default()) else {
-            return;
-        };
-        let device_id = winit::event::DeviceId::dummy();
-        v.handle_event(
-            &winit::event::WindowEvent::CursorMoved {
-                device_id,
-                position: center,
-            },
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: ui::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        v.handle_event(
-            &winit::event::WindowEvent::MouseWheel {
-                device_id,
-                delta: winit::event::MouseScrollDelta::LineDelta(0.0, scroll_y),
-                phase: winit::event::TouchPhase::Moved,
-            },
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: ui::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
     }
 
     /// The visible region of the canvas in normalized image coordinates, or

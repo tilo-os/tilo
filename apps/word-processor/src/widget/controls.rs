@@ -219,13 +219,7 @@ impl WordProcessorWidget {
 
     /// Open the toolbar's More menu, as a person choosing it would.
     pub(super) fn open_toolbar_overflow(&mut self) {
-        let _ = Widget::perform_semantic_action(
-            &mut self.tool_bar,
-            "toolbar.overflow",
-            &ui::a11y::Action::Activate,
-            &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
-            &automerge::ROOT,
-        );
+        self.tool_bar.open_overflow();
         self.lifecycle.dirty = true;
     }
 
