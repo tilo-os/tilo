@@ -1,0 +1,83 @@
+# Compatibility
+
+Tilo's parts change every few days, and compatibility with older versions is
+not kept. Instead every device runs the newest version, automatically, and two
+parts speak only when they speak the same version of the interface between
+them. A mismatch is a state the person sees, with its way out, never undefined
+behaviour. The one thing that survives every change is the person's data.
+
+## Everyone on the newest version
+
+- **Apps** (and the runtime builds they link) update in the background:
+  `tilo-app-update.timer` runs `app update` hourly, except on a connection the
+  owner marked metered. No restart: a running app keeps its build until it
+  next starts.
+- **The system image** is fetched and staged by
+  `bootc-fetch-apply-updates.timer`, at least daily, and applies at the next
+  restart. The shell asks for that restart at most every two days
+  (`shell::system_update`), so the updates of those days apply with one
+  restart.
+- Something that needs a newer system than this one (an app build, a
+  collaborator's device) starts the system update at once
+  (`tilo-deployment-update.service`), and the restart is asked for as soon as
+  the image is staged.
+
+## One version per interface
+
+| Interface | Version | Schema | Checked |
+|---|---|---|---|
+| App ↔ shell (shell-ui) | `ui::floating_surface::FLOATING_SURFACE_PROTOCOL_VERSION` | `crates/sdk/ui-core/interface.toml` | the app's first frame on its shell-ui connection; the launcher, from the manifest |
+| App ↔ runtime (the session services the launcher connects) | `runtime_portal::RUNTIME_INTERFACE_VERSION` | `crates/runtime/runtime-portal/interface.toml` | the launcher, before it connects any service |
+| Store package format (`.tapp` and its manifest) | `tilo_app_package::TAPP_FORMAT_VERSION` | `crates/packaging/tilo-app-package/interface.toml` | the archive header, when a package is read |
+
+- There is no negotiation and no code for an older number. A side at another
+  number says so and stops.
+- The Rust runtime a native app links has no stable ABI, so a build names the
+  exact runtime build it links (`package.runtime`), and the store fetches that
+  runtime with the app.
+- The image declares the versions it serves in
+  `os/usr/share/tilo/system-interfaces.toml`, one per interface; every service
+  an app can be handed belongs to the runtime interface unless it is one of its
+  own. An app's manifest names the version it speaks of each service it uses
+  (`[sandbox.services]`, `required@N` or `optional@N`); it runs only where every
+  one is served exactly, optional ones included.
+- `interface.toml` is written from the code, the way `tilo-app surface` writes
+  an app's `surface.toml`: every type the interface carries, read from its
+  sources with the serde attributes that shape the wire, and its Cap'n Proto
+  schemas. `tools/policy/check_interfaces.py` fails when the file differs from
+  the code (`check`, policy suite) and when it changed incompatibly since main
+  without a higher version (`against`, t's `changes` check). An added optional
+  field of a JSON message, an added Cap'n Proto struct field and a new type are
+  compatible; every other change to what one side sends or reads is not.
+
+## A mismatch is a state
+
+The launcher refuses a build that speaks another version than the system
+serves; the shell decides first what the person sees
+(`shell::app_versions`):
+
+- **The app is behind** (built for older versions): its place says "Updating
+  Mail…" while its update downloads, and it opens there once it fits. After a
+  system update the restored windows of such apps do the same in their tabs.
+- **No build fits yet** (its developer has not published one): "Waiting for an
+  update from the developer". It does not start.
+- **The app is ahead** (it needs a newer system): "Opens once Tilo has
+  updated", and the system update starts.
+- An app whose shell-ui hello names another version than its manifest is
+  answered with the shell's version and closed, and the side behind updates.
+
+## User data survives
+
+- **Resources** migrate with `#[resource(version, migrate)]`
+  ([resources.md](resources.md) §6). A migration is one change on top of the
+  document's history, so the document before it stays readable there: going
+  back to the build that wrote it loses nothing, and that build refuses the
+  migrated document instead of reading it as its own.
+- **Other on-disk formats** are a `tilo_files::native::migration::Format`: a
+  version, the oldest version still brought up, and one forward-only step per
+  version. Loading an older file copies it to `<file>.v<N>` first, then
+  replaces it with the migrated bytes; a newer file is refused untouched. Each
+  step is tested against a file the previous version wrote, and only that.
+  `tools/policy/check_format_migrations.py` keeps the chain from losing a step,
+  so a machine that missed updates still loads. The shell's `state.json` is the
+  first such format.
