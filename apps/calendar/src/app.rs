@@ -3645,7 +3645,10 @@ impl CalendarApp {
         // Global letter/arrow shortcuts fire only when NOT typing into a
         // text field or the notes editor.
         if !field_focused && !notes_focused {
-            return self.handle_keyboard_shortcut(logical_key, state, handled);
+            let state_mods = modifiers.state();
+            let plain =
+                !state_mods.control_key() && !state_mods.alt_key() && !state_mods.super_key();
+            return self.handle_keyboard_shortcut(logical_key, plain, state, handled);
         }
         false
     }
@@ -3754,15 +3757,23 @@ impl CalendarApp {
     }
 
     /// Global letter/arrow shortcuts, fired only when not typing into a text
-    /// field or the notes editor. Split out of `handle_keyboard` to keep
-    /// that under the line cap.
+    /// field or the notes editor, and letters only without Ctrl, Alt or
+    /// Super (`plain`), which belong to the window and the system. Split out
+    /// of `handle_keyboard` to keep that under the line cap.
+    ///
+    /// No single letter opens a file dialog: export and import are in the
+    /// sidebar's menu and the command palette, where a stray key in the week
+    /// view cannot reach them.
     fn handle_keyboard_shortcut(
         &mut self,
         logical_key: &Key,
+        plain: bool,
         state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) -> bool {
-        if let Key::Character(ch) = logical_key {
+        if let Key::Character(ch) = logical_key
+            && plain
+        {
             let key = ch.to_lowercase();
             let act = match key.as_str() {
                 "m" => Some(Action::View(View::Month)),
@@ -3772,8 +3783,6 @@ impl CalendarApp {
                 "t" => Some(Action::Today),
                 "n" if self.view == View::Tasks => Some(Action::NewTask),
                 "n" => Some(Action::NewEvent),
-                "e" => Some(Action::Export),
-                "i" => Some(Action::Import),
                 "[" => Some(Action::Prev),
                 "]" => Some(Action::Next),
                 _ => None,
