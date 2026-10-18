@@ -745,7 +745,7 @@ impl PrintersModel {
     fn job_row(&self, job: &PrintJob) -> Item {
         let cancel = format!("settings.printers.job.cancel.{}", slug(&job.id));
         let retry = format!("settings.printers.job.retry.{}", slug(&job.id));
-        let size = ui::format::bytes_si(job.size_bytes);
+        let size = ui::format::size(job.size_bytes);
         let state = job
             .state
             .map_or_else(|| t("settings-printers-job-state-missing"), job_state_label);

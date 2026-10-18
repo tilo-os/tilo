@@ -22,8 +22,8 @@ pub(super) fn outbound_failure(
             Some(Some(format!(
                 "Changes are no longer shared: one change is {}, above the {} collaboration limit. \
              They remain on this device.",
-                crate::format::bytes(u64::try_from(*actual).unwrap_or(u64::MAX)),
-                crate::format::bytes(u64::try_from(*max).unwrap_or(u64::MAX)),
+                crate::format::memory(u64::try_from(*actual).unwrap_or(u64::MAX)),
+                crate::format::memory(u64::try_from(*max).unwrap_or(u64::MAX)),
             )))
         }
         Err(_) => None,

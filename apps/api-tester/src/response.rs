@@ -96,7 +96,7 @@ pub(crate) fn response(data: &ResponseData, view: ResponseView, sink: &Sink) -> 
     });
     let status = Badge::text(format!("{} {}", data.status, data.status_text))
         .style(ChipStyle::Tinted(status_tone(data.status_class())));
-    let size = ui::format::bytes(u64::try_from(data.size_bytes).unwrap_or(u64::MAX));
+    let size = ui::format::memory(u64::try_from(data.size_bytes).unwrap_or(u64::MAX));
     let summary = Row::new()
         .push(Box::new(status))
         .push(caption(&human_duration(data.duration_ms)))

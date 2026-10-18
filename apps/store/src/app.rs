@@ -141,7 +141,7 @@ fn format_size(bytes: u64) -> String {
     if bytes == 0 {
         return "Size not published".into();
     }
-    ui::format::bytes_si(bytes)
+    ui::format::size(bytes)
 }
 
 /// A compact, printable status detail for the visible progress/error surface.

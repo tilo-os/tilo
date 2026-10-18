@@ -574,7 +574,9 @@ impl I18nManager {
     }
 
     /// Monotonic retained-widget invalidation token. It changes only when a
-    /// catalog or active locale changes.
+    /// catalog, the active locale or the person's region formats
+    /// ([`crate::format::region`]) change, so text that shows dates and
+    /// numbers re-renders with the language.
     #[must_use]
     pub fn revision() -> u64 {
         let catalog = MANAGER.with(|manager| {
@@ -583,7 +585,9 @@ impl I18nManager {
                 .as_ref()
                 .map_or(0, |manager| manager.revision)
         });
-        catalog.wrapping_add(PSEUDO_REVISION.with(Cell::get))
+        catalog
+            .wrapping_add(PSEUDO_REVISION.with(Cell::get))
+            .wrapping_add(crate::format::region::revision())
     }
 
     /// Enable or disable pseudo-localized output. The retained-widget revision

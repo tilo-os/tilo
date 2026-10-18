@@ -308,7 +308,7 @@ pub(crate) fn parse_mem_total_kb(contents: &str) -> Option<u64> {
 /// Format a memory size reported in KiB (as `/proc/meminfo` does) with
 /// binary units, `15.6 GiB`.
 pub(crate) fn format_memory(kb: u64) -> String {
-    ui::format::bytes(kb.saturating_mul(1024))
+    ui::format::memory(kb.saturating_mul(1024))
 }
 
 pub(crate) fn parse_uptime_seconds(contents: &str) -> Option<f64> {

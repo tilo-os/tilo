@@ -2842,7 +2842,7 @@ impl FilePicker {
                 );
             };
             if show_size && !entry.is_dir {
-                meta(scene, &crate::format::bytes_si(entry.size), size_x1, true);
+                meta(scene, &crate::format::size(entry.size), size_x1, true);
             }
             if show_date && let Some(modified) = entry.modified {
                 let Some(when) = chrono::DateTime::from_timestamp(modified, 0)

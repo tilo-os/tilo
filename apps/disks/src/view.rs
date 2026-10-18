@@ -9,7 +9,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use ui::format::bytes_si;
+use ui::format::size;
 use ui::icons::Icon;
 use ui::text_render::TextKind;
 use ui::tokens::{Rhythm, TextRole};
@@ -75,7 +75,7 @@ pub(crate) fn drive_list(
         .map(|(index, (drive, label))| {
             let item = NavItem::new(drive_id(index), label.clone())
                 .icon(drive_icon(drive))
-                .meta(bytes_si(drive.size))
+                .meta(size(drive.size))
                 .without_actions();
             match drive.smart_status() {
                 SmartStatus::Warning => item.status(RowStatus::Warning),
@@ -239,7 +239,7 @@ fn overview(model: &DetailModel<'_>, intents: &Intents) -> Element {
         .map(|(index, part)| MapEntry {
             partition: Some(index),
             device: part.name.clone(),
-            label: format!("{} {}", part.display_label(), bytes_si(part.size)),
+            label: format!("{} {}", part.display_label(), size(part.size)),
             size: part.size,
             used: part.used_frac(),
         })
@@ -248,7 +248,7 @@ fn overview(model: &DetailModel<'_>, intents: &Intents) -> Element {
         entries.push(MapEntry {
             partition: None,
             device: String::new(),
-            label: format!("Unallocated {}", bytes_si(drive.free_tail())),
+            label: format!("Unallocated {}", size(drive.free_tail())),
             size: drive.free_tail(),
             used: None,
         });
@@ -314,7 +314,7 @@ fn filesystem(index: usize, part: &Partition, selected: bool, intents: &Intents)
         .selected(selected)
         .on_view(move || pick.push(Intent::SelectPartition(Some(index))));
     if let Some(used) = part.used {
-        row = row.meta(format!("{} free", bytes_si(part.size.saturating_sub(used))));
+        row = row.meta(format!("{} free", size(part.size.saturating_sub(used))));
     }
     match part.used_frac() {
         Some(used) if used >= FULL => row.error(),
@@ -337,7 +337,7 @@ fn drive_facts(drive: &Drive) -> Vec<Property> {
     let mut facts = vec![
         Property::new("Device", format!("/dev/{}", drive.name)).with_kind(TextKind::Identifier),
         Property::new("Type", drive.kind.long()),
-        Property::new("Capacity", bytes_si(drive.size)).with_kind(TextKind::Numeric),
+        Property::new("Capacity", size(drive.size)).with_kind(TextKind::Numeric),
         Property::new("Interface", interface_name(drive)),
     ];
     if let Some(serial) = &drive.serial {
@@ -438,7 +438,7 @@ fn smart_tiles(smart: &SmartInfo) -> Vec<Element> {
     if let Some(written) = smart.written_gb {
         tiles.push(Box::new(StatTile::new(
             "Host writes",
-            bytes_si((written.max(0) as u64).saturating_mul(1_000_000_000)),
+            size((written.max(0) as u64).saturating_mul(1_000_000_000)),
         )));
     }
     tiles
@@ -517,7 +517,7 @@ fn partitions(model: &DetailModel<'_>, intents: &Intents) -> Element {
                 )
                 .icon(Icon::Layers)
                 .secondary(summary)
-                .meta(bytes_si(part.size))
+                .meta(size(part.size))
                 .selected(model.partition == Some(index))
                 .on_view(move || pick.push(Intent::SelectPartition(Some(index)))),
             )

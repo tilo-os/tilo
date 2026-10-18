@@ -379,6 +379,98 @@ relative-ago-years = { $count ->
        *[other] { $count } years ago
     }
 
+# Dates, times and numbers (ui::format). Months are 1 = January … 12 =
+# December; weekdays are 1 = Monday … 7 = Sunday.
+format-month-short = { $month ->
+        [1] Jan
+        [2] Feb
+        [3] Mar
+        [4] Apr
+        [5] May
+        [6] Jun
+        [7] Jul
+        [8] Aug
+        [9] Sep
+        [10] Oct
+        [11] Nov
+       *[12] Dec
+    }
+format-month-name = { $month ->
+        [1] January
+        [2] February
+        [3] March
+        [4] April
+        [5] May
+        [6] June
+        [7] July
+        [8] August
+        [9] September
+        [10] October
+        [11] November
+       *[12] December
+    }
+format-weekday-short = { $weekday ->
+        [1] Mon
+        [2] Tue
+        [3] Wed
+        [4] Thu
+        [5] Fri
+        [6] Sat
+       *[7] Sun
+    }
+format-weekday-name = { $weekday ->
+        [1] Monday
+        [2] Tuesday
+        [3] Wednesday
+        [4] Thursday
+        [5] Friday
+        [6] Saturday
+       *[7] Sunday
+    }
+# A day this year in a list: "Jun 30".
+format-month-day = { $month } { $day }
+# A day in another year in a list: "Jun 30, 2025".
+format-month-day-year = { $month } { $day }, { $year }
+# The "Long" date style: "30 Jun 2026".
+format-date-long = { $day } { $month } { $year }
+# A date and a time of day, the date numeric ("2026-06-30 13:42") or worded ("30 Jun 2026, 13:42").
+format-date-time-numeric = { $date } { $time }
+format-date-time-worded = { $date }, { $time }
+# The top of a day: "Tuesday, June 30" and "Tuesday, June 30, 2026".
+format-day-heading = { $weekday }, { $month } { $day }
+format-day-heading-year = { $weekday }, { $month } { $day }, { $year }
+# The top of a month grid: "June 2026".
+format-month-heading = { $month } { $year }
+# The halves of a 12-hour clock: "2:05 PM".
+format-time-am = AM
+format-time-pm = PM
+# How long something takes or took: "1 hr 5 min".
+format-duration-days = { $count ->
+        [one] { $count } day
+       *[other] { $count } days
+    }
+format-duration-hours = { $count } hr
+format-duration-minutes = { $count } min
+format-duration-seconds = { $count } sec
+# How many things a folder, a selection or a result holds: "12 items".
+format-items = { $count ->
+        [one] { $formatted } item
+       *[other] { $formatted } items
+    }
+format-percent = { $value }%
+# Abbreviated large counts: "12.3K", "4.1M", "1.1B".
+format-compact-thousands = { $value }K
+format-compact-millions = { $value }M
+format-compact-billions = { $value }B
+# Narrow relative times for tight list columns: "now", "3m", "2h", "4d", "2w", "3mo", "1y".
+relative-compact-now = now
+relative-compact-minutes = { $count }m
+relative-compact-hours = { $count }h
+relative-compact-days = { $count }d
+relative-compact-weeks = { $count }w
+relative-compact-months = { $count }mo
+relative-compact-years = { $count }y
+
 # A software participant in history, presence and activity rows.
 history-run-step-separator = {", "}
 participant-agent = { $name } · Agent

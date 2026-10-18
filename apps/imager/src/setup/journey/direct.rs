@@ -122,8 +122,8 @@ impl InstallerPreview {
                     return Some(crate::setup::strings::t_args(
                         "installer-review-storage-shortfall",
                         &[
-                            ("needed", ui::format::bytes(needed_bytes).into()),
-                            ("available", ui::format::bytes(available_bytes).into()),
+                            ("needed", ui::format::memory(needed_bytes).into()),
+                            ("available", ui::format::memory(available_bytes).into()),
                         ],
                     ));
                 }
@@ -165,8 +165,8 @@ impl InstallerPreview {
             t_args(
                 "installer-review-resize",
                 &[
-                    ("before", ui::format::bytes(shrink.from_bytes).into()),
-                    ("after", ui::format::bytes(shrink.to_bytes).into()),
+                    ("before", ui::format::memory(shrink.from_bytes).into()),
+                    ("after", ui::format::memory(shrink.to_bytes).into()),
                 ],
             )
         } else {
@@ -470,8 +470,8 @@ mod tests {
         assert!(preview.review_storage_summary().contains(&t_args(
             "installer-review-resize",
             &[
-                ("before", ui::format::bytes(shrink.from_bytes).into()),
-                ("after", ui::format::bytes(shrink.to_bytes).into()),
+                ("before", ui::format::memory(shrink.from_bytes).into()),
+                ("after", ui::format::memory(shrink.to_bytes).into()),
             ]
         )));
         preview

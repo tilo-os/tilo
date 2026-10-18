@@ -66,8 +66,8 @@ impl std::fmt::Display for LoadError {
             LoadError::TooLarge(n) => write!(
                 f,
                 "file is {} — too large to open as text (limit {})",
-                ui::format::bytes_si(*n),
-                ui::format::bytes_si(MAX_TEXT_BYTES)
+                ui::format::size(*n),
+                ui::format::size(MAX_TEXT_BYTES)
             ),
             LoadError::NotText => write!(f, "not a text file"),
         }

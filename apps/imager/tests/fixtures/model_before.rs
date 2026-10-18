@@ -1150,7 +1150,7 @@ pub fn fmt_size(bytes: u64) -> String {
     if bytes == 0 {
         "—".to_string()
     } else {
-        ui::format::bytes_si(bytes)
+        ui::format::size(bytes)
     }
 }
 

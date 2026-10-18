@@ -25,7 +25,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use ui::TextKind;
 use ui::chrome::SelectionState;
-use ui::format::bytes as format_bytes;
+use ui::format::memory as format_bytes;
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;

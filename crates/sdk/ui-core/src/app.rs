@@ -2065,6 +2065,9 @@ impl App {
 
     #[cfg(feature = "native")]
     fn apply_configured_theme(&mut self) {
+        // Region & Formats change with the same settings stamp: dates and
+        // numbers re-render in the new formats (the i18n revision moves).
+        crate::format::region::refresh();
         self.accessibility.base_theme = self
             .floating
             .host_theme

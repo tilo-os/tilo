@@ -2851,8 +2851,8 @@ impl InstallerApp {
         crate::i18n::t_args(
             "installer-storage-allocation-summary",
             &[
-                ("capacity", ui::format::bytes(plan.free_size_bytes).into()),
-                ("remaining", ui::format::bytes(remaining).into()),
+                ("capacity", ui::format::memory(plan.free_size_bytes).into()),
+                ("remaining", ui::format::memory(remaining).into()),
                 ("details", Self::alongside_capacity_summary(plan).into()),
             ],
         )
@@ -2862,8 +2862,8 @@ impl InstallerApp {
         crate::i18n::t_args(
             "installer-storage-alongside-capacity",
             &[
-                ("root", ui::format::bytes(plan.root_size_bytes).into()),
-                ("total", ui::format::bytes(plan.free_size_bytes).into()),
+                ("root", ui::format::memory(plan.root_size_bytes).into()),
+                ("total", ui::format::memory(plan.free_size_bytes).into()),
             ],
         )
     }
@@ -5668,11 +5668,11 @@ mod tests {
             assert_eq!(plan.free_size_bytes, expected_bytes);
             let capacity = app.alongside_allocation_summary(&plan);
             assert!(
-                capacity.contains(&ui::format::bytes(expected_bytes)),
+                capacity.contains(&ui::format::memory(expected_bytes)),
                 "missing selected capacity: {capacity}"
             );
             assert!(
-                capacity.contains(&ui::format::bytes(full.free_size_bytes - expected_bytes)),
+                capacity.contains(&ui::format::memory(full.free_size_bytes - expected_bytes)),
                 "missing unused space: {capacity}"
             );
             assert!(capacity.contains("remains unused"), "{capacity}");

@@ -11,9 +11,6 @@
 //!
 //! Clock types and epoch readings are `ui::time`'s.
 
-use std::sync::Mutex;
-use tilo_lock::MutexRecover as _;
-
 /// The local date and time every screenshot capture shows:
 /// 30 June 2026, 10:42.
 pub const CAPTURE_LOCAL_TIME: (i32, u32, u32, u32, u32) = (2026, 6, 30, 10, 42);
@@ -75,24 +72,10 @@ pub enum TimeStyle {
 impl TimeStyle {
     pub const ALL: [TimeStyle; 2] = [TimeStyle::H24, TimeStyle::H12];
 
-    /// The style the person chose, re-read once the settings change.
+    /// The style the person chose (see [`crate::format::region`]).
     #[must_use]
     pub fn configured() -> Self {
-        static CONFIGURED: Mutex<Option<(Option<settings_store::SettingsStamp>, TimeStyle)>> =
-            Mutex::new(None);
-        let stamp = settings_store::stamp();
-        let mut configured = CONFIGURED.lock_recover();
-        match *configured {
-            Some((seen, style)) if seen == stamp => style,
-            _ => {
-                let style = settings_store::load_section("locale")
-                    .remove("time_format")
-                    .and_then(|value| serde_json::from_value(value).ok())
-                    .unwrap_or_default();
-                *configured = Some((stamp, style));
-                style
-            }
-        }
+        crate::format::region::current().time
     }
 
     /// `time` in this style.
@@ -107,7 +90,14 @@ impl TimeStyle {
         match self {
             TimeStyle::H24 => format!("{hour:02}:{minute:02}"),
             TimeStyle::H12 => {
-                let half = if hour % 24 < 12 { "AM" } else { "PM" };
+                let half = crate::i18n::widget_format(
+                    if hour % 24 < 12 {
+                        "format-time-am"
+                    } else {
+                        "format-time-pm"
+                    },
+                    &[],
+                );
                 let hour = match hour % 12 {
                     0 => 12,
                     hour => hour,

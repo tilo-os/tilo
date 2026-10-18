@@ -723,7 +723,7 @@ fn disks_from(devices: &[BlockDevice]) -> Vec<Disk> {
             }
             Some(Disk {
                 name,
-                size: ui::format::bytes(size_bytes),
+                size: ui::format::memory(size_bytes),
                 model: text(d.model.as_ref()),
                 size_bytes,
                 partition_table: text(d.pttype.as_ref()),

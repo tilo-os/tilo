@@ -3916,6 +3916,7 @@ impl FrameBuilder {
         self.appearance_generation = appearance_generation;
         self.apply_configured_theme();
         crate::shell::i18n::apply_configured_locale();
+        ui::format::region::refresh();
         self.refresh_display_comfort();
         self.rebuild_layout_tree();
         self.relayout();
