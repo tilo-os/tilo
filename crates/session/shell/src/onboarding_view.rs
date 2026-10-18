@@ -6458,6 +6458,10 @@ mod tests {
             .expect("spawn helper"),
         );
         view.nearby_status_path = Some(status);
+        // Hold the journal write that records the join, so the assertion
+        // below sees the hand-off waiting for it rather than racing it.
+        let (release_journal, journal_gate) = std::sync::mpsc::channel::<()>();
+        view.journal_writer = writer_held_until(journal_gate);
         let doc = AutoCommit::new();
         let deadline = tilo_test_env::hang_deadline();
         while view.nearby.is_some() {
@@ -6469,6 +6473,7 @@ mod tests {
             !view.identity_ready_page,
             "the hand-off waits for the journal that records it"
         );
+        release_journal.send(()).expect("the writer waits for its release");
         sync_journaled(&mut view, &doc);
 
         assert_eq!(view.flow.screen(), Screen::Done);
@@ -7080,6 +7085,22 @@ mod tests {
     /// A state writer whose thread is parked in a job from now on, for the
     /// life of the process: the test's stand-in for a crash before the
     /// journal changes queued behind it reach the disk.
+    /// A journal writer whose first job waits until `release` is signalled,
+    /// so a test can look at the view while a journal change is pending.
+    fn writer_held_until(
+        release: std::sync::mpsc::Receiver<()>,
+    ) -> &'static crate::shell::durable_writer::DurableWriter {
+        let writer = Box::leak(Box::new(
+            crate::shell::durable_writer::DurableWriter::spawn("onboarding-journal-held"),
+        ));
+        writer
+            .submit_ordered(move || {
+                let _ = release.recv();
+            })
+            .expect("the held writer takes its gate");
+        writer
+    }
+
     fn writer_that_never_finishes() -> &'static crate::shell::durable_writer::DurableWriter {
         let writer = Box::leak(Box::new(
             crate::shell::durable_writer::DurableWriter::spawn("onboarding-journal-test"),
@@ -7987,6 +8008,9 @@ mod tests {
             view.flow.begin_existing();
             view.accept_connected_identity(identity).unwrap();
         }
+        // Identity work and the progress journal run off the loop; settle
+        // them as a frame loop would before an agent acts.
+        sync_journaled(&mut view, &AutoCommit::new());
         view
     }
     #[test]
@@ -8243,7 +8267,7 @@ mod tests {
             }),
         );
         assert_eq!(reply["answer"]["status"], "accepted");
-        view.sync(doc, &automerge::ROOT);
+        sync_journaled(view, doc);
         id
     }
 
@@ -8413,7 +8437,7 @@ mod tests {
         view.flow.begin_existing();
         view.press(KEY_CONNECT_RETRY);
         let doc = AutoCommit::new();
-        view.sync(&doc, &automerge::ROOT);
+        sync_journaled(&mut view, &doc);
         assert!(view.flow.is_done());
         assert!(view.identity_ready_page);
         assert!(!view.backup_export_available);
@@ -10047,7 +10071,7 @@ mod tests {
             press(&view, &mut doc, KEY_BACKUP_SKIP_ACKNOWLEDGED);
             view.sync(&doc, &automerge::ROOT);
             press(&view, &mut doc, KEY_BACKUP_CONTINUE);
-            view.sync(&doc, &automerge::ROOT);
+            sync_journaled(&mut view, &doc);
 
             let theme = Theme::dark().with_text_scale(1.3);
             let mut text = ui::text_render::TextRenderer::new();
