@@ -56,6 +56,8 @@ args = ["--locked", "--profile", "ci", "--tests"]
 exclude = ["launcher", "shell", "store", "tilo-sandbox", "tilo-vmd"]
 inputs = [".config/nextest.toml", ".config/nextest-filters.toml", "tools/ci/t-nextest.sh", "tools/ci/package_features.py", "tools/ci/nextest_filters.py", "tools/test-env.sh", "tools/with-test-environment.sh", "tools/with-headless-audio.sh"]
 env = { TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "1" }
+# Each job of this family runs under it; t cuts batches so none is expected to need more.
+requirement = { cores = 16, memory = "32GiB" }
 # Packages whose tests start sandboxes of their own (bubblewrap, unshare): in t's job
 # sandbox they may create user, mount and network namespaces, as uid 1000 inside.
 nested_sandboxes = ["shell", "launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-vmd", "settings", "tilo-sandbox-core", "thumbnails", "runtime-bundle"]
