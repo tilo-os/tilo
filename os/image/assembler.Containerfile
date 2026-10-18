@@ -10,8 +10,15 @@ ARG RPMS_REF
 FROM ${RPMS_REF} AS rpms
 
 FROM ${BASE_REF}
+# QEMU, its firmware and a software TPM boot the image's disk for VM tests and development VMs
+# (os/image/dev-vm.sh), nested in the step's guest.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
-    dnf install -y --setopt=reposdir=/repo --setopt=install_weak_deps=False \
+    case "$(uname -m)" in \
+      x86_64) vm="qemu-system-x86-core edk2-ovmf qemu-device-display-virtio-vga" ;; \
+      aarch64) vm="qemu-system-aarch64-core edk2-aarch64 qemu-device-display-virtio-gpu-pci" ;; \
+    esac \
+    && dnf install -y --setopt=reposdir=/repo --setopt=install_weak_deps=False \
       podman skopeo fuse-overlayfs e2fsprogs util-linux jq python3 git-core qemu-img \
+      swtpm swtpm-tools curl zstd $vm \
     && dnf clean all \
     && podman --version && skopeo --version

@@ -40,7 +40,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 RERUN = "python3 tools/policy/check_image_builder_inputs.py   (or tools/policy/run.sh)"
 # (Containerfile, compile stage) pairs this policy covers.
-STAGES = (("os/Containerfile", "apps-payload"), ("os/Containerfile.dev", "dev-builder"))
+STAGES = (("os/Containerfile", "apps-payload"),)
 WORKDIR = "/build"
 # Always read by a workspace build.
 WORKSPACE_FILES = ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml")

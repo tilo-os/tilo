@@ -977,12 +977,12 @@ each = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "a
 name = "os-dev-image-{arch}"
 comment = """
 The dev image a development VM runs (os/Containerfile.dev: tilo-vmd, sshd, the toolchain and the
-components with their dev features, compiled again) on os-image-{arch}."""
+components with their dev features, compiled by os-compile-dev-{arch}) on os-image-{arch}."""
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
-run = "bash tools/ci/publish/os-image.sh dev {arch} /target/os/{arch}/image /target/publish/os-dev/{arch}"
-inputs = ["os/**", "crates/**", "apps/**", "vendor/**", "examples/**", "dist/**", "docs/developers/tasks/**", "tools/policy/**", "tools/protocols/airdrop_sender.py", "tools/test-assets.py", "tools/test-assets-build.rs", "tools/ci/measure.sh", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/**", ".containerignore"]
-needs = ["os-image-{arch}"]
-outputs = ["/target/publish/os-dev/{arch}/image.oci.tar", "/target/publish/os-dev/{arch}/digest", "/target/publish/os-dev/{arch}/revision"]
+run = "bash tools/ci/publish/os-image.sh dev {arch} /target/os/{arch}/image /target/publish/os-dev/{arch} /target/os/{arch}/compiled-dev"
+inputs = ["os/**", "crates/dev/tilo-vmd/data/**", "Cargo.lock", ".containerignore", "tools/ci/os/oci_layers.py"]
+needs = ["os-image-{arch}", "os-compile-dev-{arch}"]
+outputs = ["/target/publish/os-dev/{arch}/**"]
 git = true
 requires = ["{node}", "disk-100g"]
 isolation = "vm"

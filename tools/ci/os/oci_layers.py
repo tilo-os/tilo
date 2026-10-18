@@ -28,11 +28,12 @@ layers, so the pinned base is a fragment as it comes from the registry.
                                                      under sha256-<hex>.sig, which t's
                                                      server-side publishing pushes after
                                                      the image
-    oci_layers.py diff OLD NEW                       which layers of NEW are new, which
+    oci_layers.py diff OLD NEW [REPORT] [--strict]   which layers of NEW are new, which
                                                      action made each and which of its
                                                      inputs changed, and, for a layer whose
                                                      action's inputs did not change, the
-                                                     files that differ: a nondeterminism
+                                                     files that differ: a nondeterminism;
+                                                     --strict fails on any
 
 Composing writes a manifest and a configuration and links the blobs it was given:
 it takes seconds whatever the image's size, and the same fragments give the same
@@ -309,7 +310,7 @@ def layer_files(root, layer):
     return files
 
 
-def cmd_diff(old, new):
+def cmd_diff(old, new, out=None):
     """Say which layers of NEW are not in OLD, and why: the action whose inputs changed (and
     which inputs), or, where its inputs are the same, the files that differ and whether in
     content or only in metadata."""
@@ -322,6 +323,16 @@ def cmd_diff(old, new):
         if a:
             by_action.setdefault(a, []).append(l)
     sent = 0
+    nondeterministic = 0
+    lines = []
+    import builtins
+    real_print = builtins.print
+
+    def print(*a):  # noqa: A001 - every line goes to the report too
+        line = " ".join(str(x) for x in a)
+        lines.append(line)
+        real_print(line)
+
     for i, l in enumerate(n_manifest["layers"]):
         if l["digest"] in have:
             continue
@@ -335,6 +346,7 @@ def cmd_diff(old, new):
         elif before != inputs:
             print(f"layer {i} ({l['size'] / 1048576:.1f} MiB): {a} ran again, its inputs changed ({before[:19]} -> {inputs[:19]})")
         else:
+            nondeterministic += 1
             print(f"layer {i} ({l['size'] / 1048576:.1f} MiB): {a}'s inputs are the same, yet its layer differs: nondeterministic")
             pos = [j for j, x in enumerate(n_manifest["layers"]) if x.get("annotations", {}).get(ACTION) == a].index(i)
             if pos < len(olds):
@@ -354,6 +366,10 @@ def cmd_diff(old, new):
                         what = [k for k, x, y in (("mode", w[1], n[1]), ("owner", w[2], n[2]), ("time", w[3], n[3])) if x != y]
                         print(f"  {', '.join(what)} only: {path}")
     print(f"an update from the old image downloads {sent / 1048576:.1f} MiB")
+    if out:
+        with open(out, "w") as f:
+            f.write("\n".join(lines) + "\n")
+    return nondeterministic
 
 
 def cmd_attach(root, digest, payload_file, signatures):
@@ -412,8 +428,12 @@ def main(argv):
         cmd_index(args[0], args[1:])
     elif cmd == "attach" and len(args) >= 4:
         cmd_attach(args[0], args[1], args[2], args[3:])
-    elif cmd == "diff" and len(args) == 2:
-        cmd_diff(*args)
+    elif cmd == "diff" and len(args) in (2, 3, 4):
+        strict = "--strict" in args
+        rest = [a for a in args if a != "--strict"]
+        found = cmd_diff(*rest)
+        if strict and found:
+            die(f"{found} layers changed although the inputs of the actions that made them did not")
     else:
         die(__doc__)
 

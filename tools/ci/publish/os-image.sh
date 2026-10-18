@@ -4,9 +4,12 @@
 # as the OCI layout os-image-<arch> left. Nothing here holds a secret or publishes:
 # os-board-publish.sh pushes a board image from a trusted run on main.
 #
-#   os-image.sh dev ARCH IN OUT    the dev image (os/Containerfile.dev: tilo-vmd, sshd, the toolchain,
-#                                  the dev-overrides components) FROM the OS image in IN (IN/oci),
-#                                  into OUT/image.oci.tar, with OUT/digest and OUT/revision
+#   os-image.sh dev ARCH IN OUT COMPILED
+#                                  the dev image (os/Containerfile.dev: tilo-vmd, sshd, the toolchain,
+#                                  the dev-overrides components compiled in COMPILED by
+#                                  os/image/compile.sh --dev) FROM the OS image in IN (IN/oci), as
+#                                  an OCI layout in OUT/oci, its layers over the OS image's
+#                                  composed with them, with OUT/digest and OUT/revision
 #   os-image.sh board BOARD IN OUT the board's sealed dev image (os/Containerfile.board: firmware,
 #                                  device tree, initramfs, a UKI) FROM the aarch64 dev image `dev`
 #                                  left in IN, into OUT as `dev` writes it, with OUT/board
@@ -146,21 +149,26 @@ case ${1:-} in
     [[ $(uname -m) == "$arch" ]] || die "the $arch dev image builds natively, not on $(uname -m)"
     guest_tools
     revision=$(git rev-parse --verify HEAD) || die 'the build names its commit: git = true'
+    compiled=${5:?usage: os-image.sh dev ARCH IN OUT COMPILED}
     load_image "$in" localhost/tilo:ci "$revision"
-    # About 3 GiB a job, as `build`: the shell's dev build links the same large binaries.
-    jobs=$(( $(awk '/^MemTotal:/ {print $2}' /proc/meminfo) / 1024 / 1024 / 3 ))
-    (( jobs > $(nproc) )) && jobs=$(nproc)
-    (( jobs >= 1 )) || jobs=1
     # tilo-vm moves a machine only onto a dev image whose base is no older than the one it
     # runs; the OS image's own clock is its base's and RPM snapshot's, so the commit's time
-    # orders dev bases, as it did in Build / OS dev.
+    # orders dev bases, as it did in Build / OS dev. The dev components come compiled
+    # (os-compile-dev-<arch>): nothing compiles here.
     TILO_DEV_BASE=localhost/tilo:ci TILO_DEV_IMAGE=localhost/tilo-vm:ci TILO_DEV_DISK=0 \
       TILO_DEV_BASE_CREATED=$(date -u -d "@$(git log -1 --format=%ct)" +%Y-%m-%dT%H:%M:%SZ) \
-      TILO_CARGO_FRESHNESS=clean TILO_DEV_RUST_LTO=off TILO_DEV_CARGO_BUILD_JOBS=$jobs \
+      TILO_COMPILED_DEV=$compiled \
       TILO_DISTROBOX= TILO_OUTPUT=$scratch/dev-output TMPDIR=/var/tmp \
-      TILO_BUILD_ARGS="--label org.opencontainers.image.revision=$revision" \
       bash os/dev/build-dev-image.sh
-    save_image localhost/tilo-vm:ci "$out" "$revision"
+    # Kept as the layers it added over the OS image's, composed with them: the OS image's
+    # layers are the same blobs in both, stored and sent once.
+    dev=$scratch/dev-built
+    rm -rf "$dev" "$out"
+    podman push -q --compression-format gzip --force-compression localhost/tilo-vm:ci "oci:$dev:tilo"
+    printf '{"inputs":{},"inputsDigest":""}' > "$scratch/dev-inputs.json"
+    python3 -I tools/ci/os/oci_layers.py take "$in/oci" "$dev" "$scratch/dev-fragment" dev-image "$scratch/dev-inputs.json"
+    python3 -I tools/ci/os/oci_layers.py compose "$out" "$in/oci" "$scratch/dev-fragment"
+    printf '%s\n' "$revision" > "$out/revision"
     ;;
   board)
     board=${2:?usage: os-image.sh board BOARD IN OUT}
@@ -183,5 +191,5 @@ case ${1:-} in
     save_image localhost/tilo-board:ci "$out" "$revision"
     printf '%s\n' "$board" > "$out/board"
     ;;
-  *) die 'usage: os-image.sh dev ARCH IN OUT | board BOARD IN OUT' ;;
+  *) die 'usage: os-image.sh dev ARCH IN OUT COMPILED | board BOARD IN OUT' ;;
 esac

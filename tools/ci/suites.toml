@@ -163,7 +163,6 @@ suites = [
   "os/tests/test_create_development_disk.py",
   "os/tests/dev_base_inputs_tree.sh",
   "os/tests/test_cargo_freshness.py",
-  "os/tests/test_dev_builder_staging.py",
   "os/tests/test_development_boot.py",
   "os/tests/test_development_composefs.py",
   "os/tests/test_development_loader.py",

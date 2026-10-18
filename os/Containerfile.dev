@@ -175,141 +175,14 @@ RUN --mount=type=bind,from=rust-toolchain,source=/usr/local/rustup/toolchains,ta
 FROM scratch AS dev-tools-sysext
 COPY --from=dev-tools-tree /out-tools/ /
 
-# ---- The toolchain the dev binaries compile with ------------------------------
-# BASE_REF with the same Rust release and builder packages: what os/Containerfile's
-# builder-base links the production binaries against, from the same snapshot.
-FROM ${BASE_REF} AS dev-compile-toolchain
-# Buildah leaves the rust-toolchain mount out of the layer cache key; this ARG keys it on RUST_TOOLCHAIN_IMAGE.
-ARG RUST_TOOLCHAIN_IMAGE
-RUN --mount=type=bind,from=rust-toolchain,source=/usr/local/rustup/toolchains,target=/run/tilo-rust-toolchains,ro \
-    --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
-    sh /run/tilo-dev/os/scripts/install-dev-toolchain.sh rust
-ARG SOURCE_DATE_EPOCH=0
-# Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
-ARG RPMS_REF
-RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
-    --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
-    --mount=type=bind,from=dev-build-clock,source=/build-clock.so,target=/run/tilo-build-clock.so \
-    sh /run/tilo-dev/os/scripts/install-dev-toolchain.sh packages
-RUN ldconfig
-
-# Stage the selective Cargo inputs on scratch first. Copying each input into
-# the multi-gigabyte toolchain would commit that parent after every COPY;
-# scratch keeps those small commits cheap and the toolchain receives one layer.
-# Keep this list in sync with os/tests/test_dev_builder_staging.py.
-FROM scratch AS dev-builder-sources
-COPY Cargo.toml Cargo.lock rust-toolchain.toml /build/
-COPY .cargo /build/.cargo
-COPY crates /build/crates
-COPY apps /build/apps
-COPY examples /build/examples
-COPY vendor /build/vendor
-COPY dist /build/dist
-COPY docs/developers/tasks /build/docs/developers/tasks
-COPY os/components.toml /build/os/components.toml
-COPY os/scripts/install-components.py os/scripts/verify-elf-hardening.sh os/scripts/cargo-freshness.sh /build/os/scripts/
-COPY os/legacy-guest-snapshot.env /build/os/legacy-guest-snapshot.env
-COPY os/hardware/profiles/lenovo-83ed/input/keyboard.json os/hardware/profiles/lenovo-83ed/input/mouse.json os/hardware/profiles/lenovo-83ed/input/touchpad.json /build/os/hardware/profiles/lenovo-83ed/input/
-COPY tools/policy/app_portability_rules.toml /build/tools/policy/app_portability_rules.toml
-COPY tools/policy/app_capability_usage.toml /build/tools/policy/app_capability_usage.toml
-COPY tools/protocols/airdrop_sender.py /build/tools/protocols/airdrop_sender.py
-COPY tools/test-assets-build.rs /build/tools/test-assets-build.rs
-COPY tools/test-assets.py /build/tools/test-assets.py
-COPY tools/ci/measure.sh /build/tools/ci/measure.sh
-
 # ---- Dev binaries -----------------------------------------------------------
-# Compiled in the dev image's own toolchain, the same one in-VM builds use.
-# Cache mounts follow the production builder: cargo home and sccache under
-# /build. The target cache has its own id, since a feature change rebuilds the
-# same crates differently. TILO_CARGO_FRESHNESS=clean (the default, and CI's)
-# cleans it before every compile and empties it after, as the production builder
-# does; `content` (local builds, os/dev/build-dev-image.sh) keeps it and lets
-# os/scripts/cargo-freshness.sh mark exactly the changed sources newer, so an
-# unchanged crate is neither recompiled nor relinked.
-FROM dev-compile-toolchain AS dev-builder
-WORKDIR /build
-# A private socket lets this compile overlap the production compile without
-# sharing its sccache server or falling back after a TCP port collision.
-ENV CARGO_HOME=/build/.cargo-home \
-    SCCACHE_DIR=/build/.sccache \
-    SCCACHE_SERVER_UDS=/tmp/tilo-dev-image-sccache.sock \
-    RUSTC_WRAPPER=sccache \
-    SCCACHE_IDLE_TIMEOUT=0 \
-    CARGO_INCREMENTAL=0 \
-    LC_ALL=C.UTF-8 \
-    TZ=UTC
-# Only what Cargo and the install manifest read enters /build. In particular,
-# editing a unit, /etc file or os/dev-image/ must not invalidate this compile.
-COPY --from=dev-builder-sources /build/ /build/
-ARG TILO_CARGO_BUILD_JOBS=4
-ENV CARGO_BUILD_JOBS=${TILO_CARGO_BUILD_JOBS}
-ARG TILO_CARGO_FRESHNESS=clean
-# CI's dev lane links without LTO, as its production image does; everyone else
-# keeps thin LTO.
-ARG TILO_DEV_RUST_LTO=thin
-# A shared compiler cache when one is passed: CI's runner cache through the
-# actions_cache_url / actions_runtime_token secrets, or an S3 bucket through
-# SCCACHE_BUCKET and the aws_* secrets. Without either sccache keeps its local
-# cache mount only.
-ARG SCCACHE_BUCKET=""
-ARG SCCACHE_ENDPOINT=""
-ARG SCCACHE_REGION="auto"
-ARG SCCACHE_S3_KEY_PREFIX="tilo/dev-image/v1"
-ARG SCCACHE_S3_USE_SSL="false"
-# Buildah leaves the rust-toolchain mount out of the layer cache key; this ARG keys it on RUST_TOOLCHAIN_IMAGE.
-ARG RUST_TOOLCHAIN_IMAGE
-# Fedora's sccache has neither the S3 nor the GitHub Actions cache backend;
-# the compile runs the builder image's pinned full-feature client.
-RUN --mount=type=bind,from=rust-toolchain,source=/usr/local/bin/sccache,target=/usr/lib/tilo-dev-builder/bin/sccache \
-    --mount=type=cache,target=/build/.cargo-home \
-    --mount=type=cache,id=tilo-dev-image-target,target=/build/target,sharing=locked \
-    --mount=type=cache,target=/build/.sccache \
-    --mount=type=secret,id=aws_access_key_id \
-    --mount=type=secret,id=aws_secret_access_key \
-    --mount=type=secret,id=actions_cache_url \
-    --mount=type=secret,id=actions_runtime_token \
-    export PATH="/usr/lib/tilo-dev-builder/bin:$PATH" \
-    && trap 'status=$?; if [ "$status" != 0 ]; then df -h /build /build/target /tmp; df -i /build /build/target /tmp; fi; sccache --show-stats 2>/dev/null || true; exit "$status"' EXIT \
-    && case "$TILO_DEV_RUST_LTO" in thin|off) ;; *) printf 'TILO_DEV_RUST_LTO must be thin or off\n' >&2; exit 1 ;; esac \
-    && if [ -n "$SCCACHE_BUCKET" ]; then \
-         export SCCACHE_BUCKET SCCACHE_ENDPOINT SCCACHE_REGION SCCACHE_S3_KEY_PREFIX SCCACHE_S3_USE_SSL \
-                SCCACHE_IGNORE_SERVER_IO_ERROR=1 \
-                AWS_ACCESS_KEY_ID="$(cat /run/secrets/aws_access_key_id 2>/dev/null || true)" \
-                AWS_SECRET_ACCESS_KEY="$(cat /run/secrets/aws_secret_access_key 2>/dev/null || true)"; \
-       fi \
-    && ACTIONS_CACHE_URL="$(cat /run/secrets/actions_cache_url 2>/dev/null || true)" \
-    && ACTIONS_RUNTIME_TOKEN="$(cat /run/secrets/actions_runtime_token 2>/dev/null || true)" \
-    && if [ -n "$ACTIONS_CACHE_URL" ] && [ -n "$ACTIONS_RUNTIME_TOKEN" ]; then \
-         export ACTIONS_CACHE_URL ACTIONS_RUNTIME_TOKEN SCCACHE_GHA_ENABLED=on SCCACHE_GHA_VERSION=tilo-dev-image-v1; \
-       fi \
-    && if ! sccache --start-server; then \
-         export RUSTC_WRAPPER=; \
-         printf '%s\n' 'sccache unavailable; compiling normally' >&2; \
-       fi \
-    && case "$TILO_CARGO_FRESHNESS" in \
-         clean) cargo clean --release ;; \
-         content) sh os/scripts/cargo-freshness.sh /build /build/target/.tilo-built-sources \
-                    || cargo clean --release ;; \
-         *) printf 'TILO_CARGO_FRESHNESS must be clean or content\n' >&2; exit 1 ;; \
-       esac \
-    && started=$(date +%s) \
-    && DEV_CARGO_ARGS="$(python3 os/scripts/install-components.py --dev --dry-run --format cargo)" \
-    && DEV_BINS="$(python3 os/scripts/install-components.py --dev --dry-run --format bins)" \
-    && [ -n "$DEV_CARGO_ARGS" ] && [ -n "$DEV_BINS" ] \
-    && printf 'dev image build: cargo build --release %s\n' "$DEV_CARGO_ARGS" \
-    && CARGO_PROFILE_RELEASE_LTO="$TILO_DEV_RUST_LTO" \
-       CARGO_PROFILE_RELEASE_CODEGEN_UNITS=8 \
-       bash tools/ci/measure.sh "dev cargo" -- cargo build --release ${DEV_CARGO_ARGS} \
-    && printf 'TILO_BUILD_TIMING phase=dev-cargo elapsed_seconds=%s freshness=%s\n' "$(( $(date +%s) - started ))" "$TILO_CARGO_FRESHNESS" \
-    && if [ "$TILO_CARGO_FRESHNESS" = content ]; then \
-         sh os/scripts/cargo-freshness.sh --built /build/target/.tilo-built-sources; \
-       fi \
-    && mkdir -p /out \
-    && for b in ${DEV_BINS}; do cp "target/release/$b" /out/; done \
-    && if [ "$TILO_CARGO_FRESHNESS" = clean ]; then \
-         find /build/target -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +; \
-       fi
-RUN /build/os/scripts/verify-elf-hardening.sh /out
+# Compiled outside any image build, as the production binaries are: os/image/compile.sh --dev
+# in the OS builder image (the base and RPM snapshot with the toolchains), with t's compiler
+# cache and warm build directories on t, or os/output's locally (os/dev/build-dev-image.sh).
+# The tree comes in as the `compiled-dev` build context: the components with their dev
+# features, as os/scripts/install-components.py --dev names them.
+FROM scratch AS dev-builder
+COPY --from=compiled-dev / /out/
 
 # ---- Dev components, placed by the manifest ---------------------------------
 FROM dev-toolchain AS dev-component-files

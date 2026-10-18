@@ -6,7 +6,7 @@
 # build compiles: this runs as an ordinary build action, with the compiler
 # cache, warm build directories and keys every other build of the workspace has.
 #
-# usage: compile.sh OUT
+# usage: compile.sh OUT | --dev OUT
 #   CARGO_TARGET_DIR   the build directory (default target/)
 #   TILO_RUST_LTO      thin (published images) or off (integration and development)
 #   TILO_WITH_BROWSER  1 to build the browser's engine host, 0 not to
@@ -18,7 +18,27 @@
 # sccache over SCCACHE_DIR, which os/dev/build-image.sh keeps between local builds;
 # else none.
 set -euo pipefail
-out=${1:?usage: compile.sh OUT}
+# --dev: the development components instead (os/scripts/install-components.py --dev names them,
+# with their dev features), for the dev image (os/Containerfile.dev).
+if [[ ${1:-} == --dev ]]; then
+  out=${2:?usage: compile.sh --dev OUT}
+  mkdir -p "$out"
+  out=$(cd "$out" && pwd)
+  export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$(pwd)/target} LC_ALL=C.UTF-8 TZ=UTC CARGO_INCREMENTAL=0 SOURCE_DATE_EPOCH=0
+  : "${TILO_DEV_RUST_LTO:=off}"
+  case "$TILO_DEV_RUST_LTO" in thin|off) ;; *) echo 'TILO_DEV_RUST_LTO must be thin or off' >&2; exit 1 ;; esac
+  dev_cargo_args=$(python3 os/scripts/install-components.py --dev --dry-run --format cargo)
+  dev_bins=$(python3 os/scripts/install-components.py --dev --dry-run --format bins)
+  [[ -n $dev_cargo_args && -n $dev_bins ]] || { echo 'install-components.py names no dev components' >&2; exit 1; }
+  printf 'dev image build: cargo build --release %s\n' "$dev_cargo_args"
+  # shellcheck disable=SC2086
+  CARGO_PROFILE_RELEASE_LTO=$TILO_DEV_RUST_LTO CARGO_PROFILE_RELEASE_CODEGEN_UNITS=8 \
+    bash tools/ci/measure.sh "dev cargo" -- cargo build --release $dev_cargo_args
+  for b in $dev_bins; do cp "$CARGO_TARGET_DIR/release/$b" "$out/"; done
+  os/scripts/verify-elf-hardening.sh "$out"
+  exit 0
+fi
+out=${1:?usage: compile.sh OUT | --dev OUT}
 src=$(pwd)
 mkdir -p "$out"
 out=$(cd "$out" && pwd)

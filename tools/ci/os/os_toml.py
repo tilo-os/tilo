@@ -154,6 +154,17 @@ def block():
                 ("requires", req), ("isolation", '"vm"'), ("writable_sources", "true"),
                 ("cost", '"heavy"'), ("cpus", "8"), ("memory", '"16G"'), ("timeout_secs", "7200"),
                 ("default", "false")]))
+        out.append(check([
+            ("name", f'"os-compile-dev-{arch}"'),
+            ("image", BUILDER_IMAGE.format(arch=arch)),
+            ("run", f'"bash os/image/compile.sh --dev /target/os/{arch}/compiled-dev"'),
+            ("inputs", arr(sorted(set(builder_sources + ["os/image/compile.sh", "os/components.toml",
+                                                         "os/scripts/install-components.py", "tools/ci/measure.sh"])))),
+            ("env", '{ TILO_DEV_RUST_LTO = "off" }'),
+            ("outputs", arr([f"/target/os/{arch}/compiled-dev/**"])),
+            ("requires", arr([node])),
+            ("cost", '"heavy"'), ("cpus", "16"), ("memory", '"32G"'), ("timeout_secs", "10800"),
+            ("default", "false")]))
         for variant in VARIANTS:
             suffix = "" if variant == "dev" else "-release"
             lto = "off" if variant == "dev" else "thin"
@@ -168,6 +179,18 @@ def block():
                 ("requires", arr([node])),
                 ("cost", '"heavy"'), ("cpus", "16"), ("memory", '"32G"'), ("timeout_secs", "10800"),
                 ("default", "false")] + ([("on", RELEASE_ON)] if variant == "release" else [])))
+        out.append(check([
+            ("name", f'"os-packages-chunked-{arch}"'),
+            ("image", ASSEMBLER_IMAGE.format(arch=arch)),
+            ("run", f'"bash os/image/build-layer.sh chunk {arch} /target/os/{arch}/layers/packages-chunked"'),
+            ("inputs", arr(sorted(set(tools + ["os/Containerfile.rechunk", "os/scripts/rechunk-chunkah.py",
+                                               "os/scripts/oci-rechunk.py", "os/dev/cache-github-assets.sh",
+                                               "os/external-assets/github-assets.tsv"])))),
+            ("needs", arr([f"os-base-{arch}", "os-assets", f"image-rpms-{arch}", f"os-layer-packages-{arch}"])),
+            ("outputs", arr([f"/target/os/{arch}/layers/packages-chunked/**"])),
+            ("requires", req), ("isolation", '"vm"'), ("writable_sources", "true"),
+            ("cost", '"heavy"'), ("cpus", "8"), ("memory", '"16G"'), ("timeout_secs", "7200"),
+            ("on", RELEASE_ON), ("default", "false")]))
         for variant in VARIANTS:
             below = []
             for l in plan["layer"]:
@@ -203,6 +226,11 @@ def block():
                     ("default", "false")]
                 if variant == "release" and name not in SHARED:
                     fields.append(("on", RELEASE_ON))
+                if variant == "release" and name == "binaries":
+                    # The release identities its runtime, browser runtime and apps are signed
+                    # with, persistent so the same binaries give the same layers in every release.
+                    fields.append(("secrets", arr(["TILO_RUNTIME_IDENTITY", "TILO_BROWSER_RUNTIME_IDENTITY",
+                                                   "TILO_APP_PUBLISHER_IDENTITY", "TILO_BROWSER_RUNTIME_PUBLISHER"])))
                 out.append(check(fields))
                 below.append(layer_check_name(name, arch, variant))
             suffix = "" if variant == "dev" else "-release"
@@ -210,7 +238,7 @@ def block():
                 ("name", f'"os-image{suffix}-{arch}"'),
                 ("run", f'"bash os/image/build-layer.sh compose {arch} {variant} /target/os/{arch}/image{suffix}"'),
                 ("inputs", arr(["os/image/build-layer.sh", "os/image/layers.toml", "tools/ci/os/oci_layers.py", "os/base-snapshot.env"])),
-                ("needs", arr([f"os-base-{arch}"] + below)),
+                ("needs", arr([f"os-base-{arch}"] + below + ([f"os-packages-chunked-{arch}"] if variant == "release" else []))),
                 ("outputs", arr([f"/target/os/{arch}/image{suffix}/**"])),
                 ("cost", '"minutes"'), ("default", "false")]
             if variant == "release":
@@ -229,6 +257,27 @@ def block():
             ("requires", arr([node, "disk-100g"])), ("isolation", '"vm"'), ("writable_sources", "true"),
             ("cost", '"heavy"'), ("cpus", "4"), ("memory", '"8G"'), ("timeout_secs", "3600"),
             ("default", "false")]))
+    for arch, node in ARCHES:
+        out.append(check([
+            ("name", f'"os-image-changes-{arch}"'),
+            ("image", ASSEMBLER_IMAGE.format(arch=arch)),
+            ("run", f'"bash os/image/build-layer.sh changes {arch} /target/os/{arch}/changes"'),
+            ("inputs", arr(["os/image/build-layer.sh", "tools/ci/os/oci_layers.py", "tools/ci/publish/lib.sh"])),
+            ("needs", arr([f"os-image-{arch}"])),
+            ("outputs", arr([f"/target/os/{arch}/changes/**"])),
+            ("cost", '"heavy"'), ("cache", "false"),
+            ("on", '["schedule:30 0 * * *", "dispatch"]'), ("default", "false")]))
+    for arch, node in ARCHES:
+        out.append(check([
+            ("name", f'"os-vm-{arch}"'),
+            ("image", ASSEMBLER_IMAGE.format(arch=arch)),
+            ("run", f'"bash os/image/dev-vm.sh {arch} /target/os/{arch}/disk/disk.qcow2"'),
+            ("inputs", arr(["os/image/dev-vm.sh", "os/dev/_common.sh", "tools/ci/publish/lib.sh"])),
+            ("needs", arr([f"os-disk-{arch}"])),
+            ("dispatch_inputs", '{ lifetime = "60" }'),
+            ("requires", arr([node, "/dev/kvm"])), ("isolation", '"vm"'),
+            ("cpus", "6"), ("memory", '"12G"'), ("timeout_secs", "43200"),
+            ("cache", "false"), ("default", "false")]))
     for variant in VARIANTS:
         suffix = "" if variant == "dev" else "-release"
         fields = [
@@ -303,8 +352,11 @@ def release_checks():
         ("run", '"echo \'publish-os-ci is pushed by the t server from its store (publish in t.toml)\' >&2; exit 1"'),
         ("inputs", arr(["tools/ci/os/os_toml.py"])),
         ("needs", arr(["os-image"])),
+        # After the comparison with the image `main` names now, whatever it found: it reports,
+        # and must read the previous image before this moves the tag.
+        ("needs_any_outcome", arr([f"os-image-changes-{a}" for a, _ in ARCHES])),
         ("id_token", arr(["registry.tilo.so"])),
-        ("publish", '{ layout = "/target/os/image/oci", repository = "registry.tilo.so/tilo/tilo-ci", tags = ["main-{commit}"] }'),
+        ("publish", '{ layout = "/target/os/image/oci", repository = "registry.tilo.so/tilo/tilo-ci", tags = ["main-{commit}", "main"] }'),
         ("on", '["schedule:30 0 * * *", "dispatch"]')]))
     return out
 

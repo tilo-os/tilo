@@ -37,6 +37,10 @@ cmd_seal() {
   id=$(podman pull -q "oci:$in/oci")
   [[ $(podman image inspect --format '{{.Digest}}' "$id") == "$(cat "$in/digest")" ]] || die "$in/oci is not the image $in/digest names"
   podman tag "$id" localhost/tilo:release
+  # A development image's runtime and apps are signed with keys anyone can derive: never sealed
+  # or published for devices.
+  [[ $(podman image inspect --format '{{index .Labels "org.tilo.derived-identities"}}' "$id") != 1 ]] \
+    || die "$in/oci is signed with derived development identities: a release signs with its release identities"
   export TILO_IMAGE=localhost/tilo:release TILO_SKIP_BUILD=1 TILO_REQUIRE_PCR_PREDICTION=1 TILO_DISTROBOX= \
     TILO_VM_ARCH=$arch TILO_OUTPUT=$scratch/seal-output TILO_RUN=$scratch/seal-run TMPDIR=/var/tmp \
     TILO_MEM=6144 TILO_SMP=4 TILO_BOOT_WAIT_ATTEMPTS=150

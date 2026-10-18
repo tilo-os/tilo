@@ -573,12 +573,18 @@ COPY --from=compiled / /out/
 ARG TILO_PREBUILT_APPS=0
 ARG TILO_WITH_BROWSER
 ARG TILO_APP_COLLECTION_PUBLISHER=""
-# Development images sign their runtime bundle, browser runtime and apps with
-# identities derived from what they sign (os/scripts/derived-identity.py), so
-# the same payload gives the same signatures and the same layers in every build;
-# a key minted per build made every build's runtime and app layers new. Their
-# keys are no secret, and no trust list but the image's own names them, as
-# before. Releases pass 0 and their own identities.
+# Identities, so the same payload gives the same signatures and the same layers in
+# every build (a key minted per build made every build's runtime and app layers new):
+# - a release signs with its persistent release identities, given as build secrets
+#   (runtime_bundle_identity, browser_runtime_identity, app_publisher_identity: t
+#   secrets of stable's trusted runs);
+# - a development image (TILO_DERIVED_IDENTITIES=1) signs with identities derived from
+#   what they sign (os/scripts/derived-identity.py). Anyone holding the payload derives
+#   those keys, so such an image is development trust only: it says so in its
+#   org.tilo.derived-identities label, the release seal refuses it
+#   (tools/ci/publish/os-release.sh), it is published only to tilo-ci, which device
+#   policy rejects, and no release identity is ever combined with a derived one;
+# - anything else mints a key for the build, as before.
 ARG TILO_DERIVED_IDENTITIES=0
 COPY --chmod=0755 os/scripts/derived-identity.py /usr/local/libexec/tilo-derived-identity
 # A prebuilt runtime (TILO_PREBUILT_APPS=1) is where the bake below looks for it.
@@ -625,7 +631,8 @@ ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 # rather than at exec. The closure check then loads every bundled
 # object and thin app the way the launcher does, with only the bundle's lib/
 # on LD_LIBRARY_PATH.
-RUN --mount=type=bind,source=os/scripts/verify-runtime-bundle-closure.sh,target=/usr/local/libexec/tilo-verify-runtime-bundle-closure.sh,ro \
+RUN --mount=type=secret,id=runtime_bundle_identity \
+    --mount=type=bind,source=os/scripts/verify-runtime-bundle-closure.sh,target=/usr/local/libexec/tilo-verify-runtime-bundle-closure.sh,ro \
     --mount=type=bind,source=os/scripts/collect-runtime-dependencies.py,target=/usr/local/libexec/tilo-collect-runtime-dependencies.py,ro \
     --mount=type=bind,source=os/registry-runtime-publisher.hex,target=/usr/local/share/tilo-registry-runtime-publisher.hex,ro \
     grep -Eqx '[0-9a-f]{64}' /usr/local/share/tilo-registry-runtime-publisher.hex \
@@ -646,7 +653,11 @@ RUN --mount=type=bind,source=os/scripts/verify-runtime-bundle-closure.sh,target=
     else \
       python3 /build/tools/font-catalog.py prepare \
         /build/crates/sdk/ui-core/assets/fonts /out/fonts --scope product \
-      && if [ "${TILO_DERIVED_IDENTITIES}" = 1 ]; then \
+      && if [ -s /run/secrets/runtime_bundle_identity ]; then \
+           [ "${TILO_DERIVED_IDENTITIES}" != 1 ] \
+             || { echo 'a release identity and derived identities at once: a release never signs with a derived key' >&2; exit 1; }; \
+           cp /run/secrets/runtime_bundle_identity /out/runtime-bundle-identity.json; \
+         elif [ "${TILO_DERIVED_IDENTITIES}" = 1 ]; then \
            /usr/local/libexec/tilo-derived-identity runtime-bundle /out/libruntime_dylib.so \
              /out/tilo-runtime-account-capability /out/runtime-engines $(sed 's|^|/out/|' /out/runtime-engines) \
              $(find /out -maxdepth 1 -name 'libstd-*.so') /out/fonts > /out/runtime-bundle-identity.json; \
@@ -3204,3 +3215,7 @@ COPY --from=uki /out/*.efi /boot/EFI/Linux/
 # thin.
 ARG TILO_RUST_LTO=thin
 LABEL org.tilo.rust-lto="${TILO_RUST_LTO}"
+# Whether its runtime bundle and apps are signed with identities derived from what they sign
+# (development images only: anyone can derive those keys). The release seal refuses 1.
+ARG TILO_DERIVED_IDENTITIES=0
+LABEL org.tilo.derived-identities="${TILO_DERIVED_IDENTITIES}"

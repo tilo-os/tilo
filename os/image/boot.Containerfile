@@ -90,3 +90,7 @@ COPY --from=uki /out/*.efi /boot/EFI/Linux/
 # thin.
 ARG TILO_RUST_LTO=thin
 LABEL org.tilo.rust-lto="${TILO_RUST_LTO}"
+# Whether its runtime bundle and apps are signed with identities derived from what they sign
+# (development images only: anyone can derive those keys). The release seal refuses 1.
+ARG TILO_DERIVED_IDENTITIES=0
+LABEL org.tilo.derived-identities="${TILO_DERIVED_IDENTITIES}"
