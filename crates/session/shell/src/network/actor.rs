@@ -199,11 +199,6 @@ pub enum PersonalFabricPayload {
     /// Ephemeral, exact-target command encoded independently of snapshot
     /// schema so it is never persisted or relayed through room history.
     Action(Vec<u8>),
-    /// Retired non-resumable media-handoff lane. It stays so frames from
-    /// devices that predate the unified lane still decode; receivers drop
-    /// them. Media handoffs now travel as [`Self::NearbyTransfer`] objects of
-    /// kind `MediaHandoff`.
-    MediaTransfer(PersonalMediaTransferFrame),
     /// The one lane for file bytes between a person's devices: Nearby sends
     /// and media handoffs alike. Offers and resume checkpoints travel as
     /// authenticated actions; this lane carries bounded bytes only.
@@ -230,39 +225,16 @@ pub enum PersonalFabricPayload {
         offset: u64,
         bytes: Vec<u8>,
     },
-    /// Optional owner-authored screen observation extension. Appended to keep
-    /// every existing payload discriminant and schema-6 checkpoint unchanged.
+    /// Optional owner-authored screen observation, apart from the schema-6
+    /// checkpoint.
     DisplayConnectors {
         stamp: crate::shell::device_fabric::FabricStamp,
         outputs: Vec<crate::shell::device_fabric::DisplayConnectorPlacement>,
     },
     /// Rich output observations follow the same certified, opt-in route.
-    /// Appending preserves existing payload discriminants and checkpoints.
     DisplayOutputs {
         stamp: crate::shell::device_fabric::FabricStamp,
         outputs: Vec<crate::shell::device_fabric::DisplayOutputObservation>,
-    },
-}
-
-/// Wire shape of the retired media-handoff lane, decoded only to be dropped.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub enum PersonalMediaTransferFrame {
-    Start {
-        transfer_id: [u8; 16],
-        file_name: String,
-        total_bytes: u64,
-    },
-    Chunk {
-        transfer_id: [u8; 16],
-        offset: u64,
-        bytes: Vec<u8>,
-    },
-    Finish {
-        transfer_id: [u8; 16],
-        content_hash: [u8; 32],
-    },
-    Abort {
-        transfer_id: [u8; 16],
     },
 }
 
@@ -5326,52 +5298,6 @@ mod tests {
             assert_eq!(offset, 99);
             assert_eq!(bytes.len(), PERSONAL_TRANSFER_CHUNK_BYTES);
         }
-    }
-
-    #[test]
-    fn legacy_media_transfer_frame_is_decoded_and_dropped() {
-        // Postcard writes the variant index first: the retired media lane
-        // keeps its slot, so older devices' frames decode and the unified
-        // lane's discriminant never moves.
-        let legacy = PersonalFabricWireFrame {
-            workspace: 42,
-            user_public_key: [3; 32],
-            payload: PersonalFabricPayload::MediaTransfer(PersonalMediaTransferFrame::Start {
-                transfer_id: [6; 16],
-                file_name: "song.flac".into(),
-                total_bytes: 9,
-            }),
-        };
-        let encoded = postcard::to_allocvec(&legacy).unwrap();
-        let decoded: PersonalFabricWireFrame = postcard::from_bytes(&encoded).unwrap();
-        assert!(matches!(
-            decoded.payload,
-            PersonalFabricPayload::MediaTransfer(PersonalMediaTransferFrame::Start {
-                transfer_id,
-                total_bytes: 9,
-                ..
-            }) if transfer_id == [6; 16]
-        ));
-        let discriminant = |payload: PersonalFabricPayload| {
-            postcard::to_allocvec(&payload).unwrap().first().copied()
-        };
-        assert_eq!(
-            discriminant(PersonalFabricPayload::MediaTransfer(
-                PersonalMediaTransferFrame::Abort {
-                    transfer_id: [1; 16]
-                }
-            )),
-            Some(3)
-        );
-        assert_eq!(
-            discriminant(PersonalFabricPayload::NearbyTransfer(
-                PersonalNearbyTransferFrame::Abort {
-                    transfer_id: [1; 16],
-                    request_id: [2; 16],
-                }
-            )),
-            Some(4)
-        );
     }
 
     use iroh::endpoint::presets;
