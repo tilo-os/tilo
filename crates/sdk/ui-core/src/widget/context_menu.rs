@@ -289,6 +289,12 @@ pub struct ContextMenu {
     platform: PlatformConventions,
     /// The trailing column (shortcuts, chevrons) from the last measure.
     trailing_width: f64,
+    /// Its coming from the pointer or the control that opened it, and
+    /// going back (`motion::Appear`).
+    appear: crate::motion::Appearing,
+    /// The pose it was last drawn in: rows are hit where they are drawn
+    /// while it moves.
+    drawn: crate::motion::Pose,
 }
 
 impl Default for ContextMenu {
@@ -323,6 +329,8 @@ impl ContextMenu {
             submenu_focused: false,
             platform: PlatformConventions::default(),
             trailing_width: 0.0,
+            appear: crate::motion::Appearing::closed(),
+            drawn: crate::motion::Pose::REST,
         }
     }
 
@@ -390,6 +398,7 @@ impl ContextMenu {
         self.bounds = None;
         self.scroll_offset = 0.0;
         self.open = true;
+        self.appear.show(true);
         self.opened_under = Some(Point::new(f64::from(position[0]), f64::from(position[1])));
         self.position = Some(position);
         self.measured_width = MENU_WIDTH * self.text_scale;
@@ -446,6 +455,7 @@ impl ContextMenu {
     /// call `layout_within` with the renderer before painting to settle text metrics.
     pub fn open_anchored(&mut self, anchor: Rect, viewport: Rect) {
         self.open = true;
+        self.appear.show(true);
         self.opened_under = None;
         self.hovered = None;
         self.scroll_offset = 0.0;
@@ -725,6 +735,7 @@ impl ContextMenu {
     /// Safe to call when already closed.
     pub fn close(&mut self) {
         self.open = false;
+        self.appear.show(false);
         self.opened_under = None;
         self.active_touch = None;
         self.anchor_row = None;
@@ -741,7 +752,8 @@ impl ContextMenu {
     /// Panel with the floating shadow, the ring on its anchor row and its
     /// open nested menu. Nothing while it is closed.
     pub fn painted_bounds(&self, theme: &Theme) -> Vec<Rect> {
-        if !self.open {
+        // A closing menu still paints until it has gone.
+        if !self.appear.is_drawn() {
             return Vec::new();
         }
         // `floating_surface::paint_rounded` clips the shadow to this reach;
@@ -850,6 +862,9 @@ impl ContextMenu {
             Rect::new(self.rect.x0, row.y0, self.rect.x1, row.y1),
             viewport,
         );
+        // A nested menu follows the pointer across rows, which is too
+        // frequent to animate (hover over menus is instant): it is there.
+        menu.appear = crate::motion::Appearing::opened();
         if keyboard {
             menu.focus_first_action();
         }
@@ -892,7 +907,7 @@ impl ContextMenu {
             return false;
         }
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor = ctx.logical(position);
+            self.last_cursor = self.drawn.to_local(ctx.logical(position));
         }
         let p = self.last_cursor;
         let over = self
@@ -1105,121 +1120,19 @@ fn item_shown(items: &[MenuItem], index: usize) -> bool {
     }
 }
 
-impl Widget for ContextMenu {
-    fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
-        self.platform = conventions;
-    }
-
-    fn composition_follows_allocation(&self) -> bool {
-        true
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        self.set_text_scale(theme.text_scale);
-        let height = if self.open { self.rect.height() } else { 0.0 };
-        // Both are small logical-pixel menu dimensions: MENU_WIDTH is a
-        // compile-time constant and `height` is a row-count multiple of
-        // ROW_HEIGHT, so neither comes close to f32's range.
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "bounded logical-pixel menu dimensions; f32 precision is sufficient"
-        )]
-        let style = Style {
-            size: Size::from_lengths(self.legacy_width() as f32, height as f32),
-            ..Default::default()
-        };
-        taffy.widget_leaf(style, node_map, self)
-    }
-
-    /// Both lengths are fixed when the node is built and it measures
-    /// nothing: there is never a size for the layout solver to re-solve,
-    /// open or closed.
-    fn layout_needs_measure(&self) -> bool {
-        false
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        if self.bounds.is_some() {
-            self.layout_at_position();
-            return;
-        }
-        // The caller-provided anchor wins when open; otherwise the
-        // taffy-assigned position keeps offscreen/closed menus sensible.
-        if self.open && self.position.is_some() {
-            self.layout_at_position();
-            return;
-        }
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        let (x0, y0) = if let (true, Some([px, py])) = (self.open, self.position) {
-            (f64::from(px), f64::from(py))
-        } else {
-            (
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-            )
-        };
-        self.rect = Rect::new(
-            x0,
-            y0,
-            x0 + f64::from(l.size.width),
-            y0 + f64::from(l.size.height),
-        );
-    }
-
-    /// A menu paints nothing in place: it is a floating Panel in the
-    /// window's top layer ([`Widget::draw_overlay`]), so no later sibling,
-    /// pane or chrome covers it.
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-        self.set_text_scale(theme.text_scale);
-    }
-
-    fn draw_overlay(
-        &mut self,
+impl ContextMenu {
+    /// The menu's panel and rows, in the pose's transform.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one pass over the rows paints each kind in order"
+    )]
+    fn paint_menu(
+        &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        presence: &PresenceCtx,
     ) {
-        self.set_text_scale(theme.text_scale);
-        if !self.open {
-            return;
-        }
-        // A menu opened at a point with no viewport of its own flips and
-        // shifts inside the window it is presented in.
-        if self.bounds.is_none()
-            && self.viewport.is_none()
-            && let Some(window) = presence.viewport.get()
-        {
-            self.set_viewport(Some(window));
-        }
-
-        // Measure in both modes: an anchored menu hugs its labels, a
-        // point-placed one keeps its origin and reference width but grows
-        // its rows (and, past the reference width, its width) to the text.
-        self.layout_within(text_renderer, theme);
-        // The row the menu acts on stays marked while it is open.
-        if let Some(row) = self.anchor_row {
-            scene.stroke(
-                &Stroke::new(2.0),
-                transform,
-                theme.tokens.colors.intent.you,
-                None,
-                &crate::surface::edge_outline(row, f64::from(theme.tokens.radii.item)),
-            );
-        }
         // Panel role (HIG §9.1): the floating radius, the one floating
         // shadow, and the floating material with its derived edge.
         // One row sits in a panel concentric with it, never a near-pill.
@@ -1446,9 +1359,160 @@ impl Widget for ContextMenu {
         }
         scene.pop_layer();
         self.draw_scroll_affordance(scene, transform, theme);
+    }
+
+    /// Where the menu comes from: the control or row it is anchored to, or
+    /// the point it was opened at.
+    fn appear_anchor(&self) -> Point {
+        if let Some((anchor, _)) = self.bounds {
+            return anchor.center();
+        }
+        self.position.map_or_else(
+            || self.rect.center(),
+            |[x, y]| Point::new(f64::from(x), f64::from(y)),
+        )
+    }
+}
+
+impl Widget for ContextMenu {
+    fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
+        self.platform = conventions;
+    }
+
+    fn composition_follows_allocation(&self) -> bool {
+        true
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        self.set_text_scale(theme.text_scale);
+        let height = if self.open { self.rect.height() } else { 0.0 };
+        // Both are small logical-pixel menu dimensions: MENU_WIDTH is a
+        // compile-time constant and `height` is a row-count multiple of
+        // ROW_HEIGHT, so neither comes close to f32's range.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "bounded logical-pixel menu dimensions; f32 precision is sufficient"
+        )]
+        let style = Style {
+            size: Size::from_lengths(self.legacy_width() as f32, height as f32),
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
+    }
+
+    /// Both lengths are fixed when the node is built and it measures
+    /// nothing: there is never a size for the layout solver to re-solve,
+    /// open or closed.
+    fn layout_needs_measure(&self) -> bool {
+        false
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        if self.bounds.is_some() {
+            self.layout_at_position();
+            return;
+        }
+        // The caller-provided anchor wins when open; otherwise the
+        // taffy-assigned position keeps offscreen/closed menus sensible.
+        if self.open && self.position.is_some() {
+            self.layout_at_position();
+            return;
+        }
+        let l = taffy.layout(node).copied().unwrap_or_default();
+        let (x0, y0) = if let (true, Some([px, py])) = (self.open, self.position) {
+            (f64::from(px), f64::from(py))
+        } else {
+            (
+                origin.x + f64::from(l.location.x),
+                origin.y + f64::from(l.location.y),
+            )
+        };
+        self.rect = Rect::new(
+            x0,
+            y0,
+            x0 + f64::from(l.size.width),
+            y0 + f64::from(l.size.height),
+        );
+    }
+
+    /// A menu paints nothing in place: it is a floating Panel in the
+    /// window's top layer ([`Widget::draw_overlay`]), so no later sibling,
+    /// pane or chrome covers it.
+    fn draw(
+        &mut self,
+        _scene: &mut Scene,
+        _transform: Affine,
+        _text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        self.set_text_scale(theme.text_scale);
+    }
+
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.set_text_scale(theme.text_scale);
+        // It comes from where it was opened and goes back
+        // (`motion::Appear`); a closing menu is drawn until it has gone but
+        // takes no input.
+        self.appear.follow(self.open, theme.motion());
+        if !self.appear.is_drawn() {
+            self.drawn = crate::motion::Pose::REST;
+            return;
+        }
+        // A menu opened at a point with no viewport of its own flips and
+        // shifts inside the window it is presented in.
+        if self.bounds.is_none()
+            && self.viewport.is_none()
+            && let Some(window) = presence.viewport.get()
+        {
+            self.set_viewport(Some(window));
+        }
+
+        // Measure in both modes: an anchored menu hugs its labels, a
+        // point-placed one keeps its origin and reference width but grows
+        // its rows (and, past the reference width, its width) to the text.
+        self.layout_within(text_renderer, theme);
+        // The row the menu acts on stays marked while it is open.
+        if let Some(row) = self.anchor_row {
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                theme.tokens.colors.intent.you,
+                None,
+                &crate::surface::edge_outline(row, f64::from(theme.tokens.radii.item)),
+            );
+        }
+        let pose = self.appear.pose(self.rect, self.appear_anchor());
+        self.drawn = pose;
+        let elevation = &theme.tokens.elevation.floating;
+        let reach = f64::from(elevation.blur) * 2.0 + f64::from(elevation.offset_y).abs() + 2.0;
+        let bounds = self.rect.inflate(reach, reach);
+        pose.paint(scene, transform, bounds, |scene, transform| {
+            self.paint_menu(scene, transform, text_renderer, theme);
+        });
         if let Some((_, menu)) = self.submenu.as_mut() {
             menu.draw_overlay(scene, transform, text_renderer, theme, presence);
         }
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.appear.is_moving()
+            || self
+                .submenu
+                .as_ref()
+                .is_some_and(|(_, menu)| menu.needs_animation_frame())
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -1460,7 +1524,8 @@ impl Widget for ContextMenu {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = ctx.logical(position);
+                // Rows are hit where they are drawn while the menu arrives.
+                self.last_cursor = self.drawn.to_local(ctx.logical(position));
                 // Hover follows the pointer once it moves; until then the
                 // row the menu opened on (or the keyboard moved to) stays.
                 if self
@@ -1564,7 +1629,7 @@ impl Widget for ContextMenu {
                 *ctx.handled = true;
             }
             WindowEvent::Touch(touch) => {
-                let point = ctx.logical(touch.location);
+                let point = self.drawn.to_local(ctx.logical(touch.location));
                 match touch.phase {
                     winit::event::TouchPhase::Started if self.active_touch.is_none() => {
                         self.active_touch = Some(touch.id);
@@ -2064,6 +2129,8 @@ mod a11y_tests {
             assert_eq!(node.children[1].state.checked, Some(false));
         }
 
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         accessibility_reports_menu_role_and_collapsed_when_closed();
         accessibility_open_menu_is_expanded_and_visible();
         a_caption_is_read_among_the_rows_but_never_chosen();
@@ -2086,6 +2153,8 @@ mod tests {
     /// `draw_overlay` (run after the app and the window's chrome) paints it.
     #[test]
     fn an_open_menu_paints_only_in_the_top_layer() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let mut menu = ContextMenu::new();
         menu.push(MenuItem::action("Open", || {}));
         menu.push(MenuItem::action("Rename", || {}));
@@ -2104,6 +2173,69 @@ mod tests {
         assert!(!top.encoding().is_empty(), "the top layer paints the menu");
     }
 
+    /// A context menu a click opens comes from the pointer (`motion::Appear`):
+    /// its rows are hit where they are drawn while it arrives, it is drawn
+    /// while it leaves but takes no input then, and a nested menu that
+    /// follows the pointer across rows is simply there.
+    #[test]
+    fn a_clicked_menu_comes_from_the_pointer_and_fades_when_it_closes() {
+        use crate::time::testing::with_monotonic_time;
+        let theme = Theme::dark();
+        let presence = PresenceCtx::default();
+        let mut text = TextRenderer::new();
+        let t0 = crate::time::now();
+        let at = |ms: u64| t0 + crate::time::Duration::from_millis(ms);
+        let mut menu = ContextMenu::new();
+        menu.push(MenuItem::action("Open", || {}));
+        menu.push(MenuItem::submenu(
+            "More",
+            vec![MenuItem::action("Rename", || {})],
+        ));
+        let paint = |menu: &mut ContextMenu, text: &mut TextRenderer| {
+            let mut top = Scene::new();
+            menu.draw_overlay(&mut top, Affine::IDENTITY, text, &theme, &presence);
+            top
+        };
+        with_monotonic_time(t0, || {
+            crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+            menu.open_at([40.0, 40.0]);
+            let _ = paint(&mut menu, &mut text);
+            assert!(menu.needs_animation_frame(), "it arrives");
+            // The pointer it opened at is the origin: that corner stays put.
+            let corner = Point::new(40.0, 40.0);
+            assert!((menu.drawn.to_drawn(corner) - corner).hypot() < 1e-6);
+        });
+        with_monotonic_time(at(400), || {
+            let _ = paint(&mut menu, &mut text);
+            assert!(!menu.needs_animation_frame(), "it rests");
+            assert!(menu.drawn.is_rest());
+            // A nested menu is there at once.
+            menu.open_submenu(1, false);
+            let _ = paint(&mut menu, &mut text);
+            assert!(
+                !menu.needs_animation_frame(),
+                "a nested menu does not animate"
+            );
+            menu.close();
+            assert!(
+                !menu.contains([50.0, 50.0]),
+                "a closing menu takes no input"
+            );
+            let leaving = paint(&mut menu, &mut text);
+            assert!(
+                !leaving.encoding().is_empty(),
+                "it is drawn while it leaves"
+            );
+            assert!(!menu.painted_bounds(&theme).is_empty());
+        });
+        with_monotonic_time(at(800), || {
+            let gone = paint(&mut menu, &mut text);
+            assert!(gone.encoding().is_empty(), "and then it has gone");
+            assert!(menu.painted_bounds(&theme).is_empty());
+            assert!(!menu.needs_animation_frame());
+        });
+    }
+
     /// Opened from a control, the menu hangs `s1` under it with its
     /// leading edge on the control's; at the window's trailing edge it lines
     /// up with the control's trailing edge, and near the bottom it opens
@@ -2111,6 +2243,8 @@ mod tests {
     /// in.
     #[test]
     fn a_menu_opens_at_its_trigger_and_flips_at_the_window_edges() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let window = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let theme = Theme::dark();
         let mut text = TextRenderer::new();
@@ -2171,6 +2305,8 @@ mod tests {
     /// or doubled separator, and its rows are the menu row height.
     #[test]
     fn separators_only_stand_between_actions() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let mut menu = ContextMenu::new();
         for item in [
             MenuItem::separator(),
@@ -2205,6 +2341,8 @@ mod tests {
 
     #[test]
     fn a_state_row_carries_its_checked_state_and_an_anchor_row_clears_on_close() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let item = MenuItem::action("Copy on select", || {}).with_checked(true);
         assert_eq!(item.checked(), Some(true));
         let mut menu = ContextMenu::new();
@@ -2349,6 +2487,8 @@ mod tests {
             assert!(Widget::modal_capture(&closed).is_none());
         }
 
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         click_on_row_fires_action_and_records_selection();
         click_outside_dismisses_and_is_swallowed();
         esc_dismisses();
@@ -2363,6 +2503,8 @@ mod tests {
     /// hover from there.
     #[test]
     fn a_still_pointer_replayed_where_the_menu_opened_keeps_the_keyboard_row() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let (mut m, fired) = open_menu();
         dispatch(&mut m, &named_key(NamedKey::ArrowDown));
         dispatch(&mut m, &named_key(NamedKey::ArrowDown));
@@ -2486,6 +2628,8 @@ mod tests {
             assert!(menu.is_open());
         }
 
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         keyboard_nav_skips_separator_and_enter_selects();
         disabled_rows_reject_pointer_activation();
         keyboard_navigation_skips_disabled_rows();
@@ -2600,6 +2744,8 @@ mod tests {
             assert_eq!(m.item_at([p.x, p.y]), Some(2));
         }
 
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         bounded_wheel_hit_testing_and_keyboard_activation_share_scroll_offset();
         viewport_bounds_menu_and_keeps_keyboard_target_reachable();
         wheel_scrolls_rows_inside_a_bounded_menu();
@@ -2687,6 +2833,8 @@ mod tests {
             }
         }
 
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         legacy_open_at_geometry_is_unchanged_at_1x_after_paint();
         legacy_open_at_rows_grow_with_the_text_scale_and_glyphs_stay_in_their_rows();
     }
@@ -2771,6 +2919,8 @@ mod bounded_tests {
             assert_eq!(menu.item_at([last.center().x, last.center().y]), Some(2));
         }
 
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         bounded_menu_measures_scales_and_clamps_at_all_edges();
         width_uses_shaping_and_legacy_open_resets_bounded_geometry();
         tiny_viewport_keeps_focused_rows_reachable();
@@ -2825,6 +2975,8 @@ mod nested_and_anchored_tests {
 
     #[test]
     fn a_submenu_opens_beside_its_row_by_hover_and_by_keyboard() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let fired = Arc::new(AtomicU32::new(0));
         let mut m = file_menu(&fired);
         m.open_anchored(Rect::new(100.0, 40.0, 140.0, 72.0), WINDOW);
@@ -2872,6 +3024,8 @@ mod nested_and_anchored_tests {
 
     #[test]
     fn shortcuts_widen_the_menu_and_a_bare_key_has_no_modifier() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let fired = Arc::new(AtomicU32::new(0));
         // Labels long enough that the menu is past its minimum width.
         let label = "Open the most recent document";
@@ -2902,6 +3056,8 @@ mod nested_and_anchored_tests {
 
     #[test]
     fn a_trailing_menu_hangs_from_its_anchors_trailing_edge_inside_the_margin() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let mut m = ContextMenu::with_items(vec![
             MenuItem::action("Rename", || {}),
             MenuItem::action("Duplicate", || {}),
@@ -2929,6 +3085,8 @@ mod nested_and_anchored_tests {
 
     #[test]
     fn a_single_row_menu_is_concentric_with_its_row() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let theme = Theme::dark();
         let single = crate::widget::floating_surface::single_row_radius(&theme);
         assert!(single < f64::from(theme.tokens.radii.panel));
@@ -2944,6 +3102,8 @@ mod nested_and_anchored_tests {
     #[test]
     fn a_menu_button_opens_its_menu_at_its_own_rect() {
         use crate::headless::Framed;
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let fired = Arc::new(AtomicU32::new(0));
         let f = Arc::clone(&fired);
         let button =

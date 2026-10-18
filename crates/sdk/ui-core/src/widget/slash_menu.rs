@@ -293,6 +293,8 @@ mod tests {
 
     #[test]
     fn visibility_resets_filter_and_invisible_menu_ignores_keys() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         // Case `new_starts_hidden_with_full_row_set`.
         {
             let m = SlashMenu::new();
@@ -323,6 +325,8 @@ mod tests {
 
     #[test]
     fn filter_narrows_rows_from_typing_ime_and_backspace() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         // Case `filter_narrows_to_matching_rows`.
         {
             let mut m = SlashMenu::new();
@@ -426,6 +430,8 @@ mod tests {
 
     #[test]
     fn keyboard_moves_the_cursor_and_commits_or_escapes() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         // Case `arrow_keys_move_cursor`.
         {
             let mut m = SlashMenu::new();
@@ -543,6 +549,8 @@ mod tests {
 
     #[test]
     fn pointer_and_semantic_activation_commit_the_exact_row() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         // Case `synthetic_menu_item_activation_commits_that_exact_filtered_row`.
         {
             let mut menu = SlashMenu::new();
@@ -629,6 +637,8 @@ mod tests {
 
     #[test]
     fn labels_that_start_with_the_query_come_first() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let mut m = SlashMenu::new();
         m.set_filter("c");
         assert_eq!(
@@ -649,6 +659,8 @@ mod tests {
 
     #[test]
     fn an_inline_menu_leaves_typing_to_the_document_and_gives_back_a_dead_enter() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let mut m = SlashMenu::new();
         m.set_inline(true);
         m.set_visible(true);
@@ -678,6 +690,8 @@ mod tests {
 
     #[test]
     fn a_menu_at_the_bottom_of_the_view_opens_above_the_caret_and_stays_inside() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let mut m = SlashMenu::new();
         m.set_inline(true);
         m.set_visible(true);
@@ -701,6 +715,8 @@ mod tests {
 
     #[test]
     fn host_commands_are_offered_only_by_a_host_that_answers_them() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let mut m = SlashMenu::new();
         m.set_filter("image");
         assert_eq!(m.visible_len(), 0);

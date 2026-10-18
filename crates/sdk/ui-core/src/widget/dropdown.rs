@@ -188,6 +188,14 @@ pub struct Dropdown {
     /// An option, the placeholder, the caption or the icon changed since the
     /// last layout, so the measured width may have.
     layout_dirty: bool,
+    /// The list's coming from the field and going back (`motion::Appear`).
+    appear: crate::motion::Appearing,
+    /// The pose the list was last drawn in: rows are hit where they are
+    /// drawn while it moves.
+    list_pose: crate::motion::Pose,
+    /// The filter and scroll the list showed when it closed, so a leaving
+    /// list fades as it was rather than jumping to every option.
+    leaving: Option<(String, f32)>,
 }
 
 /// Lists shorter than this never show a filter: a typed letter jumps to the
@@ -308,6 +316,9 @@ impl Dropdown {
             interaction: crate::interaction::InteractionEnvironment::default(),
             layout_dirty: true,
             drawn: None,
+            appear: crate::motion::Appearing::closed(),
+            list_pose: crate::motion::Pose::REST,
+            leaving: None,
         }
     }
 
@@ -468,6 +479,8 @@ impl Dropdown {
     #[must_use]
     pub fn open(mut self) -> Self {
         self.open = true;
+        // Open from its first paint: shown at rest, not arriving.
+        self.appear.snap(true);
         self.align_highlight_on_sync = true;
         self
     }
@@ -540,6 +553,7 @@ impl Dropdown {
     /// the current selected value on the next sync.
     pub fn open_menu(&mut self) {
         self.open = true;
+        self.appear.show(true);
         self.align_highlight_on_sync = true;
     }
 
@@ -933,6 +947,7 @@ impl Dropdown {
     /// Open the list and align highlight + scroll to the current value.
     fn do_open(&mut self) {
         self.open = true;
+        self.appear.show(true);
         self.interactive_open = true;
         self.filter.clear();
         self.filter_selection = Selection::collapsed(0);
@@ -966,7 +981,11 @@ impl Dropdown {
 
     /// Close the options overlay without changing its selected value.
     pub fn close(&mut self) {
+        if self.open {
+            self.leaving = Some((self.filter.clone(), self.scroll));
+        }
         self.open = false;
+        self.appear.show(false);
         self.interactive_open = false;
         self.scrollbar.release();
         self.scrollbar_track = Rect::ZERO;
@@ -1028,6 +1047,8 @@ impl Dropdown {
         self.is_hovered = self.rect.contains(pos);
         // While open, hovering a row moves the highlight.
         if self.open {
+            // The list is hit where it is drawn while it arrives.
+            let pos = self.list_pose.to_local(pos);
             let filtered = self.filtered();
             let list = self.list_rect(filtered.len());
             let metrics = self.scroll_metrics(filtered.len());
@@ -1061,11 +1082,13 @@ impl Dropdown {
         if self.open {
             let filtered = self.filtered();
             let list = self.list_rect(filtered.len());
-            if list.contains(pos) {
+            // The list is hit where it is drawn while it arrives.
+            let at = self.list_pose.to_local(pos);
+            if list.contains(at) {
                 match self.scrollbar.press(
                     self.scrollbar_track,
                     self.scroll_metrics(filtered.len()),
-                    pos,
+                    at,
                 ) {
                     PressOutcome::Thumb => {
                         *handled = true;
@@ -1078,7 +1101,7 @@ impl Dropdown {
                     }
                     PressOutcome::Miss => {}
                 }
-                if let Some(vi) = self.row_at(pos, list, filtered.len()) {
+                if let Some(vi) = self.row_at(at, list, filtered.len()) {
                     self.highlight = vi;
                     self.select_highlighted(state, root);
                 }
@@ -1195,6 +1218,163 @@ impl Dropdown {
                 *handled = true;
             }
         }
+    }
+}
+
+impl Dropdown {
+    /// The open list: its panel and rows, in the pose's transform.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one pass paints the panel, the rows and the scroll bar in order"
+    )]
+    fn paint_list(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let filtered = self.filtered();
+        let list = self.list_rect(filtered.len());
+        // The open list is a floating Panel (HIG §9.1 / §9.5): the panel
+        // radius, the floating shadow, and the floating material with its
+        // derived edge, so it separates from the field it drops from.
+        let radius = f64::from(theme.tokens.radii.panel);
+        crate::surface::shadow(
+            scene,
+            transform,
+            list,
+            radius,
+            &theme.tokens.elevation.floating,
+        );
+        crate::surface::panel(scene, transform, list, radius, theme);
+
+        // Rows sit inside the menu inset and scroll inside it.
+        self.scrollbar_gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
+        let inset = Self::rows_rect(list);
+        let rows = self.option_rows(list, filtered.len());
+        self.scrollbar_track = if self.scroll_metrics(filtered.len()).overflows() {
+            self.scrollbar
+                .track_in(Rect::new(rows.x1, inset.y0, inset.x1, inset.y1), theme)
+        } else {
+            Rect::ZERO
+        };
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &rows);
+
+        if filtered.is_empty() {
+            // Centre on the measured line, not the font size (the face's
+            // ascent/descent otherwise sits the label low in the row).
+            let hint = crate::i18n!("dropdown-no-matches");
+            let (_, hint_h) = text_renderer.measure_style(&hint, None, &theme.text(TextRole::Body));
+            let ty = rows.y0 + (self.item_h - f64::from(hint_h)) / 2.0;
+            text_renderer.draw_style(
+                scene,
+                &hint,
+                theme.text_dim,
+                transform.pre_translate((rows.x0 + LIST_PAD, ty).into()),
+                None,
+                &theme.text(TextRole::Body),
+            );
+        } else {
+            for (vi, &opt_idx) in filtered.iter().enumerate() {
+                let row_top = rows.y0 + (f64_of_usize(vi) * self.item_h) - f64::from(self.scroll);
+                let row_bottom = row_top + self.item_h;
+                // Cull rows scrolled out of the box (hundreds of zones).
+                if row_bottom < rows.y0 || row_top > rows.y1 {
+                    continue;
+                }
+                let Some(opt) = self.options.get(opt_idx) else {
+                    continue;
+                };
+                let row = Rect::new(rows.x0, row_top, rows.x1, row_bottom);
+                let is_selected = self.menu.is_none()
+                    && self
+                        .values
+                        .get(opt_idx)
+                        .is_some_and(|value| *value == self.selected);
+                // The armed row is the panel's strong lift, as in every
+                // menu (HIG §9.3);
+                // the applied value carries a trailing check.
+                let color = if vi == self.highlight {
+                    crate::widget::floating_surface::paint_armed_row(
+                        scene, transform, row, LIST_PAD, theme,
+                    )
+                } else {
+                    theme.text_primary
+                };
+                let check = f64::from(theme.tokens.metrics.icon_sm);
+                if is_selected {
+                    crate::icons::draw_icon(
+                        scene,
+                        transform,
+                        Rect::from_center_size(
+                            Point::new(row.x1 - LIST_PAD - check / 2.0, row.center().y),
+                            (check, check),
+                        ),
+                        crate::icons::Icon::Check,
+                        color,
+                        crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+                    );
+                }
+                // The keys that do the same at the row's end, quieter than
+                // the label unless the row is highlighted.
+                let mut label_end = row.x1 - LIST_PAD * 2.0 - check;
+                let keys = self.values.get(opt_idx).and_then(|value| {
+                    self.shortcuts
+                        .iter()
+                        .find(|(of, _)| of == value)
+                        .map(|(_, keys)| keys.as_str())
+                });
+                if let Some(keys) = keys {
+                    let (keys_w, keys_h) =
+                        text_renderer.measure_style(keys, None, &theme.text(TextRole::Body));
+                    let keys_x = label_end - f64::from(keys_w);
+                    let keys_color = if vi == self.highlight {
+                        color
+                    } else {
+                        theme.text_dim
+                    };
+                    text_renderer.draw_style(
+                        scene,
+                        keys,
+                        keys_color,
+                        transform.pre_translate(
+                            (keys_x, row_top + (self.item_h - f64::from(keys_h)) / 2.0).into(),
+                        ),
+                        None,
+                        &theme.text(TextRole::Body),
+                    );
+                    label_end = keys_x - LIST_PAD;
+                }
+                // Rows are one `ITEM_HEIGHT` tall, so a long option elides
+                // rather than wrapping into the row beneath it.
+                let shown = text_renderer.elide_to_width_style(
+                    opt,
+                    f32_of_f64((label_end - row.x0 - LIST_PAD).max(0.0)),
+                    &theme.text(TextRole::Body),
+                );
+                let (_, opt_h) =
+                    text_renderer.measure_style(&shown, None, &theme.text(TextRole::Body));
+                let ty = row_top + (self.item_h - f64::from(opt_h)) / 2.0;
+                text_renderer.draw_style(
+                    scene,
+                    &shown,
+                    color,
+                    transform.pre_translate((row.x0 + LIST_PAD, ty).into()),
+                    None,
+                    &theme.text(TextRole::Body),
+                );
+            }
+        }
+        scene.pop_layer();
+        self.scrollbar.draw(
+            scene,
+            transform,
+            self.scrollbar_track,
+            self.scroll_metrics(filtered.len()),
+            theme,
+            false,
+        );
     }
 }
 
@@ -1441,154 +1621,44 @@ impl Widget for Dropdown {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        if !self.open {
+        // The list comes from the field and goes back (`motion::Appear`); a
+        // leaving list is drawn as it was until it has gone, and takes no
+        // input.
+        self.appear.follow(self.open, theme.motion());
+        if !self.appear.is_drawn() {
+            self.list_pose = crate::motion::Pose::REST;
+            self.leaving = None;
             return;
         }
         if let Some(viewport) = presence.viewport.get() {
             self.viewport = Some(viewport);
         }
-        self.measure_list(text_renderer, theme);
-        let filtered = self.filtered();
-        let list = self.list_rect(filtered.len());
-        // The open list is a floating Panel (HIG §9.1 / §9.5): the panel
-        // radius, the floating shadow, and the floating material with its
-        // derived edge, so it separates from the field it drops from.
-        let radius = f64::from(theme.tokens.radii.panel);
-        crate::surface::shadow(
-            scene,
-            transform,
-            list,
-            radius,
-            &theme.tokens.elevation.floating,
-        );
-        crate::surface::panel(scene, transform, list, radius, theme);
-
-        // Rows sit inside the menu inset and scroll inside it.
-        self.scrollbar_gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
-        let inset = Self::rows_rect(list);
-        let rows = self.option_rows(list, filtered.len());
-        self.scrollbar_track = if self.scroll_metrics(filtered.len()).overflows() {
-            self.scrollbar
-                .track_in(Rect::new(rows.x1, inset.y0, inset.x1, inset.y1), theme)
-        } else {
-            Rect::ZERO
-        };
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &rows);
-
-        if filtered.is_empty() {
-            // Centre on the measured line, not the font size (the face's
-            // ascent/descent otherwise sits the label low in the row).
-            let hint = crate::i18n!("dropdown-no-matches");
-            let (_, hint_h) = text_renderer.measure_style(&hint, None, &theme.text(TextRole::Body));
-            let ty = rows.y0 + (self.item_h - f64::from(hint_h)) / 2.0;
-            text_renderer.draw_style(
-                scene,
-                &hint,
-                theme.text_dim,
-                transform.pre_translate((rows.x0 + LIST_PAD, ty).into()),
-                None,
-                &theme.text(TextRole::Body),
-            );
-        } else {
-            for (vi, &opt_idx) in filtered.iter().enumerate() {
-                let row_top = rows.y0 + (f64_of_usize(vi) * self.item_h) - f64::from(self.scroll);
-                let row_bottom = row_top + self.item_h;
-                // Cull rows scrolled out of the box (hundreds of zones).
-                if row_bottom < rows.y0 || row_top > rows.y1 {
-                    continue;
-                }
-                let Some(opt) = self.options.get(opt_idx) else {
-                    continue;
-                };
-                let row = Rect::new(rows.x0, row_top, rows.x1, row_bottom);
-                let is_selected = self.menu.is_none()
-                    && self
-                        .values
-                        .get(opt_idx)
-                        .is_some_and(|value| *value == self.selected);
-                // The armed row is the panel's strong lift, as in every
-                // menu (HIG §9.3);
-                // the applied value carries a trailing check.
-                let color = if vi == self.highlight {
-                    crate::widget::floating_surface::paint_armed_row(
-                        scene, transform, row, LIST_PAD, theme,
-                    )
-                } else {
-                    theme.text_primary
-                };
-                let check = f64::from(theme.tokens.metrics.icon_sm);
-                if is_selected {
-                    crate::icons::draw_icon(
-                        scene,
-                        transform,
-                        Rect::from_center_size(
-                            Point::new(row.x1 - LIST_PAD - check / 2.0, row.center().y),
-                            (check, check),
-                        ),
-                        crate::icons::Icon::Check,
-                        color,
-                        crate::icons::LUCIDE_DEFAULT_STROKE_PX,
-                    );
-                }
-                // The keys that do the same at the row's end, quieter than
-                // the label unless the row is highlighted.
-                let mut label_end = row.x1 - LIST_PAD * 2.0 - check;
-                let keys = self.values.get(opt_idx).and_then(|value| {
-                    self.shortcuts
-                        .iter()
-                        .find(|(of, _)| of == value)
-                        .map(|(_, keys)| keys.as_str())
-                });
-                if let Some(keys) = keys {
-                    let (keys_w, keys_h) =
-                        text_renderer.measure_style(keys, None, &theme.text(TextRole::Body));
-                    let keys_x = label_end - f64::from(keys_w);
-                    let keys_color = if vi == self.highlight {
-                        color
-                    } else {
-                        theme.text_dim
-                    };
-                    text_renderer.draw_style(
-                        scene,
-                        keys,
-                        keys_color,
-                        transform.pre_translate(
-                            (keys_x, row_top + (self.item_h - f64::from(keys_h)) / 2.0).into(),
-                        ),
-                        None,
-                        &theme.text(TextRole::Body),
-                    );
-                    label_end = keys_x - LIST_PAD;
-                }
-                // Rows are one `ITEM_HEIGHT` tall, so a long option elides
-                // rather than wrapping into the row beneath it.
-                let shown = text_renderer.elide_to_width_style(
-                    opt,
-                    f32_of_f64((label_end - row.x0 - LIST_PAD).max(0.0)),
-                    &theme.text(TextRole::Body),
-                );
-                let (_, opt_h) =
-                    text_renderer.measure_style(&shown, None, &theme.text(TextRole::Body));
-                let ty = row_top + (self.item_h - f64::from(opt_h)) / 2.0;
-                text_renderer.draw_style(
-                    scene,
-                    &shown,
-                    color,
-                    transform.pre_translate((row.x0 + LIST_PAD, ty).into()),
-                    None,
-                    &theme.text(TextRole::Body),
-                );
-            }
+        if self.open {
+            self.leaving = None;
         }
-        scene.pop_layer();
-        self.scrollbar.draw(
-            scene,
-            transform,
-            self.scrollbar_track,
-            self.scroll_metrics(filtered.len()),
-            theme,
-            false,
-        );
+        // A leaving list shows the filter and scroll it closed with.
+        let shown = self.leaving.clone().map(|(filter, scroll)| {
+            (
+                std::mem::replace(&mut self.filter, filter),
+                std::mem::replace(&mut self.scroll, scroll),
+            )
+        });
+        self.measure_list(text_renderer, theme);
+        let list = self.list_rect(self.filtered().len());
+        let pose = self.appear.pose(list, self.rect.center());
+        self.list_pose = pose;
+        let bounds = crate::widget::floating_surface::painted_bounds(list, theme);
+        pose.paint(scene, transform, bounds, |scene, transform| {
+            self.paint_list(scene, transform, text_renderer, theme);
+        });
+        if let Some((filter, scroll)) = shown {
+            self.filter = filter;
+            self.scroll = scroll;
+        }
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.appear.is_moving()
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -2281,6 +2351,8 @@ mod tests {
 
     #[test]
     fn dropdown_touch_choices_use_host_targets_and_select_stable_values() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
             for scale in [1.0, 1.5] {
                 let selected = crate::LocalState::new(String::new());
@@ -2333,6 +2405,8 @@ mod tests {
 
     #[test]
     fn dropdown_language_popup_stays_visible_in_a_short_scaled_window() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let mut frame = crate::headless::FrameHarness::new_with_theme(
             crate::State::new(),
             Box::new(
@@ -2368,6 +2442,8 @@ mod tests {
 
     #[test]
     fn dropdown_language_shared_scrollbar_and_search_field_are_interactive() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let mut frame = crate::headless::FrameHarness::new_with_theme(
             crate::State::new(),
             Box::new(
@@ -2441,6 +2517,8 @@ mod tests {
 
     #[test]
     fn dropdown_language_accessibility_selects_stable_ids_with_duplicate_labels() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let state = crate::LocalState::new(String::new());
         let mut dropdown = Dropdown::from_state(Vec::new(), &state);
         dropdown.set_value_options(vec![
@@ -2468,6 +2546,8 @@ mod tests {
 
     #[test]
     fn dropdown_language_empty_stable_value_keeps_its_human_label() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let state = crate::LocalState::new(String::new());
         let mut dropdown = Dropdown::from_state(Vec::new(), &state);
         dropdown.set_value_options(vec![
@@ -2488,6 +2568,8 @@ mod tests {
 
     #[test]
     fn dropdown_language_revoked_action_releases_modal_capture() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let mut dropdown =
             Dropdown::new(opts(), "legacy").on_action(crate::widget::test_string_action_binding());
         let allowed = std::collections::HashSet::from([tilo_actions::ActionAddress::new(
@@ -2529,6 +2611,8 @@ mod tests {
     /// row, and the first row starts after it.
     #[test]
     fn the_open_list_insets_its_rows_like_every_menu() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let mut dd = Dropdown::new(opts(), "tz");
         dd.rect = Rect::new(0.0, 0.0, 240.0, 32.0);
         let n = dd.options.len();
@@ -2553,6 +2637,8 @@ mod tests {
 
     #[test]
     fn updating_placeholder_does_not_select_or_replace_a_private_value() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let selection = crate::LocalState::new(String::new());
         let mut dropdown = Dropdown::from_state(opts(), &selection);
         dropdown.set_placeholder("Waiting for tasks");
@@ -2723,6 +2809,8 @@ mod tests {
             );
         }
 
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         starts_closed_and_reads_value_on_sync();
         down_opens_when_closed_and_focused();
         arrows_move_highlight_while_open();
@@ -2918,6 +3006,8 @@ mod tests {
             );
         }
 
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         typing_filters_options_case_insensitively();
         space_is_part_of_an_open_combobox_query();
         backspace_edits_the_filter();
@@ -3105,6 +3195,8 @@ mod tests {
             );
         }
 
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         losing_focus_closes_the_list();
         open_dropdown_captures_pointer();
         hover_changes_do_not_consume_the_move_and_cursor_left_clears_hover();
@@ -3151,11 +3243,15 @@ mod tests {
             assert_eq!(&*changes.borrow(), &["Europe/Amsterdam"]);
         }
 
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         local_state_binding_is_two_way_across_dropdowns();
     }
 
     #[test]
     fn a_menu_button_reports_a_choice_without_keeping_it() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let state = crate::LocalState::new(String::new());
         let chosen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let captured = std::rc::Rc::clone(&chosen);
@@ -3362,6 +3458,8 @@ mod tests {
             );
         }
 
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         semantic_actions_expand_collapse_and_reject_unknown_values();
         with_enabled_false_is_reported_by_is_enabled();
         disabled_dropdown_does_not_open();
@@ -3383,6 +3481,8 @@ mod tests {
                     .push(Box::new(dropdown)),
             )
         }
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let short = || vec!["A".to_string(), "B".to_string()];
         let section = Section::titled(
             "Formats",
@@ -3582,6 +3682,8 @@ mod tests {
             captioned.paint(&mut scene, Affine::IDENTITY, &mut text, &theme);
         }
 
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         hugs_its_widest_option_unless_it_fills();
         a_short_list_jumps_instead_of_filtering();
         a_caption_placed_externally_never_covers_the_field();

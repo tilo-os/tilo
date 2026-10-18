@@ -197,6 +197,9 @@ fn draw_frame_content(
     }
     painted(scene, "the close dialog", &mut drawn);
     app.presence_ctx.pop_viewport(prev_vp);
+    if let Some(ap) = app.actions.action_palette.as_mut() {
+        ap.follow_presence(app.theme.motion());
+    }
     if let Some(ap) = app
         .actions
         .action_palette
@@ -310,15 +313,14 @@ fn draw_visible_tooltip(
         &text,
         viewport,
     );
-    crate::widget::tooltip::draw_chip(
-        scene,
-        transform,
-        &mut app.text_renderer,
-        &app.theme,
-        chip,
-        &text,
-    );
-    Some(transform.transform_rect_bbox(crate::widget::tooltip::chip_paint_bounds(chip, &app.theme)))
+    // It arrives from its control (`motion::Appear`).
+    let pose = app.input.tooltip_host.pose(chip, app.theme.motion());
+    let bounds = crate::widget::tooltip::chip_paint_bounds(chip, &app.theme);
+    let (text_renderer, theme) = (&mut app.text_renderer, &app.theme);
+    pose.paint(scene, transform, bounds, |scene, transform| {
+        crate::widget::tooltip::draw_chip(scene, transform, text_renderer, theme, chip, &text);
+    });
+    Some(transform.transform_rect_bbox(bounds))
 }
 
 /// Paint the presence a window shows over its widgets (legacy cursors, peer

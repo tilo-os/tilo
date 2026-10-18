@@ -145,6 +145,11 @@ pub struct Popover<C: Widget = NoContent> {
     content_origin: Point,
     /// The host must place the content again.
     stale: bool,
+    /// Its coming from the anchor and going back (`motion::Appear`).
+    appear: crate::motion::Appearing,
+    /// The pose it was last drawn in: option rows are hit where they are
+    /// drawn while it moves.
+    drawn: crate::motion::Pose,
 }
 
 impl Default for Popover {
@@ -179,6 +184,8 @@ impl<C: Widget> Popover<C> {
             content_size: (0.0, 0.0),
             content_origin: Point::ZERO,
             stale: false,
+            appear: crate::motion::Appearing::closed(),
+            drawn: crate::motion::Pose::REST,
         }
     }
 
@@ -259,6 +266,8 @@ impl<C: Widget> Popover<C> {
     #[must_use]
     pub fn open(mut self, open: bool) -> Self {
         self.open = open;
+        // Open from its first paint: shown at rest, not arriving.
+        self.appear.snap(open);
         self
     }
 
@@ -301,11 +310,13 @@ impl<C: Widget> Popover<C> {
             self.stale = self.host_content.is_some();
         }
         self.open = open;
+        self.appear.show(self.open);
     }
 
     /// Close (safe when already closed).
     pub fn close(&mut self) {
         self.open = false;
+        self.appear.show(self.open);
     }
 
     pub fn is_open(&self) -> bool {
@@ -509,6 +520,7 @@ impl<C: Widget> Popover<C> {
 
     fn dismiss(&mut self) {
         self.open = false;
+        self.appear.show(self.open);
         if let Some(cb) = self.on_dismiss.as_mut() {
             cb();
         }
@@ -854,6 +866,7 @@ impl Popover<PopoverPrompt> {
         let submitted = self.content.submitted.take();
         if submitted.is_some() {
             self.open = false;
+            self.appear.show(self.open);
         }
         submitted
     }
@@ -918,6 +931,7 @@ impl Popover {
             .min(options.items.len().saturating_sub(1));
         options.pending = None;
         self.open = true;
+        self.appear.show(self.open);
     }
 
     pub fn selected(&self) -> Option<usize> {
@@ -953,6 +967,7 @@ impl Popover {
             options.highlighted = idx;
             options.pending = Some(idx);
             self.open = false;
+            self.appear.show(self.open);
         }
     }
 
@@ -1080,14 +1095,19 @@ impl<C: Widget + 'static> Widget for Popover<C> {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        if !self.open {
+        // It comes from its anchor and goes back (`motion::Appear`); a
+        // closing panel is drawn until it has gone, but takes no input.
+        self.appear.follow(self.open, theme.motion());
+        if !self.appear.is_drawn() {
+            self.drawn = crate::motion::Pose::REST;
             return;
         }
         self.layout_theme = theme.clone();
         if let Some(window) = presence.viewport.get() {
-            if self
-                .presented
-                .is_none_or(|w| (w.width() - window.width()).abs() > 0.5)
+            if self.open
+                && self
+                    .presented
+                    .is_none_or(|w| (w.width() - window.width()).abs() > 0.5)
             {
                 self.stale = self.host_content.is_some();
             }
@@ -1095,29 +1115,34 @@ impl<C: Widget + 'static> Widget for Popover<C> {
         }
         let viewport = self.room(theme);
         self.place_in(viewport, text_renderer, theme);
-        if !self.transparent {
-            floating_surface::paint(scene, transform, self.rect, theme);
-        }
-        if self.options.is_some() {
-            self.paint_options(scene, transform, text_renderer, theme);
-        } else {
-            let on_panel = if self.transparent {
-                theme.clone()
-            } else {
-                theme.on_ground(crate::chrome::panel_ground(theme))
-            };
-            // A hosted content follows the panel on the host's next layout
-            // pass; until then it is drawn where it belongs.
-            let shift = self.content_target(theme) - self.content_origin;
-            if shift.hypot() > 0.01 {
-                self.stale = true;
+        let pose = self.appear.pose(self.rect, self.anchor.center());
+        self.drawn = pose;
+        let bounds = floating_surface::painted_bounds(self.rect, theme);
+        pose.paint(scene, transform, bounds, |scene, transform| {
+            if !self.transparent {
+                floating_surface::paint(scene, transform, self.rect, theme);
             }
-            let transform = transform * Affine::translate(shift);
-            self.content
-                .draw(scene, transform, text_renderer, &on_panel, presence);
-            self.content
-                .draw_overlay(scene, transform, text_renderer, &on_panel, presence);
-        }
+            if self.options.is_some() {
+                self.paint_options(scene, transform, text_renderer, theme);
+            } else {
+                let on_panel = if self.transparent {
+                    theme.clone()
+                } else {
+                    theme.on_ground(crate::chrome::panel_ground(theme))
+                };
+                // A hosted content follows the panel on the host's next
+                // layout pass; until then it is drawn where it belongs.
+                let shift = self.content_target(theme) - self.content_origin;
+                if self.open && shift.hypot() > 0.01 {
+                    self.stale = true;
+                }
+                let transform = transform * Affine::translate(shift);
+                self.content
+                    .draw(scene, transform, text_renderer, &on_panel, presence);
+                self.content
+                    .draw_overlay(scene, transform, text_renderer, &on_panel, presence);
+            }
+        });
     }
 
     fn adjust_layout_style(
@@ -1151,7 +1176,8 @@ impl<C: Widget + 'static> Widget for Popover<C> {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.open && (self.stale || self.content.needs_animation_frame())
+        self.appear.is_moving()
+            || (self.open && (self.stale || self.content.needs_animation_frame()))
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -1163,11 +1189,11 @@ impl<C: Widget + 'static> Widget for Popover<C> {
                 self.last_cursor = ctx.logical(position);
                 if self.options.is_some() {
                     let count = self.options.as_ref().map_or(0, |o| o.items.len());
+                    // Rows are hit where they are drawn while it arrives.
+                    let at = self.drawn.to_local(self.last_cursor);
                     let hit = (0..count).find(|&i| {
-                        self.rect.contains(self.last_cursor)
-                            && self
-                                .row_rect_in(i, &self.layout_theme)
-                                .contains(self.last_cursor)
+                        self.rect.contains(at)
+                            && self.row_rect_in(i, &self.layout_theme).contains(at)
                     });
                     if let (Some(idx), Some(options)) = (hit, self.options.as_mut()) {
                         options.highlighted = idx;
@@ -1203,6 +1229,7 @@ impl<C: Widget + 'static> Widget for Popover<C> {
                             options.selected = Some(idx);
                             options.pending = Some(idx);
                             self.open = false;
+                            self.appear.show(self.open);
                         }
                         _ => {}
                     }
@@ -1223,14 +1250,15 @@ impl<C: Widget + 'static> Widget for Popover<C> {
                 button: MouseButton::Left,
                 ..
             } => {
-                if !self.rect.contains(self.last_cursor) {
+                let at = self.drawn.to_local(self.last_cursor);
+                if !self.rect.contains(at) {
                     // A click outside closes; it does not also hit what is
                     // beneath.
                     self.dismiss();
                 } else if let Some(options) = self.options.as_mut() {
                     let theme = &self.layout_theme;
                     let m = MenuMetrics::of(theme);
-                    let rel = self.last_cursor.y - self.rect.y0 - m.pad;
+                    let rel = at.y - self.rect.y0 - m.pad;
                     #[allow(
                         clippy::cast_possible_truncation,
                         clippy::cast_sign_loss,
@@ -1242,6 +1270,7 @@ impl<C: Widget + 'static> Widget for Popover<C> {
                         options.highlighted = idx;
                         options.pending = Some(idx);
                         self.open = false;
+                        self.appear.show(self.open);
                     }
                 } else {
                     self.forward_to_content(event, ctx);

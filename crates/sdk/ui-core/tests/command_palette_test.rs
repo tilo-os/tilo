@@ -23,6 +23,8 @@ use vello::peniko::Color;
 
 #[test]
 fn command_palette_filters_and_registers_its_panel_edge() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = tilo_ui::motion::testing::settled();
     // Case `command_palette_filters_by_query`.
     {
         let mut p = CommandPalette::new();

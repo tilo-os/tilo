@@ -665,6 +665,46 @@ pub fn paint_backdrop(
     layout: &ModalLayout,
     spec: &ModalSpec<'_>,
 ) {
+    paint_scrim(scene, transform, theme, layout, layout.card);
+    paint_sheet(scene, transform, text_renderer, theme, layout, spec);
+}
+
+/// Paint the scrim behind a floating sheet drawn in `drawn_card`: the
+/// sheet's rect where it is drawn this frame, which differs from
+/// `layout.card` while it arrives or leaves. A full-window page has none.
+pub fn paint_scrim(
+    scene: &mut Scene,
+    transform: Affine,
+    theme: &Theme,
+    layout: &ModalLayout,
+    drawn_card: Rect,
+) {
+    if layout.card == layout.scrim {
+        return;
+    }
+    let scale = if layout.card.width() > 0.0 {
+        drawn_card.width() / layout.card.width()
+    } else {
+        1.0
+    };
+    crate::overlay::scrim::behind_panel(
+        scene,
+        transform,
+        layout.scrim,
+        RoundedRect::from_rect(drawn_card, floating_surface::radius(theme) * scale),
+        theme,
+    );
+}
+
+/// Paint the sheet, its title and its close control, without the scrim.
+pub fn paint_sheet(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    layout: &ModalLayout,
+    spec: &ModalSpec<'_>,
+) {
     if layout.card == layout.scrim {
         // A full-window modal is the foreground page. It does not sample or
         // dim the displaced page and has no floating shadow or rounded edge.
@@ -676,13 +716,6 @@ pub fn paint_backdrop(
             theme,
         );
     } else {
-        crate::overlay::scrim::behind_panel(
-            scene,
-            transform,
-            layout.scrim,
-            RoundedRect::from_rect(layout.card, floating_surface::radius(theme)),
-            theme,
-        );
         floating_surface::paint(scene, transform, layout.card, theme);
     }
 
@@ -802,6 +835,10 @@ pub struct ModalSheet {
     enabled: Vec<bool>,
     /// Action indices in the order they stand, leading to trailing.
     visual: Vec<usize>,
+    /// Its arrival (`motion::Appear`, from the sheet's centre): the first
+    /// paint after [`Self::new`] or [`Self::reset`] starts it. It leaves when
+    /// its host stops painting it, at once.
+    appear: crate::motion::Appearing,
 }
 
 impl ModalSheet {
@@ -928,7 +965,26 @@ impl ModalSheet {
             .clone()
             .actions(&actions)
             .close_hovered(spec.close_hovered || close_hovered);
-        paint_backdrop(scene, transform, text_renderer, theme, &layout, &spec);
+        // It arrives from its centre; the scrim fades with it, cut out where
+        // the sheet is drawn. A full-window page only fades.
+        self.appear.follow(true, theme.motion());
+        let mut pose = self.appear.pose(layout.card, layout.card.center());
+        if layout.card == layout.scrim {
+            pose.transform = Affine::IDENTITY;
+        }
+        let scrim = crate::motion::Pose {
+            opacity: pose.opacity,
+            transform: Affine::IDENTITY,
+        };
+        if let Some(at) = scrim.begin(scene, transform, layout.scrim) {
+            paint_scrim(scene, at, theme, &layout, pose.drawn_rect(layout.card));
+            scrim.end(scene);
+        }
+        let Some(transform) = pose.begin(scene, transform, layout.scrim) else {
+            self.layout = Some(layout);
+            return;
+        };
+        paint_sheet(scene, transform, text_renderer, theme, &layout, &spec);
         let on_panel = on_sheet(theme);
         if layout.body_overflows {
             scene.push_layer(
@@ -944,6 +1000,7 @@ impl ModalSheet {
             scene.pop_layer();
         }
         paint_actions(scene, transform, text_renderer, theme, &layout, &spec);
+        pose.end(scene);
         self.layout = Some(layout);
     }
 
@@ -1298,6 +1355,8 @@ pub struct ModalDialog<C: Widget> {
     /// The theme from the latest layout build, for the content layout
     /// `apply_layout` runs without one.
     layout_theme: Theme,
+    /// Its arriving and leaving (`motion::Appear`, from the sheet's centre).
+    appear: crate::motion::Appearing,
 }
 
 impl<C: Widget> ModalDialog<C> {
@@ -1336,6 +1395,7 @@ impl<C: Widget> ModalDialog<C> {
             structure_dirty: false,
             platform: PlatformConventions::default(),
             layout_theme: Theme::dark(),
+            appear: crate::motion::Appearing::closed(),
         }
     }
 
@@ -1350,6 +1410,9 @@ impl<C: Widget> ModalDialog<C> {
     #[must_use]
     pub fn open(mut self, open: bool) -> Self {
         self.set_open(open);
+        // Built open: shown at rest from its first paint, so a host that
+        // rebuilds its tree never replays the entrance.
+        self.appear.snap(open);
         self
     }
 
@@ -1363,6 +1426,7 @@ impl<C: Widget> ModalDialog<C> {
             self.remeasure = true;
         }
         self.open = open;
+        self.appear.show(open);
         // A closed dialog receives no moves, so whatever position it last
         // saw is stale by the time it reopens.
         self.pointer_inside = false;
@@ -2139,7 +2203,10 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        if !self.open {
+        // The sheet arrives and leaves (`motion::Appear`); a leaving sheet is
+        // drawn until it has gone but takes no input.
+        self.appear.follow(self.open, theme.motion());
+        if !self.appear.is_drawn() {
             return;
         }
         // The host pushes the window as the presence viewport for its
@@ -2148,7 +2215,9 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
             self.window = window;
             self.presented = true;
         }
-        if self.host_content.is_some() {
+        // A leaving sheet is drawn as it was laid out: it asks the host for
+        // nothing more.
+        if self.open && self.host_content.is_some() {
             if self.laid_out_for != Some(self.key(theme)) {
                 self.resolve(theme, text_renderer);
                 // The content follows on the host's next layout pass; until
@@ -2160,7 +2229,9 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                 self.remeasure = true;
                 self.stale = true;
             }
-        } else if self.laid_out_for != Some(self.key(theme)) || self.detached.is_none() {
+        } else if self.open
+            && (self.laid_out_for != Some(self.key(theme)) || self.detached.is_none())
+        {
             self.relayout_detached(theme, text_renderer);
         }
         let Some(layout) = self.layout.clone() else {
@@ -2185,7 +2256,25 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
             .platform_conventions(self.platform)
             .closable(layout.close.is_some())
             .close_hovered(close_hovered);
-        paint_backdrop(scene, transform, text_renderer, theme, &layout, &spec);
+        // A floating sheet scales about its centre; a full-window page only
+        // fades (it comes from nowhere in particular). The scrim fades with
+        // it, cut out where the sheet is drawn.
+        let mut pose = self.appear.pose(layout.card, layout.card.center());
+        if layout.card == layout.scrim {
+            pose.transform = Affine::IDENTITY;
+        }
+        let scrim = crate::motion::Pose {
+            opacity: pose.opacity,
+            transform: Affine::IDENTITY,
+        };
+        if let Some(at) = scrim.begin(scene, transform, layout.scrim) {
+            paint_scrim(scene, at, theme, &layout, pose.drawn_rect(layout.card));
+            scrim.end(scene);
+        }
+        let Some(transform) = pose.begin(scene, transform, layout.scrim) else {
+            return;
+        };
+        paint_sheet(scene, transform, text_renderer, theme, &layout, &spec);
         paint_actions(scene, transform, text_renderer, theme, &layout, &spec);
         drop(actions);
 
@@ -2212,6 +2301,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         // the body, so it is drawn after the clip.
         self.content
             .draw_overlay(scene, content_transform, text_renderer, &on_panel, presence);
+        pose.end(scene);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -2409,7 +2499,8 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
     fn needs_animation_frame(&self) -> bool {
         // A move the top layer found (a new window, a scroll) lands on the
         // host's next layout pass.
-        self.open && (self.stale || self.content.needs_animation_frame())
+        self.appear.is_moving()
+            || (self.open && (self.stale || self.content.needs_animation_frame()))
     }
 
     fn get_rect(&self) -> Rect {

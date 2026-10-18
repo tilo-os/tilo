@@ -679,10 +679,10 @@ impl<T, M: TreeModel> TreeView<T, M> {
         theme: &Theme,
         presence: &crate::presence::PresenceCtx,
     ) {
-        if self.menu.is_open() {
-            self.menu
-                .draw_overlay(scene, transform, text_renderer, theme, presence);
-        }
+        // Drawn while it is open and while it leaves (`motion::Appear`);
+        // a closed menu draws nothing.
+        self.menu
+            .draw_overlay(scene, transform, text_renderer, theme, presence);
     }
 
     /// What a pointer at `point` would do, for the tooltip host.

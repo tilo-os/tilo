@@ -2361,6 +2361,8 @@ mod tests {
     #[test]
     fn two_toolbar_overflow_actions_open_only_their_own_menu() {
         use crate::headless::Framed;
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let first = Toolbar::new(Orientation::Horizontal)
             .push_button("First toolbar long command", || {})
             .with_view("test.first-command");
@@ -2426,6 +2428,8 @@ mod tests {
 
     #[test]
     fn nested_native_controls_keep_their_operation_route() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let calls = std::rc::Rc::new(std::cell::Cell::new(0));
         let count = calls.clone();
         let toolbar = Toolbar::new(Orientation::Horizontal).push_element(Box::new(
@@ -2456,6 +2460,8 @@ mod tests {
         use crate::headless::Framed;
         use std::cell::Cell;
         use std::rc::Rc;
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let press = || WindowEvent::KeyboardInput {
             device_id: winit::event::DeviceId::dummy(),
             event: crate::synthetic_input::key_event(
@@ -2516,6 +2522,8 @@ mod tests {
         use std::cell::Cell;
         use std::rc::Rc;
 
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         for width in [800, 100] {
             let calls = Rc::new(Cell::new(0));
             let callback = Rc::clone(&calls);
@@ -2569,6 +2577,8 @@ mod tests {
         use crate::widget::controls::{
             control_action_bindings, refresh_control_action_availability, take_control_invocation,
         };
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let resource = tilo_actions::Resource::new("doc:toolbar", "doc", "Document").with_action(
             tilo_actions::ActionSpec::operation(
                 "save",
@@ -2644,6 +2654,8 @@ mod tests {
     /// one, shows no stray rule.
     #[test]
     fn separators_only_stand_between_shown_commands() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let tb = Toolbar::new(Orientation::Horizontal)
             .push_separator()
             .push_button("Cut", || {})
@@ -2666,6 +2678,8 @@ mod tests {
     #[test]
     fn glyph_commands_are_named_squares_the_host_paints() {
         use std::cell::Cell;
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         thread_local!(static PAINTED: Cell<Option<Rect>> = const { Cell::new(None) });
         fn mark(_: &mut Scene, _: Affine, rect: Rect, _: &Theme) {
             PAINTED.with(|painted| painted.set(Some(rect)));
@@ -2697,6 +2711,8 @@ mod tests {
     /// and a painted host lays a toolbar out without taffy.
     #[test]
     fn icon_commands_and_toggles_lay_out_in_a_painted_host() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let theme = Theme::dark();
         let mut text = TextRenderer::new();
         let mut tb = Toolbar::new(Orientation::Horizontal)
@@ -2727,6 +2743,8 @@ mod tests {
 
     #[test]
     fn a_colour_well_is_a_square_command_named_for_its_colour() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let theme = Theme::dark();
         let mut text = TextRenderer::new();
         let yellow = vello::peniko::Color::from_rgb8(250, 204, 21);
@@ -2817,6 +2835,8 @@ mod tests {
 
     #[test]
     fn toolbar_lays_out_named_commands_separators_and_overflow() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         // Case `toolbar_exposes_focusable_named_commands`.
         {
             let tb = lay_out(n_button_toolbar(3), 100.0);
@@ -3163,6 +3183,8 @@ mod lifecycle_tests {
     }
     #[test]
     fn commands_are_reachable_once_by_every_route_with_matching_semantic_bounds() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         // Case `pointer_survives_layout_between_press_and_release`.
         {
             let (mut tb, counts) = counted(2);
@@ -3331,6 +3353,8 @@ mod lifecycle_tests {
     }
     #[test]
     fn toolbar_lifecycle_measures_scales_orients_and_reconciles_overflow() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         // Case `measured_unicode_scale_orientation_and_resize`.
         {
             for orientation in [Orientation::Horizontal, Orientation::Vertical] {
@@ -3433,6 +3457,8 @@ mod lifecycle_tests {
     }
     #[test]
     fn overflow_popup_dismissal_restores_focus_without_click_through() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         // Case `escape_and_outside_press_restore_focus_without_click_through`.
         {
             let (mut tb, counts) = counted(5);
@@ -3601,6 +3627,8 @@ mod lifecycle_tests {
     #[test]
     #[ignore = "manual offscreen evidence; set TILO_UI_SCREENSHOT_DIR"]
     fn rendered_toolbar_overflow_fixtures() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let dir = crate::env::var("TILO_UI_SCREENSHOT_DIR").unwrap();
         std::fs::create_dir_all(&dir).unwrap();
         for (name, width, height, scale, toolbar_width) in [
@@ -3702,6 +3730,8 @@ mod command_state_tests {
 
     #[test]
     fn icon_toggles_disabled_commands_and_labels_follow_the_model() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let ran = Rc::new(Cell::new(0));
         let r = Rc::clone(&ran);
         let mut tb = Toolbar::new(Orientation::Horizontal)
@@ -3745,6 +3775,8 @@ mod command_state_tests {
 
     #[test]
     fn priority_keeps_a_pair_together_and_the_more_menu_shows_state() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let mut tb = Toolbar::new(Orientation::Horizontal)
             .push_button("Insert table", || {})
             .with_priority(-1)
@@ -3787,6 +3819,8 @@ mod command_state_tests {
 
     #[test]
     fn joined_commands_give_way_together() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let mut tb = Toolbar::new(Orientation::Horizontal)
             .push_button("Compile", || {})
             .push_icon(Icon::Minus, "Zoom out", || {})
@@ -3807,6 +3841,8 @@ mod command_state_tests {
 
     #[test]
     fn a_menu_command_opens_its_menu_under_itself() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let sorted = Rc::new(Cell::new(false));
         let mut tb = Toolbar::new(Orientation::Horizontal).push_menu(
             "Sort",
@@ -3830,6 +3866,8 @@ mod command_state_tests {
 
     #[test]
     fn layout_from_cached_measurements_needs_no_renderer() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let mut tb = Toolbar::new(Orientation::Horizontal)
             .push_button("Bold", || {})
             .push_button("Italic", || {});

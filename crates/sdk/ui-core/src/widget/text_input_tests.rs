@@ -12,6 +12,8 @@ fn body_size() -> f32 {
 
 #[test]
 fn hovering_and_leaving_a_field_do_not_consume_a_siblings_pointer_movement() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let mut input = TextInput::local();
     input.rect = Rect::new(0.0, 0.0, 200.0, 40.0);
     let mut doc = AutoCommit::new();
@@ -24,6 +26,8 @@ fn hovering_and_leaving_a_field_do_not_consume_a_siblings_pointer_movement() {
 
 #[test]
 fn caret_paints_with_real_line_geometry_and_can_be_suppressed() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `drag_preview_suppresses_caret_paint_without_blurring_or_clearing_ime`.
     {
         let mut input = TextInput::local().with_initial_value("editable");
@@ -156,6 +160,8 @@ fn caret_paints_with_real_line_geometry_and_can_be_suppressed() {
 
 #[test]
 fn caret_respects_graphemes_and_visual_bidi_order() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `programmatic_caret_never_splits_a_grapheme`.
     {
         let mut combining = TextInput::local().with_initial_value("a\u{301}b");
@@ -291,6 +297,8 @@ fn caret_respects_graphemes_and_visual_bidi_order() {
 
 #[test]
 fn widget_metadata_reports_id_ime_content_cursor_and_scrim() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `permission_denied_overlay_alpha_matches_other_widgets`.
     {
         let expected = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
@@ -350,6 +358,8 @@ fn widget_metadata_reports_id_ime_content_cursor_and_scrim() {
 
 #[test]
 fn caret_and_selection_survive_widget_state_round_trip() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `selection_survives_widget_state_round_trip_and_legacy_state_still_loads`.
     {
         let mut original = TextInput::local().with_initial_value("hello world");
@@ -384,6 +394,8 @@ fn caret_and_selection_survive_widget_state_round_trip() {
 
 #[test]
 fn highlighted_code_shares_bidi_geometry_and_scaled_gutter() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `highlighted_code_uses_shared_bidi_geometry_through_the_gutter`.
     {
         let text = "let אבג = 1;\nprintln!(\"ok\");";
@@ -466,6 +478,8 @@ fn highlighted_code_shares_bidi_geometry_and_scaled_gutter() {
 
 #[test]
 fn a_collapsed_anchor_does_not_select_the_text_inserted_after_it() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // A tap leaves the anchor where the caret was; the soft keyboard then
     // commits a word and, separately, the space after it.
     let mut ti = TextInput::local();
@@ -486,6 +500,8 @@ fn a_collapsed_anchor_does_not_select_the_text_inserted_after_it() {
 
 #[test]
 fn ime_preedit_is_shaped_underlined_and_committed_without_touching_the_document() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `ime_preedit_is_shaped_underlined_and_committed_atomically`.
     {
         let mut ti = TextInput::local().with_initial_value("ab");
@@ -572,6 +588,8 @@ fn ime_preedit_is_shaped_underlined_and_committed_without_touching_the_document(
 
 #[test]
 fn shaped_layout_is_cached_until_display_inputs_or_fonts_change() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `shaped_paragraph_is_reused_until_its_display_inputs_change`.
     {
         let mut ti = TextInput::local().with_initial_value("office שלום");
@@ -705,6 +723,8 @@ fn shaped_layout_is_cached_until_display_inputs_or_fonts_change() {
 
 #[test]
 fn value_bindings_publish_user_edits_but_not_model_updates() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `on_change_reports_committed_user_edits_once`.
     {
         let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -831,6 +851,8 @@ fn value_bindings_publish_user_edits_but_not_model_updates() {
 
 #[test]
 fn unfocused_input_shows_start_and_placeholder() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `unfocused_input_renders_from_start_not_caret`.
     // Otherwise caret-following scroll hides the first characters.
     {
@@ -989,6 +1011,8 @@ fn unfocused_input_shows_start_and_placeholder() {
 
 #[test]
 fn disabled_input_is_inert_to_focus_keys_pointer_and_accessibility() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `disabled_input_is_not_focusable`.
     {
         let enabled = TextInput::new(Vec::new());
@@ -1088,6 +1112,8 @@ fn right_click(ti: &mut TextInput, doc: &mut AutoCommit, x: f64, y: f64) -> bool
 
 #[test]
 fn read_only_context_menu_copies_without_offering_or_applying_edits() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let services = crate::host::HostServices::null();
     let _host = crate::host::enter(&services);
     crate::text_selection::clipboard_copy("clipboard");
@@ -1148,6 +1174,8 @@ fn read_only_context_menu_copies_without_offering_or_applying_edits() {
 
 #[test]
 fn context_menu_opens_on_right_click_dispatches_and_dismisses() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `right_click_selects_word_and_opens_menu_with_expected_labels`.
     {
         let mut ti = TextInput::local().with_initial_value("hello world");
@@ -1291,6 +1319,8 @@ fn context_menu_opens_on_right_click_dispatches_and_dismisses() {
 
 #[test]
 fn spellcheck_eligibility_follows_field_kind_vocabulary_and_language() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `spelling_defaults_on_and_can_be_disabled_per_field`.
     {
         let mut prose = TextInput::local()
@@ -1386,6 +1416,8 @@ fn spellcheck_eligibility_follows_field_kind_vocabulary_and_language() {
 
 #[test]
 fn spellcheck_squiggles_appear_at_word_boundaries_and_after_settling() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `spelling_checks_immediately_but_only_hides_the_word_being_typed`.
     {
         let mut ti = TextInput::local()
@@ -1459,6 +1491,8 @@ fn suggesting_field(text: &str) -> TextInput {
 
 #[test]
 fn a_short_pause_at_the_end_of_a_misspelled_word_shows_its_suggestion() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let mut ti = suggesting_field("so beautifull");
     let start = crate::time::now();
 
@@ -1505,6 +1539,8 @@ fn a_short_pause_at_the_end_of_a_misspelled_word_shows_its_suggestion() {
 
 #[test]
 fn moving_the_caret_back_into_an_earlier_word_shows_its_suggestion() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let mut ti = suggesting_field("beautifull day");
     let start = crate::time::now();
     ti.refresh_suggestion_at(start);
@@ -1550,6 +1586,8 @@ fn moving_the_caret_back_into_an_earlier_word_shows_its_suggestion() {
 
 #[test]
 fn the_settling_word_schedules_its_own_wake() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let mut ti = suggesting_field("so beautifull");
     // Far enough ahead that a slow test run never sees the deadline pass.
     let now = crate::time::now() + Duration::from_secs(3600);
@@ -1570,6 +1608,8 @@ fn the_settling_word_schedules_its_own_wake() {
 
 #[test]
 fn autocorrect_previews_applies_restores_and_respects_opt_outs() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `obvious_typo_autocorrects_at_boundary_and_backspace_restores_it`.
     {
         let mut ti = TextInput::local()
@@ -1638,6 +1678,8 @@ fn autocorrect_previews_applies_restores_and_respects_opt_outs() {
 
 #[test]
 fn word_boundaries_walk_starts_ends_and_snap() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `prev_word_boundary_walks_word_starts`.
     {
         let s = "hello world quick ui";
@@ -1675,6 +1717,8 @@ fn word_boundaries_walk_starts_ends_and_snap() {
 
 #[test]
 fn editing_primitives_splice_replace_filter_and_repeat() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `delete_selection_removes_range_and_collapses`.
     {
         let mut ti = TextInput::local();
@@ -1797,6 +1841,8 @@ fn editing_primitives_splice_replace_filter_and_repeat() {
 
 #[test]
 fn secret_input_masks_rendering_and_accessibility_but_keeps_the_value() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `secret_input_masks_glyphs_but_keeps_value`.
     // Proven end-to-end through a real Automerge `Text` object.
     {
@@ -1936,6 +1982,8 @@ fn secret_input_masks_rendering_and_accessibility_but_keeps_the_value() {
 
 #[test]
 fn a_secret_never_reaches_the_clipboard() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let services = crate::host::HostServices::null();
     let _host = crate::host::enter(&services);
     let clipboard = || crate::text_selection::clipboard_paste();
@@ -2011,6 +2059,8 @@ fn a_secret_never_reaches_the_clipboard() {
 fn secret_field_carries_a_show_hide_control_off_the_tab_order() {
     use crate::a11y::{Action, Role};
 
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `secret_is_hidden_by_default_with_a_named_show_control`.
     {
         let mut ti = TextInput::local()
@@ -2171,6 +2221,8 @@ fn secret_field_carries_a_show_hide_control_off_the_tab_order() {
 
 #[test]
 fn accessibility_exposes_role_name_value_and_grapheme_actions() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `accessibility_reports_text_input_role_and_value`.
     {
         use crate::a11y::{AccessibleTextSelection, Role};
@@ -2261,6 +2313,8 @@ fn accessibility_exposes_role_name_value_and_grapheme_actions() {
 fn a_bound_text_is_only_read_and_edits_wait_for_the_owner() {
     use crate::a11y::Action;
 
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let mut document = AutoCommit::new();
     let title = document
         .put_object(&automerge::ROOT, "title", ObjType::Text)
@@ -2352,6 +2406,8 @@ fn drive(ti: &mut TextInput, doc: &mut AutoCommit, ev: &WindowEvent, m: Modifier
 
 #[test]
 fn touch_owns_text_selection_until_release() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `touch_places_caret_drags_selection_and_releases_ownership`.
     {
         let mut input = TextInput::local().with_initial_value("abcdef");
@@ -2424,6 +2480,8 @@ fn touch_owns_text_selection_until_release() {
 
 #[test]
 fn action_bindings_own_edits_and_accessibility_set_value() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `bound_text_edits_optimistically_without_splicing_document`.
     {
         let mut doc = AutoCommit::new();
@@ -2545,6 +2603,8 @@ fn draw_with_theme(ti: &mut TextInput, theme: &Theme) {
 
 #[test]
 fn multiline_measurement_matches_draw_scale_and_invalidation() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `multiline_shaped_editor_scales_font_and_line_metrics_with_theme`.
     {
         let mut normal = TextInput::local()
@@ -2883,6 +2943,8 @@ fn x_for_byte(ti: &TextInput, b: usize) -> f64 {
 
 #[test]
 fn arrow_keys_move_and_extend_by_char_and_word() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `shift_arrow_extends_selection_by_char`.
     {
         let mut ti = TextInput::local().with_initial_value("abcdef");
@@ -3025,6 +3087,8 @@ fn arrow_keys_move_and_extend_by_char_and_word() {
 
 #[test]
 fn home_end_and_select_all_shortcuts_move_extend_and_cut() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `home_end_move_and_extend`.
     {
         let mut ti = TextInput::local().with_initial_value("hello world");
@@ -3144,6 +3208,8 @@ fn home_end_and_select_all_shortcuts_move_extend_and_cut() {
 
 #[test]
 fn pointer_clicks_and_drags_select_word_range_and_all() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `double_click_selects_word_via_handle_event`.
     {
         let mut ti = TextInput::local().with_initial_value("hello world");
@@ -3230,6 +3296,8 @@ fn pointer_clicks_and_drags_select_word_range_and_all() {
 
 #[test]
 fn primary_selection_publishes_pointer_selections_and_middle_click_pastes() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `mouse_selection_is_eligible_for_primary_publication`.
     {
         let mut ti = TextInput::local().with_initial_value("hello world");
@@ -3363,6 +3431,8 @@ fn ml_input(text: &str, w: f64, h: f64) -> TextInput {
 
 #[test]
 fn multiline_ime_intent_and_paragraph_commit_preserve_the_submit_boundary() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let mut input = ml_input("before old after", 400.0, 200.0).with_enter_submits(true);
     input.set_selection(7, 10);
     let intent = crate::ime::ImeWindowState::from_widget(&input).unwrap();
@@ -3411,6 +3481,8 @@ fn shaped_row(ti: &TextInput, byte: usize) -> usize {
 
 #[test]
 fn multiline_enter_backspace_and_copy_handle_newlines() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `multiline_enter_inserts_newline`.
     {
         let mut ti = ml_input("ab", 300.0, 120.0);
@@ -3519,6 +3591,8 @@ fn multiline_enter_backspace_and_copy_handle_newlines() {
 
 #[test]
 fn multiline_vertical_and_line_edge_navigation_follows_visual_lines() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `multiline_up_down_moves_between_visual_lines`.
     {
         let mut ti = ml_input("hello\nworld\nfoo", 400.0, 200.0);
@@ -3619,6 +3693,8 @@ fn multiline_vertical_and_line_edge_navigation_follows_visual_lines() {
 
 #[test]
 fn multiline_wraps_at_unicode_line_breaks() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `multiline_soft_wraps_at_word_boundaries`.
     {
         let text = "the quick brown fox jumps over the lazy dog again and again";
@@ -3679,6 +3755,8 @@ fn multiline_wraps_at_unicode_line_breaks() {
 
 #[test]
 fn clearing_direct_binding_preserves_interaction_and_cannot_write_stale_object() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let mut doc = AutoCommit::new();
     let stale = doc
         .put_object(&automerge::ROOT, "stale", ObjType::Text)
@@ -3730,6 +3808,8 @@ fn clearing_direct_binding_preserves_interaction_and_cannot_write_stale_object()
 
 #[test]
 fn clearing_without_a_binding_is_a_noop_for_local_users() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let mut doc = AutoCommit::new();
     let state = crate::LocalState::new(String::from("local"));
     let mut local_input = TextInput::from_state(&state);
@@ -3746,6 +3826,8 @@ fn clearing_without_a_binding_is_a_noop_for_local_users() {
 
 #[test]
 fn controlled_local_input_opt_outs_survive_draw_without_dictionary_work() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let mut input = TextInput::local_with_language("en_US")
         .with_spellcheck(false)
         .with_autocorrect(false)
@@ -3776,6 +3858,8 @@ fn controlled_local_input_opt_outs_survive_draw_without_dictionary_work() {
 fn attributed_single_line_is_shaped_during_measure_before_draw() {
     use crate::widget::marks::{Mark, MarkSpan};
     use crate::widget::rich_text_line::RichTextLine;
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     for scale in [1.0, 2.0] {
         let theme = Theme::dark().with_text_scale(scale);
         let mut line = RichTextLine::new().with_text("aBz");
@@ -3823,6 +3907,8 @@ fn draw_rich_line_for_test(line: &mut crate::widget::RichTextLine, theme: &Theme
 #[test]
 fn attributed_single_line_preedit_preserves_utf8_marks_and_commit_route() {
     use crate::widget::marks::{Mark, MarkSpan};
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     for scale in [1.0, 2.0] {
         let theme = Theme::dark().with_text_scale(scale);
         let mut line = crate::widget::RichTextLine::new().with_text("éW");
@@ -3881,6 +3967,8 @@ fn attributed_single_line_preedit_preserves_utf8_marks_and_commit_route() {
 #[test]
 fn attributed_single_line_chip_and_link_rules_follow_shaped_ranges() {
     use crate::widget::marks::{Mark, MarkSpan};
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     for scale in [1.0, 2.0] {
         let theme = Theme::dark().with_text_scale(scale);
         let mut line = crate::widget::RichTextLine::new().with_text("aWWWz");
@@ -3935,6 +4023,8 @@ fn attributed_single_line_chip_and_link_rules_follow_shaped_ranges() {
 #[test]
 fn attributed_single_line_style_inputs_invalidate_cached_shape() {
     use crate::richtext::{BaselineShift, FontFamily};
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let mut input = TextInput::local().with_initial_value("WWW");
     input.apply_layout_external(Rect::new(0.0, 0.0, 400.0, 60.0));
     let mut attributes = SingleLineAttributes {
@@ -3977,6 +4067,8 @@ fn attributed_single_line_style_inputs_invalidate_cached_shape() {
 #[test]
 fn attributed_single_line_sync_undo_redo_rebuilds_runs() {
     use crate::widget::marks::{Mark, MarkSpan};
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let mut state = crate::State::new();
     let text = state
         .doc
@@ -4029,6 +4121,8 @@ fn attributed_single_line_sync_undo_redo_rebuilds_runs() {
 
 #[test]
 fn accessible_selection_preserves_anchor_and_focus_direction() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let mut input = TextInput::local().with_initial_value("Ae\u{301}👋B");
     input.core.set_selection(8, 1);
 
@@ -4038,6 +4132,8 @@ fn accessible_selection_preserves_anchor_and_focus_direction() {
 
 #[test]
 fn insertion_collapses_an_empty_drag_selection() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     for (text, caret, expected) in [("", 0, "Nx"), ("ab", 1, "aNxb")] {
         let mut ti = TextInput::new(Vec::new());
         ti.set_text(text);
@@ -4054,6 +4150,8 @@ fn insertion_collapses_an_empty_drag_selection() {
 
 #[test]
 fn field_kinds_set_their_text_kind_while_typing() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     for (kind, text) in [
         (TextInputKind::Prose, TextKind::Prose),
         (TextInputKind::Search, TextKind::Prose),
@@ -4098,6 +4196,8 @@ fn fields_share_rows_with_buttons_and_state_what_they_are() {
         }
     }
 
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `a_small_field_is_as_tall_as_a_small_button`.
     {
         let theme = Theme::dark();
@@ -4174,6 +4274,8 @@ fn fields_share_rows_with_buttons_and_state_what_they_are() {
 
 #[test]
 fn submit_accessory_and_span_highlighting() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `on_submit_reports_the_text_on_enter`.
     {
         let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
@@ -4317,6 +4419,8 @@ fn submit_accessory_and_span_highlighting() {
 #[cfg(feature = "broker-transport")]
 #[test]
 fn shared_personal_words_protect_autocorrection_and_clear_stale_spelling() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // The authenticated host it installs is process-wide: every field
     // checking spelling on another thread would read its personal words.
     if !crate::testing::in_own_process(&crate::testing::test_path(
@@ -4429,6 +4533,8 @@ fn delayed_paste_publishes_once_and_cancels_when_the_target_changes() {
             "delayed-paste"
         }
     }
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let clipboard = Arc::new(Delayed::default());
     let services = crate::host::HostServices::null().with_clipboard(clipboard.clone());
     let _host = crate::host::enter(&services);
@@ -4547,6 +4653,8 @@ fn typing_field(text: &str, tr: &mut TextRenderer, theme: &Theme) -> TextInput {
 
 #[test]
 fn multiline_keystroke_prepares_only_the_edited_paragraph_at_every_width() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let mut tr = crate::font_catalog::fixture_renderer();
     let theme = Theme::dark();
     tr.set_text_scale(theme.text_scale);
@@ -4599,6 +4707,8 @@ fn multiline_keystroke_prepares_only_the_edited_paragraph_at_every_width() {
 
 #[test]
 fn spelling_marks_follow_edits_like_a_full_check() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let text = "teh first paragraph\n\nsecond wrold here\nthird is fine\n\nlast lnie";
     let mut input = TextInput::local()
         .with_spell_language("en_US")
@@ -4638,6 +4748,8 @@ fn spelling_marks_follow_edits_like_a_full_check() {
 
 #[test]
 fn single_line_batch_metrics_preserve_graphemes_preedit_and_theme_geometry() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     for text in ["", "ordinary ffi text", "abc אבג xyz", "é 👩‍💻 end"] {
         for scale in [1.0, 2.0] {
             let theme = Theme::dark().with_text_scale(scale);
@@ -4673,6 +4785,8 @@ fn single_line_batch_metrics_preserve_graphemes_preedit_and_theme_geometry() {
 
 #[test]
 fn themed_input_typography_reflows_and_centers_actual_shaped_text() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let mut input = TextInput::local()
         .with_initial_value("Themed input baseline")
         .with_spellcheck(false)
@@ -4741,6 +4855,8 @@ fn themed_input_typography_reflows_and_centers_actual_shaped_text() {
 
 #[test]
 fn read_only_text_selects_and_copies_but_never_changes() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let mut ti = TextInput::local()
         .with_initial_value("read me")
         .with_read_only(true);
@@ -4779,6 +4895,8 @@ fn read_only_text_selects_and_copies_but_never_changes() {
 
 #[test]
 fn embedded_input_measurement_adopts_theme_and_keeps_document_size_override() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let text = "A wrapping field must measure the same themed typography that it paints.";
     let mut theme = Theme::dark();
     theme.tokens.typography = theme.tokens.typography.with_base_size(19.0);
@@ -4822,6 +4940,8 @@ fn embedded_input_measurement_adopts_theme_and_keeps_document_size_override() {
 
 #[test]
 fn read_only_text_links_its_addresses_and_the_ranges_it_is_given() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let ti = TextInput::local()
         .with_initial_value("see https://example.com/a, or www.example.org and click here")
         .with_read_only(true);
@@ -4851,6 +4971,8 @@ fn read_only_text_links_its_addresses_and_the_ranges_it_is_given() {
 #[test]
 fn only_the_web_and_mail_open_from_a_link() {
     use crate::text_detect::Detected;
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     assert_eq!(
         link_target(Detected::Url, "javascript://x/%0aalert(1)"),
         None
@@ -4865,6 +4987,8 @@ fn only_the_web_and_mail_open_from_a_link() {
 
 #[test]
 fn forced_color_idle_field_boundary_has_rendered_non_text_contrast() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let mut renderer = crate::offscreen::OffscreenRenderer::new(160, 64);
     for theme in [
         Theme::high_contrast(),
@@ -4930,6 +5054,8 @@ fn forced_color_idle_field_boundary_has_rendered_non_text_contrast() {
 
 #[test]
 fn a_replacement_lands_only_on_the_text_it_was_made_for_and_is_left_selected() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let mut ti = TextInput::local().with_initial_value("hello world");
     assert!(
         !ti.replace_range(0..5, "hullo", "HELLO"),
@@ -4966,6 +5092,8 @@ fn a_replacement_lands_only_on_the_text_it_was_made_for_and_is_left_selected() {
 
 #[test]
 fn a_secret_field_never_hands_its_text_to_a_text_action() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     for field in [
         TextInput::local().with_secret(true),
         TextInput::local().with_kind(TextInputKind::Password),
@@ -4990,6 +5118,8 @@ fn a_secret_field_never_hands_its_text_to_a_text_action() {
 #[test]
 fn every_kind_and_override_reaches_the_input_method_as_its_purpose_and_hints() {
     use crate::ime::InputPurpose;
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // `zwp_text_input_v3` wire values.
     const NORMAL: u32 = 0;
     const DIGITS: u32 = 2;
@@ -5117,6 +5247,8 @@ fn every_kind_and_override_reaches_the_input_method_as_its_purpose_and_hints() {
 
 #[test]
 fn an_open_text_menu_owns_the_keyboard() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let mut ti = TextInput::local()
         .with_spellcheck(false)
         .with_text_action("translate", "Translate")
@@ -5148,6 +5280,8 @@ fn an_open_text_menu_owns_the_keyboard() {
 
 #[test]
 fn a_lowercase_pronoun_is_corrected_at_the_next_word_boundary() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     for (typed, corrected) in [("so i", "so I "), ("im", "I'm ")] {
         let mut ti = suggesting_field(typed);
         let start = crate::time::now();
@@ -5168,6 +5302,8 @@ fn a_lowercase_pronoun_is_corrected_at_the_next_word_boundary() {
 /// and the word taken back stays as typed when the space comes again.
 #[test]
 fn cant_and_wont_are_corrected_and_backspace_takes_a_correction_back_for_good() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     for (typed, corrected) in [("I cant", "I can't "), ("it wont", "it won't ")] {
         let mut ti = TextInput::local()
             .with_spellcheck(true)
