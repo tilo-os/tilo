@@ -68,14 +68,15 @@ simulation and subject mattes: `libtilo_paint_engine.so` for Canvas; the
 YouTube client, rustypipe with its QuickJS: `libtilo_youtube_engine.so` for
 Music and Tube; account custody with its OAuth client and cloud-storage
 providers, the IMAP client, and the WebDAV/CalDAV client whose calendar sign-in
-reaches custody: `libtilo_accounts_engine.so` for Mail, Settings, Calendar and
-the Spotify engine; the time-zone database, chrono-tz:
+reaches custody: `libtilo_accounts_engine.so` for Mail, Settings, Calendar,
+Imager and the Spotify engine; the time-zone database, chrono-tz:
 `libtilo_timezone_engine.so` for Calendar and Clocks; the contact directory:
 `libtilo_contact_directory_engine.so` for Contacts, Mail and Messages; Tilo's
 PDF engine, tilo-pdf with the hayro rasteriser, the pdfium helper's client and
 PDF export: `libtilo_pdf_engine.so` for PDF Viewer, Files, Writer and Print
 Centre, which hand its first-page rasteriser to the thumbnailer every app
-shares). It is
+shares; the workspace filesystem's FUSE presentation, runtime-fs-fuse with
+fuser: `libtilo_fuse_engine.so` for Imager's projection worker). It is
 signed into the runtime bundle beside `libruntime_dylib.so`, so the runtime's
 id, signature and verity cover it, but only its apps name it `DT_NEEDED`;
 every other app no longer maps or relocates it. Apps share one engine library
@@ -94,7 +95,7 @@ relies on:
   another);
 - the app links the engine under a feature of its own (`runtime-engine` in
   Typst Editor, Music, Canvas, Tube, Mail, Settings, Calendar, Clocks,
-  Contacts, Messages, PDF Viewer, Files, Writer and Print Centre), named in `dist/apps/app-collections.toml`, the
+  Contacts, Messages, PDF Viewer, Files, Writer, Print Centre and Imager), named in `dist/apps/app-collections.toml`, the
   Containerfile's `APP_FEATURES` and `os/components.toml`; without it the app
   links the engine's crates statically, as `tilo-app dev` does;
 - one app may not load two engine libraries that both carry a crate (rustc
@@ -126,6 +127,93 @@ from each app that loads them (`canvas --probe-paint-engine`, `music` and
 engine itself. Settings, whose tapp stays as it is, has no probe; the trace of
 its start shows it loads the accounts engine itself.
 
+### Engines the toolkit opens on first use
+
+Some code the toolkit reaches on behalf of every app, but only once a person
+does something particular: the search engine (tantivy, with rust-stemmers'
+tables) for an index too large to answer from its records, the syntax
+grammars (syntect, fancy-regex and two-face's packed grammars) for a line of
+code, the ad-block compiler (adblock-rust) for the browser's filter lists. No
+app names those engines: the toolkit opens them by name the first time
+(`tilo-engine-loader`: `dlopen` with local symbols, never closed) and calls
+one entry function, whose type the toolkit defines and the engine crate is
+checked against at compile time (`tilo_search::EngineEntry`,
+`tilo_highlight::GrammarsEntry`, `ui::webview::adblock::EngineEntry`):
+
+| engine library | opened by | the first time |
+|---|---|---|
+| `libtilo_search_engine.so` | `tilo-search` (`lazy-engine`) | a large index commits or is searched |
+| `libtilo_highlight_engine.so` | the code editor's highlighter (`lazy-highlight`) | a line of code is highlighted |
+| `libtilo_adblock_engine.so` | `ui::webview::adblock` (`lazy-adblock`) | an app compiles filter lists |
+
+The runtime-side crate names the engine's code only while its `lazy-*`
+feature is off, and each engine's `thin` feature turns it on, so in the
+release graph rustc never puts the engine on the runtime's link line, while
+every other build (`tilo-app dev`, workspace tests, the shell) links it as
+before. The surface check knows these edges (`LAZY_EDGES`). The engine's
+check binary goes through the toolkit's own path, so a release proves the
+runtime finds and runs it. A library that does not open is logged once:
+large indexes then find nothing, code highlights as plain text, filter lists
+do not compile. The Typst engine chains on the highlight engine (Typst's raw
+blocks use the same syntect and grammars), so Typst Editor maps one copy and
+the toolkit's `dlopen` finds it already loaded.
+
+### Tables without relocations
+
+A table of `&str` or slices is a table of pointers, which the loader writes
+in every process before `main`. Where the runtime needs such a table, it is
+laid out as offsets into one string literal instead, which is plain
+`.rodata`: MIME types by extension (`tilo-mime`, generated from mime_guess by
+`tools/mime-table.py`), the BIP39 wordlist of recovery phrases
+(`threshold-identity`'s `bip39.rs`), pulldown-cmark's HTML entities
+(`vendor/pulldown-cmark`) and regex-syntax's Unicode name and case-folding
+tables (`vendor/regex-syntax`, written by `tools/regex-syntax-tables.py`).
+The surface check fails on mime_guess or bip39 back in the runtime
+(`TABLES`).
+
+### X11
+
+Every app runs as a Wayland client in its sandbox, so the runtime leaves
+winit's X11 backend (x11rb, x11-dl) and the X11 clipboard (arboard on Linux)
+out. A development build on an X11 host turns them on with `tilo-app`'s
+`x11` feature (`--features ui/x11`); the shell keeps X11 for its hosted
+backend. hakari does not unify winit or xkbcommon-dl (`.config/hakari.toml`),
+or the shell's X11 would return through the workspace-hack.
+
+### Expected effect of the engines on first use, the tables and X11
+
+Not measured: no build ran for these changes. From the previous round's link
+map of the runtime at main (aarch64, `.data.rel.ro` 4.0 MB before the PDF
+engine left, about 3.5 MB after), these leave the relocated data every app
+process copies and relocates before `main`:
+
+| change | relocated data | code out of the runtime |
+|---|---|---|
+| search engine on first use (tantivy, rust-stemmers) | ~120 KB stemmers + tantivy's vtables and strings, ~0.2 MB | ~2-3 MB |
+| syntax grammars on first use (syntect, fancy-regex, two-face) | tens of KB | ~2 MB code, 0.9 MB grammar data |
+| ad-block compiler on first use | tens of KB | ~1-2 MB |
+| mime types from `tilo-mime` | ~122 KB | — |
+| regex-syntax's tables | ~121 KB | — |
+| pulldown-cmark's entities | ~68 KB | — |
+| BIP39 wordlist (and bitcoin_hashes) | ~33 KB | small |
+| X11 (x11rb, x11-dl, arboard) | tens of KB | ~1 MB |
+| FUSE presentation (fuser) | small | ~0.3 MB |
+
+About 0.6-0.7 MB in all: `.data.rel.ro` from ~3.5 MB to ~2.8-2.9 MB, about
+160 fewer pages copied and relocated, ~0.3-0.4 ms of the loader-only time at
+the measured ~2 µs a page (5.97 ms before the PDF engine moved; expected
+~4.2 ms now, still above the 3 ms target). What is left is mostly the
+toolkit's own (tilo-ui about 570 KB), ~39k panic locations (a file-name
+pointer each, ~0.9 MB) and ~89k vtable entries: see app-start-phases.md for
+what reaches 3 ms. Cold, the runtime file shrinks by roughly 8-10 MB of code
+that no first frame touches.
+
+Apps get smaller too: an app that encodes a PNG or JPEG no longer
+instantiates the `image` crate's encoders in its own binary (`ui::png`,
+`ui::jpeg`, compiled once in the runtime; about 50 KB per app that encoded),
+and Imager loads account custody and the FUSE presentation from their
+engines instead of carrying them.
+
 ## What an app start pays for the runtime
 
 Warm, the loader's work before `main` is almost all the runtime's: it copies
@@ -151,6 +239,17 @@ maps the runtime library and the libraries of its bundle it needs, for every
 runtime the system registry names, read-only, and locks them once per boot,
 at idle I/O priority. The page cache then holds one copy that every app maps,
 and no app start waits on the disk for it. It runs no app code; engines and
-the media libraries loaded on first use stay out, and a runtime a person
-installed into their own store is not covered. Its memory is the runtime's
+the media libraries loaded on first use stay out. Its memory is the runtime's
 size, which is one more reason the runtime stays small.
+
+A runtime a person installed into their own store is kept by their session
+(`tilo-launcher runtime-resident --user`, the user units
+`tilo-runtime-resident.service` and `.path`), by what the bytes are, never by
+where they are: an ABI-bound version names its payload's digest, so when the
+system holds a bundle of that version the launcher runs the app on the
+system's copy (the same bytes, already resident); the person's other
+runtimes are verified as a launch verifies them, and each library is kept
+only when the kernel measures the publisher-signed fs-verity digest on the
+descriptor that is mapped. Unsealed files are left to the page cache. The
+session's `RLIMIT_MEMLOCK` bounds what is locked; past it the files stay
+mapped and read in.
