@@ -3278,16 +3278,34 @@ fn validate_directory_target_input(
 /// A person's confirmation, given on their own device, of one invocation
 /// someone acting for them makes.
 struct Witness {
+    binding: WitnessBinding,
+    expires: std::time::Instant,
+}
+
+/// The original invocation and publication the person actually answered.
+/// Arguments are hashed so the registry never retains disclosure contents.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct WitnessBinding {
     actor: String,
+    provider: String,
+    room: String,
+    revision: Option<String>,
+    publication: (u64, u64),
+    invocation: tilo_actions::InvocationId,
     resource: String,
     action: String,
     argument_digest: [u8; 32],
-    expires: std::time::Instant,
+}
+
+#[derive(Clone, Copy)]
+enum WitnessPublicationKind {
+    Surface,
+    Directory,
 }
 
 struct ConfirmationGrant {
     /// Only set after consuming a host-issued witness for these exact arguments.
-    host_witnessed: bool,
+    host_witnessed: Option<WitnessBinding>,
     peer_id: u64,
     resource: String,
     action: String,
@@ -3455,6 +3473,9 @@ pub struct CapnpBrokerState {
     certificate_authority: std::sync::OnceLock<Arc<dyn super::peer_actions::CertificateAuthority>>,
     /// Latest complete action surface per live connection.
     surfaces: Mutex<HashMap<u64, PublishedSurface>>,
+    /// Per-connection incarnations, independent of unrelated discovery churn.
+    witness_publications: Mutex<HashMap<u64, (u64, u64)>>,
+    next_witness_publication: AtomicU64,
     /// Each connection's surface as `publishActionSurface` deltas built it:
     /// the shapes and bindings the next delta applies to.
     surface_tables: Mutex<HashMap<u64, runtime_collab::SurfaceTable>>,
@@ -3731,6 +3752,7 @@ impl CapnpBrokerState {
         clear!(self.host_workers);
         clear!(self.channels);
         clear!(self.surfaces);
+        clear!(self.witness_publications);
         clear!(self.surface_tables);
         clear!(self.action_directory_roots);
         clear!(self.native_checkouts);
@@ -4312,6 +4334,8 @@ impl CapnpBrokerState {
                     .or_else(|| services.native_certificates.clone())
                     .map_or_else(std::sync::OnceLock::new, std::sync::OnceLock::from),
                 surfaces: Mutex::new(HashMap::new()),
+                witness_publications: Mutex::new(HashMap::new()),
+                next_witness_publication: AtomicU64::new(1),
                 surface_tables: Mutex::new(HashMap::new()),
                 surface_changes: tokio::sync::watch::Sender::new(0),
                 launchable: launchable::LaunchableCatalogue::new(),
@@ -4447,6 +4471,13 @@ impl CapnpBrokerState {
     #[cfg(any(test, feature = "test-support"))]
     pub fn replace_action_directory_roots_for_test(&self, roots: Vec<ActionDirectoryRoot>) {
         if let Ok(mut registered) = self.action_directory_roots.lock() {
+            for peer in registered
+                .keys()
+                .copied()
+                .chain(roots.iter().map(|root| root.peer_id))
+            {
+                self.advance_witness_publication(peer, WitnessPublicationKind::Directory);
+            }
             registered.clear();
             registered.extend(roots.into_iter().map(|root| (root.peer_id, root)));
         }
@@ -4456,6 +4487,13 @@ impl CapnpBrokerState {
     #[cfg(any(test, feature = "test-support"))]
     pub fn replace_published_surfaces_for_test(&self, surfaces: Vec<PublishedSurface>) {
         if let Ok(mut published) = self.surfaces.lock() {
+            for peer in published
+                .keys()
+                .copied()
+                .chain(surfaces.iter().map(|surface| surface.peer_id))
+            {
+                self.advance_witness_publication(peer, WitnessPublicationKind::Surface);
+            }
             published.clear();
             published.extend(
                 surfaces
@@ -4586,6 +4624,25 @@ impl CapnpBrokerState {
     #[must_use]
     pub fn published_surfaces_generation(&self) -> u64 {
         *self.surface_changes.borrow()
+    }
+
+    /// Allocate a fresh incarnation even for an identical republication.
+    /// The allocator survives disconnect, so reusing a peer id cannot revive
+    /// a previously issued witness.
+    fn advance_witness_publication(&self, peer: u64, kind: WitnessPublicationKind) {
+        let mut publications = self
+            .witness_publications
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let incarnation = self
+            .next_witness_publication
+            .fetch_add(1, Ordering::Relaxed);
+        let publication = publications.entry(peer).or_default();
+        match kind {
+            WitnessPublicationKind::Surface => publication.0 = incarnation,
+            WitnessPublicationKind::Directory => publication.1 = incarnation,
+        }
+        drop(publications);
     }
 
     /// Record that a published surface changed: the generation moves and
@@ -5207,7 +5264,7 @@ impl CapnpBrokerState {
                 action: action.to_string(),
                 argument_digest: argument_digest(argument),
                 actor: actor.id.clone(),
-                host_witnessed: false,
+                host_witnessed: None,
                 expires: now
                     .checked_add(std::time::Duration::from_secs(60))
                     .ok_or(ActionDirectoryBridgeError::Unavailable)?,
@@ -5576,7 +5633,7 @@ impl CapnpBrokerState {
                 action: action.to_string(),
                 argument_digest: argument_digest(argument),
                 actor: actor.to_string(),
-                host_witnessed: false,
+                host_witnessed: None,
                 expires: std::time::Instant::now()
                     .checked_add(std::time::Duration::from_secs(60))
                     .ok_or_else(|| "confirmation expiry overflowed".to_string())?,
@@ -6029,13 +6086,40 @@ impl CapnpBrokerState {
                 .remove(token)
                 .ok_or_else(|| "the confirmation token is unknown or already used".to_string())?;
             if (requires_store_witness(&offered.0.app_id, &offered.1.action)
-                && !grant.host_witnessed)
+                && grant.host_witnessed.is_none())
                 || grant.expires < std::time::Instant::now()
                 || grant.peer_id != peer_id
                 || grant.resource != offered.1.resource
                 || grant.action != offered.1.action
                 || grant.argument_digest != argument_digest(argument)
                 || grant.actor != actor.id
+                || grant.host_witnessed.as_ref().is_some_and(|binding| {
+                    binding.room != offered.0.route.cluster_id
+                        || Some(binding.invocation)
+                            != requested
+                                .or_else(|| durable.map(DurableContext::invocation))
+                                .or_else(|| execution.as_ref().map(ExecutionScope::invocation))
+                                .or(match &origin {
+                                    Some(InvocationCaller::NativePerson { invocation, .. }) => {
+                                        Some(*invocation)
+                                    }
+                                    _ => None,
+                                })
+                        || binding.publication != self.witness_publication(&binding.provider)
+                        || match original_request {
+                            Some(request) => {
+                                binding.provider != request.target.provider
+                                    || binding.revision != request.revision
+                            }
+                            None => {
+                                binding.provider != peer_id.to_string()
+                                    || binding
+                                        .revision
+                                        .as_deref()
+                                        .is_some_and(|held| Some(held) != revision)
+                            }
+                        }
+                })
             {
                 return Err(
                     "the confirmation token is expired or does not match this invocation".into(),
@@ -6525,17 +6609,19 @@ impl CapnpBrokerState {
         argument: Option<&str>,
         actor: &BrokerActor,
         evidence: Option<&tilo_actions::remote::Confirmation>,
+        binding: &WitnessBinding,
     ) -> Result<Option<String>, tilo_actions::remote::ActionHostError> {
         use tilo_actions::remote::{ActionHostError, Confirmation};
         // Only a person acting themselves confirms by their own word; anyone
         // acting for them carries the answer the person gave on their device.
         let witnessed = match evidence {
-            Some(Confirmation::Witnessed(token)) => self.take_witness(
-                token,
-                &actor.id,
-                (&offered.resource, &offered.action),
-                argument,
-            ),
+            Some(Confirmation::Witnessed(token)) => {
+                binding.actor == actor.id()
+                    && binding.resource == offered.resource
+                    && binding.action == offered.action
+                    && binding.argument_digest == argument_digest(argument)
+                    && self.take_witness(token, binding)
+            }
             _ => false,
         };
         // Store disclosures must be answered on a trusted host sheet, even
@@ -6564,7 +6650,7 @@ impl CapnpBrokerState {
                         .map_err(|_| "the confirmation registry is unavailable".to_owned())?
                         .get_mut(&token)
                         .ok_or("the confirmation grant disappeared")?
-                        .host_witnessed = true;
+                        .host_witnessed = Some(binding.clone());
                 }
                 Ok(token)
             })
@@ -6602,7 +6688,7 @@ impl CapnpBrokerState {
                 action: offered.action.clone(),
                 argument_digest: argument_digest(argument),
                 actor: actor.id.clone(),
-                host_witnessed: false,
+                host_witnessed: None,
                 expires,
             },
         );
@@ -6616,12 +6702,7 @@ impl CapnpBrokerState {
     /// one invocation once, within a minute.
     ///
     /// [`Confirmation::Witnessed`]: tilo_actions::remote::Confirmation::Witnessed
-    pub(crate) fn witness_confirmation(
-        &self,
-        actor: &str,
-        (resource, action): (&str, &str),
-        argument: Option<&str>,
-    ) -> Option<String> {
+    pub(crate) fn witness_confirmation(&self, binding: &WitnessBinding) -> Option<String> {
         let now = std::time::Instant::now();
         let expires = now.checked_add(std::time::Duration::from_secs(60))?;
         let token = uuid::Uuid::new_v4().to_string();
@@ -6630,10 +6711,7 @@ impl CapnpBrokerState {
         witnessed.insert(
             token.clone(),
             Witness {
-                actor: actor.to_owned(),
-                resource: resource.to_owned(),
-                action: action.to_owned(),
-                argument_digest: argument_digest(argument),
+                binding: binding.clone(),
                 expires,
             },
         );
@@ -6643,22 +6721,12 @@ impl CapnpBrokerState {
 
     /// Spend the person's answer `token` names, when it was given for this
     /// very invocation.
-    fn take_witness(
-        &self,
-        token: &str,
-        actor: &str,
-        (resource, action): (&str, &str),
-        argument: Option<&str>,
-    ) -> bool {
+    fn take_witness(&self, token: &str, binding: &WitnessBinding) -> bool {
         let Ok(mut witnessed) = self.witnessed_confirmations.lock() else {
             return false;
         };
         let matches = witnessed.get(token).is_some_and(|witness| {
-            witness.expires >= std::time::Instant::now()
-                && witness.actor == actor
-                && witness.resource == resource
-                && witness.action == action
-                && witness.argument_digest == argument_digest(argument)
+            witness.expires >= std::time::Instant::now() && witness.binding == *binding
         });
         if matches {
             witnessed.remove(token);
@@ -7250,6 +7318,10 @@ impl CapnpBrokerState {
 
     fn remove_connection(&self, peer_id: u64) {
         self.launch_disconnected(peer_id);
+        self.witness_publications
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&peer_id);
         if let Ok(mut directories) = self.canonical_directories.lock() {
             directories.remove(peer_id);
         }
@@ -10574,6 +10646,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 .lock()
                 .map_err(|_| capnp::Error::failed("action surface registry unavailable".into()))?
                 .insert(peer_id, surface);
+            state.advance_witness_publication(peer_id, WitnessPublicationKind::Surface);
             state.surfaces_changed();
             state.publish_action_catalogue();
             if offers {
@@ -10638,6 +10711,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 .lock()
                 .map_err(|_| capnp::Error::failed("action surface registry unavailable".into()))?
                 .insert(peer_id, surface);
+            state.advance_witness_publication(peer_id, WitnessPublicationKind::Surface);
             state.surfaces_changed();
             state.publish_action_catalogue();
             if offers {
@@ -10723,6 +10797,8 @@ impl channel_handle::Server for CapnpChannelHandle {
                 },
             );
         }
+        self.state
+            .advance_witness_publication(self.peer_id, WitnessPublicationKind::Directory);
         self.retain_native_checkout(&route);
         self.state.refresh_action_directory_root_snapshot();
         // The directory can alter remote discoverability without an eager
@@ -11579,113 +11655,169 @@ impl channel_handle::Server for CapnpChannelHandle {
         let origin_route = self.route();
         let cluster = origin_route.cluster_id.clone();
         Promise::from_future(async move {
-            let offered = state
+            let publication = state
                 .surfaces
                 .lock()
                 .ok()
                 .and_then(|surfaces| surfaces.get(&peer_id).cloned())
                 .filter(|surface| surface.route.cluster_id == cluster)
-                .and_then(|surface| {
-                    surface.actions.into_iter().find(|candidate| {
-                        candidate.resource == resource && candidate.action == action
-                    })
-                })
+                .and_then(|surface| surface.action_projection(&resource, &action))
                 .ok_or_else(|| capnp::Error::failed("unknown application action".into()))?;
+            let offered = &publication.1;
             let actor = current.broker_actor();
             let phrase = confirmation
                 .get("confirmation_phrase")
                 .and_then(serde_json::Value::as_str);
-            let job = match &offered.contract.confirmation {
-                tilo_actions::ConfirmationPolicy::None => state
-                    .start_invocation_confirmed_for_origin(
+            let job = if requires_store_witness(&publication.0.app_id, &action) {
+                // Never treat caller-supplied booleans, phrases or tokens as
+                // permission to disclose. The host shows the signed audience
+                // and payload, bound to a fresh invocation before it asks.
+                let invocation = tilo_actions::InvocationId::new();
+                let binding = state.native_witness_binding(
+                    actor.id(),
+                    &publication,
+                    argument.as_deref(),
+                    invocation,
+                );
+                let answer = state
+                    .local_store_witness(&current, &publication, argument.as_deref(), &binding)
+                    .await
+                    .map_err(capnp::Error::failed)?;
+                let current = state.revalidate_admission(&origin_route, &current)?;
+                state
+                    .check_native_store_offer(&publication)
+                    .map_err(capnp::Error::failed)?;
+                let current_binding = state.native_witness_binding(
+                    actor.id(),
+                    &publication,
+                    argument.as_deref(),
+                    invocation,
+                );
+                let token = state
+                    .confirmation_token(
                         peer_id,
-                        &resource,
-                        &action,
-                        InvocationInputs {
-                            original_request: None,
-                            requested: None,
-                            caller: None,
-                            execution: None,
-                            argument: argument.as_deref(),
-                            actor: &actor,
-                            confirmation_token: None,
-                            context: None,
-                        },
-                        Some(InvocationCaller::Local {
-                            route: origin_route.clone(),
-                            admitted: Box::new(current.clone()),
-                        }),
-                    ),
-                tilo_actions::ConfirmationPolicy::Confirm => {
-                    if confirmation
-                        .get("confirm")
-                        .and_then(serde_json::Value::as_bool)
-                        != Some(true)
-                    {
-                        return Err(capnp::Error::failed(
-                            "explicit confirmation is required".into(),
-                        ));
+                        &publication.0.app_id,
+                        offered,
+                        argument.as_deref(),
+                        &actor,
+                        Some(&answer),
+                        &current_binding,
+                    )
+                    .map_err(|error| {
+                        capnp::Error::failed(format!("host confirmation refused: {error:?}"))
+                    })?;
+                state.start_invocation_confirmed_for_origin(
+                    peer_id,
+                    &resource,
+                    &action,
+                    InvocationInputs {
+                        original_request: None,
+                        requested: Some(invocation),
+                        caller: None,
+                        execution: None,
+                        argument: argument.as_deref(),
+                        actor: &actor,
+                        confirmation_token: token.as_deref(),
+                        context: None,
+                    },
+                    Some(InvocationCaller::Local {
+                        route: origin_route.clone(),
+                        admitted: Box::new(current),
+                    }),
+                )
+            } else {
+                match &offered.contract.confirmation {
+                    tilo_actions::ConfirmationPolicy::None => state
+                        .start_invocation_confirmed_for_origin(
+                            peer_id,
+                            &resource,
+                            &action,
+                            InvocationInputs {
+                                original_request: None,
+                                requested: None,
+                                caller: None,
+                                execution: None,
+                                argument: argument.as_deref(),
+                                actor: &actor,
+                                confirmation_token: None,
+                                context: None,
+                            },
+                            Some(InvocationCaller::Local {
+                                route: origin_route.clone(),
+                                admitted: Box::new(current.clone()),
+                            }),
+                        ),
+                    tilo_actions::ConfirmationPolicy::Confirm => {
+                        if confirmation
+                            .get("confirm")
+                            .and_then(serde_json::Value::as_bool)
+                            != Some(true)
+                        {
+                            return Err(capnp::Error::failed(
+                                "explicit confirmation is required".into(),
+                            ));
+                        }
+                        let token = state
+                            .prepare_confirmation(
+                                peer_id,
+                                &resource,
+                                &action,
+                                argument.as_deref(),
+                                &actor.id,
+                                None,
+                            )
+                            .map_err(capnp::Error::failed)?;
+                        state.start_invocation_confirmed_for_origin(
+                            peer_id,
+                            &resource,
+                            &action,
+                            InvocationInputs {
+                                original_request: None,
+                                requested: None,
+                                caller: None,
+                                execution: None,
+                                argument: argument.as_deref(),
+                                actor: &actor,
+                                confirmation_token: Some(&token),
+                                context: None,
+                            },
+                            Some(InvocationCaller::Local {
+                                route: origin_route.clone(),
+                                admitted: Box::new(current.clone()),
+                            }),
+                        )
                     }
-                    let token = state
-                        .prepare_confirmation(
+                    tilo_actions::ConfirmationPolicy::Phrase { .. } => {
+                        let token = state
+                            .prepare_confirmation(
+                                peer_id,
+                                &resource,
+                                &action,
+                                argument.as_deref(),
+                                &actor.id,
+                                phrase,
+                            )
+                            .map_err(capnp::Error::failed)?;
+                        state.start_invocation_confirmed_for_origin(
                             peer_id,
                             &resource,
                             &action,
-                            argument.as_deref(),
-                            &actor.id,
-                            None,
+                            InvocationInputs {
+                                original_request: None,
+                                requested: None,
+                                caller: None,
+                                execution: None,
+                                argument: argument.as_deref(),
+                                actor: &actor,
+                                confirmation_token: Some(&token),
+                                context: None,
+                            },
+                            Some(InvocationCaller::Local {
+                                route: origin_route.clone(),
+                                admitted: Box::new(current.clone()),
+                            }),
                         )
-                        .map_err(capnp::Error::failed)?;
-                    state.start_invocation_confirmed_for_origin(
-                        peer_id,
-                        &resource,
-                        &action,
-                        InvocationInputs {
-                            original_request: None,
-                            requested: None,
-                            caller: None,
-                            execution: None,
-                            argument: argument.as_deref(),
-                            actor: &actor,
-                            confirmation_token: Some(&token),
-                            context: None,
-                        },
-                        Some(InvocationCaller::Local {
-                            route: origin_route.clone(),
-                            admitted: Box::new(current.clone()),
-                        }),
-                    )
-                }
-                tilo_actions::ConfirmationPolicy::Phrase { .. } => {
-                    let token = state
-                        .prepare_confirmation(
-                            peer_id,
-                            &resource,
-                            &action,
-                            argument.as_deref(),
-                            &actor.id,
-                            phrase,
-                        )
-                        .map_err(capnp::Error::failed)?;
-                    state.start_invocation_confirmed_for_origin(
-                        peer_id,
-                        &resource,
-                        &action,
-                        InvocationInputs {
-                            original_request: None,
-                            requested: None,
-                            caller: None,
-                            execution: None,
-                            argument: argument.as_deref(),
-                            actor: &actor,
-                            confirmation_token: Some(&token),
-                            context: None,
-                        },
-                        Some(InvocationCaller::Local {
-                            route: origin_route.clone(),
-                            admitted: Box::new(current.clone()),
-                        }),
-                    )
+                    }
                 }
             }
             .map_err(capnp::Error::failed)?;
@@ -15968,13 +16100,21 @@ pub mod tests {
         }
 
         fn invocation_channel(&self) -> channel_handle::Client {
+            self.invocation_channel_for(self.peer_id, &self.route)
+        }
+
+        fn invocation_channel_for(
+            &self,
+            peer_id: u64,
+            route: &CrdtRoute,
+        ) -> channel_handle::Client {
             capnp_rpc::new_client(CapnpChannelHandle {
                 person_chat_views: RefCell::default(),
                 committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
                 state: Arc::clone(&self.state),
                 directories: Rc::clone(&self.directories),
-                channel_id: self.route.channel_key(),
-                peer_id: self.peer_id,
+                channel_id: route.channel_key(),
+                peer_id,
                 verified_identity: self.source_identity.clone().unwrap_or_else(|| {
                     AdmittedJoinIdentity {
                         host_scope: None,
@@ -16270,6 +16410,109 @@ pub mod tests {
                         "an admitted remote/raw route cannot manufacture launcher process custody",
                     );
                     assert!(error.to_string().contains("launcher-attested"), "{error}");
+                }
+            })
+            .await;
+    }
+
+    #[cfg(test)]
+    async fn witness_publish(
+        fixture: &LocalDirectoryFixture,
+        channel: &channel_handle::Client,
+        app: &str,
+        directory: bool,
+    ) {
+        if directory {
+            let mut request = channel.publish_action_directory_request();
+            request.get().set_app_id(app);
+            request.get().set_directory(fixture.directory.clone());
+            request.send().promise.await.unwrap();
+        } else {
+            let mut request = channel.publish_actions_request();
+            request.get().set_app_id(app);
+            request.get().init_actions(0);
+            request.send().promise.await.unwrap();
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn witness_publication_is_target_scoped_and_rejects_republish_and_peer_reuse() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                for directory in [false, true] {
+                    let fixture = local_directory_fixture();
+                    let person = principal_id_for_root([0; 32]);
+                    let mut other_workspace = crate::test_support::Workspace::new(
+                        crate::test_support::WorkspaceId(72),
+                        "Other publication room",
+                    );
+                    other_workspace.set_owner(person.clone());
+                    let other_room = other_workspace.room.to_string();
+                    {
+                        let mut tree = fixture.membership.as_ref().unwrap().write();
+                        tree.workspaces[0].set_owner(person);
+                        tree.workspaces.push(other_workspace);
+                    }
+                    let target = fixture.invocation_channel();
+                    witness_publish(&fixture, &target, &fixture.route.app_id, directory).await;
+                    let request = tilo_actions::remote::InvokeRequest {
+                        invocation: tilo_actions::InvocationId::new(),
+                        target: tilo_actions::remote::RemoteActionTarget {
+                            provider: fixture.peer_id.to_string(),
+                            address: tilo_actions::ActionAddress::new("document", "open"),
+                        },
+                        argument: tilo_actions::remote::InvokeArgument::None,
+                        confirmation: None,
+                        context: None,
+                        revision: Some("directory-r1".into()),
+                        wait_ms: None,
+                        appearance: None,
+                        on_behalf_of: None,
+                    };
+                    let binding = || {
+                        fixture
+                            .state
+                            .witness_binding("person", &fixture.cluster_id, &request)
+                    };
+                    let original = binding();
+                    let token = fixture.state.witness_confirmation(&original).unwrap();
+                    // Both another provider in this room and another room may publish,
+                    // reregister and disconnect while the person's sheet is open.
+                    for room in [fixture.cluster_id.clone(), other_room] {
+                        let other_peer = fixture.peer_id + 1;
+                        let route = CrdtRoute::record("org.example.unrelated", room, "main");
+                        let other = fixture.invocation_channel_for(other_peer, &route);
+                        for other_directory in [false, true] {
+                            witness_publish(&fixture, &other, &route.app_id, other_directory).await;
+                            witness_publish(&fixture, &other, &route.app_id, other_directory).await;
+                        }
+                        fixture.state.remove_connection(other_peer);
+                    }
+                    assert!(
+                        fixture.state.take_witness(&token, &binding()),
+                        "unrelated churn preserves consent"
+                    );
+
+                    let token = fixture.state.witness_confirmation(&original).unwrap();
+                    witness_publish(&fixture, &target, &fixture.route.app_id, directory).await;
+                    assert!(
+                        !fixture.state.take_witness(&token, &binding()),
+                        "identical target republication revokes consent"
+                    );
+
+                    let current = binding();
+                    let token = fixture.state.witness_confirmation(&current).unwrap();
+                    fixture.state.remove_connection(fixture.peer_id);
+                    assert!(
+                        !fixture.state.take_witness(&token, &binding()),
+                        "disconnect revokes consent"
+                    );
+                    let token = fixture.state.witness_confirmation(&current).unwrap();
+                    witness_publish(&fixture, &target, &fixture.route.app_id, directory).await;
+                    assert!(
+                        !fixture.state.take_witness(&token, &binding()),
+                        "peer reuse cannot restore old consent"
+                    );
                 }
             })
             .await;

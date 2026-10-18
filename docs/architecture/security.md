@@ -553,6 +553,17 @@ without anyone asking each time:
   through the portal) follow the Fedora base image's defaults, which this
   repository neither configures nor audits.
 
+Store report and appeal submissions require explicit confirmation on a trusted
+host sheet showing their purpose, payload and registry audience. Published-action
+RPCs, durable local invocations and native tasks use that same sheet; an app's
+confirmation boolean or token and a task's general approval cannot replace it.
+The one-use answer binds the actor, workspace, original provider, publication
+revision, invocation UUID and exact arguments. Changed publications or replay
+under another invocation require a new answer; an exact admitted retry returns
+the original receipt without sending again. Other internal actions retain their
+existing confirmation policies. Signing keys remain inside the typed host
+operation, which also checks committed Store evidence and configured registries.
+
 The app catalogue (`apps.tilo.so`) is fetched only when the Store opens, and
 owner-opted extension refresh only after the owner opts in. LAN discovery
 (mDNS) is off unless `TILO_COLLAB_LAN_DISCOVERY` is set.

@@ -374,18 +374,19 @@ impl NativeLaunch {
         // Application-directory providers can name an action that was never
         // retained. Once published, it needs the same exact disclosure gate.
         if super::requires_store_witness(&self.app, &self.action) && self.witness.is_none() {
-            if let super::native_task_confirmation::NativeGate::Confirmed {
-                argument,
-                confirmation: id,
-            } = state
-                .native_confirmation_for(
-                    &self.run,
-                    &self.lease,
-                    (&self.app, &offered.1),
-                    (&self.resource, &self.action),
-                    self.argument.as_deref(),
-                )
-                .await?
+            if !admitted.confirmed
+                && let super::native_task_confirmation::NativeGate::Confirmed {
+                    argument,
+                    confirmation: id,
+                } = state
+                    .native_confirmation_for(
+                        &self.run,
+                        &self.lease,
+                        (&self.app, &offered.1),
+                        (&self.resource, &self.action),
+                        self.argument.as_deref(),
+                    )
+                    .await?
             {
                 admitted.argument = Some(argument);
                 admitted.confirmed = true;
@@ -394,9 +395,10 @@ impl NativeLaunch {
             admitted.witness = state
                 .native_store_witness(
                     (&admitted.run, &admitted.lease, admitted.confirmed),
-                    (&admitted.app, &offered.1),
+                    &offered,
                     admitted.argument.as_deref(),
                     &admitted.caller,
+                    admitted.invocation,
                 )
                 .await?;
             admitted.check(state)?;
@@ -418,12 +420,22 @@ impl NativeLaunch {
             ),
             offered,
         )?;
-        if let Some(id) = confirmation {
-            if let Err(error) = state.settle_native_confirmation(&admitted.run, &id).await {
-                tracing::warn!(%error, "confirmed Store action started but its confirmation stayed");
-            }
-        }
+        admitted
+            .settle_started_confirmation(state, confirmation.as_deref())
+            .await;
         Ok(job.id)
+    }
+
+    async fn settle_started_confirmation(
+        &self,
+        state: &CapnpBrokerState,
+        confirmation: Option<&str>,
+    ) {
+        if let Some(id) = confirmation
+            && let Err(error) = state.settle_native_confirmation(&self.run, id).await
+        {
+            tracing::warn!(%error, "confirmed Store action started but its confirmation stayed");
+        }
     }
 }
 
@@ -609,16 +621,8 @@ impl CapnpBrokerState {
             native.confirmed = true;
             confirmation = Some(id);
         }
-        if let Some(retained) = &native.retained {
-            native.witness = self
-                .native_store_witness(
-                    (&native.run, reask.lease, native.confirmed),
-                    (&native.app, retained),
-                    native.argument.as_deref(),
-                    &native.caller,
-                )
-                .await?;
-        }
+        // A disclosure witness needs the actual live provider/publication, not
+        // just a retained descriptor. Ask after launch in NativeLaunch::deliver.
         let destination = native.destination(self)?;
         // The ordinary delivery loop uses this label only for actor-view placement.
         // Authority comes from the captured signed LocalCaller and native owner admission.

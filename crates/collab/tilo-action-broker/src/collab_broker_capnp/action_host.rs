@@ -2362,6 +2362,7 @@ impl CapnpBrokerState {
             argument,
             &actor,
             request.confirmation.as_ref(),
+            &self.witness_binding(actor.id(), &root.cluster_id, request),
         )?;
         let surface = PublishedSurface {
             peer_id: root.peer_id,
@@ -2392,7 +2393,7 @@ impl CapnpBrokerState {
             root.peer_id,
             (surface, offered),
             InvocationInputs {
-                original_request: None,
+                original_request: Some(request),
                 caller: Some(caller),
                 requested: Some(request.invocation),
                 execution: super::ExecutionScope::for_call(caller, request.invocation),
@@ -2483,6 +2484,7 @@ impl CapnpBrokerState {
             argument.as_deref(),
             &actor,
             request.confirmation.as_ref(),
+            &self.witness_binding(actor.id(), &room, original_request),
         )?;
         self.start_invocation_confirmed_for_origin(
             peer_id,
@@ -2638,6 +2640,7 @@ impl CapnpBrokerState {
                 (&workspace, &policy, now),
                 &address.action,
                 (argument, request.confirmation.as_ref()),
+                &self.witness_binding(actor.id(), room, request),
             );
         }
         if let Some(service) = self.services.keyboard_shortcuts.as_ref()
@@ -2650,6 +2653,7 @@ impl CapnpBrokerState {
                 (&workspace, &policy, now),
                 address,
                 (argument, request.confirmation.as_ref()),
+                &self.witness_binding(actor.id(), room, request),
             );
         }
         if let Some(governance) = self.services.workspace_governance.as_ref()
@@ -2699,9 +2703,7 @@ impl CapnpBrokerState {
             Some(Confirmation::Confirmed) => true,
             Some(Confirmation::Witnessed(token)) => self.take_witness(
                 token,
-                policy.id(),
-                (&address.resource, &address.action),
-                argument,
+                &self.witness_binding(policy.id(), &workspace.room.to_string(), request),
             ),
             _ => false,
         };
@@ -2713,6 +2715,7 @@ impl CapnpBrokerState {
             governance.app_id(),
             &descriptor,
             (argument, Some(&Confirmation::Confirmed)),
+            false,
         )?;
         if !confirmation_satisfied(
             &descriptor.contract.confirmation_for_argument(argument),
@@ -2733,7 +2736,8 @@ impl CapnpBrokerState {
         (workspace, policy, now): (&Workspace, &BrokerActor, u64),
         app: &str,
         descriptor: &ActionDescriptor,
-        (argument, confirmation): (Option<&str>, Option<&Confirmation>),
+        (_argument, confirmation): (Option<&str>, Option<&Confirmation>),
+        witnessed: bool,
     ) -> Result<(), ActionHostError> {
         let (answer, spent) = policy.action_verdict_in(
             workspace,
@@ -2750,12 +2754,7 @@ impl CapnpBrokerState {
             tilo_action_policy::Answer::Allow => true,
             tilo_action_policy::Answer::Deny => return Err(ActionHostError::NotPermitted),
             tilo_action_policy::Answer::Ask => match confirmation {
-                Some(Confirmation::Witnessed(token)) => self.take_witness(
-                    token,
-                    policy.id(),
-                    (&descriptor.address.resource, &descriptor.address.action),
-                    argument,
-                ),
+                Some(Confirmation::Witnessed(_)) => witnessed,
                 Some(Confirmation::Confirmed) => policy.direct(),
                 _ => false,
             },
@@ -2776,6 +2775,7 @@ impl CapnpBrokerState {
         (workspace, policy, now): (&Workspace, &BrokerActor, u64),
         action: &str,
         (argument, confirmation): (Option<&str>, Option<&Confirmation>),
+        binding: &super::WitnessBinding,
     ) -> Result<u64, ActionHostError> {
         let library = self
             .services
@@ -2789,6 +2789,7 @@ impl CapnpBrokerState {
             SHORTCUTS_APP_ID,
             &descriptor,
             (argument, confirmation),
+            self.consume_answer(confirmation, binding),
         )?;
         let operation = automation::decode_library(action, argument)
             .map_err(|reason| ActionHostError::InvalidRequest { reason })?;
@@ -2846,6 +2847,7 @@ impl CapnpBrokerState {
         (workspace, policy, now): (&Workspace, &BrokerActor, u64),
         address: &ActionAddress,
         (argument, confirmation): (Option<&str>, Option<&Confirmation>),
+        binding: &super::WitnessBinding,
     ) -> Result<u64, ActionHostError> {
         let mut keymap = settings_store::hardware::ShortcutConfig::load();
         let descriptor = service
@@ -2856,6 +2858,7 @@ impl CapnpBrokerState {
             service.app_id(),
             &descriptor,
             (argument, confirmation),
+            self.consume_answer(confirmation, binding),
         )?;
         let id = self
             .invocation_id
@@ -2902,21 +2905,14 @@ impl CapnpBrokerState {
         descriptor: &ActionDescriptor,
         argument: Option<&str>,
         confirmation: Option<&Confirmation>,
+        witnessed: bool,
     ) -> bool {
-        if descriptor.contract.confirmation == tilo_actions::ConfirmationPolicy::None {
+        let policy = descriptor.contract.confirmation_for_argument(argument);
+        if policy == tilo_actions::ConfirmationPolicy::None {
             return true;
         }
-        let witnessed = match confirmation {
-            Some(Confirmation::Witnessed(token)) => self.take_witness(
-                token,
-                actor.id(),
-                (&descriptor.address.resource, &descriptor.address.action),
-                argument,
-            ),
-            _ => false,
-        };
         let own = actor.direct().then_some(confirmation).flatten();
-        witnessed || confirmation_satisfied(&descriptor.contract.confirmation, own)
+        witnessed || confirmation_satisfied(&policy, own)
     }
 
     fn follow_host_step_at(
