@@ -50,6 +50,10 @@
 #                     the OS builder image, with the build directory and sccache kept
 #                     under os/output so a rebuild compiles only what changed
 #   TILO_DEV_RUST_LTO thin (default here) or off, for that compile
+#   TILO_DEV_COMPILER_CACHE  local (default): sccache over a directory under
+#                     TILO_OUTPUT; shared: the runner's Actions cache, whose
+#                     variables pass into the compile by name, never as values on
+#                     a command line; off: no compiler cache at all
 #   TILO_DEV_CARGO_BUILD_JOBS  parallel jobs of that compile (default: a CPU per
 #                     job, as far as memory holds out at 4 GiB a thin-LTO job)
 #   TILO_DISK_SIZE    the dev disk's size (default 64G, as the published dev
@@ -212,21 +216,37 @@ dev_compile_base="$(. "$TILO_OS_DIR/base-snapshot.env" && printf '%s' "${BASE_RE
 
 # The dev components, compiled outside the image build: os/image/compile.sh --dev in the OS
 # builder image, rootless, with cargo's home, the build directory and sccache kept under
-# os/output, so a rebuild compiles only what changed. TILO_COMPILED_DEV names a tree compiled
-# already (t's os-compile-dev-<arch>).
+# TILO_OUTPUT, so a rebuild compiles only what changed. TILO_COMPILED_DEV names a tree compiled
+# already (t's os-compile-dev-<arch>). The settings are checked before anything is built.
+case "${TILO_DEV_RUST_LTO:-thin}" in thin|off) ;; *) die "TILO_DEV_RUST_LTO must be thin or off" ;; esac
+dev_cache="$TILO_OUTPUT/compile-cache"
+_dev_cache_args=()
+case "${TILO_DEV_COMPILER_CACHE:-local}" in
+  local) _dev_cache_args+=(-v "$dev_cache/sccache:/sccache" -e SCCACHE_DIR=/sccache -e RUSTC_WRAPPER=sccache) ;;
+  shared)
+    [ -n "${ACTIONS_CACHE_URL:-}" ] && [ -n "${ACTIONS_RUNTIME_TOKEN:-}" ] \
+      || die "shared dev compiler cache requires both runner cache variables"
+    _dev_cache_args+=(-e ACTIONS_CACHE_URL -e ACTIONS_RUNTIME_TOKEN -e SCCACHE_GHA_ENABLED=on
+                      -e RUSTC_WRAPPER=sccache)
+    ;;
+  off) ;;
+  *) die "TILO_DEV_COMPILER_CACHE must be local, shared or off" ;;
+esac
 if [ -z "${TILO_COMPILED_DEV:-}" ]; then
-  builder=localhost/tilo-os-builder:latest cache="$TILO_OUTPUT/compile-cache"
-  mkdir -p "$cache/cargo-home" "$cache/dev-target" "$cache/sccache" "$TILO_OUTPUT/compiled-dev"
+  builder=localhost/tilo-os-builder:latest
+  mkdir -p "$dev_cache/cargo-home" "$dev_cache/dev-target" "$dev_cache/sccache" "$TILO_OUTPUT/compiled-dev"
   "$TILO_OS_DIR/dev/cache-github-assets.sh" >/dev/null
   podman build "${TILO_PODMAN_BUILD_FLAGS[@]}" -f "$TILO_OS_DIR/Containerfile" --target builder-base -t "$builder" \
     --build-context "github-assets=$TILO_REPO/os/external-assets/cache" \
     --build-arg "BASE_REF=$dev_compile_base" --build-arg "RPMS_REF=$rpms_ref" "$TILO_REPO"
+  # The output is a mount of its own: TILO_OUTPUT need not be inside the checkout.
   podman run --rm --security-opt label=disable --userns=keep-id -v "$TILO_REPO:/src" -w /src \
-    -v "$cache/cargo-home:/cargo-home" -v "$cache/dev-target:/build-target" -v "$cache/sccache:/sccache" \
-    -e CARGO_HOME=/cargo-home -e CARGO_TARGET_DIR=/build-target -e SCCACHE_DIR=/sccache -e RUSTC_WRAPPER=sccache \
+    -v "$dev_cache/cargo-home:/cargo-home" -v "$dev_cache/dev-target:/build-target" \
+    -v "$TILO_OUTPUT/compiled-dev:/compiled-dev" \
+    -e CARGO_HOME=/cargo-home -e CARGO_TARGET_DIR=/build-target "${_dev_cache_args[@]}" \
     -e TILO_DEV_RUST_LTO="${TILO_DEV_RUST_LTO:-thin}" \
     -e CARGO_BUILD_JOBS="${TILO_DEV_CARGO_BUILD_JOBS:-$(cargo_build_jobs 4)}" \
-    "$builder" bash os/image/compile.sh --dev /src/os/output/compiled-dev
+    "$builder" bash os/image/compile.sh --dev /compiled-dev
   TILO_COMPILED_DEV="$TILO_OUTPUT/compiled-dev"
 fi
 
