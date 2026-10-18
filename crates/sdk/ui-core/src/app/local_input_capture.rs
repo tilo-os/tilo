@@ -112,16 +112,26 @@ impl App {
         }
     }
 
+    /// Record that input has no authenticated publication. Editing continues;
+    /// the status is the same every time, so only its first appearance asks
+    /// for a frame (a scroll or keystroke must not repaint the window whole).
+    fn note_local_input_unsigned(&mut self) {
+        if self.local_input_capture.failure.is_none() {
+            self.local_input_capture.failure = Some(crate::i18n::I18nManager::lookup_plain(
+                "history-local-action-unsigned",
+            ));
+            self.needs_sync = true;
+        }
+    }
+
     pub(super) fn begin_local_input_capture(&mut self) -> crate::local_document_action::Scope {
         if !self.collaboration.manager.is_connected() {
             let routes = self.local_input_capture.offline_routes.clone();
             if routes.is_empty() && self.actions.action_directory_snapshot.is_none() {
                 // No authenticated publication: preserve editing, but do not
-                // invent a caller, route, revision or admission.
-                self.local_input_capture.failure = Some(crate::i18n::I18nManager::lookup_plain(
-                    "history-local-action-unsigned",
-                ));
-                self.needs_sync = true;
+                // invent a caller, route, revision or admission. The status is
+                // idempotent; only its first appearance needs a frame.
+                self.note_local_input_unsigned();
                 return crate::local_document_action::suspend();
             }
             for route in &routes {
@@ -158,10 +168,7 @@ impl App {
         self.publish_action_surface();
         if self.actions.action_directory_snapshot.is_none() {
             drop(background);
-            self.local_input_capture.failure = Some(crate::i18n::I18nManager::lookup_plain(
-                "history-local-action-unsigned",
-            ));
-            self.needs_sync = true;
+            self.note_local_input_unsigned();
             return crate::local_document_action::suspend();
         }
         let mut routes: Vec<InputRoute> = Vec::new();
