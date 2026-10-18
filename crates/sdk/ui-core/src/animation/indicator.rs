@@ -26,6 +26,24 @@ pub fn indicator_elapsed(epoch: Instant, now: Instant) -> Duration {
     INDICATOR_STEP.saturating_mul(step)
 }
 
+/// Where in a loop `period` long an indicator stands at `now`, `0..1`,
+/// taken at the start of the step `now` falls in.
+#[must_use]
+pub fn indicator_phase(epoch: Instant, now: Instant, period: Duration) -> f64 {
+    let period = period.as_nanos().max(1);
+    let at = indicator_elapsed(epoch, now).as_nanos() % period;
+    let (at, period) = (
+        u64::try_from(at).unwrap_or(u64::MAX),
+        u64::try_from(period).unwrap_or(u64::MAX),
+    );
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "a phase within one loop needs no more than f64's 52 bits"
+    )]
+    let phase = at as f64 / period as f64;
+    phase
+}
+
 /// When the step after the one `now` falls in begins.
 #[must_use]
 pub fn next_indicator_step(epoch: Instant, now: Instant) -> Instant {

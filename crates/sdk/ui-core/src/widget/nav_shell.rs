@@ -459,11 +459,11 @@ struct Inputs {
     sidebar: FlapState,
     inspector: FlapState,
     pane: NavPane,
-    /// Eased position in the push stack: the front screen's index while
-    /// settled, fractional while sliding.
+    /// The drawn position in the push stack while a push slides; `None` at
+    /// rest, where the front screen's index stands.
     push_pos: Option<f64>,
-    push_from: Option<f64>,
-    push_progress: f64,
+    /// The push stack's position on the drill motion (`motion::Drill`).
+    push: crate::motion::MotionValue<f64>,
     /// The parts in the order they were built (their placement index).
     parts: Vec<Part>,
     /// How each column's actions fit, written by the layout policy.
@@ -532,8 +532,7 @@ impl Default for Inputs {
             inspector: FlapState::open_when_docked(),
             pane: NavPane::Content,
             push_pos: None,
-            push_from: None,
-            push_progress: 1.0,
+            push: crate::motion::MotionValue::new(0.0),
             parts: Vec::new(),
             fit: Rc::new(RefCell::new(Default::default())),
             held: Held::default(),
@@ -1006,8 +1005,25 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     let drawer_top = if hh > 0.0 { top + hh + m.gap } else { m.gap };
     let drawer_bottom = (h - m.gap).max(drawer_top);
 
-    // 6. Columns.
-    let region = Rect::new(docked_now, 0.0, (w - inspector_now).max(docked_now), h);
+    // 6. Columns. While a docked sidebar or inspector slides, the columns
+    //    beside it keep the width they have with it shut and slide with its
+    //    edge, so they reflow once, at the wide end (`motion::PanelSlide`),
+    //    never on every frame of the slide.
+    let sidebar_moving = g.sidebar == SidebarPlacement::Docked
+        && !rail_sidebar
+        && inputs.sidebar.is_animating(sidebar_layout);
+    let inspector_moving = g.inspector == InspectorPlacement::Docked
+        && inputs.inspector.is_animating(inspector_layout);
+    let settled_w = (w - inspector_now - docked_now).max(0.0);
+    let widest_w = w
+        - if sidebar_moving { 0.0 } else { docked_now }
+        - if inspector_moving { 0.0 } else { inspector_now };
+    let region_w = crate::motion::PanelSlide::content_width(
+        settled_w,
+        widest_w.max(0.0),
+        sidebar_moving || inspector_moving,
+    );
+    let region = Rect::new(docked_now, 0.0, docked_now + region_w, h);
     let region_w = region.width();
     let screen_x = |pane: NavPane| -> f64 {
         let i = stack_index(&stack, pane);
@@ -1447,16 +1463,12 @@ pub struct NavShell {
     pane_chosen: bool,
     resize: Option<Resize>,
     last_cursor: Point,
-    /// When the push or the reduced-motion fade in flight last advanced, or
-    /// began; `None` at rest. The first frame covers the time since the
-    /// change was asked for, never an idle gap before it.
-    last_tick: Option<Instant>,
     /// Reduced motion: the sidebar and drawers fade in instead of sliding.
-    fade: f64,
-    /// How far the columns a layout switch brought in have faded in, `0..=1`
-    /// (`1` at rest): the columns that appeared or moved where no slide
-    /// carries them, and under reduced motion every one of them.
-    switch_fade: f64,
+    fade: crate::motion::Presence,
+    /// The columns a layout switch brought in fading in (open at rest): the
+    /// columns that appeared or moved where no slide carries them, and under
+    /// reduced motion every one of them.
+    switch_fade: crate::motion::Presence,
     /// Which columns ([`Column::index`]) the layout switch fades in.
     switch_columns: [bool; 4],
     animating: bool,
@@ -1554,9 +1566,8 @@ impl NavShell {
             pane_chosen: false,
             resize: None,
             last_cursor: Point::ZERO,
-            last_tick: None,
-            fade: 1.0,
-            switch_fade: 1.0,
+            fade: crate::motion::Presence::opened(),
+            switch_fade: crate::motion::Presence::opened(),
             switch_columns: [false; 4],
             animating: false,
             built: false,
@@ -2287,6 +2298,25 @@ impl NavShell {
         self.after_flap_change();
     }
 
+    /// A toggle a key asked for: it lands at once (motion follows the
+    /// input); the next pointer toggle animates again.
+    fn toggle_by_key(&mut self, column: Column) {
+        {
+            let mut inputs = self.inputs.borrow_mut();
+            let flap = if column == Column::Inspector {
+                &mut inputs.inspector
+            } else {
+                &mut inputs.sidebar
+            };
+            flap.from_input(crate::tokens::MotionSource::Keyboard);
+        }
+        if column == Column::Inspector {
+            self.toggle_inspector();
+        } else {
+            self.toggle_sidebar();
+        }
+    }
+
     pub fn open_sidebar(&mut self) {
         if self.has_sidebar() && !self.is_sidebar_open() {
             self.toggle_sidebar();
@@ -2328,8 +2358,8 @@ impl NavShell {
 
     fn after_flap_change(&mut self) {
         if self.layout_theme.reduce_motion {
-            self.fade = 0.0;
-            self.last_tick.get_or_insert_with(crate::time::now);
+            // Under reduced motion the panel does not slide; it fades in.
+            self.fade = Self::fading_in(self.layout_theme.motion());
         }
         self.animating = true;
         self.structure_dirty = true;
@@ -2421,17 +2451,27 @@ impl NavShell {
                 return;
             }
             let stack = &self.geometry.stack;
-            let from = inputs
-                .push_pos
-                .unwrap_or_else(|| f64_of_usize(stack_index(stack, inputs.pane)));
+            let now = crate::time::now();
+            if !inputs.push.is_moving(now) {
+                let from = f64_of_usize(stack_index(stack, inputs.pane));
+                inputs.push.snap(from);
+            }
             inputs.pane = pane;
-            inputs.push_from = Some(from);
-            inputs.push_progress = 0.0;
-            if self.layout_theme.reduce_motion || stack.is_empty() {
+            let to = f64_of_usize(stack_index(stack, pane));
+            if stack.is_empty() {
+                inputs.push.snap(to);
                 inputs.push_pos = None;
-                inputs.push_progress = 1.0;
             } else {
-                self.last_tick.get_or_insert_with(crate::time::now);
+                // Deeper is an enter; a push mid-slide continues from where
+                // it is drawn (`motion::Drill`).
+                let direction = crate::motion::Direction::of(to >= inputs.push.target());
+                let timing = crate::motion::Drill::SPEC.timing(
+                    direction,
+                    self.layout_theme.motion(),
+                    crate::tokens::MotionSource::Pointer,
+                );
+                inputs.push.set(to, timing, now);
+                inputs.push_pos = inputs.push.is_moving(now).then(|| inputs.push.get(now));
             }
         }
         if let Some(binding) = self.pane_binding.as_mut() {
@@ -2486,11 +2526,11 @@ impl NavShell {
             let open = inputs.inspector.is_open(layout);
             inputs.inspector.snap(open);
             inputs.push_pos = None;
-            inputs.push_from = None;
-            inputs.push_progress = 1.0;
+            let at = inputs.push.target();
+            inputs.push.snap(at);
         }
-        self.fade = 1.0;
-        self.switch_fade = 1.0;
+        self.fade = crate::motion::Presence::opened();
+        self.switch_fade = crate::motion::Presence::opened();
         self.switch_columns = [false; 4];
         self.animating = false;
         self.structure_dirty = true;
@@ -2910,81 +2950,39 @@ impl NavShell {
         from_sidebar || from_rail || from_overview
     }
 
-    /// Advance the slides by the time since the last frame.
+    /// Advance the slides to this frame's time. Every one runs on the
+    /// standard motions: the sidebar and inspector on the panel slide, the
+    /// push stack on the drill, a layout switch's columns and the
+    /// reduced-motion reveal on the cross-fade.
     fn tick(&mut self, theme: &Theme) {
         let now = crate::time::now();
-        // Unclamped: a stalled frame lands where the clock says, as every
-        // wall-clock tween does.
-        let dt = self
-            .last_tick
-            .replace(now)
-            .map_or(0.0, |t| now.saturating_duration_since(t).as_secs_f64());
-        let base = theme.tokens.motion.durations.base();
-        let reduce = theme.reduce_motion;
+        let motion = theme.motion();
         let sidebar_layout = layout_of(self.geometry.sidebar);
         let inspector_layout = inspector_layout_of(self.geometry.inspector);
-        let stack = self.geometry.stack.clone();
+        let stack_empty = self.geometry.stack.is_empty();
         let mut moving = false;
         {
             let mut inputs = self.inputs.borrow_mut();
-            if reduce {
-                inputs.sidebar.settle(sidebar_layout);
-                inputs.inspector.settle(inspector_layout);
-            } else {
-                moving |= inputs.sidebar.advance(sidebar_layout, now, base);
-                moving |= inputs.inspector.advance(inspector_layout, now, base);
-            }
-            if stack.is_empty() || (inputs.push_progress >= 1.0 && inputs.push_pos.is_none()) {
+            moving |= inputs.sidebar.advance(sidebar_layout, now, motion);
+            moving |= inputs.inspector.advance(inspector_layout, now, motion);
+            if stack_empty || !inputs.push.is_moving(now) {
+                // Settled: the front screen's index, exactly.
                 inputs.push_pos = None;
-                inputs.push_progress = 1.0;
             } else {
-                let target = f64_of_usize(stack_index(&stack, inputs.pane));
-                if reduce || base.as_secs_f64() <= 0.0 {
-                    inputs.push_progress = 1.0;
-                } else if inputs.push_progress < 1.0 {
-                    inputs.push_progress =
-                        (inputs.push_progress + dt / base.as_secs_f64()).min(1.0);
-                }
-                let eased = crate::ease_out(inputs.push_progress);
-                let from = inputs.push_from.unwrap_or(target);
-                if inputs.push_progress >= 1.0 {
-                    // Settled: the front screen's index, exactly.
-                    inputs.push_pos = None;
-                    inputs.push_from = None;
-                } else {
-                    inputs.push_pos = Some(from + (target - from) * eased);
-                    moving = true;
-                }
+                inputs.push_pos = Some(inputs.push.get(now));
+                moving = true;
             }
         }
-        if self.switch_fade < 1.0 {
-            // A layout switch's fade: `base`, at most `fast` under reduced
-            // motion.
-            let span = theme.motion().fade(base).as_secs_f64();
-            self.switch_fade = if span <= 0.0 {
-                1.0
-            } else {
-                (self.switch_fade + dt / span).min(1.0)
-            };
-            if self.switch_fade >= 1.0 {
-                self.switch_columns = [false; 4];
-            }
+        if self.switch_fade.is_moving(now) {
             self.paint_dirty = true;
-            moving |= self.switch_fade < 1.0;
+            moving = true;
+        } else if self.switch_columns.contains(&true) {
+            self.switch_columns = [false; 4];
+            self.paint_dirty = true;
         }
-        if reduce && self.fade < 1.0 {
-            let fast = theme.tokens.motion.durations.fast().as_secs_f64();
-            self.fade = if fast <= 0.0 {
-                1.0
-            } else {
-                (self.fade + dt / fast).min(1.0)
-            };
+        if self.fade.is_moving(now) {
             self.paint_dirty = true;
-            self.animating = self.fade < 1.0 || moving;
-            if !self.animating {
-                self.last_tick = None;
-            }
-            return;
+            moving = true;
         }
         if moving {
             self.invalidate();
@@ -2993,10 +2991,20 @@ impl NavShell {
             self.structure_dirty = true;
             self.invalidate();
         }
-        if !moving {
-            self.last_tick = None;
-        }
         self.animating = moving;
+    }
+
+    /// A fade-in starting now on the standard cross-fade.
+    fn fading_in(motion: crate::tokens::EffectiveMotion) -> crate::motion::Presence {
+        let mut fade = crate::motion::Presence::closed();
+        fade.show(
+            true,
+            crate::motion::CROSS_FADE,
+            motion,
+            crate::tokens::MotionSource::Pointer,
+            crate::time::now(),
+        );
+        fade
     }
 
     fn refresh_geometry(&mut self) {
@@ -3056,8 +3064,8 @@ impl NavShell {
                 NavPane::Content
             };
             inputs.push_pos = None;
-            inputs.push_from = None;
-            inputs.push_progress = 1.0;
+            let at = inputs.push.target();
+            inputs.push.snap(at);
             drop(inputs);
             if switched {
                 self.move_into_layout(before);
@@ -3112,9 +3120,15 @@ impl NavShell {
                 let i = f64_of_usize(stack_index(&after.stack, front));
                 let last = f64_of_usize(after.stack.len().saturating_sub(1));
                 let from = (i - (was.x0 - is.x0) / w).clamp(0.0, last);
-                inputs.push_from = Some(from);
-                inputs.push_pos = Some(from);
-                inputs.push_progress = 0.0;
+                let now = crate::time::now();
+                inputs.push.snap(from);
+                let timing = crate::motion::Drill::SPEC.timing(
+                    crate::motion::Direction::Enter,
+                    self.layout_theme.motion(),
+                    crate::tokens::MotionSource::Pointer,
+                );
+                inputs.push.set(i, timing, now);
+                inputs.push_pos = inputs.push.is_moving(now).then_some(from);
                 for (column, pane) in [
                     (Column::Sidebar, NavPane::Sidebar),
                     (Column::Overview, NavPane::Overview),
@@ -3142,10 +3156,9 @@ impl NavShell {
         }
         if faded.contains(&true) {
             self.switch_columns = faded;
-            self.switch_fade = 0.0;
+            self.switch_fade = Self::fading_in(self.layout_theme.motion());
         }
         if carried.contains(&true) || faded.contains(&true) {
-            self.last_tick.get_or_insert_with(crate::time::now);
             self.animating = true;
         }
     }
@@ -3204,18 +3217,13 @@ impl NavShell {
         let g = self.geometry.clone();
         // Under reduced motion a sidebar or drawer that just appeared fades
         // in instead of sliding.
-        let fade = unit_f32(self.fade);
+        let fade = unit_f32(self.fade.progress(crate::time::now()));
 
-        // Docked regions under their columns.
-        if g.inspector == InspectorPlacement::Docked && g.inspector_column.width() > 0.0 {
-            crate::surface::region(
-                f.scene,
-                f.transform,
-                g.inspector_column,
-                crate::surface::Region::Inspector,
-                f.theme,
-            );
-        }
+        // Docked regions under their columns, each painted just before its
+        // column: while a panel slides, the content beside it keeps its
+        // width and passes under the panel, which covers it.
+        let inspector_region =
+            g.inspector == InspectorPlacement::Docked && g.inspector_column.width() > 0.0;
         let sidebar_region = matches!(
             g.sidebar,
             SidebarPlacement::Docked | SidebarPlacement::Screen
@@ -3251,6 +3259,15 @@ impl NavShell {
                     f.transform,
                     g.sidebar_column,
                     crate::surface::Region::Sidebar,
+                    f.theme,
+                );
+            }
+            if column == Column::Inspector && inspector_region {
+                crate::surface::region(
+                    f.scene,
+                    f.transform,
+                    g.inspector_column,
+                    crate::surface::Region::Inspector,
                     f.theme,
                 );
             }
@@ -3387,7 +3404,7 @@ impl NavShell {
         let clip = rect.intersect(self.rect);
         // A column a layout switch brought in fades in.
         let alpha = if self.switch_columns[column.index()] {
-            unit_f32(self.switch_fade)
+            unit_f32(self.switch_fade.progress(crate::time::now()))
         } else {
             1.0
         };
@@ -4203,7 +4220,7 @@ impl Widget for NavShell {
         // cannot advance until the drawer is painted. Only painted parts ask
         // the host for frames; background wakes still visit every owned part.
         self.animating
-            || self.fade < 1.0
+            || self.fade.is_moving(crate::time::now())
             || self
                 .host_parts
                 .iter()
@@ -4225,7 +4242,7 @@ impl Widget for NavShell {
             || self.toasts_dirty
             || self.toasts_expired()
             || self.animating
-            || self.fade < 1.0
+            || self.fade.is_moving(crate::time::now())
             || self
                 .host_parts
                 .iter()
@@ -4251,7 +4268,7 @@ impl Widget for NavShell {
         // The shell's own geometry, materials and transitions can change
         // outside a child's box. A settled shell can preserve local control
         // damage rather than rasterising every pane for a hover.
-        if self.paint_dirty || self.animating || self.fade < 1.0 {
+        if self.paint_dirty || self.animating || self.fade.is_moving(crate::time::now()) {
             regions.push(self.rect);
         } else {
             self.for_each_owned(|child| child.collect_damage(regions));
@@ -4473,7 +4490,7 @@ impl NavShell {
                 == Some(HostShortcut::Sidebar)
                 && self.has_sidebar()
             {
-                self.toggle_sidebar();
+                self.toggle_by_key(Column::Sidebar);
                 return true;
             }
             if c.eq_ignore_ascii_case("f") && !modifiers.shift_key() {
@@ -4489,7 +4506,7 @@ impl NavShell {
                 }) {
                     if self.geometry.sidebar == SidebarPlacement::Drawer && !self.is_sidebar_open()
                     {
-                        self.toggle_sidebar();
+                        self.toggle_by_key(Column::Sidebar);
                     }
                     *ctx.focus_target = Some(node);
                     return true;
@@ -4498,11 +4515,11 @@ impl NavShell {
         }
         if *key == Key::Named(NamedKey::Escape) {
             if self.geometry.sidebar == SidebarPlacement::Drawer && self.is_sidebar_open() {
-                self.toggle_sidebar();
+                self.toggle_by_key(Column::Sidebar);
                 return true;
             }
             if self.geometry.inspector == InspectorPlacement::Drawer && self.is_inspector_open() {
-                self.toggle_inspector();
+                self.toggle_by_key(Column::Inspector);
                 return true;
             }
             if self.pop_push_stack() {

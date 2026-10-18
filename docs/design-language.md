@@ -250,7 +250,13 @@ emoji or Unicode glyphs as icons.
 ## Motion
 
 - Motion answers an action (open, expand, confirm, move) and shows what changed.
-- Springs come from `tokens::motion`, with no literal durations.
+- Every animation is one of the standard motions in `ui::motion` (appear,
+  drill, disclose, panel slide, cross-fade, list change, snap, zoom, window
+  motion, ambient, feedback, attention; HIG §9.7), so the same relationship
+  always moves the same way. No literal durations, curves or springs.
+- Motion never delays the person: input acts at once, nothing bounces, a
+  keyboard shortcut's result shows on the next frame, and repeated actions
+  collapse into one motion.
 - Nothing animates at idle.
 - Reduced motion: movement (slides, scales, springs, snaps) lands at once; a
   change of what is shown may cross-fade, at most `fast`; looping indicators

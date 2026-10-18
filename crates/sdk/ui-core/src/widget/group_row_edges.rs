@@ -379,7 +379,7 @@ impl GroupRow {
         if reduce_motion {
             pan.jump_to(rest);
         } else if (rest - pan.scroll_x).abs() > super::SNAP_SETTLED_PX {
-            pan.ease_to(rest, now, omega);
+            pan.glide_to(rest, now, omega);
         }
         self.scroll_dirty = true;
         self.hover_edge(self.last_cursor, false);

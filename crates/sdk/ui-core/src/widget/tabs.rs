@@ -1,7 +1,6 @@
 use crate::color_compat::ColorCompat;
 use crate::dnd::{DRAG_START_THRESHOLD_PX, DragPayload};
 use crate::icons;
-use crate::num::f64_of_u64;
 use crate::paint::PaintCtx;
 use crate::presence::{PresenceCtx, PresenceKey};
 use crate::text_render::{TextRenderer, TextStyle, TextWeight};
@@ -22,25 +21,64 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::motion::{Direction, Disclose, ListChange, MotionSpec, Snap};
+use crate::tokens::{EffectiveMotion, MotionSource};
+
 /// Drop-target indicator line width; thin enough not to compete with pill chrome.
 const HOVER_DROP_LINE_PX: f64 = 1.5;
-/// Fade-in when `hover_drop_idx` changes gap; shorter than the layout spring.
-const HOVER_DROP_FADE_MS: u64 = 90;
+/// The tab bar's motions, from the standard ones (`motion::ListChange`
+/// and friends): pills change places on the list change's move, arrive and
+/// leave on its fade (opacity and a small rise; no per-pill scale layer), a
+/// pill opens its chips on the disclosure, a held tab springs back as a
+/// let-go surface settles (`motion::Snap`), and the drop line and a lifted
+/// tab answer on the fade.
+fn tab_progress(spec: MotionSpec, direction: Direction, elapsed: Duration) -> f64 {
+    spec.progress_after(
+        direction,
+        EffectiveMotion::default(),
+        MotionSource::Pointer,
+        elapsed,
+    )
+}
 
-/// Layout spring on reorder/insert/close; long enough to read as one motion, not a
-/// jump cut.
-const LAYOUT_ANIM_MS: u64 = 180;
+/// How long one of the tab bar's motions runs.
+fn tab_motion_time(spec: MotionSpec, direction: Direction) -> Duration {
+    spec.settle_time(direction, EffectiveMotion::default(), MotionSource::Pointer)
+}
 
-/// Per-pill insert fade-in, distinct from `LAYOUT_ANIM_MS` so a new pill reads as
-/// "appearing" rather than sliding in. Opacity + y-offset only; scale is skipped to
-/// avoid a per-pill affine `push_layer`.
-const INSERT_FADE_MS: u64 = 220;
+/// Pills changing places on reorder, insert and close.
+fn layout_anim() -> Duration {
+    tab_motion_time(ListChange::MOVE, Direction::Enter)
+}
+
+/// A new pill fading in.
+fn insert_fade() -> Duration {
+    tab_motion_time(ListChange::FADE, Direction::Enter)
+}
+
+/// A closed pill fading out; a closed window group's tile leaves alike.
+pub(crate) fn close_fade() -> Duration {
+    tab_motion_time(ListChange::FADE, Direction::Exit)
+}
+
+/// The drop line fading in at a new gap.
+fn hover_drop_fade() -> Duration {
+    tab_motion_time(ListChange::FADE, Direction::Enter)
+}
+
+/// A pill opening its chips.
+fn reveal_anim() -> Duration {
+    tab_motion_time(Disclose::SPEC, Direction::Enter)
+}
+
+/// A held tab springing back once let go.
+fn resist_return() -> Duration {
+    tab_motion_time(Snap::SPEC, Direction::Enter)
+}
 /// Start y-offset for the insert fade; positive pulls the pill up at t=0, settling
 /// to target at t=1.
 const INSERT_FADE_Y_OFFSET: f64 = 10.0;
 
-/// Per-pill close fade-out; pairs with `SPAWN_FADE_MS` in `tile_host.rs`.
-pub const CLOSE_FADE_MS: f32 = 180.0;
 /// Terminal scale of the close curve (from 1.0).
 const CLOSE_SCALE_END: f64 = 0.95;
 /// Terminal y-offset of the close curve; negative drifts upward.
@@ -91,17 +129,6 @@ struct PillPaint<'a> {
 
 fn shift_rect(r: Rect, d: vello::kurbo::Vec2) -> Rect {
     r + d
-}
-
-/// Converts an elapsed-time reading (in milliseconds) to `f64`. Only ever fed a
-/// recent `Duration`, so — like [`ms_f64`] — the value stays far below the
-/// precision limit.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "elapsed animation time in milliseconds stays far below 2^52; exact in f64"
-)]
-fn duration_ms_f64(ms: u128) -> f64 {
-    ms as f64
 }
 
 /// Chip fade-in strength at reveal `zone`, ramping 0→1 as the zone clears
@@ -157,7 +184,7 @@ struct RevealAnim {
 }
 
 /// A tab fading out after close, tracked apart from the live `tabs` vec so it keeps
-/// rendering at declining alpha/scale for `CLOSE_FADE_MS` while survivors reflow.
+/// rendering at declining alpha/scale for the close fade ([`close_fade`]) while survivors reflow.
 #[derive(Clone, Debug)]
 struct ClosingTab {
     desc: TabDescriptor,
@@ -194,8 +221,6 @@ struct Resist {
 /// How far a held tab follows a drag before it stops: the reach of the
 /// rubber band ([`crate::tokens::rubber_band`]), a section gap.
 const RESIST_REACH: f32 = crate::tokens::Spacing::BASE.s4;
-/// How long a held tab takes to spring back once let go.
-const RESIST_RETURN_MS: u64 = 260;
 
 #[derive(Clone, Debug)]
 pub struct TabDescriptor {
@@ -357,7 +382,7 @@ pub struct TabBar {
     hover_drop_idx: Option<usize>,
     hover_drop_animated_at: Option<Instant>,
     /// `tab_rects[i]` keyed by id, snapshotted just before a reorder/insert/remove;
-    /// `draw` springs each pill from here to its new rect over `LAYOUT_ANIM_MS`.
+    /// `draw` springs each pill from here to its new rect on the list change's move.
     prev_tab_rects_by_id: HashMap<u64, Rect>,
     layout_anim_started: Option<Instant>,
     inserted_at: HashMap<u64, Instant>,
@@ -1559,12 +1584,11 @@ impl TabBar {
             1.0
         } else {
             self.drag_lifted_at.map_or(1.0, |started| {
-                let span = theme.tokens.motion.durations.fast().as_secs_f64();
-                if span <= f64::EPSILON {
-                    1.0
-                } else {
-                    crate::ease_out((started.elapsed().as_secs_f64() / span).clamp(0.0, 1.0))
-                }
+                tab_progress(
+                    ListChange::FADE,
+                    Direction::Enter,
+                    crate::time::now().saturating_duration_since(started),
+                )
             })
         };
         Some(TabDragVisual {
@@ -1684,18 +1708,12 @@ impl TabBar {
         let Some(a) = self.reveal_anim.get(&id) else {
             return Reveal::None.reserve();
         };
-        let span = f64_of_u64(REVEAL_ANIM_MS) / 1000.0;
-        if span <= 0.0 {
-            return a.to;
-        }
-        let t = a.started.elapsed().as_secs_f64() / span;
-        if t >= 1.0 {
-            a.to
-        } else {
-            // Cubic ease-out: leaves quickly, lands softly against its neighbours.
-            let u = 1.0 - t.clamp(0.0, 1.0);
-            a.from + (a.to - a.from) * (1.0 - u * u * u)
-        }
+        let t = tab_progress(
+            Disclose::SPEC,
+            Direction::Enter,
+            crate::time::now().saturating_duration_since(a.started),
+        );
+        a.from + (a.to - a.from) * t
     }
 
     /// Where pill `i`'s chips sit once it has finished opening: the menu-aim
@@ -1860,7 +1878,7 @@ impl TabBar {
     }
 
     fn reveal_in_flight(&self) -> bool {
-        let span = Duration::from_millis(REVEAL_ANIM_MS);
+        let span = reveal_anim();
         self.reveal_anim
             .values()
             .any(|a| (a.from - a.to).abs() > f64::EPSILON && a.started.elapsed() < span)
@@ -2125,12 +2143,11 @@ impl TabBar {
         let keep = match resist.released_at {
             None => 1.0,
             Some(at) => {
-                let back = Duration::from_millis(RESIST_RETURN_MS);
-                let elapsed = at.elapsed();
-                if self.reduce_motion || elapsed >= back {
+                let elapsed = crate::time::now().saturating_duration_since(at);
+                if self.reduce_motion || elapsed >= resist_return() {
                     return None;
                 }
-                1.0 - crate::ease_out(elapsed.as_secs_f64() / back.as_secs_f64())
+                1.0 - tab_progress(Snap::SPEC, Direction::Enter, elapsed)
             }
         };
         Some((resist.tab, resist.pull * keep))
@@ -2292,7 +2309,7 @@ impl TabBar {
     }
 
     /// True if `id` is mid close-fade — already gone from the live tab list
-    /// but still rendering its `CLOSE_FADE_MS` animation. A caller that
+    /// but still rendering its the close fade ([`close_fade`]) animation. A caller that
     /// reconciles pills against its own model checks this before
     /// re-inserting a still-open item, so cancelling a close (e.g. answering
     /// "no" to a discard-unsaved-changes prompt) doesn't pop a duplicate
@@ -2946,9 +2963,6 @@ impl Reveal {
 #[cfg(test)]
 const HOVER_GROWTH_PX: f64 = Reveal::Full.reserve() - Reveal::None.reserve();
 
-/// Matched to [`LAYOUT_ANIM_MS`] so a pill opening and neighbours sliding
-/// aside read as one motion.
-const REVEAL_ANIM_MS: u64 = LAYOUT_ANIM_MS;
 /// First-frame estimate before `draw` records the real advance into
 /// [`TabBar::title_advance`]. Deliberately an over-estimate: guessing wide is
 /// invisible by the next frame; guessing narrow elides the title, which is
@@ -3401,20 +3415,16 @@ impl Widget for TabBar {
             .collect();
 
         // After a reorder/insert/remove, every surviving pill interpolates from
-        // its previous rect to `tab_rects[i]` over `LAYOUT_ANIM_MS`; a brand-new
+        // its previous rect to `tab_rects[i]` on the list change's move; a brand-new
         // tab (no snapshot) renders at target immediately.
         let layout_t = self.layout_anim_started.and_then(|t| {
-            let elapsed = t.elapsed();
-            if elapsed >= Duration::from_millis(LAYOUT_ANIM_MS) {
-                None
-            } else {
-                let raw = elapsed.as_secs_f64() / (f64_of_u64(LAYOUT_ANIM_MS) / 1000.0);
-                Some(crate::ease_out(raw))
-            }
+            let elapsed = crate::time::now().saturating_duration_since(t);
+            (elapsed < layout_anim())
+                .then(|| tab_progress(ListChange::MOVE, Direction::Enter, elapsed))
         });
 
         // Stop `needs_animation_frame` pumping forever once every insert-fade elapses.
-        let fade_window = Duration::from_millis(INSERT_FADE_MS);
+        let fade_window = insert_fade();
         self.inserted_at
             .retain(|_, started| started.elapsed() < fade_window);
 
@@ -3772,24 +3782,18 @@ impl Widget for TabBar {
         // insert fade, close fade, drop-line fade-in, or reveal.
         let layout = self
             .layout_anim_started
-            .is_some_and(|t| t.elapsed() < Duration::from_millis(LAYOUT_ANIM_MS));
+            .is_some_and(|t| t.elapsed() < layout_anim());
         let insert_fade = self
             .inserted_at
             .values()
-            .any(|t| t.elapsed() < Duration::from_millis(INSERT_FADE_MS));
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "CLOSE_FADE_MS is a small fixed positive animation constant"
-        )]
-        let close_fade_ms = CLOSE_FADE_MS as u128;
+            .any(|t| t.elapsed() < insert_fade());
         let close_fade = self
             .closing_tabs
             .iter()
-            .any(|c| c.started_at.elapsed().as_millis() < close_fade_ms);
+            .any(|c| c.started_at.elapsed() < close_fade());
         let hover_drop_fade = self
             .hover_drop_animated_at
-            .is_some_and(|t| t.elapsed() < Duration::from_millis(HOVER_DROP_FADE_MS));
+            .is_some_and(|t| t.elapsed() < hover_drop_fade());
         // Keeps the curve running once the pointer stops moving, until an
         // opening pill finishes.
         let reveal = self.reveal_in_flight();
@@ -3917,7 +3921,7 @@ impl TabBar {
                 _ => target,
             };
 
-            // Fade alpha 0→1 and y -10→0 over `INSERT_FADE_MS`; `fade_alpha` < 1.0
+            // Fade alpha 0→1 and y -10→0 on the list change's fade; `fade_alpha` < 1.0
             // wraps the paint in a `push_layer`.
             let (fade_alpha, fade_y): (f32, f64) = match self.inserted_at.get(&t.id) {
                 Some(started) => {
@@ -3925,9 +3929,7 @@ impl TabBar {
                     if elapsed >= fade_window {
                         (1.0, 0.0)
                     } else {
-                        let raw = (elapsed.as_secs_f64() / (f64_of_u64(INSERT_FADE_MS) / 1000.0))
-                            .clamp(0.0, 1.0);
-                        let eased = crate::ease_out(raw);
+                        let eased = tab_progress(ListChange::FADE, Direction::Enter, elapsed);
                         #[allow(
                             clippy::cast_possible_truncation,
                             reason = "ease_out output stays in 0.0..=1.0"
@@ -4086,20 +4088,13 @@ impl TabBar {
         }
         let ground = self.ground(theme);
         let idle = self.idle_ink(theme);
-        // `CLOSE_FADE_MS` is a small fixed positive animation-timing constant.
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "CLOSE_FADE_MS is a small fixed positive animation constant"
-        )]
-        let close_window = Duration::from_millis(CLOSE_FADE_MS as u64);
+        let close_window = close_fade();
         for c in &self.closing_tabs {
             let elapsed = c.started_at.elapsed();
             if elapsed >= close_window {
                 continue;
             }
-            let raw = (elapsed.as_secs_f64() / (f64::from(CLOSE_FADE_MS) / 1000.0)).clamp(0.0, 1.0);
-            let eased = crate::ease_out(raw);
+            let eased = tab_progress(ListChange::FADE, Direction::Exit, elapsed);
             #[allow(
                 clippy::cast_possible_truncation,
                 reason = "1.0 - eased stays in 0.0..=1.0"
@@ -4139,7 +4134,7 @@ impl TabBar {
 
     /// Drop-indicator line at `hover_drop_idx`, serving both the single-bar
     /// case and the cross-group case (where `pending_drag.is_some()` is false
-    /// on sibling bars). Eased fade-in over `HOVER_DROP_FADE_MS`.
+    /// on sibling bars). Eased fade-in on the list change's fade.
     fn draw_drop_indicator(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         let Some(gap_idx) = self.hover_drop_idx else {
             return;
@@ -4148,12 +4143,13 @@ impl TabBar {
             return;
         }
         let now = crate::time::now();
-        let elapsed_ms = self.hover_drop_animated_at.map_or_else(
-            || f64_of_u64(HOVER_DROP_FADE_MS),
-            |t| duration_ms_f64(now.duration_since(t).as_millis()),
-        );
-        let raw_t = (elapsed_ms / f64_of_u64(HOVER_DROP_FADE_MS)).clamp(0.0, 1.0);
-        let eased_t = crate::ease_out(raw_t);
+        let eased_t = self.hover_drop_animated_at.map_or(1.0, |t| {
+            tab_progress(
+                ListChange::FADE,
+                Direction::Enter,
+                now.saturating_duration_since(t),
+            )
+        });
         // 4px above/below the pill's extent for bleed past the rounded caps.
         let (cx, y0, y1) = if gap_idx == 0 {
             self.tab_rects
@@ -6221,14 +6217,8 @@ mod tests {
             let stamp = b
                 .closing_started_at(2)
                 .expect("started_at recorded at close-start");
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "CLOSE_FADE_MS is a small fixed positive animation constant"
-            )]
-            let close_fade_ms = CLOSE_FADE_MS as u64;
             assert!(
-                stamp.elapsed() < Duration::from_millis(close_fade_ms),
+                stamp.elapsed() < close_fade(),
                 "close-start timestamp is recent",
             );
 
@@ -6332,12 +6322,12 @@ mod tests {
         // Case `insert_fade_clears_after_duration`.
         {
             // Backdate `inserted_at` so both `draw`'s retain and the timestamp check
-            // here consider it expired, rather than waiting out `INSERT_FADE_MS`.
+            // here consider it expired, rather than waiting out the fade.
             let mut b = bar();
             let now = crate::time::now();
             b.inserted_at.insert(
                 7,
-                now.checked_sub(Duration::from_millis(INSERT_FADE_MS + 50))
+                now.checked_sub(insert_fade() + Duration::from_millis(50))
                     .unwrap_or(now),
             );
             assert!(
@@ -6348,11 +6338,11 @@ mod tests {
 
         // Case `layout_spring_clears_itself_after_duration`.
         {
-            // Backdate `layout_anim_started` rather than waiting out `LAYOUT_ANIM_MS`.
+            // Backdate `layout_anim_started` rather than waiting out the move.
             let mut b = bar();
             let now = crate::time::now();
             b.layout_anim_started = Some(
-                now.checked_sub(Duration::from_millis(LAYOUT_ANIM_MS + 50))
+                now.checked_sub(layout_anim() + Duration::from_millis(50))
                     .unwrap_or(now),
             );
             assert!(
@@ -6659,8 +6649,7 @@ mod tests {
         assert!(b.needs_animation_frame(), "it springs back");
         // Once back, nothing more moves.
         b.resist = b.resist.map(|resist| Resist {
-            released_at: crate::time::now()
-                .checked_sub(Duration::from_millis(RESIST_RETURN_MS + 1)),
+            released_at: crate::time::now().checked_sub(resist_return() + Duration::from_millis(1)),
             ..resist
         });
         assert_eq!(b.resist_offset(), None);
@@ -6830,7 +6819,7 @@ mod tests {
             lay_out_at_width_with(&mut b, width, &theme);
 
             hover_pill(&mut b, 1, width, &theme);
-            std::thread::sleep(Duration::from_millis(REVEAL_ANIM_MS + 40));
+            std::thread::sleep(reveal_anim() + Duration::from_millis(40));
             lay_out_at_width_with(&mut b, width, &theme);
             assert!(b.close_rects[1].area() > 0.0);
 
@@ -8656,7 +8645,7 @@ mod tests {
                 b.reveal_in_flight(),
                 "the pointer arriving must start a curve"
             );
-            std::thread::sleep(Duration::from_millis(REVEAL_ANIM_MS / 3));
+            std::thread::sleep(Duration::from_millis(15));
             lay_out_at_width_with(&mut b, width, &theme);
             let opening = b.tab_rects()[1].width();
             assert!(
@@ -8666,7 +8655,7 @@ mod tests {
                 idle + HOVER_GROWTH_PX,
             );
 
-            std::thread::sleep(Duration::from_millis(REVEAL_ANIM_MS + 40));
+            std::thread::sleep(reveal_anim() + Duration::from_millis(40));
             lay_out_at_width_with(&mut b, width, &theme);
             let settled = b.tab_rects()[1].width();
             assert!(

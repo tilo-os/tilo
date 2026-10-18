@@ -20,8 +20,48 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Shape};
 use winit::event::WindowEvent;
 
-const SPAWN_FADE_MS: f32 = 180.0;
-const SPAWN_SCALE_START: f64 = 0.95;
+use crate::motion::{Direction, WindowMotion};
+use crate::tokens::{EffectiveMotion, MotionSource};
+
+/// How far a window's arrival has come `elapsed` after it spawned: it fades
+/// in and scales up in place (`motion::WindowMotion::OPEN`).
+fn spawn_progress(elapsed: Duration) -> f64 {
+    WindowMotion::OPEN.progress_after(
+        Direction::Enter,
+        EffectiveMotion::default(),
+        MotionSource::Pointer,
+        elapsed,
+    )
+}
+
+/// How long a window's arrival runs.
+fn spawn_time() -> Duration {
+    WindowMotion::OPEN.settle_time(
+        Direction::Enter,
+        EffectiveMotion::default(),
+        MotionSource::Pointer,
+    )
+}
+
+/// How far the opening card's hand-over to the window has come: one motion
+/// becoming another, a cross-fade (`motion::CROSS_FADE`).
+fn handover_progress(elapsed: Duration) -> f64 {
+    crate::motion::CROSS_FADE.progress_after(
+        Direction::Exit,
+        EffectiveMotion::default(),
+        MotionSource::Pointer,
+        elapsed,
+    )
+}
+
+/// How long the hand-over runs.
+fn handover_time() -> Duration {
+    crate::motion::CROSS_FADE.settle_time(
+        Direction::Exit,
+        EffectiveMotion::default(),
+        MotionSource::Pointer,
+    )
+}
 
 /// One logical pixel: heavier reads as a drawn outline around the app,
 /// not the boundary of a surface.
@@ -63,27 +103,6 @@ fn edge_bands(rect: Rect, radius: f64) -> Vec<Rect> {
         Rect::new(outer.x0, top, rect.x0 + outside, bottom),
         Rect::new(rect.x1 - outside, top, outer.x1, bottom),
     ]
-}
-
-/// See [`translated`]: scaling about a pivot point is translate, scale,
-/// translate back — still the same plain f64 matrix math.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "kurbo::Affine composition is f64 matrix math; it never panics \
-              or overflows, unlike integer +/-/*"
-)]
-fn scaled_about(transform: Affine, centre: Point, scale: f64) -> Affine {
-    transform
-        * Affine::translate((centre.x, centre.y))
-        * Affine::scale(scale)
-        * Affine::translate((-centre.x, -centre.y))
-}
-
-/// `Duration::as_secs_f32` converts precisely with no lossy integer
-/// step, unlike `as_millis() as f32` (`u128` -> `f32`), which is what the
-/// truncation/precision-loss lints below were actually catching.
-fn elapsed_ms_f32(t: Instant) -> f32 {
-    t.elapsed().as_secs_f32() * 1000.0
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -355,15 +374,6 @@ pub struct TileHost {
     /// Drives the dissolve; only ever set once `opening_shown` is.
     handed_over_at: Option<Instant>,
 }
-
-/// Same length as the tab-close fade — one motion becoming another, short
-/// enough nobody is waiting on it.
-const HANDOVER_MS: u64 = 180;
-
-/// Mirrors `HANDOVER_MS` as an `f32` for the dissolve's progress ratio —
-/// kept as its own literal rather than `HANDOVER_MS as f32` so the
-/// conversion is a compile-time constant, not a cast the lints must trust.
-const HANDOVER_MS_F32: f32 = 180.0;
 
 /// Larger than the toolkit default so it holds its own under a title on a
 /// full-window card, small enough to stay an indicator rather than the
@@ -728,7 +738,7 @@ impl TileHost {
 
     fn handover_in_flight(&self) -> bool {
         self.handed_over_at
-            .is_some_and(|t| t.elapsed() < Duration::from_millis(HANDOVER_MS))
+            .is_some_and(|t| crate::time::now().saturating_duration_since(t) < handover_time())
     }
 
     /// Idempotent on the same record — rebinding would hand the tab a
@@ -1411,7 +1421,7 @@ impl TileHost {
 
     pub fn spawn_in_flight(&self) -> bool {
         match self.spawned_at {
-            Some(t) => elapsed_ms_f32(t) < SPAWN_FADE_MS,
+            Some(t) => crate::time::now().saturating_duration_since(t) < spawn_time(),
             None => false,
         }
     }
@@ -1486,13 +1496,8 @@ impl TileHost {
     #[cfg(test)]
     pub fn spawn_alpha(&self) -> Option<f32> {
         self.spawned_at.and_then(|t| {
-            let elapsed = elapsed_ms_f32(t);
-            if elapsed >= SPAWN_FADE_MS {
-                None
-            } else {
-                let raw = (elapsed / SPAWN_FADE_MS).clamp(0.0, 1.0);
-                Some(1.0 - (1.0 - raw).powi(3))
-            }
+            let elapsed = crate::time::now().saturating_duration_since(t);
+            (elapsed < spawn_time()).then(|| crate::motion::unit_opacity(spawn_progress(elapsed)))
         })
     }
 }
@@ -2400,7 +2405,7 @@ impl Widget for TileHost {
         // Clear an expired spawn timestamp before branching, or it stays
         // `Some` forever after the curve ends.
         if let Some(t) = self.spawned_at
-            && elapsed_ms_f32(t) >= SPAWN_FADE_MS
+            && crate::time::now().saturating_duration_since(t) >= spawn_time()
         {
             self.spawned_at = None;
         }
@@ -2412,11 +2417,9 @@ impl Widget for TileHost {
         if self.spawn_in_flight()
             && let Some(started) = self.spawned_at
         {
-            let elapsed = elapsed_ms_f32(started);
-            let t = (elapsed / SPAWN_FADE_MS).clamp(0.0, 1.0);
-            let eased = 1.0 - (1.0 - t).powi(3);
-            let alpha = eased;
-            let scale = SPAWN_SCALE_START + (1.0 - SPAWN_SCALE_START) * f64::from(eased);
+            let progress = spawn_progress(crate::time::now().saturating_duration_since(started));
+            let pose = WindowMotion::content_pose(progress, self.rect, theme.motion());
+            let alpha = pose.opacity;
             // The window edge sits just outside the card; a few pixels of
             // clip keep it whole through the scale.
             let clip = Rect::new(
@@ -2432,8 +2435,7 @@ impl Widget for TileHost {
                 transform,
                 &clip,
             );
-            let centre = self.rect.center();
-            let anim_transform = scaled_about(transform, centre, scale);
+            let anim_transform = pose.applied_to(transform);
             self.draw_steady_state(scene, anim_transform, tr, theme, presence);
             scene.pop_layer();
             crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
@@ -3131,7 +3133,9 @@ impl TileHost {
                 self.opening_shown = false;
                 self.handed_over_at = None;
             } else if let Some(started) = self.handed_over_at {
-                let t = elapsed_ms_f32(started) / HANDOVER_MS_F32;
+                let t = crate::motion::unit_opacity(handover_progress(
+                    crate::time::now().saturating_duration_since(started),
+                ));
                 if t >= 1.0 {
                     self.opening_shown = false;
                     self.handed_over_at = None;
@@ -3298,17 +3302,6 @@ fn draw_card_text(
 mod tests {
     use super::*;
     use crate::time::Duration;
-
-    /// The millisecond durations used in these tests are small positive
-    /// compile-time constants.
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "duration constants used in these tests are small positive values"
-    )]
-    fn millis(v: f32) -> u64 {
-        v as u64
-    }
 
     #[test]
     fn window_edge_shadow_and_focus_ring_stay_off_app_pixels() {
@@ -4722,8 +4715,7 @@ mod tests {
 
     /// Backdate the spawn so its fade window has already elapsed.
     fn expire_spawn_animation(h: &mut TileHost) {
-        h.spawned_at =
-            crate::time::now().checked_sub(Duration::from_millis(millis(SPAWN_FADE_MS) + 20));
+        h.spawned_at = crate::time::now().checked_sub(spawn_time() + Duration::from_millis(20));
     }
 
     fn stub_host() -> TileHost {

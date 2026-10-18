@@ -2757,13 +2757,13 @@ impl VideoEditorApp {
             self.inspector_flap.snap(inspector_open);
             return;
         }
-        // The panels slide over the theme's own base duration, each on its
-        // own clock: the first frame after idle covers the time since the
-        // toggle, not the idle gap.
+        // The panels slide on the standard panel slide, each from when it
+        // was asked for: the first frame after idle covers the time since
+        // the toggle, not the idle gap.
         let now = ui::time::now();
-        let duration = self.chrome_theme.tokens.motion.durations.base();
-        self.bin_flap.advance(layout, now, duration);
-        self.inspector_flap.advance(insp, now, duration);
+        let motion = self.chrome_theme.motion();
+        self.bin_flap.advance(layout, now, motion);
+        self.inspector_flap.advance(insp, now, motion);
     }
 
     /// Toggle the media bin flap (the topbar hamburger / `B` shortcut).

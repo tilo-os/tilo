@@ -864,7 +864,8 @@ pub struct TreeView<T, M = TreeNode<T>> {
     last_tick: Option<Instant>,
     transition_snapshot: Vec<KeyedRowSnapshot<TreeRowKey, TreeTransitionPayload>>,
     transitions: KeyedTransitionSet<TreeRowKey, TreeTransitionPayload>,
-    transition_duration: Duration,
+    /// The motion its row changes play (`motion::ListChange`).
+    transition_motion: crate::tokens::EffectiveMotion,
     reduce_motion: bool,
     /// Disclosure column, resolved from the theme's label line at layout
     /// time so the glyph never overlaps the label at larger text scales
@@ -1114,7 +1115,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
             last_tick: None,
             transition_snapshot: Vec::new(),
             transitions: KeyedTransitionSet::new(),
-            transition_duration: Duration::from_millis(210),
+            transition_motion: crate::tokens::EffectiveMotion::default(),
             reduce_motion: false,
             disclosure_w: DISCLOSURE_WIDTH,
             authored_row_height: None,
@@ -1882,9 +1883,8 @@ impl<T, M: TreeModel> TreeView<T, M> {
                 &old_snapshot,
                 &new_snapshot,
                 crate::time::now(),
-                self.transition_duration,
-                crate::animation::Curve::EaseInOut,
-                self.reduce_motion,
+                self.transition_motion,
+                crate::tokens::MotionSource::Pointer,
             );
         } else {
             // Navigation rows and section headings must share the same geometry
@@ -2864,7 +2864,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             self.layout_theme = Some(theme.clone());
             self.paint_dirty = true;
         }
-        self.transition_duration = theme.tokens.motion.durations.base();
+        self.transition_motion = theme.motion();
         self.reduce_motion = theme.reduce_motion;
         if self.reduce_motion {
             self.transitions.clear();

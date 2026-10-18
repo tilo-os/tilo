@@ -11,9 +11,9 @@
 //! run its course every row stands where it is laid out and the finished
 //! tracks are dropped ([`KeyedTransitionSet::settle`]).
 
+use crate::motion::{Direction, ListChange};
 use crate::time::{Duration, Instant};
-
-use crate::animation::Curve;
+use crate::tokens::{EffectiveMotion, MotionSource};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RowGeometry {
@@ -52,12 +52,16 @@ struct Track<K, P> {
     entering: bool,
 }
 
-/// One active structural transition over a bounded set of visible keys.
+/// One active structural transition over a bounded set of visible keys, on
+/// the standard list change (`motion::ListChange`): survivors move on its
+/// move, arrivals and departures fade on its fade.
 pub struct KeyedTransitionSet<K, P> {
     tracks: Vec<Track<K, P>>,
     started: Instant,
+    motion: EffectiveMotion,
+    source: MotionSource,
+    /// How long the whole change runs: the longer of its move and fades.
     duration: Duration,
-    curve: Curve,
 }
 
 impl<K, P> Default for KeyedTransitionSet<K, P> {
@@ -71,8 +75,9 @@ impl<K, P> KeyedTransitionSet<K, P> {
         Self {
             tracks: Vec::new(),
             started: crate::time::now(),
+            motion: EffectiveMotion::default(),
+            source: MotionSource::Pointer,
             duration: Duration::ZERO,
-            curve: Curve::EaseInOut,
         }
     }
 
@@ -93,27 +98,35 @@ impl<K, P> KeyedTransitionSet<K, P> {
         }
     }
 
-    /// Compare two bounded snapshots. Reduced motion and zero duration both
-    /// snap by clearing all tracks.
+    /// Compare two bounded snapshots. Reduced motion and a change a
+    /// shortcut made land at once, by clearing all tracks.
     pub fn reconcile(
         &mut self,
         old: &[KeyedRowSnapshot<K, P>],
         new: &[KeyedRowSnapshot<K, P>],
         now: Instant,
-        duration: Duration,
-        curve: Curve,
-        reduce_motion: bool,
+        motion: EffectiveMotion,
+        source: MotionSource,
     ) where
         K: Clone + PartialEq,
         P: Clone,
     {
         self.clear();
-        if reduce_motion || duration.is_zero() || old.is_empty() {
+        let duration = [
+            ListChange::MOVE.settle_time(Direction::Enter, motion, source),
+            ListChange::FADE.settle_time(Direction::Enter, motion, source),
+            ListChange::FADE.settle_time(Direction::Exit, motion, source),
+        ]
+        .into_iter()
+        .max()
+        .unwrap_or(Duration::ZERO);
+        if motion.reduced() || duration.is_zero() || old.is_empty() {
             return;
         }
         self.started = now;
+        self.motion = motion;
+        self.source = source;
         self.duration = duration;
-        self.curve = curve;
         for row in new {
             if let Some(previous) = old.iter().find(|previous| previous.key == row.key) {
                 if previous.geometry != row.geometry {
@@ -163,8 +176,7 @@ impl<K, P> KeyedTransitionSet<K, P> {
                 opacity: 1.0,
             };
         };
-        let progress = self.progress(now);
-        if progress >= 1.0 || !self.is_active(now) {
+        if !self.is_active(now) {
             return TransitionVisual {
                 geometry: settled,
                 opacity: 1.0,
@@ -174,13 +186,22 @@ impl<K, P> KeyedTransitionSet<K, P> {
         // snapshot was taken: a row measured since lands at its height.
         let from = if track.entering { settled } else { track.from };
         TransitionVisual {
-            geometry: interpolate(from, settled, progress),
-            opacity: if track.entering { progress } else { 1.0 },
+            geometry: interpolate(
+                from,
+                settled,
+                self.progress(ListChange::MOVE, Direction::Enter, now),
+            ),
+            opacity: if track.entering {
+                crate::motion::unit_opacity(self.progress(ListChange::FADE, Direction::Enter, now))
+            } else {
+                1.0
+            },
         }
     }
 
     pub fn exiting(&self, now: Instant) -> impl Iterator<Item = (&K, &P, TransitionVisual)> {
-        let progress = self.progress(now);
+        let progress =
+            crate::motion::unit_opacity(self.progress(ListChange::FADE, Direction::Exit, now));
         let active = self.is_active(now);
         self.tracks
             .iter()
@@ -197,18 +218,17 @@ impl<K, P> KeyedTransitionSet<K, P> {
             })
     }
 
-    fn progress(&self, now: Instant) -> f32 {
-        if self.duration.is_zero() {
-            return 1.0;
-        }
-        let raw =
-            now.saturating_duration_since(self.started).as_secs_f32() / self.duration.as_secs_f32();
-        self.curve.apply(raw.clamp(0.0, 1.0)).clamp(0.0, 1.0)
+    fn progress(&self, spec: crate::motion::MotionSpec, direction: Direction, now: Instant) -> f64 {
+        spec.progress_after(
+            direction,
+            self.motion,
+            self.source,
+            now.saturating_duration_since(self.started),
+        )
     }
 }
 
-fn interpolate(from: RowGeometry, to: RowGeometry, progress: f32) -> RowGeometry {
-    let progress = f64::from(progress);
+fn interpolate(from: RowGeometry, to: RowGeometry, progress: f64) -> RowGeometry {
     RowGeometry {
         top: from.top + (to.top - from.top) * progress,
         height: from.height + (to.height - from.height) * progress,
@@ -227,6 +247,10 @@ mod tests {
         }
     }
 
+    fn motion(reduced: bool) -> EffectiveMotion {
+        EffectiveMotion::new(crate::tokens::Motion::default(), reduced)
+    }
+
     #[test]
     fn finished_transitions_stand_rows_where_they_are_laid_out() {
         let now = crate::time::now();
@@ -236,19 +260,19 @@ mod tests {
             &[row(1, 0.0), row(2, 20.0)],
             &[row(1, 40.0), row(3, 20.0)],
             now,
-            Duration::from_millis(200),
-            Curve::Linear,
-            false,
+            motion(false),
+            MotionSource::Pointer,
         );
         let measured = RowGeometry::new(40.0, 32.0);
         // Mid-way the row moves toward its measured geometry, not the
-        // snapshot's.
-        let middle = set.visual(&1, measured, now + Duration::from_millis(100));
-        assert!((middle.geometry.top - 20.0).abs() < 1e-9);
-        assert!((middle.geometry.height - 26.0).abs() < 1e-9);
+        // snapshot's: top and height are the same share of the way there.
+        let middle = set.visual(&1, measured, now + Duration::from_millis(60));
+        let moved = middle.geometry.top / 40.0;
+        assert!(moved > 0.0 && moved < 1.0, "{moved}");
+        assert!(((middle.geometry.height - 20.0) / 12.0 - moved).abs() < 1e-9);
         // Once the transition has run its course it stands where it is laid
         // out, and the finished tracks are dropped.
-        let done = now + Duration::from_millis(250);
+        let done = now + Duration::from_millis(500);
         assert_eq!(set.visual(&1, measured, done).geometry, measured);
         assert_eq!(set.visual(&3, measured, done).opacity, 1.0);
         assert_eq!(set.exiting(done).count(), 0);
@@ -267,16 +291,15 @@ mod tests {
                 &[row(1, 0.0)],
                 &[row(1, 40.0)],
                 now,
-                Duration::from_millis(200),
-                Curve::Linear,
-                false,
+                motion(false),
+                MotionSource::Pointer,
             );
             let visual = set.visual(
                 &1,
                 RowGeometry::new(40.0, 20.0),
-                now + Duration::from_millis(100),
+                now + Duration::from_millis(60),
             );
-            assert_eq!(visual.geometry.top, 20.0);
+            assert!(visual.geometry.top > 0.0 && visual.geometry.top < 40.0);
             assert_eq!(visual.opacity, 1.0);
         }
 
@@ -288,34 +311,28 @@ mod tests {
                 &[row(1, 0.0)],
                 &[row(2, 0.0)],
                 now,
-                Duration::from_millis(200),
-                Curve::Linear,
-                false,
+                motion(false),
+                MotionSource::Pointer,
             );
-            let middle = now + Duration::from_millis(100);
-            assert_eq!(
-                set.visual(&2, RowGeometry::new(0.0, 20.0), middle).opacity,
-                0.5
-            );
+            let middle = now + Duration::from_millis(40);
+            let arriving = set.visual(&2, RowGeometry::new(0.0, 20.0), middle).opacity;
+            assert!(arriving > 0.0 && arriving < 1.0, "{arriving}");
             let ghosts = set.exiting(middle).collect::<Vec<_>>();
             assert_eq!(ghosts.len(), 1);
             assert_eq!(*ghosts[0].0, 1);
             assert_eq!(*ghosts[0].1, "row");
-            assert_eq!(ghosts[0].2.opacity, 0.5);
+            assert!(ghosts[0].2.opacity > 0.0 && ghosts[0].2.opacity < 1.0);
         }
 
-        // Case `reduced_motion_has_no_active_or_ghost_state`.
-        {
+        // Case `reduced_motion_has_no_active_or_ghost_state`, and the same
+        // for a change a shortcut made.
+        for (reduced, source) in [
+            (true, MotionSource::Pointer),
+            (false, MotionSource::Keyboard),
+        ] {
             let now = crate::time::now();
             let mut set = KeyedTransitionSet::new();
-            set.reconcile(
-                &[row(1, 0.0)],
-                &[row(2, 0.0)],
-                now,
-                Duration::from_millis(200),
-                Curve::Linear,
-                true,
-            );
+            set.reconcile(&[row(1, 0.0)], &[row(2, 0.0)], now, motion(reduced), source);
             assert!(!set.is_active(now));
             assert_eq!(set.exiting(now).count(), 0);
             assert_eq!(
