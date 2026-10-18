@@ -137,6 +137,11 @@ impl MotionSpec {
         source: MotionSource,
         elapsed: crate::time::Duration,
     ) -> f64 {
+        // The settled clock (captures and tests) reads every motion at its
+        // end.
+        if super::clock::testing::is_settled() {
+            return 1.0;
+        }
         match self.timing(direction, motion, source) {
             Timing::Instant => 1.0,
             Timing::Spring(spring) => {

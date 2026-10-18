@@ -3792,6 +3792,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         window.request_redraw();
                     }
                     AkWindowEvent::ActionRequested(req) => {
+                        // Assistive technology acts like a shortcut: what it
+                        // opens lands at once.
+                        crate::motion::note_source(crate::tokens::MotionSource::Action);
                         // `Some((x, y))` means "synthesise a click here".
                         if let Some(action) = crate::accesskit_bridge::accesskit_action_to_ours(
                             req.action,
@@ -3995,6 +3998,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         event: WindowEvent,
     ) {
         let _slow = slow_event::Span::begin("window_event", slow_event::window_event_name(&event));
+        // What this event opens or closes follows it (a key lands it at
+        // once, a click moves it): `motion::input_source`.
+        crate::motion::note_input(&event);
         if let Some(window) = self
             .window
             .clone()
@@ -4410,7 +4416,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // starving the pump: a fade that replaces a slide still needs its
         // frames, and gating here froze every reduced-motion app that waited
         // on one.
-        let widget_animation = app.root_widget.needs_animation_frame();
+        // A motion started outside the polled tree (a menu its owner draws in
+        // its own overlay pass) asks through the motion clock.
+        let widget_animation = app.root_widget.needs_animation_frame()
+            || crate::motion::frames_wanted(crate::time::now());
         let needs_frame = widget_animation
             || app
                 .presence_ctx
@@ -4598,6 +4607,7 @@ impl AppHandler {
                 }
             }
             accesskit_winit::WindowEvent::ActionRequested(request) => {
+                crate::motion::note_source(crate::tokens::MotionSource::Action);
                 if dispatch_native_surface_accessibility(
                     self.app.root_widget.as_mut(),
                     &id,
