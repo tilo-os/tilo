@@ -12,6 +12,9 @@ pub(super) struct LocalInputCapture {
     retained_bytes: usize,
     evicted: u64,
     transport_connected: bool,
+    // One bounded, inert copy of the last authenticated pre-input surface.
+    offline_routes: Vec<InputRoute>,
+    recovered_routes: std::collections::HashSet<crate::collaboration::RouteSpec>,
     pub(super) failure: Option<String>,
 }
 
@@ -24,6 +27,10 @@ struct PendingCapture {
 }
 
 impl LocalInputCapture {
+    pub(super) fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
     #[cfg(test)]
     pub(super) fn pending_count(&self) -> usize {
         self.pending.len()
@@ -102,21 +109,57 @@ impl App {
     }
 
     pub(super) fn begin_local_input_capture(&mut self) -> crate::local_document_action::Scope {
-        // Standalone and disconnected views retain their existing local editing
-        // semantics. An absent broker is not an authenticated admission failure.
         if !self.collaboration.manager.is_connected() {
-            return crate::local_document_action::suspend();
+            let routes = self.local_input_capture.offline_routes.clone();
+            if routes.is_empty() && self.actions.action_directory_snapshot.is_none() {
+                // No authenticated publication: preserve editing, but do not
+                // invent a caller, route, revision or admission.
+                self.local_input_capture.failure = Some(crate::i18n::I18nManager::lookup_plain(
+                    "history-local-action-unsigned",
+                ));
+                self.needs_sync = true;
+                return crate::local_document_action::suspend();
+            }
+            for route in &routes {
+                if let Some(pin) = route.pin.as_ref().and_then(|pin| {
+                    pin.clone()
+                        .downcast::<action_directory_snapshot::LocalDocumentDirectoryPin>()
+                        .ok()
+                }) {
+                    if !self
+                        .actions
+                        .local_document_directory_pins
+                        .iter()
+                        .any(|old| old.upgrade().is_some_and(|old| Rc::ptr_eq(&old, &pin)))
+                    {
+                        self.actions
+                            .local_document_directory_pins
+                            .push(Rc::downgrade(&pin));
+                    }
+                }
+            }
+            if !routes.is_empty() {
+                return crate::local_document_action::enter_input(routes);
+            }
         }
         // Publication runs outside the input scope: refreshing controls or
         // draining a model wake must not acquire the person's input identity.
         let nested = crate::local_document_action::input_is_active();
         let background = crate::local_document_action::suspend();
-        if !nested {
+        if !nested && self.collaboration.manager.is_connected() {
             // Controls left by an earlier model pass are not this input's
             // actions. Service them before freezing the input's snapshot.
             self.dispatch_control_invocations();
         }
         self.publish_action_surface();
+        if self.actions.action_directory_snapshot.is_none() {
+            drop(background);
+            self.local_input_capture.failure = Some(crate::i18n::I18nManager::lookup_plain(
+                "history-local-action-unsigned",
+            ));
+            self.needs_sync = true;
+            return crate::local_document_action::suspend();
+        }
         let mut routes: Vec<InputRoute> = Vec::new();
         let revision = self
             .actions
@@ -154,7 +197,12 @@ impl App {
                         }
                     }
                     Ok(None) => {
-                        if let Some(witness) = self.collaboration.manager.primary_route() {
+                        if let Some(witness) = self
+                            .collaboration
+                            .manager
+                            .primary_route()
+                            .or(self.actions.last_published_bound_route.as_ref())
+                        {
                             aliases
                                 .entry(None)
                                 .or_insert_with(|| (witness.route.clone(), HashMap::new()))
@@ -190,6 +238,18 @@ impl App {
         if routes.is_empty() && pin.is_some() {
             self.local_input_capture_failed("local input has no published action route");
         }
+        // Retain inert snapshot copies, not registered leases. Ordinary online
+        // reconciliation can still release all in-flight directory pins.
+        self.local_input_capture.offline_routes = routes
+            .iter()
+            .cloned()
+            .map(|mut route| {
+                route.pin = pin
+                    .as_ref()
+                    .map(|pin| Rc::new((**pin).clone()) as Rc<dyn std::any::Any>);
+                route
+            })
+            .collect();
         // Drop the suspension before installing a new input scope so nesting
         // restores the outer host rather than erasing the new scope.
         drop(background);
@@ -198,6 +258,38 @@ impl App {
 
     pub(super) fn drain_local_input_capture(&mut self) {
         let mut failures = Vec::new();
+        let mut recovery_routes: Vec<_> = self
+            .document_routes
+            .owners
+            .iter()
+            .map(|entry| entry.route.clone())
+            .collect();
+        if let Some(primary) = self.collaboration.manager.primary_route() {
+            if self.persistence.records.is_some() || self.persistence.autosave.is_some() {
+                recovery_routes.push(primary.route.clone());
+            }
+        }
+        for route in recovery_routes {
+            if !self.local_input_capture.recovered_routes.contains(&route) {
+                match self.restore_local_input_checkpoint(&route) {
+                    Ok(()) => {
+                        self.local_input_capture.recovered_routes.insert(route);
+                    }
+                    // A live owner can be ahead of its durable checkpoint,
+                    // including immediately after the edit being drained here.
+                    // That is ordinary save progress, not failed capture. Keep
+                    // recovery eligible for the next pump; explicit recovery
+                    // still reports these conditions to its caller.
+                    Err(error)
+                        if matches!(
+                            error.as_str(),
+                            "private action checkpoint is not durable"
+                                | "document checkpoint is not durable"
+                        ) => {}
+                    Err(error) => failures.push(error),
+                }
+            }
+        }
         let now = crate::time::now();
         let queues: Vec<_> = self
             .local_input_capture
@@ -275,7 +367,7 @@ impl App {
             }
         }
         for request_id in rejected {
-            self.local_input_capture.pending.remove(&request_id);
+            self.retire_rejected_local_capture(request_id);
         }
         // Never retire a route's capacity accounting while replies are in
         // flight, including unknown outcomes that still own snapshot leases.
@@ -297,6 +389,120 @@ impl App {
         }
     }
 
+    /// Restore private reports only for the exact currently owned document.
+    /// No action execution, new invocation identity or publication authority is
+    /// reconstructed from this metadata.
+    pub fn restore_local_input_checkpoint(
+        &mut self,
+        route: &crate::collaboration::RouteSpec,
+    ) -> Result<(), String> {
+        let entries = self.local_action_checkpoint_entries(route)?;
+        for (checkpoint, receipt) in entries {
+            if receipt.as_deref() == Some("{\"local_capture_rejected\":true}") {
+                continue;
+            }
+            let report = checkpoint.report;
+            if self
+                .local_input_capture
+                .pending
+                .values()
+                .any(|pending| pending.capture.invocation == report.invocation)
+                || self
+                    .local_input_capture
+                    .retained
+                    .iter()
+                    .any(|(capture, _)| capture.invocation == report.invocation)
+            {
+                continue;
+            }
+            let arguments = match report.argument.as_deref() {
+                None => serde_json::Map::new(),
+                Some(argument) => serde_json::from_str(
+                    argument
+                        .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
+                        .ok_or("private action checkpoint arguments are not canonical")?,
+                )
+                .map_err(|error| error.to_string())?,
+            };
+            let capture = crate::local_document_action::CapturedAction {
+                invocation: report.invocation,
+                capture_id: report.capture_id,
+                revision: report.revision.clone(),
+                published: Some(crate::local_document_action::PublishedInvocation {
+                    resource: report.resource.clone(),
+                    action: report.action.clone(),
+                    arguments,
+                }),
+                encoded: report.encoded.clone(),
+                context: report.context.clone(),
+                original_heads: report.original_heads.clone(),
+                mutation_hashes: report.mutation_hashes.clone(),
+            };
+            if serde_json::to_vec(&capture.clone().into_report()?).map_err(|e| e.to_string())?
+                != serde_json::to_vec(&report).map_err(|e| e.to_string())?
+            {
+                return Err("private action checkpoint report changed on recovery".into());
+            }
+            let recovery_pin = if receipt.is_none() {
+                checkpoint
+                    .directory_row
+                    .map(|row| {
+                        self.restore_local_directory_row(
+                            report.revision.clone(),
+                            report.resource.clone(),
+                            report.action.clone(),
+                            row,
+                        )
+                        .ok_or("private action recovery exceeds directory pin budget")
+                    })
+                    .transpose()?
+            } else {
+                None
+            };
+            let history = &mut self.local_input_capture;
+            if let Some(receipt) = receipt {
+                history.retained_bytes += retained_size(&capture, &receipt);
+                history.retained.push_back((capture, receipt));
+                while history.retained.len() > 128 || history.retained_bytes > 4 * 1024 * 1024 {
+                    let (capture, receipt) = history.retained.pop_front().unwrap();
+                    history.retained_bytes -= retained_size(&capture, &receipt);
+                    history.evicted += 1;
+                }
+            } else {
+                let bytes: usize = history
+                    .pending
+                    .values()
+                    .map(|pending| retained_size(&pending.capture, ""))
+                    .sum();
+                if history.pending.len() >= 128
+                    || bytes + retained_size(&capture, "") > 4 * 1024 * 1024
+                {
+                    return Err("private action recovery exceeds pending custody budget".into());
+                }
+                let mut request_id = capture.invocation.as_u64_pair().0;
+                while history.pending.contains_key(&request_id) {
+                    request_id = request_id.wrapping_add(1);
+                }
+                let queue = history.queues.entry(route.clone()).or_default();
+                let lease = queue.restore_lease(
+                    &capture,
+                    recovery_pin.map(|pin| pin as Rc<dyn std::any::Any>),
+                )?;
+                history.pending.insert(
+                    request_id,
+                    PendingCapture {
+                        capture,
+                        route: route.clone(),
+                        _lease: lease,
+                        retry_at: crate::time::now(),
+                        retry_delay: crate::time::Duration::from_secs(1),
+                    },
+                );
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn local_input_capture_deadline(&self) -> Option<crate::time::Instant> {
         self.collaboration
             .manager
@@ -309,6 +515,16 @@ impl App {
                     .min()
             })
             .flatten()
+    }
+
+    fn retire_rejected_local_capture(&mut self, request_id: u64) {
+        if let Some(pending) = self.local_input_capture.pending.remove(&request_id) {
+            if let Err(error) =
+                self.stage_local_action_checkpoint(&pending.route, &pending.capture, None, true)
+            {
+                self.local_input_capture_failed(&error);
+            }
+        }
     }
 
     fn local_input_capture_failed(&mut self, error: &str) {
@@ -392,7 +608,7 @@ impl App {
                 }
             }
             Err(Rejected(error)) => {
-                self.local_input_capture.pending.remove(&request_id);
+                self.retire_rejected_local_capture(request_id);
                 self.local_input_capture_failed(&error);
             }
             // Unknown or malformed replies keep custody until a bounded,

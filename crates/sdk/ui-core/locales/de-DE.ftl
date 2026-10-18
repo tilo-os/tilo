@@ -183,6 +183,9 @@ history-sync-queue-full = Die Warteschlange für entfernte Änderungen ist voll.
 history-sync-owner-changed = Verbindung oder Besitzer des Dokuments hat sich geändert, während entfernte Änderungen ausstanden. Verbinde dich neu und synchronisiere, bevor du fortfährst.
 history-sync-offline = Offline. Änderungen werden synchronisiert, sobald du wieder verbunden bist.
 history-local-action-unconfirmed = Das Teilen dieser Änderung wurde nicht bestätigt.
+history-local-action-unsigned = Für diese Änderung gibt es keinen authentifizierten Teilungsverlauf.
+history-local-action-pending = Der Aktionsverlauf wartet auf Bestätigung.
+
 history-sync-refused = Synchronisierung angehalten: Dieser Arbeitsbereich hat eine Änderung nicht angenommen. Deine Änderungen bleiben auf diesem Gerät.
 history-sync-remote-waiting = Entfernte Änderungen werden übernommen, sobald die aktuelle Bearbeitung abgeschlossen ist.
 history-sync-owner-closed = Der Besitzer des Dokuments wurde geschlossen oder hat gewechselt. Verbinde dich neu, bevor du den Nachfolger synchronisierst.

@@ -73,6 +73,70 @@ fn private_checkpoints_follow_the_executed_child_owner_not_the_primary_document(
         recovered[0].1.is_none(),
         "an unconfirmed report is not an admission"
     );
+    // Drop every in-memory capture and directory lease, as on process restart.
+    // Recovery reads the existing private document checkpoint, not the live UI.
+    let heads = fixture
+        .records
+        .read(&fixture.bindings[0].checkout.id, |doc| {
+            doc.clone().get_heads()
+        })
+        .unwrap();
+    fixture.app.local_input_capture = Default::default();
+    fixture.app.actions.local_document_directory_pins.clear();
+    // Recovered rows may share a revision but live in separate pins. An
+    // unrelated row must not hide the report's row during the next checkpoint.
+    let mut unrelated_row = fixture
+        .app
+        .local_action_checkpoint_entries(&route)
+        .unwrap()
+        .remove(0)
+        .0
+        .directory_row
+        .unwrap();
+    unrelated_row.action = Some("unrelated-checkpoint-action".into());
+    let _unrelated_pin = fixture
+        .app
+        .restore_local_directory_row(
+            report.revision.clone(),
+            report.resource.clone(),
+            "unrelated-checkpoint-action".into(),
+            unrelated_row,
+        )
+        .unwrap();
+    sent.borrow_mut().clear();
+    fixture.app.restore_local_input_checkpoint(&route).unwrap();
+    assert_eq!(fixture.app.local_input_capture.pending_count(), 1);
+    fixture.app.drain_local_input_capture();
+    let retried = capture_reports(&sent);
+    assert_eq!(retried.len(), 1);
+    assert!(
+        fixture
+            .app
+            .checkpoint_local_directory_row(&report.revision, &report.resource, &report.action)
+            .is_some(),
+        "all recovered rows at a revision remain checkpointable"
+    );
+    assert_eq!(
+        serde_json::to_vec(&retried[0].1).unwrap(),
+        serde_json::to_vec(&report).unwrap()
+    );
+    assert!(matches!(
+        fixture.app.resolve_local_document_action_directory(
+            &report.revision,
+            &report.resource,
+            &report.action
+        ),
+        runtime_collab::ActionDirectoryResolution::Found { .. }
+    ));
+    assert_eq!(
+        fixture
+            .records
+            .read(&fixture.bindings[0].checkout.id, |doc| doc
+                .clone()
+                .get_heads())
+            .unwrap(),
+        heads
+    );
     let other = fixture.bindings[1].broker_route().unwrap();
     assert_ne!(route, other);
     assert!(
@@ -83,7 +147,24 @@ fn private_checkpoints_follow_the_executed_child_owner_not_the_primary_document(
             .is_empty()
     );
     fixture
+        .app
+        .apply_collab_event_for_test(CollabEvent::LocalDocumentActionReported {
+            request_id: retried[0].0,
+            result: Err(runtime_collab::LocalDocumentActionError::Rejected(
+                "refused".into(),
+            )),
+        });
+    assert_eq!(fixture.app.local_input_capture.pending_count(), 0);
+    fixture
         .records
         .try_flush_record(&fixture.bindings[0].checkout.id)
         .unwrap();
+    fixture.app.local_input_capture = Default::default();
+    fixture.app.restore_local_input_checkpoint(&route).unwrap();
+    assert_eq!(
+        fixture.app.local_input_capture.pending_count(),
+        0,
+        "a durable terminal refusal must not become a fresh pending report"
+    );
+    assert_eq!(fixture.app.local_document_action_admissions().count(), 0);
 }

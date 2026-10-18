@@ -12,6 +12,7 @@ thread_local! { static DISCOVERY_COUNT: Cell<usize> = const { Cell::new(0) }; }
 thread_local! { static CONTROL_AUTHORITY: RefCell<Vec<(bool, bool)>> = const { RefCell::new(vec![]) }; }
 thread_local! { static COMPOUND_MODE: Cell<u8> = const { Cell::new(0) }; }
 thread_local! { static DOCUMENT_JOB_MODE: Cell<bool> = const { Cell::new(false) }; }
+thread_local! { static READ_CAPTURE_MODE: Cell<bool> = const { Cell::new(false) }; }
 thread_local! {
     static PAGED_SEARCH_COUNTS: RefCell<Option<Rc<[Cell<usize>; 2]>>> = const { RefCell::new(None) };
 }
@@ -142,6 +143,38 @@ impl tilo_actions::Action for EmptyFollowUp {
         }
     }
 }
+fn probe_read_schema() -> &'static serde_json::Value {
+    static SCHEMA: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
+    SCHEMA.get_or_init(|| {
+        crate::semantic_document_read::result_schema(serde_json::json!({"type":"string"}), false)
+    })
+}
+
+fn probe_read_validate(
+    _: &tilo_actions::Resource,
+    payload: &[u8],
+) -> Result<(), crate::semantic_document_read::SemanticReadError> {
+    crate::semantic_document_read::decode_request::<()>(payload)
+}
+
+fn probe_read_project(
+    doc: &automerge::AutoCommit,
+    heads: &[automerge::ChangeHash],
+    _: &[u8],
+) -> Result<crate::semantic_document_read::ReadPage, crate::semantic_document_read::SemanticReadError>
+{
+    Probe::capture("bound-read");
+    let marker = doc
+        .get_at(ROOT, "marker", heads)
+        .map_err(|_| crate::semantic_document_read::SemanticReadError::Malformed)?
+        .and_then(|(value, _)| value.into_string().ok())
+        .ok_or(crate::semantic_document_read::SemanticReadError::Malformed)?;
+    Ok(crate::semantic_document_read::ReadPage {
+        content: serde_json::json!(marker),
+        next_cursor: None,
+    })
+}
+
 impl Probe {
     fn capture(label: &'static str) {
         CAPTURES.with_borrow_mut(|v| v.push((label, crate::LatestRequest::new())));
@@ -223,6 +256,24 @@ impl Widget for Probe {
         dyn crate::resources::PublishesResources,
         dyn crate::search::capability::SearchSource
     );
+
+    fn semantic_readers(
+        &self,
+    ) -> &'static [crate::semantic_document_read::RegisteredSemanticReader] {
+        static READERS: [crate::semantic_document_read::RegisteredSemanticReader; 1] = [
+            crate::semantic_document_read::RegisteredSemanticReader::new(
+                "bound.read",
+                probe_read_schema,
+                probe_read_validate,
+                probe_read_project,
+            ),
+        ];
+        if READ_CAPTURE_MODE.get() {
+            &READERS
+        } else {
+            &[]
+        }
+    }
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &["bound.follow-up", "bound.view"]
@@ -451,26 +502,44 @@ impl crate::resources::PublishesResources for Probe {
                 tilo_actions::ExecutionMode::Background { cancellable: true };
             document.contract.result = tilo_actions::ResultSpec::Job;
         }
-        vec![
-            tilo_actions::Resource::new(
-                self.collision.as_deref().unwrap_or("bound:probe"),
-                "probe",
-                "Probe",
+        let mut resource = tilo_actions::Resource::new(
+            self.collision.as_deref().unwrap_or("bound:probe"),
+            "probe",
+            "Probe",
+        )
+        .with_action(action)
+        .with_action(document)
+        .with_action(
+            tilo_actions::ActionSpec::operation(
+                "view",
+                "View",
+                tilo_actions::OperationKind::View,
+                "bound.view",
+                &(),
             )
-            .with_action(action)
-            .with_action(document)
-            .with_action(
+            .unwrap()
+            .with_contract(tilo_actions::ActionContract::view()),
+        );
+        if READ_CAPTURE_MODE.get() {
+            resource = resource.with_action(
                 tilo_actions::ActionSpec::operation(
-                    "view",
-                    "View",
-                    tilo_actions::OperationKind::View,
-                    "bound.view",
+                    "read",
+                    "Read",
+                    tilo_actions::OperationKind::Effect,
+                    "bound.read",
                     &(),
                 )
                 .unwrap()
-                .with_contract(tilo_actions::ActionContract::view()),
-            ),
-        ]
+                .with_contract(tilo_actions::ActionContract {
+                    kind: tilo_actions::ActionKind::Read,
+                    result: tilo_actions::ResultSpec::Json {
+                        schema: probe_read_schema().clone(),
+                    },
+                    ..tilo_actions::ActionContract::view()
+                }),
+            );
+        }
+        vec![resource]
     }
     fn action_directory_resource_page(
         &self,

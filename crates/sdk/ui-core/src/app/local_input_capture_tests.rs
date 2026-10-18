@@ -132,6 +132,120 @@ fn local_component_action_drains_exact_pre_execution_snapshot_and_alias() {
         .unwrap();
 }
 
+fn capture_registered_read_only_callback(action: &str, callback: &str) {
+    COMPOUND_MODE.set(0);
+    let mut fixture = ActionFixture::broker();
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    let connected = Rc::new(Cell::new(true));
+    fixture.app.collaboration.manager =
+        CollaborationManager::with_peer_transport(RecoveringCapturePeer {
+            sent: sent.clone(),
+            connected: connected.clone(),
+            reject_enqueue: Rc::new(Cell::new(false)),
+        });
+    let published = capture_address(&mut fixture);
+    let offline_revision = if action == "read" {
+        // Retain the authenticated input snapshot before losing transport.
+        drop(fixture.app.begin_local_input_capture());
+        let revision = fixture.app.action_directory_revision();
+        connected.set(false);
+        Some(revision)
+    } else {
+        None
+    };
+    let address = tilo_actions::ActionAddress::new(published.resource.clone(), action);
+    let heads = fixture
+        .records
+        .read(&fixture.bindings[0].checkout.id, |doc| {
+            doc.clone().get_heads()
+        })
+        .unwrap();
+    CAPTURES.with_borrow_mut(Vec::clear);
+
+    fixture
+        .app
+        .invoke_local_resource_action(&address, &serde_json::Map::new())
+        .unwrap();
+
+    CAPTURES.with_borrow(|captures| {
+        assert_eq!(
+            captures
+                .iter()
+                .filter(|(label, _)| *label == callback)
+                .count(),
+            1,
+            "the registered callback must actually run exactly once"
+        );
+    });
+    assert_eq!(
+        fixture
+            .records
+            .read(&fixture.bindings[0].checkout.id, |doc| doc
+                .clone()
+                .get_heads())
+            .unwrap(),
+        heads,
+        "read-only callbacks do not mutate the canonical record"
+    );
+    if offline_revision.is_some() {
+        assert!(capture_reports(&sent).is_empty());
+        assert_eq!(fixture.app.local_input_capture.pending_count(), 1);
+        connected.set(true);
+        fixture.app.drain_local_input_capture();
+    }
+    let reports = capture_reports(&sent);
+    assert_eq!(reports.len(), 1);
+    let report = &reports[0].1;
+    if let Some(revision) = offline_revision {
+        assert_eq!(report.revision, revision);
+    }
+    // Invocation refreshes publication before freezing its snapshot. Resolve
+    // that retained snapshot, not an unrelated earlier publication revision.
+    assert!(matches!(
+        fixture.app.resolve_local_document_action_directory(
+            &report.revision,
+            &report.resource,
+            &report.action,
+        ),
+        runtime_collab::ActionDirectoryResolution::Found {
+            revision: Some(exact),
+            ..
+        } if exact == report.revision
+    ));
+    assert_eq!(report.resource, published.resource);
+    assert_eq!(report.action, action);
+    assert_eq!(report.bound_invocation().unwrap(), report.invocation);
+    assert!(report.mutation_hashes.is_empty());
+    assert_eq!(
+        fixture
+            .app
+            .actions
+            .bound_publication
+            .alias(&fixture.bindings[0], "bound:probe")
+            .unwrap(),
+        report.resource,
+        "read-only execution retains the same published component alias"
+    );
+    assert_eq!(fixture.app.local_input_capture.pending_count(), 1);
+}
+
+#[test]
+fn registered_bound_view_callback_captures_empty_report_without_mutation() {
+    capture_registered_read_only_callback("view", "bound-view");
+}
+
+#[test]
+fn registered_bound_read_projection_captures_empty_report_without_mutation() {
+    struct ReadCaptureGuard(bool);
+    impl Drop for ReadCaptureGuard {
+        fn drop(&mut self) {
+            READ_CAPTURE_MODE.set(self.0);
+        }
+    }
+    let _guard = ReadCaptureGuard(READ_CAPTURE_MODE.replace(true));
+    capture_registered_read_only_callback("read", "bound-read");
+}
+
 #[test]
 fn blocked_host_does_not_delay_local_edits_and_capacity_refusal_is_atomic() {
     let mut fixture = ActionFixture::broker();
@@ -212,8 +326,59 @@ fn disconnected_input_keeps_local_framework_edits_available() {
         .unwrap();
     drop(scope);
     fixture.app.drain_local_input_capture();
-    assert!(fixture.app.local_input_capture.failure.is_none());
+    assert!(fixture.app.document_sync_status().is_some());
     assert_eq!(fixture.app.local_input_capture.pending_count(), 0);
+    assert_eq!(fixture.app.local_document_action_admissions().count(), 0);
+}
+
+#[test]
+fn disconnected_input_retains_the_last_published_revision_and_exact_route() {
+    let mut fixture = ActionFixture::broker();
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    let connected = Rc::new(std::cell::Cell::new(true));
+    fixture.app.collaboration.manager =
+        CollaborationManager::with_peer_transport(RecoveringCapturePeer {
+            sent: sent.clone(),
+            connected: connected.clone(),
+            reject_enqueue: Rc::new(std::cell::Cell::new(false)),
+        });
+    let address = capture_address(&mut fixture);
+    // Freeze a genuinely published input surface, then lose only transport.
+    drop(fixture.app.begin_local_input_capture());
+    let revision = fixture.app.action_directory_revision();
+    connected.set(false);
+    let before = capture_reports(&sent).len();
+    for _ in 0..2 {
+        let scope = fixture.app.begin_local_input_capture();
+        let target = fixture.target(0, "apply");
+        let actor = fixture.bindings[0].author.0.clone();
+        fixture
+            .app
+            .invoke_bound_target(
+                &target,
+                &ResourceInvocation::new(&target.address.address, &actor),
+            )
+            .unwrap();
+        drop(scope);
+        fixture.app.drain_local_input_capture();
+    }
+    assert_eq!(capture_reports(&sent).len(), before);
+    assert_eq!(fixture.app.local_input_capture.pending_count(), 2);
+    assert!(
+        fixture.app.document_sync_status().is_some(),
+        "disconnected edits awaiting admission must be visible"
+    );
+    connected.set(true);
+    fixture.app.drain_local_input_capture();
+    let reports = capture_reports(&sent);
+    assert_eq!(reports.len(), 2);
+    assert_ne!(reports[0].1.invocation, reports[1].1.invocation);
+    for (_, report) in reports {
+        assert_eq!(report.revision, revision);
+        assert_eq!(report.resource, address.resource);
+        assert_eq!(report.bound_invocation().unwrap(), report.invocation);
+        assert!(!report.mutation_hashes.is_empty());
+    }
 }
 
 #[test]

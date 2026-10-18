@@ -5867,8 +5867,9 @@ impl CapnpBrokerState {
             && (!matches!(
                 offered.1.operation_kind,
                 tilo_actions::OperationKind::Document | tilo_actions::OperationKind::View
-            ) || (offered.1.operation_kind == tilo_actions::OperationKind::View
-                && local_report.is_some_and(|report| !report.mutation_hashes.is_empty()))
+            ) && offered.1.contract.kind != tilo_actions::ActionKind::Read
+                || (offered.1.operation_kind != tilo_actions::OperationKind::Document
+                    && local_report.is_some_and(|report| !report.mutation_hashes.is_empty()))
                 || provenance.durable.is_some()
                 || !matches!(
                     provenance.origin.as_ref(),
@@ -5876,8 +5877,7 @@ impl CapnpBrokerState {
                 ))
         {
             return Err(
-                "local action report requires authenticated document or read-only view admission"
-                    .into(),
+                "local action report requires authenticated document or read-only admission".into(),
             );
         }
         if let Some(report) = local_report {
