@@ -1075,7 +1075,9 @@ mod tests {
         let mut newer = postcard::to_stdvec(&(PEER_PROTOCOL_VERSION + 1)).unwrap();
         newer.extend_from_slice(b"a shape this build has never seen");
         assert_eq!(
-            decode_handshake::<Hello>(&newer).unwrap_err().peer_version(),
+            decode_handshake::<Hello>(&newer)
+                .unwrap_err()
+                .peer_version(),
             Some(PEER_PROTOCOL_VERSION + 1)
         );
         assert!(this_device_is_behind(PEER_PROTOCOL_VERSION + 1));

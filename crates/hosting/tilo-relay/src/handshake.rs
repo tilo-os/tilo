@@ -67,7 +67,10 @@ pub(crate) enum HandshakeError {
     Auth(#[from] AuthError),
     /// The peer speaks another peer protocol version, `theirs`. It was told
     /// this relay's ([`auth::version_answer`]) and nothing else was read.
-    #[error("peer speaks protocol {theirs}, this relay {}", auth::PEER_PROTOCOL_VERSION)]
+    #[error(
+        "peer speaks protocol {theirs}, this relay {}",
+        auth::PEER_PROTOCOL_VERSION
+    )]
     Version {
         /// The peer's version.
         theirs: u32,
