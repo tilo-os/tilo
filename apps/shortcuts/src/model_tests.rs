@@ -201,7 +201,9 @@ fn editing_a_saved_shortcut_preserves_per_action_appearance() {
         .unwrap()
         .shortcut(Vec::new());
     let StepKind::Invoke {
-        appearance, args, ..
+        appearance,
+        args: fields,
+        ..
     } = &edited.steps[0].kind
     else {
         panic!("expected the saved action");
@@ -211,7 +213,7 @@ fn editing_a_saved_shortcut_preserves_per_action_appearance() {
         &Some(Binding::Literal(json!({"name": "Example bridge"})))
     );
     assert_eq!(
-        args.get("title"),
+        fields.get("title"),
         Some(&Binding::Literal(json!("Updated title")))
     );
 }

@@ -42,7 +42,12 @@ pub const ADDRESS_SEP: char = '#';
 
 /// The single-string form of an address.
 pub fn encode_address(address: &ActionAddress) -> String {
-    format!("{}{}{}", address.resource, ADDRESS_SEP, address.action)
+    encode_parts(&address.resource, &address.action)
+}
+
+/// Encode the two halves of an address, for a stored step that kept them.
+pub fn encode_parts(resource: &str, action: &str) -> String {
+    format!("{resource}{ADDRESS_SEP}{action}")
 }
 
 /// Recover an address from [`encode_address`]. `None` when the string is not

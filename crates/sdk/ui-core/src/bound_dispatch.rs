@@ -109,6 +109,21 @@ pub struct BoundActionAddress {
     pub address: tilo_actions::ActionAddress,
 }
 
+impl BoundActionAddress {
+    /// The address of `action` on `resource` as `instance` publishes it.
+    #[must_use]
+    pub fn new(
+        instance_id: crate::application::InstanceId,
+        resource: impl Into<String>,
+        action: impl Into<String>,
+    ) -> Self {
+        Self {
+            instance_id,
+            address: tilo_actions::ActionAddress::new(resource, action),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) enum BoundActionError {
     Door(tilo_actions::DoorError),

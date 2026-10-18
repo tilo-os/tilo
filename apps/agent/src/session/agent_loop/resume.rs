@@ -115,10 +115,7 @@ fn interrupted() -> &'static str {
 
 /// The paused step as the model reads it.
 fn step_label(paused: &TaskRunPausedStep) -> String {
-    let what = surface::encode_address(&tilo_actions::ActionAddress::new(
-        paused.resource.as_str(),
-        paused.action.as_str(),
-    ));
+    let what = surface::encode_parts(paused.resource.as_str(), paused.action.as_str());
     let gist = paused
         .draft
         .gist()
