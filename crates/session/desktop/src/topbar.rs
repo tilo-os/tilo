@@ -3416,7 +3416,7 @@ impl TopBarChrome {
         );
     }
 
-    fn activate_control(&mut self, target: &str) -> bool {
+    fn activate_control(&self, target: &str) -> bool {
         if matches!(
             target,
             Self::CONTROL_CONTINUITY | Self::CONTROL_CONTINUITY_DISMISS
@@ -4495,7 +4495,6 @@ impl Widget for TopBarChrome {
                     .with_state(AccessState {
                         focused: self.focused && self.focused_control.as_deref() == Some(target),
                         focusable: true,
-                        checked,
                         ..Default::default()
                     });
                 // The bell painted in the status cluster says what it shows.
