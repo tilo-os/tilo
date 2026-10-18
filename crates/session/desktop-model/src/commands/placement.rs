@@ -8,13 +8,16 @@
 //! 3. **At a seam, when nothing is selected** — the visible border between
 //!    two groups, else the next one rightwards.
 //!
-//! An app chosen from search skips rules 1–2 and takes the rightmost
-//! insertion point in view. A view opened for an actor that is not the
+//! An app chosen from search follows rule 1 and skips rule 2: it opens as
+//! its own window right of the one you're in, never as a tab of it, and
+//! falls back to rule 3 when nothing is selected. Opening it anywhere else
+//! (the end of what's on screen, say) moves the strip away from what you
+//! were working on. A view opened for an actor that is not the
 //! person at the keyboard (an agent, a Shortcut, another app) opens as a new
 //! group right after the view that actor works in, on that actor's strip,
 //! which need not be the one the person is looking at: everyone keeps their
-//! place. Rules 1–2 read the tree alone; rule 3 and search
-//! need a [`StripViewport`], which only a host that lays the strip out has.
+//! place. Rules 1–2 read the tree alone; rule 3
+//! needs a [`StripViewport`], which only a host that lays the strip out has.
 //! A host without a layout or a focus (a headless owner placing an agent's
 //! open) gets a new group at the end of its last strip.
 
@@ -78,14 +81,6 @@ impl StripViewport {
             .find(|s| self.on_screen(s))
     }
 
-    /// The rightmost place on the screen where a new group can be inserted.
-    /// Unlike [`Self::visible_seam`], this includes the trailing edge of the
-    /// last window: visible canvas after it is the most natural place for a
-    /// searched app.
-    pub fn rightmost_visible_seam(&self) -> Option<Seam> {
-        self.seams().rev().find(|s| self.on_screen(s))
-    }
-
     /// Falls back to the rightmost seam when every seam is behind the
     /// viewport — the end of the strip is still a seam.
     pub fn next_seam_rightwards(&self) -> Option<Seam> {
@@ -101,9 +96,9 @@ pub enum OpenIntent {
     /// A launch beside what the person is working in (rules 1–3).
     #[default]
     Launch,
-    /// An app explicitly chosen from search: spatially predictable rather
-    /// than focus-relative, so selecting a result never silently becomes a
-    /// tab just because the focused group holds several.
+    /// An app explicitly chosen from search: its own window beside the one
+    /// you're in (rules 1 and 3), never silently a tab just because the
+    /// focused group holds several.
     Search,
     /// A view an actor's action needs, opened beside the group that actor
     /// works in ([`OpenContext::beside`]): a new group right after it, never
@@ -197,37 +192,28 @@ pub fn open_app_placement(
             .map(|seam| seam.after)
             .filter(|group| owns(*group))
     };
+    let selected = at
+        .selected
+        .and_then(|id| strip.window_groups.iter().find(|g| g.id == id))
+        .filter(|g| owns(g.id));
     Ok(match at.intent {
-        OpenIntent::Launch => {
-            let selected = at
-                .selected
-                .and_then(|id| strip.window_groups.iter().find(|g| g.id == id))
-                .filter(|g| owns(g.id));
-            match selected {
-                Some(group) if group.tabs.len() > 1 => TabPlacement::InGroup {
+        OpenIntent::Launch | OpenIntent::Search => match selected {
+            Some(group) if group.tabs.len() > 1 && at.intent == OpenIntent::Launch => {
+                TabPlacement::InGroup {
                     strip: strip.id.0,
                     group: group.id,
                     after: None,
-                },
-                Some(group) => new_group(Some(group.id)),
-                None => new_group(seam(StripViewport::visible_seam)),
+                }
             }
-        }
+            Some(group) => new_group(Some(group.id)),
+            None => new_group(seam(StripViewport::visible_seam)),
+        },
         OpenIntent::Beside => new_group(
             at.selected
                 .filter(|id| strip.window_groups.iter().any(|g| g.id == *id))
                 .or_else(|| strip.window_groups.last().map(|g| g.id))
                 .filter(|group| owns(*group)),
         ),
-        OpenIntent::Search => {
-            new_group(seam(StripViewport::rightmost_visible_seam).or_else(|| {
-                strip
-                    .window_groups
-                    .last()
-                    .map(|g| g.id)
-                    .filter(|group| owns(*group))
-            }))
-        }
     })
 }
 
@@ -375,29 +361,30 @@ mod tests {
     }
 
     #[test]
-    fn search_takes_the_rightmost_visible_seam() {
+    fn search_opens_beside_the_selection_never_as_a_tab() {
         use OpenIntent::Search;
+        // A | B | C | D in view, A (tabbed) selected: right of A, where the
+        // person is working, not after D at the far edge, and not a tab.
         let (w, ids) = workspace(&[3, 1, 1, 1]);
         let view = viewport(&ids, (0.0, 350.0));
         assert_eq!(
             place(&w, Search, Some(ids[0]), Some(&view)),
-            right_of(ids[2])
+            right_of(ids[0])
         );
+        assert_eq!(place(&w, Search, Some(ids[1]), None), right_of(ids[1]));
 
-        let (pair, pair_ids) = workspace(&[1, 1]);
-        let view = viewport(&pair_ids, (0.0, 350.0));
-        assert_eq!(
-            place(&pair, Search, None, Some(&view)),
-            right_of(pair_ids[1])
-        );
-
+        // Nothing selected: the seam in view, like a launch.
         let (three, three_ids) = workspace(&[1, 1, 1]);
+        let view = viewport(&three_ids, (150.0, 280.0));
+        assert_eq!(
+            place(&three, Search, None, Some(&view)),
+            right_of(three_ids[1])
+        );
         let view = viewport(&three_ids, (20.0, 90.0));
         assert_eq!(
             place(&three, Search, None, Some(&view)),
             right_of(three_ids[0])
         );
-        assert_eq!(place(&three, Search, None, None), right_of(three_ids[2]));
     }
 
     #[test]

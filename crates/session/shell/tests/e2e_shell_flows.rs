@@ -841,25 +841,34 @@ fn overlay_host_keys_and_corner_clicks_open_close_and_navigate_overlays() {
             let before =
                 chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0].active_tab;
 
-            let mods = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+            // Ctrl+Tab belongs to the focused app first (keyboard_focus_wire
+            // and app_tabs cover it); the desktop's own spelling adds Super.
+            let mods = Modifiers::from(
+                winit::keyboard::ModifiersState::SUPER | winit::keyboard::ModifiersState::CONTROL,
+            );
             let handled = pump_host(&mut host, &named_key(NamedKey::Tab), mods);
-            assert!(handled, "Ctrl+Tab must be consumed by the overlay host");
+            assert!(
+                handled,
+                "Super+Ctrl+Tab must be consumed by the overlay host"
+            );
             assert!(
                 !chrome.borrow().overlays.overview,
-                "Ctrl+Tab is tab navigation; only Super+Tab opens the overview"
+                "Super+Ctrl+Tab is tab navigation; only Super+Tab opens the overview"
             );
             let after =
                 chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0].active_tab;
-            assert_ne!(after, before, "Ctrl+Tab must select the next tab");
+            assert_ne!(after, before, "Super+Ctrl+Tab must select the next tab");
 
             let backwards = Modifiers::from(
-                winit::keyboard::ModifiersState::CONTROL | winit::keyboard::ModifiersState::SHIFT,
+                winit::keyboard::ModifiersState::SUPER
+                    | winit::keyboard::ModifiersState::CONTROL
+                    | winit::keyboard::ModifiersState::SHIFT,
             );
             assert!(pump_host(&mut host, &named_key(NamedKey::Tab), backwards));
             assert_eq!(
                 chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0].active_tab,
                 before,
-                "Ctrl+Shift+Tab must return to the previous tab"
+                "Super+Ctrl+Shift+Tab must return to the previous tab"
             );
         }
 

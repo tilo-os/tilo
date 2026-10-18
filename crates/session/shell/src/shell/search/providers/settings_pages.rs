@@ -19,6 +19,39 @@ use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchRe
 
 pub const PROVIDER_ID: &str = "settings-pages";
 
+/// The picture of each page: the one Settings' sidebar shows beside it,
+/// so a row from search and the page it opens look alike.
+fn page_icon(slug: &str) -> Option<ui::icons::Icon> {
+    use ui::icons::Icon;
+    Some(match slug {
+        "network" => Icon::Wifi,
+        "bluetooth" => Icon::Bluetooth,
+        "devices_sync" => Icon::Cloud,
+        "sound" => Icon::Volume2,
+        "speakers" => Icon::Speaker,
+        "displays" => Icon::Monitor,
+        "keyboard" | "keyboard_shortcuts" => Icon::Keyboard,
+        "pointing" => Icon::Mouse,
+        "spelling" => Icon::Type,
+        "time_date" => Icon::Calendar,
+        "users" => Icon::Users,
+        "printers" => Icon::Printer,
+        "power" => Icon::Battery,
+        "appearance" => Icon::Palette,
+        "accessibility" => Icon::Eye,
+        "notifications" => Icon::Bell,
+        "default-apps" => Icon::LayoutGrid,
+        "storage" => Icon::HardDrive,
+        "external_accounts" => Icon::Mail,
+        "agent_models" => Icon::Sparkles,
+        "region_formats" => Icon::Globe,
+        "permissions" => Icon::Shield,
+        "updates" => Icon::Refresh,
+        "about" => Icon::Info,
+        _ => return None,
+    })
+}
+
 pub struct SettingsPagesProvider {
     kinds: Vec<ResourceKind>,
     /// The rows' text, indexed while it stays the same.
@@ -233,6 +266,34 @@ impl SearchProvider for SettingsPagesProvider {
         &self.kinds
     }
 
+    fn row_icon(&self, result: &SearchResult) -> Option<ui::icons::Icon> {
+        // A setting wears the picture of the page it is on.
+        let slug = result.id.strip_prefix("page:").or_else(|| {
+            let id = result.id.strip_prefix("setting:")?;
+            index::SETTINGS
+                .iter()
+                .find(|setting| setting.id == id)
+                .map(|setting| setting.page)
+        })?;
+        page_icon(slug)
+    }
+
+    /// A setting the system settings offer in place (its value on the row,
+    /// changed without opening Settings) is one row for people, that one;
+    /// its "open the page at it" row stays for agents and the page itself
+    /// still lists it.
+    fn hidden_from_people(
+        &self,
+        result: &SearchResult,
+        _needle: &str,
+        _chrome: &crate::shell::chrome_state::ChromeState,
+    ) -> bool {
+        result
+            .id
+            .strip_prefix("setting:")
+            .is_some_and(super::system_settings::offers_in_place)
+    }
+
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
         self.with_built(&ctx, |built| {
             crate::shell::search::usage::order_ties_after(self.ranked(built, ctx.needle.trim()))
@@ -265,5 +326,17 @@ impl SettingsPagesProvider {
             *built = Some(Self::build(kind, locale));
         }
         built.as_ref().map(read)
+    }
+}
+
+#[cfg(test)]
+mod icon_tests {
+    #[test]
+    fn every_page_wears_its_own_picture_not_the_magnifier() {
+        for page in settings_store::index::PAGES {
+            let slug = page.slug;
+            let icon = super::page_icon(slug).unwrap_or_else(|| panic!("{slug} has no icon"));
+            assert_ne!(icon, ui::icons::Icon::Search, "{slug}");
+        }
     }
 }

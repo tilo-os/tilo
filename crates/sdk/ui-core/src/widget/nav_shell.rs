@@ -1439,6 +1439,24 @@ impl NavShell {
         self.toasts_dirty = true;
     }
 
+    /// Show a notice with one button, `action` ("Undo"), beside its text.
+    /// [`Self::take_toast_action`] reports the press.
+    pub fn toast_with_action(
+        &mut self,
+        text: impl Into<String>,
+        kind: ToastKind,
+        action: impl Into<String>,
+    ) {
+        self.toasts.push_with_action(text, kind, action);
+        self.toasts_dirty = true;
+    }
+
+    /// The text of the notice whose button the person pressed since the
+    /// last call.
+    pub fn take_toast_action(&mut self) -> Option<String> {
+        self.toasts.take_activated()
+    }
+
     /// Take down the notice showing, when its news no longer holds.
     pub fn dismiss_toast(&mut self) {
         if !self.toasts.is_empty() {

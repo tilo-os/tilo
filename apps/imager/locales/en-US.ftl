@@ -536,7 +536,7 @@ installer-preview-backup-body = Use your encrypted backup and its passphrase.
 installer-preview-purpose-heading = How will this device be used?
 installer-preview-purpose-intro = The same Tilo OS, with defaults for the job it will do.
 installer-preview-purpose-computer-title = Computer
-installer-preview-purpose-computer-body = For everyday use. Sleeps after 15 minutes idle by default; your approved devices sync while it is awake.
+installer-preview-purpose-computer-body = For everyday use. Choose when it sleeps in Power settings; your approved devices sync while it is awake.
 installer-preview-purpose-server-title = Always-available server
 installer-preview-purpose-server-body = Keeps running when idle so your approved devices can sync. Screen blanking, locking, lid and low-battery protection stay on. Use reliable power; this does not grant remote access or enable nearby-device discovery.
 
@@ -643,6 +643,8 @@ installer-preview-identity-invalid-color = Choose a valid avatar color.
 installer-preview-invalid-choice = That choice isn't available on this page.
 
 installer-preview-wrong-page = This action isn't available on the current page.
+installer-demo-unavailable = This action isn't available in the demo.
+installer-demo-notice = Preview only · Example data. Nothing will be installed or connected.
 
 installer-preview-at-start = You're at the beginning of setup.
 
@@ -1240,6 +1242,7 @@ installer-desktop-prepare = Set up Tilo Desktop
 
 installer-desktop-password-intro = Choose a password to protect your prepared Tilo identity and connections. Your computer’s login password stays the same.
 
+installer-desktop-keep-existing = Your files, applications and Linux account stay unchanged. Your current desktop remains the default session.
 installer-desktop-unavailable = Tilo Desktop setup is unavailable on this computer.
 
 installer-desktop-enrolled-unavailable = This prepared device identity is for a new Tilo device. To use Tilo Desktop on this computer, use an identity backup.

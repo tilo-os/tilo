@@ -513,9 +513,17 @@ fn apple_key(name: &str) -> Option<&'static str> {
 
 static ACTIVE: AtomicU8 = AtomicU8::new(0);
 
+thread_local! {
+    /// The layout [`scoped`] put in place on this thread, read ahead of the
+    /// process-wide one.
+    static SCOPED: std::cell::Cell<Option<Keycaps>> = const { std::cell::Cell::new(None) };
+}
+
 /// The legends of the layout the keyboard is typing with now.
 pub fn active() -> Keycaps {
-    Keycaps::from_code(ACTIVE.load(Ordering::Relaxed))
+    SCOPED
+        .with(std::cell::Cell::get)
+        .unwrap_or_else(|| Keycaps::from_code(ACTIVE.load(Ordering::Relaxed)))
 }
 
 /// Publish the legends of the layout the keyboard just switched to.
@@ -523,9 +531,54 @@ pub fn set_active(keycaps: Keycaps) {
     ACTIVE.store(keycaps.code(), Ordering::Relaxed);
 }
 
+/// Read `keycaps` as the active layout on this thread only, until the
+/// returned guard drops; the previous scope comes back then, even when the
+/// holder panics. For code that renders labels under a given layout (a test
+/// asking for German keycaps) without changing what every other thread
+/// reads: [`set_active`] is process-wide, so a test using it would leak its
+/// layout into every test running beside it.
+#[must_use = "the layout applies only while the guard lives"]
+pub fn scoped(keycaps: Keycaps) -> ScopedKeycaps {
+    ScopedKeycaps {
+        previous: SCOPED.with(|scoped| scoped.replace(Some(keycaps))),
+    }
+}
+
+/// Keeps a [`scoped`] layout in place on its thread.
+#[derive(Debug)]
+pub struct ScopedKeycaps {
+    previous: Option<Keycaps>,
+}
+
+impl Drop for ScopedKeycaps {
+    fn drop(&mut self) {
+        SCOPED.with(|scoped| scoped.set(self.previous));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_scoped_layout_stays_on_its_thread_and_unwinds() {
+        let german = Keycaps::from_xkb("de", "");
+        let outer = scoped(german);
+        assert_eq!(active(), german);
+        let other = std::thread::spawn(active).join().ok();
+        assert_eq!(
+            other,
+            Some(Keycaps::from_code(ACTIVE.load(Ordering::Relaxed))),
+            "another thread keeps reading the process-wide layout"
+        );
+        {
+            let _mac = scoped(Keycaps::from_xkb("us", "mac"));
+            assert_eq!(active(), Keycaps::from_xkb("us", "mac"));
+        }
+        assert_eq!(active(), german, "the inner scope restores the outer");
+        drop(outer);
+        assert_eq!(active(), Keycaps::from_code(ACTIVE.load(Ordering::Relaxed)));
+    }
 
     fn chord(keycaps: Keycaps, modifiers: &[&str], key: &str) -> String {
         keycaps.chord(modifiers.iter().copied(), key)

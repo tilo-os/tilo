@@ -17,7 +17,7 @@ pub trait AppSurface {
     /// Show `cursor` while the pointer is over the app.
     fn set_cursor(&self, cursor: CursorIcon);
     /// Whether the surface's host answers the desktop's tab chords (Ctrl+T,
-    /// Ctrl+W, Ctrl+Shift+T) itself, so the app leaves them unhandled for it
+    /// Ctrl+W, Ctrl+Shift+T, Ctrl+Tab, Ctrl+Shift+Tab) itself, so the app leaves them unhandled for it
     /// rather than asking the session's tab service.
     fn hosts_tab_chords(&self) -> bool {
         false
@@ -596,8 +596,8 @@ impl App {
             handled = true;
         }
 
-        // Ctrl+T / Ctrl+W / Ctrl+Shift+T nobody consumed are the desktop's
-        // tab chords.
+        // Ctrl+T / Ctrl+W / Ctrl+Shift+T / Ctrl+Tab / Ctrl+Shift+Tab nobody
+        // consumed are the desktop's tab chords.
         if !window.hosts_tab_chords() {
             app.handle_unconsumed_tab_chord(&event, &mut handled);
         }

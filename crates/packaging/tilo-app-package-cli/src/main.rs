@@ -1306,7 +1306,7 @@ mod runtime_readiness_tests {
         let signer = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
         let url = "https://apps.tilo.so/artifacts/browser.tapp";
         let mut app = RegistryEntry {
-            package_id: manifest.package.id.to_string(),
+            package_id: manifest.package.id.clone(),
             kind: registry_types::EntryKind::App,
             name: "Browser".into(),
             description: "Browse the web".into(),

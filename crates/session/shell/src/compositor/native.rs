@@ -2310,6 +2310,26 @@ fn pump_floating_surface_service(
                         crate::shell::app_tabs::AppTabRequest::ReopenClosed,
                     );
                 }
+                ui::floating_surface::FloatingSurfaceClientMessage::CycleTab {
+                    forward,
+                    instance,
+                } => {
+                    // The app had the Ctrl+Tab first and left it alone. The
+                    // connection vouches for the app id, so an app can only
+                    // step through the group its own focused tab is in.
+                    let focused = crate::shell::app_tabs::is_focused_app_tab(
+                        &frame_builder.chrome().tree(),
+                        &app_id,
+                        instance,
+                    );
+                    if focused {
+                        changed |= frame_builder.host_mut().cycle_focused_tab(if forward {
+                            1
+                        } else {
+                            -1
+                        });
+                    }
+                }
                 ui::floating_surface::FloatingSurfaceClientMessage::PlaceNextWindowBeside {
                     background,
                     instance,
@@ -11368,6 +11388,14 @@ pub fn run() {
                     // Carry the modifier mask forward so the next event dispatched (or the
                     // lock-chord check above) sees the right Ctrl/Shift/Alt/Super state.
                     test_control_ctx.modifiers = modifiers;
+                    // An open search previews on its selected row what Enter
+                    // does with the modifier just pressed or released.
+                    if frame_builder
+                        .host_mut()
+                        .note_held_modifiers(modifiers.state())
+                    {
+                        session_changed = true;
+                    }
                 }
                 BackendEvent::KeyboardConfiguration { scope, settings } => {
                     frame_builder.host_mut().set_keyboard_scope(scope.clone());

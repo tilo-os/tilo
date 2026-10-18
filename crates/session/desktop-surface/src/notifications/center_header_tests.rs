@@ -74,6 +74,44 @@ fn normal_header_retains_its_single_band_geometry() {
     );
 }
 
+/// Do Not Disturb is stated where the person looks for what they missed:
+/// a status line under the centre's header, which pushes the rows down
+/// rather than covering them, and the first thing a reader hears.
+#[test]
+fn quiet_mode_is_a_status_line_under_the_header() {
+    for theme in [Theme::light(), Theme::dark().with_text_scale(2.0)] {
+        let metrics = CenterLayout::metrics(&theme, &mut TextRenderer::new());
+        let host = super::super::stack::tests::TestHost::default();
+        host.log
+            .borrow_mut()
+            .retain(Notification::new("Held", "While you were busy"));
+        let center = NotificationCenter::new();
+        let loud = center.preferred_height_for_width(&host, &metrics, 360.0);
+        host.quiet.replace(Some("Do Not Disturb".into()));
+        let quiet_height = center.preferred_height_for_width(&host, &metrics, 360.0);
+        assert!(quiet_height > loud, "the status line takes its own room");
+        let panel = Rect::new(0.0, 0.0, 360.0, quiet_height);
+        let layout = CenterLayout::new(panel, &metrics).quiet(true);
+        let status = layout.quiet_rect();
+        assert!(status.height() > 0.0);
+        assert!(status.y0 >= layout.back().y1);
+        assert!(status.y0 >= layout.title_rect().y1);
+        assert!(status.y1 <= layout.rows_top());
+        assert_eq!(
+            CenterLayout::new(panel, &metrics).quiet_rect().height(),
+            0.0
+        );
+        let node = center.accessibility(&host, &layout, ui::time::now());
+        assert!(
+            node.description
+                .as_deref()
+                .is_some_and(|text| text.starts_with("Do Not Disturb. ")),
+            "{:?}",
+            node.description
+        );
+    }
+}
+
 #[test]
 fn narrow_header_keeps_clear_undo_and_nested_back_journeys() {
     use super::super::stack::tests::TestHost;

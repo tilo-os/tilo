@@ -834,7 +834,7 @@ fn an_app_is_not_installed_or_updated_without_the_optional_runtime_it_pins() {
 
     // Update: a build pinning an engine this device lacks does not replace
     // the working one.
-    let v2 = env.tapp_pinning_optional("2.0.0", b"two", "tilo-runtime/2026.10.10-chromium");
+    let v2 = env.tapp_pinning_optional("2.0.0", b"two", "tilo-runtime/2026.10.17-chromium");
     let (ok, out, err) = env.cmd(&[
         "update",
         "so.tilo.lifecycle",
@@ -842,7 +842,7 @@ fn an_app_is_not_installed_or_updated_without_the_optional_runtime_it_pins() {
         v2.to_str().unwrap(),
     ]);
     assert!(!ok, "update must refuse: {out}{err}");
-    assert!(err.contains("2026.10.10-chromium"), "{err}");
+    assert!(err.contains("2026.10.17-chromium"), "{err}");
     assert_eq!(
         std::fs::read(env.payload_root().join("bin/app")).unwrap(),
         b"one",
@@ -853,7 +853,7 @@ fn an_app_is_not_installed_or_updated_without_the_optional_runtime_it_pins() {
     let bundle = env
         .xdg_data()
         .join("tilo-runtime")
-        .join("2026.10.10-chromium");
+        .join("2026.10.17-chromium");
     std::fs::create_dir_all(&bundle).unwrap();
     std::fs::write(bundle.join("bundle.toml"), b"").unwrap();
     let (ok, out, err) = env.cmd(&[

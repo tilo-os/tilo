@@ -90,6 +90,8 @@ pub struct BridgePlan {
     pub complete_links: Vec<Value>,
     /// `unlink`.
     pub unlinks: Vec<Value>,
+    /// `rename-link`.
+    pub renames: Vec<Value>,
     /// Chat `create-category`, then `map` it.
     pub import_categories: Vec<Value>,
     /// Chat `create-channel`, then `map` it.
@@ -562,6 +564,7 @@ fn inbound_plan(plan: &mut BridgePlan, read: Reading<'_>, inbound: InboundPlan) 
             .into_iter()
             .map(|user| json!({ "discord_user": user })),
     );
+    plan.renames.extend(values(inbound.renames));
 }
 
 #[cfg(test)]

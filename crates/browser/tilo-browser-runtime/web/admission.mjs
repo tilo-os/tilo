@@ -8,7 +8,8 @@
  *    a room service guest `ticket` is spent on this page's pairing code at
  *    the redemption door the web host names (`entry.json` `tickets`);
  *    with `pair`, this browser becomes a new device of that person once
- *    one of their devices approves its pairing code (the host relays);
+ *    one of their devices approves its pairing code (the host relays): the
+ *    device that made the link, when it names an invite (`pairing.mjs`);
  * 3. a member connects with this browser's existing account for that host
  *    (where other tabs hold every device key it has there, this tab goes on
  *    to 4 and 5 as a new device of the person);
@@ -26,6 +27,8 @@
  * link never tells a stranger which rooms exist. Only after admission does
  * the page read the room's catalogue to resolve the target.
  */
+import {parsePairSecret} from './pairing.mjs';
+
 export const NO_ACCESS = 'You don’t have access to this workspace. Ask the person who shared the link to invite you.';
 
 export class AdmissionError extends Error {
@@ -86,8 +89,10 @@ export async function admit({scope, secrets = {}, tickets, deps, onProgress = ()
   }
   if (secrets.pair) {
     if (!deps.pairDevice) throw new AdmissionError('unsupported', 'This page cannot pair a device');
+    const pairing = parsePairSecret(secrets.pair);
+    if (!pairing) throw new AdmissionError('malformed', 'This pairing link is damaged. Make a new one on your other device.');
     onProgress({phase: 'pairing'});
-    return ready(await deps.pairDevice({origin, room, userPublicKey: secrets.pair, workspace: listed}));
+    return ready(await deps.pairDevice({origin, room, ...pairing, workspace: listed}));
   }
   /** Steps 4 to 6: the host's door, else the root this page holds. */
   const withoutAccount = async busy => {

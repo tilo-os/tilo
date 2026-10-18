@@ -1047,6 +1047,23 @@ mod parent_durability_tests {
     use tilo_files::native::atomic::{DirectoryState, directory_state};
 
     #[test]
+    fn existing_copy_parent_is_not_reprovisioned_before_locking() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("settings.json");
+        let visits = Rc::new(RefCell::new(Vec::new()));
+        let observed = visits.clone();
+        let guard = with_provision_observer(
+            move |event| observed.borrow_mut().push(event.path.clone()),
+            || session::lock_copy(&path),
+        )
+        .unwrap();
+        assert!(visits.borrow().is_empty());
+        assert!(session::lock_path(&path).is_file());
+        assert!(!path.exists(), "locking must not publish settings");
+        drop(guard);
+    }
+
+    #[test]
     fn public_update_preserves_file_publication_phase_and_visible_format() {
         use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
         use tilo_files::native::atomic::{PublicationState, publication_state};

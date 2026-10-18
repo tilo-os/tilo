@@ -166,6 +166,16 @@ pub fn anchor_for_app(
         .map(|(anchor, _)| anchor)
 }
 
+/// Whether the tab a request from `app_id` (launched as record `instance`)
+/// answers to is the focused tab. A tab chord the app left unhandled is a
+/// keypress in the focused window; by the time it arrives focus may have
+/// moved on, and stepping through some other group's tabs would then be a
+/// surprise.
+pub fn is_focused_app_tab(tree: &WorkspaceTree, app_id: &str, instance: Option<u64>) -> bool {
+    anchor_for_app(tree, app_id, instance)
+        .is_some_and(|anchor| focused_tab(tree) == Some(anchor.tab))
+}
+
 /// Where the new instance's window lands: right after `anchor`, in front
 /// unless `background`; without an anchor, wherever a launch lands.
 pub fn placement_after(st: &ChromeState, anchor: Option<TabAnchor>, background: bool) -> Placement {
@@ -481,7 +491,9 @@ mod tests {
             );
         }
 
-        // Phase `an_app_hosted_in_the_shell_answers_the_same_chords`.
+        // Phase `an_app_hosted_in_the_shell_answers_the_same_chords`: the
+        // Ctrl tab chords reach the app first and step, close or reopen only
+        // because it left them unhandled.
         {
             use winit::event::Modifiers;
             use winit::keyboard::{Key, ModifiersState};
@@ -504,17 +516,39 @@ mod tests {
             let mut chord = |frame: &mut crate::shell::test_support::PopulatedShellFixture,
                              key: &str,
                              modifiers: ModifiersState| {
+                let key = if key == "Tab" {
+                    Key::Named(winit::keyboard::NamedKey::Tab)
+                } else {
+                    Key::Character(key.into())
+                };
                 frame.dispatch_event(
-                    &ui::synthetic_input::key_input(
-                        &Key::Character(key.into()),
-                        winit::event::ElementState::Pressed,
-                    ),
+                    &ui::synthetic_input::key_input(&key, winit::event::ElementState::Pressed),
                     &Modifiers::from(modifiers),
                     &mut ui::widget::Edits::lend(&mut document),
                     &automerge::ROOT,
                     &mut focus,
                 )
             };
+            let active = |frame: &crate::shell::test_support::PopulatedShellFixture| {
+                crate::shell::window_actions::active_tab_id(&frame.chrome()).unwrap()
+            };
+            let start = active(&frame);
+            assert!(
+                chord(&mut frame, "Tab", ModifiersState::CONTROL),
+                "Ctrl+Tab"
+            );
+            let stepped = active(&frame);
+            assert_ne!(stepped, start, "Ctrl+Tab the app left shows the next tab");
+            assert!(before.contains(&stepped), "within the same group");
+            assert!(
+                chord(
+                    &mut frame,
+                    "Tab",
+                    ModifiersState::CONTROL | ModifiersState::SHIFT
+                ),
+                "Ctrl+Shift+Tab"
+            );
+            assert_eq!(active(&frame), start, "and Ctrl+Shift+Tab goes back");
             assert!(chord(&mut frame, "w", ModifiersState::CONTROL), "Ctrl+W");
             let closed = group_tabs(&frame.chrome().tree(), group).0;
             assert_eq!(
@@ -545,6 +579,7 @@ mod tests {
                 after,
                 "a plain t is typing, not a tab chord"
             );
+            drop(frame);
         }
 
         // Phase `an_unknown_app_or_undeclared_target_opens_nothing`.

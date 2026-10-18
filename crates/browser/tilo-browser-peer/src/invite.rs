@@ -11,7 +11,7 @@ use tilo_relay_client::DeviceSigner;
 use tilo_relay_protocol::rooms::{JoinChallengeView, JoinReply, JoinStep, join_proof_digest};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, device_cert_signing_digest};
 
-use crate::carrier::{self, HttpClient, LinkError};
+use tilo_relay_client::https::{self, HttpClient, LinkError};
 
 /// The page's own certificate for its device, signed by the person's own
 /// root `root`: a member device named `label`, with no expiry.
@@ -54,7 +54,7 @@ pub async fn guest_certificate(
 ///
 /// Returns [`LinkError`] when the host is not reached or answers badly.
 pub async fn join(client: &dyn HttpClient, step: &JoinStep) -> Result<JoinReply, LinkError> {
-    carrier::join(client, step).await
+    https::join(client, step).await
 }
 
 /// Ask to join with `invitation` as the device `cert` signed by `signer`,

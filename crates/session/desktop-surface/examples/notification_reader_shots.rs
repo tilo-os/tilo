@@ -22,6 +22,10 @@ impl NotificationHost for Fixture {
     fn log(&self) -> Ref<'_, NotificationLog> {
         self.0.borrow()
     }
+    fn present(&self, now: ui::time::Instant, on_screen: &[u64], held: bool) {
+        self.0.borrow_mut().present(now, on_screen, held);
+    }
+    fn open_center(&self) {}
     fn dismiss(&self, id: u64) {
         self.dismiss_history(id);
     }

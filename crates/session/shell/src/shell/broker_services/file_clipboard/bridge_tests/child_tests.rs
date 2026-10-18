@@ -141,7 +141,8 @@ async fn child_journey(info: &ChildInfo) {
             b.command(Command::Paste {
                 offer,
                 destination,
-                operation: operation.clone()
+                operation: operation.clone(),
+                conflict: runtime_collab::file_clipboard::Conflict::KeepBoth,
             })
             .await
             .expect("sandboxed native Paste"),

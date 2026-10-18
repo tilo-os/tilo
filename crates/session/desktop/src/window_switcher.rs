@@ -361,6 +361,15 @@ impl FocusHistory {
         }
     }
 
+    /// The active workspace's windows (tabs) by when they were last focused,
+    /// most recent first; windows never focused are not listed.
+    pub fn recent_tabs(&self, tree: &DesktopTree) -> Vec<u64> {
+        tree.active_workspace()
+            .and_then(|ws| self.recent.get(&ws.id))
+            .cloned()
+            .unwrap_or_default()
+    }
+
     /// The active workspace's windows, focused one first, then by recency.
     /// Windows never focused follow in strip order from the focused one, so
     /// on a fresh desktop Alt+Tab steps to the next window along the strip.
@@ -710,6 +719,12 @@ impl WindowSwitcher {
         self.pointer_dirty |= session.windows.len() != before;
         self.hover =
             hovered.and_then(|id| session.windows.iter().position(|w| w.address.tab == id));
+    }
+
+    /// The active workspace's windows by when they were last focused, most
+    /// recent first ([`FocusHistory::recent_tabs`]).
+    pub fn recent_tabs(&self, tree: &DesktopTree) -> Vec<u64> {
+        self.history.recent_tabs(tree)
     }
 
     /// The windows Alt+Tab would walk right now, in order.

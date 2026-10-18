@@ -344,7 +344,7 @@ struct Desktop {
     /// The name and colour each person who opened a window here had when
     /// last seen, by user root: their windows still name them once they
     /// left.
-    people: RefCell<HashMap<String, (String, (u8, u8, u8))>>,
+    people: RefCell<HashMap<String, crate::desktop::PersonIdentity>>,
 }
 
 impl Desktop {
@@ -1077,6 +1077,7 @@ fn present_desktop(
             permissions,
             models: config.models()?,
             provider_admin: config.provider_admin()?,
+            peer: config.peer,
         },
         dyn_store,
         config.apps.as_deref(),
@@ -1204,33 +1205,18 @@ fn present_component(
         .load(config.instance)
         .map_err(error)?
         .map_or(RestoreInput::None, RestoreInput::Local);
+    let inputs = HostContextInputs {
+        records: record.clone(),
+        views,
+        device_id: config.device.clone(),
+        instance_id: config.instance,
+        permissions,
+        author: UserId(config.author()),
+        action_context: tilo_actions::ActionContext::default(),
+    };
     let mut context = match named_new {
-        Some(id) => HostContext::prepare_new_record(
-            definition,
-            HostContextInputs {
-                records: record.clone(),
-                views,
-                device_id: config.device.clone(),
-                instance_id: config.instance,
-                permissions,
-                author: UserId(config.author()),
-                action_context: tilo_actions::ActionContext::default(),
-            },
-            id,
-        ),
-        None => HostContext::prepare(
-            definition,
-            HostContextInputs {
-                records: record.clone(),
-                views,
-                device_id: config.device.clone(),
-                instance_id: config.instance,
-                permissions,
-                author: UserId(config.author()),
-                action_context: tilo_actions::ActionContext::default(),
-            },
-            &target,
-        ),
+        Some(id) => HostContext::prepare_new_record(definition, inputs, id),
+        None => HostContext::prepare(definition, inputs, &target),
     }
     .map_err(error)?;
     context.provide_models(config.models()?);
@@ -2880,6 +2866,34 @@ pub fn desktop_acknowledge(id: u64, text: &str) -> Result<(), JsValue> {
             .ok_or_else(|| error("Desktop unavailable"))?
             .handle
             .acknowledge(text);
+        m.window.request_redraw();
+        Ok(())
+    })
+}
+
+/// The room's host answered the room action `request` the desktop asked for
+/// (a `room-action` host request): `answer` is `{"ok": value}` or
+/// `{"error": "why"}`.
+///
+/// # Errors
+///
+/// Rejects a closed or single-application mount, or an answer of neither
+/// form.
+#[wasm_bindgen]
+pub fn desktop_room_action_answer(id: u64, request: u32, answer: &str) -> Result<(), JsValue> {
+    let answer: serde_json::Value = serde_json::from_str(answer).map_err(error)?;
+    let answer = match (answer.get("ok"), answer.get("error")) {
+        (Some(value), None) => Ok(value.clone()),
+        (None, Some(why)) => Err(why.as_str().unwrap_or("refused").to_owned()),
+        _ => return Err(error("a room action answer is {ok} or {error}")),
+    };
+    with_mount(id, |m| {
+        let desktop = m
+            .desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?;
+        desktop.shared.room_actions.answer(request, answer);
+        m.pending = true;
         m.window.request_redraw();
         Ok(())
     })

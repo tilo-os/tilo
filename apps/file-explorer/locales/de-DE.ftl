@@ -6,6 +6,7 @@ files-time-unknown = unbekannter Zeitpunkt
 ## Tastaturkurzbefehle
 files-shortcuts-title = Tastaturkurzbefehle
 files-shortcuts-row = { $action }: { $keys }
+files-shortcuts-preview = Vorschau
 files-shortcuts-open = Öffnen
 files-shortcuts-back-forward = Zurück, vor
 files-shortcuts-up = Übergeordneter Ordner
@@ -100,7 +101,7 @@ files-property-history = Verlauf: { $versions } { $versions ->
     [one] Konflikt
    *[other] Konflikte
 }
-files-properties-collab-summary = Dateisystem und verifizierte kollaborative Metadaten
+files-properties-collab-summary = Datei- und Freigabedetails
 files-availability-title = Verfügbarkeit — { $name }
 files-availability-title-short = Verfügbarkeit…
 files-not-stored = Nicht auf diesem Gerät gespeichert
@@ -109,11 +110,11 @@ files-stored = Auf diesem Gerät gespeichert ({ $bytes } Byte)
 files-kept-offline-parent = Durch einen übergeordneten Ordner offline gehalten
 files-kept-offline = Offline verfügbar gehalten
 files-automatic-storage = Automatische Speicherverwaltung
-files-replica-unverified = Die Replikatsicherheit wurde nicht verifiziert
-files-replica-counts = { $reachable } erreichbar, { $durable } dauerhafte { $durable ->
-    [one] Replik
-   *[other] Repliken
-}
+files-replica-unverified = Noch unbekannt, ob andere Geräte eine Kopie haben
+files-replica-counts = Auf { $durable } { $durable ->
+    [one] anderen Gerät
+   *[other] anderen Geräten
+} gespeichert
 files-transfer-state = Übertragung: { $state }
 files-transfer-idle = inaktiv
 files-transfer-queued = eingereiht
@@ -168,7 +169,7 @@ files-share-creating = Freigabe wird erstellt…
 files-share-invalid-options = Diese Freigabeoptionen können nicht kombiniert werden
 files-share-link-needs-expiry = Freigabelinks benötigen ein Ablaufdatum
 files-share-invalid-uses = Freigabelinks benötigen ein Verwendungslimit von 1 bis 1.000
-files-share-recipient-unreachable = Diese Person hat kein zertifiziertes Zustellgerät
+files-share-recipient-unreachable = Keins der Geräte dieser Person kann gerade Dateien empfangen
 files-sharing-access = Freigabe und Zugriff…
 files-share-with = Für { $person } freigeben
 files-revoke-subject = Zugriff für { $subject } widerrufen
@@ -193,7 +194,7 @@ files-no-expiry = läuft nicht ab
 files-expires = läuft am { $time } ab
 files-share-grant-line = { $subject }: { $permission }, { $status }, { $expiry }
 files-sharing-title = Freigabe — { $name }
-files-certified-devices = { $person }, zertifizierte Geräte: { $devices }
+files-certified-devices = { $person }, Geräte: { $devices }
 files-certified-device-detail = { $device }, Schlüssel { $fingerprint }, { $capabilities }, ausgestellt { $issued }, { $expiry }
 files-device-cap-own = verwaltet Arbeitsbereiche
 files-device-cap-admit = lässt Geräte zu
@@ -217,7 +218,7 @@ files-restore-previous = Vorherige Version wiederherstellen
 files-resolve-keep-current = { $conflict } lösen — Aktuelle behalten
 files-resolve-use-other = { $conflict } lösen — Andere verwenden (Gerät { $device })
 files-history-version-line = { $action } { $time } von { $person } auf Gerät { $device }
-files-history-older = Ältere Versionen sind über den Verlaufsdienst verfügbar
+files-history-older = Ältere Versionen sind noch nicht auf diesem Gerät
 files-conflict-needs-review = Überprüfung erforderlich
 files-conflict-resolved-strategy = Gelöst: { $strategy }
 files-conflict-resolved = Gelöst
@@ -230,7 +231,7 @@ files-conflict-line = Konflikt { $conflict }: { $count } { $count ->
    *[other] Versionen
 }, { $state }
 files-conflict-resolve-hint = Über das Kontextmenü lösen: Aktuelle behalten oder Andere verwenden
-files-conflict-unsupported-hint = Beide behalten und Zusammenführen sind nicht verfügbar, bis die signierten Abläufe unterstützt werden
+files-conflict-unsupported-hint = „Beide behalten“ und „Zusammenführen“ sind für diese Datei noch nicht verfügbar
 files-history-title = Versionsverlauf — { $name }
 files-history-summary = { $versions } { $versions ->
     [one] Version
@@ -249,19 +250,19 @@ files-merging-versions = Nicht überlappende Änderungen werden sicher zusammeng
 files-merge-review-menu = Zusammenführung prüfen
 files-merge-review-title = Zusammenführung prüfen — { $name }
 files-merge-review-summary = Es wurden noch keine Änderungen vorgenommen
-files-merge-review-checking = Die genauen unveränderlichen Versionen werden geprüft…
-files-merge-review-checking-detail = Tilo vergleicht beide Änderungen mit ihrer gemeinsamen Basis. Währenddessen wird nichts geändert.
+files-merge-review-checking = Die beiden Versionen werden verglichen …
+files-merge-review-checking-detail = Währenddessen ändert sich nichts.
 files-merge-review-safe = Sicher zusammenführbar
 files-merge-review-needs-review = Prüfung nötig — es wird nichts zusammengeführt
-files-merge-review-unavailable = Die Zusammenführungsprüfung ist nicht verfügbar. Aktualisieren Sie die Datei und vergleichen Sie die Versionen manuell.
-files-merge-review-no-apply = Behalten Sie beide Versionen oder wählen Sie nach dem Prüfen des unveränderlichen Diffs eine Version aus.
+files-merge-review-unavailable = Die Versionen lassen sich gerade nicht vergleichen. Aktualisiere die Datei und vergleiche sie im Versionsverlauf.
+files-merge-review-no-apply = Behalte beide oder wähle eine, nachdem du sie verglichen hast.
 files-merge-review-incoming = Eingehende Version von Gerät { $device }
-files-merge-review-diff = In der Versionshistorie können Sie die beiden unveränderlichen Versionen vor der Zusammenführung vergleichen.
-files-merge-review-guard = Tilo prüft die genaue Basis und beide Versionen unmittelbar vor dem Speichern erneut. Überlappen sich die Änderungen oder haben sie sich verändert, wird nichts zusammengeführt.
-files-merge-review-undo = Die Zusammenführung erstellt einen signierten Verlaufseintrag. So können Sie eine frühere Version wiederherstellen, ohne spätere Arbeit rückgängig zu machen.
+files-merge-review-diff = Der Versionsverlauf zeigt beide Versionen nebeneinander.
+files-merge-review-guard = Ändert sich eine der Versionen vor dem Anwenden, wird nichts zusammengeführt.
+files-merge-review-undo = Du kannst danach jede frühere Version wiederherstellen, ohne spätere Arbeit zu verlieren.
 files-merge-apply-safe = Sichere Zusammenführung anwenden
-files-merge-apply-safe-detail = Dies wird nur ausgeführt, wenn die deterministische Vorprüfung weiterhin beide Versionen sicher erhalten kann.
-files-conflict-resolved-signed = Konflikt mit einem signierten Verlaufseintrag gelöst
+files-merge-apply-safe-detail = Wird nur angewendet, wenn beide Versionen noch vollständig erhalten bleiben.
+files-conflict-resolved-signed = Konflikt gelöst
 files-history-change-saved = Verlaufsänderung gespeichert
 files-history-action-created = Erstellt
 files-history-action-edited = Bearbeitet
@@ -302,9 +303,9 @@ files-a11y-partly-offline = Teilweise offline verfügbar
 files-a11y-available-offline = Offline verfügbar
 files-a11y-kept-offline-parent = Durch übergeordneten Ordner offline gehalten
 files-a11y-kept-offline = Offline verfügbar gehalten
-files-a11y-replica-unknown = Replikatstatus unbekannt
-files-a11y-durably-replicated = Dauerhaft repliziert
-files-a11y-not-durably-replicated = Nicht dauerhaft repliziert
+files-a11y-replica-unknown = Kopien auf anderen Geräten unbekannt
+files-a11y-durably-replicated = Auf anderen Geräten gespeichert
+files-a11y-not-durably-replicated = Noch nicht auf anderen Geräten gespeichert
 files-a11y-shared-recipients = Für { $count } { $count ->
     [one] Empfänger
    *[other] Empfänger
@@ -315,12 +316,12 @@ files-a11y-version-conflict = Hat einen Versionskonflikt
 files-open-terminal-failed = Terminal konnte nicht geöffnet werden: { $error }
 files-conflict-strategy-unsupported = Diese Konfliktstrategie wird von Dateien noch nicht unterstützt
 files-conflict-encode-failed = Konfliktanfrage konnte nicht kodiert werden
-files-conflict-request-too-large = Konfliktanfrage überschreitet ihre Übertragungsgrenze
+files-conflict-request-too-large = Dieser Konflikt lässt sich hier nicht lösen. Versuch es im Versionsverlauf.
 files-conflict-resolve-failed = Konflikt konnte nicht gelöst werden: { $error }
 files-share-wrong-response = Freigabedienst hat die falsche Antwort zurückgegeben
 files-share-unavailable-error = Freigabedienst nicht verfügbar: { $error }
 files-share-encode-failed = Freigabeanfrage konnte nicht kodiert werden: { $error }
-files-share-request-too-large = Freigabeanfrage überschreitet ihre Übertragungsgrenze
+files-share-request-too-large = Zu viele Personen auf einmal. Teile mit weniger gleichzeitig.
 files-share-request-failed = Link konnte nicht angefordert werden: { $error }
 files-share-flush-failed = Freigabeanfrage konnte nicht abgeschlossen werden: { $error }
 files-share-no-response = Freigabedienst hat nicht geantwortet: { $error }
@@ -331,33 +332,34 @@ files-share-refused = Freigabedienst hat die Anfrage abgelehnt ({ $code })
 files-received-refused = Empfangsdienst hat den Link abgelehnt ({ $code })
 files-received-wrong-response = Empfangsdienst hat die falsche Antwort zurückgegeben
 files-received-encode-failed = Empfangsanfrage konnte nicht kodiert werden
-files-received-request-too-large = Empfangsanfrage überschreitet ihre Grenze
+files-received-request-too-large = Diese geteilte Datei kann nicht empfangen werden.
 files-received-unavailable = Empfangsdienst ist nicht verfügbar
 files-received-no-response = Empfangsdienst hat nicht geantwortet
 files-received-response-too-large = Empfangsdienst hat eine zu große Antwort zurückgegeben
 files-received-response-truncated = Antwort des Empfangsdienstes wurde abgeschnitten
 files-received-response-invalid = Empfangsdienst hat eine ungültige Antwort zurückgegeben
 files-received-not-available = Empfangsdienst ist nicht verfügbar
-files-received-fd-clone-failed = Dateideskriptor des Empfangsdienstes konnte nicht dupliziert werden
-files-received-fd-invalid = Dateideskriptor des Empfangsdienstes ist ungültig
+files-received-fd-clone-failed = Die geteilte Datei konnte nicht empfangen werden. Versuch es erneut.
+files-received-fd-invalid = Die geteilte Datei konnte nicht empfangen werden. Versuch es erneut.
 files-received-file = Freigegebene Datei empfangen
 files-received-mount-starting = Freigegebene Datei angenommen; Einbindung wird gestartet
 files-received-admitted = Freigegebene Datei angenommen
 files-received-link-read-failed = Link zur freigegebenen Datei konnte nicht gelesen werden
-files-received-link-too-large = Link zur freigegebenen Datei überschreitet seine Grenze
+files-received-link-too-large = Dieser Link ist zu lang zum Öffnen.
 files-received-link-invalid-text = Link zur freigegebenen Datei ist kein gültiger Text
 files-received-link-empty = Link zur freigegebenen Datei ist leer
 
 ## Anwendungsrahmen und Navigation
 files-app-title = Dateien
-files-selection-empty = Wählen Sie zuerst Dateien aus.
-files-clipboard-source-unavailable = Eine ausgewählte Datei wurde geändert oder ist nicht mehr verfügbar. Wählen Sie sie vor dem Kopieren erneut aus.
-files-clipboard-source-changed = Das angezeigte Objekt unterscheidet sich von der gespeicherten Auswahl. Wählen Sie es vor dem Kopieren erneut aus.
-files-clipboard-unavailable = Die Datei-Zwischenablage des Arbeitsbereichs ist nicht verfügbar.
+files-selection-empty = Wähle zuerst Dateien aus.
+files-clipboard-source-unavailable = Eine ausgewählte Datei wurde geändert oder ist nicht mehr verfügbar. Wähle sie vor dem Kopieren erneut aus.
+files-clipboard-source-changed = Das angezeigte Objekt unterscheidet sich von der gespeicherten Auswahl. Wähle es vor dem Kopieren erneut aus.
+files-clipboard-unavailable = Kopieren und Einfügen ist gerade nicht verfügbar.
 files-clipboard-empty = Die Datei-Zwischenablage des Arbeitsbereichs ist leer.
 files-clipboard-undone = Einfügen rückgängig gemacht.
-files-selection-unavailable = Ein Eintrag ist nicht mehr im angezeigten Ordner. Die Auswahl wurde nicht geändert.
-files-selection-too-large = Wählen Sie höchstens 256 Einträge pro Anfrage aus oder verwenden Sie „Alles auswählen“.
+files-selection-unavailable = Dieses Element ist nicht mehr in diesem Ordner.
+files-selection-too-large = Wähle höchstens 256 Elemente pro Anfrage aus.
+files-copy-too-large = Kopiere höchstens 1.024 Elemente auf einmal.
 files-back = Zurück
 files-forward = Vor
 files-up = Einen Ordner nach oben
@@ -399,10 +401,10 @@ files-loading-title = Ordner wird geöffnet
 files-loading-detail = { $path } wird geladen
 files-directory-read-failed = Dieser Ordner konnte nicht geöffnet werden: { $error }
 files-load-error-title = „{ $name }“ konnte nicht geöffnet werden
-files-folder-error-permission = Ihnen fehlt die Berechtigung, den Inhalt zu sehen.
+files-folder-error-permission = Dir fehlt die Berechtigung, den Inhalt zu sehen.
 files-folder-error-missing = Er wurde verschoben oder gelöscht.
 files-open-enclosing = Übergeordneten Ordner öffnen
-files-a11y-load-error = Ordner konnte nicht geladen werden: { $error }. Erneut versuchen ist verfügbar
+files-a11y-load-error = Dieser Ordner konnte nicht geöffnet werden: { $error }
 files-a11y-panel-details = { $title }. { $summary }. { $details }. Zum Schließen Escape drücken
 files-a11y-dialog-close = { $summary }. Zum Schließen Escape drücken
 files-a11y-activity = Dateiaktivität
@@ -504,10 +506,9 @@ files-drag-items = { $count } Elemente
 files-archive-extract = Archiv entpacken…
 files-archive-extract-here = Hier entpacken
 files-archive-compress = Als ZIP komprimieren
-files-archive-select-compress = Wählen Sie Dateien oder Ordner zum Komprimieren aus
+files-archive-select-compress = Wähle Dateien oder Ordner zum Komprimieren aus
 files-archive-read-only = Archive können erst nach dem Entpacken geändert werden
-files-archive-open-after-extract = Entpacken Sie dieses Archiv, um enthaltene Dateien zu öffnen oder zu bearbeiten
-files-archive-select = Wählen Sie zum Entpacken ein ZIP-, TAR- oder TAR.GZ-Archiv aus
+files-archive-select = Wähle zum Entpacken ein ZIP-, TAR- oder TAR.GZ-Archiv aus
 files-archive-extracted =
     { $count ->
         [one] 1 Datei entpackt
@@ -535,31 +536,31 @@ files-shortcut-started = „{ $shortcut }“ läuft
 files-shortcut-failed = „{ $shortcut }“ wurde nicht ausgeführt: { $reason }
 files-action-send-nearby-device = An { $device } senden
 files-nearby-send-to-device = An { $device } senden
-files-nearby-select-one = Wählen Sie eine Datei oder einen Ordner zum Senden aus.
-files-nearby-loading-devices = Zertifizierte Geräte werden gesucht…
-files-nearby-no-devices = Keine zertifizierten Geräte sind online.
-files-nearby-choose-device = Wählen Sie ein zertifiziertes Gerät.
-files-nearby-queueing = Sicheres Senden wird vorbereitet…
-files-nearby-accepted = Senden angenommen.
-files-nearby-declined = Senden abgelehnt.
+files-nearby-select-one = Wähle eine Datei oder einen Ordner zum Senden aus.
+files-nearby-loading-devices = Deine Geräte werden gesucht …
+files-nearby-no-devices = Keins deiner Geräte ist in der Nähe.
+files-nearby-choose-device = Wähle ein Gerät.
+files-nearby-queueing = Senden wird vorbereitet …
+files-nearby-accepted = Angenommen.
+files-nearby-declined = Abgelehnt.
 files-nearby-cancelled = Senden abgebrochen.
-files-nearby-retrying = Senden wird erneut versucht…
+files-nearby-retrying = Wird erneut gesendet …
 files-nearby-accept = Annehmen
 files-nearby-retry = Erneut versuchen
-files-nearby-consent-detail = Nichts wird gespeichert, bevor Sie genau diese Übertragung annehmen.
-files-nearby-retry-detail = Die Quelle bleibt verfügbar, daher kann die fortsetzbare Übertragung sicher erneut versucht werden.
+files-nearby-consent-detail = Nichts wird gespeichert, bevor du annimmst.
+files-nearby-retry-detail = Die Datei ist noch da, das Senden kann dort weitermachen, wo es aufgehört hat.
 files-nearby-offer-title = Senden von { $device }
 files-nearby-offer-summary = { $name } empfangen?
 files-nearby-offer-size = Übertragungsgröße: { $bytes } Bytes
 files-nearby-failed-title = Senden fehlgeschlagen
-files-nearby-failed-device = Zertifiziertes Gerät: { $device }
+files-nearby-failed-device = Gerät: { $device }
 files-nearby-choose-destination = Speicherort wählen
-files-nearby-no-destinations = Kein freigegebener beschreibbarer Arbeitsbereichsordner ist verfügbar.
-files-nearby-destination-count = Wählen Sie aus { $count } freigegebenen Speicherorten.
+files-nearby-no-destinations = Es gibt keinen Ordner, in dem das gespeichert werden kann.
+files-nearby-destination-count = Wähle aus { $count } Ordnern.
 files-nearby-save-to-destination = In { $destination } speichern
 files-nearby-save-and-remember = In { $destination } speichern und für diese Sitzung merken
 
-files-share-not-available = Freigabedienst ist auf diesem Gerät nicht verfügbar
+files-share-not-available = Teilen ist auf diesem Gerät nicht verfügbar
 
 files-name-invalid = Gib einen gültigen Datei- oder Ordnernamen ein
 
@@ -589,11 +590,11 @@ files-open-with-now-default = { $app } öffnet jetzt { $type }
 files-open-with-unavailable = Die Anwendungswahl ist hier nicht verfügbar ({ $name })
 files-open-with-not-a-candidate = { $app } öffnet diese Datei nicht
 files-place-recent = Zuletzt verwendet
-files-empty-recent = Dateien, die Sie öffnen oder erstellen, erscheinen hier
+files-empty-recent = Noch keine zuletzt verwendeten Dateien
 files-recent-reveal = Enthaltenden Ordner öffnen
 files-recent-forget = Aus „Zuletzt verwendet“ entfernen
-files-recent-action-unavailable = Dieser zuletzt verwendete Eintrag ist nicht mehr verfügbar. Öffnen Sie „Zuletzt verwendet“ und wählen Sie einen aktuellen Eintrag.
-files-recent-not-a-folder = „Zuletzt verwendet“ ist kein Ordner; öffnen Sie einen, um Dateien hinzuzufügen
+files-recent-action-unavailable = Dieser zuletzt verwendete Eintrag ist nicht mehr verfügbar. Öffne „Zuletzt verwendet“ und wähle einen aktuellen Eintrag.
+files-recent-not-a-folder = „Zuletzt verwendet“ ist kein Ordner; öffne einen, um Dateien hinzuzufügen
 
 ## Cloud-Konten
 files-account-sign-in-title = Bei { $account } anmelden
@@ -611,7 +612,7 @@ files-airdrop-file-only = Eine reguläre Datei für die AirDrop-Laborübertragun
 files-airdrop-verifying = Empfängerüberprüfung und Erlaubnis zum Senden dieser Datei werden erwartet.
 files-airdrop-address = IP-Adresse des Empfängers
 files-airdrop-port = TLS-Port des Empfängers
-files-airdrop-action-detail = Den gewählten Laborempfänger auf dem Bestätigungsdialog des Systems prüfen, bevor diese Datei einmal gesendet wird.
+files-airdrop-action-detail = Du bestätigst den Empfänger, bevor die Datei gesendet wird.
 
 files-nearby-status = Übertragungsstatus
 files-nearby-transfer-unavailable = Diese Übertragung ist in diesem Dateienfenster nicht mehr verfügbar.
@@ -675,3 +676,22 @@ files-error-exists = Es gibt bereits etwas mit diesem Namen.
 files-error-no-space = Es ist nicht genug Speicherplatz frei.
 files-error-read-only = Dieser Ort ist schreibgeschützt.
 files-error-not-empty = Der Ordner ist nicht leer.
+files-notice-cancel = Abbrechen
+files-copying = { $count } { $count ->
+    [one] Element wird
+   *[other] Elemente werden
+} nach „{ $folder }“ kopiert
+files-moving = { $count } { $count ->
+    [one] Element wird
+   *[other] Elemente werden
+} nach „{ $folder }“ verschoben
+files-transfer-progress = { $done } von { $total }
+files-transfer-stopped = Angehalten
+files-clash-title-one = „{ $name }“ gibt es in „{ $folder }“ schon
+files-clash-title-many = { $count } Elemente gibt es in „{ $folder }“ schon
+files-clash-detail = Beim Ersetzen kommen die vorhandenen Elemente in den Papierkorb.
+files-clash-skip = Überspringen
+files-clash-keep-both = Beide behalten
+files-clash-replace = Ersetzen
+files-preview-detail = { $what }, geändert { $modified }
+files-drop-nowhere = Öffne einen Ordner, um Dateien hineinzulegen.

@@ -12,7 +12,10 @@
 //! - [`environment`] — a terminal into an environment session on a relay
 //!   ([`open_remote_environment`], [`PtyStream`]);
 //! - [`signer`] — the device key as a signer, so a browser's
-//!   non-extractable key can authenticate.
+//!   non-extractable key can authenticate;
+//! - [`https`] — the session with a host over its HTTPS routes
+//!   ([`https::HttpsLink`]), for a page through its `fetch` and for a native
+//!   device reaching a host that publishes no iroh address.
 //!
 //! The messages themselves are defined in [`tilo_relay_protocol`]. Without
 //! the default `iroh` feature certification is left out and the signer seam,
@@ -28,6 +31,7 @@ pub mod coedit;
 #[cfg(feature = "iroh")]
 pub mod environment;
 pub mod frame;
+pub mod https;
 pub mod signer;
 
 #[cfg(feature = "iroh")]
@@ -38,5 +42,6 @@ pub use environment::{
     EnvironmentClientError, LegacyWindowStream, PtyEvent, PtyStream, RemoteRelay,
     attach_remote_environment, open_legacy_windows, open_remote_environment,
 };
+pub use https::{HttpClient, HttpFuture, HttpsLink, LinkError};
 pub use signer::{DeviceSigner, MaybeSendSync, SignError, SignFuture};
 pub use tilo_relay_protocol::transport::{ContentPeerRegistration, Envelope};

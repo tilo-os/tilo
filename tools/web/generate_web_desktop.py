@@ -26,7 +26,8 @@ and is then linked with `default-features = false` and exactly those.
 Features that name a platform crate's backend (`media/decode`, `ui/portal`)
 need no entry: platform crates compile them to nothing on the web.
 
-It writes the whole registry (id, name, category, platforms, keywords) to
+It writes the whole registry (id, name, its other languages' names, category,
+platforms, keywords) to
 crates/session/desktop-search/src/catalog.rs, so the browser desktop and the
 native shell list the apps they cannot run with the reason the Cloud console
 shows.
@@ -76,6 +77,21 @@ def search_keywords(app_dir: pathlib.Path) -> list[str]:
     return words
 
 
+def localized_names(package: dict, name: str) -> list[str]:
+    """The app's name in every other language its manifest gives one.
+
+    A German desktop types "Dateien" for Files and "Rechner" for Calculator:
+    the plain localized name is the first word anyone tries, so the registry
+    keeps it for every app it lists, and search weighs it as the name,
+    whatever the language of the desktop that searches it.
+    """
+    names: list[str] = []
+    for _, localized in sorted(package.get("names", {}).items()):
+        if localized.lower() != name.lower() and localized.lower() not in {n.lower() for n in names}:
+            names.append(localized)
+    return names
+
+
 def all_apps(repo: pathlib.Path) -> list[dict]:
     apps = []
     for manifest_path in sorted((repo / "apps").glob("*/tilo-app.toml")):
@@ -103,6 +119,7 @@ def all_apps(repo: pathlib.Path) -> list[dict]:
                 web_features=web_features,
                 platforms=list(platforms),
                 keywords=search_keywords(app_dir),
+                names=localized_names(package, package.get("name", package["id"])),
             )
         )
     return apps
@@ -244,6 +261,7 @@ def catalog_rs(apps: list[dict]) -> str:
         f"        name: {text(a['name'])},\n"
         f"        category: {text(a['category'])},\n"
         + rust_list("platforms", [text(p) for p in a["platforms"]])
+        + rust_list("names", [text(n) for n in a["names"]])
         + rust_list("keywords", [text(k) for k in a["keywords"]])
         + "    },\n"
         for a in apps

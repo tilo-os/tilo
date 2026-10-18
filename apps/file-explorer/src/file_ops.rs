@@ -14,6 +14,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
+use ui::lock::MutexRecover as _;
+
 pub use crate::cloud_transfer::TransferProgress;
 use tilo_cloud_files::cloud::ImportEntry;
 
@@ -125,6 +127,206 @@ pub type Outcome = Settled<Vec<Change>>;
 
 fn text(path: &Path) -> String {
     path.display().to_string()
+}
+
+/// A local copy or move under way, as the window shows it: how far it is,
+/// and whether the person asked to stop.
+#[derive(Debug, Default)]
+pub struct LocalTransfer {
+    /// Bytes copied so far, and of how many.
+    pub done: std::sync::atomic::AtomicU64,
+    pub total: std::sync::atomic::AtomicU64,
+    /// Set by Cancel; the transfer stops at the next chunk.
+    pub cancel: AtomicBool,
+    /// Copying (else moving), how many items, and into which folder.
+    pub copy: bool,
+    pub count: usize,
+    pub folder: String,
+    /// When it started, so a quick transfer never flashes a progress card.
+    pub started: Option<ui::time::Instant>,
+}
+
+/// The local transfers running on this device now.
+static ACTIVE: std::sync::Mutex<Vec<std::sync::Arc<LocalTransfer>>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// The local copies and moves running now, oldest first.
+pub fn active_transfers() -> Vec<std::sync::Arc<LocalTransfer>> {
+    ACTIVE.lock_recover().clone()
+}
+
+/// Stop every running local transfer at its next chunk.
+pub fn cancel_transfers() {
+    for transfer in active_transfers() {
+        transfer
+            .cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// How many bytes copying `path` writes (symlinks count as themselves).
+fn tree_size(path: &Path) -> u64 {
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return 0;
+    };
+    if !meta.is_dir() {
+        return meta.len();
+    }
+    std::fs::read_dir(path).map_or(0, |entries| {
+        entries
+            .filter_map(Result::ok)
+            .map(|entry| tree_size(&entry.path()))
+            .sum()
+    })
+}
+
+/// Counts the bytes a transfer copies and stops it on Cancel.
+struct Tracked<'a> {
+    transfer: &'a LocalTransfer,
+    report: &'a dyn Fn(&LocalTransfer),
+    since_report: u64,
+}
+
+const CHUNK: usize = 1 << 20;
+/// Report at most every this many bytes, so progress never floods the UI.
+const REPORT_EVERY: u64 = 8 << 20;
+
+impl Tracked<'_> {
+    fn check(&self) -> std::io::Result<()> {
+        if self
+            .transfer
+            .cancel
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                CANCELLED,
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// The reason a transfer the person stopped settles with.
+pub const CANCELLED: &str = "cancelled";
+
+impl fileops::TransferObserver for Tracked<'_> {
+    fn before_copy_source(&mut self, _source: &Path) -> std::io::Result<()> {
+        self.check()
+    }
+
+    fn copy_bytes(
+        &mut self,
+        source: &mut std::fs::File,
+        destination: &mut std::fs::File,
+    ) -> std::io::Result<u64> {
+        use std::io::{Read as _, Write as _};
+        use std::sync::atomic::Ordering;
+        let mut buffer = vec![0_u8; CHUNK];
+        let mut copied = 0_u64;
+        loop {
+            self.check()?;
+            let read = match source.read(&mut buffer) {
+                Ok(0) => return Ok(copied),
+                Ok(read) => read,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            };
+            destination.write_all(buffer.get(..read).unwrap_or_default())?;
+            let read = read as u64;
+            copied += read;
+            self.transfer.done.fetch_add(read, Ordering::Relaxed);
+            self.since_report += read;
+            if self.since_report >= REPORT_EVERY {
+                self.since_report = 0;
+                (self.report)(self.transfer);
+            }
+        }
+    }
+}
+
+/// Carry out a copy or move with its progress shown and Cancel honoured,
+/// trying every item even when one fails; any other operation as
+/// [`execute`]. `report` hears how far it is now and then, off the UI
+/// thread.
+pub fn execute_tracked(
+    op: &FileOp,
+    reverting: Option<&[Change]>,
+    report: &dyn Fn(&LocalTransfer),
+) -> Outcome {
+    let (paths, folder, copy) = match op {
+        FileOp::Copy { paths, folder } => (paths, folder, true),
+        FileOp::Move {
+            paths,
+            folder,
+            create: false,
+        } => (paths, folder, false),
+        _ => return execute(op, reverting),
+    };
+    let folder_path = Path::new(folder);
+    if !folder_path.is_dir() {
+        return Settled::Failed {
+            reason: format!("{} is not a folder", folder_path.display()),
+            partial: vec![],
+        };
+    }
+    let transfer = std::sync::Arc::new(LocalTransfer {
+        total: paths
+            .iter()
+            .map(|path| tree_size(Path::new(path)))
+            .sum::<u64>()
+            .into(),
+        copy,
+        count: paths.len(),
+        folder: folder.clone(),
+        started: Some(ui::time::now()),
+        ..LocalTransfer::default()
+    });
+    ACTIVE.lock_recover().push(std::sync::Arc::clone(&transfer));
+    let mut observer = Tracked {
+        transfer: &transfer,
+        report,
+        since_report: 0,
+    };
+    let mut changes = Vec::new();
+    let mut failures = Vec::new();
+    for path in paths {
+        if transfer.cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            break;
+        }
+        match fileops::transfer_into_with(Path::new(path), folder_path, !copy, &mut observer) {
+            Ok(done) => changes.push(if copy {
+                Change::Copied {
+                    from: path.clone(),
+                    to: text(&done),
+                }
+            } else {
+                Change::Moved {
+                    from: path.clone(),
+                    to: text(&done),
+                }
+            }),
+            Err(error) => failures.push(error),
+        }
+    }
+    ACTIVE
+        .lock_recover()
+        .retain(|active| !std::sync::Arc::ptr_eq(active, &transfer));
+    report(&transfer);
+    if transfer.cancel.load(std::sync::atomic::Ordering::Relaxed) {
+        return Settled::Failed {
+            reason: CANCELLED.into(),
+            partial: changes,
+        };
+    }
+    match failures.first() {
+        None => Settled::Done(changes),
+        Some(first) => Settled::Failed {
+            reason: first.clone(),
+            partial: changes,
+        },
+    }
 }
 
 /// Carry out `op` on this device's filesystem. A revert is given the changes

@@ -11,7 +11,7 @@ pub const MAX_FIELD_RANK: i32 = 100;
 
 /// Rank of a multi-word query whose every word occurs in some field, though
 /// no field holds the whole query: below a substring match in any standard
-/// field (the lightest, [`FieldWeight::BODY`], ranks an infix at 12).
+/// field (the lightest, [`FieldWeight::BODY`], ranks a word start at 14).
 pub const SPANNING_RANK: i32 = 11;
 
 /// Rank of a query that only matches a title's words within a small edit
@@ -76,8 +76,8 @@ impl MatchTier {
     }
 
     /// The default rank of this tier in a field of `weight`. Unranked fields
-    /// only match by substring, at rank 0; the loose tiers rank the same in
-    /// every field.
+    /// match at rank 0; the loose tiers rank the same in every field; a match
+    /// inside a word counts only in names and identities.
     #[must_use]
     pub fn rank_in(self, weight: FieldWeight) -> Option<i32> {
         match self {
@@ -85,8 +85,15 @@ impl MatchTier {
             // A name remembered wrongly beats a keyword remembered wrongly.
             Self::Typo if weight == FieldWeight::TITLE => Some(self.percent()),
             Self::Typo => Some(self.percent().saturating_sub(1)),
-            Self::Contains if weight.percent() == 0 => Some(0),
-            _ if weight.percent() == 0 => None,
+            // Searchable, never ranked: any field tier finds it, at 0.
+            _ if weight.percent() == 0 => Some(0),
+            // Inside a word, only a name or an identity is matched: a person
+            // remembers a fragment of what a thing is called or of its path,
+            // never of its description or of a synonym ("dark" is not
+            // looking for "Set display brightness" through "darker").
+            Self::Contains if weight <= FieldWeight::KEYWORD && weight != FieldWeight::IDENTITY => {
+                None
+            }
             _ => Some(self.percent().saturating_mul(i32::from(weight.percent())) / 100),
         }
     }
@@ -184,8 +191,12 @@ mod tests {
             MatchTier::Exact.rank_in(FieldWeight::TITLE),
             Some(MAX_FIELD_RANK)
         );
-        assert_eq!(MatchTier::Contains.rank_in(FieldWeight::BODY), Some(12));
+        assert_eq!(MatchTier::Contains.rank_in(FieldWeight::BODY), None);
+        assert_eq!(MatchTier::WordPrefix.rank_in(FieldWeight::BODY), Some(14));
         assert_eq!(MatchTier::Contains.rank_in(FieldWeight::UNRANKED), Some(0));
-        assert_eq!(MatchTier::Prefix.rank_in(FieldWeight::UNRANKED), None);
+        assert_eq!(MatchTier::Prefix.rank_in(FieldWeight::UNRANKED), Some(0));
+        assert_eq!(MatchTier::Contains.rank_in(FieldWeight::IDENTITY), Some(30));
+        assert_eq!(MatchTier::Contains.rank_in(FieldWeight::KEYWORD), None);
+        assert_eq!(MatchTier::Contains.rank_in(FieldWeight::SUBTITLE), None);
     }
 }

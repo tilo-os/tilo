@@ -157,9 +157,22 @@ test('a pairing link makes this browser a new device of the person it names, bef
   const {calls, deps} = doors();
   const person = 'ab'.repeat(32);
   assert.deepEqual(await admit({scope: room, secrets: {pair: person}, deps}), {peer: {admission: 'paired'}});
-  assert.deepEqual(calls, [['pairDevice', {origin: room.host, room: room.room, userPublicKey: person, workspace: null}]]);
+  assert.deepEqual(calls, [['pairDevice', {origin: room.host, room: room.room, userPublicKey: person, invite: null, workspace: null}]]);
   const bare = doors({pairDevice: undefined});
   await assert.rejects(admit({scope: room, secrets: {pair: person}, deps: bare.deps}), {code: 'unsupported'});
+});
+
+test('a pairing link that names an invite passes it on, and a damaged one is refused before anything is asked', async () => {
+  const {calls, deps} = doors();
+  const person = 'ab'.repeat(32);
+  const invite = '0f'.repeat(16);
+  await admit({scope: room, secrets: {pair: `${person}${invite}`}, deps});
+  assert.deepEqual(calls, [['pairDevice', {origin: room.host, room: room.room, userPublicKey: person, invite, workspace: null}]]);
+  for (const pair of [person.slice(2), `${person}${invite.slice(2)}`, person.toUpperCase(), `${person}${invite}00`]) {
+    const refused = doors();
+    await assert.rejects(admit({scope: room, secrets: {pair}, deps: refused.deps}), {code: 'malformed'});
+    assert.deepEqual(refused.calls, []);
+  }
 });
 
 test('a host this browser set up or joined as its person is reconnected to, and anything else stays no access', async () => {

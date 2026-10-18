@@ -7,6 +7,7 @@ files-time-unknown = unknown time
 ## Keyboard shortcuts
 files-shortcuts-title = Keyboard shortcuts
 files-shortcuts-row = { $action }: { $keys }
+files-shortcuts-preview = Preview
 files-shortcuts-open = Open
 files-shortcuts-back-forward = Back, forward
 files-shortcuts-up = Enclosing folder
@@ -23,11 +24,12 @@ files-shortcuts-refresh = Refresh
 files-selection-empty = Select files first.
 files-clipboard-source-unavailable = A selected file has changed or is no longer available. Select it again before copying.
 files-clipboard-source-changed = The shown object differs from its retained selection. Select it again before copying.
-files-clipboard-unavailable = The workspace file clipboard is unavailable.
+files-clipboard-unavailable = Copy and paste isn’t available right now.
 files-clipboard-empty = The workspace file clipboard is empty.
 files-clipboard-undone = Paste undone.
-files-selection-unavailable = An entry is no longer in the folder shown. The selection was not changed.
-files-selection-too-large = Select at most 256 entries in one request, or use Select all.
+files-selection-unavailable = That item is no longer in this folder.
+files-selection-too-large = Select at most 256 items in one request.
+files-copy-too-large = Copy at most 1,024 items at once.
 
 ## Availability actions and status
 files-opening-document = Opening document…
@@ -109,7 +111,7 @@ files-property-history = History: { $versions } { $versions ->
     [one] conflict
    *[other] conflicts
 }
-files-properties-collab-summary = Filesystem and verified collaborative metadata
+files-properties-collab-summary = File and sharing details
 files-availability-title = Availability — { $name }
 files-availability-title-short = Availability…
 files-not-stored = Not stored on this device
@@ -118,10 +120,10 @@ files-stored = Stored on this device ({ $bytes } bytes)
 files-kept-offline-parent = Kept offline by a parent folder
 files-kept-offline = Kept offline
 files-automatic-storage = Automatic storage
-files-replica-unverified = Replica safety has not been verified
-files-replica-counts = { $reachable } reachable, { $durable } durable { $durable ->
-    [one] replica
-   *[other] replicas
+files-replica-unverified = Not known yet whether other devices keep a copy
+files-replica-counts = Kept on { $durable } other { $durable ->
+    [one] device
+   *[other] devices
 }
 files-transfer-state = Transfer: { $state }
 files-transfer-idle = idle
@@ -177,7 +179,7 @@ files-share-creating = Creating share…
 files-share-invalid-options = Those sharing options cannot be combined
 files-share-link-needs-expiry = Share links require an expiry
 files-share-invalid-uses = Share links require a use limit from 1 to 1,000
-files-share-recipient-unreachable = This person has no certified delivery device
+files-share-recipient-unreachable = None of this person’s devices can receive files right now
 files-sharing-access = Sharing and access…
 files-share-with = Share with { $person }
 files-revoke-subject = Revoke { $subject }
@@ -202,7 +204,7 @@ files-no-expiry = no expiry
 files-expires = expires { $time }
 files-share-grant-line = { $subject }: { $permission }, { $status }, { $expiry }
 files-sharing-title = Sharing — { $name }
-files-certified-devices = { $person }, certified devices: { $devices }
+files-certified-devices = { $person }, devices: { $devices }
 files-certified-device-detail = { $device }, key { $fingerprint }, { $capabilities }, issued { $issued }, { $expiry }
 files-device-cap-own = manages workspaces
 files-device-cap-admit = admits devices
@@ -226,7 +228,7 @@ files-restore-previous = Restore previous version
 files-resolve-keep-current = Resolve { $conflict }: keep current
 files-resolve-use-other = Resolve { $conflict }: use other (device { $device })
 files-history-version-line = { $action } { $time } by { $person } on device { $device }
-files-history-older = Older versions are available from the history service
+files-history-older = Older versions aren’t on this device yet
 files-conflict-needs-review = Needs review
 files-conflict-resolved-strategy = Resolved: { $strategy }
 files-conflict-resolved = Resolved
@@ -239,7 +241,7 @@ files-conflict-line = Conflict { $conflict }: { $count } { $count ->
    *[other] versions
 }, { $state }
 files-conflict-resolve-hint = Resolve from the context menu: keep current or use other
-files-conflict-unsupported-hint = Keep both and merge are unavailable until their signed workflows are supported
+files-conflict-unsupported-hint = Keep both and Merge aren’t available for this file yet
 files-history-title = Version history — { $name }
 files-history-summary = { $versions } { $versions ->
     [one] version
@@ -258,19 +260,19 @@ files-merging-versions = Safely merging non-overlapping changes…
 files-merge-review-menu = Review merge
 files-merge-review-title = Review merge — { $name }
 files-merge-review-summary = No changes have been made yet
-files-merge-review-checking = Checking the exact immutable revisions…
-files-merge-review-checking-detail = Tilo is comparing both changes with their shared base. Nothing is changed while this runs.
+files-merge-review-checking = Comparing the two versions…
+files-merge-review-checking-detail = Nothing changes while this runs.
 files-merge-review-safe = Safe to merge
 files-merge-review-needs-review = Needs review — no merge will be applied
-files-merge-review-unavailable = The merge preflight is unavailable. Refresh the file and compare the versions manually.
-files-merge-review-no-apply = Keep both or choose a version after reviewing the immutable diff.
+files-merge-review-unavailable = The versions can’t be compared right now. Refresh the file and compare them in Version history.
+files-merge-review-no-apply = Keep both, or choose one after comparing them.
 files-merge-review-incoming = Incoming revision from device { $device }
-files-merge-review-diff = Version history lets you compare the two immutable revisions before applying this merge.
-files-merge-review-guard = Tilo rechecks the exact base and both revisions immediately before saving. If the edits overlap or changed meanwhile, nothing is merged.
-files-merge-review-undo = Applying creates one signed history entry, so you can restore either earlier version without undoing later work.
+files-merge-review-diff = Version history shows both versions side by side.
+files-merge-review-guard = If either version changes before you apply, nothing is merged.
+files-merge-review-undo = You can restore either earlier version afterwards without losing later work.
 files-merge-apply-safe = Apply safe merge
-files-merge-apply-safe-detail = This only proceeds when the deterministic preflight still proves both revisions can be preserved.
-files-conflict-resolved-signed = Conflict resolved with a signed history entry
+files-merge-apply-safe-detail = Applies only if both versions can still be kept whole.
+files-conflict-resolved-signed = Conflict resolved
 files-history-change-saved = History change saved
 files-history-action-created = Created
 files-history-action-edited = Edited
@@ -311,9 +313,9 @@ files-a11y-partly-offline = Partly available offline
 files-a11y-available-offline = Available offline
 files-a11y-kept-offline-parent = Kept offline by parent folder
 files-a11y-kept-offline = Kept offline
-files-a11y-replica-unknown = Replica status unknown
-files-a11y-durably-replicated = Durably replicated
-files-a11y-not-durably-replicated = Not durably replicated
+files-a11y-replica-unknown = Copies on other devices unknown
+files-a11y-durably-replicated = Kept on other devices
+files-a11y-not-durably-replicated = Not kept on other devices yet
 files-a11y-shared-recipients = Shared with { $count } { $count ->
     [one] recipient
    *[other] recipients
@@ -324,12 +326,12 @@ files-a11y-version-conflict = Has a version conflict
 files-open-terminal-failed = Could not open Terminal: { $error }
 files-conflict-strategy-unsupported = That conflict strategy is not supported by Files yet
 files-conflict-encode-failed = Could not encode the conflict request
-files-conflict-request-too-large = Conflict request exceeds its wire bound
+files-conflict-request-too-large = This conflict can’t be resolved here. Try again from Version history.
 files-conflict-resolve-failed = Could not resolve that conflict: { $error }
 files-share-wrong-response = Share service returned the wrong response
 files-share-unavailable-error = Share service unavailable: { $error }
 files-share-encode-failed = Could not encode share request: { $error }
-files-share-request-too-large = Share request exceeds its wire bound
+files-share-request-too-large = Too many people to share with at once. Share with fewer at a time.
 files-share-request-failed = Could not request link: { $error }
 files-share-flush-failed = Could not finish the share request: { $error }
 files-share-no-response = Share service did not respond: { $error }
@@ -340,20 +342,20 @@ files-share-refused = Share service refused the request ({ $code })
 files-received-refused = Received-file service refused the link ({ $code })
 files-received-wrong-response = Received-file service returned the wrong response
 files-received-encode-failed = Could not encode received-file request
-files-received-request-too-large = Received-file request exceeds its bound
+files-received-request-too-large = This shared file can’t be received.
 files-received-unavailable = Received-file service is unavailable
 files-received-no-response = Received-file service did not respond
 files-received-response-too-large = Received-file service returned an oversized response
 files-received-response-truncated = Received-file service response was truncated
 files-received-response-invalid = Received-file service returned an invalid response
 files-received-not-available = Received-file service is not available
-files-received-fd-clone-failed = Received-file service descriptor could not be cloned
-files-received-fd-invalid = Received-file service descriptor is invalid
+files-received-fd-clone-failed = The shared file couldn’t be received. Try again.
+files-received-fd-invalid = The shared file couldn’t be received. Try again.
 files-received-file = Received shared file
 files-received-mount-starting = Shared file admitted; mount is starting
 files-received-admitted = Shared file admitted
 files-received-link-read-failed = Could not read the shared-file link
-files-received-link-too-large = Shared-file link exceeds its bound
+files-received-link-too-large = This link is too long to open.
 files-received-link-invalid-text = Shared-file link is not valid text
 files-received-link-empty = Shared-file link is empty
 
@@ -403,7 +405,7 @@ files-load-error-title = Couldn’t open “{ $name }”
 files-folder-error-permission = You don’t have permission to see inside it.
 files-folder-error-missing = It was moved or deleted.
 files-open-enclosing = Open enclosing folder
-files-a11y-load-error = Could not load folder: { $error }. Try again is available
+files-a11y-load-error = Couldn’t open this folder: { $error }
 files-a11y-panel-details = { $title }. { $summary }. { $details }. Press Escape to close
 files-a11y-dialog-close = { $summary }. Press Escape to close
 files-a11y-activity = Files activity
@@ -507,7 +509,6 @@ files-archive-extract-here = Extract here
 files-archive-compress = Compress to ZIP
 files-archive-select-compress = Select files or folders to compress
 files-archive-read-only = Archives are read-only until extracted
-files-archive-open-after-extract = Extract this archive to open or edit files inside it
 files-archive-select = Select a ZIP, TAR, or TAR.GZ archive to extract
 files-archive-extracted =
     { $count ->
@@ -537,30 +538,30 @@ files-shortcut-failed = “{ $shortcut }” didn't run: { $reason }
 files-action-send-nearby-device = Send to { $device }
 files-nearby-send-to-device = Send to { $device }
 files-nearby-select-one = Select one file or folder to send.
-files-nearby-loading-devices = Looking for your certified devices…
-files-nearby-no-devices = No certified devices are online.
-files-nearby-choose-device = Choose a certified device.
-files-nearby-queueing = Preparing a secure Nearby Send…
-files-nearby-accepted = Nearby Send accepted.
-files-nearby-declined = Nearby Send declined.
-files-nearby-cancelled = Nearby Send cancelled.
-files-nearby-retrying = Retrying Nearby Send…
+files-nearby-loading-devices = Looking for your devices…
+files-nearby-no-devices = None of your devices are nearby.
+files-nearby-choose-device = Choose a device.
+files-nearby-queueing = Preparing to send…
+files-nearby-accepted = Accepted.
+files-nearby-declined = Declined.
+files-nearby-cancelled = Sending cancelled.
+files-nearby-retrying = Sending again…
 files-nearby-accept = Accept
 files-nearby-retry = Retry
-files-nearby-consent-detail = Nothing is saved until you accept this exact transfer.
-files-nearby-retry-detail = The source remains available, so this resumable transfer can be retried safely.
+files-nearby-consent-detail = Nothing is saved until you accept.
+files-nearby-retry-detail = The file is still there, so sending can pick up where it stopped.
 files-nearby-offer-title = Nearby Send from { $device }
 files-nearby-offer-summary = Receive { $name }?
 files-nearby-offer-size = Transfer size: { $bytes } bytes
 files-nearby-failed-title = Nearby Send failed
-files-nearby-failed-device = Certified device: { $device }
+files-nearby-failed-device = Device: { $device }
 files-nearby-choose-destination = Choose where to save
-files-nearby-no-destinations = No approved writable workspace folder is available.
-files-nearby-destination-count = Choose from { $count } approved destinations.
+files-nearby-no-destinations = There’s no folder this can be saved to.
+files-nearby-destination-count = Choose from { $count } folders.
 files-nearby-save-to-destination = Save to { $destination }
 files-nearby-save-and-remember = Save to { $destination } and use it for this session
 
-files-share-not-available = Share service is not available on this host
+files-share-not-available = Sharing isn’t available on this device
 
 files-name-invalid = Enter a valid file or folder name
 
@@ -581,7 +582,7 @@ files-open-with-now-default = { $app } now opens { $type }
 files-open-with-unavailable = Choosing an application is unavailable here ({ $name })
 files-open-with-not-a-candidate = { $app } does not open this file
 files-place-recent = Recent
-files-empty-recent = Files you open or create appear here
+files-empty-recent = No recent files yet
 files-recent-reveal = Open containing folder
 files-recent-forget = Remove from Recent
 files-recent-action-unavailable = This recent item is no longer available. Open Recent and choose a current item.
@@ -603,7 +604,7 @@ files-airdrop-file-only = Choose one regular file for the AirDrop lab transfer.
 files-airdrop-verifying = Waiting for receiver verification and permission to send this file.
 files-airdrop-address = Receiver's literal IP address
 files-airdrop-port = Receiver's TLS port
-files-airdrop-action-detail = Verify a manually selected lab receiver on the compositor's sheet before sending this file once.
+files-airdrop-action-detail = You confirm the receiver before this file is sent.
 
 files-nearby-status = Transfer status
 files-nearby-transfer-unavailable = This transfer is no longer available in this Files window.
@@ -678,3 +679,22 @@ files-error-exists = Something with that name already exists.
 files-error-no-space = There isn’t enough space.
 files-error-read-only = This location is read-only.
 files-error-not-empty = The folder isn’t empty.
+files-notice-cancel = Cancel
+files-copying = Copying { $count } { $count ->
+    [one] item
+   *[other] items
+} to “{ $folder }”
+files-moving = Moving { $count } { $count ->
+    [one] item
+   *[other] items
+} to “{ $folder }”
+files-transfer-progress = { $done } of { $total }
+files-transfer-stopped = Stopped
+files-clash-title-one = “{ $name }” already exists in “{ $folder }”
+files-clash-title-many = { $count } items already exist in “{ $folder }”
+files-clash-detail = Replacing moves the existing items to Trash.
+files-clash-skip = Skip
+files-clash-keep-both = Keep both
+files-clash-replace = Replace
+files-preview-detail = { $what }, modified { $modified }
+files-drop-nowhere = Open a folder to drop files into it.

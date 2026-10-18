@@ -24,9 +24,9 @@ use tilo_user_identity::{
     DeviceCert, RevocationList, verify_device_cert_at, verify_issued_cert,
 };
 
-use crate::carrier::LinkError;
 use crate::session::Host;
 use tilo_lock::MutexRecover as _;
+use tilo_relay_client::https::LinkError;
 
 /// Longest a certification request waits for an approver.
 pub const CERTIFICATION_WAIT_NS: u64 = 5 * 60 * 1_000_000_000;
@@ -156,22 +156,24 @@ pub async fn certify(
     host: &Host,
     user_public_key: [u8; 32],
     label: &str,
+    invite: [u8; 16],
     signer: &dyn DeviceSigner,
     on_pending: impl FnOnce(&str),
 ) -> Result<(DeviceCert, DeviceCert), CertifyError> {
-    let request = signed_request(user_public_key, label, signer).await?;
+    let request = signed_request(user_public_key, label, invite, signer).await?;
     let reply = match host {
         Host::Https(client) => {
             let digest = request
                 .digest()
                 .map_err(|error| CertifyError::Request(error.to_string()))?;
-            let mut reply = crate::carrier::certify_request(client.as_ref(), &request).await?;
+            let mut reply =
+                tilo_relay_client::https::certify_request(client.as_ref(), &request).await?;
             let mut on_pending = Some(on_pending);
             while let CertifyReply::Pending { pairing_code } = &reply {
                 if let Some(show) = on_pending.take() {
                     show(pairing_code);
                 }
-                reply = crate::carrier::certify_wait(client.as_ref(), digest).await?;
+                reply = tilo_relay_client::https::certify_wait(client.as_ref(), digest).await?;
             }
             reply
         }
@@ -319,7 +321,7 @@ async fn approve(
     request: ApproverRequest,
 ) -> Result<ApproverReply, CertifyError> {
     let approval = member_approval(root, request).await?;
-    match crate::carrier::certify_approve(client, &approval).await? {
+    match tilo_relay_client::https::certify_approve(client, &approval).await? {
         ApproverReply::Refused { reason } => Err(CertifyError::Denied(reason)),
         reply => Ok(reply),
     }
@@ -346,7 +348,9 @@ pub async fn pending_pairings(
 }
 
 /// Answer the pending request `request_digest` at the host at `client`:
-/// approved, `root` certifies the device it names as a browser of that root.
+/// approved, `root` certifies the device it names as a browser of that root,
+/// and the certificate it issued is answered, for the root's own record of
+/// the person's devices.
 ///
 /// # Errors
 ///
@@ -357,7 +361,7 @@ pub async fn answer_pairing(
     root: &dyn DeviceSigner,
     request_digest: [u8; 32],
     approved: bool,
-) -> Result<(), CertifyError> {
+) -> Result<Option<DeviceCert>, CertifyError> {
     let decision = if approved {
         let pending = pending_pairings(client, root).await?;
         let Some(found) = pending
@@ -379,9 +383,36 @@ pub async fn answer_pairing(
     } else {
         ApproverDecision::Deny
     };
+    let issued = match &decision {
+        ApproverDecision::Issue(cert) => Some(cert.clone()),
+        _ => None,
+    };
+    decide_pairing(client, root, request_digest, issued.clone())
+        .await
+        .map(|()| issued)
+}
+
+/// Answer the pending request `request_digest` at the host at `client`,
+/// as `approver` (a member's root, or what signs its approval commands):
+/// with `cert`, a certificate the person's root already issued for exactly
+/// that request, or turned away without one.
+///
+/// # Errors
+///
+/// As [`answer_pairing`].
+pub async fn decide_pairing(
+    client: &dyn crate::HttpClient,
+    approver: &dyn DeviceSigner,
+    request_digest: [u8; 32],
+    cert: Option<DeviceCert>,
+) -> Result<(), CertifyError> {
+    let decision = match cert {
+        Some(cert) => ApproverDecision::Issue(cert),
+        None => ApproverDecision::Deny,
+    };
     approve(
         client,
-        root,
+        approver,
         ApproverRequest::Decide {
             request_digest,
             decision,
@@ -407,7 +438,7 @@ pub async fn certify_with_root(
     signer: &dyn DeviceSigner,
     label: &str,
 ) -> Result<(DeviceCert, DeviceCert), CertifyError> {
-    let host_cert = crate::carrier::host_info(client).await?.host_cert;
+    let host_cert = tilo_relay_client::https::host_info(client).await?.host_cert;
     check_host(&host_cert, root.device_public_key())?;
     let cert =
         issue_device_cert(root, signer.device_public_key(), label, IssuedRole::Browser).await?;
@@ -428,6 +459,7 @@ fn check_host(host_cert: &DeviceCert, user_public_key: [u8; 32]) -> Result<(), C
 async fn signed_request(
     user_public_key: [u8; 32],
     label: &str,
+    invite: [u8; 16],
     signer: &dyn DeviceSigner,
 ) -> Result<CertificationRequest, CertifyError> {
     let now = tilo_clock::unix_now_ns();
@@ -438,6 +470,7 @@ async fn signed_request(
         device_label: label.to_owned(),
         requested: DeviceCapabilities::member(),
         nonce: rand::random(),
+        invite,
         issued_at_ns: now,
         expires_at_ns: now.saturating_add(CERTIFICATION_WAIT_NS),
         signature: [0; 64],

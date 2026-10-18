@@ -1886,7 +1886,7 @@ pub fn deliver_held_key_release(state: &mut State, event: &WindowEvent) -> bool 
 /// sync), forwarded to the focused client only when the shell doesn't own the chord and a client actually holds keyboard focus.
 fn route_keyboard_input(
     state: &mut State,
-    fb: &FrameBuilder,
+    fb: &mut FrameBuilder,
     captured: bool,
     event: &WindowEvent,
     modifiers: Modifiers,
@@ -1905,6 +1905,7 @@ fn route_keyboard_input(
         let overlay_open = fb.host().palette_visible() || fb.host().wheel_summoned();
         let configured_shortcut = fb.host().owns_configured_chord(&key.logical_key, modifiers);
         let shell_owns = captured
+            || fb.host().banner_owns_key(&key.logical_key)
             || fb.host().dictation_owns_key(&key.logical_key)
             || (!shortcuts_inhibited(state)
                 && (configured_shortcut || is_shell_chord(event, &modifiers, overlay_open)))
@@ -1945,8 +1946,23 @@ fn route_keyboard_input(
     } else {
         state.global_shortcuts.release(&key.physical_key)
     };
-    let shell_owns =
-        captured || shell_chord || granted || fb.host().dictation_owns_key(&key.logical_key);
+    // Keyboard focus moved into a banner (the Notifications chord) takes
+    // only the keys a banner acts on; any other key goes to the window as
+    // usual and takes focus back with it.
+    let banner_owns = fb.host().banner_owns_key(&key.logical_key);
+    if pressed
+        && !banner_owns
+        && !shell_chord
+        && !is_modifier_key(&key.logical_key)
+        && fb.host().banner_has_keyboard()
+    {
+        fb.host_mut().release_banner_keyboard();
+    }
+    let shell_owns = captured
+        || shell_chord
+        || granted
+        || banner_owns
+        || fb.host().dictation_owns_key(&key.logical_key);
     let forward = track_forwarded_key(
         &mut state.client_input.forwarded_keys,
         code,

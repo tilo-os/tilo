@@ -11,7 +11,7 @@ use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
 use vello::peniko::{BlendMode, Fill};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
@@ -254,6 +254,8 @@ struct Flow<'a, 'b> {
     y: f64,
     pointer: Point,
     attachments: Vec<(Rect, MessageId, usize)>,
+    /// The save buttons beside them.
+    saves: Vec<(Rect, MessageId, usize)>,
 }
 
 impl Flow<'_, '_> {
@@ -382,6 +384,22 @@ impl Flow<'_, '_> {
                 .paint(self.ctx.scene, self.ctx.transform, self.ctx.text, theme);
             self.attachments.push((rect, message.id, index));
             x += w + gap;
+            // Beside it, saving it as a file somewhere of the person's
+            // choosing; the chip itself opens it.
+            if attachment.is_downloadable() {
+                let save = Rect::new(x, self.y, x + h, self.y + h);
+                Button::paint(
+                    self.ctx.scene,
+                    self.ctx.transform,
+                    self.ctx.text,
+                    theme,
+                    &ButtonFace::icon_only(save, Icon::Download, "Save")
+                        .control_size(ControlSize::Small)
+                        .hovered(save.contains(self.pointer)),
+                );
+                self.saves.push((save, message.id, index));
+                x += h + gap;
+            }
         }
         self.y += h;
     }
@@ -402,6 +420,8 @@ pub struct MessageReader {
     pointer: Point,
     /// Attachment chips `(rect, message, index)` as last painted.
     attachments: Vec<(Rect, MessageId, usize)>,
+    /// The save button beside each attachment chip, as last painted.
+    attachment_saves: Vec<(Rect, MessageId, usize)>,
     /// The "Load images" / "Block images" button as last painted.
     remote_button: Option<Rect>,
     /// The conversation the scroll offset belongs to.
@@ -426,6 +446,18 @@ pub struct MessageReader {
     /// The open message's sender.
     html_sender: String,
     html_view_rect: Option<Rect>,
+    /// How tall the loaded HTML body is and where it is scrolled, as its
+    /// engine last said, and the view width it was measured at.
+    html_document: Option<HtmlDocument>,
+    /// The loaded HTML body has replaced the one before it: the sizes the
+    /// engine reports are of it.
+    html_committed: bool,
+    /// The view width the HTML body is being measured at: it is laid out
+    /// a sliver tall, and not drawn, until its engine says how tall it is.
+    html_measuring: Option<f64>,
+    /// The reader's furthest scroll, as last painted: past it, the wheel
+    /// scrolls an HTML body taller than the reader.
+    scroll_max: f64,
     /// The text of each message shown open, as last painted: the newest
     /// always, and the earlier ones the person opened.
     bodies: HashMap<MessageId, BodyText>,
@@ -448,6 +480,15 @@ pub struct MessageReader {
     dirty: bool,
 }
 
+/// The HTML body's document as its engine measured it, in CSS pixels, and
+/// the width of the view it was laid out in.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct HtmlDocument {
+    height: f64,
+    scroll_y: f64,
+    width: f64,
+}
+
 impl MessageReader {
     pub fn new(shared: Shared) -> Self {
         Self {
@@ -457,6 +498,7 @@ impl MessageReader {
             theme: Theme::dark(),
             pointer: Point::new(-1.0, -1.0),
             attachments: Vec::new(),
+            attachment_saves: Vec::new(),
             remote_button: None,
             shown: None,
             html_engine: None,
@@ -468,6 +510,10 @@ impl MessageReader {
             html_load_remote: false,
             html_sender: String::new(),
             html_view_rect: None,
+            html_document: None,
+            html_committed: false,
+            html_measuring: None,
+            scroll_max: 0.0,
             bodies: HashMap::new(),
             active: None,
             expanded: HashSet::new(),
@@ -490,8 +536,20 @@ impl MessageReader {
             .html_engine
             .clone()
             .unwrap_or_else(|| new_html_engine().0);
-        self.html_view
-            .get_or_insert_with(|| WebView::new(engine).with_test_id("mail_html_body"))
+        self.html_view.get_or_insert_with(|| {
+            // The body is sized to its document, so the reader scrolls as
+            // one page.
+            engine.send(WebViewCommand::ReportDocumentSize(true));
+            WebView::new(engine).with_test_id("mail_html_body")
+        })
+    }
+
+    /// Whether the HTML body's engine says how tall its document is: the
+    /// body is then sized to it, and otherwise fills the reader.
+    fn html_measured(&self) -> bool {
+        self.html_engine
+            .as_ref()
+            .is_some_and(|engine| engine.measures_document())
     }
 
     /// Load `html` for message `id` into the sandboxed view (the
@@ -509,6 +567,8 @@ impl MessageReader {
         let engine = self.ensure_html_view().engine().clone();
         engine.send(WebViewCommand::SetContentFilter(Some(filter)));
         engine.send(WebViewCommand::Navigate(url));
+        self.html_document = None;
+        self.html_committed = false;
         self.html_key = Some(key);
         self.html_style = Some(style);
     }
@@ -666,6 +726,7 @@ impl MessageReader {
         let messages = state.selected_thread_messages();
         let Some(head) = messages.last().copied() else {
             self.attachments.clear();
+            self.attachment_saves.clear();
             self.remote_button = None;
             self.html_view_rect = None;
             self.bodies.clear();
@@ -695,9 +756,10 @@ impl MessageReader {
         let r = self.rect;
         let head_html = head.html_body.clone();
         let head_sender = head.from.email.to_ascii_lowercase();
-        // An HTML body takes the rest of the reader, so the thread above it
-        // does not scroll.
-        if head_html.is_some() && self.html_engine_live {
+        // An HTML body whose height is unknown takes the rest of the
+        // reader, so the thread above it does not scroll.
+        let measured = self.html_measured();
+        if head_html.is_some() && self.html_engine_live && !measured {
             self.region.set_offset(Vec2::ZERO);
         }
         let scroll = self.region.offset().y;
@@ -711,6 +773,7 @@ impl MessageReader {
             y: r.y0 + gutter - scroll,
             pointer: self.pointer,
             attachments: Vec::new(),
+            saves: Vec::new(),
         };
 
         // The conversation's subject, and how many messages it holds.
@@ -750,6 +813,9 @@ impl MessageReader {
         flow.y += f64::from(spacing.s6);
 
         let mut webview_rect = None;
+        // The HTML body fills the reader and scrolls inside its own view.
+        let mut html_fills = false;
+        self.html_measuring = None;
         let count = messages.len();
         self.headers.clear();
         for (index, message) in messages.iter().enumerate() {
@@ -762,11 +828,41 @@ impl MessageReader {
             if is_head && head_html.is_some() && self.html_engine_live {
                 self.paint_remote_line(&mut flow);
                 flow.y += f64::from(spacing.s3);
-                let bottom = r.y1 - gutter;
-                if bottom > flow.y + f64::from(spacing.s12) {
-                    webview_rect = Some(Rect::new(flow.x, flow.y, flow.x + flow.width, bottom));
+                if measured {
+                    // As tall as its document, up to the reader's height:
+                    // a taller one scrolls inside once the reader has
+                    // scrolled it into full view.
+                    let most = (r.height() - 2.0 * gutter).max(f64::from(spacing.s12));
+                    let width = flow.width;
+                    let known = self
+                        .html_document
+                        .filter(|doc| (doc.width - width).abs() < 0.5);
+                    let (laid, kept) = match known {
+                        Some(doc) => {
+                            let height = doc.height.clamp(1.0, most);
+                            (height, height)
+                        }
+                        None => {
+                            // A sliver until it says how tall it is, keeping
+                            // the room it had at another width.
+                            self.html_measuring = Some(width);
+                            let sliver = f64::from(spacing.s1);
+                            let kept = self
+                                .html_document
+                                .map_or(sliver, |doc| doc.height.clamp(1.0, most));
+                            (sliver, kept)
+                        }
+                    };
+                    webview_rect = Some(Rect::new(flow.x, flow.y, flow.x + width, flow.y + laid));
+                    flow.y += kept;
+                } else {
+                    let bottom = r.y1 - gutter;
+                    if bottom > flow.y + f64::from(spacing.s12) {
+                        webview_rect = Some(Rect::new(flow.x, flow.y, flow.x + flow.width, bottom));
+                    }
+                    flow.y = bottom;
+                    html_fills = true;
                 }
-                flow.y = bottom;
             } else if open {
                 // Without an isolated renderer the HTML is read into styled
                 // text; nothing in it is fetched. An earlier message opened
@@ -811,15 +907,17 @@ impl MessageReader {
             }
         }
         flow.y += gutter;
-        // An HTML body fills the reader; it scrolls inside its own view.
-        let content_h = if webview_rect.is_some() {
+        let content_h = if html_fills && webview_rect.is_some() {
             r.height()
         } else {
             flow.y + scroll - r.y0
         };
+        self.scroll_max = (content_h - r.height()).max(0.0);
         let attachments = std::mem::take(&mut flow.attachments);
+        let saves = std::mem::take(&mut flow.saves);
         flow.ctx.scene.pop_layer();
         self.attachments = attachments;
+        self.attachment_saves = saves;
         self.region.set_content_size(r.width(), content_h);
         self.region.paint_bars(flow.ctx.scene, t, theme);
         drop(flow);
@@ -835,10 +933,17 @@ impl MessageReader {
                     self.html_shown_id = Some(head_id);
                 }
                 self.load_html_body(head_id, &html, theme);
+                let measuring = self.html_measuring.is_some();
                 let view = self.ensure_html_view();
                 view.set_viewport(rect, 1.0);
-                view.draw(scene, t, tr, theme, presence);
-                self.html_view_rect = Some(rect);
+                if !measuring {
+                    // Scrolled partly out of the reader, it is cut at its
+                    // edges like the rest of the conversation.
+                    scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &r);
+                    view.draw(scene, t, tr, theme, presence);
+                    scene.pop_layer();
+                    self.html_view_rect = Some(rect);
+                }
                 self.intercept_navigation();
             }
             (None, Some(_)) => {}
@@ -897,7 +1002,7 @@ impl MessageReader {
             return true;
         }
         if let Some((_, message, index)) = self
-            .attachments
+            .attachment_saves
             .iter()
             .find(|(rect, _, _)| rect.contains(point))
             .copied()
@@ -905,6 +1010,17 @@ impl MessageReader {
             self.shared
                 .borrow_mut()
                 .push_intent(Intent::SaveAttachment(message, index));
+            return true;
+        }
+        if let Some((_, message, index)) = self
+            .attachments
+            .iter()
+            .find(|(rect, _, _)| rect.contains(point))
+            .copied()
+        {
+            self.shared
+                .borrow_mut()
+                .push_intent(Intent::OpenAttachment(message, index));
             return true;
         }
         false
@@ -921,18 +1037,79 @@ impl MessageReader {
             open_link(&url);
         }
         for event in engine.drain_events() {
-            if let ui::webview::WebViewEvent::UriChanged(uri) = event
-                && !uri.is_empty()
-                && !uri.starts_with("data:")
-                && uri != "about:blank"
-            {
-                open_link(&uri);
-                left = true;
+            match event {
+                ui::webview::WebViewEvent::UriChanged(uri) if uri.starts_with("data:") => {
+                    self.html_committed = true;
+                }
+                ui::webview::WebViewEvent::UriChanged(uri)
+                    if !uri.is_empty() && uri != "about:blank" =>
+                {
+                    open_link(&uri);
+                    left = true;
+                }
+                ui::webview::WebViewEvent::DocumentSize {
+                    height, scroll_y, ..
+                } if self.html_committed => self.measured(height, scroll_y),
+                _ => {}
             }
         }
         if left {
             self.html_key = None;
             self.dirty = true;
+        }
+    }
+
+    /// The HTML body's engine says how tall its document is and where it is
+    /// scrolled: a new height lays the reader out again.
+    fn measured(&mut self, height: f64, scroll_y: f64) {
+        let width = self
+            .html_measuring
+            .or(self.html_document.map(|doc| doc.width));
+        let Some(width) = width else {
+            return;
+        };
+        let next = HtmlDocument {
+            height,
+            scroll_y,
+            width,
+        };
+        if self
+            .html_document
+            .is_none_or(|doc| doc.height != height || doc.width != width)
+        {
+            self.dirty = true;
+        }
+        self.html_document = Some(next);
+        self.html_measuring = None;
+    }
+
+    /// Whether the wheel `event` scrolls the HTML body rather than the
+    /// reader: a body sized to its document scrolls once the reader can go
+    /// no further that way and the body can.
+    fn wheel_scrolls_body(&self, event: &WindowEvent) -> bool {
+        let WindowEvent::MouseWheel { delta, .. } = event else {
+            return false;
+        };
+        if !self.html_measured() {
+            return true;
+        }
+        let (Some(rect), Some(doc)) = (self.html_view_rect, self.html_document) else {
+            return false;
+        };
+        if !rect.contains(self.pointer) {
+            return false;
+        }
+        let toward_top = match delta {
+            MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
+            MouseScrollDelta::PixelDelta(position) => position.y,
+        };
+        if toward_top > 0.0 {
+            doc.scroll_y > 0.5
+        } else if toward_top < 0.0 {
+            self.region.offset().y >= self.scroll_max - 0.5
+                && doc.scroll_y + rect.height() < doc.height - 0.5
+        } else {
+            false
         }
     }
 
@@ -985,6 +1162,7 @@ impl MessageReader {
         (
             self.attachments
                 .iter()
+                .chain(&self.attachment_saves)
                 .position(|(rect, _, _)| rect.contains(point)),
             self.remote_button.is_some_and(|rect| rect.contains(point)),
             self.quote_buttons
@@ -994,10 +1172,9 @@ impl MessageReader {
     }
 
     fn forward_to_html(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        let over = matches!(
-            event,
-            WindowEvent::MouseWheel { .. } | WindowEvent::CursorMoved { .. }
-        ) && self.html_view_rect.is_some();
+        let over = (matches!(event, WindowEvent::CursorMoved { .. })
+            || self.wheel_scrolls_body(event))
+            && self.html_view_rect.is_some();
         if over && let Some(view) = self.html_view.as_mut() {
             view.handle_event(event, ctx);
         }
@@ -1030,6 +1207,7 @@ impl Widget for MessageReader {
     ) {
         if self.shared.borrow().bulk_selecting {
             self.attachments.clear();
+            self.attachment_saves.clear();
             self.remote_button = None;
             self.html_view_rect = None;
             self.bodies.clear();
@@ -1120,7 +1298,14 @@ impl Widget for MessageReader {
             .iter()
             .any(|(rect, _, _)| rect.contains(point))
         {
-            return Some("Save attachment");
+            return Some("Open");
+        }
+        if self
+            .attachment_saves
+            .iter()
+            .any(|(rect, _, _)| rect.contains(point))
+        {
+            return Some("Save");
         }
         None
     }
@@ -1215,6 +1400,85 @@ mod tests {
             .find(|m| m.from.email == email)
             .unwrap_or_else(|| panic!("sample has mail from {email}"))
             .id
+    }
+
+    /// An HTML body is as tall as its document, so the reader scrolls the
+    /// conversation and the body as one page; a body taller than the reader
+    /// takes the wheel once the reader has scrolled it into full view.
+    #[test]
+    fn an_html_body_is_as_tall_as_its_document_and_scrolls_with_the_reader() {
+        use ui::webview::WebViewEvent;
+        let shared = shared();
+        let id = message_from(&shared, "hello@fieldnotes.example");
+        let mut reader = reader_for(&shared, id, 960.0, 820.0);
+        let engine = TestEngine::new();
+        engine.set_measures_document(true);
+        reader.set_html_engine(engine.clone());
+        draw(&mut reader);
+        assert!(
+            engine
+                .commands()
+                .contains(&WebViewCommand::ReportDocumentSize(true)),
+            "the reader asks how tall the document is"
+        );
+        assert!(
+            reader.html_view_rect.is_none(),
+            "not shown before its height is known"
+        );
+
+        let document = |height: f64, scroll_y: f64| WebViewEvent::DocumentSize {
+            width: 912.0,
+            height,
+            scroll_y,
+        };
+        engine.push_event(document(300.0, 0.0));
+        draw(&mut reader);
+        draw(&mut reader);
+        let short = reader.html_view_rect.expect("shown once measured");
+        assert!((short.height() - 300.0).abs() < 0.01, "{short:?}");
+        assert!(
+            short.y1 < reader.rect.y1,
+            "the conversation goes on below a short body"
+        );
+        let wheel_down = ui::synthetic_input::mouse_wheel(0.0, -3.0);
+        reader.pointer = short.center();
+        assert!(
+            !reader.wheel_scrolls_body(&wheel_down),
+            "a body that fits never scrolls inside"
+        );
+
+        engine.push_event(document(5000.0, 0.0));
+        draw(&mut reader);
+        draw(&mut reader);
+        let tall = reader.html_view_rect.expect("still shown");
+        let gutter = f64::from(Theme::dark().tokens.spacing.s6);
+        assert!(
+            (tall.height() - (reader.rect.height() - 2.0 * gutter)).abs() < 0.01,
+            "a tall body is at most as tall as the reader: {tall:?}"
+        );
+        assert!(reader.scroll_max > 0.0, "the reader scrolls it into view");
+        reader.pointer = tall.center();
+        assert!(
+            !reader.wheel_scrolls_body(&wheel_down),
+            "the reader scrolls first"
+        );
+        reader.region.set_offset(Vec2::new(0.0, reader.scroll_max));
+        assert!(
+            reader.wheel_scrolls_body(&wheel_down),
+            "then the body scrolls inside"
+        );
+        let wheel_up = ui::synthetic_input::mouse_wheel(0.0, 3.0);
+        assert!(
+            !reader.wheel_scrolls_body(&wheel_up),
+            "at its top, the reader scrolls back up"
+        );
+        engine.push_event(document(5000.0, 400.0));
+        draw(&mut reader);
+        reader.pointer = reader.html_view_rect.expect("shown").center();
+        assert!(
+            reader.wheel_scrolls_body(&wheel_up),
+            "scrolled down, the body scrolls back first"
+        );
     }
 
     #[test]
@@ -1320,7 +1584,7 @@ mod tests {
     }
 
     #[test]
-    fn an_attachment_chip_asks_the_app_to_save_through_the_portal() {
+    fn an_attachment_chip_opens_it_and_its_button_saves_it_through_the_portal() {
         let shared = shared();
         let id = message_from(&shared, "billing@lumen-energy.example");
         let mut reader = reader_for(&shared, id, 760.0, 900.0);
@@ -1331,6 +1595,18 @@ mod tests {
             .expect("the attachment is a chip");
         assert_eq!(message, id);
         assert!(reader.press(rect.center()), "chip press consumed");
+        assert!(
+            shared.borrow_mut().take_intents().iter().any(|intent| matches!(
+                intent,
+                Intent::OpenAttachment(found, found_index) if *found == id && *found_index == index
+            )),
+            "the chip opens the attachment"
+        );
+        let (save, _, _) = *reader
+            .attachment_saves
+            .first()
+            .expect("a downloaded attachment can be saved");
+        assert!(reader.press(save.center()));
         assert!(
             shared.borrow_mut().take_intents().iter().any(|intent| matches!(
                 intent,

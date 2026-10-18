@@ -170,7 +170,8 @@ impl NativeHistoryReadSubject {
         Ok(current)
     }
     #[cfg(not(target_os = "linux"))]
-    fn named_parent_locked(&self, _table: &Table) -> Result<Arc<Dir>, FsError> {
+    fn named_parent_locked(&self, table: &Table) -> Result<Arc<Dir>, FsError> {
+        self.scope_locked(table)?;
         Err(FsError::Unsupported(
             "retained history requires Linux source lineage",
         ))

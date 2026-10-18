@@ -560,6 +560,7 @@ mod tests {
             public_origin: None,
             live_origin: None,
             limits: crate::web::WebLimits::default(),
+            country: None,
         }
     }
 

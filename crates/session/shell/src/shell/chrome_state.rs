@@ -402,17 +402,17 @@ pub enum OpenTarget {
     Beside,
     /// Force the new window into `GroupId` as a tab.
     Here(u64),
+    /// Its own group, right beside `GroupId`: what Ctrl+Enter in search
+    /// asks for, beside the focused window whatever the default would say.
+    RightOf(u64),
 }
 
-impl OpenTarget {
-    /// Appended to launchable palette rows so a result says where it
-    /// will land before the user commits.
-    pub fn result_hint(self) -> String {
-        match self {
-            OpenTarget::Beside => crate::shell::i18n::t("search-opens-beside"),
-            OpenTarget::Here(_) => crate::shell::i18n::t("search-opens-here"),
-        }
-    }
+/// Where clipboard history was summoned to paste: the focused field's caret
+/// and the focused window, in desktop coordinates, either unknown.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PasteOrigin {
+    pub caret: Option<vello::kurbo::Rect>,
+    pub window: Option<vello::kurbo::Rect>,
 }
 
 /// One monitor's brightness control in Quick Settings.
@@ -474,6 +474,11 @@ pub struct QuickSettingsState {
     /// `Root`) — pushing `Wifi`/`Bluetooth` flips the popover to the
     /// drill-in list.
     pub nav_stack: Vec<QsLevel>,
+    /// Set while clipboard history is open to paste (Super+V): where it was
+    /// summoned from, so it opens there instead of under the tray and a
+    /// choice is pasted into that field. `None` when history is browsed from
+    /// Quick Settings. Cleared whenever Quick Settings opens another way.
+    pub paste_origin: Option<PasteOrigin>,
     pub wifi_networks: Vec<WifiNetwork>,
     /// True only while `NetworkManager` discovery is outstanding.
     pub wifi_scanning: bool,
@@ -560,6 +565,7 @@ impl Default for QuickSettingsState {
             rotation_available: os_actions::has_accelerometer(),
             rotation_lock: settings_store::hardware::ROTATION_LOCK.get(),
             nav_stack: vec![QsLevel::Root],
+            paste_origin: None,
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
             wifi_networks: Vec::new(),
@@ -600,6 +606,7 @@ impl QuickSettingsState {
             rotation_available: false,
             rotation_lock: false,
             nav_stack: vec![QsLevel::Root],
+            paste_origin: None,
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
             wifi_networks: Vec::new(),
@@ -630,6 +637,7 @@ impl QuickSettingsState {
 
     /// Replace stale drill-in history with one authoritative destination.
     pub fn show_level(&mut self, level: QsLevel) {
+        self.paste_origin = None;
         self.nav_stack.clear();
         self.nav_stack.push(QsLevel::Root);
         if level != QsLevel::Root {
@@ -696,6 +704,13 @@ pub struct ChromeState {
     pub search_resource_scope: Option<SearchResourceScope>,
     /// Set by the tab strip's "+", cleared when the palette closes.
     pub open_target: OpenTarget,
+    /// The active workspace's windows (tabs), most recently focused first, as
+    /// Alt+Tab walks them: search lists "windows to go back to" in this order
+    /// and switches an app's row to its latest window.
+    pub recent_windows: Vec<crate::shell::state::TabId>,
+    /// Whether this view follows a collaborator, published by the overlay
+    /// host that owns the follow: "Stop following" is only offered then.
+    pub following: bool,
     /// Copied here once per frame from
     /// [`crate::shell::status::StatusBridge`] with no lock held across
     /// a draw. `None` until a poller publishes.
@@ -1024,6 +1039,8 @@ impl ChromeState {
             search_scope: SearchScope::default(),
             search_resource_scope: None,
             open_target: OpenTarget::default(),
+            recent_windows: Vec::new(),
+            following: false,
             status: crate::shell::status::SystemStatus::default(),
             clock_activity: None,
             osd: None,
@@ -1984,8 +2001,31 @@ impl ChromeState {
         self.overlays.quick_settings = opening;
         if opening {
             self.overlays.ws_settings = false;
+            self.quick_settings.paste_origin = None;
         }
         self.bump();
+    }
+
+    /// Back out of the Quick Settings page on screen (its Back chevron, or
+    /// Escape): to the page it was drilled into from, or, for clipboard
+    /// history opened to paste, out of Quick Settings altogether — it was
+    /// summoned on its own, at the caret, and has no page behind it there.
+    pub fn quick_settings_back(&mut self) {
+        if self.quick_settings.paste_origin.take().is_some() {
+            self.overlays.quick_settings = false;
+            self.quick_settings
+                .show_level(crate::shell::quick_settings::QsLevel::Root);
+        } else {
+            self.quick_settings.pop_level();
+        }
+        self.bump();
+    }
+
+    /// Open clipboard history to paste (Super+V): at `origin` (the caret,
+    /// else the focused window), and a choice goes into that field.
+    pub fn open_clipboard_history_to_paste(&mut self, origin: PasteOrigin) {
+        self.open_quick_settings_level(crate::shell::quick_settings::QsLevel::Clipboard);
+        self.quick_settings.paste_origin = Some(origin);
     }
 
     /// Reveal Quick Settings without toggle semantics, for deep links such as
@@ -3009,6 +3049,18 @@ impl ChromeState {
         }
     }
 
+    /// The banner stack laid out `on_screen` at `now`, and whether the
+    /// person holds it: only banners on screen and unheld age
+    /// ([`NotificationLog::present`]). Viewer-local; no repaint.
+    pub fn present_notifications(
+        &mut self,
+        now: std::time::Instant,
+        on_screen: &[u64],
+        held: bool,
+    ) {
+        self.notification_log.present(now, on_screen, held);
+    }
+
     /// Called each frame by the overlay host. Expired toasts from a D-Bus
     /// `Notify` emit `NotificationClosed(id, 1)`.
     pub fn update_notification_lifecycle(&mut self, now: std::time::Instant) -> usize {
@@ -3356,6 +3408,22 @@ impl ChromeState {
                 let time = ui::clock::hour_minute((end / 60).into(), (end % 60).into());
                 t_args("quiet-status-focus-until", &[("time", time.into())])
             })
+    }
+
+    /// [`Self::quiet_status`] at the local time now.
+    pub fn quiet_status_now(&self) -> Option<String> {
+        use chrono::{Datelike, Timelike};
+        let local = chrono::Local::now();
+        self.quiet_status(
+            u16::try_from(
+                local
+                    .hour()
+                    .saturating_mul(60)
+                    .saturating_add(local.minute()),
+            )
+            .unwrap_or(0),
+            u8::try_from(local.weekday().num_days_from_monday()).unwrap_or(0),
+        )
     }
 
     // ---------- D-Bus notification wiring ----------

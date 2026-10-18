@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  ACTION_GAP_MS, ASK_AFTER_ACTIONS, COPY_PAIR, createIdentityActions, KEEP, NAME, PAIR, RECOVERY, SIGN_IN, syncProfile,
+  ACTION_GAP_MS, ASK_AFTER_ACTIONS, createIdentityActions, KEEP, NAME, PAIR, RECOVERY, SIGN_IN, syncProfile,
 } from './identity-actions.mjs';
+import {openInvites} from './pairing.mjs';
 import {browserIdentity, IdentityError, unlockIdentity} from './root-identity.mjs';
 import {fakeAuthenticator} from './testing/fake-authenticator.mjs';
 
@@ -240,96 +241,120 @@ test('a device takes the name its person keeps on their hosts, and a root holder
   assert.equal(published.length, 2, 'a name nobody chose is not published');
 });
 
-const PAIR_LINK = 'https://tilo.example/#/@rooms.example/w/ROOM?pair=ab';
+const INVITE_A = '0a'.repeat(16);
+const INVITE_B = '0b'.repeat(16);
 
-test('a link the clipboard refused is shown in a banner that can copy it again', async () => {
+/** Pairing wired to fakes: the host's requests (`host.pending`), its
+ * answers, the sheets and asks shown, and a clock and poll to drive. */
+async function pairingFixture({invites = [INVITE_A, INVITE_B]} = {}) {
   const identity = await browserIdentity({storage: memoryStorage(), persist: null});
   const mount = fakeMount();
-  let clipboard = 'refuse';
-  const revealed = [];
-  const actions = createIdentityActions({identity, every: () => () => {},
-    copy: async () => { if (clipboard === 'refuse') throw new Error('denied'); },
-    revealLink: (link, copied) => revealed.push({link, copied}),
-    pairing: {link: () => PAIR_LINK, pending: async () => [], answer: async () => {}}});
-  await actions.attach(mount);
-  await actions.perform(PAIR.id);
-  assert.deepEqual(mount.offers, [COPY_PAIR.id], 'the banner offers Copy link');
-  assert.equal(mount.said[0].action.title, 'Copy link');
-  assert.equal(mount.said[0].body, PAIR_LINK);
-  assert.ok(mount.actions.includes(COPY_PAIR.id), 'offered while the link is not copied');
-  assert.deepEqual(mount.acknowledged, [], 'nothing was copied to acknowledge');
-
-  // Refused again: the banner stays and the link goes where it can be copied by hand.
-  await actions.perform(COPY_PAIR.id);
-  assert.ok(mount.actions.includes(COPY_PAIR.id), 'the banner stays');
-  assert.deepEqual(mount.acknowledged, []);
-  assert.deepEqual(revealed.map(r => r.link), [PAIR_LINK]);
-
-  // Copied by hand from there: acknowledged, and no longer offered.
-  revealed[0].copied();
-  assert.deepEqual(mount.acknowledged, ['Link copied: open it on the new device']);
-  assert.ok(!mount.actions.includes(COPY_PAIR.id), 'withdrawn');
-  revealed[0].copied();
-  assert.equal(mount.acknowledged.length, 1, 'acknowledged once');
-});
-
-test('Copy link with a working clipboard acknowledges once and withdraws the banner', async () => {
-  const identity = await browserIdentity({storage: memoryStorage(), persist: null});
-  const mount = fakeMount();
-  let refuse = true;
-  const copied = [];
-  const revealed = [];
-  const actions = createIdentityActions({identity, every: () => () => {},
-    copy: async text => { if (refuse) throw new Error('denied'); copied.push(text); },
-    revealLink: link => revealed.push(link),
-    pairing: {link: () => PAIR_LINK, pending: async () => [], answer: async () => {}}});
-  await actions.attach(mount);
-  await actions.perform(PAIR.id);
-  refuse = false;
-  await actions.perform(COPY_PAIR.id);
-  assert.deepEqual(copied, [PAIR_LINK]);
-  assert.deepEqual(mount.acknowledged, ['Link copied: open it on the new device']);
-  assert.ok(!mount.actions.includes(COPY_PAIR.id), 'no longer offered, so its banner is withdrawn');
-  assert.deepEqual(revealed, []);
-  assert.deepEqual(mount.offers, [COPY_PAIR.id], 'no second banner');
-});
-
-test('pairing copies a link, then offers each waiting device for approval and approves the one chosen', async () => {
-  const identity = await browserIdentity({storage: memoryStorage(), persist: null});
-  const mount = fakeMount();
-  const copied = [];
-  const answered = [];
-  let pending = [];
-  let poll;
-  let clock = 0;
+  const host = {pending: [], answers: [], fail: null};
+  const sheets = [];
+  const asks = [];
   const errors = [];
-  const actions = createIdentityActions({identity, onError: error => errors.push(error),
-    copy: async text => copied.push(text), now: () => clock,
-    every: run => { poll = run; return () => { poll = null; }; },
-    pairing: {link: () => 'https://tilo.example/#/@rooms.example/w/ROOM?pair=ab', pending: async () => pending,
-      answer: async (digest, approved) => answered.push([digest, approved])}});
-  await actions.attach(mount);
-  assert.ok(mount.actions.includes(PAIR.id));
-  await actions.perform(PAIR.id);
-  assert.deepEqual(copied, ['https://tilo.example/#/@rooms.example/w/ROOM?pair=ab']);
-  assert.deepEqual(mount.offers, [], 'copying is no notification');
-  assert.deepEqual(mount.acknowledged, ['Link copied: open it on the new device'], 'said in passing');
+  const fixture = {identity, mount, host, sheets, asks, errors, clock: 0, poll: null};
+  const ids = [...invites];
+  const random = bytes => bytes.fill(Number.parseInt(ids.shift().slice(0, 2), 16));
+  fixture.actions = createIdentityActions({identity, onError: error => errors.push(error),
+    now: () => fixture.clock, invites: openInvites({now: () => fixture.clock, random}),
+    copy: async () => {},
+    every: run => { fixture.poll = run; return () => { fixture.poll = null; }; },
+    pairing: {
+      link: invite => `https://tilo.example/#/@rooms.example/w/ROOM?pair=${identity.userPublicKey}${invite}`,
+      pending: async () => host.pending,
+      answer: async (digest, approved) => {
+        if (host.fail) throw host.fail;
+        host.answers.push([digest, approved]);
+        return approved ? '{"cert":{}}' : null;
+      },
+    },
+    showPairLink: sheet => { const shown = {...sheet, closed: false, close() { shown.closed = true; }}; sheets.push(shown); return shown; },
+    askPairing: (request, decide) => {
+      const shown = {request, decide, closed: false, close() { shown.closed = true; }};
+      asks.push(shown);
+      return shown;
+    }});
+  fixture.tick = async () => { fixture.poll?.(); await new Promise(resolve => setTimeout(resolve, 0)); };
+  await fixture.actions.attach(mount);
+  return fixture;
+}
 
-  pending = [{digest: 'd1', pairingCode: '123456', label: 'Browser on Linux', device: 'ee'.repeat(32)}];
-  poll();
-  await new Promise(resolve => setTimeout(resolve, 0));
-  assert.deepEqual(mount.offers, ['approve-pairing:d1']);
-  poll();
-  await new Promise(resolve => setTimeout(resolve, 0));
-  assert.equal(mount.offers.length, 1, 'a waiting device is offered once');
+const request = (digest, invite, extra = {}) => ({digest, pairingCode: '123456', label: 'Safari on iPhone', device: 'ee'.repeat(32),
+  invite, requestedAtMs: 0, country: 'DE', ...extra});
 
-  await actions.perform('approve-pairing:d1');
-  assert.deepEqual(answered, [['d1', true]]);
-  assert.deepEqual(mount.offers, ['approve-pairing:d1'], 'approving is not announced');
-  assert.deepEqual(errors, []);
+test('each pairing link names a fresh invite, shown on a sheet that can copy it, open for ten minutes', async () => {
+  const pairing = await pairingFixture();
+  assert.ok(pairing.mount.actions.includes(PAIR.id));
+  await pairing.actions.perform(PAIR.id);
+  await pairing.actions.perform(PAIR.id);
+  assert.deepEqual(pairing.sheets.map(sheet => sheet.link), [
+    `https://tilo.example/#/@rooms.example/w/ROOM?pair=${pairing.identity.userPublicKey}${INVITE_A}`,
+    `https://tilo.example/#/@rooms.example/w/ROOM?pair=${pairing.identity.userPublicKey}${INVITE_B}`,
+  ]);
+  assert.deepEqual(pairing.sheets.map(sheet => sheet.expiresAt), [10 * 60 * 1000, 10 * 60 * 1000]);
+  assert.equal(await pairing.sheets[0].copy(), true);
+  assert.deepEqual(pairing.mount.offers, [], 'no banner: the sheet is the pairing');
 
-  clock = 11 * 60 * 1000;
-  poll();
-  await new Promise(resolve => setTimeout(resolve, 0));
-  assert.equal(poll, null, 'a stale pairing link is no longer watched');
+  pairing.clock = 10 * 60 * 1000;
+  await pairing.tick();
+  assert.ok(pairing.sheets.every(sheet => sheet.closed), 'an expired link’s sheet closes');
+  assert.equal(pairing.poll, null, 'nothing is watched once no link is open');
+  assert.deepEqual(pairing.errors, []);
+});
+
+test('only a request answering one of this page’s open invites is asked about, once per invite', async () => {
+  const pairing = await pairingFixture();
+  await pairing.actions.perform(PAIR.id);
+  pairing.host.pending = [
+    request('d0', null), request('d1', '0c'.repeat(16)), request('d2', INVITE_A), request('d3', INVITE_A),
+  ];
+  await pairing.tick();
+  await pairing.tick();
+  assert.deepEqual(pairing.asks.map(ask => ask.request.digest), ['d2'], 'the first device naming this page’s invite, once');
+  assert.ok(pairing.sheets[0].closed, 'the ask takes the sheet’s place');
+  assert.deepEqual(pairing.host.answers, [], 'nothing is answered without the person');
+});
+
+test('approving answers the request and spends its invite; a second device naming it is never asked about', async () => {
+  const pairing = await pairingFixture();
+  await pairing.actions.perform(PAIR.id);
+  pairing.host.pending = [request('d1', INVITE_A)];
+  await pairing.tick();
+  assert.deepEqual(await pairing.asks[0].decide(true), {approved: true, label: 'Safari on iPhone'});
+  assert.deepEqual(pairing.host.answers, [['d1', true]]);
+  pairing.host.pending = [request('d2', INVITE_A)];
+  await pairing.tick();
+  assert.equal(pairing.asks.length, 1, 'the link worked once');
+  assert.equal(pairing.poll, null, 'no link is open any more');
+  assert.deepEqual(pairing.errors, []);
+});
+
+test('declining answers no and spends the invite too; an answer the host did not take can be given again', async () => {
+  const pairing = await pairingFixture();
+  await pairing.actions.perform(PAIR.id);
+  await pairing.actions.perform(PAIR.id);
+  pairing.host.pending = [request('d1', INVITE_A), request('d2', INVITE_B)];
+  await pairing.tick();
+  assert.equal(pairing.asks.length, 2);
+  pairing.host.fail = new Error('offline');
+  await assert.rejects(pairing.asks[1].decide(true), /offline/);
+  pairing.host.fail = null;
+  assert.deepEqual(await pairing.asks[0].decide(false), {approved: false, label: 'Safari on iPhone'});
+  assert.deepEqual(await pairing.asks[1].decide(true), {approved: true, label: 'Safari on iPhone'});
+  assert.deepEqual(pairing.host.answers, [['d1', false], ['d2', true]]);
+  await pairing.tick();
+  assert.equal(pairing.asks.length, 2);
+  assert.equal(pairing.poll, null);
+});
+
+test('an ask still open when its link expires closes', async () => {
+  const pairing = await pairingFixture();
+  await pairing.actions.perform(PAIR.id);
+  pairing.host.pending = [request('d1', INVITE_A)];
+  await pairing.tick();
+  pairing.clock = 11 * 60 * 1000;
+  await pairing.tick();
+  assert.ok(pairing.asks[0].closed);
+  assert.equal(pairing.poll, null);
 });

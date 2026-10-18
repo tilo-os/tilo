@@ -35,27 +35,9 @@ impl std::fmt::Debug for Outgoing {
     }
 }
 
-/// Resolve a [`Request`] against `env_vars` into a concrete [`Outgoing`].
-/// Query params, headers, the chosen auth scheme, and the body are all
-/// substituted and assembled here.
-pub fn build_outgoing(req: &Request, env_vars: &HashMap<String, String>) -> Outgoing {
-    let sub = |s: &str| vars::substitute(s, env_vars);
-
-    // Assemble the URL with its query string from enabled params.
-    let base = sub(&req.url);
-    let query: Vec<String> = req
-        .params
-        .iter()
-        .filter(|p| p.enabled && !p.key.trim().is_empty())
-        .map(|p| {
-            format!(
-                "{}={}",
-                ui::uri::encode_component(&sub(&p.key)),
-                ui::uri::encode_component(&sub(&p.value))
-            )
-        })
-        .collect();
-    let url = if query.is_empty() {
+/// Appends the encoded `query` pairs to `base`, keeping any `#fragment` last.
+fn append_query(base: String, query: &[String]) -> String {
+    if query.is_empty() {
         base
     } else {
         // Fragments are not sent to the server; params must precede them.
@@ -78,7 +60,30 @@ pub fn build_outgoing(req: &Request, env_vars: &HashMap<String, String>) -> Outg
             url.push_str(fragment);
         }
         url
-    };
+    }
+}
+
+/// Resolve a [`Request`] against `env_vars` into a concrete [`Outgoing`].
+/// Query params, headers, the chosen auth scheme, and the body are all
+/// substituted and assembled here.
+pub fn build_outgoing(req: &Request, env_vars: &HashMap<String, String>) -> Outgoing {
+    let sub = |s: &str| vars::substitute(s, env_vars);
+
+    // Assemble the URL with its query string from enabled params.
+    let base = sub(&req.url);
+    let query: Vec<String> = req
+        .params
+        .iter()
+        .filter(|p| p.enabled && !p.key.trim().is_empty())
+        .map(|p| {
+            format!(
+                "{}={}",
+                ui::uri::encode_component(&sub(&p.key)),
+                ui::uri::encode_component(&sub(&p.value))
+            )
+        })
+        .collect();
+    let url = append_query(base, &query);
 
     // Headers from the request, then auth-derived headers.
     let mut headers: Vec<(String, String)> = req

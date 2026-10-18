@@ -40,6 +40,8 @@ struct Inner {
     /// What a paint capture answers with; `None` until a test sets one.
     paint_snapshot: Option<String>,
     paint_resources: std::collections::HashMap<String, Vec<u8>>,
+    /// Whether it says it measures its document, as a ready host does.
+    measures_document: bool,
 }
 
 pub struct TestEngine {
@@ -84,6 +86,18 @@ impl TestEngine {
     /// `DOMSnapshot` JSON), as a real engine would for its current page.
     pub fn set_paint_snapshot(&self, snapshot: impl Into<String>) {
         self.lock_inner().paint_snapshot = Some(snapshot.into());
+    }
+
+    /// Say the engine measures its document (answers
+    /// [`WebViewCommand::ReportDocumentSize`]), as a ready host that can does.
+    pub fn set_measures_document(&self, measures: bool) {
+        self.lock_inner().measures_document = measures;
+    }
+
+    /// Deliver `event` on the next drain, as the engine would on its own (a
+    /// page reporting its document size).
+    pub fn push_event(&self, event: WebViewEvent) {
+        self.lock_inner().events.push(event);
     }
 
     /// Queue the answer to the next page request. Without one, an outline
@@ -286,6 +300,10 @@ impl TestEngine {
 }
 
 impl WebViewEngine for TestEngine {
+    fn measures_document(&self) -> bool {
+        self.lock_inner().measures_document
+    }
+
     fn navigate_owned(
         &self,
         request_id: u32,
@@ -442,6 +460,7 @@ impl WebViewEngine for TestEngine {
             | WebViewCommand::ContextMenuAction { .. }
             | WebViewCommand::StopFinding
             | WebViewCommand::SetZoomLevel(_)
+            | WebViewCommand::ReportDocumentSize(_)
             | WebViewCommand::CancelNativeDownload { .. }
             | WebViewCommand::RetryDownload { .. }
             | WebViewCommand::CancelAllDownloads => {}

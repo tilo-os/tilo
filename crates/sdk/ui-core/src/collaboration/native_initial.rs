@@ -721,10 +721,6 @@ pub(crate) struct InitialReadBridge {
 }
 #[cfg(not(feature = "broker-transport"))]
 impl InitialReadBridge {
-    #[expect(
-        clippy::unnecessary_wraps,
-        reason = "mirrors the broker-backed bridge's signature"
-    )]
     pub(crate) fn service_request(
         &self,
         _command: runtime_collab::BrowserServiceSessionCommand,

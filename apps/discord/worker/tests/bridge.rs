@@ -976,6 +976,7 @@ async fn opted_in_the_bridge_adds_its_own_roles_and_new_channels_only() {
                 name: "ideas".into(),
                 category: Some(channels),
                 kind: None,
+                topic: None,
             }),
         )
         .await;
@@ -1064,6 +1065,7 @@ fn seed_channels(doc: &mut AutoCommit, owner: &str, workspace: &Id) -> Result<()
                 name: name.into(),
                 category: category.clone(),
                 kind: None,
+                topic: None,
             }),
         )
         .map_err(|error| error.to_string())?;

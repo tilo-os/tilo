@@ -224,7 +224,7 @@ impl<P: Chained> ChainState<P> {
     /// Open every part newer than the head that this device holds. Whether
     /// one was.
     fn look(&self) -> bool {
-        self.looked.set(Some(ui_core::time::Instant::now()));
+        self.looked.set(Some(ui_core::time::now()));
         let head = self.parts.borrow().keys().next_back().copied();
         // Only the newest is the head; the parts between are opened when
         // someone reads back to them.

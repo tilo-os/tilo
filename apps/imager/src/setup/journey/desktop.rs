@@ -13,45 +13,8 @@ impl InstallerPreview {
         {
             return Err("installer-desktop-unavailable");
         }
-        let identity = self
-            .personal
-            .prepared_handle()
-            .ok_or("installer-preview-identity-not-prepared")?;
-        let accounts = if self.journey.migrate == Some(true)
-            && self.journey.categories[2]
-            && self.accounts.has_prepared_connections()
-        {
-            Some(
-                self.accounts
-                    .prepared_handle()
-                    .ok_or("installer-preview-account-handoff-unavailable")?,
-            )
-        } else {
-            None
-        };
-        let install_profile = self.public_install_profile()?;
-        self.media_preparation.start_with_selections(
-            identity,
-            accounts,
-            super::prepared_media::MediaSelections {
-                sessions: self.belongings.sessions.selected_for_accounts(
-                    self.journey.migrate == Some(true) && self.journey.categories[2],
-                ),
-                home_applications: false,
-                home: None,
-                retained: None,
-                planned_direct: None,
-                applications: None,
-                browser: (self.journey.migrate == Some(true)
-                    && self.belongings.browser.available())
-                .then(|| self.belongings.browser.selected())
-                .filter(|selected| !selected.profiles().is_empty()),
-            },
-            zeroize::Zeroizing::new(self.journey.password.clone()),
-            Some(install_profile),
-        )?;
-        self.desktop_pending = true;
-        Ok(())
+        let child = crate::setup::view::SetupApp::for_desktop();
+        self.show_desktop(child)
     }
     pub(super) fn finish_desktop(
         &mut self,
@@ -62,6 +25,10 @@ impl InstallerPreview {
             .map_err(|_| "installer-desktop-unavailable")?;
         let child = crate::setup::view::SetupApp::from_guided_desktop(prepared, home)
             .map_err(|_| "installer-desktop-unavailable")?;
+        self.show_desktop(child)
+    }
+
+    fn show_desktop(&mut self, child: crate::setup::view::SetupApp) -> Result<(), &'static str> {
         let navigation = child.guided_navigation_guard();
         let context = self
             .direct

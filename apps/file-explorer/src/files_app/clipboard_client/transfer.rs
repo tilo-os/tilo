@@ -2,6 +2,7 @@
 
 use super::{Arc, Command, Duration, Instant, Offer, Reply, RetainedObject, SelectedDescriptor};
 use serde::{Deserialize, Serialize};
+use ui::collaboration::file_clipboard::Conflict;
 use ui::tilo_resource::{self, JsonSchema};
 
 /// What the native host reports of a transfer it carried out. Settled
@@ -28,6 +29,13 @@ enum Phase {
 pub(super) enum Step {
     Send(Command),
     Done(Result<Receipt, String>),
+    /// The destination already has `count` of the names (the first in
+    /// `names`): nothing was pasted; the window asks, then answers with
+    /// [`Transfer::decide`].
+    Ask {
+        names: Vec<String>,
+        count: usize,
+    },
 }
 
 pub(super) struct Transfer {
@@ -41,6 +49,7 @@ pub(super) struct Transfer {
     phase: Phase,
     restore: bool,
     expires: Instant,
+    conflict: Conflict,
 }
 
 impl Transfer {
@@ -60,6 +69,39 @@ impl Transfer {
             phase: Phase::Snapshot,
             restore: false,
             expires: ui::time::now() + Duration::from_secs(120),
+            conflict: Conflict::KeepBoth,
+        }
+    }
+
+    /// Paste with `conflict` for names the destination already has.
+    pub(super) fn with_conflict(mut self, conflict: Conflict) -> Self {
+        self.conflict = conflict;
+        self
+    }
+
+    /// The person's answer to clashing names: paste again with it (the same
+    /// operation, which never started), or give the destination back.
+    pub(super) fn decide(&mut self, conflict: Option<Conflict>) -> Step {
+        match conflict {
+            Some(conflict) if conflict != Conflict::Ask => {
+                self.conflict = conflict;
+                self.phase = Phase::Paste;
+                Step::Send(self.paste())
+            }
+            _ => {
+                self.receipt = Some(Receipt {
+                    operation: self.operation.clone(),
+                    completed: 0,
+                    cut: self.offer.as_ref().is_some_and(|offer| offer.cut),
+                    restore: false,
+                    // Nothing was pasted, as the person chose: no failure.
+                    error: None,
+                });
+                self.phase = Phase::Release;
+                Step::Send(Command::Release {
+                    tickets: self.destination.iter().cloned().collect(),
+                })
+            }
         }
     }
 
@@ -94,6 +136,7 @@ impl Transfer {
                 .map_or_else(String::new, |offer| offer.id.clone()),
             destination: self.destination.clone().unwrap_or_default(),
             operation: self.operation.clone(),
+            conflict: self.conflict,
         }
     }
 
@@ -130,7 +173,7 @@ impl Transfer {
     pub fn answer(&mut self, reply: &Reply) -> Step {
         match (&self.phase, reply) {
             (Phase::Snapshot, Reply::Snapshot { offer: Some(offer) })
-                if offer.count > 0 && offer.count <= super::file_clipboard::MAX_ENTRIES =>
+                if offer.count > 0 && offer.count <= super::file_clipboard::MAX_OFFER_ENTRIES =>
             {
                 self.offer = Some(offer.clone());
                 self.phase = Phase::Capture;
@@ -153,6 +196,12 @@ impl Transfer {
                 self.destination = Some(destination.clone());
                 self.phase = Phase::Paste;
                 Step::Send(self.paste())
+            }
+            (Phase::Paste, Reply::Conflicts { names, count }) if self.conflict == Conflict::Ask => {
+                Step::Ask {
+                    names: names.clone(),
+                    count: *count,
+                }
             }
             (Phase::Restore | Phase::Paste | Phase::Observe, Reply::Running { operation })
                 if operation == &self.operation =>
@@ -262,6 +311,7 @@ mod tests {
             offer: actual_offer,
             destination,
             operation,
+            ..
         } = &paste
         else {
             panic!("must paste exact captured objects")

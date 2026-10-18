@@ -401,8 +401,11 @@ impl DesktopTree {
     /// [`Self::remove_tab`] for a tab the person closed (its window went
     /// away): if it was in front, the group goes back to the tab that was in
     /// front before it, most recent first, and only without such history takes
-    /// the tab now at its index. Restructuring that removes and re-adds tabs
-    /// keeps using [`Self::remove_tab`].
+    /// the tab now at its index. Likewise, when it was the active group's last
+    /// tab, the strip goes back to the group that was active before it
+    /// ([`DesktopTree::previously_active_group`]), and only without such
+    /// history to the group now at its index. Restructuring that removes and
+    /// re-adds tabs keeps using [`Self::remove_tab`].
     pub fn close_tab(&mut self, tab_id: TabId) -> Option<RemovedTab> {
         self.remove_tab_choosing(tab_id, true)
     }
@@ -445,13 +448,16 @@ impl DesktopTree {
         let group_removed = group.tabs.is_empty();
         if group_removed {
             strip.window_groups.remove(group_idx);
+            let at_index = strip
+                .window_groups
+                .get(group_idx)
+                .or_else(|| strip.window_groups.last())
+                .map(|group| group.id);
             if self.active_group.get(&strip_id) == Some(&group_id) {
-                match strip
-                    .window_groups
-                    .get(group_idx)
-                    .or_else(|| strip.window_groups.last())
-                    .map(|group| group.id)
-                {
+                let came_from = back_to_previous
+                    .then(|| self.previously_active_group(strip_id, group_id))
+                    .flatten();
+                match came_from.or(at_index) {
                     Some(next) => {
                         self.active_group.insert(strip_id, next);
                     }
@@ -459,6 +465,9 @@ impl DesktopTree {
                         self.active_group.remove(&strip_id);
                     }
                 }
+            }
+            if let Some(history) = self.group_focus_history.get_mut(&strip_id) {
+                history.retain(|g| *g != group_id);
             }
         }
         Some(RemovedTab {

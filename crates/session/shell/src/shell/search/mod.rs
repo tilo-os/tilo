@@ -499,6 +499,13 @@ pub trait SearchProvider {
         None
     }
 
+    /// The picture for one of this provider's rows when the row has one of
+    /// its own (a settings page's, an action's); `None` keeps its kind's
+    /// glyph. A picture tells rows apart faster than their text does.
+    fn row_icon(&self, _result: &SearchResult) -> Option<ui::icons::Icon> {
+        None
+    }
+
     /// Resource hierarchy for one result already admitted to the caller's
     /// catalog. Providers derive identity from their authoritative source,
     /// never presentation labels. This does not resolve or invoke an action.
@@ -601,6 +608,33 @@ pub trait SearchProvider {
     /// bounded ranking preference, never as a visibility filter.
     fn proximity(&self, _result: &SearchResult, _chrome: &ChromeState) -> SearchProximity {
         SearchProximity::Global
+    }
+
+    /// Whether `result` opens the app whose windows announce `app_id` (a
+    /// package id, a Wayland app id). Search shows one row per open app: the
+    /// app's row takes over its latest window's row and switches to it.
+    fn opens_app(&self, _result: &SearchResult, _app_id: &str) -> bool {
+        false
+    }
+
+    /// Whether a person typing `needle` should not be offered `result`: a
+    /// row for agents and the control socket only (reading a value the row
+    /// beside it already shows), or an action with nothing to act on right
+    /// now (closing a sheet that is not open). It still resolves by its
+    /// address and is listed for agents.
+    fn hidden_from_people(
+        &self,
+        _result: &SearchResult,
+        _needle: &str,
+        _chrome: &ChromeState,
+    ) -> bool {
+        false
+    }
+
+    /// Whether `result` is offered only when nothing else answers the query
+    /// (a web search for it): a fallback never takes a row from a match.
+    fn is_fallback(&self, _result: &SearchResult) -> bool {
+        false
     }
 }
 
@@ -1088,6 +1122,15 @@ impl SearchRegistry {
 
     /// Union of every registered provider's [`ResourceKind`]s, ordered by
     /// `ResourceKind::sort_key` — one chip per kind in the palette.
+    /// The picture the provider that returned `result` gives it, if any
+    /// ([`SearchProvider::row_icon`]).
+    pub fn row_icon(&self, result: &SearchResult) -> Option<ui::icons::Icon> {
+        self.providers
+            .iter()
+            .find(|provider| provider.id() == result.provider_id)?
+            .row_icon(result)
+    }
+
     pub fn registered_kinds(&self) -> Vec<ResourceKind> {
         let mut out: Vec<ResourceKind> = Vec::new();
         for provider in self.enabled_providers() {
@@ -1301,14 +1344,12 @@ impl SearchRegistry {
         if !query_input_is_bounded(args.needle) {
             return (Vec::new(), QueryCompletion::invalid_input());
         }
-        let QueryArgs {
-            needle,
-            scope,
-            active_provider_id,
-            chrome,
-            ..
-        } = *args;
+        let QueryArgs { needle, chrome, .. } = *args;
+        // A person typing, as opposed to an agent listing the catalogue:
+        // what they chose before and which windows are open shape the order.
+        let interactive = !exhaustive && !include_programmatic;
         let mut merged: Vec<(SearchResult, f32)> = Vec::new();
+        let mut fallbacks: Vec<(SearchResult, f32)> = Vec::new();
         let mut canonical_rows: HashMap<(String, String), usize> = HashMap::new();
         let mut incomplete = Vec::new();
         for source in self.query_rounds(args, exhaustive, include_programmatic) {
@@ -1316,6 +1357,13 @@ impl SearchRegistry {
             source.report_incomplete(args, include_programmatic, &mut incomplete);
             let top = provider.max_score().max(1);
             for r in source.results {
+                if interactive && provider.hidden_from_people(&r, needle, chrome) {
+                    continue;
+                }
+                if interactive && provider.is_fallback(&r) {
+                    fallbacks.push((r, 0.0));
+                    continue;
+                }
                 // A score above `top` exceeds strength 1.0 and silently
                 // outranks every other provider's perfect match.
                 debug_assert!(
@@ -1325,22 +1373,7 @@ impl SearchRegistry {
                     provider.id(),
                     r.score,
                 );
-                let proximity = if scope == SearchScope::Workspace {
-                    let active_app = if active_provider_id == Some(provider.id()) {
-                        system::ACTIVE_APP_PROXIMITY_BOOST
-                    } else {
-                        0.0
-                    };
-                    let workspace =
-                        if provider.proximity(&r, chrome) == SearchProximity::CurrentWorkspace {
-                            system::ACTIVE_APP_PROXIMITY_BOOST
-                        } else {
-                            0.0
-                        };
-                    active_app + workspace
-                } else {
-                    0.0
-                };
+                let proximity = proximity_boost(provider, &r, args);
                 let strength = system::merged_strength(
                     needle,
                     &r.kind,
@@ -1349,7 +1382,11 @@ impl SearchRegistry {
                     r.score,
                     top,
                     proximity,
-                );
+                ) + if interactive {
+                    window_intent(needle, &r, top) + usage_strength(needle, &r)
+                } else {
+                    0.0
+                };
                 let key = (r.provider_id.clone(), r.id.clone());
                 #[expect(
                     clippy::indexing_slicing,
@@ -1365,12 +1402,103 @@ impl SearchRegistry {
                 }
             }
         }
+        if interactive && !needle.trim().is_empty() {
+            self.one_row_per_open_app(&mut merged, chrome);
+            files_follow_what_was_named(&mut merged, needle);
+            if merged.is_empty() {
+                merged = fallbacks;
+            }
+        }
         system::order_by_kind(&mut merged, |r| &r.kind);
         let completion = QueryCompletion {
             complete: incomplete.is_empty(),
             incomplete,
         };
         (merged.into_iter().map(|(r, _)| r).collect(), completion)
+    }
+
+    /// One row per open app: an app's row takes over the row of its most
+    /// recently used window in this workspace, and Enter switches to that
+    /// window instead of starting another copy. Its other windows stay, each
+    /// titled by what it shows. Two rows that do the same thing ("Files" and
+    /// a "Files" window) cost a row of the palette and a guess.
+    fn one_row_per_open_app(&self, merged: &mut Vec<(SearchResult, f32)>, chrome: &ChromeState) {
+        let windows: Vec<(usize, String, usize)> = {
+            let tree = chrome.tree();
+            merged
+                .iter()
+                .enumerate()
+                .filter_map(|(at, (row, _))| {
+                    if row.provider_id != tilo_desktop::search::WINDOWS_PROVIDER_ID
+                        || row.kind != ResourceKind::Tab
+                        || row.operation_kind != tilo_actions::OperationKind::View
+                    {
+                        return None;
+                    }
+                    let app = tilo_desktop::search::window_row_app_id(&tree.desktop, &row.id)?;
+                    let tab: crate::shell::state::TabId =
+                        row.id.rsplit(':').next()?.parse().ok()?;
+                    let recency = chrome
+                        .recent_windows
+                        .iter()
+                        .position(|recent| *recent == tab)
+                        .unwrap_or(usize::MAX);
+                    Some((at, app, recency))
+                })
+                .collect()
+        };
+        if windows.is_empty() {
+            return;
+        }
+        let providers: HashMap<&str, &dyn SearchProvider> = self
+            .enabled_providers()
+            .map(|provider| (provider.id(), provider.as_ref()))
+            .collect();
+        let mut absorbed: Vec<usize> = Vec::new();
+        for app_at in 0..merged.len() {
+            let Some((app_row, _)) = merged.get(app_at) else {
+                continue;
+            };
+            if !matches!(
+                app_row.kind,
+                ResourceKind::Application | ResourceKind::HostApplication
+            ) {
+                continue;
+            }
+            let Some(provider) = providers.get(app_row.provider_id.as_str()) else {
+                continue;
+            };
+            let latest = windows
+                .iter()
+                .filter(|(at, app, _)| !absorbed.contains(at) && provider.opens_app(app_row, app))
+                .min_by_key(|(_, _, recency)| *recency)
+                .map(|(at, ..)| *at);
+            let Some(window_at) = latest else {
+                continue;
+            };
+            let Some((window, window_strength)) = merged.get(window_at).cloned() else {
+                continue;
+            };
+            if let Some((app_row, strength)) = merged.get_mut(app_at) {
+                app_row.subtitle = if window.title.eq_ignore_ascii_case(&app_row.title) {
+                    window.subtitle
+                } else {
+                    Some(window.title)
+                };
+                app_row.operation_kind = window.operation_kind;
+                app_row.contract = window.contract;
+                app_row.params = window.params;
+                app_row.on_open = window.on_open;
+                app_row.on_invoke = window.on_invoke;
+                app_row.on_begin_invoke = window.on_begin_invoke;
+                *strength = strength.max(window_strength);
+            }
+            absorbed.push(window_at);
+        }
+        absorbed.sort_unstable();
+        for at in absorbed.into_iter().rev() {
+            merged.remove(at);
+        }
     }
 
     /// [`Self::query`], arranged into contiguous per-kind groups and
@@ -1393,6 +1521,131 @@ impl SearchRegistry {
     }
 }
 
+/// How much nearer the person a row is in Workspace scope: from the focused
+/// app's provider, and in the workspace being looked at.
+fn proximity_boost(provider: &dyn SearchProvider, row: &SearchResult, args: &QueryArgs<'_>) -> f32 {
+    if args.scope != SearchScope::Workspace {
+        return 0.0;
+    }
+    let active_app = if args.active_provider_id == Some(provider.id()) {
+        system::ACTIVE_APP_PROXIMITY_BOOST
+    } else {
+        0.0
+    };
+    let workspace = if provider.proximity(row, args.chrome) == SearchProximity::CurrentWorkspace {
+        system::ACTIVE_APP_PROXIMITY_BOOST
+    } else {
+        0.0
+    };
+    active_app + workspace
+}
+
+/// Queries this short are what launchers live on: the thing chosen most
+/// leads every other prefix match.
+const SHORT_QUERY_SCALARS: usize = 3;
+/// How much a row's whole frecency adds at the merge, for a short query and
+/// for a longer one. For a short query it outweighs the gap between an exact
+/// name and a prefix (1.5) and an app's launch intent; for a longer one it
+/// only settles near ties.
+const SHORT_QUERY_USAGE: f32 = 6.0;
+const LONG_QUERY_USAGE: f32 = 0.4;
+/// What a row chosen before for the same typed text adds: it leads.
+const SAME_TEXT_CHOICE: f32 = 8.0;
+/// A title matched from a word start: the hits frecency may reorder.
+const WORD_START_LEXICAL: f32 = 1.5;
+
+/// What the person chose before adds to a row at the merge: how often and
+/// how recently they chose it, which leads a short query's prefix matches
+/// ("t" is the Terminal they open daily, not whichever action sorts first),
+/// and whether they chose it before for this very text.
+fn usage_strength(needle: &str, row: &SearchResult) -> f32 {
+    let typed = needle.trim();
+    if typed.is_empty() {
+        return 0.0;
+    }
+    let choice = usage::choice_share(typed, &row.provider_id, &row.id) * SAME_TEXT_CHOICE;
+    let lexical = system::lexical_strength(typed, &row.kind, &row.title, None);
+    if lexical < WORD_START_LEXICAL {
+        return choice;
+    }
+    let weight = if typed.chars().count() <= SHORT_QUERY_SCALARS {
+        SHORT_QUERY_USAGE
+    } else {
+        LONG_QUERY_USAGE
+    };
+    choice + usage::share(&row.provider_id, &row.id) * weight
+}
+
+/// A window named by a query is as much what the person reaches for as the
+/// app it belongs to: it gets the launch intent an app row gets.
+fn window_intent(needle: &str, row: &SearchResult, top: i32) -> f32 {
+    if needle.trim().is_empty()
+        || row.kind != ResourceKind::Tab
+        || row.operation_kind != tilo_actions::OperationKind::View
+    {
+        return 0.0;
+    }
+    system::application_intent_boost(row.score, top)
+}
+
+/// Whether typed text asks for a file by its shape: a path, a home-relative
+/// path, or a name with an extension ("report.pdf").
+fn looks_like_a_path(needle: &str) -> bool {
+    let typed = needle.trim();
+    if typed.contains('/') || typed.starts_with('~') {
+        return true;
+    }
+    typed.rsplit_once('.').is_some_and(|(stem, extension)| {
+        !stem.is_empty()
+            && (1..=5).contains(&extension.len())
+            && extension.chars().all(|c| c.is_ascii_alphanumeric())
+            && extension.chars().any(|c| c.is_ascii_alphabetic())
+    })
+}
+
+/// Files and folders follow every app, window, action and setting the query
+/// names by a word start of its title, unless the query is shaped like a
+/// file ([`looks_like_a_path`]). A launcher that leads with
+/// `Settings-backup.txt` for "settings" is a filename grep; the files are
+/// still there, below what the person most likely meant.
+fn files_follow_what_was_named(merged: &mut [(SearchResult, f32)], needle: &str) {
+    if looks_like_a_path(needle) {
+        return;
+    }
+    let is_file = |kind: &ResourceKind| matches!(kind, ResourceKind::File | ResourceKind::Folder);
+    let is_named = |kind: &ResourceKind| {
+        matches!(
+            kind,
+            ResourceKind::Action
+                | ResourceKind::Application
+                | ResourceKind::HostApplication
+                | ResourceKind::Tab
+                | ResourceKind::WindowGroup
+                | ResourceKind::Custom(_)
+        )
+    };
+    // The weakest best of the kinds whose title the query named: files sit
+    // just below it, so no named group is ordered after them.
+    let mut best: HashMap<(u8, String), f32> = HashMap::new();
+    for (row, strength) in merged.iter() {
+        if is_named(&row.kind)
+            && system::lexical_strength(needle, &row.kind, &row.title, None) >= WORD_START_LEXICAL
+        {
+            let slot = best.entry(row.kind.sort_key()).or_insert(f32::MIN);
+            *slot = slot.max(*strength);
+        }
+    }
+    let Some(floor) = best.values().copied().reduce(f32::min) else {
+        return;
+    };
+    let ceiling = floor - 0.01;
+    for (row, strength) in merged.iter_mut() {
+        if is_file(&row.kind) && *strength >= floor {
+            *strength = ceiling;
+        }
+    }
+}
+
 /// Rows per group the empty palette shows.
 const JUMP_BACK_IN_GROUP_ROWS: usize = 4;
 
@@ -1402,21 +1655,87 @@ const JUMP_BACK_IN_SUGGESTIONS: [&str; 3] =
 
 const JUMP_BACK_IN_ACTIONS_PROVIDER: &str = "actions";
 
-/// The palette before anything is typed: windows to go back to, apps, and a
-/// few ways in. It is never the full inventory, and never offers a row that
-/// changes something: close, move and revoke need their verb typed. Agents
-/// still enumerate everything through [`SearchRegistry::query_exhaustive`].
+/// Recent choices the empty palette shows.
+const RECENT_CHOICES: usize = 5;
+/// How far back the recent choices are read, so that rows that no longer
+/// resolve or are not offered there still leave five.
+const RECENT_CHOICES_SCANNED: usize = 24;
+
+/// Whether a recent choice may sit in the empty palette, one Enter away:
+/// never something that ends or destroys work (restart, close, delete), and
+/// never a window, which the windows group lists already.
+fn offered_again(row: &SearchResult) -> bool {
+    if matches!(row.kind, ResourceKind::Tab | ResourceKind::WindowGroup) {
+        return false;
+    }
+    !row.contract.as_ref().is_some_and(|contract| {
+        matches!(
+            contract.risk,
+            tilo_actions::RiskLevel::Destructive | tilo_actions::RiskLevel::Privileged
+        ) || contract.confirmation == tilo_actions::ConfirmationPolicy::Confirm
+    })
+}
+
+/// The palette before anything is typed. Once the person has chosen from
+/// search, it is what they chose last (five things, newest first: apps,
+/// files, actions, settings), then the other windows of this workspace in
+/// the order they were left. Before there is any history, it is the windows,
+/// a few apps to start with and a few ways in. It is never the full
+/// inventory, and never offers a row that changes something: close, move and
+/// revoke need their verb typed. Agents still enumerate everything through
+/// [`SearchRegistry::query_exhaustive`].
 ///
 /// Interactive search is one bounded page, so late catalogue rows (help,
-/// the tour) are not on that page. Suggestions are fetched by exact id.
+/// the tour) are not on that page. Suggestions and recent choices are
+/// fetched by exact id.
 fn jump_back_in(registry: &SearchRegistry, args: &QueryArgs<'_>) -> Vec<KindGroup> {
     let rows = registry.query(args);
     let windows = rows
         .iter()
         .filter(|row| matches!(row.kind, ResourceKind::Tab | ResourceKind::WindowGroup))
         .filter(|row| row.operation_kind == tilo_actions::OperationKind::View)
-        .take(JUMP_BACK_IN_GROUP_ROWS)
         .cloned()
+        .collect::<Vec<_>>();
+    let mut recent: Vec<SearchResult> = Vec::new();
+    for (provider, id) in usage::recent_choices(RECENT_CHOICES_SCANNED) {
+        if recent.len() >= RECENT_CHOICES {
+            break;
+        }
+        if let Some(row) = registry.resolve(&provider, &id, args)
+            && offered_again(&row)
+        {
+            recent.push(row);
+        }
+    }
+    if !recent.is_empty() {
+        // A recent app that has a window here switches to it, and that
+        // window is not listed twice.
+        let recent_count = recent.len();
+        let mut merged: Vec<(SearchResult, f32)> = recent
+            .into_iter()
+            .chain(windows)
+            .map(|row| (row, 0.0))
+            .collect();
+        registry.one_row_per_open_app(&mut merged, args.chrome);
+        let mut rows = merged.into_iter().map(|(row, _)| row);
+        let recent: Vec<SearchResult> = rows.by_ref().take(recent_count).collect();
+        let windows: Vec<SearchResult> = rows.take(JUMP_BACK_IN_GROUP_ROWS).collect();
+        return [
+            (ResourceKind::Custom(t("search-group-recent")), recent),
+            (ResourceKind::Tab, windows),
+        ]
+        .into_iter()
+        .filter(|(_, results)| !results.is_empty())
+        .map(|(kind, results)| KindGroup {
+            kind,
+            total: results.len(),
+            results,
+        })
+        .collect();
+    }
+    let windows = windows
+        .into_iter()
+        .take(JUMP_BACK_IN_GROUP_ROWS)
         .collect::<Vec<_>>();
     let apps = rows
         .iter()
@@ -2891,6 +3210,189 @@ mod tests {
             env.remove("TILO_APPS_DATA_DIR");
             crate::shell::launcher::invalidate_app_cache();
         }
+    }
+
+    fn ask(
+        registry: &SearchRegistry,
+        chrome: &crate::shell::chrome_state::Chrome,
+        needle: &str,
+    ) -> Vec<SearchResult> {
+        let (doc, root) = mk_doc();
+        let state = chrome.borrow();
+        registry.query(&QueryArgs {
+            needle,
+            scope: SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &state,
+            doc: &doc,
+            doc_root: &root,
+        })
+    }
+
+    #[test]
+    fn files_follow_the_app_the_query_names_unless_it_names_a_file() {
+        let mut reg = SearchRegistry::new();
+        reg.register(Rc::new(FakeProvider {
+            id: "files".into(),
+            kinds: vec![ResourceKind::File],
+            results: vec![
+                mk_result(
+                    ResourceKind::File,
+                    "files",
+                    "f1",
+                    "Settings-backup.txt",
+                    120,
+                ),
+                mk_result(ResourceKind::File, "files", "f2", "settings", 120),
+            ],
+            max_score: Some(120),
+        }));
+        reg.register(Rc::new(FakeProvider {
+            id: "applications".into(),
+            kinds: vec![ResourceKind::Application],
+            results: vec![mk_result(
+                ResourceKind::Application,
+                "applications",
+                "so.tilo.settings",
+                "Settings",
+                40,
+            )],
+            max_score: None,
+        }));
+        let chrome = mk_chrome();
+        let rows = ask(&reg, &chrome, "settings");
+        assert_eq!(
+            rows.first().map(|row| row.id.as_str()),
+            Some("so.tilo.settings"),
+            "a file named like the app comes after it: {:?}",
+            rows.iter().map(|row| &row.title).collect::<Vec<_>>()
+        );
+        assert!(
+            rows.iter().any(|row| row.id == "f1"),
+            "the files are still offered"
+        );
+        assert!(looks_like_a_path("Settings-backup.txt"));
+        assert!(looks_like_a_path("~/Documents"));
+        assert!(!looks_like_a_path("settings"));
+        assert!(!looks_like_a_path("v1.2"), "a version is not a file type");
+    }
+
+    #[test]
+    fn a_short_query_leads_with_what_is_chosen_most() {
+        let mut reg = SearchRegistry::new();
+        reg.register(Rc::new(FakeProvider {
+            id: "usage-merge-apps".into(),
+            kinds: vec![ResourceKind::Application],
+            results: vec![
+                mk_result(
+                    ResourceKind::Application,
+                    "usage-merge-apps",
+                    "tube",
+                    "Tube",
+                    100,
+                ),
+                mk_result(
+                    ResourceKind::Application,
+                    "usage-merge-apps",
+                    "terminal",
+                    "Terminal",
+                    100,
+                ),
+            ],
+            max_score: None,
+        }));
+        reg.register(Rc::new(FakeProvider {
+            id: "usage-merge-actions".into(),
+            kinds: vec![ResourceKind::Action],
+            results: vec![mk_result(
+                ResourceKind::Action,
+                "usage-merge-actions",
+                "t",
+                "T",
+                100,
+            )],
+            max_score: None,
+        }));
+        let chrome = mk_chrome();
+        usage::record_for_test("usage-merge-apps", "terminal", 12);
+        let rows = ask(&reg, &chrome, "t");
+        assert_eq!(
+            rows.first().map(|row| row.id.as_str()),
+            Some("terminal"),
+            "the app opened every day leads \"t\": {:?}",
+            rows.iter().map(|row| &row.title).collect::<Vec<_>>()
+        );
+        // The text a choice was made for leads next time.
+        usage::record_choice("tu", "usage-merge-apps", "tube");
+        let rows = ask(&reg, &chrome, "tu");
+        assert_eq!(rows.first().map(|row| row.id.as_str()), Some("tube"));
+    }
+
+    #[test]
+    fn an_open_app_is_one_row_that_switches_to_its_latest_window() {
+        struct Apps;
+        impl SearchProvider for Apps {
+            fn id(&self) -> &'static str {
+                "open-app-apps"
+            }
+            fn name(&self) -> &'static str {
+                "apps"
+            }
+            fn resource_kinds(&self) -> &[ResourceKind] {
+                &[ResourceKind::Application]
+            }
+            fn query(&self, _ctx: SearchContext<'_>) -> Vec<SearchResult> {
+                vec![mk_result(
+                    ResourceKind::Application,
+                    "open-app-apps",
+                    "so.tilo.files",
+                    "Files",
+                    100,
+                )]
+            }
+            fn opens_app(&self, result: &SearchResult, app_id: &str) -> bool {
+                result.id == app_id
+            }
+        }
+        use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let window = |id: u64, title: &str| WindowGroup {
+            id: id.saturating_mul(100),
+            tabs: vec![Tab {
+                id,
+                title: title.into(),
+                tile: TileContent::Foreign {
+                    app_id: "so.tilo.files".into(),
+                    surface_id: id,
+                },
+            }],
+            active_tab: id,
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        };
+        tree.desktop.workspaces[0].strips[0].window_groups =
+            vec![window(1, "Downloads"), window(2, "Documents")];
+        tree.seed_doc_from_cache();
+        let chrome = ChromeState::new(tree);
+        chrome.borrow_mut().recent_windows = vec![2, 1];
+        let mut reg = SearchRegistry::new();
+        reg.register(Rc::new(Apps));
+        reg.register(Rc::new(providers::DesktopWindowsProvider::new()));
+        let rows = ask(&reg, &chrome, "files");
+        let titles: Vec<&str> = rows.iter().map(|row| row.title.as_str()).collect();
+        assert_eq!(
+            titles,
+            ["Files", "Downloads"],
+            "one row for the app, which took the latest window; the other window stays"
+        );
+        assert_eq!(
+            rows[0].subtitle.as_deref(),
+            Some("Documents"),
+            "the app's row says which window it goes to"
+        );
+        assert_eq!(rows[0].operation_kind, tilo_actions::OperationKind::View);
     }
 
     /// Write the on-disk shape `launcher::gui_apps` reads.

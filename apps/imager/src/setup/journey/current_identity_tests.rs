@@ -84,7 +84,14 @@ fn current_owner_desktop_actions_restart_and_authenticated_import_preserve_origi
     environment.set("XDG_STATE_HOME", &state);
     environment.set("TILO_IDENTITY_ROOT", &system);
     let mut app = fixture();
-    choose(&mut app, "desktop");
+    // Qualify retained prepared migrations; new Desktop choices bypass identity.
+    app.with_widget::<InstallerPreview, _>(|preview| {
+        preview.journey.destination = Some(Destination::Desktop);
+        preview.journey.page = Page::Migration;
+        preview.journey.categories = [false, false, true];
+        preview.dirty = true;
+    })
+    .unwrap();
     choose(&mut app, "migrate");
     app.with_widget::<InstallerPreview, _>(|preview| preview.live = true)
         .unwrap();

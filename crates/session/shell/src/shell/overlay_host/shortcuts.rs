@@ -218,6 +218,24 @@ pub(super) fn shortcut_reference_rows(shortcuts: &ShortcutConfig) -> Vec<(String
     .collect()
 }
 
+/// The guide's note on going straight to a strip, with the live chords of
+/// the first and the last strip: "Super+1 … Super+9" by default.
+pub(super) fn shortcut_strip_jump_note(shortcuts: &ShortcutConfig) -> String {
+    let chord = |action: ShortcutAction| {
+        shortcuts
+            .bindings
+            .get(&action)
+            .map_or_else(|| t("guide-unassigned-inline"), shortcut_guide_chord)
+    };
+    t_args(
+        "guide-strip-jump",
+        &[
+            ("first", chord(ShortcutAction::FocusStrip1).into()),
+            ("last", chord(ShortcutAction::FocusStrip9).into()),
+        ],
+    )
+}
+
 /// The chords bound to published actions, as the guide lists them: what
 /// each runs, then its chord.
 pub(super) fn shortcut_action_rows(shortcuts: &ShortcutConfig) -> Vec<(String, String)> {
@@ -240,6 +258,25 @@ pub(super) fn shortcut_action_summary(shortcuts: &ShortcutConfig) -> Option<Stri
             .join("   ");
         t_args("guide-your-shortcuts", &[("shortcuts", list.into())])
     })
+}
+
+/// The guide's note on the app tab chords: Ctrl+Tab, Ctrl+Shift+Tab and
+/// Ctrl+Shift+T reach the focused app first and change tabs only where it
+/// leaves them unhandled, while the Super spellings always do. Written in the
+/// active layout's keycaps, so a German keyboard reads `Strg`.
+pub(super) fn shortcut_app_tab_note() -> String {
+    let chord = |text: &str| {
+        KeyChord::parse(text)
+            .map_or_else(|_| text.to_string(), |chord| shortcut_guide_chord(&chord))
+    };
+    t_args(
+        "guide-app-tab-chords",
+        &[
+            ("next", chord("Ctrl+Tab").into()),
+            ("previous", chord("Ctrl+Shift+Tab").into()),
+            ("reopen", chord("Ctrl+Shift+T").into()),
+        ],
+    )
 }
 
 /// How many reference groups sit side by side in a guide body of this
@@ -301,10 +338,11 @@ pub(super) fn shortcut_navigation_step(theme: &ui::theme::Theme) -> f64 {
         + f64::from(theme.tokens.spacing.rhythm.tight)
 }
 
-/// Lines of pointer notes: the fixed pointer line, your action chords and the
-/// vim-mode hint when present.
+/// Lines of notes under the reference: the fixed pointer line, the app tab
+/// chords line, your action chords and the vim-mode hint when present.
 pub(super) fn shortcut_note_lines(has_summary: bool, vim_mode: bool) -> usize {
-    1_usize
+    // The pointer, strip-number and app tab chord notes are always there.
+    3_usize
         .saturating_add(usize::from(has_summary))
         .saturating_add(usize::from(vim_mode))
 }
@@ -314,7 +352,7 @@ pub(super) fn shortcut_note_lines(has_summary: bool, vim_mode: bool) -> usize {
 pub(super) fn shortcut_notes_height(lines: usize) -> f64 {
     #[allow(
         clippy::cast_precision_loss,
-        reason = "at most three note lines convert exactly"
+        reason = "at most four note lines convert exactly"
     )]
     let lines = lines as f64;
     4.0 + 14.0 + lines * 18.0

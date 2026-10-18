@@ -45,6 +45,8 @@ tilo-actions = { path = "../actions" }
 # The join client an enrollment redeems its invitation over, and the relay
 # session a joined room syncs through.
 tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
+# The HTTPS client seam of a host reached over its HTTPS routes.
+tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 tilo-user-identity = { path = "../tilo-user-identity" }
 # The relay voice carrier a call participation authorizes.

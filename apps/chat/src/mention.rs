@@ -79,7 +79,8 @@ impl Mention {
     }
 }
 
-/// Someone the composer can offer at `@`: a person or an agent in the room.
+/// Someone a message's `@name` can bind to: a person or an agent in the
+/// room.
 ///
 /// `name` is the room's answer, never the client's own claim about itself —
 /// see `ChatApp::participants`.
@@ -90,110 +91,6 @@ pub struct Participant {
     /// An automated agent acting in the room rather than a person. The roster
     /// draws the distinction; a mention carries it forward.
     pub is_agent: bool,
-}
-
-/// The `@`-run the caret currently sits in, if any.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MentionQuery {
-    /// Byte offset of the `@`.
-    pub start: usize,
-    /// Text typed after the `@`, up to the caret.
-    pub query: String,
-}
-
-/// How long an `@`-run may grow before it stops being somebody's name. Spaces
-/// are allowed inside a run because real names have them; this is what stops a
-/// stray `@` from holding the picker open over a whole paragraph.
-const MAX_QUERY_LEN: usize = 40;
-
-/// Find the `@`-run the caret is inside, so the composer knows whether to offer
-/// participants. Returns `None` when the caret is not in one.
-///
-/// A run starts at an `@` that opens a word (start of text, or preceded by
-/// whitespace) and ends at the caret. It is abandoned once it grows past
-/// `MAX_QUERY_LEN` or crosses a newline — at that point the person is writing
-/// prose that contains an `@`, not picking somebody.
-pub fn query_at_caret(text: &str, caret: usize) -> Option<MentionQuery> {
-    let caret = caret.min(text.len());
-    let head = text.get(..caret)?;
-    let at = head.rfind('@')?;
-    // The `@` must open a word: nothing before it, or whitespace.
-    let opens_word = head
-        .get(..at)?
-        .chars()
-        .next_back()
-        .is_none_or(char::is_whitespace);
-    if !opens_word {
-        return None;
-    }
-    let query = head.get(at + '@'.len_utf8()..)?;
-    if query.len() > MAX_QUERY_LEN || query.contains('\n') || query.contains('@') {
-        return None;
-    }
-    Some(MentionQuery {
-        start: at,
-        query: query.to_string(),
-    })
-}
-
-/// Whether the composer should be offering participants right now, and for
-/// what — [`query_at_caret`] plus the two things that make an open picker
-/// wrong.
-///
-/// Returns `None` when the caret is not in an `@`-run, when nobody in the room
-/// matches what has been typed (an open list of nothing is noise), or when the
-/// run is *already* a completed mention — `@Ada Lovelace ` with the closing
-/// space typed. That last case is why the raw lexer is not enough on its own:
-/// names contain spaces, so a run cannot be ended by whitespace alone, and
-/// without the room to compare against, a finished pick keeps the list up.
-pub fn picker_query(
-    text: &str,
-    caret: usize,
-    participants: &[Participant],
-) -> Option<MentionQuery> {
-    let q = query_at_caret(text, caret)?;
-    // Already picked: the run is exactly one participant's name plus the space
-    // a completed pick appends to close it.
-    if let Some(name) = q.query.strip_suffix(' ') {
-        let done = participants
-            .iter()
-            .any(|p| !p.name.is_empty() && p.name.eq_ignore_ascii_case(name));
-        if done {
-            return None;
-        }
-    }
-    if candidates(participants, &q.query).is_empty() {
-        return None;
-    }
-    Some(q)
-}
-
-/// The participants worth offering for `query`, best first.
-///
-/// Ranks a prefix match on the whole name above a prefix match on any later
-/// word ("lov" finds "Ada Lovelace") above a plain substring, and falls back to
-/// the room's own order within a rank so the list is stable while typing. An
-/// empty query offers everyone.
-pub fn candidates<'a>(participants: &'a [Participant], query: &str) -> Vec<&'a Participant> {
-    let q = query.trim().to_lowercase();
-    let mut ranked: Vec<(u8, usize, &Participant)> = Vec::new();
-    for (i, p) in participants.iter().enumerate() {
-        let name = p.name.to_lowercase();
-        let rank = if q.is_empty() || name.starts_with(&q) {
-            0
-        } else if name.split_whitespace().any(|w| w.starts_with(&q)) {
-            1
-        } else if name.contains(&q) {
-            2
-        } else if p.id.to_lowercase().contains(&q) {
-            3
-        } else {
-            continue;
-        };
-        ranked.push((rank, i, p));
-    }
-    ranked.sort_by_key(|(rank, i, _)| (*rank, *i));
-    ranked.into_iter().map(|(_, _, p)| p).collect()
 }
 
 /// Resolve every `@`-run in `text` against the room's `participants`.
@@ -362,41 +259,6 @@ mod tests {
             assert_eq!(m[0].slice(text), "@Ada");
             assert_eq!(m[1].slice(text), "@Scribe");
             assert!(m[0].end() <= m[1].start);
-        }
-    }
-
-    #[test]
-    fn picker_opens_on_a_leading_at_and_ranks_room_candidates() {
-        // Phase: the_caret_query_opens_only_on_a_word_leading_at.
-        {
-            assert_eq!(query_at_caret("hi @ad", 6).unwrap().query, "ad");
-            assert_eq!(query_at_caret("hi @ad", 6).unwrap().start, 3);
-            assert!(
-                query_at_caret("mail@ad", 7).is_none(),
-                "an infix @ is an address"
-            );
-            assert!(
-                query_at_caret("hi @a\nb", 7).is_none(),
-                "a newline ends the run"
-            );
-        }
-        // Phase: candidates_rank_prefix_then_word_then_substring.
-        {
-            let r = room();
-            let c = candidates(&r, "ada");
-            assert_eq!(c[0].id, "u_ada");
-            let c = candidates(&r, "lov");
-            assert_eq!(c[0].id, "u_lovelace", "a later word still matches");
-            assert_eq!(
-                candidates(&r, "").len(),
-                3,
-                "an empty query offers the room"
-            );
-        }
-        // Phase: the_picker_stays_shut_when_the_room_offers_nobody.
-        {
-            assert!(picker_query("hi @zz", 6, &room()).is_none());
-            assert!(picker_query("hi @ad", 6, &room()).is_some());
         }
     }
 }

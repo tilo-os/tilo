@@ -128,6 +128,14 @@ impl Verb {
 }
 
 /// The setting and verb an action id of this provider names.
+/// Whether the setting Settings' index calls `index_id` is one served here
+/// with its live value, so search shows it once, in place.
+pub(crate) fn offers_in_place(index_id: &str) -> bool {
+    SPECS.iter().any(|spec| {
+        spec.id.replace('-', "_") == index_id.replace('-', "_") && read(spec.kind).is_some()
+    })
+}
+
 fn parse(id: &str) -> Option<(&'static Spec, Verb)> {
     let (setting, suffix) = id.rsplit_once('.')?;
     let verb = [Verb::Get, Verb::Set, Verb::Toggle]
@@ -670,9 +678,28 @@ fn build() -> (Vec<SearchResult>, Vec<Vec<(String, FieldWeight)>>) {
         } else {
             &[Verb::Get, Verb::Set]
         };
+        // What Settings' own index calls it, in every language, and the
+        // words it is found by there: this row stands in for that one, so a
+        // person never gets both. They weigh less than this row's own name:
+        // they describe the neighbourhood too ("sperren" is Lock before it
+        // is "lock screen after").
+        let indexed: Vec<(String, FieldWeight)> =
+            settings_store::index::setting(&spec.id.replace('-', "_"))
+                .map(|setting| {
+                    settings_store::index::names_in_every_locale(&setting.name_key())
+                        .into_iter()
+                        .map(|name| (name, FieldWeight::SUBTITLE))
+                        .chain(
+                            settings_store::index::words_in_every_locale(&setting.words_key())
+                                .into_iter()
+                                .map(|word| (word, FieldWeight::SUBTITLE)),
+                        )
+                        .collect()
+                })
+                .unwrap_or_default();
         for &verb in verbs {
             let row = row_for(spec, verb, &name, &reading);
-            fields.push(vec![
+            let mut row_fields = vec![
                 (row.title.clone(), FieldWeight::TITLE),
                 (name.clone(), FieldWeight::TITLE),
                 (row.id.clone(), FieldWeight::IDENTITY),
@@ -681,7 +708,9 @@ fn build() -> (Vec<SearchResult>, Vec<Vec<(String, FieldWeight)>>) {
                     row.subtitle.clone().unwrap_or_default(),
                     FieldWeight::SUBTITLE,
                 ),
-            ]);
+            ];
+            row_fields.extend(indexed.iter().cloned());
+            fields.push(row_fields);
             rows.push(row);
         }
     }
@@ -704,6 +733,17 @@ impl SystemSettingsProvider {
 }
 
 impl SearchProvider for SystemSettingsProvider {
+    fn row_icon(&self, result: &SearchResult) -> Option<ui::icons::Icon> {
+        use ui::icons::Icon;
+        let (spec, _) = parse(&result.id)?;
+        Some(match spec.kind {
+            Kind::LockAfter => Icon::Lock,
+            Kind::BlankAfter | Kind::DisplayScale | Kind::DisplayRefreshRate => Icon::Monitor,
+            Kind::SuspendAfter | Kind::AutoSuspend => Icon::Moon,
+            Kind::KeyboardLayout => Icon::Keyboard,
+            Kind::AppearanceMode => Icon::Palette,
+        })
+    }
     fn id(&self) -> &str {
         PROVIDER_ID
     }
@@ -718,6 +758,20 @@ impl SearchProvider for SystemSettingsProvider {
 
     fn resource_kinds(&self) -> &[ResourceKind] {
         &[ResourceKind::Action]
+    }
+
+    /// A person sees one row per setting, its value on the row: reading a
+    /// value is what the row already does, and a switch is flipped, not set.
+    /// Agents and the control socket still reach `.get` and `.set`.
+    fn hidden_from_people(
+        &self,
+        result: &SearchResult,
+        _needle: &str,
+        _chrome: &crate::shell::chrome_state::ChromeState,
+    ) -> bool {
+        parse(&result.id).is_some_and(|(spec, verb)| {
+            verb == Verb::Get || (verb == Verb::Set && spec.kind == Kind::AutoSuspend)
+        })
     }
 
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
@@ -739,7 +793,6 @@ impl SearchProvider for SystemSettingsProvider {
 
 fn row_for(spec: &'static Spec, verb: Verb, name: &str, reading: &Reading) -> SearchResult {
     let id = format!("{}.{}", spec.id, verb.suffix());
-    let value: [(&str, ui::i18n::ArgValue); 1] = [("value", reading.label.clone().into())];
     let (title, subtitle, params) = match verb {
         Verb::Get => (
             t_args(
@@ -752,17 +805,16 @@ fn row_for(spec: &'static Spec, verb: Verb, name: &str, reading: &Reading) -> Se
             t("setting-get-detail"),
             Vec::new(),
         ),
-        // A verb, as every setter in the palette reads: the bare name is
-        // the Settings page's, which lets the person choose rather than type.
-        Verb::Set => (
-            t_args("setting-set", &[("name", name.to_owned().into())]),
-            t_args("setting-current", &value),
-            set_params(spec.kind),
-        ),
-        Verb::Toggle => (
-            t_args("setting-toggle", &[("name", name.to_owned().into())]),
-            t_args("setting-current", &value),
-            Vec::new(),
+        // The one row a person sees for a setting: its name, with the live
+        // value as the trailing pill; choosing it asks for the new value.
+        Verb::Set | Verb::Toggle => (
+            name.to_owned(),
+            String::new(),
+            if verb == Verb::Set {
+                set_params(spec.kind)
+            } else {
+                Vec::new()
+            },
         ),
     };
     let display =
@@ -788,8 +840,8 @@ fn row_for(spec: &'static Spec, verb: Verb, name: &str, reading: &Reading) -> Se
         provider_id: PROVIDER_ID.into(),
         id: id.clone(),
         title,
-        subtitle: Some(subtitle),
-        badge: Some(t("search-badge-settings")),
+        subtitle: (!subtitle.is_empty()).then_some(subtitle),
+        badge: (verb != Verb::Get).then(|| reading.label.clone()),
         score: 0,
         params,
         contract: contract_for(&id),
@@ -924,7 +976,25 @@ mod tests {
                     .collect::<Vec<_>>(),
                 ["0", "1", "5", "10", "15", "30"]
             );
-            assert_eq!(lock.subtitle.as_deref(), Some("Currently 5 minutes"));
+            assert_eq!(lock.title, "Lock screen after", "the setting's own name");
+            assert_eq!(
+                lock.badge.as_deref(),
+                Some("5 minutes"),
+                "its value is the pill"
+            );
+            assert_eq!(lock.subtitle, None);
+            let provider = SystemSettingsProvider::new();
+            let get = rows(&chrome, "")
+                .into_iter()
+                .find(|row| row.id == "power.lock-after.get")
+                .unwrap();
+            let state = chrome.borrow();
+            assert!(
+                provider.hidden_from_people(&get, "", &state),
+                "reading is the row's pill"
+            );
+            assert!(!provider.hidden_from_people(&lock, "", &state));
+            drop(state);
         }
 
         // Phase `the_palette_finds_a_setting_by_its_name_in_either_language`.

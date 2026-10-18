@@ -48,6 +48,7 @@ name = "room-service"
 image = "{REGISTRY}/tilo/room-service"
 manifest = "apps/rooms/deployment.yaml"
 health = "https://rooms.example/mode"
+expect = {{ relay = "up" }}
 """
 
 
@@ -184,12 +185,16 @@ class CloudDeployTests(unittest.TestCase):
         self.fake.publish(WEB, self.side)
         self.fake.publish(ROOM, self.side)
         self.running = {WEB.name: self.deployed, ROOM.name: self.deployed}
+        # The room service of a build whose relay cannot start answers, without a relay.
+        self.relay_down_in = set()
         self.serve_running()
         self.clock = Clock()
 
     def serve_running(self):
         self.fake.serve(WEB.health, {"version": "0123456789abcdef0123", "revision": self.running[WEB.name]})
-        self.fake.serve(ROOM.health, {"mode": "normal", "revision": self.running[ROOM.name]})
+        room = self.running[ROOM.name]
+        self.fake.serve(ROOM.health, {"mode": "normal", "revision": room,
+                                      "relay": "restarting" if room in self.relay_down_in else "up"})
 
     def git(self, *args, cwd=None):
         return subprocess.run(["git", *args], cwd=cwd or self.repo, check=True, text=True,
@@ -461,6 +466,28 @@ class CloudDeployTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("already runs", out)
         self.assertEqual(self.writes(), [])
+
+    def test_a_service_reporting_its_build_without_what_it_serves_is_rolled_back(self):
+        """A room service whose relay cannot start still answers with its revision."""
+        self.serve_infra(self.deployed)
+        self.relay_down_in = {self.target}
+        self.reconcile()
+        code, _, err = self.run_tool("deploy")
+        self.assertEqual(code, 1)
+        self.assertIn(f"{ROOM.health} reports relay 'restarting', not 'up'", err)
+        self.assertIn("Rolled back: the previous images are healthy again.", err)
+        for service in TARGET.services:
+            self.assertIn(f"{service.image}@{self.fake.digests[(service.name, self.deployed)]}",
+                          self.fake.file(service.manifest)[0])
+
+    def test_a_build_rolled_back_to_may_predate_an_expected_field(self):
+        older = deploy.Service("room-service", ROOM.image, ROOM.manifest, "https://old.example/mode",
+                               expect=(("relay", "up"),))
+        self.fake.serve(older.health, {"mode": "normal", "revision": self.deployed})
+        self.assertIn("relay None", deploy.probe(self.fake, older, self.deployed))
+        self.assertIsNone(deploy.probe(self.fake, older, self.deployed, strict=False))
+        self.fake.serve(older.health, {"revision": self.deployed, "relay": "restarting"})
+        self.assertIsNotNone(deploy.probe(self.fake, older, self.deployed, strict=False))
 
     def test_a_rollout_that_does_not_become_healthy_is_rolled_back(self):
         self.serve_infra(self.deployed)

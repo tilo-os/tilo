@@ -193,6 +193,10 @@ pub struct Attachment {
     /// settings store (it holds message content, not settings).
     #[serde(skip, default)]
     pub content: Vec<u8>,
+    /// The bytes are kept on this device with the message's other kept mail
+    /// ([`crate::store`]), to be read when the attachment is opened or saved.
+    #[serde(default)]
+    pub kept: bool,
 }
 
 impl Attachment {
@@ -205,6 +209,7 @@ impl Attachment {
             hydrated: false,
             content_id: None,
             content: Vec::new(),
+            kept: false,
         }
     }
 
@@ -221,12 +226,14 @@ impl Attachment {
             hydrated: true,
             content_id: None,
             content,
+            kept: false,
         }
     }
 
-    /// Whether the bytes are present locally and this attachment can be saved.
+    /// Whether the bytes are on this device and this attachment can be
+    /// opened or saved.
     pub fn is_downloadable(&self) -> bool {
-        self.hydrated && !self.content.is_empty()
+        self.hydrated && (!self.content.is_empty() || self.kept)
     }
 
     /// Human-readable size, e.g. `14 KiB`, `1.2 MiB`.

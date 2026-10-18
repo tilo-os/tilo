@@ -285,6 +285,54 @@ fn history_skips_tabs_that_closed_and_plain_removal_keeps_the_index_rule() {
 }
 
 #[test]
+fn closing_a_window_returns_to_the_window_you_came_from_not_its_right_neighbour() {
+    // [10 | 11]: the person works in 10, opens a window between 10 and 11
+    // (where a new window lands), looks at it, closes it.
+    let mut tree = tree();
+    tree.set_active_group(StripId(1), 10);
+    let strip = &mut tree.workspaces[0].strips[0];
+    strip.window_groups.insert(1, group(12, &[120]));
+    tree.set_active_group(StripId(1), 12);
+    let removed = tree.close_tab(120).unwrap();
+    assert!(removed.group_removed);
+    assert_eq!(
+        tree.active_group_for(StripId(1)),
+        Some(10),
+        "back to the window the person came from, not 11, which now sits at the index"
+    );
+    assert!(
+        tree.group_focus_history[&StripId(1)]
+            .iter()
+            .all(|g| *g != 12),
+        "a closed group is never returned to"
+    );
+
+    // History skips groups that closed meanwhile: 10 -> 11 -> 12, close 11
+    // while behind, then close 12: back to 10.
+    let mut tree = self::tree();
+    tree.workspaces[0].strips[0]
+        .window_groups
+        .push(group(12, &[120]));
+    tree.set_active_group(StripId(1), 10);
+    tree.set_active_group(StripId(1), 11);
+    tree.set_active_group(StripId(1), 12);
+    tree.close_tab(110).unwrap();
+    assert_eq!(tree.active_group_for(StripId(1)), Some(12));
+    tree.close_tab(120).unwrap();
+    assert_eq!(tree.active_group_for(StripId(1)), Some(10));
+
+    // Restructuring removal keeps the index rule.
+    let mut plain = self::tree();
+    plain.workspaces[0].strips[0]
+        .window_groups
+        .insert(1, group(12, &[120]));
+    plain.set_active_group(StripId(1), 10);
+    plain.set_active_group(StripId(1), 12);
+    plain.remove_tab(120).unwrap();
+    assert_eq!(plain.active_group_for(StripId(1)), Some(11));
+}
+
+#[test]
 fn activating_the_front_tab_again_records_nothing() {
     let mut group = group(30, &[300, 301]);
     group.activate_tab(300);

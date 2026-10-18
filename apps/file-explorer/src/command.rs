@@ -96,6 +96,11 @@ pub enum FileCommand {
     Delete,
     /// Take back the last change: the window's Undo, as Ctrl+Z.
     Undo,
+    /// Offer the folders a long path bar hides, in a menu at `at`.
+    ShowPathMenu {
+        folders: Vec<(String, PathBuf)>,
+        at: vello::kurbo::Point,
+    },
     /// Copy / cut the selection into the clipboard.
     Copy,
     /// Provider browse and transfer controls share the semantic effect handler.

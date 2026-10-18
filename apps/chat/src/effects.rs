@@ -627,7 +627,7 @@ impl ChatApp {
         ))
     }
 
-    fn reveal_message(&mut self, message: &str) -> Result<(), String> {
+    pub(crate) fn reveal_message(&mut self, message: &str) -> Result<(), String> {
         let found = self
             .search_messages
             .iter()

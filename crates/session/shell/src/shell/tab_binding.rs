@@ -1150,8 +1150,9 @@ pub fn remove_tab(tree: &mut WorkspaceTree, tab_id: TabId) -> bool {
     remove_tab_choosing(tree, tab_id, false)
 }
 
-/// [`remove_tab`] for a window the person closed: the group returns to the tab that was in front before it.
-fn close_tab_back_to_previous(tree: &mut WorkspaceTree, tab_id: TabId) -> bool {
+/// [`remove_tab`] for a window the person closed: the group returns to the tab that was in front
+/// before it, and the strip to the window that was focused before it.
+pub(crate) fn close_tab_back_to_previous(tree: &mut WorkspaceTree, tab_id: TabId) -> bool {
     remove_tab_choosing(tree, tab_id, true)
 }
 

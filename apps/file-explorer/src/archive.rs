@@ -372,6 +372,78 @@ fn extract_tar<R: Read>(reader: R, destination: &Path) -> io::Result<Vec<PathBuf
     Ok(written)
 }
 
+/// Write the single file `member` of `archive` to `output` (a new file),
+/// read-only: a member is opened by reading a copy of it, never by editing
+/// inside the archive.
+///
+/// # Errors
+///
+/// Returns an error when the archive cannot be read, holds no such regular
+/// file, the member is past the size limit, or `output` exists.
+pub fn extract_member(archive: &Path, member: &Path, output: &Path) -> io::Result<()> {
+    let missing = || io::Error::new(io::ErrorKind::NotFound, "no such file in the archive");
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(output)?;
+    let written = (|| {
+        if archive
+            .extension()
+            .and_then(|v| v.to_str())
+            .is_some_and(|v| v.eq_ignore_ascii_case("zip"))
+        {
+            let mut zip = zip::ZipArchive::new(File::open(archive)?).map_err(io::Error::other)?;
+            for index in 0..zip.len() {
+                let entry = zip.by_index(index).map_err(io::Error::other)?;
+                if entry.is_dir() || zip_mode_is_symlink(entry.unix_mode()) {
+                    continue;
+                }
+                let name = entry.name().map_err(io::Error::other)?.into_owned();
+                if safe_relative(Path::new(name.as_str()))? == member {
+                    let size = entry.size();
+                    account(0, 0, size)?;
+                    return io::copy(&mut entry.take(size), &mut file);
+                }
+            }
+            return Err(missing());
+        }
+        let reader = File::open(archive)?;
+        let gz = archive
+            .file_name()
+            .and_then(|v| v.to_str())
+            .is_some_and(|v| {
+                Path::new(v).extension().is_some_and(|extension| {
+                    extension.eq_ignore_ascii_case("gz") || extension.eq_ignore_ascii_case("tgz")
+                })
+            });
+        let reader: Box<dyn Read> = if gz {
+            Box::new(flate2::read::GzDecoder::new(reader))
+        } else {
+            Box::new(reader)
+        };
+        let mut tar = tar::Archive::new(reader);
+        for item in tar.entries()? {
+            let mut entry = item?;
+            if !entry.header().entry_type().is_file() {
+                continue;
+            }
+            if safe_relative(&entry.path()?)? == member {
+                account(0, 0, entry.header().size()?)?;
+                return io::copy(&mut entry, &mut file);
+            }
+        }
+        Err(missing())
+    })();
+    if let Err(error) = written {
+        drop(file);
+        let _ = fs::remove_file(output);
+        return Err(error);
+    }
+    let mut permissions = fs::metadata(output)?.permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(output, permissions)
+}
+
 /// Create a ZIP archive atomically from the selected files and directories.
 ///
 /// # Errors

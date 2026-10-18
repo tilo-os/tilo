@@ -32,10 +32,13 @@ strip changes context; switching a window or tab changes focus within it.
 | Preview workspace in Overview | Up/Down | Workspace rail |
 | Commit preview | Enter | Select workspace |
 | Previous/next workspace | Super+Page Up/Page Down | Workspace arrows/wheel |
-| Previous/next strip | Super+Up/Down | Strip navigation |
+| Maximize/restore the focused window | Super+Up/Down (Super+M toggles) | Double-click the tab bar |
+| Strip above/below | Ctrl+Super+Up/Down | Strip navigation, three-finger vertical swipe |
+| Go to strip N, counting from the top (the Lounge strip is 1) | Super+1 … Super+9 | Strip navigation |
+| Carry the focused group to the strip above/below | Shift+Ctrl+Super+Up/Down | Drag onto another strip |
 | Cycle previous/next window | Alt+Shift+Tab / Alt+Tab | Select group/tab |
 | Spatial previous/next window | Super+Left/Right | Select group/tab |
-| Focus the Nth window of the strip | Super+1 … Super+9 | Select group/tab |
+| Focus the Nth window of the strip | Ctrl+Super+1 … Ctrl+Super+9 | Select group/tab |
 | Summon/dismiss workspace wheel | Super+S | — |
 | Quick Settings | Super+Q | Top bar |
 | Keyboard guide | F1, Super+Shift+/ | — |
@@ -91,7 +94,7 @@ behavior"). Super+Left/Right clamps because it describes a spatial direction.
 | Move focused window group to the strip above/below | Super+Shift+Up/Down | — |
 | Move focused window group to the previous/next display | Super+Ctrl+Shift+Left/Right | Drag the group onto the display |
 | Make focused window group narrower/wider | Super+- / Super+= | — |
-| Previous/next tab in current group | Ctrl+Shift+Tab / Ctrl+Tab | Tab strip |
+| Previous/next tab in current group | Super+Ctrl+Shift+Tab / Super+Ctrl+Tab | Tab strip |
 | Choose where the desktop appears (extend, mirror, one screen, wireless) | Super+P | Search "mirror displays" / Settings › Displays |
 
 Super tapped alone means Super pressed and released with no other key,
@@ -101,15 +104,24 @@ outside. Held alone that long, Super opens the same surface as a peek,
 which closes when Super comes up unless something was typed or clicked
 in it; a chord pressed during the hold closes the peek and runs. Super+N is already the
 adjacent-window chord, so notifications take Super+A (the Windows Action
-Center key). Shift carries the focused group in the direction the bare
-arrow moves focus; carrying past the first or last strip does nothing, and
-the group lands after the destination strip's focused group. Super+M
-replaced Super+Up as the maximize default when Super+Up/Down took strips; a
-settings file that still holds a previous default takes the new one. Super+F makes a Wayland client full screen through
+Center key). Super+Up/Down maximize and restore the focused window group on
+any strip, as on Windows and GNOME; pressed again they do nothing, and
+Super+M toggles. Strips are one level out, on Ctrl+Super+Up/Down, and
+Super+1 … 9 go straight to a strip, counting from the top, so the shared
+Lounge strip is Super+1 where a workspace has one; a number past the last
+strip does nothing. Shift carries the focused group in the direction
+Ctrl+Super+Up/Down moves focus; carrying past the first or last strip does
+nothing, and the group lands after the destination strip's focused group.
+Before 2026-10-17 Super+Up/Down switched strips (maximizing only on the top
+strip), Super+Shift+Up/Down carried the group and Super+1 … 9 focused a
+window; a settings file that still holds one of those defaults takes the new
+one, and a chord the person chose stays. Ctrl+Super is rarely bound by apps,
+so these reach the desktop without taking app shortcuts. Super+F makes a Wayland client full screen through
 `xdg_toplevel`; a Tilo app, which has no protocol fullscreen, maximizes its
 window group instead. Each resize step is 5% of the display's width. With
 one display, the move-to-display chords do nothing; displays are ordered left
-to right, then top to bottom. Super+1 … 9, Super+E, Ctrl+Alt+T, Super+V, Super+A,
+to right, then top to bottom. Super+Up/Down, Ctrl+Super+Up/Down, Super+1 … 9,
+Ctrl+Super+1 … 9, Super+E, Ctrl+Alt+T, Super+V, Super+A,
 Super+F, Super+Alt+8, Super+Alt+=, Super+Alt+-, Super+C and Ctrl+Alt+Delete are
 defaults, rebindable in Settings → Keyboard shortcuts.
 
@@ -135,6 +147,31 @@ terminals and editors keep H/J/K/L.
 
 Application Ctrl shortcuts stay application-owned; shell-level window actions
 use Super so a browser, terminal or editor does not lose familiar bindings.
+
+## Tab chords the app gets first
+
+Ctrl+Tab, Ctrl+Shift+Tab and Ctrl+Shift+T switch and reopen tabs in
+browsers, editors and terminals, so the desktop never takes them from the
+focused app:
+
+- A Wayland or X11 app always receives them; the desktop cannot know what it
+  did with them and does nothing.
+- A Tilo app receives them first. Only when no widget used the press does it
+  hand it to the desktop (`ui::shell_tabs`): Ctrl+Tab and Ctrl+Shift+Tab show
+  the next and previous tab of its window group, Ctrl+Shift+T reopens the
+  workspace's last closed tab. Ctrl+T and Ctrl+W work the same way.
+- A tile the shell draws itself (nothing else holds the keyboard) answers
+  them directly.
+
+Super+Ctrl+Tab, Super+Ctrl+Shift+Tab and Super+Shift+T are the desktop's
+spellings of the same actions. Like every Super chord they never reach an
+app, so they work whatever is focused, and Settings can rebind them. A
+settings file that still holds an old Ctrl default takes the Super one.
+
+The other Ctrl or Alt chords the desktop answers ahead of apps are
+conventions apps on any Linux desktop leave to the system: Alt+Tab,
+Alt+Shift+Tab, Alt+`, Alt+F4, Ctrl+Alt+T, Ctrl+Alt+Delete and
+Alt+Shift+Num Lock.
 
 ## Fixed shell chords
 

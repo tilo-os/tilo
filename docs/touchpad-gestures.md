@@ -12,13 +12,13 @@ gesture's `begin`, by finger count (`crates/session/shell/src/compositor/backend
 |---|---|---|
 | 1–2 | Focused client | Forwarded over `zwp_pointer_gestures_v1` (swipe, pinch, hold) |
 | 3 swipe left / right | Shell | Pan the active strip directly |
-| 3 swipe up / down | Shell | Focus the strip above / below, as Super+↑ / ↓ |
+| 3 swipe up / down | Shell | Focus the strip above / below, as Ctrl+Super+↑ / ↓ |
 | 4 swipe up / down | Shell | Switch workspace, as Super+Page Up / Page Down |
 | 4 swipe left / right | Nobody | Deliberately unassigned |
 | 3+ pinch in / out | Shell | Open / close the overview |
 
-Three fingers work the plane you see and four go one level out, the split Super and
-Ctrl+Super make on the keyboard ([window-management.md](architecture/window-management.md)).
+Three fingers work the plane you see and four go one level out, the split Ctrl+Super+arrows
+and Super+Page Up / Page Down make on the keyboard ([window-management.md](architecture/window-management.md)).
 A touchscreen swipe of three or four fingers means the same.
 
 A three-finger pan follows the fingers 1:1. Each frame reads the finger path at the frame's

@@ -54,6 +54,22 @@ Object.defineProperty(globalThis,'__tiloLinkSecrets',{value:Object.freeze(found)
     .tilo-entry-card label { display: grid; gap: 6px; }
     .tilo-entry-card input { font: inherit; padding: 8px; border-radius: 8px; border: 1px solid #3a3d44; background: #14161a; color: inherit; }
     .tilo-entry-card .tilo-entry-error { margin: 0; color: #ff8a80; }
+    /* Pairing a device: the link's sheet, the ask on the device that sent
+       it, and the code a new device shows while it waits (entry-page.mjs). */
+    .tilo-pair { width: min(400px, calc(100vw - 32px)); gap: 16px; max-height: calc(100% - 32px); overflow: auto; }
+    .tilo-pair h2 { margin: 0; font-size: 17px; font-weight: 600; color: #f2f2f4; }
+    .tilo-pair .tilo-pair-note { font-size: 13px; color: #9b9ba3; }
+    .tilo-pair input { min-width: 0; text-overflow: ellipsis; color: #c4c4cc; }
+    .tilo-pair-qr { display: block; width: min(240px, 100%); height: auto; aspect-ratio: 1; margin: 0 auto; border-radius: 10px; image-rendering: pixelated; }
+    .tilo-pair .tilo-pair-digits { font: 600 32px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .14em; text-align: center; color: #f2f2f4; }
+    .tilo-pair-device { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; margin: 0; }
+    .tilo-pair-device dt { color: #9b9ba3; }
+    .tilo-pair-device dd { margin: 0; color: #e6e6e9; overflow-wrap: anywhere; }
+    .tilo-pair-done { justify-items: center; text-align: center; animation: tilo-pair-in 420ms ease-out both; }
+    .tilo-pair-check { position: relative; width: 44px; height: 44px; border-radius: 50%; background: #2f8f5b; animation: tilo-pair-pop 480ms cubic-bezier(.2, 1.4, .4, 1) both; }
+    .tilo-pair-check::after { content: ''; position: absolute; left: 16px; top: 10px; width: 9px; height: 18px; border: solid #fff; border-width: 0 3px 3px 0; transform: rotate(45deg); }
+    @keyframes tilo-pair-in { from { opacity: 0; } }
+    @keyframes tilo-pair-pop { from { transform: scale(.4); opacity: 0; } }
     /* Arrival: until the desktop draws its first frame, the page is the
        desktop's own ground with Tilo's mark (the brand's dark variant, as
        the desktop's top bar draws it, `paint_tilo_mark`), breathing slowly. Below, from the
@@ -87,6 +103,7 @@ Object.defineProperty(globalThis,'__tiloLinkSecrets',{value:Object.freeze(found)
       #arrival { transition: none; }
       #arrival > svg { animation: none; }
       #arrival > p, #arrival-bar > span { transition: none; }
+      .tilo-pair-done, .tilo-pair-check { animation: none; }
     }
   </style>
 </head>

@@ -179,6 +179,10 @@ impl Direct {
     }
 }
 
+/// One whitespace-separated chunk of a query, marked, and the range of the
+/// query's words it holds.
+type Chunk = (String, std::ops::Range<usize>);
+
 /// A non-empty query, prepared once for every record: the tiers' marked
 /// sequences, the words spread over fields, and which index words each typed
 /// word matches, each with the rank it earns.
@@ -189,6 +193,10 @@ struct Typed<'a> {
     /// The marked chunks every one of which some field must hold, and their
     /// rank; only for a query of several chunks.
     spanning: Option<(Vec<String>, i32)>,
+    /// The query's chunks again, each with the range of typed words it
+    /// holds, and the rank of every chunk matching either as a substring or
+    /// by the typos of its words: "nots neu" is still the new-note action.
+    spanning_typos: Option<(Vec<Chunk>, i32)>,
     /// For each typed word, the index words it matches.
     typo_words: Vec<Vec<bool>>,
     title_typo: Option<i32>,
@@ -228,11 +236,30 @@ impl<'a> Typed<'a> {
         } else {
             Vec::new()
         };
+        let spanning_typos = (matching.spanning && matching.typos && chunks.len() > 1)
+            .then(|| {
+                let mut at = 0usize;
+                chunks
+                    .iter()
+                    .map(|chunk| {
+                        let held = words(chunk).len();
+                        let range = at..at.saturating_add(held);
+                        at = range.end;
+                        let marked: String = marked(chunk, false).into_iter().collect();
+                        (!marked.is_empty()).then_some((marked, range))
+                    })
+                    .collect::<Option<Vec<_>>>()
+                    // Chunks and words split alike, or the ranges are wrong.
+                    .filter(|_| at == typed.len())
+            })
+            .flatten()
+            .and_then(|chunks| Some((chunks, ranks(MatchTier::Typo, FieldWeight::KEYWORD)?)));
         Some(Self {
             ranks,
             needle: marked_query.into_iter().collect(),
             tiers,
             spanning,
+            spanning_typos,
             typo_words: if typed.is_empty() {
                 Vec::new()
             } else {
@@ -277,21 +304,35 @@ impl<'a> Typed<'a> {
         {
             better(*rank);
         }
+        if let Some((chunks, rank)) = &self.spanning_typos
+            && chunks.iter().all(|(chunk, typed)| {
+                record
+                    .fields
+                    .iter()
+                    .any(|(_, value)| value.contains(chunk.as_str()))
+                    || (!typed.is_empty()
+                        && typed.clone().all(|word| {
+                            self.typo_words.get(word).is_some_and(|matches| {
+                                [&record.title_words, &record.keyword_words]
+                                    .into_iter()
+                                    .flatten()
+                                    .any(|&id| word_matches(matches, id))
+                            })
+                        }))
+            })
+        {
+            better(*rank);
+        }
         if !self.typo_words.is_empty() {
             for (held, rank) in [
                 (&record.title_words, self.title_typo),
                 (&record.keyword_words, self.keyword_typo),
             ] {
                 if let Some(rank) = rank
-                    && self.typo_words.iter().all(|matches| {
-                        held.iter().any(|&id| {
-                            usize::try_from(id)
-                                .ok()
-                                .and_then(|id| matches.get(id))
-                                .copied()
-                                .unwrap_or(false)
-                        })
-                    })
+                    && self
+                        .typo_words
+                        .iter()
+                        .all(|matches| held.iter().any(|&id| word_matches(matches, id)))
                 {
                     better(rank);
                 }
@@ -299,6 +340,15 @@ impl<'a> Typed<'a> {
         }
         best
     }
+}
+
+/// Whether the index word `id` is among a typed word's `matches`.
+fn word_matches(matches: &[bool], id: u32) -> bool {
+    usize::try_from(id)
+        .ok()
+        .and_then(|id| matches.get(id))
+        .copied()
+        .unwrap_or(false)
 }
 
 /// The ordering of `record` hit at `rank`.

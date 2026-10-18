@@ -360,6 +360,13 @@ pub enum FloatingSurfaceClientMessage {
     },
     /// Reopen the workspace's most recently closed tab.
     ReopenClosedTab,
+    /// Show the next (`forward`) or previous tab of the window group this
+    /// app's tab is in: Ctrl+Tab or Ctrl+Shift+Tab that no widget of the app
+    /// used. The shell steps only while that tab is the focused one.
+    CycleTab {
+        forward: bool,
+        instance: Option<u64>,
+    },
     /// The next window this app maps lands as a tab right after this one.
     PlaceNextWindowBeside {
         background: bool,

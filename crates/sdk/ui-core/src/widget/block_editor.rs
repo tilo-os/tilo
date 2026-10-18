@@ -674,6 +674,23 @@ pub struct BlockEditor {
     /// before it paints instead of guessing from a line edge.
     slash_anchor_caret: Option<(usize, usize)>,
     link_anchor_caret: Option<(usize, usize)>,
+    /// The `@` picker: the room's participants under the caret while a
+    /// name is typed after an `@`.
+    mention_picker: crate::widget::mention_picker::MentionPicker,
+    /// Who the picker offers: the room's roster as the last draw saw it,
+    /// with what the owner added ([`Self::set_mention_people`]).
+    mention_roster: Vec<crate::widget::MentionCandidate>,
+    /// Participants the owner knows of beyond the room's roster.
+    mention_extra: Vec<crate::widget::MentionCandidate>,
+    /// Whether the owner painted the popovers itself this frame
+    /// ([`Self::draw_overlay`]), so the window's overlay pass leaves them.
+    popovers_painted: bool,
+    /// The window's bounds as the last draw saw them, for placing the
+    /// picker inside it.
+    overlay_viewport: Option<Rect>,
+    /// Bounds the owner keeps the editor's popovers inside, when it knows
+    /// them better than the draw's viewport (a composer at a window's foot).
+    popover_bounds: Option<Rect>,
     /// Actual painted link geometry from the most recent draw. This keeps
     /// app-level navigation hit-testing independent of a guessed theme,
     /// padding, font advances, or window scale.
@@ -889,6 +906,12 @@ impl BlockEditor {
             link_open_at: None,
             slash_anchor_caret: None,
             link_anchor_caret: None,
+            mention_picker: crate::widget::mention_picker::MentionPicker::default(),
+            mention_roster: Vec::new(),
+            mention_extra: Vec::new(),
+            popovers_painted: false,
+            overlay_viewport: None,
+            popover_bounds: None,
             live_link_hits: Vec::new(),
             transclusion_previews: HashMap::new(),
             transclusion_rects: Vec::new(),
@@ -1274,6 +1297,10 @@ impl BlockEditor {
         if focused != self.is_focused {
             self.tab_navigation = false;
         }
+        if !focused && self.mention_picker.is_open() {
+            self.mention_picker.close();
+            self.dirty = true;
+        }
         if focused && self.read_only {
             return;
         }
@@ -1657,7 +1684,35 @@ impl BlockEditor {
     /// Enter itself (the slash menu, a link picker, find).
     #[must_use]
     pub fn has_open_popup(&self) -> bool {
-        self.slash_menu.is_visible() || self.link_popover.is_visible() || self.find_visible
+        self.slash_menu.is_visible()
+            || self.link_popover.is_visible()
+            || self.find_visible
+            || self.mention_picker.is_open()
+    }
+
+    /// Whether the `@` picker is open under the caret.
+    #[must_use]
+    pub fn mention_picker_open(&self) -> bool {
+        self.mention_picker.is_open()
+    }
+
+    /// The `@` picker's panel as last painted, while it is open: an owner
+    /// that routes pointer presses itself sends the ones over it here.
+    #[must_use]
+    pub fn mention_picker_rect(&self) -> Option<Rect> {
+        self.mention_picker.rect()
+    }
+
+    /// Keep the editor's popovers inside `bounds` (normally its window): the
+    /// `@` list opens above the caret where there is no room below.
+    pub fn set_popover_bounds(&mut self, bounds: Option<Rect>) {
+        self.popover_bounds = bounds;
+    }
+
+    /// Participants the owner's record knows of beyond the room's roster
+    /// (someone who wrote here and has since left), offered at `@` too.
+    pub fn set_mention_people(&mut self, people: Vec<crate::widget::MentionCandidate>) {
+        self.mention_extra = people;
     }
 
     /// The id local edits are attributed to, if any.
@@ -3058,11 +3113,119 @@ impl BlockEditor {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
+        self.popovers_painted = true;
+        self.paint_popovers(scene, transform, text_renderer, theme);
+    }
+
+    /// The slash menu, the link picker and the `@` picker, at their anchors.
+    fn paint_popovers(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         self.refresh_popover_anchors(theme);
         self.slash_menu
             .draw_overlay(scene, transform, text_renderer, theme);
         self.link_popover
             .draw_overlay(scene, transform, text_renderer, theme);
+        if let Some((index, byte)) = self.mention_picker.anchor()
+            && let Some(line) = self.blocks.get(index).map(|block| &block.line)
+        {
+            let caret = line.caret_rect(theme, byte);
+            self.mention_picker.paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                caret,
+                self.popover_bounds.or(self.overlay_viewport),
+            );
+        }
+    }
+
+    /// Open, narrow or close the `@` picker for where the caret is now.
+    fn follow_mention_caret(&mut self) {
+        let Some(index) = self.focused.filter(|_| self.is_focused && !self.read_only) else {
+            if self.mention_picker.is_open() {
+                self.mention_picker.close();
+                self.dirty = true;
+            }
+            return;
+        };
+        let Some(block) = self.blocks.get(index) else {
+            return;
+        };
+        let editable =
+            block.kind.is_editable() && !matches!(block.kind, BlockKind::CodeBlock { .. });
+        let collapsed = block
+            .line
+            .selection_range()
+            .is_none_or(|(start, end)| start == end);
+        if !editable || !collapsed || self.document_selection.is_some() {
+            if self.mention_picker.is_open() {
+                self.mention_picker.close();
+                self.dirty = true;
+            }
+            return;
+        }
+        let text = block.line.value();
+        let before = text
+            .get(..block.line.cursor_pos().min(text.len()))
+            .unwrap_or_default();
+        let marks = block.line.marks();
+        let in_mention = |at: usize| {
+            marks
+                .iter()
+                .any(|span| matches!(span.mark, Mark::Mention(_)) && span.range.contains(&at))
+        };
+        if self
+            .mention_picker
+            .follow(index, before, in_mention, &self.mention_roster)
+        {
+            self.dirty = true;
+        }
+    }
+
+    /// Replace the typed `@name` with a mention of `who`.
+    fn commit_mention(&mut self, who: &crate::widget::MentionCandidate) {
+        let typed = self.mention_picker.typed();
+        self.mention_picker.close();
+        self.select_before_caret(typed);
+        if self.insert_mention(&who.id, &who.label()) {
+            self.commit_pending = true;
+            self.edit_pending = true;
+        }
+        self.dirty = true;
+    }
+
+    /// While the `@` picker is open it takes the arrows, Enter, Tab and
+    /// Escape. Returns whether the event stops here.
+    fn handle_mention_picker_key(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
+        use crate::widget::mention_picker::PickerKey;
+        match self.mention_picker.handle_key(event) {
+            PickerKey::Pass => {
+                // The release of a key the picker took is its too.
+                if self.mention_picker.owns_key(event)
+                    && matches!(event, WindowEvent::KeyboardInput { event, .. } if event.state == winit::event::ElementState::Released)
+                {
+                    *ctx.handled = true;
+                    return true;
+                }
+                false
+            }
+            PickerKey::Handled => {
+                *ctx.handled = true;
+                self.dirty = true;
+                true
+            }
+            PickerKey::Pick(who) => {
+                self.commit_mention(&who);
+                *ctx.handled = true;
+                true
+            }
+        }
     }
 
     /// Re-anchor overlays from rendered caret geometry.  Event handling cannot
@@ -3395,6 +3558,15 @@ impl BlockEditor {
             menu.semantic_key = Some("notes.slash-menu".into());
             menu.bounds = Some(self.slash_menu.get_rect().into());
             children.push(std::sync::Arc::new(menu));
+        }
+        let mentions = self.mention_picker.access_rows();
+        if !mentions.is_empty() {
+            let mut list = AccessNode::new(crate::a11y::Role::List)
+                .with_name(crate::i18n!("widget-mention-list"));
+            list.semantic_key = Some("editor.mention-picker".into());
+            list.bounds = self.mention_picker.rect().map(Into::into);
+            list.children = mentions;
+            children.push(std::sync::Arc::new(list));
         }
         Some(crate::a11y::SharedAccessNode {
             node: self.document_access_node(),
@@ -8454,6 +8626,24 @@ impl BlockEditor {
 impl Widget for BlockEditor {
     crate::provides!(dyn crate::presence::capability::PublishesPresence);
 
+    /// The editor's popovers, in the window's top layer — unless its owner
+    /// painted them itself this frame, inside its own scroll and clip.
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        for child in self.children_mut() {
+            child.draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
+        if !self.popovers_painted {
+            self.paint_popovers(scene, transform, text_renderer, theme);
+        }
+    }
+
     /// The frame after a keystroke makes what it left to do (formatting the
     /// markdown it closed, the correction its word boundary asked for).
     fn settle(&mut self, edits: &mut crate::widget::Edits<'_>, path: &ObjId) {
@@ -8865,6 +9055,20 @@ impl Widget for BlockEditor {
     ) {
         #[cfg(test)]
         let setup_probe = crate::profiling::frame_probe::span("block_setup");
+        self.popovers_painted = false;
+        if self.is_focused && !self.read_only {
+            // Who `@` offers: the room as it is now, read where the editor
+            // meets the room's presence.
+            let roster =
+                crate::widget::mention_picker::merged_roster(presence, &self.mention_extra);
+            if roster != self.mention_roster {
+                self.mention_roster = roster;
+                self.follow_mention_caret();
+            }
+            if let Some(viewport) = presence.viewport.get() {
+                self.overlay_viewport = Some(viewport);
+            }
+        }
         let incoming = std::mem::take(scene);
         let track_paragraphs = !self.blocks.is_empty()
             && !self.has_open_popup()
@@ -10999,6 +11203,19 @@ impl BlockEditor {
     /// an outside click but deliberately lets that click continue into the
     /// editor, matching normal popover focus behavior.
     fn handle_popover_pointer_press(&mut self, ctx: &mut EventCtx<'_>) -> bool {
+        if self.mention_picker.is_open() {
+            if let Some(who) = self.mention_picker.click_at(self.last_mouse_pos) {
+                self.commit_mention(&who);
+                *ctx.handled = true;
+                return true;
+            }
+            if self.mention_picker.contains(self.last_mouse_pos) {
+                *ctx.handled = true;
+                return true;
+            }
+            self.mention_picker.close();
+            self.dirty = true;
+        }
         if self.slash_menu.is_visible() {
             if let Some(new_kind) = self.slash_menu.click_at(self.last_mouse_pos) {
                 self.commit_slash_selection(new_kind);
@@ -11170,6 +11387,9 @@ impl BlockEditor {
             self.dirty = true;
         }
         if self.link_popover.is_visible() && self.link_popover.hover_at(logical) {
+            self.dirty = true;
+        }
+        if self.mention_picker.hover_at(logical) {
             self.dirty = true;
         }
 
@@ -12708,6 +12928,11 @@ impl BlockEditor {
             return;
         }
 
+        // The `@` picker takes its keys; typing goes on into the text.
+        if self.handle_mention_picker_key(event, ctx) {
+            return;
+        }
+
         if let Some(start) = self.visual_formula_focus
             && let WindowEvent::KeyboardInput {
                 event:
@@ -12871,6 +13096,14 @@ impl BlockEditor {
         self.focus_block_under_mouse(event, ctx);
 
         self.route_event_to_focused_block(event, ctx);
+        if matches!(
+            event,
+            WindowEvent::KeyboardInput { .. }
+                | WindowEvent::Ime(_)
+                | WindowEvent::MouseInput { .. }
+        ) {
+            self.follow_mention_caret();
+        }
         // Consumed input can move the caret or selection without editing text.
         // Repaint that change once; focus alone is not an animation source.
         self.dirty |= *ctx.handled;

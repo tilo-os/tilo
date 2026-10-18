@@ -83,7 +83,7 @@ fn row_actions(starred: bool) -> [(CtxAction, RowAction<'static>); 3] {
 }
 
 /// How many rows before the end of the list the older mail is asked for.
-const OLDER_AHEAD_ROWS: f64 = 10.0;
+const OLDER_AHEAD_ROWS: u32 = 10;
 
 const SWIPE_ARCHIVE: SwipeAction<'static> = SwipeAction {
     icon: Icon::Archive,
@@ -496,29 +496,17 @@ fn paint_arriving_rows(ctx: &mut PaintCtx<'_>, list: Rect) {
     }
 }
 
-/// An unread conversation's dot: primary ink in the gutter before the
-/// avatar, on its centre line, so unread mail reads at a glance and not
-/// only by the heavier title.
+/// An unread conversation's dot: the toolkit's "something new" mark in the
+/// gutter before the avatar, on its centre line, so unread mail reads at a
+/// glance and not only by the heavier title.
 fn paint_unread_dot(ctx: &mut PaintCtx<'_>, face: &ListRowFace<'_>, row: Rect) {
-    let theme = ctx.theme;
-    let leading = face.leading_rect(row, ctx.text, theme);
+    let leading = face.leading_rect(row, ctx.text, ctx.theme);
     let gutter = (leading.x0 - row.x0).max(0.0);
-    let diameter = f64::from(theme.tokens.spacing.s2).min(gutter * 0.75);
-    if diameter <= 0.0 {
+    if gutter <= 0.0 {
         return;
     }
-    // Clear of the avatar by as much as the dot is wide.
-    let centre = Point::new(
-        (leading.x0 - diameter * 1.5).max(row.x0 + diameter / 2.0),
-        leading.center().y,
-    );
-    ctx.scene.fill(
-        Fill::NonZero,
-        ctx.transform,
-        theme.text_primary,
-        None,
-        &vello::kurbo::Circle::new(centre, diameter / 2.0),
-    );
+    let mark = Rect::new(row.x0, leading.y0, leading.x0, leading.y1);
+    ui::widget::BadgeFace::dot(mark).paint(ctx.scene, ctx.transform, ctx.text, ctx.theme);
 }
 
 impl Widget for MessageList {
@@ -634,7 +622,7 @@ impl Widget for MessageList {
         ctx.scene.pop_layer();
         // Near the last row, the older mail is fetched before it is reached.
         if let Some(last) = slots.last()
-            && last.band.y0 - r.y1 < self.row_h * OLDER_AHEAD_ROWS
+            && last.band.y0 - r.y1 < self.row_h * f64::from(OLDER_AHEAD_ROWS)
         {
             state.wants_older.set(true);
         }

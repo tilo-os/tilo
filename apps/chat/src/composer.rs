@@ -391,6 +391,12 @@ impl DraftComposer {
         }
     }
 
+    /// Images pasted into the composer since the last call: shared as
+    /// attachments, never kept in the draft's text.
+    pub fn take_pasted_images(&mut self) -> Vec<ui::clipboard::ClipboardImage> {
+        self.host.widget_mut().editor_mut().take_pasted_images()
+    }
+
     /// Make the draft shown exist before its first keystroke.
     pub fn ensure_draft(&mut self, doc: &AutoCommit) {
         let source = self.host.widget_mut().source_mut();
@@ -807,23 +813,6 @@ impl<S: RichTextSource + 'static> Composer<S> {
         self.host.sync(doc, &automerge::ROOT);
     }
 
-    /// Replace the `@query` before the caret (`query_len` bytes) with a
-    /// mention of `id` shown as `label`.
-    pub fn complete_mention(
-        &mut self,
-        doc: &mut ui::widget::Edits<'_>,
-        query_len: usize,
-        id: &str,
-        label: &str,
-    ) {
-        self.host.sync(doc, &automerge::ROOT);
-        self.caret_somewhere();
-        let surface = self.host.widget_mut();
-        surface.editor_mut().select_before_caret(query_len);
-        surface.insert_mention(doc, id, label);
-        self.host.sync(doc, &automerge::ROOT);
-    }
-
     /// Put the caret at the end when no paragraph holds it.
     fn caret_somewhere(&mut self) {
         let editor = self.host.widget_mut().editor_mut();
@@ -832,13 +821,31 @@ impl<S: RichTextSource + 'static> Composer<S> {
         }
     }
 
-    /// The focused paragraph's text before the caret.
-    pub fn text_before_caret(&self) -> Option<String> {
+    /// Whether the editor's `@` list is open under the caret.
+    pub fn mention_picker_open(&self) -> bool {
+        self.host.widget().editor().mention_picker_open()
+    }
+
+    /// The editor's `@` list as last painted, while it is open.
+    pub fn mention_picker_rect(&self) -> Option<Rect> {
+        self.host.widget().editor().mention_picker_rect()
+    }
+
+    /// Keep the editor's `@` list inside `bounds`, the chat's window.
+    pub fn set_popover_bounds(&mut self, bounds: Rect) {
         self.host
-            .widget()
-            .editor()
-            .text_before_caret()
-            .map(str::to_owned)
+            .widget_mut()
+            .editor_mut()
+            .set_popover_bounds(Some(bounds));
+    }
+
+    /// Who the room's record knows beyond the room's roster, offered at `@`
+    /// too.
+    pub fn set_mention_people(&mut self, people: Vec<ui::widget::MentionCandidate>) {
+        self.host
+            .widget_mut()
+            .editor_mut()
+            .set_mention_people(people);
     }
 
     /// Where paragraph `index` starts in [`Self::value`].

@@ -359,4 +359,7 @@ uses it with `PUBLIC_TILO_ROOMS_URL=http://localhost:8790`.
   `back-soon` also stops spectating (the persistent room's routes read
   `ops::get().mode()`). `GET /mode` tells the page which, and is public:
   `{"mode": "normal", "revision": "<commit>"}`, the same revision as the
-  build info, so drift can be seen from outside the cluster.
+  build info, so drift can be seen from outside the cluster. A persistent
+  room adds `"relay": "up"` while its relay serves and `"restarting"` while
+  it does not (it cannot start, or is between restarts), which deploys
+  require before they count a rollout healthy.

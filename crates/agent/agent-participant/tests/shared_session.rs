@@ -154,6 +154,7 @@ async fn start_host(
             public_origin: None,
             live_origin: None,
             limits: tilo_relay::web::WebLimits::default(),
+            country: None,
         })
         .await
         .unwrap();
@@ -378,7 +379,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         let iroh = host.iroh();
         let key = agent_key.clone();
         async move {
-            certify(&iroh, user, "Agent: Writer helper", &key, |code| {
+            certify(&iroh, user, "Agent: Writer helper", [0; 16], &key, |code| {
                 let _ = code_tx.send(code.to_string());
             })
             .await
