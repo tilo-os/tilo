@@ -303,7 +303,7 @@ pub fn plan(guild: &Guild, workspace_id: &str, workspace: &Workspace) -> ImportP
             }),
         }
     }
-    plan.drop_categories = emptied(workspace, &plan.file, &tilo_own);
+    plan.drop_categories = emptied(workspace, &plan.file, tilo_own);
     if !pending && guild.ownership == Ownership::Importing {
         plan.finish.push(finish(guild, workspace));
     }
