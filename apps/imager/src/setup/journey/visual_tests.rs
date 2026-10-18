@@ -446,6 +446,48 @@ fn guided_pages_paint_at_small_normal_and_large_host_scales_in_both_themes() {
     }
 }
 
+#[cfg(unix)]
+#[track_caller]
+fn wait_for_preview(
+    app: &mut TestApp<GuidedInstallerShell>,
+    predicate: impl Fn(&InstallerPreview) -> bool,
+) {
+    fn ready(root: &dyn Widget, predicate: &impl Fn(&InstallerPreview) -> bool) -> bool {
+        if let Some(preview) = root
+            .as_any()
+            .and_then(|widget| widget.downcast_ref::<InstallerPreview>())
+        {
+            return predicate(preview);
+        }
+        root.children()
+            .into_iter()
+            .any(|child| ready(child, predicate))
+    }
+    let settled = app
+        .harness()
+        .wait_until(ui::time::Duration::from_secs(30), |harness| {
+            ready(harness.root_widget(), &predicate)
+        });
+    if !settled {
+        let state = app.effect(&InstallerPreviewEffect::ReadPreview).unwrap();
+        panic!("installer preparation did not settle: {state:?}");
+    }
+}
+
+#[cfg(unix)]
+fn wait_for_fresh_preparation(app: &mut TestApp<GuidedInstallerShell>) {
+    wait_for_preview(app, |preview| {
+        preview.restart.projection()["state"] == "missing"
+    });
+    let state = app
+        .effect(&InstallerPreviewEffect::ReadPreview)
+        .unwrap()
+        .value
+        .unwrap();
+    assert_eq!(state["restart"]["state"], "missing", "{state}");
+    assert_eq!(state["page"], "destination", "{state}");
+}
+
 #[cfg(target_os = "linux")]
 fn pairing_name_app(viewport: (u32, u32), theme: Theme) -> TestApp<GuidedInstallerShell> {
     // Live semantic actions hosted offscreen on a fresh test profile; capture mode
@@ -453,23 +495,7 @@ fn pairing_name_app(viewport: (u32, u32), theme: Theme) -> TestApp<GuidedInstall
     let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
     app.harness().set_theme(theme.with_reduce_motion(true));
     app.harness().resize(viewport).unwrap();
-    let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
-    loop {
-        app.settle();
-        let state = app
-            .effect(&InstallerPreviewEffect::ReadPreview)
-            .unwrap()
-            .value
-            .unwrap();
-        if state["restart"]["state"] == "missing" {
-            break;
-        }
-        assert!(
-            state["restart"]["state"] == "checking" && std::time::Instant::now() < deadline,
-            "fresh pairing preparation unavailable: {state}"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    wait_for_fresh_preparation(&mut app);
     for choice in ["computer", "fresh", "existing"] {
         app.effect(&InstallerPreviewEffect::ChoosePreview {
             choice: choice.into(),
@@ -515,23 +541,9 @@ fn pairing_name_and_approval_code_paint_at_all_host_scales_in_both_themes() {
                 preview.dirty = true;
             })
             .unwrap();
-            let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
-            loop {
-                app.settle();
-                let observed = app
-                    .with_widget::<InstallerPreview, _>(|preview| {
-                        preview.pairing.projection()["verification_code"] == "123456"
-                    })
-                    .unwrap();
-                if observed {
-                    break;
-                }
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "inert helper code was never observed"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
+            wait_for_preview(&mut app, |preview| {
+                preview.pairing.projection()["verification_code"] == "123456"
+            });
             paint_app(
                 &mut app,
                 "installer-pairing-approval",
@@ -569,22 +581,7 @@ fn account_overview_and_explicit_provider_choice_paint_with_matching_navigation(
         for (viewport, scale) in [((480, 800), 1.0), ((1180, 820), 1.0), ((2560, 1440), 2.0)] {
             env.set("XDG_STATE_HOME", root.join(format!("{tag}-{}", viewport.0)));
             let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
-            let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
-            loop {
-                let state = app
-                    .effect(&InstallerPreviewEffect::ReadPreview)
-                    .unwrap()
-                    .value
-                    .unwrap();
-                if state["restart"]["state"] == "missing" {
-                    break;
-                }
-                assert!(
-                    state["restart"]["state"] == "checking" && std::time::Instant::now() < deadline,
-                    "{state}"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
+            wait_for_fresh_preparation(&mut app);
             for choice in ["computer", "fresh", "new"] {
                 app.effect(&InstallerPreviewEffect::ChoosePreview {
                     choice: choice.into(),
@@ -610,18 +607,7 @@ fn account_overview_and_explicit_provider_choice_paint_with_matching_navigation(
             ] {
                 app.effect(&effect).unwrap();
             }
-            loop {
-                let state = app
-                    .effect(&InstallerPreviewEffect::ReadPreview)
-                    .unwrap()
-                    .value
-                    .unwrap();
-                if state["page"] == "devices" {
-                    break;
-                }
-                assert!(std::time::Instant::now() < deadline, "{state}");
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
+            wait_for_preview(&mut app, |preview| preview.journey.page == Page::Devices);
             app.with_widget::<InstallerPreview, _>(|preview| {
                 preview.restart = restart_controller::Restart::default();
                 preview.journey.page = Page::Accounts;
@@ -631,20 +617,9 @@ fn account_overview_and_explicit_provider_choice_paint_with_matching_navigation(
             app.harness().resize(viewport).unwrap();
             app.harness()
                 .set_theme(theme.clone().with_ui_scale(scale).with_reduce_motion(true));
-            loop {
-                let state = app
-                    .effect(&InstallerPreviewEffect::ReadPreview)
-                    .unwrap()
-                    .value
-                    .unwrap();
-                if state["accounts"]["can_continue"] == true
-                    && state["restart"]["checking"] == false
-                {
-                    break;
-                }
-                assert!(std::time::Instant::now() < deadline, "{state}");
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
+            wait_for_preview(&mut app, |preview| {
+                preview.accounts.can_continue() && preview.restart.projection()["checking"] == false
+            });
             paint_app(
                 &mut app,
                 "installer-account-overview",
@@ -1179,15 +1154,30 @@ fn personal_pages_keep_control_scale_and_rasterize_forward_and_back_motion() {
 }
 
 #[test]
+#[cfg(unix)]
 fn resizing_or_changing_host_scale_discards_old_transition_geometry() {
-    let mut app =
-        TestApp::<GuidedInstallerShell>::capture_at(Some("installer-profile"), (1180, 820))
-            .unwrap();
+    let custody = tempfile::tempdir().unwrap();
+    let mut environment = tilo_test_env::ScopedEnv::new();
+    environment.set("XDG_STATE_HOME", custody.path().join("state"));
+    environment.set("XDG_CONFIG_HOME", custody.path().join("config"));
+    // Captures publish inert descriptions, not executable action bindings.
+    // Exercise transitions on the launched root's real effect runner.
+    let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+    app.with_widget::<InstallerPreview, _>(|preview| {
+        preview.live = false;
+        preview.restart = restart_controller::Restart::default();
+        preview.journey = Journey::new("Ada Lovelace".into());
+        preview.journey.destination = Some(Destination::Computer);
+        preview.journey.migrate = Some(false);
+        preview.journey.identity = Some(Identity::New);
+        preview.journey.page = Page::Profile;
+        preview.dirty = true;
+    })
+    .unwrap();
+    app.harness().resize((1180, 820)).unwrap();
     let mut theme = Theme::dark().with_reduce_motion(false);
     theme.tokens.motion.durations.base_ms = 30_000;
     app.harness().set_theme(theme.clone());
-    app.with_widget::<InstallerPreview, _>(|preview| preview.capture = false)
-        .unwrap();
     app.settle();
     for change_scale in [false, true] {
         app.effect(&InstallerPreviewEffect::ContinuePreview)
@@ -1630,7 +1620,7 @@ fn belongings_entry_discovers_real_metadata_after_profile_and_review_edit() {
 
 #[test]
 #[cfg(unix)]
-fn profile_explains_optional_picture_and_keeps_name_before_data_access() {
+fn profile_keeps_picture_action_and_name_without_redundant_explanation() {
     let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview.stage(Some("installer-profile"));
@@ -1639,9 +1629,10 @@ fn profile_explains_optional_picture_and_keeps_name_before_data_access() {
     .unwrap();
     app.settle();
     let view = app.harness().inspection_json().unwrap();
-    assert!(view.contains(&t("installer-preview-profile-avatar")));
+    assert!(view.contains(&t("installer-preview-avatar-change")));
     app.with_widget::<InstallerPreview, _>(|preview| {
-        assert!(control(preview, "installer.profile.avatar-help").is_some());
+        assert!(control(preview, "installer.profile.avatar-help").is_none());
+        assert!(control(preview, "installer.avatar").is_some());
         assert!(control(preview, "installer.name").is_some());
         assert!(control(preview, "installer.category.files").is_none());
     })
@@ -2134,7 +2125,7 @@ fn password_policy_feedback_explains_the_actual_requirement_through_public_effec
 fn compact_password_submission_reveals_invalid_field_and_correction_without_manual_scroll() {
     // A short window at 200% genuinely clips either correction field, while
     // retaining enough body height for the control and its concise caption.
-    password_submission_focus_cases((480, 520), true);
+    password_validation_scenario((480, 520), true);
 }
 
 #[cfg(unix)]
@@ -2142,11 +2133,13 @@ fn compact_password_submission_reveals_invalid_field_and_correction_without_manu
 fn compact_password_submission_keeps_feedback_readable_at_200_percent() {
     // The 800px window need not clip the short-password input. Keep this
     // everyday compact size covered without claiming it proves offscreen reveal.
-    password_submission_focus_cases((480, 800), false);
+    for viewport in [(480, 800), (320, 800)] {
+        password_validation_scenario(viewport, false);
+    }
 }
 
 #[cfg(unix)]
-fn password_submission_focus_cases(viewport: (u32, u32), require_clipped: bool) {
+fn password_validation_scenario(viewport: (u32, u32), require_clipped: bool) {
     let custody = tempfile::tempdir().unwrap();
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("XDG_STATE_HOME", custody.path().join("state"));
@@ -2264,26 +2257,14 @@ fn password_submission_focus_cases(viewport: (u32, u32), require_clipped: bool) 
                 "dark-200",
             );
 
-            // After correction feedback the person can choose another field.
-            // Scroll only until that real field is visible: at the short
-            // viewport the top of the page shows its heading, not both inputs.
-            // Merely reading state must not retarget focus or reset that scroll.
-            app.harness().click_at(body.center().x, body.center().y);
-            for _ in 0..40 {
-                let visible = app
-                    .with_widget::<InstallerPreview, _>(|preview| {
-                        let input = control(preview, other).unwrap().get_rect();
-                        input.y0 >= body.y0 && input.y1 <= body.y1
-                    })
-                    .unwrap();
-                if visible {
-                    break;
-                }
-                // One real wheel line is 60 logical pixels. Ten lines can
-                // leap over the entire visible interval in a short window.
-                app.harness().scroll(0.0, if mismatch { 1.0 } else { -1.0 });
-                app.settle();
+            // Move from the rejected input to its neighbour through the real
+            // keyboard path. Focus navigation must reveal an offscreen input;
+            // clicking its old, clipped coordinates is not a reachable action.
+            if mismatch {
+                app.harness().set_modifiers(&["shift".into()]);
             }
+            app.harness().key("Tab");
+            app.harness().set_modifiers(&[]);
             app.settle();
             let (chosen, focused) = app
                 .with_widget::<InstallerPreview, _>(|preview| {
@@ -2299,6 +2280,13 @@ fn password_submission_focus_cases(viewport: (u32, u32), require_clipped: bool) 
             );
             app.harness().click_at(chosen.center().x, chosen.center().y);
             app.settle();
+            // Blurring a field can add live validation and reflow the form.
+            // Read-only observation, unlike validation, must not change geometry.
+            let chosen = app
+                .with_widget::<InstallerPreview, _>(|preview| {
+                    control(preview, other).unwrap().get_rect()
+                })
+                .unwrap();
             app.effect(&InstallerPreviewEffect::ReadPreview).unwrap();
             app.settle();
             app.with_widget::<InstallerPreview, _>(|preview| {
@@ -2321,21 +2309,12 @@ fn password_submission_focus_cases(viewport: (u32, u32), require_clipped: bool) 
                     value.contains('z'),
                     "actual keyboard typing reaches the person's chosen masked field"
                 );
+                inspect_password_validation(preview, field, error);
                 assert!(
-                    preview.error.is_none(),
-                    "editing clears stale submission feedback"
+                    !preview.password_continue_enabled(),
+                    "an unrelated edit does not correct the rejected field"
                 );
-                assert!(validation_copy(preview, error).is_none());
                 assert!(preview.validation_focus.is_none());
-                assert!(
-                    !control(preview, field)
-                        .unwrap()
-                        .accessibility()
-                        .unwrap()
-                        .state
-                        .invalid,
-                    "the edited form no longer displays the old submission's invalid mark"
-                );
                 assert!(
                     control(preview, other)
                         .unwrap()
@@ -2344,6 +2323,85 @@ fn password_submission_focus_cases(viewport: (u32, u32), require_clipped: bool) 
                         .value
                         .is_none()
                 );
+            })
+            .unwrap();
+
+            // Correct both inputs with real keyboard selection and typing.
+            // Separate frames make caret resets during validation observable.
+            let valid = "walnut telescope amber meadow";
+            for id in ["installer.password", "installer.confirmation"] {
+                app.harness()
+                    .perform_named(id, &ui::a11y::Action::Focus)
+                    .unwrap();
+                app.harness().key("Home");
+                app.harness().set_modifiers(&["shift".into()]);
+                app.harness().key("End");
+                app.harness().set_modifiers(&[]);
+                app.settle();
+                let selection = app
+                    .with_widget::<InstallerPreview, _>(|preview| {
+                        ui::undo::get_state(control(preview, id).unwrap()).unwrap()
+                    })
+                    .unwrap();
+                assert_eq!(
+                    selection.split(':').count(),
+                    3,
+                    "replacement has a selection"
+                );
+                app.effect(&InstallerPreviewEffect::ReadPreview).unwrap();
+                app.settle();
+                app.with_widget::<InstallerPreview, _>(|preview| {
+                    assert_eq!(
+                        ui::undo::get_state(control(preview, id).unwrap()).unwrap(),
+                        selection,
+                        "observation preserves the private selection"
+                    );
+                })
+                .unwrap();
+                app.harness().type_text("walnut ");
+                app.settle();
+                app.harness().type_text("telescope amber meadow");
+                app.settle();
+                app.with_widget::<InstallerPreview, _>(|preview| {
+                    let input = control(preview, id).unwrap();
+                    assert!(input.is_focused(), "correction retains keyboard focus");
+                    assert_eq!(
+                        if id == "installer.password" {
+                            &preview.journey.password
+                        } else {
+                            &preview.journey.confirmation
+                        },
+                        valid,
+                        "selection replacement and caret survive validation reflow"
+                    );
+                    assert!(!input.accessibility().unwrap().state.invalid);
+                    let (body, _) = body_scroll_geometry(preview).unwrap();
+                    let input = control(preview, id).unwrap().get_rect();
+                    assert!(
+                        input.y0 >= body.y0 && input.y1 <= body.y1,
+                        "the corrected field stays visible: {input:?}, {body:?}"
+                    );
+                    if id == "installer.password" {
+                        inspect_password_validation(
+                            preview,
+                            "installer.confirmation",
+                            "installer-preview-password-mismatch",
+                        );
+                        assert!(!preview.password_continue_enabled());
+                    } else {
+                        assert!(preview.password_continue_enabled());
+                        assert!(preview.password_validation().is_none());
+                        assert!(preview.error.is_none());
+                        assert!(validation_copy(preview, error).is_none());
+                    }
+                })
+                .unwrap();
+            }
+            app.harness().key("Enter");
+            app.settle();
+            app.with_widget::<InstallerPreview, _>(|preview| {
+                assert_eq!(preview.journey.page, Page::Devices);
+                assert!(preview.error.is_none());
             })
             .unwrap();
         }

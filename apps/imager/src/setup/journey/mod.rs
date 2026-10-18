@@ -5,12 +5,15 @@
 //! live setup or its privileged workers. Every interaction is also an effect.
 
 mod accounts;
+#[cfg(test)]
+mod back_navigation_tests;
 mod belongings;
 pub(crate) mod browser;
 mod capabilities;
+mod compatibility;
 mod demo;
 mod desktop;
-mod diagram;
+mod devices;
 mod direct;
 mod draft;
 mod existing_identity;
@@ -22,12 +25,16 @@ mod migration_selection;
 mod model;
 mod native_ownership;
 mod pairing;
+#[cfg(test)]
+mod password_validation_tests;
 pub(in crate::setup) mod personal;
 #[path = "portable_source/presentation.rs"]
 pub(crate) mod portable_source;
 #[cfg(target_os = "linux")]
 #[path = "portable_source.rs"]
 mod portable_source_native;
+#[cfg(all(test, target_os = "linux"))]
+mod preparation_navigation_tests;
 #[path = "prepared_media/presentation.rs"]
 pub(crate) mod prepared_media;
 #[cfg(target_os = "linux")]
@@ -44,6 +51,8 @@ mod service_sessions;
 mod source_change_tests;
 mod storage;
 mod transfer;
+#[cfg(test)]
+mod visual_review_tests;
 #[cfg(test)]
 mod visual_tests;
 mod windows;
@@ -67,7 +76,7 @@ use ui::framework::{
 };
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
-use ui::text_render::{ParagraphAlign, TextRenderer};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_resource::{self, ActionRef, Effect};
 use ui::tokens::{Rhythm, TextRole};
@@ -262,6 +271,15 @@ pub enum InstallerPreviewEffect {
         service: String,
         included: bool,
     },
+    /// Review website sign-ins grouped by their granted source.
+    #[effect(returns)]
+    ReviewServiceSessions,
+    /// Include or exclude a discovered source group.
+    #[effect(returns)]
+    SetPreviewServiceSessionGroup { source_id: String, included: bool },
+    /// Expand or collapse an existing sign-in source group.
+    #[effect(returns)]
+    ExpandServiceSessionGroup { source_id: String, expanded: bool },
     /// Expand or collapse migration details.
     #[effect(returns)]
     TogglePreviewDetails,
@@ -573,6 +591,8 @@ pub struct InstallerPreview {
     error: Option<&'static str>,
     validation_focus: Option<String>,
     password_next_focus: Rc<Cell<bool>>,
+    password_touched: [bool; 2],
+    password_focused: Option<String>,
     avatar: Option<String>,
     avatar_picker: Option<ui::PortalChannel>,
     profile_avatar_original: Option<OriginalAvatar>,
@@ -591,6 +611,7 @@ pub struct InstallerPreview {
     storage: storage::Storage,
     install_preferences: imager_backend::imager_model::InstallProfile,
     direct: direct::Direct,
+    compatibility: compatibility::Compatibility,
     desktop_pending: bool,
     desktop_review_pending: bool,
     native_full_os_review_pending: bool,
@@ -623,6 +644,7 @@ pub struct InstallerPreview {
     recovery: super::migration_recovery::Flow,
     belongings: belongings::Belongings,
     belongings_worker: Option<std::sync::mpsc::Receiver<belongings::Belongings>>,
+    sessions_review: bool,
 }
 
 impl Default for InstallerPreview {
@@ -660,6 +682,7 @@ impl Default for InstallerPreview {
             storage: storage::Storage::default(),
             install_preferences: imager_backend::imager_model::InstallProfile::default(),
             direct: direct::Direct::default(),
+            compatibility: compatibility::Compatibility::default(),
             desktop_pending: false,
             desktop_review_pending: false,
             native_full_os_review_pending: false,
@@ -693,6 +716,7 @@ impl Default for InstallerPreview {
             windows: windows::Preparation::default(),
             belongings: belongings::Belongings::default(),
             belongings_worker: None,
+            sessions_review: false,
             journey,
             linux: cfg!(target_os = "linux"),
             commands: Rc::default(),
@@ -702,6 +726,8 @@ impl Default for InstallerPreview {
             error: None,
             validation_focus: None,
             password_next_focus: Rc::default(),
+            password_touched: [false; 2],
+            password_focused: None,
         }
     }
 }
@@ -912,17 +938,6 @@ impl InstallerPreview {
             }
         }
         if self.live {
-            if self.media_preparation.busy() {
-                content = content.push(Box::new(Text::new(&t(self
-                    .media_preparation
-                    .phase_key()
-                    .as_deref()
-                    .unwrap_or("installer-preview-install-preparing")))));
-                if let Some(bytes) = self.media_preparation.progress_label() {
-                    content =
-                        content.push(Box::new(Text::new(&bytes).with_role(TextRole::Caption)));
-                }
-            }
             if !matches!(self.storage.plan, Some(Ok(_)))
                 || self
                     .storage
@@ -948,6 +963,23 @@ impl InstallerPreview {
             .set_application_minimum(super::staging::MIN_TARGET_BYTES);
         self.migration_selection.invalidate();
         self.portable_source.invalidate();
+    }
+
+    fn media_preparation_admitted(&self) -> bool {
+        self.live
+            && !self.windows.enabled
+            && !self.direct.active
+            && !self.restart.blocks()
+            && self.media_preparation.busy()
+            && matches!(
+                self.journey.page,
+                Page::Devices
+                    | Page::Purpose
+                    | Page::Belongings
+                    | Page::Accounts
+                    | Page::Review
+                    | Page::Storage
+            )
     }
 
     // These actions operate on the current guided page. Explicit source grants,
@@ -1029,10 +1061,14 @@ impl InstallerPreview {
                     && self.journey.migrate == Some(true)
                     && self.journey.categories[1]
             }
-            "set-preview-service-session" => {
+            "expand-service-session-group" => {
+                page == Page::Belongings && self.live && self.sessions_review
+            }
+            "review-service-sessions" => page == Page::Belongings && self.live,
+            "set-preview-service-session" | "set-preview-service-session-group" => {
                 page == Page::Belongings
                     && self.live
-                    && self.journey.details
+                    && (self.journey.details || self.sessions_review)
                     && self.journey.migrate == Some(true)
                     && self.journey.categories[2]
             }
@@ -1072,8 +1108,8 @@ impl InstallerPreview {
             | "prepare-usb"
             | "prepare-direct-installation"
             | "prepare-desktop-installation"
-            | "review-changed-files"
-            | "cancel-media-preparation" => page == Page::Review,
+            | "review-changed-files" => page == Page::Review,
+            "cancel-media-preparation" => self.media_preparation_admitted(),
             _ => true,
         }
     }
@@ -1121,6 +1157,7 @@ impl InstallerPreview {
                     | InstallerPreviewEffect::EditPreview { .. }
                     | InstallerPreviewEffect::ContinuePreview
                     | InstallerPreviewEffect::PrepareDesktopInstallation
+                    | InstallerPreviewEffect::CancelMediaPreparation
             )
         {
             return Err("installer-preview-wrong-page");
@@ -1162,6 +1199,10 @@ impl InstallerPreview {
                     | InstallerPreviewEffect::SetPreviewCategory { .. }
                     | InstallerPreviewEffect::SetPreviewFlatpakApp { .. }
                     | InstallerPreviewEffect::SetPreviewServiceSession { .. }
+                    | InstallerPreviewEffect::SetPreviewServiceSessionGroup { .. }
+                    | InstallerPreviewEffect::ReviewServiceSessions
+                    | InstallerPreviewEffect::ExpandServiceSessionGroup { .. }
+                    | InstallerPreviewEffect::CancelMediaPreparation
             )
         {
             // Until this decision is saved, retained preparation belongs to
@@ -1181,6 +1222,7 @@ impl InstallerPreview {
                 InstallerPreviewEffect::ReadPreview => return Ok(()),
                 InstallerPreviewEffect::BackInPreview if self.direct.navigation.get() => {
                     self.direct.active = false;
+                    self.compatibility = compatibility::Compatibility::default();
                     if self.journey.destination == Some(Destination::Desktop) {
                         self.journey.back()?;
                     }
@@ -1257,6 +1299,7 @@ impl InstallerPreview {
                     | InstallerPreviewEffect::SetPreviewCategory { .. }
                     | InstallerPreviewEffect::SetPreviewFlatpakApp { .. }
                     | InstallerPreviewEffect::SetPreviewServiceSession { .. }
+                    | InstallerPreviewEffect::SetPreviewServiceSessionGroup { .. }
                     | InstallerPreviewEffect::ReviewUserTransfer { .. }
                     | InstallerPreviewEffect::ReviewHomePromotion { .. }
                     | InstallerPreviewEffect::StartHomePromotion
@@ -1280,6 +1323,7 @@ impl InstallerPreview {
                     | InstallerPreviewEffect::SetPreviewCategory { .. }
                     | InstallerPreviewEffect::SetPreviewFlatpakApp { .. }
                     | InstallerPreviewEffect::SetPreviewServiceSession { .. }
+                    | InstallerPreviewEffect::SetPreviewServiceSessionGroup { .. }
             ))
             || (choices_edit
                 && (self.journey.saving_edit()
@@ -1299,6 +1343,7 @@ impl InstallerPreview {
                     | InstallerPreviewEffect::SelectMigrationHome { .. }
                     | InstallerPreviewEffect::SetPreviewFlatpakApp { .. }
                     | InstallerPreviewEffect::SetPreviewServiceSession { .. }
+                    | InstallerPreviewEffect::SetPreviewServiceSessionGroup { .. }
                     | InstallerPreviewEffect::SelectPreviewAvatar { .. }
             )
         {
@@ -1840,12 +1885,25 @@ impl InstallerPreview {
                     let _ = tx.send(belongings::Belongings::discover());
                 });
             }
+            InstallerPreviewEffect::ContinuePreview if self.sessions_review => {
+                self.sessions_review = false;
+                self.journey.details = false;
+            }
             InstallerPreviewEffect::ContinuePreview => 'advance: {
                 if matches!(page, Page::Destination | Page::Migration)
                     && !self.guided_host_available()
                     && self.journey.destination != Some(Destination::Desktop)
                 {
                     return Err("installer-guided-host-unavailable");
+                }
+                if page == Page::Destination
+                    && self.live
+                    && self.linux
+                    && !self.windows.enabled
+                    && self.journey.destination == Some(Destination::Computer)
+                {
+                    self.compatibility.pending = true;
+                    return Ok(());
                 }
                 if page == Page::Destination
                     && self.journey.destination == Some(Destination::Desktop)
@@ -2225,7 +2283,7 @@ impl InstallerPreview {
             InstallerPreviewEffect::SetStorageSize { gib } if page == Page::Storage => {
                 self.storage.set_size(gib)?;
             }
-            InstallerPreviewEffect::CancelMediaPreparation if page == Page::Review && self.live => {
+            InstallerPreviewEffect::CancelMediaPreparation if self.media_preparation_admitted() => {
                 self.media_preparation.cancel()?;
                 self.dirty = true;
             }
@@ -2412,8 +2470,45 @@ impl InstallerPreview {
                 return Err("installer-preview-import-unavailable");
             }
             InstallerPreviewEffect::BackInPreview => {
+                if page == Page::Belongings && self.sessions_review {
+                    self.sessions_review = false;
+                    self.journey.details = false;
+                    self.error = None;
+                    self.dirty = true;
+                    return Ok(());
+                }
                 if page == Page::Belongings {
-                    self.migration_selection.cancel_permission();
+                    let nested = if self.migration_selection.choosing() {
+                        self.migration_selection.cancel_permission();
+                        self.journey.details
+                    } else if self.portable_source.mounted_permission_active()
+                        && self.portable_source.choosing()
+                    {
+                        self.portable_source.cancel_mounted();
+                        self.journey.details
+                    } else if self.portable_source.mounted_permission_active()
+                        || self.portable_source.choosing()
+                        || self.portable_source.busy()
+                    {
+                        self.portable_source.invalidate();
+                        self.journey.details
+                    } else if self.migration_source_location {
+                        self.migration_source_location = false;
+                        true
+                    } else if self.flatpak_access_details && self.journey.details {
+                        self.flatpak_access_details = false;
+                        true
+                    } else if self.journey.details && !choices_edit {
+                        self.journey.back()?;
+                        true
+                    } else {
+                        false
+                    };
+                    if nested {
+                        self.error = None;
+                        self.dirty = true;
+                        return Ok(());
+                    }
                 }
                 if self.live
                     && page == Page::Connect
@@ -2529,7 +2624,9 @@ impl InstallerPreview {
                     self.restart
                         .choices_changed(prepared, self.journey.draft_choices());
                 }
-                self.dirty = true;
+                // Keep the name editor retained while typing, including its caret.
+                // Connect may still change its composition when the name changes.
+                self.dirty |= page != Page::Devices;
                 return Ok(());
             }
             InstallerPreviewEffect::SetPreviewPassword { value } if page == Page::Password => {
@@ -2549,6 +2646,7 @@ impl InstallerPreview {
                 let enabled = self.password_continue_enabled();
                 self.field_values[3].set(value.clone());
                 self.journey.confirmation = value;
+                self.password_touched[1] = true;
                 self.clear_password_validation();
                 self.dirty |= enabled != self.password_continue_enabled();
                 return Ok(());
@@ -2600,13 +2698,40 @@ impl InstallerPreview {
                     self.invalidate_migration_preparation();
                 }
             }
+            InstallerPreviewEffect::ExpandServiceSessionGroup {
+                source_id,
+                expanded,
+            } if page == Page::Belongings && self.sessions_review => {
+                self.belongings
+                    .sessions
+                    .expand_group(&source_id, expanded)?;
+            }
+            InstallerPreviewEffect::ReviewServiceSessions
+                if page == Page::Belongings && self.live =>
+            {
+                self.sessions_review = true;
+            }
+            InstallerPreviewEffect::SetPreviewServiceSessionGroup {
+                source_id,
+                included,
+            } if self.live
+                && page == Page::Belongings
+                && self.sessions_review
+                && self.journey.migrate == Some(true)
+                && self.journey.categories[2] =>
+            {
+                let changed = self.belongings.sessions.set_group(&source_id, included)?;
+                if changed && !choices_edit {
+                    self.invalidate_migration_preparation();
+                }
+            }
             InstallerPreviewEffect::SetPreviewServiceSession {
                 source_id,
                 service,
                 included,
             } if self.live
                 && page == Page::Belongings
-                && self.journey.details
+                && (self.journey.details || self.sessions_review)
                 && self.journey.migrate == Some(true)
                 && self.journey.categories[2] =>
             {
@@ -2643,7 +2768,7 @@ impl InstallerPreview {
                 self.migration_source_location = !self.migration_source_location;
             }
             InstallerPreviewEffect::TogglePreviewDetails if page == Page::Belongings => {
-                self.journey.details = !self.journey.details;
+                self.journey.toggle_details();
                 self.migration_source_location = false;
             }
             _ => return Err("installer-preview-wrong-page"),
@@ -3071,8 +3196,10 @@ impl InstallerPreview {
     }
 
     fn drain(&mut self) -> bool {
+        let password_focus_changed = self.track_password_focus();
         // Register the child after the current semantic invocation has finished;
         // its published effects must not replace the executing surface's door.
+        let compatibility_changed = self.drain_compatibility();
         let desktop_review_changed = std::mem::take(&mut self.desktop_review_pending);
         let native_full_os_review_changed = std::mem::take(&mut self.native_full_os_review_pending);
         if native_full_os_review_changed && let Err(error) = self.prepare_native_full_os() {
@@ -3378,7 +3505,8 @@ impl InstallerPreview {
             || existing_changed
             || pairing_changed;
         let commands = std::mem::take(&mut *self.commands.borrow_mut());
-        let changed = native_full_os_review_changed
+        let changed = compatibility_changed
+            || native_full_os_review_changed
             || desktop_review_changed
             || checkpoint_changed
             || restart_changed
@@ -3408,10 +3536,11 @@ impl InstallerPreview {
             && !self.personal_busy()
             && !self.migration_busy();
         if focus_confirmation {
+            self.password_touched[0] = true;
             self.validation_focus = Some("installer.confirmation".into());
             self.dirty = true;
         }
-        changed || focus_confirmation
+        changed || focus_confirmation || password_focus_changed
     }
 
     fn button(&self, id: &str, label: &str, effect: InstallerPreviewEffect) -> Button {
@@ -3450,7 +3579,7 @@ impl InstallerPreview {
             enabled = true;
         }
         if matches!(effect, InstallerPreviewEffect::CancelMediaPreparation)
-            && self.media_preparation.busy()
+            && self.media_preparation_admitted()
         {
             enabled = true;
         }
@@ -3600,7 +3729,7 @@ impl InstallerPreview {
         if self.live
             && self.journey.destination == Some(Destination::Computer)
             && (matches!(self.journey.page, Page::Belongings | Page::Accounts)
-                || (self.journey.page == Page::Devices && self.journey.migrate == Some(false)))
+                || (self.journey.page == Page::Purpose && self.journey.migrate == Some(false)))
             && !self.journey.saving_edit()
             && self.direct.prepared_belongings.is_none()
         {
@@ -3711,12 +3840,74 @@ impl InstallerPreview {
             })
     }
 
-    fn clear_password_validation(&mut self) {
-        if self.password_validation().is_some() {
-            self.error = None;
-            self.validation_focus = None;
+    fn track_password_focus(&mut self) -> bool {
+        if self.journey.page != Page::Password {
+            self.password_focused = None;
+            self.password_touched = [false; 2];
+            return false;
+        }
+        let focused = self
+            .composed
+            .as_ref()
+            .and_then(|root| page::focused_id(root.as_ref()));
+        if focused == self.password_focused {
+            return false;
+        }
+        if let Some(previous) = self.password_focused.take() {
+            match previous.as_str() {
+                "installer.password" => self.password_touched[0] = true,
+                "installer.confirmation" => self.password_touched[1] = true,
+                _ => {}
+            }
             self.dirty = true;
         }
+        self.password_focused = focused;
+        self.dirty
+    }
+
+    // The shared input's undo state is caret/selection metadata only, never text.
+    // Preserve it when validation changes rebuild the surrounding Field.
+    fn password_input_state(root: &dyn Widget) -> Vec<(String, String)> {
+        let mut states = Vec::new();
+        if matches!(
+            root.test_id(),
+            Some("installer.password" | "installer.confirmation")
+        ) && let Some(input) = root
+            .as_any()
+            .and_then(|widget| widget.downcast_ref::<TextInput>())
+            && let Some(state) = ui::undo::UndoPoints::get_state(input)
+        {
+            states.push((root.test_id().unwrap().to_string(), state));
+        }
+        for child in root.children() {
+            states.extend(Self::password_input_state(child));
+        }
+        states
+    }
+
+    fn restore_password_input_state(root: &mut dyn Widget, states: &[(String, String)]) {
+        if let Some((_, state)) = states
+            .iter()
+            .find(|(id, _)| root.test_id() == Some(id.as_str()))
+            && let Some(input) = root
+                .as_any_mut()
+                .and_then(|widget| widget.downcast_mut::<TextInput>())
+        {
+            ui::undo::UndoPoints::set_state(input, state);
+        }
+        for child in root.children_mut() {
+            Self::restore_password_input_state(child, states);
+        }
+    }
+
+    fn clear_password_validation(&mut self) {
+        if Self::password_error_field(self.error).is_some() {
+            self.error = None;
+            self.validation_focus = None;
+        }
+        // Validation copy can change even when Continue remains disabled.
+        // Recomposition preserves the shared input's focus and private state.
+        self.dirty = true;
     }
 
     fn show_refusal(&mut self, error: &'static str, submitted: bool) {
@@ -3725,6 +3916,7 @@ impl InstallerPreview {
         // Only a refused submission moves focus. Read-only observations and
         // ordinary edits leave the person's typing and scroll position alone.
         if submitted && let Some((field, _)) = self.password_validation() {
+            self.password_touched[usize::from(field == "confirmation")] = true;
             self.validation_focus = Some(format!("installer.{field}"));
         }
     }
@@ -3741,7 +3933,43 @@ impl InstallerPreview {
         if self.journey.page != Page::Password {
             return None;
         }
-        match self.error {
+        self.password_field_validation("password")
+            .map(|error| ("password", error))
+            .or_else(|| {
+                self.password_field_validation("confirmation")
+                    .map(|error| ("confirmation", error))
+            })
+    }
+
+    fn password_field_validation(&self, key: &str) -> Option<&'static str> {
+        if self.journey.page != Page::Password {
+            return None;
+        }
+        if let Some((field, error)) = Self::password_error_field(self.error)
+            && field == key
+        {
+            return Some(error);
+        }
+        if self.unlocking_preparation() {
+            return None;
+        }
+        match key {
+            "password" if self.password_touched[0] => self
+                .journey
+                .validation()
+                .filter(|error| *error != "installer-preview-password-mismatch"),
+            "confirmation"
+                if self.password_touched[1]
+                    && self.journey.password != self.journey.confirmation =>
+            {
+                Some("installer-preview-password-mismatch")
+            }
+            _ => None,
+        }
+    }
+
+    fn password_error_field(error: Option<&'static str>) -> Option<(&'static str, &'static str)> {
+        match error {
             Some(
                 error @ ("installer-preview-password-short"
                 | "installer-preview-password-spaces"
@@ -3798,9 +4026,7 @@ impl InstallerPreview {
                 }),
         )
         .with_label_placement(Some(LabelPlacement::Above));
-        if let Some((target, error)) = self.password_validation()
-            && target == key
-        {
+        if let Some(error) = self.password_field_validation(key) {
             widget = widget.with_error_live(t(error), ui::a11y::Politeness::Assertive);
         } else if key == "password" && !self.unlocking_preparation() {
             widget = widget.with_help(t("installer-preview-password-hint"));
@@ -3835,7 +4061,10 @@ impl InstallerPreview {
             && j.destination == Some(Destination::Another)
             && j.categories[0]
             && self.portable_source.mounted_permission_active();
-        let heading = if mounted_step {
+        let reviewing_sessions = j.page == Page::Belongings && self.sessions_review;
+        let heading = if reviewing_sessions {
+            t("installer-service-sessions-title")
+        } else if mounted_step {
             t("installer-mounted-home-permission-heading")
         } else if self.unlocking_preparation() {
             t("installer-restart-unlock-heading")
@@ -3846,7 +4075,9 @@ impl InstallerPreview {
         } else {
             t(&format!("installer-preview-{key}-heading"))
         };
-        let intro = if matches!(j.page, Page::Destination | Page::Migration)
+        let intro = if reviewing_sessions {
+            t("installer-logins-source-body")
+        } else if matches!(j.page, Page::Destination | Page::Migration)
             && !self.guided_host_available()
         {
             t("installer-guided-host-unavailable")
@@ -3880,16 +4111,14 @@ impl InstallerPreview {
             };
         let heading = Text::new(&heading)
             .with_id("installer.heading")
+            .with_align(ui::ParagraphAlign::Start)
             .with_role(heading_role)
             .with_balanced_wrap()
             .with_heading_level(1);
-        let heading = if j.page == Page::Profile {
-            heading.with_align(ParagraphAlign::Center)
-        } else {
-            heading
-        };
         let mut title = page::stack().push(Box::new(heading));
-        if j.page != Page::Profile && self.rect.width() < self.profile_breakpoint {
+        if !matches!(j.page, Page::Profile | Page::Password | Page::Devices)
+            && self.rect.width() < self.profile_breakpoint
+        {
             // Give a compact page title breathing room before the scrolling
             // edge. The form and explanatory copy keep their full measure.
             title =
@@ -3899,26 +4128,25 @@ impl InstallerPreview {
             .with_rhythm(Rhythm::Related)
             .push(Box::new(title));
         if !intro.is_empty() {
-            let intro = Text::new(&intro).with_role(TextRole::Body);
-            let intro = if j.page == Page::Profile {
-                intro.with_align(ParagraphAlign::Center)
-            } else {
-                intro
-            };
+            let intro = Text::new(&intro)
+                .with_id("installer.intro")
+                .with_align(ui::ParagraphAlign::Start)
+                .with_role(TextRole::Body);
             header = header.push(Box::new(intro));
         }
         let mut body = page::stack()
             .with_rhythm(Rhythm::Sibling)
             .push(Box::new(header));
-        if self.live && self.direct.belongings_pending && j.page != Page::Review {
-            body = body.push(Box::new(
-                Text::new(&t(self
-                    .media_preparation
-                    .phase_key()
-                    .as_deref()
-                    .unwrap_or("installer-media-phase-review")))
-                .with_live(ui::a11y::Politeness::Polite),
-            ));
+        if self.media_preparation_admitted() {
+            let phase = self.media_preparation.phase_key();
+            let mut status = ui::widget::Banner::info(t(phase
+                .as_deref()
+                .unwrap_or("installer-media-phase-review")))
+            .with_id("installer.preparation-status");
+            if let Some(bytes) = self.media_preparation.progress_label() {
+                status = status.with_message(bytes);
+            }
+            body = body.push(Box::new(status));
         }
         match j.page {
             Page::Migration if !self.guided_host_available() => {}
@@ -3980,12 +4208,6 @@ impl InstallerPreview {
                                 )
                                 .role(ButtonRole::Plain),
                             )),
-                    ))
-                    .push(Box::new(
-                        Text::new(&t("installer-preview-profile-avatar"))
-                            .with_id("installer.profile.avatar-help")
-                            .with_role(TextRole::Caption)
-                            .with_align(ParagraphAlign::Center),
                     ));
                 body = body
                     .with_rhythm(Rhythm::Section)
@@ -4092,75 +4314,42 @@ impl InstallerPreview {
                     ));
             }
             Page::Devices => {
-                let identity_label = if j.identity == Some(Identity::Existing) && !self.live {
-                    t("installer-preview-existing-avatar")
-                } else {
-                    j.name.clone()
-                };
-                let identity_avatar = if j.identity == Some(Identity::Existing) && !self.live {
-                    Avatar::person(&identity_label, "existing-identity").size(AvatarSize::Hero)
-                } else {
-                    self.avatar(&identity_label)
-                };
-                let person = page::related()
-                    .push(Box::new(
-                        Row::new()
-                            .with_justify(taffy::JustifyContent::Center)
-                            .push(Box::new(identity_avatar)),
-                    ))
-                    .push(Box::new(
-                        Row::new()
-                            .with_justify(taffy::JustifyContent::Center)
-                            .push(Box::new(
-                                Text::new(&identity_label).with_role(TextRole::Heading),
-                            )),
-                    ));
-                let device = |icon, label: String| {
-                    Container::new()
-                        .with_no_padding()
-                        .with_flex_grow()
-                        .with_child(Box::new(
-                            page::related()
-                                .push(Box::new(
-                                    Row::new().with_justify(taffy::JustifyContent::Center).push(
-                                        Box::new(
-                                            IconWidget::new(icon)
-                                                .sized(ui::widget::IconSize::Large)
-                                                .accent(),
-                                        ),
-                                    ),
-                                ))
-                                .push(Box::new(
-                                    Row::new()
-                                        .with_justify(taffy::JustifyContent::Center)
-                                        .push(Box::new(Text::new(&label))),
-                                )),
-                        ))
-                };
-                body = body.push(Box::new(
-                    page::stack()
-                        .with_rhythm(Rhythm::Related)
-                        .push(Box::new(person))
-                        .push(Box::new(diagram::DeviceLinks::new(!self.capture)))
-                        .push(Box::new(
-                            Row::new()
-                                .with_padding(0.0, 0.0)
-                                .push(Box::new(device(Icon::Monitor, j.device_name.clone())))
-                                .push(Box::new(device(
-                                    Icon::MonitorSmartphone,
-                                    t("installer-preview-more-devices"),
-                                ))),
-                        )),
-                ));
-                if !self.device_label_locked() {
-                    body = body.push(Box::new(self.field(
-                        "device-name",
-                        &j.device_name,
-                        TextInputKind::Name,
-                    )));
-                }
+                body = body.push(Box::new(self.device_name_form()));
             }
             Page::Belongings => {
+                if self.sessions_review {
+                    let individual = self.commands.clone();
+                    let group = self.commands.clone();
+                    let expand = self.commands.clone();
+                    return body.push(self.belongings.sessions.logins_view(
+                        j.categories[2],
+                        move |source_id, service, included| {
+                            individual.borrow_mut().push(
+                                InstallerPreviewEffect::SetPreviewServiceSession {
+                                    source_id,
+                                    service: service.as_str().into(),
+                                    included,
+                                },
+                            )
+                        },
+                        move |source_id, included| {
+                            group.borrow_mut().push(
+                                InstallerPreviewEffect::SetPreviewServiceSessionGroup {
+                                    source_id,
+                                    included,
+                                },
+                            )
+                        },
+                        move |source_id, expanded| {
+                            expand.borrow_mut().push(
+                                InstallerPreviewEffect::ExpandServiceSessionGroup {
+                                    source_id,
+                                    expanded,
+                                },
+                            )
+                        },
+                    ));
+                }
                 let mounted_step = self.live
                     && j.destination == Some(Destination::Another)
                     && j.categories[0]
@@ -4279,29 +4468,7 @@ impl InstallerPreview {
                             {
                                 t("installer-preview-accounts-body")
                             } else {
-                                let labels = self
-                                    .belongings
-                                    .accounts
-                                    .candidates
-                                    .iter()
-                                    .filter(|item| {
-                                        item.can_import_credentials
-                                            || accounts::can_connect_candidate(item)
-                                    })
-                                    .map(accounts::candidate_label)
-                                    .chain(
-                                        self.belongings
-                                            .accounts
-                                            .tilo_accounts
-                                            .iter()
-                                            .map(accounts::tilo_candidate_label),
-                                    )
-                                    .collect::<Vec<_>>();
-                                if labels.is_empty() {
-                                    t("installer-preview-accounts-body")
-                                } else {
-                                    labels.join(", ")
-                                }
+                                self.belongings.accounts_overview_hint()
                             }
                         } else if self.live && self.belongings.home_unavailable {
                             t("installer-preview-home-unavailable")
@@ -4562,7 +4729,7 @@ impl InstallerPreview {
                                 .on_activate(move || {
                                     commands
                                         .borrow_mut()
-                                        .push(InstallerPreviewEffect::TogglePreviewDetails)
+                                        .push(InstallerPreviewEffect::ReviewServiceSessions)
                                 }),
                             ));
                         }
@@ -4741,26 +4908,8 @@ impl InstallerPreview {
                         .with_id("installer.review.usb-fallback"),
                     ));
                 }
-                if self.live && self.media_preparation.busy() {
-                    body = body.push(Box::new(Text::new(&t(self
-                        .media_preparation
-                        .phase_key()
-                        .as_deref()
-                        .unwrap_or("installer-preview-install-preparing")))));
-                    if let Some(bytes) = self.media_preparation.progress_label() {
-                        body = body.push(Box::new(Text::new(&bytes).with_role(TextRole::Caption)));
-                    }
-                }
                 let destination = j.destination.unwrap_or(Destination::Computer);
-                if destination != Destination::Desktop {
-                    body = body.push(Box::new(self.review_selection_row(
-                        "purpose",
-                        "purpose",
-                        t(&format!("installer-preview-purpose-{}-title", j.purpose)),
-                        t(&format!("installer-preview-purpose-{}-body", j.purpose)),
-                    )));
-                }
-                let setup = page::related()
+                let mut setup = page::related()
                     .push(Box::new(
                         Text::new(&t("installer-review-setup"))
                             .with_role(TextRole::Subheading)
@@ -4792,6 +4941,21 @@ impl InstallerPreview {
                             Destination::Desktop => Icon::MonitorSmartphone,
                         }),
                     ));
+                if destination != Destination::Desktop {
+                    setup = setup.push(Box::new(self.review_selection_row(
+                        "purpose",
+                        "purpose",
+                        t(&format!("installer-preview-purpose-{}-title", j.purpose)),
+                        t(&format!("installer-preview-purpose-{}-body", j.purpose)),
+                    )));
+                }
+                if destination == Destination::Computer && self.direct_route_enabled() {
+                    setup = setup.push(Box::new(self.review_row(
+                        "storage",
+                        t("installer-preview-storage-size-label"),
+                        self.review_storage_summary(),
+                    )));
+                }
                 let mut belongings = page::related()
                     .push(Box::new(
                         Text::new(&t("installer-review-belongings-heading"))
@@ -5013,10 +5177,10 @@ impl InstallerPreview {
                 .role(ButtonRole::Primary),
             ));
         }
-        if self.live && self.journey.page == Page::Review && self.media_preparation.busy() {
+        if self.media_preparation_admitted() {
             actions = actions.push(Box::new(self.button(
                 "installer.cancel-preparation",
-                "installer-media-cancel",
+                "installer-media-cancel-preparation",
                 InstallerPreviewEffect::CancelMediaPreparation,
             )));
         }
@@ -5104,12 +5268,12 @@ impl InstallerPreview {
                 self.accounts.continue_label(),
                 InstallerPreviewEffect::ContinuePreview,
             ),
-            Page::Belongings if self.live => (
-                "installer-preview-continue",
-                InstallerPreviewEffect::ContinuePreview,
-            ),
             _ if self.journey.saving_edit() => (
                 "installer-preview-save",
+                InstallerPreviewEffect::ContinuePreview,
+            ),
+            Page::Belongings if self.live => (
+                "installer-preview-continue",
                 InstallerPreviewEffect::ContinuePreview,
             ),
             Page::Ready => (
@@ -5157,6 +5321,7 @@ impl InstallerPreview {
             && self.journey.categories[0]
             && self.portable_source.mounted_permission_active();
         if !chooses_path
+            && !self.sessions_review
             && !mounted_step
             && !accounts_waiting
             && !(self.live && self.journey.page == Page::Review && !self.journey.editing_choices())
@@ -5179,7 +5344,10 @@ impl InstallerPreview {
         // Keep navigation at one position while a page's body, errors and
         // accessible text scroll independently. Personal forms retain their
         // bounded measure inside the same readable-width page frame.
-        if matches!(self.journey.page, Page::Profile | Page::Password) {
+        if matches!(
+            self.journey.page,
+            Page::Profile | Page::Password | Page::Devices
+        ) {
             content = page::stack().push(Box::new(
                 Container::new()
                     .with_no_padding()
@@ -5187,14 +5355,36 @@ impl InstallerPreview {
                     .with_child(Box::new(content)),
             ));
         }
-        let frame = page::Frame::new(content)
-            .center_short_body()
-            .notice(self.demo.then(|| {
-                Box::new(
+        let frame = page::Frame::new(content);
+        let frame = if self.journey.page == Page::Devices {
+            frame
+        } else {
+            frame.center_short_body()
+        };
+        let review_blocker = (self.live
+            && self.journey.page == Page::Review
+            && self.journey.destination == Some(Destination::Computer)
+            && self.direct_route_enabled())
+        .then(|| self.direct_blocker())
+        .flatten();
+        let notice = if self.demo || review_blocker.is_some() {
+            let mut notice = page::related();
+            if self.demo {
+                notice = notice.push(Box::new(
                     ui::widget::Banner::info(t("installer-demo-notice"))
                         .with_id("installer.demo-notice"),
-                ) as Box<dyn Widget>
-            }));
+                ));
+            }
+            if let Some(reason) = review_blocker {
+                notice = notice.push(Box::new(
+                    Text::new(&reason).with_id("installer.review.blocker"),
+                ));
+            }
+            Some(Box::new(notice) as Box<dyn Widget>)
+        } else {
+            None
+        };
+        let frame = frame.notice(notice);
         if self.journey.page != Page::Destination || self.journey.cancels_edit() {
             frame.actions(actions).build()
         } else {
@@ -5459,8 +5649,17 @@ impl ResourceSurface<Imager, InstallerPreviewEffect> for InstallerPreview {
             }
             return statuses;
         }
-        if self.journey.page == Page::Migration && !self.guided_host_available() {
-            for action in ["choose-preview", "continue-preview"] {
+        if !self.guided_host_available()
+            && (self.journey.page == Page::Migration
+                || (self.journey.page == Page::Destination
+                    && self.journey.destination != Some(Destination::Desktop)))
+        {
+            let actions: &[&str] = if self.journey.page == Page::Migration {
+                &["choose-preview", "continue-preview"]
+            } else {
+                &["continue-preview"]
+            };
+            for action in actions {
                 statuses.push(EffectStatus::unavailable(
                     ActionRef::<InstallerPreviewEffect, ()>::new(action, &[]),
                     "guided_host_unavailable",
@@ -5492,6 +5691,7 @@ impl ResourceSurface<Imager, InstallerPreviewEffect> for InstallerPreview {
             }
         }
         if self.journey.history.is_empty()
+            && !self.sessions_review
             && !self.journey.cancels_edit()
             && !(self.journey.page == Page::Accounts && !self.accounts.at_overview())
         {
@@ -5561,7 +5761,18 @@ impl Widget for InstallerPreview {
                     .as_ref()
                     .and_then(|root| page::focused_id(root.as_ref()))
             });
+            let password_state = if self.journey.page == Page::Password {
+                self.composed
+                    .as_ref()
+                    .map(|root| Self::password_input_state(root.as_ref()))
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
             self.composed = Some(self.composition(theme));
+            if let Some(root) = &mut self.composed {
+                Self::restore_password_input_state(root.as_mut(), &password_state);
+            }
             if let (Some(focus), Some(root)) = (focus, &mut self.composed) {
                 page::refocus(root.as_mut(), &focus);
             }
@@ -5728,6 +5939,7 @@ impl Widget for InstallerPreview {
     }
     fn needs_animation_frame(&self) -> bool {
         self.dirty
+            || self.compatibility.pending
             || self.native_full_os_review_pending
             || self.windows.busy()
             || self.pending_slide.is_some()
@@ -5763,6 +5975,8 @@ fn review_source_label(label: &str) -> String {
 mod desktop_model_tests;
 #[cfg(all(test, unix))]
 mod purpose_tests;
+#[cfg(all(test, unix))]
+mod scroll_tests;
 
 // This fixture exercises the Unix identity/restart controller. Windows has
 // its own inventory and recovery journey tests in windows.rs.
@@ -6184,8 +6398,22 @@ mod tests {
             })
             .is_err()
         );
+        app.settle();
         app.with_widget::<InstallerPreview, _>(|preview| {
             assert!(preview.device_label_locked());
+            assert!(visual_tests::control(preview, "installer.device-name").is_none());
+            let approved_name =
+                visual_tests::control(preview, "installer.devices.approved-name").unwrap();
+            assert_eq!(
+                approved_name.accessibility().unwrap().name.as_deref(),
+                Some("Approved future computer")
+            );
+            let explanation =
+                visual_tests::control(preview, "installer.devices.name-locked").unwrap();
+            assert_eq!(
+                explanation.accessibility().unwrap().name.as_deref(),
+                Some(t("installer-pairing-label-locked").as_str())
+            );
             let mut enrolled_review = preview.journey.clone();
             enrolled_review.page = Page::Review;
             // Keep the actual signed retained identity while testing admission.
@@ -6378,6 +6606,25 @@ mod tests {
                 })
                 .unwrap();
                 app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
+                assert_eq!(status(&mut app)["page"], "belongings");
+                app.with_widget::<InstallerPreview, _>(|preview| {
+                    assert!(!preview.journey.details);
+                    assert_eq!(
+                        preview.personal.prepared_handle().unwrap().public_key(),
+                        identity.public_key()
+                    );
+                    assert_eq!(
+                        preview.accounts.prepared_handle().unwrap().selected_ids(),
+                        account_ids
+                    );
+                    assert_eq!(
+                        preview.migration_selection.reviewed_intent(),
+                        Some(intent.clone())
+                    );
+                })
+                .unwrap();
+                app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
+                assert_eq!(status(&mut app)["page"], "migration");
             }
             app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
             assert_eq!(status(&mut app)["page"], "review");
@@ -7651,6 +7898,8 @@ mod tests {
         password(&mut app);
         app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
+        assert_eq!(status(&mut app)["page"], "purpose");
+        choose(&mut app, "computer");
         assert_eq!(status(&mut app)["page"], "belongings");
         app.with_widget::<InstallerPreview, _>(|preview| {
             assert!(preview.personal.photo().is_some());
@@ -9198,6 +9447,8 @@ mod tests {
         wait_for_personal(&mut app);
         app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
+        assert_eq!(status(&mut app)["page"], "purpose");
+        choose(&mut app, "computer");
         assert_eq!(status(&mut app)["page"], "belongings");
         app.with_widget::<InstallerPreview, _>(|preview| {
             preview.live = true;
@@ -9668,7 +9919,7 @@ mod tests {
         } else {
             // A fast real worker may finish before the next semantic read.
             assert_eq!(immediate["belongings_preparation"]["prepared"], true);
-            assert_eq!(immediate["page"], "review");
+            assert_eq!(immediate["page"], "purpose");
         }
         let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
         loop {
@@ -9683,6 +9934,8 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+        assert_eq!(status(&mut app)["page"], "purpose");
+        choose(&mut app, "computer");
         app.with_widget::<InstallerPreview, _>(|preview| {
             assert_eq!(preview.journey.page, Page::Review);
             assert!(!preview.direct.active);
@@ -9816,7 +10069,9 @@ mod tests {
         assert_eq!(prepared["page"], "devices");
         app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
-        assert_eq!(wait_for_belongings(&mut app)["page"], "review");
+        assert_eq!(wait_for_belongings(&mut app)["page"], "purpose");
+        choose(&mut app, "computer");
+        assert_eq!(status(&mut app)["page"], "review");
         app.settle();
         app.with_widget::<InstallerPreview, _>(|preview| {
             assert!(!preview.journey.history.contains(&Page::Storage));
@@ -10200,6 +10455,8 @@ mod tests {
         let key = created["prepared_identity"]["public_key"].clone();
         app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
+        assert_eq!(status(&mut app)["page"], "purpose");
+        choose(&mut app, "computer");
         assert_eq!(status(&mut app)["page"], "review");
         let original_name = status(&mut app)["device_name"].clone();
         app.settle();
@@ -10306,6 +10563,8 @@ mod tests {
         password(&mut app);
         app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
+        assert_eq!(status(&mut app)["page"], "purpose");
+        choose(&mut app, "computer");
         app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
         let original = status(&mut app);
@@ -10367,6 +10626,8 @@ mod tests {
         password(&mut app);
         app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
+        assert_eq!(status(&mut app)["page"], "purpose");
+        choose(&mut app, "computer");
         assert_eq!(status(&mut app)["page"], "belongings");
         app.effect(&InstallerPreviewEffect::TogglePreviewDetails)
             .unwrap();
@@ -10420,6 +10681,8 @@ mod tests {
             password(&mut app);
             app.effect(&InstallerPreviewEffect::ContinuePreview)
                 .unwrap();
+            assert_eq!(status(&mut app)["page"], "purpose");
+            choose(&mut app, "computer");
             assert_eq!(
                 status(&mut app)["page"],
                 if migrate { "belongings" } else { "storage" }
@@ -10431,7 +10694,7 @@ mod tests {
             app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
             assert_eq!(
                 status(&mut app)["page"],
-                if migrate { "belongings" } else { "devices" }
+                if migrate { "belongings" } else { "purpose" }
             );
             assert_eq!(status(&mut app)["identity"], "existing");
             assert_eq!(status(&mut app)["destination"], "another");
@@ -10895,6 +11158,8 @@ mod tests {
         assert!(catalog_availability(&mut app, "set-preview-device-name").is_available());
         app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
+        assert_eq!(status(&mut app)["page"], "purpose");
+        choose(&mut app, "computer");
         if status(&mut app)["page"] == "storage" {
             assert!(catalog_availability(&mut app, "set-storage-size").is_available());
             app.effect(&InstallerPreviewEffect::ContinuePreview)
@@ -10934,6 +11199,8 @@ mod tests {
         assert_eq!(status(&mut app)["page"], "devices");
         app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
+        assert_eq!(status(&mut app)["page"], "purpose");
+        choose(&mut app, "computer");
         assert_eq!(status(&mut app)["page"], "belongings");
         let effect = InstallerPreviewEffect::SetPreviewCategory {
             category: "accounts".into(),
@@ -11057,7 +11324,7 @@ mod tests {
             before["guided_capabilities"]["prepared_installation"],
             false
         );
-        for choice in ["computer", "another", "desktop"] {
+        for choice in ["computer", "another"] {
             assert!(
                 app.effect(&InstallerPreviewEffect::ChoosePreview {
                     choice: choice.into(),
@@ -11091,7 +11358,8 @@ mod tests {
             })
         }
         let resources = app.harness().resources();
-        for id in ["choose-preview", "continue-preview"] {
+        assert!(catalog_availability(&mut app, "choose-preview").is_available());
+        for id in ["continue-preview"] {
             assert!(
                 unavailable(&resources, id),
                 "{id} must match painted admission"
@@ -11124,6 +11392,47 @@ mod tests {
             assert_eq!(preview.journey.migrate, Some(true));
         })
         .unwrap();
+        // Desktop setup still reaches the existing account's private-host check;
+        // it must not request new OS identity credentials on this route.
+        app.with_widget::<InstallerPreview, _>(|preview| {
+            preview.journey.page = Page::Destination;
+            preview.dirty = true;
+        })
+        .unwrap();
+        choose(&mut app, "desktop");
+        assert_eq!(status(&mut app)["page"], "review");
+        assert!(!catalog_availability(&mut app, "set-preview-password").is_available());
+        assert!(
+            app.effect(&InstallerPreviewEffect::SetPreviewPassword {
+                value: "must not become OS credentials".into(),
+            })
+            .is_err()
+        );
+        app.with_widget::<InstallerPreview, _>(|preview| {
+            assert_eq!(preview.journey.destination, Some(Destination::Desktop));
+            assert!(preview.journey.password.is_empty());
+            assert!(preview.personal.prepared_handle().is_none());
+        })
+        .unwrap();
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            let checked = app
+                .with_widget::<InstallerPreview, _>(|preview| {
+                    assert!(preview.direct.active);
+                    preview.direct.navigation.get()
+                })
+                .unwrap();
+            if checked {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "native host check must complete"
+            );
+            app.settle();
+        }
+        app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
+        assert_eq!(status(&mut app)["page"], "destination");
         // The same unsupported capability does not restrict illustrative mode.
         app.with_widget::<InstallerPreview, _>(|preview| {
             preview.live = false;
@@ -11247,7 +11556,9 @@ mod tests {
         let identity_key = prepared["prepared_identity"]["public_key"].clone();
         app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
-        assert_eq!(wait_for_belongings(&mut app)["page"], "storage");
+        assert_eq!(wait_for_belongings(&mut app)["page"], "purpose");
+        choose(&mut app, "computer");
+        assert_eq!(status(&mut app)["page"], "storage");
         let before = status(&mut app)["storage"].clone();
         assert!(before["plan_digest"].is_string());
         app.effect(&InstallerPreviewEffect::SetStorageSize { gib: 80 })
