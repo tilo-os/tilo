@@ -116,7 +116,7 @@ async fn local_report_admission(
                 directories: rig.directories.clone(),
                 channel_id: env.route.channel_key(),
                 peer_id: 903,
-                verified_identity: identity,
+                verified_identity: identity.clone(),
                 record_kind: None,
                 lease: None,
             });
@@ -145,6 +145,14 @@ async fn local_report_admission(
             assert_eq!(receipt_barriers(&rig).writes, before_stale.writes);
             no_delivery(&rig).await;
             let mut request = crate::local_document_action::Request {
+                custody: Some(runtime_collab::committed_document::ConnectionSnapshot {
+                    root: env.cert.user_public_key,
+                    device: env.cert.device_public_key,
+                    agent: identity.agent_id.clone(),
+                    app_id: env.route.app_id.clone(),
+                    room: env.route.cluster_id.clone(),
+                    document: env.route.record_id.clone(),
+                }),
                 version: 1,
                 invocation: uuid::Uuid::nil(),
                 capture_id: uuid::Uuid::new_v4(),
@@ -175,6 +183,45 @@ async fn local_report_admission(
             };
             request.invocation = request.bound_invocation().unwrap();
             let invocation = request.invocation;
+            // Even a correctly rebound report cannot move historical work to
+            // the current caller or another document. No policy grant is spent.
+            for field in [
+                "missing", "root", "device", "agent", "app", "room", "document",
+            ] {
+                let mut wrong = request.clone();
+                if field == "missing" {
+                    wrong.custody = None;
+                } else {
+                    let custody = wrong.custody.as_mut().unwrap();
+                    match field {
+                        "root" => custody.root = [91; 32],
+                        "device" => custody.device = [92; 32],
+                        "agent" => custody.agent = Some("other-agent".into()),
+                        "app" => custody.app_id.push_str("-other"),
+                        "room" => custody.room.push_str("-other"),
+                        "document" => custody.document.push_str("-other"),
+                        _ => unreachable!(),
+                    }
+                }
+                wrong.invocation = wrong.bound_invocation().unwrap();
+                assert_ne!(wrong.invocation, invocation, "{field}");
+                let mut call = raw.admit_local_document_action_request();
+                call.get().set_request(&serde_json::to_vec(&wrong).unwrap());
+                let error = call
+                    .send()
+                    .promise
+                    .await
+                    .err()
+                    .expect("custody must be refused");
+                assert!(
+                    error
+                        .to_string()
+                        .contains(runtime_collab::LOCAL_DOCUMENT_REJECTED),
+                    "{field}: {error}"
+                );
+                assert_eq!(receipt_barriers(&rig).writes, before_stale.writes);
+                no_delivery(&rig).await;
+            }
             let mut wrong_revision = request.clone();
             wrong_revision.revision = "not-retained".into();
             wrong_revision.invocation = wrong_revision.bound_invocation().unwrap();
@@ -182,9 +229,17 @@ async fn local_report_admission(
             stale
                 .get()
                 .set_request(&serde_json::to_vec(&wrong_revision).unwrap());
+            let error = stale
+                .send()
+                .promise
+                .await
+                .err()
+                .expect("local admission also requires the exact retained revision");
             assert!(
-                stale.send().promise.await.is_err(),
-                "local admission also requires the exact retained revision"
+                !error
+                    .to_string()
+                    .contains(runtime_collab::LOCAL_DOCUMENT_REJECTED),
+                "unknown requests must retain reconciliation custody: {error}"
             );
             assert_eq!(receipt_barriers(&rig).writes, before_stale.writes);
             let once_grant = |id: &str| {
@@ -214,7 +269,15 @@ async fn local_report_admission(
                 || ((kind == tilo_actions::OperationKind::View || read)
                     && !request.mutation_hashes.is_empty())
             {
-                assert!(reply.is_err());
+                let error = reply
+                    .err()
+                    .expect("malformed non-document report must fail");
+                assert!(
+                    error
+                        .to_string()
+                        .contains(runtime_collab::LOCAL_DOCUMENT_REJECTED),
+                    "definitive structural refusal must release SDK custody: {error}"
+                );
                 assert_eq!(receipt_barriers(&rig).writes, before.writes);
                 assert!(rig.state.pending_invocations.lock().unwrap().is_empty());
                 no_delivery(&rig).await;

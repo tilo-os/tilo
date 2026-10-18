@@ -3,6 +3,8 @@ use super::*;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(super) struct LocalActionCheckpoint {
+    #[serde(default)]
+    pub custody: Option<runtime_collab::committed_document::ConnectionSnapshot>,
     pub report: runtime_collab::LocalDocumentActionReport,
     #[serde(with = "checkpoint_row")]
     pub directory_row: Option<runtime_collab::ActionDirectoryRow>,
@@ -77,6 +79,7 @@ impl App {
             receipt
         };
         let checkpoint = LocalActionCheckpoint {
+            custody: capture.custody.clone(),
             report,
             directory_row,
         };
@@ -88,7 +91,7 @@ impl App {
                 .chain(&capture.mutation_hashes)
                 .copied()
                 .collect(),
-            intent: if checkpoint.directory_row.is_some() {
+            intent: if checkpoint.directory_row.is_some() || checkpoint.custody.is_some() {
                 serde_json::to_vec(&checkpoint)
             } else {
                 // Preserve the original intent bytes of older checkpoints.
@@ -140,7 +143,11 @@ impl App {
         Ok(self
             .local_action_checkpoint_entries(route)?
             .into_iter()
-            .filter(|(_, receipt)| receipt.as_deref() != Some("{\"local_capture_rejected\":true}"))
+            .filter(|(checkpoint, receipt)| {
+                checkpoint.custody.is_some()
+                    && checkpoint.custody == self.collaboration.manager.connection_snapshot(route)
+                    && receipt.as_deref() != Some("{\"local_capture_rejected\":true}")
+            })
             .map(|(checkpoint, receipt)| (checkpoint.report, receipt))
             .collect())
     }
@@ -185,11 +192,21 @@ impl App {
                 let checkpoint: LocalActionCheckpoint = serde_json::from_slice(&entry.intent)
                     .or_else(|_| {
                         serde_json::from_slice(&entry.intent).map(|report| LocalActionCheckpoint {
+                            custody: None,
                             report,
                             directory_row: None,
                         })
                     })
                     .map_err(|e| e.to_string())?;
+                if let Some(custody) = &checkpoint.custody {
+                    if !custody.valid()
+                        || custody.app_id != route.app_id
+                        || custody.room != route.cluster_id.to_string()
+                        || custody.document != route.record.as_deref().unwrap_or("")
+                    {
+                        return Err("private action checkpoint custody mismatch".into());
+                    }
+                }
                 let report = &checkpoint.report;
                 let hashes: Vec<_> = report
                     .original_heads

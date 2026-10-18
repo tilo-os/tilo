@@ -1971,6 +1971,22 @@ impl CollaborationManager {
         }
     }
 
+    /// Validated inert provenance for this exact authenticated route.
+    pub(crate) fn connection_snapshot(
+        &self,
+        route: &RouteSpec,
+    ) -> Option<runtime_collab::committed_document::ConnectionSnapshot> {
+        let Backend::Transport(transport) = &self.backend else {
+            return None;
+        };
+        transport.connection_snapshot(route).filter(|snapshot| {
+            snapshot.valid()
+                && snapshot.app_id == route.app_id
+                && snapshot.room == route.cluster_id.to_string()
+                && snapshot.document == route.record.as_deref().unwrap_or("")
+        })
+    }
+
     /// Drain every event pending on the current backend. Non-blocking.
     ///
     /// Also records a primary-route acknowledgement the transport reported
@@ -2312,6 +2328,7 @@ mod local_document_report_tests {
 
     fn capture() -> CapturedAction {
         let mut capture = CapturedAction {
+            custody: None,
             invocation: uuid::Uuid::from_bytes([1; 16]),
             capture_id: uuid::Uuid::from_bytes([5; 16]),
             revision: "captured-not-current".into(),

@@ -575,6 +575,20 @@ impl BrokerTransport {
 }
 
 impl CollabTransport for BrokerTransport {
+    fn connection_snapshot(
+        &self,
+        route: &RouteSpec,
+    ) -> Option<runtime_collab::committed_document::ConnectionSnapshot> {
+        if self.status() != TransportStatus::Ready {
+            return None;
+        }
+        self.state
+            .connection_snapshots
+            .lock()
+            .ok()?
+            .get(&route.channel_id())
+            .cloned()
+    }
     fn status(&self) -> TransportStatus {
         match self.state.connect_phase() {
             // Why the worker stopped, when it stopped setting up.
@@ -1948,6 +1962,14 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
 /// overload is detected by a subscription task on the shovel thread.
 #[derive(Clone)]
 struct BridgeState {
+    connection_snapshots: Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<
+                String,
+                runtime_collab::committed_document::ConnectionSnapshot,
+            >,
+        >,
+    >,
     document_reads: committed_document::Reads,
     healthy: Arc<AtomicBool>,
     publication_failure: Arc<std::sync::Mutex<Option<DocumentPublicationError>>>,
@@ -2109,6 +2131,7 @@ impl BridgeState {
             owner: owner_wake.clone(),
         };
         Self {
+            connection_snapshots: Arc::default(),
             document_reads: committed_document::Reads::default(),
             healthy: Arc::new(AtomicBool::new(true)),
             publication_failure: Arc::new(std::sync::Mutex::new(None)),
@@ -5038,6 +5061,11 @@ async fn ensure_sdk_route(
     if routes.contains_key(&channel_id) {
         return Ok(());
     }
+    inbound_tx
+        .state
+        .connection_snapshots
+        .lock_recover()
+        .remove(&channel_id);
     let identity_bytes = match person {
         Some((room, proof)) if *room == spec.cluster_id.to_string() => proof.as_slice(),
         _ => presentation,
@@ -5085,6 +5113,21 @@ async fn ensure_sdk_route(
         },
     )
     .await?;
+    if let Ok(runtime_collab::committed_document::Reply::ConnectionSnapshot(snapshot)) = channel
+        .committed_document(&runtime_collab::committed_document::Request::ConnectionSnapshot)
+        .await
+    {
+        if snapshot.app_id == spec.app_id
+            && snapshot.room == spec.cluster_id.to_string()
+            && snapshot.document == spec.record.as_deref().unwrap_or("")
+        {
+            inbound_tx
+                .state
+                .connection_snapshots
+                .lock_recover()
+                .insert(channel_id.clone(), snapshot);
+        }
+    }
     if committed {
         // This reply contains only the original host-retained launch instance;
         // a record label or app environment never becomes private authority.

@@ -24,6 +24,8 @@ pub struct PublishedInvocation {
 /// the published child address. Neither field establishes caller authority.
 #[derive(Clone)]
 pub struct CapturedAction {
+    /// Original broker-authenticated provenance, separate from app action context.
+    pub custody: Option<runtime_collab::committed_document::ConnectionSnapshot>,
     pub invocation: uuid::Uuid,
     /// Random identity generated once, before content binding; retained on retry.
     pub capture_id: uuid::Uuid,
@@ -57,6 +59,7 @@ impl CapturedAction {
             ))
         };
         Ok(runtime_collab::LocalDocumentActionReport {
+            custody: self.custody,
             version: 1,
             invocation: self.invocation,
             capture_id: self.capture_id,
@@ -106,6 +109,7 @@ pub struct Queue(Rc<RefCell<Pending>>);
 
 #[derive(Clone)]
 struct Active {
+    custody: Option<runtime_collab::committed_document::ConnectionSnapshot>,
     queue: Queue,
     revision: String,
     aliases: Option<Rc<std::collections::HashMap<String, String>>>,
@@ -116,6 +120,7 @@ struct Active {
 /// transport aliases from the directory snapshot that supplied `revision`.
 #[derive(Clone)]
 pub(crate) struct InputRoute {
+    pub custody: Option<runtime_collab::committed_document::ConnectionSnapshot>,
     pub owner: Option<uuid::Uuid>,
     pub queue: Queue,
     pub revision: String,
@@ -156,6 +161,7 @@ pub(crate) fn enter_input(routes: Vec<InputRoute>) -> Scope {
     if routes.is_empty() {
         ACTIVE.with(|active| {
             *active.borrow_mut() = Some(Active {
+                custody: None,
                 queue: Queue::new(),
                 revision: String::new(),
                 aliases: None,
@@ -176,6 +182,7 @@ impl Queue {
     pub fn enter(&self, revision: String) -> Scope {
         let previous = ACTIVE.with(|active| {
             active.replace(Some(Active {
+                custody: None,
                 queue: self.clone(),
                 revision,
                 aliases: None,
@@ -219,6 +226,7 @@ impl Queue {
             .map(ChangeHash)
             .collect();
         let bytes = report_budget(
+            capture.custody.as_ref(),
             &capture.revision,
             capture.published.as_ref(),
             &capture.encoded,
@@ -308,6 +316,7 @@ pub(crate) fn reserve(
                 .iter()
                 .find(|route| route.owner == owner)
                 .map(|route| Active {
+                    custody: route.custody.clone(),
                     queue: route.queue.clone(),
                     revision: route.revision.clone(),
                     aliases: Some(route.aliases.clone()),
@@ -346,6 +355,7 @@ pub(crate) fn reserve(
         invocation.resource.clone_from(alias);
     }
     let estimate = report_budget(
+        active.custody.as_ref(),
         &active.revision,
         published.as_ref(),
         encoded,
@@ -419,6 +429,7 @@ impl Reservation {
         mutation_hashes.sort_unstable();
         mutation_hashes.dedup();
         let mut action = CapturedAction {
+            custody: self.active.custody.clone(),
             invocation: uuid::Uuid::nil(),
             capture_id: uuid::Uuid::new_v4(),
             revision: self.active.revision.clone(),
@@ -475,6 +486,7 @@ impl Drop for Lease {
 // the transport encoder so changes to that envelope cannot silently underbudget.
 #[derive(serde::Serialize)]
 struct BudgetReport<'a> {
+    custody: Option<&'a runtime_collab::committed_document::ConnectionSnapshot>,
     version: u8,
     invocation: uuid::Uuid,
     capture_id: uuid::Uuid,
@@ -556,6 +568,7 @@ fn validate_report_field(field: &str) -> Result<(), String> {
 }
 
 fn report_budget(
+    custody: Option<&runtime_collab::committed_document::ConnectionSnapshot>,
     revision: &str,
     published: Option<&PublishedInvocation>,
     encoded: &EncodedAction,
@@ -587,6 +600,7 @@ fn report_budget(
     serde_json::to_writer(
         &mut counter,
         &BudgetReport {
+            custody,
             version: 1,
             // UUIDs have fixed wire width; budgeting must not request randomness.
             invocation: uuid::Uuid::from_u128(1),

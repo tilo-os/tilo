@@ -91,6 +91,35 @@ impl ReceiptCache {
     }
 }
 
+/// Recovery provenance must match the live authenticated channel, not replace it.
+fn validate_report_custody(
+    request: &Request,
+    route: &CrdtRoute,
+    current: &AdmittedJoinIdentity,
+) -> Result<(), capnp::Error> {
+    let custody = request
+        .custody
+        .as_ref()
+        .ok_or_else(|| rejected("local report authenticated custody missing".into()))?;
+    let certificate = current
+        .certificate
+        .as_ref()
+        .ok_or_else(|| rejected("original SDK caller certificate missing".into()))?;
+    if !custody.valid()
+        || custody.root != certificate.user_public_key
+        || custody.device != certificate.device_public_key
+        || custody.agent != current.agent_id
+        || custody.app_id != route.app_id
+        || custody.room != route.cluster_id
+        || custody.document != route.record_id
+    {
+        return Err(rejected(
+            "local report authenticated custody changed".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Called only under admission serialization. A cached report needs current
 /// caller and host custody, but no longer needs the SDK's pre-event pin or a
 /// second policy decision (which could spend another one-use grant).
@@ -104,6 +133,7 @@ fn cached_receipt(
         return Err(capnp::Error::failed("invocation broker retired".into()));
     }
     let current = state.revalidate_admission(route, &channel.verified_identity)?;
+    validate_report_custody(request, route, &current)?;
     let target = state
         .host_workers
         .lock()
@@ -180,6 +210,22 @@ fn write_observation(
     Ok(())
 }
 
+fn validate_report_offer(request: &Request, action: &PublishedAction) -> Result<(), String> {
+    if (!matches!(
+        action.operation_kind,
+        tilo_actions::OperationKind::Document | tilo_actions::OperationKind::View
+    ) && action.contract.kind != tilo_actions::ActionKind::Read)
+        || (action.operation_kind != tilo_actions::OperationKind::Document
+            && !request.mutation_hashes.is_empty())
+    {
+        return Err(
+            "local action report requires authenticated document or read-only admission".into(),
+        );
+    }
+    request.typed_arguments(&action.params)?;
+    Ok(())
+}
+
 fn rejected(reason: String) -> capnp::Error {
     capnp::Error::failed(format!(
         "{}{reason}",
@@ -207,9 +253,7 @@ pub(super) fn admit(
         let admitted = channel
             .state
             .revalidate_admission(&route, &channel.verified_identity)?;
-        if admitted.certificate.is_none() {
-            return Err(rejected("original SDK caller certificate missing".into()));
-        }
+        validate_report_custody(&request, &route, &admitted)?;
         Ok((request, route, admitted))
     })();
     let (request, route, admitted) = match parsed {
@@ -258,10 +302,15 @@ pub(super) fn admit(
             .checked_policy_time(Some(&time))
             .map_err(capnp::Error::failed)?;
         let current = state.revalidate_admission(&route, &admitted)?;
+        validate_report_custody(&request, &route, &current)?;
         offer
             .check_registration(state, &channel.directories, peer)
             .map_err(rejected)?;
         let offered = offer.offered(peer);
+        // These are structural nonadmissions, checked after exact replay and
+        // before any journal/cache mutation. Transport, policy and admission
+        // failures remain uncertain: none proves an earlier attempt absent.
+        validate_report_offer(&request, &offered.1).map_err(rejected)?;
         if offered.0.route != route || !offer.has_original_worker() {
             return Err(rejected(
                 "local document report route or worker changed".into(),

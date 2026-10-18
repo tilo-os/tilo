@@ -1,6 +1,52 @@
 // Uses the ordinary retained component, publication and public local action door.
+struct CustodyCapturePeer {
+    inner: CapturePeer,
+    custody: Option<runtime_collab::committed_document::ConnectionSnapshot>,
+}
+impl crate::collaboration::PeerTransport for CustodyCapturePeer {
+    fn connection_snapshot(
+        &self,
+        _: &crate::collaboration::RouteSpec,
+    ) -> Option<runtime_collab::committed_document::ConnectionSnapshot> {
+        self.custody.clone()
+    }
+    fn is_connected(&self) -> bool {
+        true
+    }
+    fn send(&mut self, request: CollabRequest) -> Result<(), String> {
+        crate::collaboration::PeerTransport::send(&mut self.inner, request)
+    }
+    fn poll(&mut self) -> Vec<CollabEvent> {
+        Vec::new()
+    }
+    fn send_to_route(
+        &mut self,
+        route: crate::collaboration::RouteSpec,
+        request: CollabRequest,
+    ) -> Result<(), String> {
+        crate::collaboration::PeerTransport::send_to_route(&mut self.inner, route, request)
+    }
+}
 struct CapturePeer(Rc<RefCell<Vec<(crate::collaboration::RouteSpec, CollabRequest)>>>);
+fn capture_custody(
+    route: &crate::collaboration::RouteSpec,
+) -> runtime_collab::committed_document::ConnectionSnapshot {
+    runtime_collab::committed_document::ConnectionSnapshot {
+        root: [1; 32],
+        device: [2; 32],
+        agent: None,
+        app_id: route.app_id.clone(),
+        room: route.cluster_id.to_string(),
+        document: route.record.clone().unwrap_or_default(),
+    }
+}
 impl crate::collaboration::PeerTransport for CapturePeer {
+    fn connection_snapshot(
+        &self,
+        route: &crate::collaboration::RouteSpec,
+    ) -> Option<runtime_collab::committed_document::ConnectionSnapshot> {
+        Some(capture_custody(route))
+    }
     fn is_connected(&self) -> bool {
         true
     }
@@ -540,6 +586,12 @@ struct RecoveringCapturePeer {
     reject_enqueue: Rc<std::cell::Cell<bool>>,
 }
 impl crate::collaboration::PeerTransport for RecoveringCapturePeer {
+    fn connection_snapshot(
+        &self,
+        route: &crate::collaboration::RouteSpec,
+    ) -> Option<runtime_collab::committed_document::ConnectionSnapshot> {
+        Some(capture_custody(route))
+    }
     fn is_connected(&self) -> bool {
         self.connected.get()
     }
