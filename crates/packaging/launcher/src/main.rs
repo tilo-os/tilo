@@ -1,7 +1,7 @@
 //! tilo-launcher binary entry.
 
 use std::os::fd::{FromRawFd, RawFd};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
@@ -250,6 +250,25 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Map and lock the shared runtime's libraries of every runtime bundle
+    /// the system registry names, then sleep until stopped
+    /// (`launcher::runtime_resident`). Run by
+    /// `tilo-runtime-resident.service`; it never runs app code.
+    RuntimeResident {
+        /// The registry whose entries name the runtimes to keep.
+        #[arg(long, default_value_t = default_system_registry())]
+        registry: String,
+        /// Where the runtime bundles are installed.
+        #[arg(long, default_value = launcher::runtime_resident::SYSTEM_RUNTIME_ROOT)]
+        runtime_root: PathBuf,
+    },
+}
+
+fn default_system_registry() -> String {
+    package_store::Layout::new(package_store::layout::SYSTEM_DATA_DIR)
+        .registry()
+        .to_string_lossy()
+        .into_owned()
 }
 
 #[derive(Debug, Subcommand)]
@@ -473,6 +492,51 @@ fn dispatch_command(
         Cmd::SandboxView(command) => sandbox_view(command),
         Cmd::AppSpawner { tree } => run_app_spawner(tree),
         Cmd::Apps { json } => list_apps(json),
+        Cmd::RuntimeResident {
+            registry,
+            runtime_root,
+        } => runtime_resident(Path::new(&registry), &runtime_root),
+    }
+}
+
+/// Keep the registered runtimes' libraries resident until SIGTERM.
+fn runtime_resident(registry: &Path, runtime_root: &Path) -> ExitCode {
+    use launcher::runtime_resident as resident;
+    let registry = match package_store::Registry::load(registry) {
+        Ok(registry) => registry,
+        Err(error) => {
+            eprintln!("tilo-launcher: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let versions = resident::registered_versions(&registry);
+    let files = match resident::resident_files(&versions, runtime_root) {
+        Ok(files) => files,
+        Err(error) => {
+            eprintln!("tilo-launcher: reading the runtime libraries: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let (mapped, failed) = resident::map_all(&files);
+    for (path, error) in &failed {
+        eprintln!("tilo-launcher: keeping {} resident: {error}", path.display());
+    }
+    let bytes: usize = mapped.iter().map(resident::ResidentFile::len).sum();
+    println!(
+        "{} runtime libraries of {} runtime(s) resident, {} MiB",
+        mapped.len(),
+        versions.len(),
+        bytes / (1024 * 1024)
+    );
+    if mapped.is_empty() && !failed.is_empty() {
+        return ExitCode::FAILURE;
+    }
+    // The mappings are the whole job: hold them until systemd stops us,
+    // whose SIGTERM ends the process with its default action.
+    loop {
+        // SAFETY: pause has no preconditions; it returns only after a
+        // handled signal, and this process handles none.
+        unsafe { libc::pause() };
     }
 }
 

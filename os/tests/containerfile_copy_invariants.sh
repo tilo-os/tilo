@@ -264,7 +264,9 @@ containerfile="$repo/os/Containerfile"
 # The network-answers helper, search's one door to the network for exchange
 # rates, is installed by its net-answers component at
 # /usr/libexec/tilo-net-answers: one payload row.
-expected_contract=ae61256888343e49e5725086dac3cd362661e5e065312943572b4722167e6b7d
+# tilo-runtime-resident.service, which keeps the shared app runtime's
+# libraries in memory, is a deliberate addition.
+expected_contract=0d49efe636960910fe9445548564fa44b0dd997f43c3a08150e69bc444cc09ae
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

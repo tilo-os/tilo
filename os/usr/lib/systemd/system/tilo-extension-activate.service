@@ -32,6 +32,8 @@ Type=oneshot
 ExecStart=/usr/libexec/tilo-extension activate
 # A merge replaces /usr; the sandbox system view still binds the old one.
 ExecStartPost=-/usr/bin/systemctl --no-block start tilo-sandbox-view.service
+# and the resident runtime still holds the old runtime libraries.
+ExecStartPost=-/usr/bin/systemctl --no-block try-restart tilo-runtime-resident.service
 # systemd-sysext must mount over /usr in the host's mount namespace, so this
 # unit takes no namespace-based sandboxing (ProtectSystem=, PrivateTmp=, ...):
 # any of them would give it a private namespace the merge would vanish into.
