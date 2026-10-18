@@ -52,6 +52,9 @@ pub struct PersistentConfig {
     /// The name people see for it (`TILO_ROOMS_NAME`); unset, the relay
     /// shows `name` with a capital first letter.
     pub shown_name: Option<String>,
+    /// What the room is, as the site's directory of public workspaces says
+    /// (`TILO_ROOMS_DESCRIPTION`); unset, none.
+    pub description: String,
     /// The channels its Chat opens with while it has none
     /// (`TILO_ROOMS_CHAT_CHANNELS`); unset, `general`, since a chat without a
     /// channel has nowhere for a visitor's first message to go.
@@ -435,6 +438,7 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
     Ok(Some(PersistentConfig {
         name,
         shown_name: shown_name(var)?,
+        description: description(var)?,
         chat_channels: chat_channels(var)?,
         strips: strips(var)?,
         trusted_proxies: var("TILO_ROOMS_TRUSTED_PROXIES")
@@ -544,6 +548,21 @@ fn shown_name(var: &impl Fn(&str) -> Option<String>) -> Result<Option<String>> {
         "TILO_ROOMS_NAME must be 1-80 characters"
     );
     Ok(Some(name))
+}
+
+/// What the directory says the room is, `TILO_ROOMS_DESCRIPTION`: the text
+/// a public workspace's owner writes, held to the same bounds.
+fn description(var: &impl Fn(&str) -> Option<String>) -> Result<String> {
+    let Some(text) = var("TILO_ROOMS_DESCRIPTION") else {
+        return Ok(String::new());
+    };
+    tilo_relay_protocol::directory::Listing {
+        description: text,
+        default_role: tilo_relay_protocol::rooms::RoomRole::Editor,
+    }
+    .checked()
+    .map(|listing| listing.description)
+    .map_err(|error| anyhow::anyhow!("TILO_ROOMS_DESCRIPTION: {error}"))
 }
 
 /// `TILO_ROOMS_CHAT_CHANNELS`: comma-separated channel names, each

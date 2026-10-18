@@ -689,6 +689,27 @@ impl Service {
                 );
                 response
             }
+            (method, ["directory"]) if *method == Method::GET || *method == Method::POST => {
+                let settings = self.config.persistent.as_ref();
+                let name = settings
+                    .and_then(|settings| settings.shown_name.clone())
+                    .or_else(|| settings.map(|settings| settings.name.clone()))
+                    .unwrap_or_default();
+                let description = settings
+                    .map(|settings| settings.description.clone())
+                    .unwrap_or_default();
+                match persistent.directory(name, description).await {
+                    Some(page) => {
+                        let mut response = Self::json(StatusCode::OK, &page);
+                        response.headers_mut().insert(
+                            header::CACHE_CONTROL,
+                            header::HeaderValue::from_static("max-age=5"),
+                        );
+                        response
+                    }
+                    None => Self::error(StatusCode::SERVICE_UNAVAILABLE, "the room is restarting"),
+                }
+            }
             (&Method::GET, ["avatars", name]) => Self::avatar(persistent, name).await,
             (_, ["rooms", ..]) => Self::error(
                 StatusCode::NOT_FOUND,

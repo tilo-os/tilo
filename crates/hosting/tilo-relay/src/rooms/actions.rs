@@ -86,6 +86,15 @@ pub(crate) const JOIN_REQUESTS: &str = "join-request.list";
 pub(crate) const ADMIT: &str = "join-request.admit";
 /// Declining a waiting join request.
 pub(crate) const DECLINE: &str = "join-request.decline";
+/// Listing the room as a public workspace, with its description and the
+/// role everyone who joins gets.
+pub(crate) const PUBLISH: &str = "publish";
+/// Taking the room out of the directory.
+pub(crate) const UNPUBLISH: &str = "unpublish";
+/// Whether the room is public, and with which listing.
+pub(crate) const PUBLICATION: &str = "publication";
+/// The roles a public workspace hands out at its door.
+const DOOR_ROLES: [&str; 3] = ["viewer", "commenter", "editor"];
 
 /// How long an invitation stays redeemable when the caller does not say.
 const DEFAULT_INVITATION_HOURS: u64 = 7 * 24;
@@ -116,7 +125,7 @@ struct Verb {
 }
 
 /// What the rooms serve, in catalogue order.
-const VERBS: [Verb; 11] = [
+const VERBS: [Verb; 14] = [
     Verb {
         id: governance::INVITE,
         label: "Invite",
@@ -193,6 +202,27 @@ const VERBS: [Verb; 11] = [
         gate: governance::CALL,
         kind: roles::GOVERNANCE_KIND,
         params: call_params,
+    },
+    Verb {
+        id: PUBLISH,
+        label: "Make public",
+        gate: governance::SETTINGS,
+        kind: roles::GOVERNANCE_KIND,
+        params: publish_params,
+    },
+    Verb {
+        id: UNPUBLISH,
+        label: "Make private",
+        gate: governance::SETTINGS,
+        kind: roles::GOVERNANCE_KIND,
+        params: Vec::new,
+    },
+    Verb {
+        id: PUBLICATION,
+        label: "Public listing",
+        gate: governance::SETTINGS,
+        kind: ActionKind::Read,
+        params: Vec::new,
     },
 ];
 
@@ -279,6 +309,22 @@ fn restrict_params() -> Vec<ActionParam> {
             "minutes",
             ParamType::Integer,
             "How long they may change nothing; 60 minutes when omitted. They keep reading.",
+        ),
+    ]
+}
+
+fn publish_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required(
+            "default_role",
+            ParamType::Text,
+            "The role everyone who joins from the directory gets.",
+        )
+        .with_choices(DOOR_ROLES),
+        ActionParam::optional(
+            "description",
+            ParamType::Text,
+            "What the workspace is, in a sentence or two (at most 280 characters).",
         ),
     ]
 }
@@ -785,7 +831,56 @@ impl Rooms {
             | JOIN_REQUESTS
             | ADMIT
             | DECLINE => self.governance_invitations(action, call).await,
+            PUBLISH | UNPUBLISH | PUBLICATION => self.governance_listing(action, call).await,
             _ => self.governance_members(action, call).await,
+        }
+    }
+
+    /// Making the room a public workspace, taking it back, and what it is
+    /// public with: `{"public": bool, "description"?, "default_role"?}`.
+    async fn governance_listing(
+        &self,
+        action: &str,
+        call: GovernanceCall<'_>,
+    ) -> Result<Value, ActionHostError> {
+        let GovernanceCall {
+            room, device, args, ..
+        } = call;
+        let listed = |listing: Option<tilo_relay_protocol::directory::Listing>| match listing {
+            Some(listing) => json!({
+                "public": true,
+                "description": listing.description,
+                "default_role": role_name(super::pages::member_role(listing.default_role)),
+            }),
+            None => json!({ "public": false }),
+        };
+        match action {
+            PUBLISH => {
+                let default_role = match args.required_text("default_role")? {
+                    "viewer" => tilo_relay_protocol::rooms::RoomRole::Viewer,
+                    "commenter" => tilo_relay_protocol::rooms::RoomRole::Commenter,
+                    "editor" => tilo_relay_protocol::rooms::RoomRole::Editor,
+                    other => {
+                        return Err(invalid(format!(
+                            "a public workspace hands out viewer, commenter or editor, not `{other}`"
+                        )));
+                    }
+                };
+                let listing = tilo_relay_protocol::directory::Listing {
+                    description: args.text("description")?.unwrap_or_default().to_owned(),
+                    default_role,
+                };
+                self.publish(room, device, listing)
+                    .await
+                    .map(|listing| listed(Some(listing)))
+                    .map_err(|error| refused(&error))
+            }
+            UNPUBLISH => self
+                .unpublish(room, device)
+                .await
+                .map(|()| listed(None))
+                .map_err(|error| refused(&error)),
+            _ => Ok(listed(self.listing(room))),
         }
     }
 

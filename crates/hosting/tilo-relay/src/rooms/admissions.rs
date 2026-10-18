@@ -142,6 +142,15 @@ impl Admissions {
         self.save()
     }
 
+    /// Tell the owner `notice`, in one write.
+    pub(super) fn notice(&mut self, notice: RoomNotice) -> Result<(), String> {
+        if self.notices.len() >= MAX_NOTICES {
+            self.notices.remove(0);
+        }
+        self.notices.push(notice);
+        self.save()
+    }
+
     pub(super) fn notices(&self) -> Vec<RoomNotice> {
         self.notices.clone()
     }
