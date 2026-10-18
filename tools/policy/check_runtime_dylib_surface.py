@@ -14,10 +14,14 @@ downloads it. Two rules hold for its dependency graph:
 - **No dead weight.** Every crate in the runtime is reached by at least one
   app of the default collection without going through the runtime.
 - **No moved engine.** An engine that has a library of its own beside the
-  runtime (crates/runtime/engines/) is loaded by its one app; its
-  crates never re-enter the runtime, through any dependency or app's feature.
-  The workspace-hack's own edges do not count: its library names no crate,
-  so they put nothing on the runtime's link line.
+  runtime (crates/runtime/engines/) is loaded by its apps, or opened by the
+  toolkit on first use; its crates never re-enter the runtime, through any
+  dependency or app's feature. The workspace-hack's own edges do not count:
+  its library names no crate, so they put nothing on the runtime's link
+  line. Nor do the edges a crate names only without a feature the engines'
+  build turns on (`LAZY_EDGES`).
+- **No relocated table back.** A crate replaced because its tables cost
+  every app process relocations (`TABLES`) stays out.
 
 - **No hidden C library an app calls.** A crate that compiles a C library
   statically (``libsqlite3-sys`` with ``bundled``) puts that library inside
@@ -31,9 +35,9 @@ downloads it. Two rules hold for its dependency graph:
 
 The graph is resolved the way the release builds it
 (os/scripts/build-thin-apps.sh through dist/apps/package-apps.sh): the
-runtime and every default-collection app in one Cargo graph, each app with
-its ``thin`` feature plus the collection's features, for both shipped
-architectures. Feature unification is why this cannot be read from
+runtime, every default-collection app and every engine in one Cargo graph,
+each app and engine with its ``thin`` feature plus the collection's
+features, for both shipped architectures. Feature unification is why this cannot be read from
 ``runtime-dylib``'s manifest alone: an app enabling a feature on a shared
 crate can pull a daemon into the runtime through that crate.
 """
@@ -119,6 +123,20 @@ ENGINES = {
     "hayro-interpret": "the in-process PDF rasteriser, in libtilo_pdf_engine.so",
     "hayro-jpeg2000": "the PDF rasteriser's JPEG 2000 decoder, in libtilo_pdf_engine.so",
     "pdfium-render": "the pdfium helper's bindings, in libtilo_pdf_engine.so",
+    "tilo-search-engine": "the search engine's library (libtilo_search_engine.so)",
+    "tilo-search-tantivy": "the search layer's engine, which tilo-search opens from "
+                           "libtilo_search_engine.so the first time a large index is searched",
+    "tantivy": "the search engine, in libtilo_search_engine.so",
+    "rust-stemmers": "tantivy's stemmers and their tables, in libtilo_search_engine.so",
+    "tilo-highlight-engine": "the syntax grammars' engine library (libtilo_highlight_engine.so)",
+    "tilo-highlight-grammars": "the syntax grammars, which the toolkit opens from "
+                               "libtilo_highlight_engine.so the first time code is highlighted",
+    "syntect": "the syntax highlighter, in libtilo_highlight_engine.so",
+    "two-face": "the packed syntax grammars, in libtilo_highlight_engine.so",
+    "tilo-adblock-engine": "the ad-block compiler's engine library (libtilo_adblock_engine.so)",
+    "tilo-content-blocker": "the ad-block compiler, which the toolkit opens from "
+                            "libtilo_adblock_engine.so the first time an app compiles lists",
+    "adblock": "adblock-rust, in libtilo_adblock_engine.so",
     "tilo-fuse-engine": "the FUSE presentation's engine library (libtilo_fuse_engine.so)",
     "runtime-fs-fuse": "the workspace filesystem's FUSE presentation, which Imager's projection "
                        "worker loads from libtilo_fuse_engine.so",
@@ -197,6 +215,35 @@ def links_keys() -> frozenset[str]:
     )
 
 
+# Edges a crate's code names only while a feature is off. The feature is one
+# the engines' `thin` turns on in the release graph (the toolkit opens the
+# engine on first use instead), and rustc links no crate the code does not
+# name, so with it on the edge puts nothing on the runtime's link line.
+LAZY_EDGES = {
+    ("tilo-search", "tilo-search-tantivy"): "lazy-engine",
+    ("tilo-ui", "tilo-highlight-grammars"): "lazy-highlight",
+    ("tilo-ui", "tilo-content-blocker"): "lazy-adblock",
+}
+# Crates replaced because their tables are pointers the loader relocates in
+# every app process before main.
+TABLES = {
+    "mime_guess": "an extension table of ~1400 string slices; the runtime looks types up "
+                  "through tilo-mime",
+    "bip39": "a wordlist of 2048 string slices; threshold-identity encodes recovery phrases "
+             "itself",
+}
+
+
+def engines() -> list[str]:
+    """Every runtime engine's package, as build-thin-apps.sh finds them."""
+    names = []
+    for manifest in sorted((ROOT / "crates/runtime/engines").glob("*/Cargo.toml")):
+        match = re.search(r'^name = "([^"]+)"', manifest.read_text(), re.M)
+        if match:
+            names.append(match.group(1))
+    return names
+
+
 def collection() -> tuple[list[str], list[str]]:
     """The default collection's packages and their release features."""
     result = subprocess.run(
@@ -217,10 +264,11 @@ def collection() -> tuple[list[str], list[str]]:
 
 def resolve(packages: list[str], features: list[str], target: str) -> str:
     command = ["cargo", "tree", "--locked", "--edges", "normal", "--target", target,
-               "--prefix", "depth", "--format", "{p}", "--package", RUNTIME]
-    for package in packages:
+               "--prefix", "depth", "--format", "{p}|{f}", "--package", RUNTIME]
+    engine_packages = engines()
+    for package in packages + engine_packages:
         command += ["--package", package]
-    command += ["--features", ",".join(features)]
+    command += ["--features", ",".join(features + [f"{engine}/thin" for engine in engine_packages])]
     result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         raise RuntimeError(f"cargo tree failed for {target}:\n{result.stderr}")
@@ -232,22 +280,31 @@ def parse(tree: str) -> tuple[list[str], dict[str, set[str]]]:
 
     A deduplicated tree prints each package's dependencies once, under its
     first appearance, so the edges are complete even where a later
-    appearance is marked ``(*)``.
+    appearance is marked ``(*)``. A line may carry the package's features
+    after a ``|`` (``--format "{p}|{f}"``); an edge of ``LAZY_EDGES`` whose
+    feature the package has on is left out.
     """
     roots: list[str] = []
     edges: dict[str, set[str]] = collections.defaultdict(set)
+    features: dict[str, set[str]] = {}
     stack: list[str] = []
     for line in tree.splitlines():
         match = re.match(r"^(\d+)(\S+)", line)
         if not match:
             continue
         depth, name = int(match.group(1)), match.group(2)
+        if "|" in line and name not in features:
+            listed = line.split("|", 1)[1].replace("(*)", "").strip()
+            features[name] = {feature for feature in listed.split(",") if feature}
         del stack[depth:]
         if depth == 0:
             roots.append(name)
         elif stack:
             edges[stack[-1]].add(name)
         stack.append(name)
+    for (parent, child), feature in LAZY_EDGES.items():
+        if feature in features.get(parent, set()):
+            edges.get(parent, set()).discard(child)
     return roots, edges
 
 
@@ -289,6 +346,11 @@ def violations(tree: str, apps: list[str], target: str,
         found.append(
             f"{RUNTIME} reaches {name}, {DENIED[name]}, for {target}: OS internals are not app "
             "runtime; an app reaches them through a service or links what it calls itself"
+        )
+    for name in sorted(runtime & TABLES.keys()):
+        found.append(
+            f"{RUNTIME} reaches {name}, {TABLES[name]}, for {target}: its tables would cost every "
+            "app process relocations before main (docs/measurements/runtime-size.md)"
         )
     for name in sorted(runtime & ENGINES.keys()):
         found.append(
