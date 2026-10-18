@@ -81,10 +81,8 @@ impl Talk {
 
     /// Apply a verb on the messages, as the person confirming it would.
     pub(super) fn apply(&mut self, invoke: Invoke<ChatPart>) -> Result<(), DoorError> {
-        use ui::framework::Chained as _;
-        if let Some(refusal) = invoke.refusal() {
-            return Err(DoorError::InvalidArguments(refusal.to_owned()));
-        }
+        use ui::framework::{Chained as _, Submit as _};
+        let invoke = invoke.into_invoke().map_err(DoorError::InvalidArguments)?;
         let mut action = invoke
             .build(self.now_ms)
             .map_err(DoorError::InvalidArguments)?;
