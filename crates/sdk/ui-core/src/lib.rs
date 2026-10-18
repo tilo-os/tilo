@@ -515,7 +515,7 @@ pub use text_selection::{
 };
 pub use tokens::{ReadingFace, TextRole, UiFace};
 
-pub use animation::{Animated, Curve, Lerp, Spring, Transition, ease_out};
+pub use animation::Lerp;
 
 pub use presence::{PathSegment, PresenceCtx, PresenceKey, SelectionRange};
 pub use wake::{WakeBindError, WakeEvent, WakeHandle, WakeScope, WakeScopeGuard};

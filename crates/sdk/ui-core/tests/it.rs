@@ -24,8 +24,6 @@ mod support;
 #[cfg(unix)]
 #[path = "agent_edit_is_its_own_undo_boundary.rs"]
 mod agent_edit_is_its_own_undo_boundary;
-#[path = "animation_test.rs"]
-mod animation_test;
 #[path = "app_widget.rs"]
 mod app_widget;
 #[path = "block_editor_markdown.rs"]

@@ -1,21 +1,14 @@
-//! Shared motion system. One curve set (`Curve`), one wall-clock driver
-//! (`Animated`), one interruptible open/close driver (`Transition`), and
-//! one stateful velocity-carrying `Spring` for interactive drag, and one
-//! `IdleFade` for chrome that shows on activity and fades once it is quiet.
-//!
-//! Fire-and-forget animations (fades, spawns, snaps) use `Animated` /
-//! `Transition` — they are wall-clock parametric, so a dropped frame skips
-//! rather than slows. Interactive gestures that need velocity continuity
-//! across inputs (the workspace slide) use `Spring`, fed the real frame dt.
+//! What is left of the toolkit's early animation primitives besides the
+//! motion library (`crate::motion`, where every motion lives): `IdleFade`
+//! for chrome that shows on activity and fades once quiet, the looping
+//! indicators' cadence, and `Lerp` for blending values that are not motion.
 
-pub mod animated;
 pub mod idle_fade;
 pub mod indicator;
-pub mod spring;
+pub mod lerp;
 
-pub use animated::{Animated, Curve, Lerp, Transition, ease_out};
 pub use idle_fade::{CHROME_FADE, IdleFade};
 pub use indicator::{
     INDICATOR_STEP, indicator_elapsed, indicator_phase, indicator_step, next_indicator_step,
 };
-pub use spring::Spring;
+pub use lerp::Lerp;

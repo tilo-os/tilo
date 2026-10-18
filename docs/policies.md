@@ -170,6 +170,14 @@ operation runs, and `tokens.motion` picks the duration per source; the
 specification is [window-management.md § Motion](architecture/window-management.md#motion)
 with the durations in HIG §9.7.
 
+**Animations are composed from the motion library.** Every animation in the
+toolkit, the shell and the apps uses a named motion from `ui::motion` (HIG
+§9.7), which decides its spring, its duration, its reduced-motion variant and
+what a shortcut gets; a motion that is genuinely new goes into the library.
+Check: [`check_motion_library.py`](../tools/policy/check_motion_library.py)
+fails on easing math, ad-hoc springs and lerp-over-time outside the library;
+content curves (video keyframes, paint physics) are its short exception list.
+
 Check: `the_first_frame_after_a_chord_shows_the_final_layout` in
 `crates/session/shell/tests/strip_navigation.rs` (the first frame after a
 chord or action shows the final layout, and only the viewport may still move,
