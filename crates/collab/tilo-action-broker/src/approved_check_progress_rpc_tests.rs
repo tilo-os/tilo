@@ -184,11 +184,29 @@ async fn approved_check_reported_progress_rpc_refuses_cancelled_original_before_
                     .unwrap(),
                 runtime_collab::approved_checks::ReportedProgressUpdate::Report(_)
             ));
-            connection
+            assert!(
+                connection
+                    .handle
+                    .cancel_published_invocation(parent.id)
+                    .await
+                    .is_err(),
+                "certificate-owned jobs reject legacy actor-only cancellation"
+            );
+            let host = state
+                .journal
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .host();
+            let cancelled = connection
                 .handle
-                .cancel_published_invocation(parent.id)
+                .cancel_durable_published_invocation(host.as_bytes(), &parent.invocation_uuid)
                 .await
                 .unwrap();
+            assert!(cancelled.result.unwrap().cancellation_requested);
             release.send(()).unwrap();
             assert!(
                 tilo_test_env::within(

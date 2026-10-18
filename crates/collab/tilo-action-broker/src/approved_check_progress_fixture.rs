@@ -48,6 +48,8 @@ async fn progress_native_connection(
     ),
     String,
 > {
+    // The replacement broker reuses the room's journal, which has one writer.
+    drop(room.state.journal.lock().unwrap().as_mut().unwrap().take());
     let (state, bridge) = CapnpBrokerState::new_configured(
         &Arc::new(FanoutState::new()),
         Arc::new(Mutex::new(BrokerChannels::default())),

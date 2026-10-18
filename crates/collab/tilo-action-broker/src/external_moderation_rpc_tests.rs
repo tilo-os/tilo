@@ -365,11 +365,30 @@ mod external_moderation_rpc_tests {
                         .await
                         .unwrap();
                     refused(&target.handle, &request, id, "HTTPS").await;
-                    target
+                    assert!(
+                        target
+                            .handle
+                            .cancel_published_invocation(wire)
+                            .await
+                            .is_err(),
+                        "certificate-owned jobs reject legacy actor-only cancellation"
+                    );
+                    let host = room
+                        .state
+                        .journal
+                        .lock()
+                        .unwrap()
+                        .as_ref()
+                        .unwrap()
+                        .as_ref()
+                        .unwrap()
+                        .host();
+                    let cancelled = target
                         .handle
-                        .cancel_published_invocation(wire)
+                        .cancel_durable_published_invocation(host.as_bytes(), &id)
                         .await
                         .unwrap();
+                    assert!(cancelled.result.unwrap().cancellation_requested);
                     refused(&target.handle, &request, id, "retired or cancelled").await;
                     room.state.remove_connection(971);
                     assert!(
