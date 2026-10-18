@@ -192,6 +192,10 @@ fn the_fixture_puts_the_desktop_centre_on_no_panel_row() {
 }
 
 /// Volume and brightness keys: the readout comes up on the display in use.
+// USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
+// brightness etc. should in general be raised on the correct (?) screen(s)…
+// in consistent positions… also how to handle brightness controls on
+// multiple screens"
 #[test]
 fn hardware_key_readouts_open_on_the_focused_display() {
     let mut desk = Desk::new("laptop-beside-1080p");
@@ -210,6 +214,10 @@ fn hardware_key_readouts_open_on_the_focused_display() {
 
 /// Flyouts and panels: the power menu, Quick Settings, the window switcher
 /// and the tab menu.
+// USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
+// brightness etc. should in general be raised on the correct (?) screen(s)…
+// in consistent positions… also how to handle brightness controls on
+// multiple screens"
 #[test]
 fn menus_and_panels_open_on_the_focused_display() {
     let mut desk = Desk::new("laptop-beside-1080p");
@@ -250,6 +258,10 @@ fn menus_and_panels_open_on_the_focused_display() {
 }
 
 /// Search, the workspace sheet and the strip indicators.
+// USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
+// brightness etc. should in general be raised on the correct (?) screen(s)…
+// in consistent positions… also how to handle brightness controls on
+// multiple screens"
 #[test]
 fn search_and_sheets_open_on_the_focused_display() {
     let mut desk = Desk::new("laptop-beside-1080p");
@@ -671,4 +683,248 @@ fn a_permission_prompt_opens_over_the_window_that_asks() {
         prompt.y0 >= window.y0 - 8.0 && prompt.y0 < window.y0 + 120.0,
         "the prompt {prompt:?} sits at the top of the asking window {window:?}"
     );
+}
+
+impl Desk {
+    /// Work on the window on display `index`, with one frame painted.
+    fn work_on(&mut self, index: usize) {
+        let group = if index == 0 { ON_PANEL } else { ON_MONITOR };
+        let _ = self
+            .fb
+            .host_mut()
+            .focus_window_on_strip(STRIP, group, tab_of(group));
+        self.fb.relayout();
+        let _ = self.fb.paint();
+        assert_eq!(
+            self.focused_display(),
+            Some(self.outputs[index].id.0),
+            "working on display {index}"
+        );
+    }
+
+    fn paint_once(&mut self) {
+        self.fb.relayout();
+        let _ = self.fb.paint();
+    }
+}
+
+// USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
+// brightness etc. should in general be raised on the correct (?) screen(s)…
+// in consistent positions… also how to handle brightness controls on
+// multiple screens" — a feedback pill
+// never jumps displays while it is up: it fades where it is, and the next
+// press shows it on the display the person moved to.
+#[test]
+fn a_readout_never_jumps_displays_while_it_is_up() {
+    use crate::shell::osd::Osd;
+    let mut desk = Desk::new("laptop-beside-1080p");
+    let (panel, monitor) = (desk.display(0), desk.display(1));
+    desk.work_on(0);
+    desk.fb
+        .with_chrome(|chrome| chrome.show_osd(Osd::volume(0.4, false)));
+    desk.paint_once();
+    let pill = desk.fb.host().osd_rect().expect("the readout is painted");
+    assert_on(panel, pill, "the volume readout", "the panel");
+
+    desk.work_on(1);
+    let pill = desk.fb.host().osd_rect().expect("the readout is still up");
+    assert_on(panel, pill, "the readout raised on the panel", "the panel");
+
+    desk.fb
+        .with_chrome(|chrome| chrome.show_osd(Osd::volume(0.45, false)));
+    desk.paint_once();
+    let pill = desk.fb.host().osd_rect().expect("the readout is painted");
+    assert_on(monitor, pill, "the next press's readout", "the monitor");
+}
+
+/// What the brightness keys record: which display was set to what.
+#[derive(Default)]
+struct BrightnessRecorder {
+    calls: std::cell::RefCell<Vec<String>>,
+}
+
+impl crate::shell::quick_settings::actions::QsActions for BrightnessRecorder {
+    fn set_brightness(&self, pct: f32) -> Result<(), String> {
+        self.calls.borrow_mut().push(format!("brightness={pct:.0}"));
+        Ok(())
+    }
+    fn set_display_brightness(&self, connector: &str, pct: f32) -> Result<(), String> {
+        self.calls
+            .borrow_mut()
+            .push(format!("{connector}={pct:.0}"));
+        Ok(())
+    }
+    fn set_volume(&self, _: f32) -> Result<(), String> {
+        Ok(())
+    }
+    fn set_wifi(&self, _: bool) -> Result<(), String> {
+        Ok(())
+    }
+    fn set_bluetooth(&self, _: bool) -> Result<(), String> {
+        Ok(())
+    }
+    fn connect_wifi(&self, _: &str, _: Option<&str>) -> Result<(), String> {
+        Ok(())
+    }
+    fn set_power_profile(&self, _: os_actions::PowerProfile) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+fn dimmable() -> Vec<crate::shell::chrome_state::DisplayBrightness> {
+    vec![
+        crate::shell::chrome_state::DisplayBrightness {
+            connector: PANEL.0.into(),
+            name: "Built-in display".into(),
+            level: 0.5,
+        },
+        crate::shell::chrome_state::DisplayBrightness {
+            connector: MONITOR.0.into(),
+            name: "Test Monitor".into(),
+            level: 0.3,
+        },
+    ]
+}
+
+// USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
+// brightness etc. should in general be raised on the correct (?) screen(s)…
+// in consistent positions… also how to handle brightness controls on
+// multiple screens" — the brightness keys adjust the display the person
+// works on, not the one under the pointer, and the readout there names it.
+#[test]
+fn brightness_keys_adjust_the_focused_display() {
+    use crate::shell::media_keys::{BrightnessKeys, Context, DispatcherAudio, MediaKey, Response};
+    let mut desk = Desk::new("laptop-beside-1080p");
+    let displays = dimmable();
+    for (index, connector, expected) in [(1, MONITOR.0, "DP-1=40"), (0, PANEL.0, "eDP-1=60")] {
+        desk.work_on(index);
+        let focused = desk.fb.host().focused_connector();
+        assert_eq!(
+            focused.as_deref(),
+            Some(connector),
+            "display {index} is in use"
+        );
+        let rec = BrightnessRecorder::default();
+        let (transport_osd, _mailbox) = crate::session_runtime::mailbox(std::sync::Arc::new(|| {}));
+        let response = crate::shell::media_keys::apply(
+            MediaKey::BrightnessUp,
+            &Context {
+                actions: &rec,
+                audio: &DispatcherAudio(&rec),
+                status: None,
+                transport_osd: &transport_osd,
+                airplane_mode: false,
+                brightness: BrightnessKeys {
+                    displays: &displays,
+                    focused: focused.as_deref(),
+                    all: false,
+                },
+            },
+        );
+        assert_eq!(*rec.calls.borrow(), [expected]);
+        let Some(Response::Osd(osd)) = response else {
+            panic!("a readout, not {response:?}");
+        };
+        let name = &displays
+            .iter()
+            .find(|d| d.connector == connector)
+            .expect("dimmable")
+            .name;
+        assert!(
+            osd.caption().ends_with(name.as_str()),
+            "with two dimmable displays the readout names {name}: {}",
+            osd.caption()
+        );
+        desk.fb.with_chrome(|chrome| chrome.show_osd(osd));
+        desk.paint_once();
+        let pill = desk.fb.host().osd_rect().expect("the readout is painted");
+        assert_on(
+            desk.display(index),
+            pill,
+            "the brightness readout",
+            "the display in use",
+        );
+    }
+}
+
+// USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
+// brightness etc. should in general be raised on the correct (?) screen(s)…
+// in consistent positions… also how to handle brightness controls on
+// multiple screens" — Quick Settings shows one slider per dimmable display,
+// the display in use first.
+#[test]
+fn quick_settings_lists_the_focused_display_first() {
+    use crate::shell::quick_settings::refresh::FieldReading;
+    let mut desk = Desk::new("laptop-beside-1080p");
+    for (index, first) in [(1, MONITOR.0), (0, PANEL.0)] {
+        desk.work_on(index);
+        let chrome = desk.fb.chrome_handle();
+        {
+            let mut st = chrome.borrow_mut();
+            desk.fb
+                .host()
+                .apply_qs_field_reading(&mut st, FieldReading::Brightness(None, dimmable()));
+            let order: Vec<&str> = st
+                .quick_settings
+                .displays
+                .iter()
+                .map(|display| display.connector.as_str())
+                .collect();
+            assert_eq!(
+                order.first().copied(),
+                Some(first),
+                "display {index} first: {order:?}"
+            );
+            assert_eq!(order.len(), 2, "one slider per dimmable display");
+        }
+    }
+}
+
+// USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
+// brightness etc. should in general be raised on the correct (?) screen(s)…
+// in consistent positions… also how to handle brightness controls on
+// multiple screens" — the state of the whole machine is on every display:
+// a critical banner repeats on the display not in use, and a ringing call
+// keeps its card on the display in use and edges the other.
+#[test]
+fn machine_wide_banners_show_on_every_display_and_a_call_edges_the_others() {
+    use tilo_desktop::notifications::{Addressed, Notification};
+    let mut desk = Desk::new("laptop-beside-1080p");
+    let (panel, monitor) = (desk.display(0), desk.display(1));
+    desk.work_on(0);
+    desk.fb.with_chrome(|chrome| {
+        chrome.push_notification_full(Notification::new("Build finished", "main is green"));
+    });
+    desk.paint_once();
+    assert!(
+        desk.fb.host().machine_banner_rects().is_empty(),
+        "an ordinary banner stays on the display in use"
+    );
+    desk.fb.with_chrome(|chrome| {
+        chrome.push_notification_full(
+            Notification::new("Battery critical", "Plug in now").machine_wide(),
+        );
+    });
+    desk.paint_once();
+    let banners = desk.fb.host().machine_banner_rects().to_vec();
+    assert_eq!(banners.len(), 1, "repeated once, on the other display");
+    assert_on(monitor, banners[0], "the critical banner", "the monitor");
+    assert!(desk.fb.host().call_edge_rects().is_empty(), "no call rings");
+
+    desk.fb.with_chrome(|chrome| {
+        chrome.push_notification_full(
+            Notification::new("Jonas is calling", "")
+                .with_from("Jonas", "jonas")
+                .with_addressed(Addressed::IncomingCall),
+        );
+    });
+    desk.work_on(1);
+    assert_eq!(
+        desk.fb.host().call_edge_rects(),
+        [panel],
+        "the display not in use gets the quiet edge"
+    );
+    let banners = desk.fb.host().machine_banner_rects().to_vec();
+    assert_eq!(banners.len(), 1);
+    assert_on(panel, banners[0], "the critical banner", "the panel");
 }

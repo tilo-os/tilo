@@ -191,6 +191,7 @@ mod tests {
             verifying: false,
             now_playing: None,
             keyboard: None,
+            alert: None,
         }
     }
 

@@ -50,8 +50,9 @@ pub enum OsdKind {
     /// Audio output level. `muted` swaps the glyph and empties the bar —
     /// a muted sink at 60% is silent, and the bar should say so.
     Volume { muted: bool },
-    /// Display backlight level.
-    Brightness,
+    /// A display's brightness. `display` names it when more than one
+    /// display can be dimmed, so the readout says which one changed.
+    Brightness { display: Option<OsdLabel> },
     /// Microphone capture mute. A toggle, not a level — the bar is
     /// omitted and the caption carries the state.
     MicMute { muted: bool },
@@ -164,6 +165,14 @@ fn level_to_percent(level: f32) -> u32 {
     (level * 100.0).round() as u32
 }
 
+/// A named display's reading beside the bar: `Dell U2723 62%`.
+fn display_percent(display: &str, percent: u32) -> String {
+    t_args(
+        "osd-display-percent",
+        &[("display", display.into()), ("percent", percent.into())],
+    )
+}
+
 /// Where an OSD may go: the display it shows on, and the focused field's
 /// caret (desktop coordinates), which it must not cover.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -213,7 +222,18 @@ impl Osd {
     }
 
     pub fn brightness(level: f32) -> Self {
-        Self::at(OsdKind::Brightness, level.clamp(0.0, 1.0))
+        Self::display_brightness(level, None)
+    }
+
+    /// The brightness of the display named `display`; `None` when it is the
+    /// only display that can be dimmed and needs no name.
+    pub fn display_brightness(level: f32, display: Option<&str>) -> Self {
+        Self::at(
+            OsdKind::Brightness {
+                display: display.map(OsdLabel::new),
+            },
+            level.clamp(0.0, 1.0),
+        )
     }
 
     pub fn mic_mute(muted: bool) -> Self {
@@ -285,7 +305,7 @@ impl Osd {
         matches!(
             self.kind,
             OsdKind::Volume { .. }
-                | OsdKind::Brightness
+                | OsdKind::Brightness { .. }
                 | OsdKind::KeyboardBacklight
                 | OsdKind::Magnifier { .. }
         )
@@ -299,9 +319,18 @@ impl Osd {
                 "osd-volume",
                 &[("percent", level_to_percent(self.level).into())],
             ),
-            OsdKind::Brightness => t_args(
+            OsdKind::Brightness { display: None } => t_args(
                 "osd-brightness",
                 &[("percent", level_to_percent(self.level).into())],
+            ),
+            OsdKind::Brightness {
+                display: Some(display),
+            } => t_args(
+                "osd-brightness-display",
+                &[
+                    ("display", display.as_str().into()),
+                    ("percent", level_to_percent(self.level).into()),
+                ],
             ),
             OsdKind::MicMute { muted: true } => t("osd-microphone-muted"),
             OsdKind::MicMute { muted: false } => t("osd-microphone-on"),
@@ -432,9 +461,12 @@ impl Osd {
         match self.kind {
             OsdKind::Volume { muted: true } => t("osd-muted"),
             OsdKind::KeyboardBacklight if self.level <= 0.0 => t("osd-off"),
-            OsdKind::Volume { muted: false } | OsdKind::Brightness | OsdKind::KeyboardBacklight => {
-                percent()
-            }
+            OsdKind::Brightness {
+                display: Some(display),
+            } => display_percent(display.as_str(), level_to_percent(self.level)),
+            OsdKind::Volume { muted: false }
+            | OsdKind::Brightness { display: None }
+            | OsdKind::KeyboardBacklight => percent(),
             OsdKind::Magnifier { zoom } if zoom <= settings_store::magnifier::OFF => t("osd-off"),
             OsdKind::Magnifier { zoom } => settings_store::magnifier::zoom_label(zoom).into(),
             _ => self.caption(),
@@ -569,10 +601,13 @@ impl OsdPill {
         // does not shift as the number gains digits or the sink mutes.
         let mut slot = f64::from(value_w);
         if has_bar {
-            let widest = [
-                t_args("osd-percent", &[("percent", 100.into())]),
-                t("osd-muted"),
-            ];
+            let full = match osd.kind {
+                OsdKind::Brightness {
+                    display: Some(display),
+                } => display_percent(display.as_str(), 100),
+                _ => t_args("osd-percent", &[("percent", 100.into())]),
+            };
+            let widest = [full, t("osd-muted")];
             for reading in widest {
                 let (w, _) = text_renderer.measure_style(&reading, None, style);
                 slot = slot.max(f64::from(w));
@@ -643,7 +678,7 @@ fn draw_glyph(
     let (icon, tint) = match kind {
         OsdKind::Volume { muted: true } => (ui::icons::Icon::VolumeX, colors.text_primary),
         OsdKind::Volume { muted: false } => (ui::icons::Icon::Volume2, colors.text_primary),
-        OsdKind::Brightness => (ui::icons::Icon::Sun, colors.text_primary),
+        OsdKind::Brightness { .. } => (ui::icons::Icon::Sun, colors.text_primary),
         OsdKind::MicMute { muted } => (
             ui::icons::Icon::MicOff,
             if muted {
@@ -746,6 +781,63 @@ pub fn raise(current: &mut Option<Osd>, mut next: Osd) {
         next.shown_since = live.shown_since;
     }
     *current = Some(next);
+}
+
+/// The display a readout shows on, chosen when it is raised and kept for its
+/// life: a readout never jumps to another display while it is up.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OsdPin {
+    /// The life of the readout this display was chosen for
+    /// ([`Osd::shown_since`]).
+    shown_since: Instant,
+    /// The press it last answered ([`Osd::raised_at`]).
+    raised_at: Instant,
+    /// The display, in desktop coordinates.
+    pub display: Rect,
+}
+
+/// Where `osd` shows while the person works on `focused`, given where it was
+/// pinned and every display there is. Feedback goes to the display the
+/// person works on, and only there:
+/// - a new readout opens on `focused`;
+/// - while it is up it stays where it opened, even when the person moves to
+///   another display: it fades out where it is;
+/// - a press made from another display while it is up starts it afresh on
+///   that display (`true`: the caller replays the fade-in there);
+/// - a readout whose display went away moves to `focused`.
+pub fn pin_display(
+    pin: Option<OsdPin>,
+    osd: &Osd,
+    focused: Rect,
+    displays: &[Rect],
+) -> (OsdPin, bool) {
+    let fresh = OsdPin {
+        shown_since: osd.shown_since,
+        raised_at: osd.raised_at,
+        display: focused,
+    };
+    let Some(pin) = pin.filter(|pin| {
+        pin.shown_since == osd.shown_since
+            && (displays.contains(&pin.display) || pin.display == focused)
+    }) else {
+        return (fresh, false);
+    };
+    if pin.raised_at != osd.raised_at && pin.display != focused {
+        return (
+            OsdPin {
+                shown_since: osd.raised_at,
+                ..fresh
+            },
+            true,
+        );
+    }
+    (
+        OsdPin {
+            raised_at: osd.raised_at,
+            ..pin
+        },
+        false,
+    )
 }
 
 /// Drop an expired slab. Returns `true` when something was cleared, so
@@ -928,7 +1020,7 @@ mod tests {
             let mut cur = None;
             raise(&mut cur, Osd::volume(0.3, false));
             raise(&mut cur, Osd::brightness(0.9));
-            assert_eq!(cur.unwrap().kind, OsdKind::Brightness);
+            assert_eq!(cur.unwrap().kind, OsdKind::Brightness { display: None });
         }
 
         fn expiry_reports_whether_it_changed_anything() {
@@ -951,6 +1043,77 @@ mod tests {
         motion_tokens_back_the_lifecycle_constants();
         a_different_key_replaces_rather_than_queues();
         expiry_reports_whether_it_changed_anything();
+    }
+
+    // USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
+    // brightness etc. should in general be raised on the correct (?)
+    // screen(s)… in consistent positions… also how to handle brightness
+    // controls on multiple screens" — feedback on the display in use, and a
+    // pill never jumps displays while it is up.
+    #[test]
+    fn a_readout_stays_on_the_display_it_opened_on_until_the_next_press() {
+        let panel = Rect::new(0.0, 0.0, 1472.0, 920.0);
+        let monitor = Rect::new(1472.0, 0.0, 3392.0, 1080.0);
+        let displays = [panel, monitor];
+        let mut current = None;
+        raise(&mut current, Osd::volume(0.4, false));
+        let osd = current.expect("raised");
+        let (pin, restart) = pin_display(None, &osd, panel, &displays);
+        assert_eq!(
+            pin.display, panel,
+            "a new readout opens where the person works"
+        );
+        assert!(!restart);
+
+        // The person moves to the monitor while the readout is up.
+        let (pin, restart) = pin_display(Some(pin), &osd, monitor, &displays);
+        assert_eq!(pin.display, panel, "it fades out where it is");
+        assert!(!restart);
+
+        // The next press, made from the monitor, brings it there.
+        let mut next = Osd::volume(0.45, false);
+        next.raised_at = osd
+            .raised_at
+            .checked_add(Duration::from_millis(200))
+            .expect("later");
+        raise(&mut current, next);
+        let pressed = current.expect("raised again");
+        assert_eq!(pressed.shown_since, osd.shown_since, "updated in place");
+        let (pin, restart) = pin_display(Some(pin), &pressed, monitor, &displays);
+        assert_eq!(
+            pin.display, monitor,
+            "the next press shows it on the new display"
+        );
+        assert!(restart, "and it fades in there");
+
+        // A press on the display it already shows on keeps it there.
+        let mut live = pressed;
+        live.shown_since = live.raised_at;
+        let (pin, _) = pin_display(Some(pin), &live, monitor, &displays);
+        let mut again = live;
+        again.raised_at = live
+            .raised_at
+            .checked_add(Duration::from_millis(100))
+            .expect("later");
+        let (pin, restart) = pin_display(Some(pin), &again, monitor, &displays);
+        assert_eq!(pin.display, monitor);
+        assert!(!restart);
+
+        // Its display unplugged: the readout goes where the person works.
+        let (pin, _) = pin_display(Some(pin), &again, panel, &[panel]);
+        assert_eq!(pin.display, panel);
+    }
+
+    #[test]
+    fn a_brightness_readout_names_its_display_only_when_given_one() {
+        assert_eq!(
+            Osd::display_brightness(0.6, None).caption(),
+            "Brightness 60%"
+        );
+        let named = Osd::display_brightness(0.6, Some("Dell U2723"));
+        assert_eq!(named.caption(), "Brightness 60%, Dell U2723");
+        assert_eq!(named.value_text(), "Dell U2723 60%");
+        assert!(named.has_level());
     }
 
     #[test]

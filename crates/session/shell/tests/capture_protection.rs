@@ -331,6 +331,7 @@ fn the_lock_screen_is_never_captured() {
         verifying: false,
         now_playing: None,
         keyboard: None,
+        alert: None,
     };
     let lock = lock_screen::draw_lock_scene_at_time(
         &outputs,

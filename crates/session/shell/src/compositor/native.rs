@@ -971,8 +971,10 @@ impl LockClock {
         notification_count: usize,
         now_playing: Option<&'a crate::shell::now_playing::PlayerSnapshot>,
         keyboard: Option<ui::passcode_keyboard::PasscodeKeyboard>,
+        alert: Option<&'a str>,
     ) -> LockView<'a> {
         LockView {
+            alert,
             keyboard,
             password_len: lock.buffer_len(),
             error: lock.error(),
@@ -997,7 +999,11 @@ fn publish_accessibility_tree(
 ) {
     accessibility.set_window_focus(true);
     if let Some(view) = lock {
-        let outputs = lock_outputs(outputs, frame_builder.scene_size());
+        let outputs = lock_outputs(
+            outputs,
+            frame_builder.scene_size(),
+            focused_display_id(frame_builder),
+        );
         accessibility.update_if_active(|| {
             lock_screen::build_accessibility_tree(&outputs, frame_builder.theme(), view)
         });
@@ -1109,13 +1115,21 @@ fn widget_park_deadline(tick_started: Instant, deadline: Option<Instant>) -> Opt
 const LOCK_MEDIA_REFRESH: Duration = Duration::from_secs(1);
 
 /// Every output the lock overlay covers, or one spanning the viewport before
-/// any output has been reported.
+/// any output has been reported. The display the person was working on
+/// (`focused`, an output id) comes first: the lock screen puts the password
+/// field and its caret on the first output and its artwork on the others.
 fn lock_outputs(
     outputs: &[crate::compositor::backend::Output],
     viewport: (f64, f64),
+    focused: Option<u32>,
 ) -> Vec<LockOutput> {
-    let outputs: Vec<LockOutput> = outputs
-        .iter()
+    let mut ordered: Vec<&crate::compositor::backend::Output> = outputs.iter().collect();
+    if let Some(index) = focused.and_then(|id| ordered.iter().position(|o| o.id.0 == id)) {
+        let output = ordered.remove(index);
+        ordered.insert(0, output);
+    }
+    let outputs: Vec<LockOutput> = ordered
+        .into_iter()
         .map(|o| LockOutput {
             origin: (f64::from(o.position.0), f64::from(o.position.1)),
             size: (f64::from(o.size.0), f64::from(o.size.1)),
@@ -1131,6 +1145,17 @@ fn lock_outputs(
     } else {
         outputs
     }
+}
+
+/// The output id of the display the person works on, as the desktop's
+/// partition records it.
+fn focused_display_id(frame_builder: &FrameBuilder) -> Option<u32> {
+    frame_builder
+        .chrome()
+        .tree()
+        .desktop
+        .outputs
+        .focused_display()
 }
 
 /// The player the lock screen shows: the one the now-playing card would,
@@ -7639,6 +7664,8 @@ fn power_notification_to_incoming(
         sender_name: None,
         sound: Some(settings_store::system_sounds::SystemSoundEvent::LowBattery),
         incoming_call: false,
+        // Critical battery is about the whole machine: every display shows it.
+        machine_wide: n.critical,
     }
 }
 
@@ -10099,6 +10126,9 @@ pub fn run() {
     // A media player's answer to a transport key, as the OSD to raise.
     let (transport_osd, transport_osds) =
         crate::session_runtime::mailbox::<crate::shell::osd::Osd>(Arc::clone(&session_wake));
+    // Displays without a brightness control of their own, dimmed by the
+    // compositor to their slider's level.
+    let mut software_dim = SoftwareDimSync::default();
     // The volume and mute keys' writes, on a thread of their own from the
     // first press on: `wpctl` must never hold up input or painting.
     let mut media_key_audio: Option<crate::shell::audio_writer::AudioWriter> = None;
@@ -11151,8 +11181,11 @@ pub fn run() {
                                 button: MouseButton::Left,
                                 ..
                             } => {
-                                let outputs =
-                                    lock_outputs(backend.outputs(), frame_builder.scene_size());
+                                let outputs = lock_outputs(
+                                    backend.outputs(),
+                                    frame_builder.scene_size(),
+                                    focused_display_id(&frame_builder),
+                                );
                                 let view = LockView {
                                     now_playing: lock_player.as_ref(),
                                     keyboard: lock_keyboard.shown(),
@@ -11258,18 +11291,22 @@ pub fn run() {
                         // here, and the lock paint draws their OSD.
                         let airplane_mode =
                             frame_builder.chrome().quick_settings.radios.airplane_mode;
-                        let displays = if matches!(
+                        let brightness_key = matches!(
                             mk,
                             crate::shell::media_keys::MediaKey::BrightnessUp
                                 | crate::shell::media_keys::MediaKey::BrightnessDown
-                        ) {
-                            os_actions::BrightnessService::global().levels()
+                        );
+                        let displays = if brightness_key {
+                            brightness_displays(
+                                os_actions::BrightnessService::global().levels(),
+                                backend.outputs(),
+                            )
                         } else {
                             Vec::new()
                         };
-                        let pointer = frame_builder.host().pointer_position();
-                        let under_pointer = pointer
-                            .and_then(|p| output_connector_at(backend.outputs(), (p.x, p.y)));
+                        // The display the person works on, not the one the
+                        // pointer happens to rest on.
+                        let focused_display = frame_builder.host().focused_connector();
                         let audio: &crate::shell::audio_writer::AudioWriter = media_key_audio
                             .get_or_insert_with(|| {
                                 crate::shell::audio_writer::AudioWriter::system(
@@ -11286,10 +11323,25 @@ pub fn run() {
                                 airplane_mode,
                                 brightness: crate::shell::media_keys::BrightnessKeys {
                                     displays: &displays,
-                                    under_pointer,
+                                    focused: focused_display.as_deref(),
+                                    all: test_control_ctx.modifiers.state().shift_key(),
                                 },
                             },
                         );
+                        if brightness_key {
+                            // Quick Settings' per-display sliders follow the
+                            // levels the key just set.
+                            let levels = os_actions::BrightnessService::global().levels();
+                            frame_builder.with_chrome(|st| {
+                                for display in &mut st.quick_settings.displays {
+                                    if let Some(level) =
+                                        levels.iter().find(|l| l.connector == display.connector)
+                                    {
+                                        display.level = level.level;
+                                    }
+                                }
+                            });
+                        }
                         match response {
                             Some(crate::shell::media_keys::Response::Osd(osd)) => {
                                 frame_builder.with_chrome(|st| publish_media_osd(st, osd));
@@ -13132,6 +13184,7 @@ pub fn run() {
             frame_builder.with_chrome(|st| publish_media_osd(st, osd));
             session_changed = true;
         }
+        software_dim.sync(backend.as_mut(), &session_wake);
         let markers_suppressed = session.is_locked() || frame_builder.host().onboarding_active();
         let markers_retired =
             revalidate_native_agent_markers(&mut state, &mut frame_builder, markers_suppressed);
@@ -13703,11 +13756,13 @@ pub fn run() {
             );
             if session.is_locked() {
                 let clock = LockClock::now();
+                let alert = frame_builder.chrome().machine_alert();
                 let view = clock.view(
                     &lock,
                     frame_builder.chrome().notification_count(),
                     lock_player.as_ref(),
                     lock_keyboard.shown(),
+                    alert.as_deref(),
                 );
                 publish_accessibility_tree(
                     &mut native_accessibility,
@@ -13749,14 +13804,22 @@ pub fn run() {
                 let theme = frame_builder.theme().clone();
                 // The lock overlay covers every known output (single on winit/headless;
                 // DRM lays monitors side-by-side).
-                let lock_outputs = lock_outputs(backend.outputs(), frame_builder.scene_size());
+                let lock_outputs = lock_outputs(
+                    backend.outputs(),
+                    frame_builder.scene_size(),
+                    focused_display_id(&frame_builder),
+                );
                 let clock = LockClock::now();
+                // Critical battery is about the whole machine: every display
+                // of the lock screen says so.
+                let alert = frame_builder.chrome().machine_alert();
                 let view = clock.view(
                     &lock,
                     // Count-only summary on the lock screen — no bodies leak.
                     frame_builder.chrome().notification_count(),
                     lock_player.as_ref(),
                     lock_keyboard.shown(),
+                    alert.as_deref(),
                 );
                 frame_builder.set_lock_keyboard_keys(
                     lock_screen::keyboard_keys(&lock_outputs, &theme, &view)
@@ -14279,12 +14342,14 @@ pub fn run() {
             // screen may not paint again for as long as it stays unchanged.
             if accessibility_changed {
                 let clock = session.is_locked().then(LockClock::now);
+                let alert = frame_builder.chrome().machine_alert();
                 let view = clock.as_ref().map(|clock| {
                     clock.view(
                         &lock,
                         frame_builder.chrome().notification_count(),
                         lock_player.as_ref(),
                         lock_keyboard.shown(),
+                        alert.as_deref(),
                     )
                 });
                 publish_accessibility_tree(
@@ -14853,9 +14918,12 @@ fn sync_quick_settings_from_osd(
         crate::shell::osd::OsdKind::Volume { .. } => {
             quick_settings.volume = osd.level;
         }
-        crate::shell::osd::OsdKind::Brightness => {
+        crate::shell::osd::OsdKind::Brightness { display: None } => {
             quick_settings.brightness = osd.level;
         }
+        // A named display's slider follows the brightness service's levels,
+        // read back after the key.
+        crate::shell::osd::OsdKind::Brightness { display: Some(_) } => {}
         crate::shell::osd::OsdKind::AirplaneMode { on } => {
             quick_settings.radios.airplane_mode = on;
         }
@@ -14872,6 +14940,44 @@ fn sync_quick_settings_from_osd(
         | crate::shell::osd::OsdKind::InputSource(_)
         | crate::shell::osd::OsdKind::KeysCaptured { .. }
         | crate::shell::osd::OsdKind::PadMode { .. } => {}
+    }
+}
+
+#[cfg(test)]
+mod lock_focus_tests {
+    use super::lock_outputs;
+    use crate::compositor::backend::headless::output_fixture;
+    use crate::compositor::lock_screen::LockLayout;
+
+    // USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
+    // brightness etc. should in general be raised on the correct (?)
+    // screen(s)… in consistent positions… also how to handle brightness
+    // controls on multiple screens" — the lock screen's password field and
+    // caret are on the display the person was working on, artwork on the
+    // others.
+    #[test]
+    fn the_lock_screen_puts_the_password_field_on_the_focused_display() {
+        let outputs = output_fixture("laptop-beside-1080p").expect("fixture");
+        let theme = ui::theme::Theme::dark();
+        for focused in [&outputs[1], &outputs[0]] {
+            let lock = lock_outputs(&outputs, (0.0, 0.0), Some(focused.id.0));
+            assert_eq!(lock.len(), outputs.len(), "every display is covered");
+            let shown = focused.scene_rect();
+            let password = LockLayout::for_output(lock[0], &theme).password;
+            assert!(
+                password.area() > 0.0 && shown.union(password) == shown,
+                "the password field {password:?} is on the focused display {shown:?}"
+            );
+        }
+        let unfocused = lock_outputs(&outputs, (0.0, 0.0), None);
+        assert_eq!(
+            unfocused[0].origin,
+            (
+                f64::from(outputs[0].position.0),
+                f64::from(outputs[0].position.1)
+            ),
+            "without a focused display the primary carries it"
+        );
     }
 }
 
@@ -14905,24 +15011,7 @@ mod media_osd_publication_tests {
 /// Session-owned ambient-light loop. Settings only records policy; the
 /// compositor owns the display and therefore owns applying that policy after
 /// Settings exits. Missing sensors/backlights simply produce no write.
-/// Connector of the output containing `point` in compositor coordinates.
-fn output_connector_at(
-    outputs: &[crate::compositor::backend::Output],
-    point: (f64, f64),
-) -> Option<&str> {
-    outputs
-        .iter()
-        .find(|output| {
-            let (x, y) = (f64::from(output.position.0), f64::from(output.position.1));
-            point.0 >= x
-                && point.1 >= y
-                && point.0 < x + f64::from(output.size.0)
-                && point.1 < y + f64::from(output.size.1)
-        })
-        .map(|output| output.identity.connector.as_str())
-        .filter(|connector| !connector.is_empty())
-}
-
+///
 /// Follow the ambient light sensor every two seconds while automatic
 /// brightness is on. Turning it on or off in Settings wakes the worker at
 /// once rather than on its next sample.
@@ -14955,6 +15044,99 @@ fn spawn_auto_brightness_worker(settings: settings_store::live::LiveSettings) {
                 };
             }
         });
+}
+
+/// Keeps the backend's software dimming in line with the brightness service:
+/// a display without a backlight or DDC/CI is dimmed by the compositor to its
+/// slider's level ([`os_actions::software_luminance`]), whether the level was
+/// set here (keys, Quick Settings, search) or in Settings, whose writes the
+/// service follows ([`os_actions::BrightnessService::follow_memory`]).
+#[derive(Default)]
+struct SoftwareDimSync {
+    started: bool,
+    /// The service generation last applied.
+    generation: Option<u64>,
+    /// The outputs it was applied to, by id: a new one is dimmed as it
+    /// appears.
+    outputs: Vec<u32>,
+}
+
+impl SoftwareDimSync {
+    /// Apply what changed since the last call. Costs a comparison when
+    /// nothing did; the service wakes the loop through `wake` when a level
+    /// changes on another thread.
+    fn sync(&mut self, backend: &mut dyn Backend, wake: &crate::session_runtime::Wake) {
+        if !backend.software_dim_supported() {
+            return;
+        }
+        let service = os_actions::BrightnessService::global();
+        if !self.started {
+            self.started = true;
+            service.on_change(Arc::clone(wake));
+            service.follow_memory();
+        }
+        let generation = service.generation();
+        let same_outputs = backend
+            .outputs()
+            .iter()
+            .map(|output| output.id.0)
+            .eq(self.outputs.iter().copied());
+        if same_outputs && self.generation == Some(generation) {
+            return;
+        }
+        if !same_outputs {
+            self.outputs = backend.outputs().iter().map(|output| output.id.0).collect();
+            // A monitor that just appeared is probed once, off this thread;
+            // the generation moves when it lands.
+            service.rescan();
+        }
+        self.generation = Some(generation);
+        let dims: Vec<(String, f32)> = service
+            .software_levels()
+            .into_iter()
+            .map(|(connector, level)| (connector, os_actions::software_luminance(level)))
+            .collect();
+        backend.set_software_dim(&dims);
+    }
+}
+
+/// Every display whose brightness can be set, named for the readout and
+/// Quick Settings: "Built-in display" for the laptop panel, else the
+/// monitor's EDID name, else its connector.
+fn brightness_displays(
+    levels: Vec<os_actions::MonitorLevel>,
+    outputs: &[crate::compositor::backend::Output],
+) -> Vec<crate::shell::chrome_state::DisplayBrightness> {
+    levels
+        .into_iter()
+        .map(|level| {
+            let identity = outputs
+                .iter()
+                .map(|output| &output.identity)
+                .find(|identity| identity.connector == level.connector);
+            let name = if os_actions::brightness::is_builtin_connector(&level.connector) {
+                crate::shell::i18n::t("display-identify-builtin")
+            } else {
+                identity
+                    .map(|identity| {
+                        settings_store::hardware::MonitorIdentity {
+                            make: identity.make.clone(),
+                            model: identity.model.clone(),
+                            serial: identity.serial.clone(),
+                            physical_size_mm: None,
+                        }
+                        .display_name()
+                    })
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or_else(|| level.connector.clone())
+            };
+            crate::shell::chrome_state::DisplayBrightness {
+                connector: level.connector,
+                name,
+                level: level.level,
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]

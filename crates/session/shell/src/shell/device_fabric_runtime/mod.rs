@@ -1911,6 +1911,7 @@ impl DeviceFabricRuntime {
                     sender_name: None,
                     sound: None,
                     incoming_call: false,
+                    machine_wide: false,
                 });
         }
     }

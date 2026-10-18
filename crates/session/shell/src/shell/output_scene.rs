@@ -30,6 +30,10 @@ pub struct OutputGeometry {
     /// from an identical monitor by connector, or the connector alone
     /// without a readable EDID. Empty when the backend knows neither.
     pub monitor: String,
+    /// The DRM connector driving the display (`eDP-1`, `DP-2`), what the
+    /// brightness service names a monitor by. Empty when the backend has
+    /// no connectors.
+    pub connector: String,
     /// Left edge in the logical desktop.
     pub x: f64,
     /// Top edge in the logical desktop.
@@ -54,6 +58,7 @@ impl OutputGeometry {
         Self {
             id: 0,
             monitor: String::new(),
+            connector: String::new(),
             x,
             y,
             width,
@@ -262,6 +267,7 @@ mod tests {
             OutputGeometry {
                 id: 0,
                 monitor: String::new(),
+                connector: String::new(),
                 x: 0.0,
                 y: 0.0,
                 width: 1280.0,
@@ -272,6 +278,7 @@ mod tests {
             OutputGeometry {
                 id: 1,
                 monitor: String::new(),
+                connector: String::new(),
                 x: 1280.0,
                 y: 200.0,
                 width: 1920.0,

@@ -56,6 +56,27 @@ fn distinct_outputs(outputs: &[OutputGeometry]) -> Vec<&OutputGeometry> {
     distinct
 }
 
+/// The connector of the focused display among `outputs`, for a desktop
+/// whose partition has `partitioned` displays and focuses `focused`: what
+/// [`ShellOverlayHost::focused_connector`] answers, for a caller already
+/// holding the chrome state. `None` on one display, where nothing needs
+/// telling apart.
+pub(super) fn focused_connector_in(
+    outputs: &[OutputGeometry],
+    partitioned: usize,
+    focused: Option<u32>,
+) -> Option<String> {
+    if outputs.len() < 2 || partitioned < 2 {
+        return None;
+    }
+    let distinct = distinct_outputs(outputs);
+    focused
+        .and_then(|id| distinct.iter().find(|o| o.id == id))
+        .or_else(|| distinct.first())
+        .map(|o| o.connector.clone())
+        .filter(|connector| !connector.is_empty())
+}
+
 /// The displays as the partition knows them, primary first, a mirror set as
 /// one (see [`distinct_outputs`]). An output whose monitor
 /// the backend can't name is known by its id.
@@ -190,6 +211,15 @@ impl ShellOverlayHost {
             .and_then(|id| outputs.iter().find(|o| o.id == id))
             .or_else(|| outputs.first())
             .map(|o| (*o).clone())
+    }
+
+    /// The connector of the display the person is working on (`DP-2`),
+    /// when the desktop spans several displays and the backend names them:
+    /// the display the brightness keys and "brighter" adjust.
+    pub fn focused_connector(&self) -> Option<String> {
+        self.focused_output()
+            .map(|output| output.connector)
+            .filter(|connector| !connector.is_empty())
     }
 
     /// Where a desktop-wide overlay opens — palette, toasts, prompts,

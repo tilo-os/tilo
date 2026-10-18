@@ -97,6 +97,10 @@ pub struct LockView<'a> {
     /// The keyboard drawn on the lock screen for unlocking by touch, while
     /// touch is the input in use. `None` hides it.
     pub keyboard: Option<ui::passcode_keyboard::PasscodeKeyboard>,
+    /// What the system says about the whole machine (critical battery),
+    /// shown at the top of every display: the state of the machine is not
+    /// only the business of the display with the password field.
+    pub alert: Option<&'a str>,
 }
 
 /// The lock screen keyboard's key height and spacing, from the theme: keys
@@ -680,6 +684,8 @@ pub fn narration_tree(view: &LockView<'_>) -> ui::a11y::AccessNode {
         status = status
             .with_live(Politeness::Assertive)
             .with_value(lock_error_status(error));
+    } else if let Some(alert) = view.alert {
+        status = status.with_live(Politeness::Assertive).with_value(alert);
     } else {
         status = status.with_live(Politeness::Polite);
         if view.notification_count > 0 {
@@ -909,7 +915,53 @@ pub fn draw_lock_scene_at_time(
         }
     }
 
+    // 3. The state of the whole machine, on every display.
+    if let Some(alert) = view.alert {
+        for output in outputs {
+            draw_lock_alert(
+                &mut scene,
+                LockLayout::for_output(*output, theme).output,
+                theme,
+                text,
+                alert,
+            );
+        }
+    }
+
     scene
+}
+
+/// Where the alert about the whole machine sits on one display: top-centre,
+/// a banner's width at most, inset from the edges. `height` is the card's.
+pub fn lock_alert_rect(output: Rect, height: f64) -> Rect {
+    const INSET: f64 = 24.0;
+    const WIDTH: f64 = 360.0;
+    let width = (output.width() - INSET * 2.0).clamp(0.0, WIDTH);
+    let x0 = output.center().x - width / 2.0;
+    let y0 = output.y0 + INSET;
+    Rect::new(x0, y0, x0 + width, (y0 + height).min(output.y1))
+}
+
+/// The alert about the whole machine (critical battery), as the desktop's
+/// banner shows it, on one display of the lock screen.
+fn draw_lock_alert(
+    scene: &mut Scene,
+    output: Rect,
+    theme: &Theme,
+    text: &mut TextRenderer,
+    alert: &str,
+) {
+    let renderer_scale = text.text_scale();
+    text.set_text_scale(1.0);
+    let card = ui::widget::toast::ToastCard::new(alert, ui::widget::toast::ToastKind::Error)
+        .closable(false);
+    let width = lock_alert_rect(output, 0.0).width();
+    if width > 0.0 {
+        let height = ui::widget::toast::card_height(text, theme, &card, width);
+        let rect = lock_alert_rect(output, height);
+        let _ = ui::widget::toast::paint_card(scene, Affine::IDENTITY, text, theme, rect, &card);
+    }
+    text.set_text_scale(renderer_scale);
 }
 
 /// Draw the interactive lock widget from one already-bounded layout.
@@ -1478,6 +1530,53 @@ mod tests {
             size: (w, h),
             scale: 1.0,
         }]
+    }
+
+    // USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
+    // brightness etc. should in general be raised on the correct (?)
+    // screen(s)… in consistent positions… also how to handle brightness
+    // controls on multiple screens" — a critical alert about the machine is
+    // on every display of the lock screen, and spoken.
+    #[test]
+    fn a_machine_alert_is_on_every_lock_display_and_spoken() {
+        let outputs = [
+            LockOutput {
+                origin: (0.0, 0.0),
+                size: (2944.0, 1840.0),
+                scale: 2.0,
+            },
+            LockOutput {
+                origin: (2944.0, 0.0),
+                size: (1920.0, 1080.0),
+                scale: 1.0,
+            },
+        ];
+        let theme = Theme::dark();
+        for output in outputs {
+            let display = LockLayout::for_output(output, &theme).output;
+            let alert = lock_alert_rect(display, 64.0);
+            assert!(
+                alert.area() > 0.0 && display.union(alert) == display,
+                "the alert {alert:?} sits on its display {display:?}"
+            );
+            assert!(
+                (alert.center().x - display.center().x).abs() < 0.5,
+                "top-centre, the same place on every display"
+            );
+        }
+        let mut text = TextRenderer::new();
+        let view = LockView {
+            alert: Some("Battery critical"),
+            ..view()
+        };
+        let _scene = draw_lock_scene(&outputs, &theme, &mut text, &view);
+        let tree = narration_tree(&view);
+        assert!(
+            tree.children
+                .iter()
+                .any(|node| node.value.as_deref() == Some("Battery critical")),
+            "the status line says it"
+        );
     }
 
     #[test]

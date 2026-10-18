@@ -14,6 +14,7 @@ fn docked_laptop() -> Vec<OutputGeometry> {
         OutputGeometry {
             id: 0,
             monitor: String::new(),
+            connector: String::new(),
             x: 0.0,
             y: 0.0,
             width: 1472.0,
@@ -24,6 +25,7 @@ fn docked_laptop() -> Vec<OutputGeometry> {
         OutputGeometry {
             id: 1,
             monitor: String::new(),
+            connector: String::new(),
             x: 1472.0,
             y: 0.0,
             width: 1920.0,

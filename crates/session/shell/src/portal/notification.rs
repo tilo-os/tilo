@@ -381,6 +381,7 @@ impl NotificationBackend {
             sender_name: None,
             sound: Self::sound(&notification),
             incoming_call: false,
+            machine_wide: false,
         });
     }
 

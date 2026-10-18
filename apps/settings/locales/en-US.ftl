@@ -42,6 +42,7 @@ display-output-driver-rejected = The graphics driver refused to turn this displa
 # Displays pane: night light, rotation, built-in name
 display-builtin = Built-in display
 display-brightness = Brightness
+display-brightness-dimmed-by-tilo = Dimmed by Tilo. The monitor’s own brightness stays the same.
 display-auto-brightness = Automatic brightness
 display-no-ambient = No ambient-light sensor detected
 display-night-light = Night light

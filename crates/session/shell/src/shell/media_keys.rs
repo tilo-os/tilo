@@ -172,17 +172,21 @@ pub struct Context<'a> {
     /// Airplane mode as Quick Settings last showed it; the wireless key
     /// flips exactly what the Quick Settings toggle would.
     pub airplane_mode: bool,
-    /// Brightness keys adjust the monitor under the pointer.
+    /// Brightness keys adjust the display the person works on.
     pub brightness: BrightnessKeys<'a>,
 }
 
 /// What a brightness key acts on.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BrightnessKeys<'a> {
-    /// Every monitor with a brightness control and its cached level.
-    pub displays: &'a [os_actions::MonitorLevel],
-    /// Connector of the monitor under the pointer, when known.
-    pub under_pointer: Option<&'a str>,
+    /// Every display whose brightness can be set (by its backlight, over
+    /// DDC/CI, or dimmed by the compositor), with its name and cached level.
+    pub displays: &'a [crate::shell::chrome_state::DisplayBrightness],
+    /// Connector of the display the person works on, when the desktop spans
+    /// several.
+    pub focused: Option<&'a str>,
+    /// Shift is held: every display moves together.
+    pub all: bool,
 }
 
 /// Step per press, as a fraction of full scale.
@@ -360,19 +364,39 @@ fn toggle_mic_mute(
     None
 }
 
+/// A brightness key: the display the person works on moves by `delta`, or,
+/// with Shift, every display together, each keeping its share of the
+/// brightest one's level. The readout names the display whenever more than
+/// one can be dimmed.
 fn step_brightness(delta: f32, actions: &dyn QsActions, keys: &BrightnessKeys<'_>) -> Option<Osd> {
+    // Cached levels: a DDC/CI read takes tens of milliseconds, and a held
+    // key repeats faster than that.
+    if keys.all && keys.displays.len() > 1 {
+        let levels: Vec<f32> = keys.displays.iter().map(|display| display.level).collect();
+        let next = os_actions::step_together(&levels, delta);
+        let mut moved = None::<f32>;
+        for (display, level) in keys.displays.iter().zip(&next) {
+            if actions
+                .set_display_brightness(&display.connector, level * 100.0)
+                .is_ok()
+            {
+                moved = Some(moved.map_or(*level, |brightest| brightest.max(*level)));
+            }
+        }
+        let all = crate::shell::i18n::t("osd-all-displays");
+        return moved.map(|brightest| Osd::display_brightness(brightest, Some(&all)));
+    }
     let target = keys
-        .under_pointer
+        .focused
         .and_then(|connector| keys.displays.iter().find(|d| d.connector == connector))
         .or_else(|| keys.displays.first());
     if let Some(display) = target {
-        // Cached levels: a DDC/CI read takes tens of milliseconds, and a
-        // held key repeats faster than that.
         let next = (display.level + delta).clamp(0.0, 1.0);
         actions
             .set_display_brightness(&display.connector, next * 100.0)
             .ok()?;
-        return Some(Osd::brightness(next));
+        let name = (keys.displays.len() > 1).then_some(display.name.as_str());
+        return Some(Osd::display_brightness(next, name));
     }
     // No poller: reading sysfs is a file read, not a subprocess, so
     // asking every time is cheap. A machine with nothing to read — an
@@ -740,46 +764,121 @@ mod tests {
         );
     }
 
+    fn display(
+        connector: &str,
+        name: &str,
+        level: f32,
+    ) -> crate::shell::chrome_state::DisplayBrightness {
+        crate::shell::chrome_state::DisplayBrightness {
+            connector: connector.into(),
+            name: name.into(),
+            level,
+        }
+    }
+
+    fn press_brightness(
+        rec: &Recorder,
+        key: MediaKey,
+        brightness: BrightnessKeys<'_>,
+    ) -> Option<Osd> {
+        let (transport_osd, _mailbox) = crate::session_runtime::mailbox(std::sync::Arc::new(|| {}));
+        match apply(
+            key,
+            &Context {
+                actions: rec,
+                audio: &DispatcherAudio(rec),
+                status: None,
+                transport_osd: &transport_osd,
+                airplane_mode: false,
+                brightness,
+            },
+        ) {
+            Some(Response::Osd(osd)) => Some(osd),
+            None => None,
+            Some(other) => panic!("{key:?} answered {other:?}, not a readout"),
+        }
+    }
+
+    // USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
+    // brightness etc. should in general be raised on the correct (?)
+    // screen(s)… in consistent positions… also how to handle brightness
+    // controls on multiple screens" — the brightness keys adjust the display
+    // the person works on, and the readout names it when more than one
+    // display can be dimmed.
     #[test]
-    fn brightness_keys_adjust_the_monitor_under_the_pointer() {
+    fn brightness_keys_adjust_the_focused_display_and_name_it() {
         let displays = [
-            os_actions::MonitorLevel {
-                connector: "eDP-1".into(),
-                level: 0.5,
-            },
-            os_actions::MonitorLevel {
-                connector: "DP-2".into(),
-                level: 0.3,
-            },
+            display("eDP-1", "Built-in display", 0.5),
+            display("DP-2", "Dell U2723", 0.3),
         ];
         let rec = Recorder::default();
-        let (transport_osd, _mailbox) = crate::session_runtime::mailbox(std::sync::Arc::new(|| {}));
-        let press = |key, under_pointer| {
-            apply(
-                key,
-                &Context {
-                    actions: &rec,
-                    audio: &DispatcherAudio(&rec),
-                    status: None,
-                    transport_osd: &transport_osd,
-                    airplane_mode: false,
-                    brightness: BrightnessKeys {
-                        displays: &displays,
-                        under_pointer,
-                    },
-                },
-            )
-        };
-        let Some(Response::Osd(osd)) = press(MediaKey::BrightnessUp, Some("DP-2")) else {
-            panic!("an OSD for the adjusted monitor");
-        };
-        assert_eq!(osd.caption(), "Brightness 40%");
-        // A pointer over a monitor without a control adjusts the first.
-        press(MediaKey::BrightnessDown, Some("HDMI-A-1"));
+        let osd = press_brightness(
+            &rec,
+            MediaKey::BrightnessUp,
+            BrightnessKeys {
+                displays: &displays,
+                focused: Some("DP-2"),
+                all: false,
+            },
+        )
+        .expect("an OSD for the adjusted display");
+        assert_eq!(osd.caption(), "Brightness 40%, Dell U2723");
+        // Focus on a display without a control adjusts the first.
+        press_brightness(
+            &rec,
+            MediaKey::BrightnessDown,
+            BrightnessKeys {
+                displays: &displays,
+                focused: Some("HDMI-A-1"),
+                all: false,
+            },
+        );
         assert_eq!(
             *rec.calls.borrow(),
             ["brightness:DP-2=40.0", "brightness:eDP-1=40.0"]
         );
+        // One dimmable display needs no name.
+        let alone = press_brightness(
+            &rec,
+            MediaKey::BrightnessUp,
+            BrightnessKeys {
+                displays: &displays[..1],
+                focused: Some("eDP-1"),
+                all: false,
+            },
+        )
+        .expect("an OSD");
+        assert_eq!(alone.caption(), "Brightness 60%");
+    }
+
+    // USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
+    // brightness etc. should in general be raised on the correct (?)
+    // screen(s)… in consistent positions… also how to handle brightness
+    // controls on multiple screens" — Shift with a brightness key moves
+    // every display together, keeping their relative levels.
+    #[test]
+    fn shift_brightness_moves_every_display_keeping_their_relative_levels() {
+        let displays = [
+            display("eDP-1", "Built-in display", 0.8),
+            display("DP-2", "Dell U2723", 0.4),
+        ];
+        let rec = Recorder::default();
+        let osd = press_brightness(
+            &rec,
+            MediaKey::BrightnessDown,
+            BrightnessKeys {
+                displays: &displays,
+                focused: Some("DP-2"),
+                all: true,
+            },
+        )
+        .expect("an OSD for all displays");
+        assert_eq!(
+            *rec.calls.borrow(),
+            ["brightness:eDP-1=70.0", "brightness:DP-2=35.0"],
+            "the dimmer display stays at half the brighter one"
+        );
+        assert_eq!(osd.caption(), "Brightness 70%, All displays");
     }
 
     #[test]
