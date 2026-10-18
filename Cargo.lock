@@ -2385,6 +2385,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-files",
+ "tilo-process",
  "tilo-vello",
  "tilo-winit",
  "tracing",

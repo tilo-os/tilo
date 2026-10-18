@@ -22,6 +22,14 @@
 //! * **Realtime presentation.** [`request_realtime`] puts the calling thread
 //!   (the compositor's present thread) in `SCHED_RR`, directly when the
 //!   process may, otherwise through `RealtimeKit`.
+//! * **Who the OOM killer picks.** Each tier has an `oom_score_adj`
+//!   ([`oom_score_adj`]): an app in the background is far likelier to be
+//!   chosen than the focused one, and an app's independent jobs a little
+//!   likelier than the app. The session (the compositor, the shell's own
+//!   helpers) runs at [`SESSION_OOM_SCORE_ADJ`], which the kernel never
+//!   chooses: the display manager's unit sets it before the login, where
+//!   only a privileged process can (`greetd.service.d/50-tilo-oom.conf`).
+//!   Everything an app runs leaves it first ([`leave_session_protection`]).
 //!
 //! Everything here runs off the caller's thread and treats failure as a log
 //! line: a missing manager, a refusing policy or a unit that already exited
@@ -50,6 +58,17 @@ pub const SESSION_WEIGHT: u64 = 1000;
 pub const PRESENT_RT_PRIORITY: i32 = 5;
 /// Nice value of the compositor's main loop, which dispatches input.
 pub const MAIN_LOOP_NICE: i32 = -8;
+/// `oom_score_adj` of the focused app: the kernel's default, the lowest an
+/// unprivileged process may hand out once the session left its own.
+pub const FOREGROUND_OOM_SCORE_ADJ: i32 = 0;
+/// `oom_score_adj` of an app in the background: half the scale, so it is
+/// chosen before the focused app unless the focused one holds far more.
+pub const BACKGROUND_OOM_SCORE_ADJ: i32 = 500;
+/// What an app's independent job adds to its app's `oom_score_adj`: a
+/// runaway job goes before the app that started it.
+pub const JOB_OOM_SCORE_EXTRA: i32 = 100;
+/// `oom_score_adj` of the session: the kernel never chooses it.
+pub const SESSION_OOM_SCORE_ADJ: i32 = -1000;
 
 /// A systemd property value. Resource-control properties are `t` (u64) except
 /// the OOM preference, a string.
@@ -67,6 +86,38 @@ pub type Property = (&'static str, Value);
 pub enum Tier {
     Foreground,
     Background,
+}
+
+/// The `oom_score_adj` of an app's `leaf` in `tier`.
+#[must_use]
+pub const fn oom_score_adj(tier: Tier, leaf: crate::app_cgroup::Leaf) -> i32 {
+    let app = match tier {
+        Tier::Foreground => FOREGROUND_OOM_SCORE_ADJ,
+        Tier::Background => BACKGROUND_OOM_SCORE_ADJ,
+    };
+    match leaf {
+        crate::app_cgroup::Leaf::Main => app,
+        crate::app_cgroup::Leaf::Job => app.saturating_add(JOB_OOM_SCORE_EXTRA),
+    }
+}
+
+/// Leave the session's protection from the OOM killer: an app, or the
+/// launcher about to start one, must be a candidate like any app. Raising
+/// one's own `oom_score_adj` needs no privilege; this only ever raises it, to
+/// the foreground tier's (every launch starts there).
+pub fn leave_session_protection() {
+    let path = "/proc/self/oom_score_adj";
+    let Ok(current) = std::fs::read_to_string(path) else {
+        return;
+    };
+    if current
+        .trim()
+        .parse::<i32>()
+        .is_ok_and(|current| current < FOREGROUND_OOM_SCORE_ADJ)
+        && let Err(error) = std::fs::write(path, FOREGROUND_OOM_SCORE_ADJ.to_string())
+    {
+        eprintln!("tilo-launcher: keeping the session's OOM protection: {error}");
+    }
 }
 
 /// Physical memory in bytes from `/proc/meminfo` text.
@@ -224,6 +275,15 @@ pub trait UnitControl: Send + 'static {
     ///
     /// The manager's reason when it refuses or is unreachable.
     fn set_properties(&self, unit: &str, props: &[Property]) -> Result<(), String>;
+    /// Put `unit` in `tier`: its [`tier_properties`] for a machine with
+    /// `total` bytes of memory.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::set_properties`].
+    fn set_tier(&self, unit: &str, tier: Tier, total: Option<u64>) -> Result<(), String> {
+        self.set_properties(unit, &tier_properties(tier, total))
+    }
 }
 
 /// [`UnitControl`] over `/proc` and the system's `busctl`, the same front end
@@ -246,6 +306,19 @@ impl UnitControl for BusctlControl {
             return crate::app_cgroup::apply(&crate::app_cgroup::fs_path(unit), props);
         }
         run_busctl(&set_properties_args(Bus::User, unit, props))
+    }
+
+    fn set_tier(&self, unit: &str, tier: Tier, total: Option<u64>) -> Result<(), String> {
+        self.set_properties(unit, &tier_properties(tier, total))?;
+        if unit.starts_with('/') {
+            // An app of the session's tree also moves on the OOM killer's
+            // list; a scope of its own keeps what it was born with.
+            let dir = crate::app_cgroup::fs_path(unit);
+            if let Err(error) = crate::app_cgroup::set_oom_score_adj(&dir, tier) {
+                eprintln!("tilo-priority: {unit}: {error}");
+            }
+        }
+        Ok(())
     }
 }
 
@@ -396,8 +469,7 @@ impl<C: UnitControl> FocusBoost<C> {
         if let Some(scope) = boost
             && self.focused.as_deref() != Some(scope.as_str())
         {
-            let props = tier_properties(Tier::Foreground, self.total);
-            match self.control.set_properties(&scope, &props) {
+            match self.control.set_tier(&scope, Tier::Foreground, self.total) {
                 Ok(()) => {
                     self.foreground.insert(scope.clone());
                     self.focused = Some(scope);
@@ -443,12 +515,11 @@ impl<C: UnitControl> FocusBoost<C> {
             .filter_map(|launch| control.app_scope_of_pid(launch.pid))
             .collect();
         keep.extend(self.focused.clone());
-        let demote = tier_properties(Tier::Background, self.total);
         let mut victims: Vec<String> = self.foreground.difference(&keep).cloned().collect();
         victims.sort_unstable();
         for scope in victims {
             // A scope that already exited makes this fail; nothing to demote then.
-            let _ = self.control.set_properties(&scope, &demote);
+            let _ = self.control.set_tier(&scope, Tier::Background, self.total);
             self.foreground.remove(&scope);
         }
     }
@@ -853,6 +924,47 @@ mod tests {
         for (name, _) in fg.iter().chain(&bg) {
             assert!(!name.contains("Max") && !name.contains("High") && *name != "CPUQuota");
         }
+    }
+
+    // USER REQUIREMENT (2026-10-19): "failures are bugs: disk full/OOM
+    // crashing or blocking login is a bug to fix, never normal". When the
+    // kernel must choose, background apps go first, the focused app is
+    // protected, and the shell and compositor are never chosen.
+    #[test]
+    fn the_oom_killer_prefers_the_background_and_never_chooses_the_session() {
+        use crate::app_cgroup::Leaf;
+        let focused = oom_score_adj(Tier::Foreground, Leaf::Main);
+        let background = oom_score_adj(Tier::Background, Leaf::Main);
+        assert_eq!(focused, 0);
+        assert_eq!(background, 500);
+        assert_eq!(oom_score_adj(Tier::Foreground, Leaf::Job), 100);
+        assert_eq!(oom_score_adj(Tier::Background, Leaf::Job), 600);
+        assert!(background > focused, "the background goes first");
+        assert!(
+            oom_score_adj(Tier::Foreground, Leaf::Job) > focused,
+            "a job goes before the app that started it"
+        );
+        // -1000 is OOM_SCORE_ADJ_MIN: the kernel never chooses it.
+        assert_eq!(SESSION_OOM_SCORE_ADJ, -1000);
+        for tier in [Tier::Foreground, Tier::Background] {
+            for leaf in [Leaf::Main, Leaf::Job] {
+                let adj = oom_score_adj(tier, leaf);
+                assert!(
+                    adj > SESSION_OOM_SCORE_ADJ && adj <= 1000,
+                    "{tier:?} {leaf:?}"
+                );
+                // Unprivileged: never below what an app is born with.
+                assert!(adj >= FOREGROUND_OOM_SCORE_ADJ);
+            }
+        }
+        // The image gives the session its value.
+        let unit =
+            include_str!("../../../../os/etc/systemd/system/greetd.service.d/50-tilo-oom.conf");
+        assert!(
+            unit.lines()
+                .any(|line| line.trim() == format!("OOMScoreAdjust={SESSION_OOM_SCORE_ADJ}")),
+            "{unit}"
+        );
     }
 
     #[test]

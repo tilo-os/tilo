@@ -404,6 +404,19 @@ fn dispatch_command(
     command: Cmd,
     retained_endpoint: Option<launcher::retained_view::OrdinaryLaunchGate>,
 ) -> ExitCode {
+    // Whatever runs an app, or is about to start one, leaves the session's
+    // protection from the OOM killer, which it may have inherited from the
+    // compositor: an app is always a candidate.
+    if matches!(
+        command,
+        Cmd::Run { .. }
+            | Cmd::RunInstalled { .. }
+            | Cmd::Exec { .. }
+            | Cmd::AdmitShare { .. }
+            | Cmd::RunHost(_)
+    ) {
+        launcher::priority::leave_session_protection();
+    }
     match command {
         Cmd::Run {
             manifest,
@@ -671,14 +684,35 @@ fn run_app_spawner(tree: Option<PathBuf>) -> ExitCode {
     }
     // SAFETY: the descriptor was just created and is owned here alone.
     let socket = unsafe { OwnedFd::from_raw_fd(socket) };
+    // fd 1, when it is a socket, is where the compositor hears of what the
+    // spawner reports on its own (a job that ended for memory). It moves off
+    // stdout the same way.
+    let events = {
+        // SAFETY: fstat into a zeroed stat buffer on fd 1.
+        let is_socket = unsafe {
+            let mut stat: libc::stat = std::mem::zeroed();
+            libc::fstat(1, &raw mut stat) == 0 && stat.st_mode & libc::S_IFMT == libc::S_IFSOCK
+        };
+        // SAFETY: duplicating fd 1 to a fresh close-on-exec descriptor.
+        let events = if is_socket {
+            unsafe { libc::fcntl(1, libc::F_DUPFD_CLOEXEC, 3) }
+        } else {
+            -1
+        };
+        // SAFETY: a descriptor just created and owned here alone.
+        (events >= 0).then(|| unsafe { OwnedFd::from_raw_fd(events) })
+    };
     match std::fs::File::open("/dev/null") {
         // SAFETY: both are descriptors this process owns.
         Ok(null) => unsafe {
             libc::dup2(null.as_raw_fd(), 0);
+            if events.is_some() {
+                libc::dup2(null.as_raw_fd(), 1);
+            }
         },
         Err(error) => eprintln!("tilo-spawner: /dev/null: {error}"),
     }
-    match launcher::spawner::serve(&socket, tree) {
+    match launcher::spawner::serve(&socket, events, tree) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("tilo-spawner: {error}");

@@ -7065,6 +7065,15 @@ impl XdgShellHandler for State {
             }
         } else {
             let mut tree = self.workspace_tree.write();
+            // A window that went away without being asked to may have been
+            // ended for memory: keep its tab, so the notice that says so can
+            // put it back where it was (`launcher::take_lost_tabs`).
+            if !asked_to_close
+                && let Some(key) = launch.as_deref()
+                && let Some(entry) = crate::shell::closed_tabs::capture_surface(&tree, surface_id)
+            {
+                crate::shell::launcher::note_lost_tab(key, entry);
+            }
             let _ = tab_binding::close_tab_for_destroyed_surface_and_persist(&mut tree, surface_id);
         }
         self.host_launch_surface_labels.remove(&surface_id);

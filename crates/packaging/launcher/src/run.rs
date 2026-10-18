@@ -3732,6 +3732,10 @@ pub(crate) fn run_with_context(
         )? {
             resolved.push(stats);
         }
+        // Every app may start independent jobs; it declares nothing for it.
+        if let Some(door) = crate::job_door::open(opts.no_services) {
+            resolved.push(door);
+        }
         resolved
     };
     let binds = to_service_binds(&resolved);

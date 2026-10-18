@@ -1069,6 +1069,15 @@ launch-failed-crashed = Die App ist abgestürzt, bevor sie sich öffnete. Öffne
 launch-unnamed-app = Anwendung
 launch-failure-title = { $app } konnte nicht geöffnet werden
 
+# An app, or a process it started, that the system ended because memory ran out
+memory-app-closed-title = { $app } hatte nicht genug Arbeitsspeicher und wurde geschlossen
+memory-app-closed-body = Öffne es erneut, um dort weiterzumachen, wo du warst.
+memory-app-runaway-body = Es hat immer mehr Arbeitsspeicher belegt, bis der Computer knapp wurde. Öffne es erneut, um dort weiterzumachen, wo du warst.
+memory-job-stopped-title = { $process } in { $app } hatte nicht genug Arbeitsspeicher und wurde beendet
+memory-job-stopped-body = { $app } ist weiterhin geöffnet.
+memory-job-runaway-body = Es hat immer mehr Arbeitsspeicher belegt, bis der Computer knapp wurde. { $app } ist weiterhin geöffnet.
+memory-app-reopen = Erneut öffnen
+
 # Tab- und Fensteraktionen, die nicht ausgeführt werden konnten
 window-duplicate-no-tab = Es gibt keinen Tab zum Duplizieren.
 window-duplicate-foreign = Dieses Fenster kann nicht dupliziert werden. Öffne ein weiteres über die Suche.

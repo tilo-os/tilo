@@ -6908,7 +6908,7 @@ impl ShellOverlayHost {
         for event in events {
             // A window that went away without being closed was lost, however
             // the process then exited; a new start forgets an older loss.
-            let lost = match event.kind {
+            let lost = match &event.kind {
                 LaunchEventKind::Exited | LaunchEventKind::Failed { .. } => {
                     crate::shell::launcher::take_launch_vanished(&event.package_id)
                 }
@@ -6916,12 +6916,44 @@ impl ShellOverlayHost {
                     crate::shell::launcher::note_launch_restarted(&event.package_id);
                     false
                 }
-                LaunchEventKind::SpawnFailed { .. } | LaunchEventKind::WindowLost { .. } => false,
+                LaunchEventKind::OutOfMemory(end) if end.closed_the_app() => {
+                    crate::shell::launcher::take_launch_vanished(&event.package_id);
+                    false
+                }
+                LaunchEventKind::SpawnFailed { .. }
+                | LaunchEventKind::WindowLost { .. }
+                | LaunchEventKind::OutOfMemory(_) => false,
+            };
+            // The windows that went away with the launch are worth keeping
+            // only when memory ended it: then its notice reopens them where
+            // they were. Any other end of the app forgets them.
+            let lost_tabs = match &event.kind {
+                LaunchEventKind::OutOfMemory(end) if !end.closed_the_app() => Vec::new(),
+                LaunchEventKind::Started { .. } => Vec::new(),
+                _ => crate::shell::launcher::take_lost_tabs(&event.package_id),
             };
             let event = event.with_window_lost(lost);
             if self.room_activity.observe_agent_launch_event(&event) {
                 chrome_handle.borrow_mut().bump();
                 posted = true;
+            }
+            // Memory ended the app or one of its jobs: say which and why,
+            // whether or not its window had shown, and offer the app back
+            // where it was.
+            if let LaunchEventKind::OutOfMemory(end) = &event.kind {
+                if end.closed_the_app() {
+                    crate::shell::launcher::clear_pending_placement(&event.package_id);
+                    crate::shell::catalogue::take_pending_launch(&event.package_id);
+                    let _ = crate::shell::launcher::take_launch_presented(&event.package_id);
+                }
+                event.log_failure();
+                if let Some(notice) = event.failure_notice() {
+                    let mut st = chrome_handle.borrow_mut();
+                    st.push_out_of_memory_notice(notice, lost_tabs);
+                    st.bump();
+                    posted = true;
+                }
+                continue;
             }
             // A failure settles the pending launch here. `Started`
             // doesn't — the window is still seconds away — that's
@@ -6972,7 +7004,8 @@ impl ShellOverlayHost {
             match &event.kind {
                 LaunchEventKind::Started { .. }
                 | LaunchEventKind::Exited
-                | LaunchEventKind::WindowLost { .. } => {
+                | LaunchEventKind::WindowLost { .. }
+                | LaunchEventKind::OutOfMemory(_) => {
                     let _ = crate::shell::launcher::take_launch_presented(&event.package_id);
                 }
                 // Its window was up, so it did open; the window, and its
@@ -7031,7 +7064,8 @@ impl ShellOverlayHost {
                 }
                 LaunchEventKind::SpawnFailed { .. }
                 | LaunchEventKind::Failed { .. }
-                | LaunchEventKind::WindowLost { .. } => {}
+                | LaunchEventKind::WindowLost { .. }
+                | LaunchEventKind::OutOfMemory(_) => {}
             }
             event.log_failure();
             let Some(notice) = event.failure_notice() else {

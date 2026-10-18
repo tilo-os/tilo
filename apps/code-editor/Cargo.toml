@@ -47,6 +47,9 @@ tilo-files = { path = "../../crates/platform/tilo-files" }
 url.workspace = true
 uuid.workspace = true
 bounded-command = { path = "../../crates/system/bounded-command" }
+# Language servers start as independent jobs (`tilo_process::job`): a
+# runaway server ends alone, never the editor.
+tilo-process = { path = "../../crates/platform/tilo-process", features = ["jobs"] }
 hex.workspace = true
 sha2.workspace = true
 workspace-hack = { version = "0.1" }

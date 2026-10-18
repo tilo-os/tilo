@@ -1400,6 +1400,12 @@ impl RoomActivityPane {
         &mut self,
         event: &crate::shell::launcher::LaunchEvent,
     ) -> bool {
+        // A job that ended for memory is no end of the agent's app.
+        if let crate::shell::launcher::LaunchEventKind::OutOfMemory(end) = &event.kind
+            && !end.closed_the_app()
+        {
+            return false;
+        }
         self.0
             .observe_agent_launch_event(&activity_launch_event(event))
     }
@@ -1442,6 +1448,10 @@ fn activity_launch_event(
                 }
             }
             Native::Exited => Shared::Exited,
+            Native::OutOfMemory(_) => Shared::Failed {
+                code: None,
+                stderr_tail: "ran out of memory".to_string(),
+            },
         },
     }
 }

@@ -1066,6 +1066,15 @@ launch-failed-crashed = The app crashed before opening. Open Applications and tr
 launch-unnamed-app = application
 launch-failure-title = Couldn't open { $app }
 
+# An app, or a process it started, that the system ended because memory ran out
+memory-app-closed-title = { $app } ran out of memory and was closed
+memory-app-closed-body = Reopen it to continue where you left off.
+memory-app-runaway-body = It kept taking more memory until the computer ran low. Reopen it to continue where you left off.
+memory-job-stopped-title = { $process } in { $app } ran out of memory and was stopped
+memory-job-stopped-body = { $app } is still open.
+memory-job-runaway-body = It kept taking more memory until the computer ran low. { $app } is still open.
+memory-app-reopen = Reopen
+
 # Tab and window actions that could not be carried out
 window-duplicate-no-tab = There is no tab to duplicate.
 window-duplicate-foreign = Can't duplicate this window. Open another one from search.
