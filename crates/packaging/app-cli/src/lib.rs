@@ -485,6 +485,19 @@ pub fn installed_version(package_id: &str) -> Result<Option<String>, String> {
         .ok_or_else(|| format!("could not read the installed manifest for {package_id}"))
 }
 
+/// Whether the installed `package_id` is recorded at the package format this
+/// build reads. One installed before the format changed is behind whatever
+/// its version, and the next update replaces it
+/// ([`package_store::integrity::record_current`]). A package that is not
+/// installed, or a registry that cannot be read, is not judged here.
+#[must_use]
+pub fn installed_record_current(package_id: &str) -> bool {
+    package_store::find_installed(package_id)
+        .ok()
+        .flatten()
+        .is_none_or(|entry| package_store::integrity::record_current(&entry))
+}
+
 /// Installed package versions, parsed once for bulk update checks.
 ///
 /// # Errors
