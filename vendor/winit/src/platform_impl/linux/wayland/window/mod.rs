@@ -339,6 +339,38 @@ impl Window {
         accepted
     }
 
+    pub fn client_buffer_formats(&self) -> Vec<(u32, u64)> {
+        self.window_state.lock().unwrap().client_buffer_formats()
+    }
+
+    pub fn create_client_buffer(
+        &self,
+        source: super::types::client_buffers::ClientBufferSource<'_>,
+        on_release: Box<dyn Fn() + Send + Sync>,
+    ) -> Option<super::types::client_buffers::ClientBuffer> {
+        let buffer = self
+            .window_state
+            .lock()
+            .unwrap()
+            .create_client_buffer(source, on_release);
+        // The request goes out now: the buffer is attached from another
+        // thread, possibly before this loop flushes again.
+        self.event_loop_awakener.ping();
+        buffer
+    }
+
+    pub fn attach_client_buffer(
+        &self,
+        buffer: &super::types::client_buffers::ClientBuffer,
+        damage: &[(i32, i32, i32, i32)],
+        observer: Option<crate::platform::wayland::WaylandPresentationObserver>,
+    ) -> bool {
+        self.window_state
+            .lock()
+            .unwrap()
+            .attach_client_buffer(buffer, damage, observer)
+    }
+
     #[inline]
     pub fn pre_present_notify(&self) {
         self.window_state.lock().unwrap().request_frame_callback();
