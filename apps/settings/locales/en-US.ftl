@@ -2460,3 +2460,13 @@ settings-drives-change-error = Not changed: { $error }
 settings-drives-bad-request = That is not a remembered drive.
 settings-drives-unexpected = The drive service gave an unexpected answer.
 settings-drives-refreshed = Drives read again.
+
+# Which shortcut pastes in an app when the shell pastes for you (Super+V)
+input-paste-title = Paste shortcut
+input-paste-caption = When you choose an image or files in clipboard history (Super+V), Tilo pastes them with the app's own shortcut: Ctrl+Shift+V in terminals, Ctrl+V elsewhere. Set it here for an app that pastes differently.
+input-paste-app = App id
+input-paste-app-placeholder = org.example.Terminal
+input-paste-ctrl-v = Ctrl+V
+input-paste-ctrl-shift-v = Ctrl+Shift+V
+input-paste-entry = { $app }: { $shortcut }
+input-paste-remove = Remove

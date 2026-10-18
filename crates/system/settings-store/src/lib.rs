@@ -108,6 +108,7 @@ pub mod keyboard_sources;
 pub mod live;
 pub mod magnifier;
 pub mod notification_policy;
+pub mod paste_shortcut;
 pub mod person_displays;
 pub mod personal_dictionary;
 pub mod power;

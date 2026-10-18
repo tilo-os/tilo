@@ -226,6 +226,12 @@ pub struct InputPrefs {
     #[serde(deserialize_with = "settings_store::hardware::lenient_tablets")]
     #[model(readonly)]
     pub tablets: std::collections::BTreeMap<String, settings_store::hardware::TabletConfig>,
+    /// Per-app paste chord the shell presses when it pastes for the person
+    /// (`ctrl_v` or `ctrl_shift_v`), keyed by app id; apps not listed get
+    /// [`settings_store::paste_shortcut::default_for`].
+    #[serde(deserialize_with = "settings_store::paste_shortcut::lenient_overrides")]
+    #[model(readonly)]
+    pub paste_shortcuts: std::collections::BTreeMap<String, String>,
 }
 
 impl Default for InputPrefs {
@@ -268,6 +274,7 @@ impl Default for InputPrefs {
             keyboard_preview_level: 0,
             keyboard_inspected_key: "AD01".into(),
             tablets: std::collections::BTreeMap::new(),
+            paste_shortcuts: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -291,6 +298,37 @@ impl InputPrefs {
         self.key_repeat = rate;
         self.key_repeat_delay_ms = None;
         self.key_repeat_rate_hz = None;
+        Ok(())
+    }
+}
+
+impl InputPrefs {
+    /// Set which shortcut pastes in `app` when the shell pastes for the
+    /// person (Super+V with an image or files), or `default` to go back to
+    /// what its app id suggests (Ctrl+Shift+V for terminals, else Ctrl+V).
+    ///
+    /// # Errors
+    ///
+    /// No app id, or a shortcut that is none of those.
+    pub fn set_paste_shortcut(&mut self, app: &str, shortcut: &str) -> Result<(), String> {
+        use settings_store::paste_shortcut as paste;
+        let app = app.trim();
+        if !paste::valid_app_id(app) {
+            return Err("an app id is needed".into());
+        }
+        let chosen = match shortcut {
+            "default" => None,
+            other => Some(
+                paste::PasteShortcut::parse(other)
+                    .ok_or_else(|| format!("`{other}` is not a paste shortcut"))?,
+            ),
+        };
+        self.paste_shortcuts
+            .retain(|id, _| !id.eq_ignore_ascii_case(app));
+        if let Some(chosen) = chosen {
+            self.paste_shortcuts
+                .insert(app.to_string(), chosen.id().to_string());
+        }
         Ok(())
     }
 }
@@ -1640,5 +1678,54 @@ impl InputPrefs {
             settings_store::hardware::SCROLL_SPEED_MIN..=settings_store::hardware::SCROLL_SPEED_MAX,
             "the scroll speed",
         )
+    }
+}
+
+#[cfg(test)]
+mod paste_shortcut_tests {
+    use super::InputPrefs;
+
+    #[test]
+    fn an_app_can_be_told_how_it_pastes_and_given_back_its_default() {
+        let mut input = InputPrefs::default();
+        input
+            .set_paste_shortcut(" org.example.MyTerm ", "ctrl_shift_v")
+            .unwrap();
+        assert_eq!(
+            input
+                .paste_shortcuts
+                .get("org.example.MyTerm")
+                .map(String::as_str),
+            Some("ctrl_shift_v")
+        );
+        // App ids compare case-insensitively: one entry per app.
+        input
+            .set_paste_shortcut("org.example.myterm", "ctrl_v")
+            .unwrap();
+        assert_eq!(input.paste_shortcuts.len(), 1);
+        assert!(
+            input
+                .set_paste_shortcut("org.example.MyTerm", "ctrl+v")
+                .is_err()
+        );
+        assert!(input.set_paste_shortcut("  ", "ctrl_v").is_err());
+        input
+            .set_paste_shortcut("org.example.myterm", "default")
+            .unwrap();
+        assert!(input.paste_shortcuts.is_empty());
+
+        // What the shell reads back from the stored section.
+        input
+            .set_paste_shortcut("org.example.MyTerm", "ctrl_shift_v")
+            .unwrap();
+        let stored = serde_json::to_value(&input).unwrap();
+        let section = stored.as_object().unwrap();
+        let overrides = settings_store::paste_shortcut::overrides_from_section(section);
+        assert_eq!(
+            settings_store::paste_shortcut::resolve("org.example.MyTerm", &overrides),
+            settings_store::paste_shortcut::PasteShortcut::CtrlShiftV
+        );
+        let back: InputPrefs = serde_json::from_value(stored).unwrap();
+        assert_eq!(back.paste_shortcuts, input.paste_shortcuts);
     }
 }
