@@ -1135,22 +1135,133 @@ struct ExecArgs {
 /// is the same sandboxed launch, built from the same manifest by the
 /// same code. The app still gets exactly one writable directory, and
 /// no flag here can change that.
-fn exec_installed(package: &str, args: ExecArgs) -> ExitCode {
-    // Held from the lookup until the app exits, so an update meanwhile
-    // leaves the build this launch runs alone (`launcher::lease`).
-    let (entry, _payload_held) = match launcher::lease::find_installed_held(package) {
-        Ok(Some(e)) => e,
+/// Exit status of a launch that cannot run yet: an update it needs is under
+/// way or has not been published (`EX_TEMPFAIL`).
+const LAUNCH_LATER: u8 = 75;
+
+/// The installed `package`, held for the launch, at a build this system runs.
+///
+/// A build made for older interface versions, or recorded at an older
+/// package format, is updated first, exactly as the shell does before it
+/// opens one (`shell::app_versions`), and the launch runs the new build. One
+/// that needs a newer system starts the system's update. Either way the
+/// person is told what happens; a launch is never just refused for being
+/// behind (docs/architecture/compatibility.md).
+fn find_current(
+    package: &str,
+) -> Result<
+    (
+        package_store::InstalledPackage,
+        Option<advisory_lock::FileLock>,
+    ),
+    ExitCode,
+> {
+    let found = find_held(package)?;
+    let provided = package_store::interfaces::system_interfaces();
+    let unmet = package_store::interfaces::unmet_at(provided.as_ref(), &found.0.manifest_path);
+    if unmet.is_empty() {
+        return Ok(found);
+    }
+    let describe = tilo_app_package::interfaces::describe_unmet(&unmet);
+    if unmet
+        .iter()
+        .any(|unmet| unmet.behind() != tilo_app_package::interfaces::Behind::Package)
+    {
+        eprintln!(
+            "tilo-launcher: {package} needs a newer Tilo ({describe}). \
+             Tilo is updating now; run it again once the update has applied."
+        );
+        start_system_update();
+        return Err(ExitCode::from(LAUNCH_LATER));
+    }
+    eprintln!("tilo-launcher: updating {package} to a build for this Tilo ({describe})…");
+    drop(found);
+    if !update_package(package) {
+        eprintln!(
+            "tilo-launcher: {package} could not be updated now; run it again once Tilo can reach the store."
+        );
+        return Err(ExitCode::from(LAUNCH_LATER));
+    }
+    let found = find_held(package)?;
+    let unmet = package_store::interfaces::unmet_at(provided.as_ref(), &found.0.manifest_path);
+    if unmet.is_empty() {
+        return Ok(found);
+    }
+    eprintln!(
+        "tilo-launcher: waiting for an update from {package}'s developer: no build fits this Tilo yet ({}).",
+        tilo_app_package::interfaces::describe_unmet(&unmet)
+    );
+    Err(ExitCode::from(LAUNCH_LATER))
+}
+
+/// The installed `package`, held for the launch.
+fn find_held(
+    package: &str,
+) -> Result<
+    (
+        package_store::InstalledPackage,
+        Option<advisory_lock::FileLock>,
+    ),
+    ExitCode,
+> {
+    match launcher::lease::find_installed_held(package) {
+        Ok(Some(found)) => Ok(found),
         Ok(None) => {
             eprintln!(
                 "tilo-launcher: package {package} is not installed. \
                  Run `tilo-install list` to see what is."
             );
-            return ExitCode::from(2);
+            Err(ExitCode::from(2))
         }
         Err(e) => {
             eprintln!("tilo-launcher: {e}");
-            return ExitCode::from(2);
+            Err(ExitCode::from(2))
         }
+    }
+}
+
+/// `app update <package>`, as the shell runs it; whether it succeeded.
+fn update_package(package: &str) -> bool {
+    let beside = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("app")));
+    let Some(app) = beside
+        .into_iter()
+        .chain([
+            PathBuf::from("/usr/libexec/app"),
+            PathBuf::from("/usr/bin/app"),
+        ])
+        .find(|path| path.exists())
+    else {
+        return false;
+    };
+    std::process::Command::new(app)
+        .args(["update", package])
+        .stdin(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// Start the system's update without waiting for it, as the shell does when
+/// an app needs a newer system (`tilo-deployment-update.service`).
+fn start_system_update() {
+    let _ = std::process::Command::new("systemctl")
+        .args([
+            "start",
+            "--no-block",
+            "--no-ask-password",
+            "tilo-deployment-update.service",
+        ])
+        .stdin(std::process::Stdio::null())
+        .status();
+}
+
+fn exec_installed(package: &str, args: ExecArgs) -> ExitCode {
+    // Held from the lookup until the app exits, so an update meanwhile
+    // leaves the build this launch runs alone (`launcher::lease`).
+    let (entry, _payload_held) = match find_current(package) {
+        Ok(found) => found,
+        Err(code) => return code,
     };
     let manifest = match launcher::manifest::read_manifest(&entry.manifest_path) {
         Ok(m) => m,
@@ -1263,18 +1374,9 @@ fn run_installed(
     rest: Vec<String>,
 ) -> ExitCode {
     // As in `exec_installed`.
-    let (entry, _payload_held) = match launcher::lease::find_installed_held(package) {
-        Ok(Some(e)) => e,
-        Ok(None) => {
-            eprintln!(
-                "tilo-launcher: package {package} is not installed. Run `tilo-install list` to see what is."
-            );
-            return ExitCode::from(2);
-        }
-        Err(e) => {
-            eprintln!("tilo-launcher: {e}");
-            return ExitCode::from(2);
-        }
+    let (entry, _payload_held) = match find_current(package) {
+        Ok(found) => found,
+        Err(code) => return code,
     };
 
     // Read the manifest to check `[cli].commands` contains the requested
