@@ -24,7 +24,9 @@ crate-type = ["dylib"]
 # Music and Tube, account custody, IMAP and WebDAV for Mail, Settings and
 # Calendar, the time-zone database for Calendar and Clocks, the contact
 # directory for Contacts, Mail and Messages, the PDF engine for PDF Viewer,
-# Files, Writer and Print Centre). Every app process maps this library, so a
+# Files, Writer and Print Centre), and a bundled C library apps call
+# themselves (SQLite: this library exports no C symbols, so an app whose own
+# code calls sqlite3_* could not link). Every app process maps this library, so a
 # crate here costs every app its relocations and dirty pages; an app that
 # needs one of those links it itself, or loads its engine library, and gets
 # only the code it calls. tools/policy/check_runtime_dylib_surface.py fails
