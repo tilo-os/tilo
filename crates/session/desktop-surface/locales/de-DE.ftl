@@ -33,6 +33,16 @@ topbar-show-clock = Uhr anzeigen
 topbar-show-system-monitor = Systemmonitor anzeigen
 topbar-show-calendar = Kalender anzeigen
 topbar-open-quick-settings = Schnelleinstellungen öffnen
+topbar-bell = { $unread ->
+    [0] Mitteilungen
+    [one] Mitteilungen, 1 ungelesen
+   *[other] Mitteilungen, { $unread } ungelesen
+}
+topbar-bell-silenced = { $unread ->
+    [0] Mitteilungen stummgeschaltet
+    [one] Mitteilungen stummgeschaltet, 1 ungelesen
+   *[other] Mitteilungen stummgeschaltet, { $unread } ungelesen
+}
 topbar-show-collaborators = Mitwirkende anzeigen
 topbar-viewer-can-control = kann { $targets } steuern
 topbar-viewer-view-only = sieht nur { $targets }

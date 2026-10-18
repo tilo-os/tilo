@@ -1942,6 +1942,22 @@ impl TopBarChrome {
         )
     }
 
+    /// The status cluster's bell, read out: whether fresh banners are
+    /// silenced and how many are unread. `None` when no bell is painted.
+    fn bell_name(&self) -> Option<String> {
+        if self.bell.unread == 0 && !self.bell.quiet {
+            return None;
+        }
+        Some(t_args(
+            if self.bell.quiet {
+                "topbar-bell-silenced"
+            } else {
+                "topbar-bell"
+            },
+            &[("unread", self.bell.unread.into())],
+        ))
+    }
+
     fn control_name(&self, target: &str) -> String {
         match target {
             Self::CONTROL_TILO_MARK => t("topbar-tilo-menu"),
@@ -5943,6 +5959,14 @@ impl Widget for TopBarChrome {
                         checked,
                         ..Default::default()
                     });
+                // The bell painted in the status cluster says what it shows.
+                if target == Self::CONTROL_QUICK_SETTINGS
+                    && let Some(bell) = self.bell_name()
+                {
+                    node = node
+                        .with_description(bell.clone())
+                        .with_children(vec![AccessNode::new(Role::Image).with_name(bell)]);
+                }
                 // The pill names the workspace; where it stands among the
                 // others is said to a reader, as the menu lists them.
                 if target == Self::CONTROL_WORKSPACE_SETTINGS && self.workspace_total > 1 {
@@ -6595,6 +6619,25 @@ mod tests {
             "one glyph slot more: {loud:?} -> {quiet:?}"
         );
         assert_eq!(quiet.x1, loud.x1, "the cluster keeps its right edge");
+        bar.bell.unread = 2;
+        let node = bar.accessibility().expect("topbar semantics");
+        let tray = node
+            .children
+            .iter()
+            .find(|child| {
+                child.action_target.as_deref() == Some(TopBarChrome::CONTROL_QUICK_SETTINGS)
+            })
+            .expect("the status cluster");
+        assert_eq!(
+            tray.description.as_deref(),
+            Some("Notifications silenced, 2 unread"),
+            "the silenced bell is named"
+        );
+        assert!(
+            tray.children
+                .iter()
+                .any(|bell| bell.name.as_deref() == Some("Notifications silenced, 2 unread"))
+        );
     }
 
     #[test]
