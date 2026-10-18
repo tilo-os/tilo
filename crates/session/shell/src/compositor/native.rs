@@ -10170,6 +10170,16 @@ pub fn run() {
         Arc::clone(&chooser_attended),
         Arc::clone(&session_wake),
     );
+    // Toolkit apps' frames are drawn by their room's render service; the
+    // broker picks the service and keeps it running.
+    let render_broker =
+        match crate::compositor::render_broker::RenderBroker::start(tree_handle.clone()) {
+            Ok(broker) => Some(broker),
+            Err(error) => {
+                tracing::warn!(%error, "no render broker: apps draw on their own GPU device");
+                None
+            }
+        };
     // Held for the session: apps' system readings, the desk widget's too.
     let _system_stats_service =
         start_system_stats_service(portal_backend.as_ref(), Arc::clone(&session_wake));
@@ -10921,6 +10931,9 @@ pub fn run() {
         }
         if let Some(service) = chooser_service.as_ref() {
             pump_chooser_opens(service, &frame_builder.chrome_handle());
+        }
+        if let Some(broker) = render_broker.as_ref() {
+            broker.sync_rooms();
         }
         // Contextual routes from Personal Settings cross a worker-thread
         // service, then land here because ChromeState intentionally remains

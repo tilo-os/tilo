@@ -419,6 +419,11 @@ pub fn run() -> std::process::ExitCode {
         return std::process::ExitCode::from(code);
     }
     let early_args: Vec<String> = std::env::args().collect();
+    // A room's render service is this binary too, holding only its broker
+    // socket (`compositor::render_broker`).
+    if let Some(code) = tilo_render_service::dispatch(&early_args) {
+        return code;
+    }
     if let Some(code) = shell::shader_seed::dispatch(&early_args) {
         return code;
     }
