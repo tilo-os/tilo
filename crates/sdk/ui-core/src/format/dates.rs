@@ -92,6 +92,64 @@ impl Formats {
         )
     }
 
+    /// The short day heading, for a day column or a compact header:
+    /// `Tue, Jun 30`.
+    #[must_use]
+    pub fn day_heading_short(&self, day: NaiveDate) -> String {
+        widget_format(
+            "format-day-heading-short",
+            &[
+                ("weekday", self.weekday_short(day.weekday()).into()),
+                ("day", day.day().to_string().into()),
+                ("month", self.month_short(day.month()).into()),
+            ],
+        )
+    }
+
+    /// A span of days, its month named once when it is the same:
+    /// `Jun 23 – 29`, `Jun 29 – Jul 5`, `Dec 29, 2025 – Jan 4, 2026`.
+    #[must_use]
+    pub fn day_range(&self, start: NaiveDate, end: NaiveDate) -> String {
+        if start.year() != end.year() {
+            return widget_format(
+                "format-range",
+                &[
+                    ("start", self.month_day_year(start).into()),
+                    ("end", self.month_day_year(end).into()),
+                ],
+            );
+        }
+        if start.month() == end.month() {
+            return widget_format(
+                "format-day-range-in-month",
+                &[
+                    ("start", start.day().to_string().into()),
+                    ("end", end.day().to_string().into()),
+                    ("month", self.month_short(end.month()).into()),
+                ],
+            );
+        }
+        widget_format(
+            "format-range",
+            &[
+                ("start", self.month_day(start).into()),
+                ("end", self.month_day(end).into()),
+            ],
+        )
+    }
+
+    /// A month in a tight space: `Jun 2026`.
+    #[must_use]
+    pub fn month_heading_short(&self, day: NaiveDate) -> String {
+        widget_format(
+            "format-month-heading",
+            &[
+                ("month", self.month_short(day.month()).into()),
+                ("year", day.year().to_string().into()),
+            ],
+        )
+    }
+
     /// The **month heading** style, for a month grid: `June 2026`.
     #[must_use]
     pub fn month_heading(&self, day: NaiveDate) -> String {

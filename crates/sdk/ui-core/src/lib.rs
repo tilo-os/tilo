@@ -194,6 +194,7 @@ pub use native::host_notifications;
 pub mod host_notifications;
 pub mod i18n;
 pub mod icons;
+pub mod held_images;
 pub mod image_store;
 pub mod ime;
 pub mod input;

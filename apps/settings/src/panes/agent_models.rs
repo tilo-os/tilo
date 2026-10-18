@@ -2073,12 +2073,8 @@ fn action_slug(action: ModelAction) -> &'static str {
 }
 
 fn byte_size(bytes: u64) -> String {
-    // In-process models are a few hundred megabytes; "0.2 GiB" says little.
-    if bytes < 1_073_741_824 {
-        format!("{:.0} MB", bytes as f64 / 1_000_000.0)
-    } else {
-        format!("{:.1} GiB", bytes as f64 / 1_073_741_824.0)
-    }
+    // A model is a download stored on the drive: a size.
+    ui::format::size(bytes)
 }
 
 fn phase_progress(phase: &LocalModelPhase) -> Option<f32> {

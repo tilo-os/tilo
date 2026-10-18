@@ -5005,7 +5005,7 @@ impl CalendarApp {
         let body = format!(
             "You’re invited to {} on {} at {} ({}).\n\nReview the attached calendar invitation for details.",
             event.display_title(),
-            event.start.format("%A, %d %B %Y"),
+            ui::format::day_heading(event.start.date(), true),
             ui::clock::time_of_day(&event.start),
             event.timezone
         );

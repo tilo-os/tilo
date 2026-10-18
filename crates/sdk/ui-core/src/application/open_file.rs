@@ -45,8 +45,8 @@ impl OpenFile {
             .ok_or_else(|| format!("{media_type:?} is not a media type"))?;
         if bytes.len() > MAX_OPEN_FILE_BYTES {
             return Err(format!(
-                "{name} is larger than the {} MiB a component may be handed",
-                MAX_OPEN_FILE_BYTES / (1024 * 1024)
+                "{name} is larger than the {} a component may be handed",
+                crate::format::memory(u64::try_from(MAX_OPEN_FILE_BYTES).unwrap_or(u64::MAX))
             ));
         }
         let opened = Rc::new(RefCell::new(None));

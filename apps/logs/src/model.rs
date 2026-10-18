@@ -132,32 +132,39 @@ pub struct LogEntry {
 }
 
 impl LogEntry {
-    /// The list-column time in local time: `HH:MM:SS.mmm` for today,
-    /// `Mon DD HH:MM:SS.mmm` for an earlier day.
+    /// The list-column time in local time: `HH:MM:SS.mmm` for today, the
+    /// toolkit's month and day before it for an earlier day
+    /// (`Jun 29 09:30:01.123`).
     pub fn list_time(&self) -> String {
         let (y, mo, d, hh, mm, ss, milli) = civil(local_us(self.realtime_us));
         let now = ui::clock::local_now();
         let now_us = u64::try_from(now.timestamp_micros()).unwrap_or(0);
         let (ty, tmo, td, ..) = civil(local_us(now_us));
+        // format: machine (a journal time to the millisecond, as journalctl writes it)
+        let precise = format!("{hh:02}:{mm:02}:{ss:02}.{milli:03}");
         if (ty, tmo, td) == (y, mo, d) {
-            format!("{hh:02}:{mm:02}:{ss:02}.{milli:03}")
-        } else {
-            format!(
-                "{} {d:02} {hh:02}:{mm:02}:{ss:02}.{milli:03}",
-                MONTHS.get((mo as usize).saturating_sub(1)).unwrap_or(&"")
-            )
+            return precise;
+        }
+        match i32::try_from(y)
+            .ok()
+            .and_then(|year| ui::format::NaiveDate::from_ymd_opt(year, mo, d))
+        {
+            Some(day) => format!("{} {precise}", ui::format::month_day(day)),
+            None => precise,
         }
     }
 
     /// `YYYY-MM-DD HH:MM:SS.mmm` in local time — the detail timestamp.
     pub fn timestamp_full(&self) -> String {
         let (y, mo, d, hh, mm, ss, milli) = civil(local_us(self.realtime_us));
+        // format: machine (the journal's own precise timestamp)
         format!("{y:04}-{mo:02}-{d:02} {hh:02}:{mm:02}:{ss:02}.{milli:03}")
     }
 
     /// `HH:MM:SS` in local time, for compact contexts.
     pub fn time_hms(&self) -> String {
         let (_, _, _, hh, mm, ss, _) = civil(local_us(self.realtime_us));
+        // format: machine (a journal time to the second)
         format!("{hh:02}:{mm:02}:{ss:02}")
     }
 
@@ -233,10 +240,6 @@ impl Filter {
             && self.search.is_empty()
     }
 }
-
-const MONTHS: [&str; 12] = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-];
 
 /// Convert epoch-microseconds to a civil `(year, month, day, hour, min,
 /// sec, milli)` tuple in UTC, through `ui::date` so the conversion needs no

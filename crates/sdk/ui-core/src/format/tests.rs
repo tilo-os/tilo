@@ -112,7 +112,17 @@ fn headings_name_the_day_and_month_in_the_language() {
         "Tuesday, June 30, 2026"
     );
     assert_eq!(H24.month_heading(day(2026, 6, 30)), "June 2026");
+    assert_eq!(H24.month_heading_short(day(2026, 6, 30)), "Jun 2026");
+    assert_eq!(H24.day_heading_short(day(2026, 6, 30)), "Tue, Jun 30");
+    assert_eq!(H24.day_range(day(2026, 6, 23), day(2026, 6, 29)), "Jun 23 – 29");
+    assert_eq!(H24.day_range(day(2026, 6, 29), day(2026, 7, 5)), "Jun 29 – Jul 5");
+    assert_eq!(
+        H24.day_range(day(2025, 12, 29), day(2026, 1, 4)),
+        "Dec 29, 2025 – Jan 4, 2026"
+    );
     speak("de-DE");
+    assert_eq!(H24.day_heading_short(day(2026, 6, 30)), "Di., 30. Juni");
+    assert_eq!(H24.day_range(day(2026, 6, 23), day(2026, 6, 29)), "23.–29. Juni");
     assert_eq!(H24.day_heading(day(2026, 6, 30), false), "Dienstag, 30. Juni");
     assert_eq!(
         H24.day_heading(day(2026, 6, 30), true),
@@ -176,17 +186,17 @@ fn sizes_use_units_matching_their_base_and_the_languages_decimal_mark() {
     for (n, want) in [
         (0, "0 B"),
         (999, "999 B"),
-        (1000, "1.0 kB"),
+        (1000, "1 kB"),
         (1_500_000, "1.5 MB"),
-        (3_000_000_000, "3.0 GB"),
+        (3_000_000_000, "3 GB"),
     ] {
         assert_eq!(H24.size(n), want, "size({n})");
     }
     for (n, want) in [
         (1023, "1,023 B"),
-        (1024, "1.0 KiB"),
-        (5 * 1024 * 1024, "5.0 MiB"),
-        (3 * 1024 * 1024 * 1024, "3.0 GiB"),
+        (1024, "1 KiB"),
+        (5 * 1024 * 1024, "5 MiB"),
+        (3 * 1024 * 1024 * 1024, "3 GiB"),
     ] {
         assert_eq!(H24.memory(n), want, "memory({n})");
     }
@@ -194,15 +204,17 @@ fn sizes_use_units_matching_their_base_and_the_languages_decimal_mark() {
         (0.0, "0 B/s"),
         (-5.0, "0 B/s"),
         (512.0, "512 B/s"),
-        (6_710_886.0, "6.4 MiB/s"),
+        (1000.0, "1 kB/s"),
+        (6_710_886.0, "6.7 MB/s"),
     ] {
         assert_eq!(H24.rate(rate), want, "rate({rate})");
     }
 
     speak("de-DE");
     assert_eq!(H24.size(1_500_000), "1,5 MB");
-    assert_eq!(H24.memory(5 * 1024 * 1024), "5,0 MiB");
-    assert_eq!(H24.rate(6_710_886.0), "6,4 MiB/s");
+    assert_eq!(H24.memory(5 * 1024 * 1024), "5 MiB");
+    assert_eq!(H24.memory(1536), "1,5 KiB");
+    assert_eq!(H24.rate(6_710_886.0), "6,7 MB/s");
     assert_eq!(H24.size(999), "999 B");
 }
 

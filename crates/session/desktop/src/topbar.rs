@@ -2156,12 +2156,11 @@ impl TopBarChrome {
             .map_or_else(
                 || self.current_clock_string(),
                 |activity| {
-                    let mins = activity.remaining_secs / 60;
-                    let secs = activity.remaining_secs % 60;
+                    let reading = ui::format::timecode(activity.remaining_secs);
                     if activity.label.is_empty() {
-                        format!("{mins:02}:{secs:02}")
+                        reading
                     } else {
-                        format!("{}  {mins:02}:{secs:02}", activity.label)
+                        format!("{}  {reading}", activity.label)
                     }
                 },
             )
@@ -3860,11 +3859,7 @@ impl TopBarChrome {
             None,
             &theme.text(TextRole::Label),
         );
-        let elapsed = format!(
-            "{:02}:{:02}",
-            activity.remaining_secs / 60,
-            activity.remaining_secs % 60
-        );
+        let elapsed = ui::format::timecode(activity.remaining_secs);
         text_renderer.draw_style(
             scene,
             &elapsed,
@@ -4060,9 +4055,7 @@ impl TopBarChrome {
         let activity = snapshot.clock_activity.as_ref()?;
         let stopwatch = activity.stopwatch;
         let paused = activity.paused;
-        let minutes = activity.remaining_secs / 60;
-        let seconds = activity.remaining_secs % 60;
-        let reading = format!("{minutes:02}:{seconds:02}");
+        let reading = ui::format::timecode(activity.remaining_secs);
         Some(
             AccessNode::new(Role::Group)
                 .with_name(t(if stopwatch {
@@ -5050,7 +5043,7 @@ mod tests {
                 .is_some_and(|text| text.contains("Alt"))
         );
         assert_eq!(node.children[0].name.as_deref(), Some("Tea"));
-        assert_eq!(node.children[0].value.as_deref(), Some("02:05"));
+        assert_eq!(node.children[0].value.as_deref(), Some("2:05"));
         assert!(node.children[2].state.focused);
     }
 

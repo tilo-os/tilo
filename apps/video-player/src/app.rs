@@ -1149,9 +1149,9 @@ impl PlayerApp {
         if file.bytes.len() > crate::kept::KEEP_LIMIT {
             if let Some(entry) = self.queue.iter_mut().find(|entry| entry.id == queue_id) {
                 entry.title = format!(
-                    "{} — too large to reopen after a reload (over {} MB)",
+                    "{} — too large to reopen after a reload (over {})",
                     entry.title,
-                    crate::kept::KEEP_LIMIT / (1024 * 1024)
+                    ui::format::memory(crate::kept::KEEP_LIMIT as u64)
                 );
             }
             return;

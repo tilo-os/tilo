@@ -562,7 +562,7 @@ impl BackupsApp {
                 let created = crate::engine::create_snapshot(&source, &destination, |step| {
                     report(
                         &shown,
-                        format!("{} files totaling {}", step.files, ui::format::memory(step.bytes)),
+                        format!("{} files totaling {}", step.files, ui::format::size(step.bytes)),
                     );
                     progress.report("copying", Some(step.files), None);
                 })
@@ -587,7 +587,7 @@ impl BackupsApp {
                     Ok(_) => app.toast_now(format!(
                         "Backup complete: {} files totaling {}.",
                         manifest.files,
-                        ui::format::memory(manifest.bytes)
+                        ui::format::size(manifest.bytes)
                     )),
                     Err(error) => app.toast_error(format!(
                         "Backup complete, but older snapshots could not be removed: {error}"
@@ -619,7 +619,7 @@ impl BackupsApp {
                 app.toast_now(format!(
                     "Verified {} files totaling {}.",
                     result.files,
-                    ui::format::memory(result.bytes)
+                    ui::format::size(result.bytes)
                 ));
                 Ok(Effected::value(serde_json::json!({
                     "files": result.files,
@@ -672,7 +672,7 @@ impl BackupsApp {
                         format!(
                             "{} files totaling {}",
                             step.files,
-                            ui::format::memory(step.bytes)
+                            ui::format::size(step.bytes)
                         ),
                     );
                     progress.report("restoring", Some(step.files), None);
@@ -687,7 +687,7 @@ impl BackupsApp {
                 app.toast_now(format!(
                     "Restored {} files totaling {}.",
                     result.files,
-                    ui::format::memory(result.bytes)
+                    ui::format::size(result.bytes)
                 ));
                 Ok(Effected::value(serde_json::json!({
                     "files": result.files,

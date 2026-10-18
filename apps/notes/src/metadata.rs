@@ -34,15 +34,12 @@ impl NoteDates {
             value
                 .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
                 .map(|date| {
-                    let date = date.with_timezone(zone);
+                    let date = date.with_timezone(zone).naive_local();
+                    let formats = ui::format::Formats::current();
                     if compact {
-                        date.format("%Y-%m-%d").to_string()
+                        formats.date(date.date())
                     } else {
-                        format!(
-                            "{}, {}",
-                            date.format("%d %b %Y"),
-                            ui::clock::time_of_day(&date)
-                        )
+                        formats.timestamp(date)
                     }
                 })
         };
@@ -110,24 +107,10 @@ fn when(seconds: i64, now: chrono::DateTime<chrono::Local>) -> String {
         let time = ui::clock::time_of_day(&moment);
         return I18nManager::format("notes-date-today", &[("time", time.into())]);
     }
-    let month = ui::format::month_abbrev(moment.month0() as usize);
     if moment.year() == now.year() {
-        I18nManager::format(
-            "notes-date-day",
-            &[
-                ("day", moment.day().to_string().into()),
-                ("month", month.into()),
-            ],
-        )
+        ui::format::month_day(moment.date_naive())
     } else {
-        I18nManager::format(
-            "notes-date-day-year",
-            &[
-                ("day", moment.day().to_string().into()),
-                ("month", month.into()),
-                ("year", moment.year().to_string().into()),
-            ],
-        )
+        ui::format::month_day_year(moment.date_naive())
     }
 }
 
@@ -309,7 +292,7 @@ mod tests {
         };
         let cest = chrono::FixedOffset::east_opt(2 * 3600).unwrap();
         let labels = dates.display_labels_in(false, &cest);
-        assert!(labels[1].contains("04 Oct 2026, 05:54"), "{labels:?}");
+        assert!(labels[1].contains("2026-10-04 05:54"), "{labels:?}");
         assert!(!labels[1].contains("UTC"), "{labels:?}");
         let compact =
             dates.display_labels_in(true, &chrono::FixedOffset::east_opt(-5 * 3600).unwrap());

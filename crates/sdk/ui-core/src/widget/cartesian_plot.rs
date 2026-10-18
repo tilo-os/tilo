@@ -2864,19 +2864,7 @@ fn format_duration(seconds: f64, places: u8) -> String {
 }
 
 fn format_bytes(value: f64, places: u8) -> String {
-    const UNITS: [&str; 6] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
-    let mut scaled = value.abs();
-    let mut unit = 0;
-    while scaled >= 1024.0 && unit + 1 < UNITS.len() {
-        scaled /= 1024.0;
-        unit += 1;
-    }
-    let signed = scaled.copysign(value);
-    format!(
-        "{signed:.places$} {}",
-        UNITS.get(unit).copied().unwrap_or("PiB"),
-        places = usize::from(places.min(8))
-    )
+    crate::format::Formats::current().memory_value(value, usize::from(places.min(8)))
 }
 
 impl Widget for CartesianPlot {

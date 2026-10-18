@@ -97,13 +97,13 @@ impl CalendarApp {
         let cell_h = (area.height() - m.header_h) / f64::from(rows);
 
         // Weekday heads share the day numbers' leading inset.
-        for i in 0..7 {
-            let label = ui::format::weekday_abbrev((i + 1) % 7);
+        for (i, weekday) in ui::format::week().into_iter().enumerate() {
+            let label = ui::format::weekday_short(weekday);
             let x = area.x0 + cell_w * i as f64;
             let head = Rect::new(x, area.y0, x + cell_w, grid_top);
             crate::draw_util::text_in_band(
                 ctx,
-                label,
+                &label,
                 &m.weekday,
                 theme.tokens.colors.text_dim,
                 x + 2.0 * m.inset,

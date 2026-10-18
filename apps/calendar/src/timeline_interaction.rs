@@ -613,7 +613,7 @@ impl TimelineInteraction {
             let text_x = x0 + s2;
             let weekday = date::weekday_short(*day);
             ctx.text(
-                weekday,
+                &weekday,
                 &ty.weekday,
                 if weekend {
                     colors.text_dim
@@ -877,10 +877,9 @@ impl TimelineInteraction {
                     ctx.text(&line, &ty.title, tinted.ink, Point::new(text_x, y), None);
                     y += title_h;
                 }
-                let time = format!(
-                    "{}–{}",
-                    fmt_event_min(event.start_min),
-                    fmt_event_min(event.clock_end_min)
+                let time = ui::format::range(
+                    &fmt_event_min(event.start_min),
+                    &fmt_event_min(event.clock_end_min),
                 );
                 for line in [time.as_str(), event.location] {
                     if line.is_empty() || y + subtitle_h > block.y1 - s1 + 0.5 {
@@ -956,7 +955,7 @@ impl TimelineInteraction {
         );
         if block.height() > s1 + title_h + subtitle_h {
             ctx.text(
-                &format!("{}–{}", fmt_min(start_min), fmt_min(end_min)),
+                &ui::format::range(&fmt_min(start_min), &fmt_min(end_min)),
                 &ty.subtitle,
                 ink,
                 Point::new(text_x, block.y0 + s1 + title_h),
@@ -1174,14 +1173,14 @@ fn snap_minute(minute: i64) -> i64 {
     ((minute + TIMELINE_SNAP_MIN / 2) / TIMELINE_SNAP_MIN * TIMELINE_SNAP_MIN).clamp(0, 24 * 60)
 }
 
+/// A minute of the day as the person reads clocks.
 fn fmt_min(minute: i64) -> String {
-    let minute = minute.clamp(0, 24 * 60);
-    format!("{:02}:{:02}", minute / 60, minute % 60)
+    let minute = u32::try_from(minute.clamp(0, 24 * 60)).unwrap_or(0);
+    ui::clock::hour_minute(minute / 60, minute % 60)
 }
 
 fn fmt_event_min(minute: i64) -> String {
-    let minute = minute.clamp(0, 24 * 60);
-    format!("{}:{:02}", minute / 60, minute % 60)
+    fmt_min(minute)
 }
 
 #[cfg(test)]

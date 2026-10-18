@@ -15,7 +15,6 @@ path = "src/main.rs"
 
 [dependencies]
 mime_guess.workspace = true
-md-5.workspace = true
 fnv.workspace = true
 hex.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }

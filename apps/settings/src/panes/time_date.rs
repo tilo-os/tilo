@@ -835,7 +835,7 @@ impl Clock for SystemClock {
         let style = if h24 { TimeStyle::H24 } else { TimeStyle::H12 };
         (
             style.format(&moment),
-            moment.format("%A, %-d %B %Y").to_string(),
+            ui::format::day_heading(moment.date_naive(), true),
         )
     }
 

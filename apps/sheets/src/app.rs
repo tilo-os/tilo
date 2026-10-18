@@ -1695,9 +1695,9 @@ impl SheetsApp {
                     };
                     if u64::try_from(file.bytes.len()).unwrap_or(u64::MAX) > MAX_IMPORT_FILE_BYTES {
                         return app.failed(format!(
-                            "{} is larger than the {} MiB import limit",
+                            "{} is larger than the {} import limit",
                             file.name,
-                            MAX_IMPORT_FILE_BYTES / (1024 * 1024)
+                            ui::format::memory(MAX_IMPORT_FILE_BYTES)
                         ));
                     }
                     // The same file chosen again is shown, not imported twice.
@@ -1942,9 +1942,9 @@ impl SheetsApp {
         }
         if metadata.len > MAX_IMPORT_FILE_BYTES {
             return Err(format!(
-                "{} is larger than the {} MiB import limit",
+                "{} is larger than the {} import limit",
                 file_label(path),
-                MAX_IMPORT_FILE_BYTES / (1024 * 1024)
+                ui::format::memory(MAX_IMPORT_FILE_BYTES)
             ));
         }
         Ok(())

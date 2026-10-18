@@ -527,8 +527,8 @@ impl FileExplorer {
     ) -> Result<(), Refusal> {
         if text.len() > MAX_WRITE_BYTES {
             return Err(Refusal::new(format!(
-                "a file written here holds at most {} KiB of text",
-                MAX_WRITE_BYTES / 1024
+                "a file written here holds at most {} of text",
+                ui::format::memory(MAX_WRITE_BYTES as u64)
             )));
         }
         let name = file_name(&name)?;

@@ -42,9 +42,9 @@ fn read_bounded(path: &Path) -> Result<Vec<u8>, String> {
         .map_err(|error| format!("cannot read {}: {error}", path.display()))?
         .ok_or_else(|| {
             format!(
-                "{} is larger than {} MiB",
+                "{} is larger than {}",
                 path.display(),
-                convert::MAX_DOCUMENT_BYTES / (1024 * 1024)
+                ui::format::memory(convert::MAX_DOCUMENT_BYTES as u64)
             )
         })
 }

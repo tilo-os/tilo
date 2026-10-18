@@ -30,6 +30,9 @@ use uuid::Uuid;
 /// bounds protect callers that parse an in-memory document directly.
 pub const MAX_VCARD_CARDS: usize = 2_048;
 pub const MAX_VCARD_LOGICAL_LINE_BYTES: usize = 32 * 1024;
+/// A `PHOTO` line carries a whole picture, so it may run longer; the picture
+/// is made a small portrait on import.
+pub const MAX_VCARD_PHOTO_LINE_BYTES: usize = 4 * 1024 * 1024;
 
 /// Result of a bounded vCard parse. `skipped_cards` includes empty, malformed,
 /// and over-limit cards, allowing the UI to be honest about partial imports.
@@ -149,6 +152,12 @@ pub fn to_vcard(c: &Contact, version: VCardVersion) -> String {
         let cats: Vec<String> = c.groups.iter().map(|group| esc(&group.value)).collect();
         lines.push(format!("CATEGORIES:{}", cats.join(",")));
     }
+    if c.photo_bytes().is_some() {
+        lines.push(match version {
+            VCardVersion::V3 => format!("PHOTO;ENCODING=b;TYPE=JPEG:{}", c.photo),
+            VCardVersion::V4 => format!("PHOTO:data:image/jpeg;base64,{}", c.photo),
+        });
+    }
 
     lines.push("END:VCARD".to_string());
 
@@ -203,7 +212,7 @@ pub fn parse_vcards(input: &str) -> Vec<Contact> {
 /// Parse a bounded vCard stream and retain enough outcome data for callers to
 /// distinguish a clean import from a partial one.
 pub fn parse_vcards_report(input: &str) -> VCardParseReport {
-    let logical = pim_lines::unfold_bounded(input, MAX_VCARD_LOGICAL_LINE_BYTES);
+    let logical = pim_lines::unfold_bounded(input, MAX_VCARD_PHOTO_LINE_BYTES);
     let mut report = VCardParseReport::default();
     let mut cur: Option<(Contact, bool)> = None;
 
@@ -222,6 +231,14 @@ pub fn parse_vcards_report(input: &str) -> VCardParseReport {
         let Some(line) = ContentLine::parse(&raw) else {
             continue;
         };
+        if raw.len() > MAX_VCARD_LOGICAL_LINE_BYTES && line.name != "PHOTO" {
+            // An oversized property invalidates its card rather than being
+            // imported in part.
+            if let Some((_, invalid)) = cur.as_mut() {
+                *invalid = true;
+            }
+            continue;
+        }
         if line.begins("VCARD") {
             if cur.take().is_some() {
                 report.skipped_cards += 1;
@@ -493,6 +510,21 @@ fn apply_property(c: &mut Contact, line: &ContentLine) {
             }
         }
         "BDAY" => c.birthday = Birthday::parse(&unescape(value)),
+        // An embedded picture only: a `VALUE=uri` link to a server is never
+        // fetched. vCard 4 writes a `data:` URI, vCard 3 `ENCODING=b`.
+        "PHOTO" => {
+            let embedded = value
+                .strip_prefix("data:")
+                .and_then(|uri| uri.split_once(";base64,").map(|(_, data)| data))
+                .or_else(|| {
+                    line.param_value("ENCODING")
+                        .is_some_and(|encoding| matches!(encoding.to_ascii_lowercase().as_str(), "b" | "base64"))
+                        .then_some(value)
+                });
+            if let Some(bytes) = embedded.and_then(ui::held_images::picture_bytes) {
+                c.set_photo(&bytes);
+            }
+        }
         "URL" => c.website = unescape(strip_uri(value)),
         "NOTE" => c.notes = unescape(value),
         "CATEGORIES" => {
@@ -593,6 +625,7 @@ mod tests {
             .into(),
             groups: vec![GroupEntry::new("Work"), GroupEntry::new("Favorites")].into(),
             favorite: true,
+            photo: String::new(),
         }
     }
 
@@ -879,5 +912,45 @@ mod tests {
         .clone();
             assert_ne!(original.id, changed.id);
         }
+    }
+
+    fn png_picture() -> Vec<u8> {
+        let image = image::RgbImage::from_pixel(300, 200, image::Rgb([30, 120, 220]));
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(image)
+            .write_to(&mut out, image::ImageFormat::Png)
+            .unwrap();
+        out.into_inner()
+    }
+
+    /// A card's embedded picture becomes the contact's portrait in either
+    /// vCard version, a linked one is never fetched, and exports carry it.
+    #[test]
+    fn embedded_photos_import_and_export_and_links_are_not_fetched() {
+        let encoded = ui::held_images::picture_text(&png_picture());
+        let v3 = format!(
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Ada Lovelace\r\nPHOTO;ENCODING=b;TYPE=PNG:{encoded}\r\nEND:VCARD\r\n"
+        );
+        let v4 = format!(
+            "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Ada Lovelace\r\nPHOTO:data:image/png;base64,{encoded}\r\nEND:VCARD\r\n"
+        );
+        for card in [v3, v4] {
+            let contacts = parse_vcards(&card);
+            assert_eq!(contacts.len(), 1);
+            let photo = contacts[0].photo_bytes().expect("the picture imported");
+            let portrait = image::load_from_memory(&photo).unwrap();
+            assert_eq!(portrait.width(), ui::held_images::PORTRAIT_SIDE);
+            assert_eq!(portrait.width(), portrait.height());
+
+            for version in [VCardVersion::V3, VCardVersion::V4] {
+                let back = parse_vcards(&to_vcard(&contacts[0], version));
+                assert!(back[0].photo_bytes().is_some(), "{version:?} keeps it");
+            }
+        }
+
+        let linked = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Ada\r\nPHOTO;VALUE=uri:https://example.com/ada.jpg\r\nEND:VCARD\r\n";
+        let contacts = parse_vcards(linked);
+        assert_eq!(contacts.len(), 1);
+        assert!(contacts[0].photo.is_empty());
     }
 }

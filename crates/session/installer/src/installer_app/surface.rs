@@ -614,15 +614,14 @@ impl InstallerApp {
         let plans = self.guided_alongside_plans();
         if plans.len() > 1 {
             for (index, plan) in plans.iter().enumerate() {
-                let gib = 1024_u64 * 1024 * 1024;
                 storage = storage.with_child(
                     Resource::new(
                         region_resource(index),
                         "installer.region",
                         format!(
-                            "{} GiB free at {} GiB",
-                            plan.free_size_bytes / gib,
-                            plan.free_start_bytes / gib
+                            "{} free at {}",
+                            ui::format::memory(plan.free_size_bytes),
+                            ui::format::memory(plan.free_start_bytes)
                         ),
                     )
                     .with_presentation(ResourcePresentation {

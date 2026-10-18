@@ -51,7 +51,7 @@ pub fn engine_entries(engine: &Engine) -> Vec<SearchEntry> {
             )
             .anchored(resource_id.clone())
             .grouped("Container images")
-            .subtitled(ui::format::memory(image.size_bytes))
+            .subtitled(ui::format::size(image.size_bytes))
             .with_icon("layers"),
         );
     }

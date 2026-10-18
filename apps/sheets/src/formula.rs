@@ -2219,6 +2219,8 @@ fn month_index(m: u32) -> usize {
 
 /// The full English month name for `TEXT`'s `mmmm` token.
 fn full_month(m: u32) -> &'static str {
+    // format: machine (a formula's result is the document's, the same for
+    // every collaborator whatever language they read)
     const M: [&str; 12] = [
         "January",
         "February",
@@ -2359,6 +2361,7 @@ fn format_date_code(serial: f64, code: &str) -> String {
 /// Month abbreviation for the `mmm` date token (kept local to the engine so
 /// the model's private helper needn't be exported).
 fn month_abbrev_local(m: u32) -> &'static str {
+    // format: machine (as `full_month`)
     const M: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];

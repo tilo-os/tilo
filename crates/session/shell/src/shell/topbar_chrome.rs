@@ -185,8 +185,8 @@ pub(crate) fn clock_snapshot() -> ClockSnapshot {
             .ok()
             .filter(|pinned| !pinned.is_empty())
             .unwrap_or_else(|| ui::clock::time_of_day(&now)),
-        weekday: now.format("%a").to_string(),
-        date: now.format("%-d %B").to_string(),
+        weekday: ui::format::weekday_short(chrono::Datelike::weekday(&now)),
+        date: ui::format::month_day(now.date_naive()),
     }
 }
 

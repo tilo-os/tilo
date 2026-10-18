@@ -113,9 +113,9 @@ pub fn content_id(bytes: &[u8]) -> String {
 pub fn parse_epub(bytes: &[u8], cover_tint: usize, subject: &str) -> Result<Book> {
     if bytes.len() > MAX_EPUB_BYTES {
         return Err(anyhow!(
-            "epub is too large ({} MiB; maximum is {} MiB)",
-            bytes.len() / (1024 * 1024),
-            MAX_EPUB_BYTES / (1024 * 1024)
+            "epub is too large ({}; maximum is {})",
+            ui::format::size(bytes.len() as u64),
+            ui::format::memory(MAX_EPUB_BYTES as u64)
         )
         .context(OpenProblem::TooLarge));
     }
@@ -157,8 +157,8 @@ pub fn parse_epub(bytes: &[u8], cover_tint: usize, subject: &str) -> Result<Book
         total_spine_bytes = total_spine_bytes.saturating_add(src.len());
         if total_spine_bytes > MAX_TOTAL_SPINE_BYTES {
             return Err(anyhow!(
-                "epub text is too large (maximum {} MiB)",
-                MAX_TOTAL_SPINE_BYTES / (1024 * 1024)
+                "epub text is too large (maximum {})",
+                ui::format::memory(MAX_TOTAL_SPINE_BYTES as u64)
             )
             .context(OpenProblem::TooLong));
         }

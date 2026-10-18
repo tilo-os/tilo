@@ -76,9 +76,16 @@ pub(crate) fn address_lines(address: &Address) -> String {
 }
 
 /// The person: avatar, name, and what they do and where.
-fn header(contact: &Contact) -> Element {
+fn header(contact: &Contact, shared: &Shared) -> Element {
     let name = contact.display_name();
     let identity = contact.id.to_string();
+    let mut avatar = Avatar::person(&name, identity).size(AvatarSize::Hero);
+    {
+        let bridge = shared.borrow();
+        if let Some(images) = &bridge.images {
+            avatar = avatar.with_image_url(images.clone(), bridge.pictures.hold_text(&contact.photo));
+        }
+    }
 
     let mut who = Column::new()
         .with_no_padding()
@@ -102,9 +109,7 @@ fn header(contact: &Contact) -> Element {
         Row::new()
             .no_wrap()
             .with_align_items(taffy::AlignItems::Center)
-            .push(Box::new(
-                Avatar::person(name, identity).size(AvatarSize::Hero),
-            ))
+            .push(Box::new(avatar))
             .push(Box::new(who)),
     )
 }
@@ -120,7 +125,7 @@ pub(crate) fn contact_page(
     let mut page = Column::new()
         .with_intrinsic_height()
         .with_id("contacts.detail")
-        .push(header(contact));
+        .push(header(contact, shared));
 
     let groups: Vec<&str> = contact
         .groups

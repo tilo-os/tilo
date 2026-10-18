@@ -5160,8 +5160,8 @@ impl VideoEditorApp {
     fn try_import_contents(&mut self, name: &str, bytes: Vec<u8>) -> Result<(), String> {
         if bytes.len() > crate::files::KEEP_LIMIT {
             return Err(format!(
-                "is larger than {} MB, the most a browser page imports",
-                crate::files::KEEP_LIMIT / (1024 * 1024)
+                "is larger than {}, the most a browser page imports",
+                ui::format::memory(crate::files::KEEP_LIMIT as u64)
             ));
         }
         let probed = probe::probe_bytes(&bytes, Path::new(name)).map_err(|e| e.to_string())?;

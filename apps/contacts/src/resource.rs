@@ -563,13 +563,15 @@ impl ContactsApp {
                     .iter()
                     .map(|email| email.value.clone())
                     .collect(),
+                photo: contact.photo.clone(),
             })
             .filter(|projected| {
                 current.people.get(&projected.person).is_none_or(|person| {
                     !person.removed
                         && (person.label != projected.label
                             || person.phones.0 != projected.phones
-                            || person.emails.0 != projected.emails)
+                            || person.emails.0 != projected.emails
+                            || person.photo != projected.photo)
                 })
             })
             .collect();

@@ -3,7 +3,7 @@
 //! values the verbs carry.
 
 use super::*;
-use crate::app::{MailApp, avatar_store_offline};
+use crate::app::MailApp;
 use crate::model::Folder;
 use crate::resource::{
     MAX_DRAFT_BODY_CHARS, MAX_DRAFT_SUBJECT_CHARS, MAX_MESSAGES_PER_ACTION, Mail, MailShell,
@@ -1143,7 +1143,7 @@ ui::action_contract_tests! {
 /// message's archive control and the place's archive verb.
 #[test]
 fn the_archive_affordance_and_the_palette_edit_alike() {
-    let mut st = MailState::new_sample(avatar_store_offline());
+    let mut st = MailState::new_sample(crate::avatars::Avatars::new());
     let mut doc = Replica::<Mail>::new().doc().clone();
     let id = st.mailbox.messages_in(Folder::Inbox)[0].id.to_string();
     st.apply_message_action(

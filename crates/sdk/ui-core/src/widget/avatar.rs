@@ -579,7 +579,7 @@ pub struct Avatar {
 // The photo type comes from runtime-identity, which only `local-daemons`
 // builds link; portable builds (the browser's) show initials or an image.
 #[cfg(feature = "local-daemons")]
-pub(super) fn profile_image(photo: &runtime_identity::ProfilePhoto) -> peniko::ImageData {
+pub(crate) fn profile_image(photo: &runtime_identity::ProfilePhoto) -> peniko::ImageData {
     peniko::ImageData {
         data: peniko::Blob::new(std::sync::Arc::new(photo.rgba().to_vec())),
         format: peniko::ImageFormat::Rgba8,

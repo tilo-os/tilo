@@ -44,6 +44,9 @@ pub(crate) struct ListEntry {
     pub secondary: String,
     /// A favourite carries a filled star after the name.
     pub favorite: bool,
+    /// The person's picture, as [`Bridge::pictures`] holds it; empty for
+    /// none, which shows their initials.
+    pub photo: String,
 }
 
 /// What the person asked for, queued by a pane or a header button and
@@ -109,7 +112,18 @@ pub(crate) struct Bridge {
     /// The book as it was presented last: what a search hit or an agent
     /// may open.
     pub book: Rc<crate::resource::Contacts>,
+    /// The pictures of the people shown, decoded off the UI thread by
+    /// [`Self::images`].
+    pub pictures: ui::held_images::HeldImages,
+    pub images: Option<ui::ImageStore>,
     requests: Vec<Request>,
+}
+
+impl Bridge {
+    /// The decoded picture at `address`, once it has loaded.
+    pub(crate) fn picture(&self, address: &str) -> Option<vello::peniko::ImageData> {
+        self.images.as_ref()?.get(address)
+    }
 }
 
 impl Bridge {
@@ -275,9 +289,12 @@ impl ContactList {
                 let rect = Rect::new(row_x0, y, width_end, y + self.row_h);
                 let selected = bridge.selected == Some(row.id);
                 let identity = row.id.to_string();
+                let picture = bridge.picture(&row.photo);
                 let mut face = ListRowFace::new(&row.name)
                     .secondary(&row.secondary)
-                    .leading(RowLeading::Avatar(AvatarFace::new(&row.name, &identity)))
+                    .leading(RowLeading::Avatar(
+                        AvatarFace::new(&row.name, &identity).image(picture.as_ref()),
+                    ))
                     .selected(selected)
                     .interaction(Interaction {
                         hovered: self.hovered == Some(row.id),
@@ -491,9 +508,12 @@ impl Widget for ContactList {
             .filter_map(|(offset, (id, rect))| {
                 let row = bridge.rows.iter().find(|row| row.id == *id)?;
                 let identity = row.id.to_string();
+                let picture = bridge.picture(&row.photo);
                 let mut face = ListRowFace::new(&row.name)
                     .secondary(&row.secondary)
-                    .leading(RowLeading::Avatar(AvatarFace::new(&row.name, &identity)))
+                    .leading(RowLeading::Avatar(
+                        AvatarFace::new(&row.name, &identity).image(picture.as_ref()),
+                    ))
                     .selected(bridge.selected == Some(row.id));
                 if row.favorite {
                     face = face.mark(Icon::Star);

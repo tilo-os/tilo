@@ -98,12 +98,7 @@ pub fn notice_for(volume: Volume, before: Level, after: Level, room: Room) -> Op
 }
 
 fn format_bytes(bytes: u64) -> String {
-    if bytes >= GIB {
-        let tenths = bytes.saturating_mul(10) / GIB;
-        format!("{}.{} GB", tenths / 10, tenths % 10)
-    } else {
-        format!("{} MB", bytes / MIB)
-    }
+    ui::format::size(bytes)
 }
 
 fn room(path: &Path) -> Option<Room> {
@@ -235,9 +230,11 @@ mod tests {
         assert!(notice_for(Volume::Home, Level::Low, Level::Low, full).is_none());
     }
 
+    /// Free space is a size on a drive: SI units, as the toolkit writes
+    /// every stored size (2.5 GiB is 2.7 GB, never "2.5 GB").
     #[test]
     fn sizes_read_plainly() {
-        assert_eq!(format_bytes(2_684_354_560), "2.5 GB");
-        assert_eq!(format_bytes(20 * MIB), "20 MB");
+        assert_eq!(format_bytes(2_684_354_560), "2.7 GB");
+        assert_eq!(format_bytes(20 * MIB), "21 MB");
     }
 }

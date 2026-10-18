@@ -2852,7 +2852,7 @@ impl FilePicker {
                 };
                 meta(
                     scene,
-                    &when.format("%Y-%m-%d %H:%M").to_string(),
+                    &crate::format::timestamp(&when),
                     date_x0,
                     false,
                 );

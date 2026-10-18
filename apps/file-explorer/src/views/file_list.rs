@@ -48,8 +48,28 @@ pub(super) struct RowContext {
     scale: f64,
     geo: Geo,
     thumbs: Option<ThumbCtx>,
+    folder_counts: Option<std::sync::Arc<crate::folder_counts::FolderCounts>>,
+    show_hidden: bool,
     workspace_roots: Rc<[std::path::PathBuf]>,
     rename_rect: Option<Rc<Cell<Option<Rect>>>>,
+}
+
+impl ListRow {
+    /// The Size column: a file's size, or how many items a folder holds once
+    /// counted (blank until then).
+    fn size_text(&self) -> String {
+        if !self.entry.is_dir {
+            return human_size(&self.entry);
+        }
+        self.cx
+            .folder_counts
+            .as_ref()
+            .and_then(|counts| {
+                counts.count(&self.entry.path, self.entry.modified, self.cx.show_hidden)
+            })
+            .map(ui::format::items)
+            .unwrap_or_default()
+    }
 }
 
 /// One row: an entry and the context its cells paint with.
@@ -159,6 +179,8 @@ pub(super) struct ListInputs<'a> {
     pub text_scale: f64,
     pub geo: Geo,
     pub thumbs: Option<ThumbCtx>,
+    pub folder_counts: Option<std::sync::Arc<crate::folder_counts::FolderCounts>>,
+    pub show_hidden: bool,
     pub workspace_roots: Rc<[std::path::PathBuf]>,
     pub renaming: Option<usize>,
     pub rename_rect: Option<Rc<Cell<Option<Rect>>>>,
@@ -212,10 +234,7 @@ fn build_table(
             )
             .sortable(true)
             .with_kind(TextKind::Numeric)
-            .with_optional_text(
-                |row: &ListRow| (!row.entry.is_dir).then(|| human_size(&row.entry)),
-                "—",
-            ),
+            .with_text(ListRow::size_text),
         );
     }
     if shape.modified != Modified::Hidden {
@@ -372,6 +391,8 @@ impl ListSlot {
             scale: inputs.scale,
             geo: inputs.geo,
             thumbs: inputs.thumbs.clone(),
+            folder_counts: inputs.folder_counts.clone(),
+            show_hidden: inputs.show_hidden,
             workspace_roots: Rc::clone(&inputs.workspace_roots),
             rename_rect: inputs.rename_rect.clone(),
         });

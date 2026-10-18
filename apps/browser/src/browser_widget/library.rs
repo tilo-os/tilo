@@ -417,13 +417,9 @@ fn day_heading(day: chrono::NaiveDate, today: chrono::NaiveDate) -> String {
         return near;
     }
     if days > -7 {
-        return day.format("%A").to_string();
+        return ui::format::weekday_name(day.weekday());
     }
-    if day.year() == today.year() {
-        day.format("%A %-d %B").to_string()
-    } else {
-        day.format("%-d %B %Y").to_string()
-    }
+    ui::format::day_heading(day, day.year() != today.year())
 }
 
 #[cfg(test)]
@@ -439,10 +435,10 @@ mod history_day_tests {
         assert_eq!(day_heading(day(7, 1), today), "Today");
         assert_eq!(day_heading(day(6, 29), today), "Yesterday");
         assert_eq!(day_heading(day(6, 26), today), "Friday");
-        assert_eq!(day_heading(day(6, 1), today), "Monday 1 June");
+        assert_eq!(day_heading(day(6, 1), today), "Monday, June 1");
         assert_eq!(
             day_heading(NaiveDate::from_ymd_opt(2025, 12, 24).unwrap(), today),
-            "24 December 2025"
+            "Wednesday, December 24, 2025"
         );
     }
 }

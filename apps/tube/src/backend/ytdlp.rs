@@ -381,10 +381,6 @@ fn today_days() -> i64 {
     (ui::time::unix_now() / 86_400) as i64
 }
 
-const MONTHS: [&str; 12] = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-];
-
 /// Turn a yt-dlp `upload_date` (`YYYYMMDD`) into a human relative age
 /// ("3 days ago", "2 weeks ago", "5 months ago") for anything within the last
 /// year, and a tidy absolute date ("Nov 3, 2023") beyond that. Anything that
@@ -402,8 +398,10 @@ fn humanize_date(d: &str) -> String {
     if !(1..=12).contains(&m) || !(1..=31).contains(&day) {
         return d.to_string();
     }
-    let month = MONTHS.get((m - 1) as usize).copied().unwrap_or("");
-    let absolute = format!("{month} {day}, {y}");
+    let absolute = i32::try_from(y)
+        .ok()
+        .and_then(|year| ui::format::NaiveDate::from_ymd_opt(year, m, day))
+        .map_or_else(|| d.to_string(), ui::format::month_day_year);
     let age = today_days() - ui::date::days_from_civil(y, m, day);
     age_label(age, &absolute)
 }
