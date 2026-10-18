@@ -1,7 +1,7 @@
 //! Compact catalogue snapshots and per-entry version indexes.
 //!
 //! A full snapshot carries every retained version of every entry. A compact
-//! snapshot (protocol [`COMPACT_SNAPSHOT_PROTOCOL`]) carries, per entry, only
+//! snapshot carries, per entry, only
 //! the newest version of each target and release channel
 //! ([`newest_versions`]), plus the BLAKE3 hash and size of that entry's
 //! version index: a static file holding the complete publisher-signed entry.
@@ -16,7 +16,12 @@
 //!
 //! Like the full form, a compact snapshot carries bot entries apart from app
 //! entries, under a second signature by the same key (see
-//! [`crate::snapshot`]), so clients that predate bots read it unchanged.
+//! [`crate::snapshot`]).
+//!
+//! Both forms, the version indexes and the channel authorizations are part
+//! of the Store package format and carry its one version,
+//! [`crate::PACKAGE_FORMAT_VERSION`], in their `protocol` field; a reader
+//! accepts that number only.
 
 use std::collections::HashSet;
 
@@ -29,12 +34,11 @@ use crate::snapshot::{
     split_kinds, valid_hex,
 };
 use crate::{
-    ChannelAuthorization, PublisherAuthorization, RegistryEntry, RegistryTarget, RegistryVersion,
-    SignedRegistrySnapshot, SnapshotError, snapshot_hash, verify_entry_signature, verify_snapshot,
+    ChannelAuthorization, PACKAGE_FORMAT_VERSION, PublisherAuthorization, RegistryEntry,
+    RegistryTarget, RegistryVersion, SignedRegistrySnapshot, SnapshotError, snapshot_hash,
+    verify_entry_signature, verify_snapshot,
 };
 
-pub const COMPACT_SNAPSHOT_PROTOCOL: u16 = 4;
-pub const VERSION_INDEX_PROTOCOL: u16 = 1;
 const COMPACT_INDEX_DOMAIN: &[u8] = b"tilo-registry-compact-index-v4\0";
 const COMPACT_BOTS_DOMAIN: &[u8] = b"tilo-registry-compact-bots-v1\0";
 /// Largest version index a client fetches. An entry holds at most
@@ -61,7 +65,7 @@ pub struct CompactRegistryEntry {
 /// The compact form of one signed snapshot.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompactRegistrySnapshot {
-    pub protocol: u16,
+    pub protocol: u32,
     pub sequence: u64,
     pub issued_at_unix: u64,
     pub expires_at_unix: u64,
@@ -86,7 +90,7 @@ pub struct CompactRegistrySnapshot {
 #[derive(Serialize)]
 #[serde(rename = "CompactRegistrySnapshot")]
 struct CompactOut<'a> {
-    protocol: u16,
+    protocol: u32,
     sequence: u64,
     issued_at_unix: u64,
     expires_at_unix: u64,
@@ -106,7 +110,7 @@ struct CompactOut<'a> {
 
 #[derive(Deserialize)]
 struct CompactIn {
-    protocol: u16,
+    protocol: u32,
     sequence: u64,
     issued_at_unix: u64,
     expires_at_unix: u64,
@@ -183,13 +187,13 @@ impl<'de> Deserialize<'de> for CompactRegistrySnapshot {
 /// A version index file: the complete publisher-signed entry.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegistryVersionIndex {
-    pub protocol: u16,
+    pub protocol: u32,
     pub entry: RegistryEntry,
 }
 
 #[derive(Serialize)]
 struct CompactSigningPayload<'a> {
-    protocol: u16,
+    protocol: u32,
     sequence: u64,
     issued_at_unix: u64,
     expires_at_unix: u64,
@@ -260,7 +264,7 @@ pub fn newest_versions(versions: &[RegistryVersion]) -> Vec<RegistryVersion> {
 /// Returns an encoding error if the entry cannot be serialized.
 pub fn version_index_bytes(entry: &RegistryEntry) -> Result<Vec<u8>, SnapshotError> {
     serde_json::to_vec(&RegistryVersionIndex {
-        protocol: VERSION_INDEX_PROTOCOL,
+        protocol: PACKAGE_FORMAT_VERSION,
         entry: entry.clone(),
     })
     .map_err(|_| SnapshotError::Encoding)
@@ -299,7 +303,7 @@ pub fn compact_snapshot(
     }
     Ok((
         CompactRegistrySnapshot {
-            protocol: COMPACT_SNAPSHOT_PROTOCOL,
+            protocol: PACKAGE_FORMAT_VERSION,
             sequence: full.sequence,
             issued_at_unix: full.issued_at_unix,
             expires_at_unix: full.expires_at_unix,
@@ -351,7 +355,7 @@ pub fn sign_compact_snapshot(
     snapshot: &mut CompactRegistrySnapshot,
     key: &SigningKey,
 ) -> Result<(), SnapshotError> {
-    snapshot.protocol = COMPACT_SNAPSHOT_PROTOCOL;
+    snapshot.protocol = PACKAGE_FORMAT_VERSION;
     snapshot.signature_hex.clear();
     snapshot.signature_hex = hex::encode(key.sign(&compact_signing_message(snapshot)?).to_bytes());
     snapshot.bots_signature_hex = if snapshot.bots().is_empty() {
@@ -401,7 +405,7 @@ pub fn verify_compact_snapshot(
     pinned_owner_pubkey_hex: &str,
     now_unix: u64,
 ) -> Result<(), SnapshotError> {
-    if snapshot.protocol != COMPACT_SNAPSHOT_PROTOCOL {
+    if snapshot.protocol != PACKAGE_FORMAT_VERSION {
         return Err(SnapshotError::Protocol);
     }
     let header = SignedHeader {
@@ -468,7 +472,7 @@ pub fn verify_version_index(
     }
     let index: RegistryVersionIndex = serde_json::from_slice(bytes)
         .map_err(|error| VersionIndexError::Decode(error.to_string()))?;
-    if index.protocol != VERSION_INDEX_PROTOCOL {
+    if index.protocol != PACKAGE_FORMAT_VERSION {
         return Err(VersionIndexError::Protocol);
     }
     let full = index.entry;
@@ -499,9 +503,11 @@ pub enum CatalogueSnapshot {
     Compact(CompactRegistrySnapshot),
 }
 
+/// Tells the two forms apart: only the compact one names its full sibling.
 #[derive(Deserialize)]
-struct ProtocolProbe {
-    protocol: u16,
+struct FormProbe {
+    #[serde(default)]
+    snapshot_hash_hex: Option<serde::de::IgnoredAny>,
 }
 
 /// One entry of a verified catalogue, and its version index when the
@@ -513,13 +519,14 @@ pub struct CatalogueEntry<'a> {
 }
 
 impl CatalogueSnapshot {
-    /// Decode either form by its `protocol`.
+    /// Decode either form; the compact one names its full sibling's hash.
+    /// The `protocol` both carry is checked when the snapshot is verified.
     ///
     /// # Errors
     /// Returns the JSON error for anything that is neither form.
     pub fn from_json(bytes: &[u8]) -> Result<Self, serde_json::Error> {
-        let probe: ProtocolProbe = serde_json::from_slice(bytes)?;
-        if probe.protocol == COMPACT_SNAPSHOT_PROTOCOL {
+        let probe: FormProbe = serde_json::from_slice(bytes)?;
+        if probe.snapshot_hash_hex.is_some() {
             serde_json::from_slice(bytes).map(Self::Compact)
         } else {
             serde_json::from_slice(bytes).map(Self::Full)
@@ -606,9 +613,8 @@ impl CatalogueSnapshot {
 mod tests {
     use super::*;
     use crate::{
-        CHANNEL_AUTHORIZATION_PROTOCOL, EntryKind, SNAPSHOT_PROTOCOL, TappArtifact,
-        VersionArtifact, sign_channel_authorization, sign_entry, sign_snapshot,
-        sign_snapshot_delegated,
+        EntryKind, TappArtifact, VersionArtifact, sign_channel_authorization, sign_entry,
+        sign_snapshot, sign_snapshot_delegated,
     };
 
     fn version(number: &str, isa: &str) -> RegistryVersion {
@@ -668,7 +674,7 @@ mod tests {
         );
         let sheets = entry("so.tilo.sheets", vec![version("5", "x86_64-v3")]);
         let mut snapshot = SignedRegistrySnapshot {
-            protocol: SNAPSHOT_PROTOCOL,
+            protocol: PACKAGE_FORMAT_VERSION,
             sequence: 1,
             issued_at_unix: 10,
             expires_at_unix: 20,
@@ -882,7 +888,7 @@ mod tests {
         let channel = SigningKey::from_bytes(&[9; 32]);
         let mut full = full(&owner);
         let mut authorization = ChannelAuthorization {
-            protocol: CHANNEL_AUTHORIZATION_PROTOCOL,
+            protocol: PACKAGE_FORMAT_VERSION,
             generation: 1,
             channel_pubkey_hex: hex::encode(channel.verifying_key().to_bytes()),
             not_before_unix: 5,

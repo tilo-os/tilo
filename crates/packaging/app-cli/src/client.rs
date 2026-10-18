@@ -530,7 +530,7 @@ mod tests {
     ) -> registry_types::SignedRegistrySnapshot {
         let entry = signed_entry();
         let mut snapshot = registry_types::SignedRegistrySnapshot {
-            protocol: registry_types::SNAPSHOT_PROTOCOL,
+            protocol: registry_types::PACKAGE_FORMAT_VERSION,
             sequence,
             issued_at_unix: 100,
             expires_at_unix: 200,

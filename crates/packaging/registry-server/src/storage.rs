@@ -2385,7 +2385,7 @@ pub enum StorageError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use registry_types::SNAPSHOT_PROTOCOL;
+    use registry_types::PACKAGE_FORMAT_VERSION;
 
     fn sample_entry(id: &str) -> RegistryEntry {
         RegistryEntry {
@@ -2448,7 +2448,7 @@ mod tests {
 
     fn snapshot(sequence: u64, previous: String, marker: &str) -> SignedRegistrySnapshot {
         SignedRegistrySnapshot {
-            protocol: SNAPSHOT_PROTOCOL,
+            protocol: PACKAGE_FORMAT_VERSION,
             sequence,
             issued_at_unix: sequence,
             expires_at_unix: sequence.checked_add(100).unwrap(),

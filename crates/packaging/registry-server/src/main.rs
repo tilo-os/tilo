@@ -27,8 +27,8 @@ use registry_server::{
 };
 use registry_types::EntryAction;
 use registry_types::{
-    CHANNEL_AUTHORIZATION_PROTOCOL, ChannelAuthorization, PublisherAuthorization,
-    SNAPSHOT_PROTOCOL, SignedRegistrySnapshot, verify_change_request,
+    ChannelAuthorization, PACKAGE_FORMAT_VERSION, PublisherAuthorization, SignedRegistrySnapshot,
+    verify_change_request,
 };
 
 const DEFAULT_FIRST_PARTY_COLLECTION_PARALLELISM: usize = 4;
@@ -544,7 +544,7 @@ fn cmd_authorize_channel(
         );
     }
     let mut authorization = ChannelAuthorization {
-        protocol: CHANNEL_AUTHORIZATION_PROTOCOL,
+        protocol: PACKAGE_FORMAT_VERSION,
         generation,
         channel_pubkey_hex: hex::encode(channel),
         not_before_unix: now,
@@ -1354,7 +1354,7 @@ fn unsigned_snapshot(
     };
     let issued_at_unix = unix_now();
     Ok(SignedRegistrySnapshot {
-        protocol: SNAPSHOT_PROTOCOL,
+        protocol: PACKAGE_FORMAT_VERSION,
         sequence,
         issued_at_unix,
         expires_at_unix: issued_at_unix.saturating_add(valid_for_seconds),
@@ -1418,7 +1418,7 @@ fn cmd_sign_snapshot(
     entries.sort_by(|left, right| left.package_id.cmp(&right.package_id));
     let issued_at_unix = unix_now();
     let mut snapshot = SignedRegistrySnapshot {
-        protocol: SNAPSHOT_PROTOCOL,
+        protocol: PACKAGE_FORMAT_VERSION,
         sequence,
         issued_at_unix,
         expires_at_unix: issued_at_unix.saturating_add(valid_for_seconds),
@@ -1498,7 +1498,7 @@ fn cmd_rollback_snapshot(
 
     let issued_at_unix = unix_now();
     let mut snapshot = SignedRegistrySnapshot {
-        protocol: SNAPSHOT_PROTOCOL,
+        protocol: PACKAGE_FORMAT_VERSION,
         sequence: current
             .sequence
             .checked_add(1)

@@ -146,7 +146,7 @@ async fn networkless_publisher_reverifies_content_addressed_bytes_and_delegated_
         reason: "test active transaction".into(),
         submissions: Vec::new(),
         candidate_snapshot: SignedRegistrySnapshot {
-            protocol: registry_types::SNAPSHOT_PROTOCOL,
+            protocol: registry_types::PACKAGE_FORMAT_VERSION,
             sequence: 1,
             issued_at_unix: 1,
             expires_at_unix: 2,
@@ -775,7 +775,7 @@ fn selected_partial_inventory_recovers_without_consuming_deferred_requests() {
             let authorization = storage.load_channel_authorization().unwrap().unwrap();
             let now = tilo_clock::unix_now();
             let mut candidate = SignedRegistrySnapshot {
-                protocol: registry_types::SNAPSHOT_PROTOCOL,
+                protocol: registry_types::PACKAGE_FORMAT_VERSION,
                 sequence: 1,
                 issued_at_unix: now,
                 expires_at_unix: now + 3600,

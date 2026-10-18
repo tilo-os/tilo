@@ -289,7 +289,7 @@ fn routes(
 ) -> Result<HashMap<String, Vec<u8>>, String> {
     let now = tilo_clock::unix_now();
     let mut full = SignedRegistrySnapshot {
-        protocol: registry_types::SNAPSHOT_PROTOCOL,
+        protocol: registry_types::PACKAGE_FORMAT_VERSION,
         sequence: 1,
         issued_at_unix: now,
         expires_at_unix: now.saturating_add(86_400),

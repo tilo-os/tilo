@@ -707,7 +707,7 @@ mod tests {
     fn verified(e: RegistryEntry) -> VerifiedEntry {
         let owner = ed25519_dalek::SigningKey::from_bytes(&[10; 32]);
         let mut snapshot = registry_types::SignedRegistrySnapshot {
-            protocol: registry_types::SNAPSHOT_PROTOCOL,
+            protocol: registry_types::PACKAGE_FORMAT_VERSION,
             sequence: 1,
             issued_at_unix: 10,
             expires_at_unix: 20,

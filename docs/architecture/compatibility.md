@@ -29,7 +29,7 @@ behaviour. The one thing that survives every change is the person's data.
 | App ↔ shell (shell-ui) | `ui::floating_surface::FLOATING_SURFACE_PROTOCOL_VERSION` | `crates/sdk/ui-core/interface.toml` | the app's first frame on its shell-ui connection; the launcher, from the manifest |
 | App ↔ runtime (the session services the launcher connects) | `runtime_portal::RUNTIME_INTERFACE_VERSION` | `crates/runtime/runtime-portal/interface.toml` | the launcher, before it connects any service |
 | Device ↔ device (handshake, relay frames, peer-sync messages) | `neighbour_wire::PEER_PROTOCOL_VERSION` | `crates/collab/neighbour-wire/interface.toml` | the first field of the certified handshake's `Hello` and `HelloAck` (relay sessions, compute, environments, the HTTPS carrier), and of the `IdentityHello` a device announces on a room's gossip topic, whose index never moves |
-| Store package format (`.tapp` and its manifest) | `tilo_app_package::TAPP_FORMAT_VERSION` | `crates/packaging/tilo-app-package/interface.toml` | the archive header, when a package is read |
+| Store package format (`.tapp`, its manifest, and the registry's snapshots, version indexes and channel authorizations) | `registry_types::PACKAGE_FORMAT_VERSION` (`tilo_app_package::TAPP_FORMAT_VERSION` is it) | `crates/packaging/tilo-app-package/interface.toml` | the archive header, when a package is read; a snapshot's `protocol`, when the catalogue is verified |
 
 - There is no negotiation and no code for an older number. A side at another
   number says so and stops.

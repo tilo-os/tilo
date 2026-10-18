@@ -43,7 +43,7 @@ use crate::signed::SIGNED_ROOT_LEN;
 /// policy fails a change to it that keeps the number. The binary layouts
 /// (signed root, chunk list) are not in that schema: a change to them bumps
 /// this by hand.
-pub const TAPP_FORMAT_VERSION: u32 = 1;
+pub const TAPP_FORMAT_VERSION: u32 = registry_types::PACKAGE_FORMAT_VERSION;
 
 const HEADER: &str = "tapp.toml";
 const SIGNED_ROOT: &str = "signed-root";
