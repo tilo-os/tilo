@@ -750,20 +750,22 @@ async fn what_ada_does_to_her_messages_in_chat_follows_in_discord() {
     bridge
         .as_ada_on_messages(
             chat::parts::ChatPart::POST.with(chat::messages::chat_part::Post {
-                channel: Id::from_raw(&bridge.general),
-                text: "the notes".into(),
-                parent: None,
-                body: None,
-                attachment: Some(chat::record::AttachmentUpdate {
-                    kind: "file".into(),
-                    name: "notes.txt".into(),
-                    blob,
-                    width: 0,
-                    height: 0,
-                    size: bytes.len() as u64,
-                }),
-                mentions: None,
-                written: None,
+                message: chat::messages::NewMessage {
+                    channel: Id::from_raw(&bridge.general),
+                    text: "the notes".into(),
+                    parent: None,
+                    body: None,
+                    attachment: Some(chat::record::AttachmentUpdate {
+                        kind: "file".into(),
+                        name: "notes.txt".into(),
+                        blob,
+                        width: 0,
+                        height: 0,
+                        size: bytes.len() as u64,
+                    }),
+                    mentions: None,
+                    written: None,
+                },
             }),
         )
         .await;

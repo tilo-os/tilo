@@ -18,7 +18,7 @@ use crate::app::{
     AttachmentImportPending, AttachmentImportResult, AttachmentPickerResult, ChatApp, Focus, Hit,
     MenuAction, MenuTarget, RowSwipe,
 };
-use crate::messages::chat_part;
+use crate::messages::{NewMessage, chat_part};
 use crate::model::{ChannelKind, Id};
 use crate::parts::ChatPart;
 use crate::record::chat;
@@ -1807,13 +1807,15 @@ impl ChatApp {
         let posted = self.try_apply_part(
             doc,
             ChatPart::POST.with(chat_part::Post {
-                channel: item(&self.active_channel),
-                text,
-                parent: parent.as_deref().map(item),
-                body: Some(body),
-                attachment: None,
-                mentions: None,
-                written: None,
+                message: NewMessage {
+                    channel: item(&self.active_channel),
+                    text,
+                    parent: parent.as_deref().map(item),
+                    body: Some(body),
+                    attachment: None,
+                    mentions: None,
+                    written: None,
+                },
             }),
         );
         if let Err(reason) = posted {
@@ -2216,13 +2218,15 @@ impl ChatApp {
             crate::model::Attachment::File { name, blob, size }
         };
         self.submit_part(ChatPart::POST.with(chat_part::Post {
-            channel: item(&pending.channel),
-            text: String::new(),
-            parent: None,
-            body: None,
-            attachment: Some(crate::record::AttachmentUpdate::of(&attachment)),
-            mentions: None,
-            written: None,
+            message: NewMessage {
+                channel: item(&pending.channel),
+                text: String::new(),
+                parent: None,
+                body: None,
+                attachment: Some(crate::record::AttachmentUpdate::of(&attachment)),
+                mentions: None,
+                written: None,
+            },
         }));
         self.scroll = 0.0;
         self.attachment_status = Some("Attachment shared".into());

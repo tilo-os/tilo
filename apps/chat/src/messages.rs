@@ -16,9 +16,10 @@
 
 use std::rc::Rc;
 
+use serde::{Deserialize, Serialize};
 use tilo_document::ClipBlock;
 use ui::framework::Chained;
-use ui::tilo_resource::{self, ActionCx, Atom, Id, Json, Refusal};
+use ui::tilo_resource::{self, ActionCx, Atom, Id, Json, JsonSchema, Refusal};
 
 use crate::model::ChannelKind;
 use crate::parts::{self, ChatPart};
@@ -136,6 +137,31 @@ impl ChatPart {
     }
 }
 
+/// A message to post: the parameters of [`ChatPart::post`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct NewMessage {
+    /// The channel
+    pub channel: Id,
+    /// The message; @Name mentions a member
+    pub text: String,
+    /// The message it answers in a thread
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<Id>,
+    /// Its paragraphs as written, with their formatting
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<Vec<ClipBlock>>,
+    /// A file, image or video another action put in the store
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment: Option<AttachmentUpdate>,
+    /// Filled in where it is posted; leave it out
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mentions: Option<Vec<crate::mention::Mention>>,
+    /// When it was written, in Unix seconds, for a message a bot brings over
+    /// from elsewhere; leave it out
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub written: Option<i64>,
+}
+
 // The window's effects on a message (reveal it, read it) are offered on
 // each message the chain publishes, as on the record's other items.
 #[ui::tilo_resource::resource(
@@ -153,21 +179,17 @@ impl ChatPart {
     pub fn post(
         &mut self,
         cx: &mut ActionCx,
-        #[param("The channel")] channel: Id,
-        #[param("The message; @Name mentions a member")] text: String,
-        #[param("The message it answers in a thread")] parent: Option<Id>,
-        #[param("Its paragraphs as written, with their formatting")] body: Option<Vec<ClipBlock>>,
-        #[param("A file, image or video another action put in the store")] attachment: Option<
-            AttachmentUpdate,
-        >,
-        #[param("Filled in where it is posted; leave it out")] mentions: Option<
-            Vec<crate::mention::Mention>,
-        >,
-        #[param(
-            "When it was written, in Unix seconds, for a message a bot brings over from elsewhere; leave it out"
-        )]
-        written: Option<i64>,
+        #[param(flatten)] message: NewMessage,
     ) -> Result<(), Refusal> {
+        let NewMessage {
+            channel,
+            text,
+            parent,
+            body,
+            attachment,
+            mentions,
+            written,
+        } = message;
         let attachment = match attachment {
             Some(update) => Some(
                 update
@@ -615,8 +637,11 @@ impl Chained for ChatPart {
             // A reply goes to its parent's part, beside the message it
             // answers.
             ChatPartAction::Post(Post {
-                parent: Some(parent),
-                ..
+                message:
+                    NewMessage {
+                        parent: Some(parent),
+                        ..
+                    },
             }) => holding(parent),
             ChatPartAction::Post(_)
             | ChatPartAction::PostFile(_)
@@ -639,9 +664,10 @@ impl Chained for ChatPart {
     fn prepare(action: &mut Self::Action, chat: &Chat) -> Result<(), String> {
         match &mut action.operation {
             ChatPartAction::Post(post) => {
-                takes_posts(chat, &post.channel)?;
-                let body = post.body.clone().unwrap_or_default();
-                post.mentions = Some(chat.mentions(&post.text, &body));
+                let message = &mut post.message;
+                takes_posts(chat, &message.channel)?;
+                let body = message.body.clone().unwrap_or_default();
+                message.mentions = Some(chat.mentions(&message.text, &body));
             }
             ChatPartAction::PostFile(post) => {
                 takes_posts(chat, &post.channel)?;

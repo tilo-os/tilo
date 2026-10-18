@@ -2,7 +2,7 @@ use ui::tilo_actions::DoorError;
 use ui::tilo_resource::{Id, Invoke, Replica, Resource};
 
 use super::*;
-use crate::messages::{Messages, chat_part};
+use crate::messages::{Messages, NewMessage, chat_part};
 use crate::parts::ChatPart;
 
 const ADA: &str = "u_ada";
@@ -149,13 +149,15 @@ fn a_bridges_post_keeps_the_name_it_showed_and_a_persons_does_not() {
 
 fn reply(parent: &Id, text: &str) -> Invoke<ChatPart> {
     ChatPart::POST.with(chat_part::Post {
-        channel: id("c_general"),
-        text: text.into(),
-        parent: Some(parent.clone()),
-        body: None,
-        attachment: None,
-        mentions: None,
-        written: None,
+        message: NewMessage {
+            channel: id("c_general"),
+            text: text.into(),
+            parent: Some(parent.clone()),
+            body: None,
+            attachment: None,
+            mentions: None,
+            written: None,
+        },
     })
 }
 
@@ -244,8 +246,10 @@ fn a_member_cannot_backdate_a_post() {
     let mut ada = Talk::new();
     ada.set_now_ms(1_234_000);
     ada.apply(ChatPart::POST.with(chat_part::Post {
-        written: Some(5),
-        ..post_fields("c_general", "from the past")
+        message: NewMessage {
+            written: Some(5),
+            ..post_fields("c_general", "from the past")
+        },
     }))
     .unwrap();
     assert_eq!(
@@ -271,20 +275,22 @@ fn a_post_that_says_nothing_or_is_misplaced_is_refused() {
     assert!(ada.apply(post_to("c_gone", "hello")).is_err());
     assert!(
         ada.apply(ChatPart::POST.with(chat_part::Post {
-            channel: id("c_general"),
-            text: "look".into(),
-            parent: None,
-            body: None,
-            attachment: Some(AttachmentUpdate {
-                kind: "image".into(),
-                name: "shot.png".into(),
-                blob: "not-a-hash".into(),
-                width: 10,
-                height: 10,
-                size: 0,
-            }),
-            mentions: None,
-            written: None,
+            message: NewMessage {
+                channel: id("c_general"),
+                text: "look".into(),
+                parent: None,
+                body: None,
+                attachment: Some(AttachmentUpdate {
+                    kind: "image".into(),
+                    name: "shot.png".into(),
+                    blob: "not-a-hash".into(),
+                    width: 10,
+                    height: 10,
+                    size: 0,
+                }),
+                mentions: None,
+                written: None,
+            },
         }))
         .is_err(),
         "an attachment is a content address"
@@ -293,11 +299,13 @@ fn a_post_that_says_nothing_or_is_misplaced_is_refused() {
 }
 
 fn post_to(channel: &str, text: &str) -> Invoke<ChatPart> {
-    ChatPart::POST.with(post_fields(channel, text))
+    ChatPart::POST.with(chat_part::Post {
+        message: post_fields(channel, text),
+    })
 }
 
-fn post_fields(channel: &str, text: &str) -> chat_part::Post {
-    chat_part::Post {
+fn post_fields(channel: &str, text: &str) -> NewMessage {
+    NewMessage {
         channel: id(channel),
         text: text.into(),
         parent: None,
@@ -335,20 +343,22 @@ fn an_attachment_is_posted_by_its_content_address() {
     let mut ada = Talk::new();
     let blob = "ab".repeat(32);
     ada.apply(ChatPart::POST.with(chat_part::Post {
-        channel: id("c_general"),
-        text: String::new(),
-        parent: None,
-        body: None,
-        attachment: Some(AttachmentUpdate {
-            kind: "file".into(),
-            name: "notes.md".into(),
-            blob: blob.clone(),
-            width: 0,
-            height: 0,
-            size: 1200,
-        }),
-        mentions: None,
-        written: None,
+        message: NewMessage {
+            channel: id("c_general"),
+            text: String::new(),
+            parent: None,
+            body: None,
+            attachment: Some(AttachmentUpdate {
+                kind: "file".into(),
+                name: "notes.md".into(),
+                blob: blob.clone(),
+                width: 0,
+                height: 0,
+                size: 1200,
+            }),
+            mentions: None,
+            written: None,
+        },
     }))
     .unwrap();
     let rows = ada.rows("c_general");

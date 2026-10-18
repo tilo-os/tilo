@@ -861,13 +861,15 @@ pub fn introduce(
 #[must_use]
 pub fn post(channel: &str, text: &str, parent: Option<&str>) -> Invoke<ChatPart> {
     ChatPart::POST.with(chat_part::Post {
-        channel: Id::from_raw(channel),
-        text: text.into(),
-        parent: parent.map(Id::from_raw),
-        body: None,
-        attachment: None,
-        mentions: None,
-        written: None,
+        message: crate::messages::NewMessage {
+            channel: Id::from_raw(channel),
+            text: text.into(),
+            parent: parent.map(Id::from_raw),
+            body: None,
+            attachment: None,
+            mentions: None,
+            written: None,
+        },
     })
 }
 
