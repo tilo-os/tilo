@@ -452,6 +452,47 @@ fn set_params(kind: Kind) -> Vec<ActionParam> {
     }
 }
 
+/// The arguments that move `spec` one value along its choices (the
+/// values its first parameter allows, else the reading's own list), held at
+/// either end.
+fn stepped_args(spec: &Spec, delta: i8) -> Result<ActionArgs, ActionError> {
+    let reading = read(spec.kind).ok_or_else(|| refuse("this setting is not available here"))?;
+    let params = set_params(spec.kind);
+    let param = params
+        .first()
+        .ok_or_else(|| refuse("this setting takes no value"))?;
+    let as_text = |value: &Value| {
+        value
+            .as_str()
+            .map_or_else(|| value.to_string(), str::to_owned)
+    };
+    let choices: Vec<String> = if param.choices.is_empty() {
+        reading.choices.iter().map(as_text).collect()
+    } else {
+        param.choices.iter().map(ToString::to_string).collect()
+    };
+    let current = as_text(&reading.value);
+    let at = choices.iter().position(|choice| *choice == current);
+    let next = match (at, delta > 0) {
+        (Some(at), true) => at.saturating_add(1).min(choices.len().saturating_sub(1)),
+        (Some(at), false) => at.saturating_sub(1),
+        (None, _) => 0,
+    };
+    let chosen = choices
+        .get(next)
+        .ok_or_else(|| refuse("this setting has no values to step through"))?;
+    let value = match param.ty {
+        ParamType::Integer => chosen
+            .parse::<i64>()
+            .map(Value::from)
+            .map_err(|_| refuse("not a whole number"))?,
+        _ => Value::String(chosen.clone()),
+    };
+    let mut arguments = serde_json::Map::new();
+    arguments.insert(param.name.to_string(), value);
+    ActionArgs::bind_json(&params, &arguments).map_err(ActionError::Arguments)
+}
+
 fn refuse(error: impl std::fmt::Display) -> ActionError {
     ActionError::Refused(error.to_string())
 }
@@ -760,6 +801,39 @@ impl SearchProvider for SystemSettingsProvider {
         &[ResourceKind::Action]
     }
 
+    /// A setting's row steps through the values Settings offers for it, or
+    /// flips a switch; a display change goes through its own confirmation
+    /// and is chosen, not stepped.
+    fn adjustable(&self, result: &SearchResult) -> bool {
+        parse(&result.id).is_some_and(|(spec, verb)| {
+            verb != Verb::Get && !matches!(spec.kind, Kind::DisplayScale | Kind::DisplayRefreshRate)
+        })
+    }
+
+    fn adjust(
+        &self,
+        result: &SearchResult,
+        delta: i8,
+        _doc: &mut ui::widget::Edits<'_>,
+        _root: &automerge::ObjId,
+        chrome: &Chrome,
+    ) -> Result<(), ActionError> {
+        let (spec, verb) =
+            parse(&result.id).ok_or_else(|| refuse("this setting is not served here"))?;
+        if verb == Verb::Toggle {
+            return apply(chrome, spec, verb, &ActionArgs::none()).map(drop);
+        }
+        let args = stepped_args(spec, delta)?;
+        apply(chrome, spec, Verb::Set, &args).map(drop)
+    }
+
+    fn match_reason(&self, result: &SearchResult, needle: &str) -> Option<String> {
+        let built = self.built.borrow();
+        let built = built.as_ref()?;
+        let at = built.rows.iter().position(|row| row.id == result.id)?;
+        crate::shell::search::match_reason_in(needle, result, built.fields.get(at)?)
+    }
+
     /// A person sees one row per setting, its value on the row: reading a
     /// value is what the row already does, and a switch is flipped, not set.
     /// Agents and the control socket still reach `.get` and `.set`.
@@ -995,6 +1069,36 @@ mod tests {
             );
             assert!(!provider.hidden_from_people(&lock, "", &state));
             drop(state);
+
+            // ←/→ step through the values Settings offers, held at the ends.
+            assert!(provider.adjustable(&lock));
+            let mut doc = AutoCommit::new();
+            let mut step = |delta: i8| {
+                provider
+                    .adjust(
+                        &lock,
+                        delta,
+                        &mut ui::widget::Edits::lend(&mut doc),
+                        &ROOT,
+                        &chrome,
+                    )
+                    .unwrap();
+                power::LOCK_MINUTES.get()
+            };
+            assert_eq!(step(1), 10, "5 minutes, one notch up");
+            assert_eq!(step(1), 15);
+            assert_eq!(step(-1), 10);
+            for _ in 0..8 {
+                step(1);
+            }
+            assert_eq!(step(1), 30, "held at the longest");
+            for _ in 0..8 {
+                step(-1);
+            }
+            assert_eq!(power::LOCK_MINUTES.get(), 0, "down to never");
+            step(1);
+            step(1);
+            assert_eq!(power::LOCK_MINUTES.get(), 5);
         }
 
         // Phase `the_palette_finds_a_setting_by_its_name_in_either_language`.

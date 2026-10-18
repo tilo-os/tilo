@@ -2951,12 +2951,28 @@ pub(crate) const DISPLAY_REVERT_ID: &str = "display.change.revert";
 pub(crate) const DISPLAY_OUTPUTS_INSPECT_ID: &str = "display.outputs.inspect";
 pub(crate) const BLUETOOTH_PAIRING_DECLINE_ID: &str = "bluetooth.pairing.decline";
 
+/// Whether a display change waits for Keep or Revert.
+fn display_change_waiting() -> bool {
+    use settings_store::hardware::{DisplayTransaction, DisplayTransactionState};
+    DisplayTransaction::load().is_some_and(|transaction| {
+        matches!(
+            transaction.state,
+            DisplayTransactionState::Requested
+                | DisplayTransactionState::AwaitingConfirmation
+                | DisplayTransactionState::ConfirmRequested
+        )
+    })
+}
+
 /// Whether the action `id` has something to act on now. Most always do;
-/// these act on something that comes and goes.
-fn action_available(id: &str, chrome: &ChromeState) -> bool {
+/// these act on something that comes and goes. Each reads state the
+/// session publishes as it changes, never storage or a device.
+fn action_available(id: &str, chrome: &ChromeState, display_waiting: bool) -> bool {
     match id {
         "projection.close" => chrome.overlays.projection,
-        "presence.follow.stop" => chrome.following,
+        "presence.follow.stop" => chrome.search_context.following,
+        DISPLAY_KEEP_ID | DISPLAY_REVERT_ID => display_waiting,
+        "dictation.finish" | "dictation.cancel" => chrome.search_context.dictating,
         BLUETOOTH_PAIRING_DECLINE_ID => crate::bluetooth::PairingPromptHandle::global()
             .current()
             .is_some(),
@@ -3148,6 +3164,10 @@ struct Catalogue {
     /// The per-source on/off switches, offered only to a query about search
     /// itself ([`asks_about_search_sources`]).
     source_switches: std::ops::Range<usize>,
+    /// Whether a display change waits for Keep or Revert, as the settings
+    /// document the catalogue was built from says: the catalogue is rebuilt
+    /// when that document changes, so this is never read per keystroke.
+    display_waiting: bool,
 }
 
 /// Everything the catalogue's rows are built from: whether a row exists,
@@ -3287,6 +3307,30 @@ impl SearchProvider for ActionsProvider {
     fn available_in_active_app_scope(&self) -> bool {
         true
     }
+    fn adjustable(&self, result: &SearchResult) -> bool {
+        matches!(result.id.as_str(), QS_VOLUME_ID | QS_BRIGHTNESS_ID)
+    }
+    /// ←/→ on Volume or Brightness: the same step "louder" or "dimmer" takes.
+    fn adjust(
+        &self,
+        result: &SearchResult,
+        delta: i8,
+        doc: &mut ui::widget::Edits<'_>,
+        root: &automerge::ObjId,
+        chrome: &Chrome,
+    ) -> Result<(), ActionError> {
+        let step = LEVEL_STEPS
+            .iter()
+            .find(|step| step.level == result.id && (step.delta > 0.0) == (delta > 0))
+            .ok_or_else(|| ActionError::Refused(format!("{} has no level to step", result.id)))?;
+        let args = stepped(&result.params, chrome, step.level, step.delta)?;
+        (result.on_open)(doc, root, chrome, &args)
+    }
+    fn match_reason(&self, result: &SearchResult, needle: &str) -> Option<String> {
+        let catalogue = self.catalogue.borrow().clone()?;
+        let at = *catalogue.by_id.get(&result.id)?;
+        crate::shell::search::match_reason_in(needle, result, catalogue.fields.get(at)?)
+    }
     /// A radio's set-enabled form is for agents: a person flips the switch
     /// row beside it, which already shows whether it is on. And an action
     /// with nothing to act on (closing a sheet that is not open, declining a
@@ -3305,7 +3349,12 @@ impl SearchProvider for ActionsProvider {
         {
             return true;
         }
-        !action_available(&result.id, chrome)
+        let display_waiting = self
+            .catalogue
+            .borrow()
+            .as_ref()
+            .is_some_and(|catalogue| catalogue.display_waiting);
+        !action_available(&result.id, chrome, display_waiting)
             && tilo_search::fold(needle.trim()) != tilo_search::fold(&result.title)
     }
     /// An address is looked up in the whole table. The shell offers more
@@ -3422,6 +3471,78 @@ impl SearchProvider for ActionsProvider {
 }
 
 impl ActionsProvider {
+    /// Louder, quieter, brighter, dimmer and mute, each derived from the
+    /// level's set row already in `out`, with the live level as its pill.
+    fn push_level_steps(
+        &self,
+        out: &mut Vec<SearchResult>,
+        candidates: &mut ActionCandidates,
+        state: &ChromeState,
+    ) {
+        for step in LEVEL_STEPS {
+            let Some(base) = out.iter().find(|row| row.id == step.level).cloned() else {
+                continue;
+            };
+            if !self.qs_actions.action_available(step.level) {
+                continue;
+            }
+            let (level, delta, params) = (step.level, step.delta, base.params.clone());
+            let run = Rc::clone(&base.on_open);
+            let on_open = Rc::new(
+                move |doc: &mut ui::widget::Edits<'_>,
+                      root: &automerge::ObjId,
+                      chrome: &Chrome,
+                      _args: &ActionArgs| {
+                    run(doc, root, chrome, &stepped(&params, chrome, level, delta)?)
+                },
+            ) as Rc<crate::shell::search::OpenFn>;
+            let title = t(step.title);
+            candidates.record(&title.to_lowercase(), "", step.id);
+            out.push(SearchResult {
+                id: step.id.to_string(),
+                title,
+                subtitle: None,
+                badge: Some(level_badge(state, level)),
+                params: Vec::new(),
+                on_open,
+                on_invoke: None,
+                on_begin_invoke: None,
+                ..base
+            });
+        }
+        if let Some(base) = out.iter().find(|row| row.id == QS_VOLUME_ID).cloned()
+            && self.qs_actions.action_available(QS_VOLUME_ID)
+        {
+            let actions = Rc::clone(&self.qs_actions);
+            let title = t("search-step-volume-mute");
+            candidates.record(&title.to_lowercase(), "", QS_MUTE_ID);
+            out.push(SearchResult {
+                id: QS_MUTE_ID.to_string(),
+                title,
+                subtitle: None,
+                badge: None,
+                params: Vec::new(),
+                on_open: Rc::new(
+                    move |_doc: &mut ui::widget::Edits<'_>,
+                          _root: &automerge::ObjId,
+                          chrome: &Chrome,
+                          _args: &ActionArgs| {
+                        if !current_shell_action_authorized(&chrome.borrow(), QS_MUTE_ID) {
+                            return Err(ActionError::Refused(format!(
+                                "current workspace authority no longer permits {QS_MUTE_ID}"
+                            )));
+                        }
+                        let backend = actions.actions.borrow().clone();
+                        backend.toggle_mute().map_err(ActionError::Refused)
+                    },
+                ),
+                on_invoke: None,
+                on_begin_invoke: None,
+                ..base
+            });
+        }
+    }
+
     /// The catalogue for the current state, built only if that is not the
     /// state the retained one was built from.
     fn catalogue(&self, ctx: &SearchContext<'_>) -> Rc<Catalogue> {
@@ -4359,6 +4480,12 @@ impl ActionsProvider {
                 ..base
             });
         }
+        for row in &mut out {
+            if matches!(row.id.as_str(), QS_VOLUME_ID | QS_BRIGHTNESS_ID) {
+                row.badge = Some(level_badge(ctx.chrome, &row.id));
+            }
+        }
+        self.push_level_steps(&mut out, &mut candidates, ctx.chrome);
         let actor = key.actor.clone();
         let ownership_resource = {
             let tree = ctx.chrome.tree();
@@ -4589,6 +4716,7 @@ impl ActionsProvider {
             fields: candidates.0,
             by_id,
             source_switches,
+            display_waiting: display_change_waiting(),
         }
     }
 }
@@ -4728,6 +4856,8 @@ pub(crate) fn toggles_in_place(id: &str) -> bool {
             | "navigation.axis.enable"
             | "navigation.axis.disable"
     ) || QS_TOGGLES.iter().any(|toggle| toggle.id == id)
+        || LEVEL_STEPS.iter().any(|step| step.id == id)
+        || id == QS_MUTE_ID
 }
 
 /// The shortcut that does what an action does, as the active keyboard
@@ -4820,6 +4950,78 @@ struct QsToggle {
     /// The switch's name; its state is the row's pill.
     name: &'static str,
     subtitle: &'static str,
+}
+
+/// A step up or down a Quick Settings level: "louder", "dimmer". The row
+/// runs the level's own set action with the live level moved by `delta`
+/// percent, so it is one Enter (or one more) instead of typing a number.
+struct LevelStep {
+    id: &'static str,
+    /// The set action whose level it moves.
+    level: &'static str,
+    delta: f32,
+    title: &'static str,
+}
+
+const LEVEL_STEPS: &[LevelStep] = &[
+    LevelStep {
+        id: "quick-settings.volume.up",
+        level: QS_VOLUME_ID,
+        delta: 5.0,
+        title: "search-step-volume-up",
+    },
+    LevelStep {
+        id: "quick-settings.volume.down",
+        level: QS_VOLUME_ID,
+        delta: -5.0,
+        title: "search-step-volume-down",
+    },
+    LevelStep {
+        id: "quick-settings.brightness.up",
+        level: QS_BRIGHTNESS_ID,
+        delta: 10.0,
+        title: "search-step-brightness-up",
+    },
+    LevelStep {
+        id: "quick-settings.brightness.down",
+        level: QS_BRIGHTNESS_ID,
+        delta: -10.0,
+        title: "search-step-brightness-down",
+    },
+];
+
+/// Muting is its own row: a step to zero would forget the level.
+pub(crate) const QS_MUTE_ID: &str = "quick-settings.volume.mute";
+
+/// The live level, in percent, of the Quick Settings set action `level`.
+fn level_percent(state: &ChromeState, level: &str) -> f32 {
+    let share = if level == QS_VOLUME_ID {
+        state.quick_settings.volume
+    } else {
+        state.quick_settings.brightness
+    };
+    (share * 100.0).round()
+}
+
+/// `"40 %"`: a level as its row's pill says it.
+fn level_badge(state: &ChromeState, level: &str) -> String {
+    t_args(
+        "search-level-percent",
+        &[("percent", f64::from(level_percent(state, level)).into())],
+    )
+}
+
+/// The arguments that set `level` to its live value moved by `delta`.
+fn stepped(
+    params: &[ActionParam],
+    chrome: &Chrome,
+    level: &str,
+    delta: f32,
+) -> Result<ActionArgs, ActionError> {
+    let percent = (level_percent(&chrome.borrow(), level) + delta).clamp(0.0, 100.0);
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("percent".into(), serde_json::json!(f64::from(percent)));
+    ActionArgs::bind_json(params, &arguments).map_err(ActionError::Arguments)
 }
 
 /// The Quick Settings radios offered as one-step toggles.
@@ -6008,6 +6210,11 @@ mod tests {
 
     #[test]
     fn empty_palette_builds_the_catalogue_once() {
+        // The catalogue is rebuilt when the settings document changes, and
+        // which document that is follows the environment: hold it still, as
+        // every test that changes either does, or a neighbour's settings
+        // write reads as this test's rebuild.
+        let _env = tilo_test_env::lock();
         let provider = Rc::new(ActionsProvider::new());
         let builds = Rc::clone(&provider.builds);
         let mut registry = crate::shell::search::SearchRegistry::new();
@@ -6061,7 +6268,59 @@ mod tests {
     }
 
     #[test]
+    fn actions_with_nothing_to_act_on_are_kept_from_people() {
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let row = |id: &str, title: &str| {
+            SearchResult::nullary(
+                ResourceKind::Action,
+                PROVIDER_ID,
+                id,
+                title,
+                None,
+                0,
+                |_, _, _| {},
+            )
+        };
+        let finish = row("dictation.finish", "Finish dictation");
+        let close = row("projection.close", "Close the display sheet");
+        let keep = row(DISPLAY_KEEP_ID, "Keep display settings");
+        {
+            let state = chrome.borrow();
+            assert!(
+                provider.hidden_from_people(&finish, "fi", &state),
+                "not dictating"
+            );
+            assert!(
+                provider.hidden_from_people(&close, "close", &state),
+                "no sheet open"
+            );
+            assert!(
+                provider.hidden_from_people(&keep, "keep", &state),
+                "no change waits"
+            );
+            assert!(
+                !provider.hidden_from_people(&close, "close the display sheet", &state),
+                "named exactly, it is offered and says why it can't run"
+            );
+        }
+        {
+            let mut state = chrome.borrow_mut();
+            state.search_context.dictating = true;
+            state.overlays.projection = true;
+        }
+        let state = chrome.borrow();
+        assert!(!provider.hidden_from_people(&finish, "fi", &state));
+        assert!(!provider.hidden_from_people(&close, "close", &state));
+    }
+
+    #[test]
     fn resolve_does_not_rank() {
+        // The catalogue is rebuilt when the settings document changes, and
+        // which document that is follows the environment: hold it still, as
+        // every test that changes either does, or a neighbour's settings
+        // write reads as this test's rebuild.
+        let _env = tilo_test_env::lock();
         let provider = ActionsProvider::new();
         let chrome = chrome_with_room();
         let doc = AutoCommit::new();

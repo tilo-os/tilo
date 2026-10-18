@@ -7749,11 +7749,15 @@ impl ShellOverlayHost {
             }
             Err(_) => return,
         };
-        // Search reads the same recency Alt+Tab walks.
+        let dictating = self.layers.dictation.session().is_some();
+        // Search reads the same recency Alt+Tab walks, and whether dictation
+        // listens.
         if let Ok(mut state) = chrome.try_borrow_mut()
-            && state.recent_windows != recent
+            && (state.search_context.recent_windows != recent
+                || state.search_context.dictating != dictating)
         {
-            state.recent_windows = recent;
+            state.search_context.recent_windows = recent;
+            state.search_context.dictating = dictating;
         }
     }
 
@@ -8433,7 +8437,7 @@ impl ShellOverlayHost {
         if let Some(chrome) = self.chrome.as_ref()
             && let Ok(mut state) = chrome.try_borrow_mut()
         {
-            state.following = peer_id.is_some();
+            state.search_context.following = peer_id.is_some();
         }
         self.followed_peer = peer_id;
         self.followed_tab = None;
@@ -9295,7 +9299,7 @@ impl ShellOverlayHost {
             for r in &group.results {
                 let idx = results.len();
                 let e = self
-                    .palette_entry_for(r, format!("result:{idx}"))
+                    .annotated_entry(r, format!("result:{idx}"), &current_query)
                     .group(label.clone())
                     .group_total(group.total);
                 entries.push(e);
@@ -9409,6 +9413,29 @@ impl ShellOverlayHost {
             groups.iter().map(|g| (g.total, g.kind.clone())).collect();
         present.sort_by_key(|(total, _)| std::cmp::Reverse(*total));
         self.present_kinds = present.into_iter().map(|(_, kind)| kind).collect();
+    }
+
+    /// A result's palette row, with what only search knows: whether ←/→
+    /// step its value, and the hidden word it matched through.
+    fn annotated_entry(
+        &self,
+        r: &crate::shell::search::SearchResult,
+        id: String,
+        query: &str,
+    ) -> CommandEntry {
+        let mut e = self.palette_entry_for(r, id);
+        if self.search_registry.adjustable(r) {
+            e = e.adjustable();
+        }
+        // A row found through a word it doesn't show says which.
+        if let Some(word) = self.search_registry.match_reason(r, query) {
+            let reason = t_args("search-matches", &[("word", word.into())]);
+            e.description = Some(match e.description.take() {
+                Some(description) => format!("{description} · {reason}"),
+                None => reason,
+            });
+        }
+        e
     }
 
     /// One result as a palette row: its picture, its text, its state, and
@@ -19248,6 +19275,9 @@ impl ShellOverlayHost {
             self.palette
                 .handle_event(event, &mut ctx.reborrow(ctx.path, palette_child));
             self.take_palette_requests(&mut ctx.state, ctx.path);
+            if let Some((id, delta)) = self.palette.take_adjustment() {
+                self.step_result(&id, delta, &mut ctx.state, ctx.path);
+            }
             // Recompute results when a character/backspace changes the query.
             if self.palette.query() != query_before
                 && self.param_flow.is_none()
@@ -19260,6 +19290,38 @@ impl ShellOverlayHost {
             }
         }
         false
+    }
+
+    /// ←/→ on a value row: step it in place and show the new value, or say
+    /// on the row why it could not.
+    fn step_result(&mut self, id: &str, delta: i8, doc: &mut ui::widget::Edits<'_>, root: &ObjId) {
+        let Some(result) = id
+            .strip_prefix("result:")
+            .and_then(|at| at.parse::<usize>().ok())
+            .and_then(|at| self.search_results.get(at))
+            .cloned()
+        else {
+            return;
+        };
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        match self
+            .search_registry
+            .adjust(&result, delta, doc, root, &chrome)
+        {
+            Ok(()) => {
+                // Never equal to a real query: the next refresh rebuilds the
+                // row with the value it now has.
+                self.last_search_query = "\0stepped\0".into();
+                self.refresh_search_results(doc, root);
+            }
+            Err(error) => {
+                self.palette
+                    .set_selected_status(t("host-action-failed-status"), error.user_message());
+            }
+        }
+        self.palette_layout_dirty = true;
     }
 
     /// The tail of `handle_event`: the strip switcher, click-to-focus,

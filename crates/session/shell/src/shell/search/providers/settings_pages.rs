@@ -278,6 +278,13 @@ impl SearchProvider for SettingsPagesProvider {
         page_icon(slug)
     }
 
+    fn match_reason(&self, result: &SearchResult, needle: &str) -> Option<String> {
+        let built = self.built.borrow();
+        let built = built.as_ref()?;
+        let at = built.rows.iter().position(|row| row.id == result.id)?;
+        crate::shell::search::match_reason_in(needle, result, built.fields.get(at)?)
+    }
+
     /// A setting the system settings offer in place (its value on the row,
     /// changed without opening Settings) is one row for people, that one;
     /// its "open the page at it" row stays for agents and the page itself

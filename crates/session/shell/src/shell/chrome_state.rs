@@ -407,6 +407,22 @@ pub enum OpenTarget {
     RightOf(u64),
 }
 
+/// State search reads that the overlay host owns, published by it as it
+/// changes so a keystroke never asks a subsystem.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SearchContextState {
+    /// The active workspace's windows (tabs), most recently focused first, as
+    /// Alt+Tab walks them: search lists "windows to go back to" in this order
+    /// and switches an app's row to its latest window.
+    pub recent_windows: Vec<crate::shell::state::TabId>,
+    /// Whether this view follows a collaborator: "Stop following" is only
+    /// offered then.
+    pub following: bool,
+    /// Whether dictation is listening: "Finish dictation" is only offered
+    /// then.
+    pub dictating: bool,
+}
+
 /// Where clipboard history was summoned to paste: the focused field's caret
 /// and the focused window, in desktop coordinates, either unknown.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -703,13 +719,8 @@ pub struct ChromeState {
     pub search_resource_scope: Option<SearchResourceScope>,
     /// Set by the tab strip's "+", cleared when the palette closes.
     pub open_target: OpenTarget,
-    /// The active workspace's windows (tabs), most recently focused first, as
-    /// Alt+Tab walks them: search lists "windows to go back to" in this order
-    /// and switches an app's row to its latest window.
-    pub recent_windows: Vec<crate::shell::state::TabId>,
-    /// Whether this view follows a collaborator, published by the overlay
-    /// host that owns the follow: "Stop following" is only offered then.
-    pub following: bool,
+    /// What the overlay host publishes for search as it changes.
+    pub search_context: SearchContextState,
     /// Copied here once per frame from
     /// [`crate::shell::status::StatusBridge`] with no lock held across
     /// a draw. `None` until a poller publishes.
@@ -1049,8 +1060,7 @@ impl ChromeState {
             search_scope: SearchScope::default(),
             search_resource_scope: None,
             open_target: OpenTarget::default(),
-            recent_windows: Vec::new(),
-            following: false,
+            search_context: SearchContextState::default(),
             status: crate::shell::status::SystemStatus::default(),
             clock_activity: None,
             osd: None,

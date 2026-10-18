@@ -337,6 +337,7 @@ impl SearchProvider for DesktopWindowsProvider {
             let recency = |row: &WindowRow| match row.action {
                 WindowAction::FocusTab { tab, .. } => Some(
                     ctx.chrome
+                        .search_context
                         .recent_windows
                         .iter()
                         .position(|recent| *recent == tab)
