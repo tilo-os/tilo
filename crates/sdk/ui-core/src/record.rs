@@ -4332,6 +4332,40 @@ mod tests {
         assert_eq!(one.get_changes(&[]).len(), 1, "they converge on one record");
     }
 
+    /// A part another device started reaches this one while its window
+    /// already holds the chain: kept in the store, it is a held part, and
+    /// it opens.
+    #[test]
+    fn a_part_stored_after_the_window_opened_is_held_and_opens() {
+        let room = uuid::Uuid::new_v4().to_string();
+        let chain = RecordId::derived("messages", &RecordId::room_default());
+        let part = RecordCheckout::new(chain.part(0), RecordKind::new("test.chain-part"));
+        let key = StorageKey::record("so.tilo.test-chain", &room, chain.part(0).storage_key());
+
+        let mut starter = RecordOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
+        let started = starter.open("so.tilo.test-chain", &room).unwrap();
+        started
+            .reserve_record(&part)
+            .unwrap()
+            .initialize(|doc| {
+                doc.put(automerge::ROOT, "messages", 1)
+                    .map(drop)
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        let bytes = started.read(&part.id, |doc| doc.clone().save()).unwrap();
+
+        let backend = Rc::new(durable_store::MemoryStore::new());
+        let mut owners = RecordOwners::with_store(Rc::clone(&backend) as Rc<dyn DurableStore>);
+        let store = owners.open("so.tilo.test-chain", &room).unwrap();
+        assert!(store.held_parts(&chain).is_empty());
+        backend
+            .write(&key, durable_store::WriteOp::Replace(bytes), None)
+            .unwrap();
+        assert_eq!(store.held_parts(&chain), vec![0]);
+        store.try_open_record(&part).unwrap();
+    }
+
     /// Writer records stamped before the kind rename reopen as rich text
     /// without rewriting their attributed history.
     #[test]
