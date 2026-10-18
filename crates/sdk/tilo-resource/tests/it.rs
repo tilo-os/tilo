@@ -28,6 +28,8 @@ pub mod incremental;
 pub mod keyed;
 #[path = "kinds.rs"]
 pub mod kinds;
+#[path = "malformed_items.rs"]
+pub mod malformed_items;
 #[path = "one_pass_reads.rs"]
 pub mod one_pass_reads;
 #[path = "outbox.rs"]
