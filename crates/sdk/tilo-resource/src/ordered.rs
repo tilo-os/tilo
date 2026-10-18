@@ -53,7 +53,7 @@ impl ItemStorage for Arranged {
 
     #[inline(never)]
     fn load<T: Model + Identified>(doc: &Doc, map: &ObjId) -> Result<Vec<T>, ModelError> {
-        stored_entries(doc, map)?
+        stored_entries(doc, map)
             .into_iter()
             .map(|stored| {
                 crate::model::load_slot::<T>(doc, stored.value, VALUE).located(stored.id.as_str())

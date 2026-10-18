@@ -700,7 +700,7 @@ pub(crate) fn store_in_order(
     quarantined: &dyn Fn(&Id) -> bool,
 ) -> Result<(), ModelError> {
     let map = slot.object(doc, ObjType::Map)?;
-    let stored = stored_entries(doc, &map)?;
+    let stored = stored_entries(doc, &map);
     let present: HashSet<&Id> = items.iter().map(|(id, _)| *id).collect();
     for entry in &stored {
         // An item that did not read is kept as it is stored, for its
@@ -821,7 +821,7 @@ pub(crate) fn edit_entries(
             if doc.get(&map, id.as_str())?.is_some() {
                 return Err(ModelError::invalid(format!("an item `{id}` exists")));
             }
-            let stored = stored_entries(doc, &map)?;
+            let stored = stored_entries(doc, &map);
             let key = key_at(&stored, *at, None);
             put_entry(doc, &map, &id, key, edits.order_only, &|doc, slot| {
                 item.store_to(doc, slot)
@@ -837,7 +837,7 @@ pub(crate) fn edit_entries(
         }
         (None, EditOp::MoveTo { id, at }) => {
             let map = slot.object(doc, ObjType::Map)?;
-            let stored = stored_entries(doc, &map)?;
+            let stored = stored_entries(doc, &map);
             let Some(entry) = stored.iter().find(|entry| &entry.id == id) else {
                 return Err(ModelError::invalid(format!("no item `{id}`")));
             };
@@ -1050,7 +1050,7 @@ pub(crate) fn load_entries(
     if !matches!(value, Value::Object(ObjType::Map)) {
         return Err(ModelError::shape("a collection"));
     }
-    for stored in stored_entries(doc, id)? {
+    for stored in stored_entries(doc, id) {
         let at = stored.id.clone();
         read(stored).located(at.as_str())?;
     }
@@ -1069,7 +1069,7 @@ fn stored_order(keys: &[(Option<&str>, &Id)]) -> Vec<usize> {
 /// The stored entries of the collection map `map`, in order. One walk of
 /// the map lists the entries and one walk of each entry reads its order key
 /// and value slot: a lookup per key would open each map again.
-pub(crate) fn stored_entries(doc: &Doc, map: &ObjId) -> Result<Vec<Stored>, ModelError> {
+pub(crate) fn stored_entries(doc: &Doc, map: &ObjId) -> Vec<Stored> {
     let mut entries = Vec::new();
     for item in doc.map_range(map, ..) {
         // An item stored as its order key alone.
@@ -1101,7 +1101,7 @@ pub(crate) fn stored_entries(doc: &Doc, map: &ObjId) -> Result<Vec<Stored>, Mode
     }
     // `(order key, id)` is unique, so an unstable sort orders as a stable one.
     entries.sort_unstable_by(|a, b| a.key.cmp(&b.key).then_with(|| a.id.cmp(&b.id)));
-    Ok(entries)
+    entries
 }
 
 /// An order key placing an item at `at` among `stored` (which may hold the
@@ -1653,7 +1653,8 @@ fn load_into(
                 Ok(())
             }
             Err(error) if quarantines(&error) => {
-                out.quarantine(key.clone(), error.at(key.as_str()).to_string());
+                let reason = error.at(key.as_str()).to_string();
+                out.quarantine(key, reason);
                 Ok(())
             }
             Err(error) => Err(error),
@@ -2212,7 +2213,7 @@ mod tests {
         let Some((_, map)) = doc.get(&ROOT, "items").unwrap() else {
             panic!("the collection is stored");
         };
-        let stored = stored_entries(&doc, &map).unwrap();
+        let stored = stored_entries(&doc, &map);
         assert_eq!(stored.len(), 10_300);
         let longest = stored.iter().map(|entry| entry.key.len()).max().unwrap();
         assert!(longest <= 5, "longest order key: {longest} characters");
