@@ -33,15 +33,6 @@ fn build_header<T>(
     Ok(header)
 }
 
-fn check_bootstrap_hash(remote: &Remote, packed: &builderlayer::Packed) -> Result<(), CliError> {
-    if remote.hello.protocol == 5 && packed.layer_hash.is_none() {
-        return Err(CliError::InvalidInput(
-            "legacy daemon bootstrap requires an assembler content hash".into(),
-        ));
-    }
-    Ok(())
-}
-
 fn check_import_hash(packed: &builderlayer::Packed, imported: &str) -> Result<(), CliError> {
     if packed
         .layer_hash
@@ -269,7 +260,7 @@ impl App {
             .path()
             .strip_prefix(&worktree.root)
             .map_err(|error| CliError::InvalidInput(error.to_string()))?;
-        let cached = if reuse && remote.hello.protocol != 5 {
+        let cached = if reuse {
             self.receipt
                 .phase("layer_lookup", || verified_layers(remote, &component.name))?
         } else {
@@ -320,9 +311,8 @@ impl App {
             &remote.hello.arch,
             &cached,
         )?;
-        check_bootstrap_hash(remote, &packed)?;
         // The build can outlast an idle connection: a fresh one for delivery.
-        *remote = self.connect_component(vm, &component.name, false)?;
+        *remote = self.connect_with_wake(vm, false)?;
         let delivered = self.receipt.phase("transfer", || {
             deliver_layer(remote, &mut stream, &packed, &component.name)
         });

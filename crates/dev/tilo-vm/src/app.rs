@@ -686,49 +686,21 @@ impl App {
     /// that is not on this network, at its address or by name, is reached
     /// over the peer network instead ([`Self::connect_peer`]).
     fn connect(&mut self, vm: &Resolved) -> Result<Remote, CliError> {
-        self.connect_with_wake(vm, false, false)
+        self.connect_with_wake(vm, false)
     }
 
     /// Swaps may resume a managed VM before transport; status remains observational.
     fn connect_for_swap(&mut self, vm: &Resolved) -> Result<Remote, CliError> {
-        self.connect_with_wake(vm, true, false)
+        self.connect_with_wake(vm, true)
     }
 
-    fn connect_component(
-        &mut self,
-        vm: &Resolved,
-        component: &str,
-        wake: bool,
-    ) -> Result<Remote, CliError> {
-        self.connect_with_wake(vm, wake, component == "vmd")
-    }
-
-    fn prepare_swap_connection(
-        &mut self,
-        vm: &Resolved,
-        component: &str,
-        source: &ci::Source,
-        builder: Option<Builder>,
-    ) -> Result<Remote, CliError> {
-        let mut remote = self.connect_component(vm, component, true)?;
-        if remote.hello.protocol == 5
-            && (!matches!(source, ci::Source::Worktree)
-                || !matches!(builder, Some(Builder::Host | Builder::Remote)))
-        {
-            return Err(CliError::InvalidInput("protocol-5 bootstrap requires swap vmd --slot vm --from worktree with --builder host or remote".into()));
-        }
-        self.receipt
-            .set("bootstrap_protocol", remote.hello.protocol);
+    fn prepare_swap_connection(&mut self, vm: &Resolved) -> Result<Remote, CliError> {
+        let mut remote = self.connect_with_wake(vm, true)?;
         self.check_vm_space(&mut remote, vm)?;
         Ok(remote)
     }
 
-    fn connect_with_wake(
-        &mut self,
-        vm: &Resolved,
-        wake: bool,
-        bootstrap: bool,
-    ) -> Result<Remote, CliError> {
+    fn connect_with_wake(&mut self, vm: &Resolved, wake: bool) -> Result<Remote, CliError> {
         self.peer = None;
         if let Some(route) = vm.entry.peer.clone()
             && vm.entry.hypervisor == hypervisor::DEVICE
@@ -748,12 +720,7 @@ impl App {
         let (endpoint, connected) = loop {
             let endpoint = self.endpoint(vm)?;
             let transport = || {
-                let connect = if bootstrap {
-                    Remote::connect_bootstrap
-                } else {
-                    Remote::connect
-                };
-                connect(
+                Remote::connect(
                     &vm.name,
                     &endpoint,
                     vm.entry.key.as_deref(),
@@ -4257,7 +4224,7 @@ impl App {
         }
         let cohort_inputs = self.cohort_inputs(&component, &source)?;
         let vm = self.resolve_vm(None)?;
-        let mut remote = self.prepare_swap_connection(&vm, &component, &source, builder)?;
+        let mut remote = self.prepare_swap_connection(&vm)?;
         let apps_build = if cohort_inputs.is_some() {
             let configured = self
                 .registry()?
@@ -4304,7 +4271,7 @@ impl App {
         }
         self.receipt.set("layer", &layer);
         // Building or pulling the layer can outlast the idle connection.
-        remote = self.connect_component(&vm, &component, true)?;
+        remote = self.connect_with_wake(&vm, true)?;
         if component == "vmd" {
             remote = self.handoff_daemon(&vm, remote, &layer)?;
         }
@@ -4960,7 +4927,7 @@ impl App {
         assembled?;
         // A build can outlast an idle SSH connection (a release shell takes
         // most of an hour): talk to the daemon on a fresh one.
-        *remote = self.connect_component(vm, &component.name, false)?;
+        *remote = self.connect_with_wake(vm, false)?;
         let features = component.build_features(&extra);
         let provenance = build::provenance(
             &mut self.runner,
@@ -4986,10 +4953,9 @@ impl App {
         let cached = self
             .receipt
             .phase("layer_lookup", || remote.call(LayerList {}))?;
-        if remote.hello.protocol != 5
-            && cached.iter().any(|layer| {
-                layer.hash == hash && layer.provenance.component == provenance.component
-            })
+        if cached
+            .iter()
+            .any(|layer| layer.hash == hash && layer.provenance.component == provenance.component)
         {
             self.receipt.set("upload", "skipped");
             self.receipt.set("layer_reused", &hash);
