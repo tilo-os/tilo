@@ -134,18 +134,7 @@ async fn post_in(
         .await
         .unwrap()
         .unwrap();
-    let mut page = Replica::open(
-        &catalogue,
-        CHAT,
-        room,
-        author,
-        ReplicaActor::Owner,
-        Seed::Existing {
-            record: ui::record::RecordId::package_primary(),
-            changes: vec![chat],
-        },
-    )
-    .unwrap();
+    let mut held = Vec::new();
     for (app, record) in rooms.record_routes(room).await.unwrap() {
         let Some(part) = ui::record::RecordId::parse(&record)
             .filter(|part| app == CHAT && chat::parts::part_index(part).is_some())
@@ -157,25 +146,44 @@ async fn post_in(
             .await
             .unwrap()
             .unwrap();
-        page.apply_record(&part, &DocumentMutation::Snapshot(bytes))
-            .unwrap();
+        held.push((part, bytes));
     }
-    let before = message_ids(&page);
-    let arguments = serde_json::json!({ "channel": channel, "text": text });
-    page.invoke(
-        &tilo_actions::door::ActionAddress::new(
-            ui::record::chain_resource_id(&chat::parts::chain()),
-            "post",
-        ),
-        arguments.as_object().unwrap(),
-        false,
-    )
-    .unwrap();
-    let id = message_ids(&page)
-        .into_iter()
-        .find(|id| !before.contains(id))
-        .expect("the post is in a part");
-    for (record, mutation) in page.take_record_mutations() {
+    // The page lives on this thread only; what it changed leaves with it.
+    let (id, taken) = {
+        let mut page = Replica::open(
+            &catalogue,
+            CHAT,
+            room,
+            author,
+            ReplicaActor::Owner,
+            Seed::Existing {
+                record: ui::record::RecordId::package_primary(),
+                changes: vec![chat],
+            },
+        )
+        .unwrap();
+        for (part, bytes) in held {
+            page.apply_record(&part, &DocumentMutation::Snapshot(bytes))
+                .unwrap();
+        }
+        let before = message_ids(&page);
+        let arguments = serde_json::json!({ "channel": channel, "text": text });
+        page.invoke(
+            &tilo_actions::door::ActionAddress::new(
+                ui::record::chain_resource_id(&chat::parts::chain()),
+                "post",
+            ),
+            arguments.as_object().unwrap(),
+            false,
+        )
+        .unwrap();
+        let id = message_ids(&page)
+            .into_iter()
+            .find(|id| !before.contains(id))
+            .expect("the post is in a part");
+        (id, page.take_record_mutations())
+    };
+    for (record, mutation) in taken {
         match mutation {
             DocumentMutation::Snapshot(bytes) => rooms
                 .author_room_record(room, cert, (CHAT, record.as_str()), |doc| {
@@ -979,7 +987,7 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
         }
     };
     part.writes(&rooms, &room, |doc| {
-        doc.load_incremental(&started).unwrap();
+        tilo_automerge::ApplyIncoming::load_incoming(doc, &started).unwrap();
     })
     .await;
     let reports = runner.step().await.unwrap();

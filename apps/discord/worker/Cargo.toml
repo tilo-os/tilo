@@ -49,6 +49,7 @@ automerge.workspace = true
 ed25519-dalek.workspace = true
 hex.workspace = true
 iroh.workspace = true
+tilo-automerge.workspace = true
 tilo-automerge-isolate.workspace = true
 
 [lints]

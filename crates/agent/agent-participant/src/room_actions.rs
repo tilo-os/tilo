@@ -964,6 +964,16 @@ fn live_actions(app: &ConfinedReplica) -> Vec<tilo_actions::ActionDescriptor> {
     app.survey()
 }
 
+/// The outcome of an action whose change could not be committed.
+fn commit_failed(message: String, retryable: bool) -> Outcome {
+    Outcome::Failed(ActionFailure {
+        code: "commit_failed".into(),
+        message,
+        details: None,
+        retryable,
+    })
+}
+
 /// Everything `app` changed since the last take, each with its route: the
 /// held record's own (`None`: the holder's route) first, then each record
 /// held beside it on the route of the same app and room its id names.
@@ -1613,7 +1623,10 @@ impl Worker {
         if target.address.resource.is_empty()
             && let Some(definition) = self.catalogue.get(&route.app_id)
         {
-            target.address.resource = definition.record_kind.as_str().to_owned();
+            definition
+                .record_kind
+                .as_str()
+                .clone_into(&mut target.address.resource);
         }
         let target = &target;
         let arguments = invoke_arguments(&request.argument);
@@ -1650,31 +1663,31 @@ impl Worker {
             .app
             .invoke_appearing(&target.address, &arguments, confirmed, appearance.as_ref())
             .map_err(|error| door_outcome(&error))?;
-        let taken = take_all(&mounted.app, &route).map_err(|error| {
-            Outcome::Failed(ActionFailure {
-                code: "commit_failed".into(),
-                message: error.to_string(),
-                details: None,
-                retryable: false,
-            })
-        })?;
-        let holder = self.holder_of(&route);
+        let taken = take_all(&mounted.app, &route)
+            .map_err(|error| commit_failed(error.to_string(), false))?;
+        self.commit_taken(workspace_id, &route, taken)
+            .map_err(|reason| commit_failed(reason, true))?;
+        Ok(output)
+    }
+
+    /// Commit what the owner's action changed, each record on its own
+    /// route: a part it started is held beside the record it acted on.
+    /// The error is why a commit failed.
+    fn commit_taken(
+        &mut self,
+        workspace_id: u64,
+        route: &DocumentRoute,
+        taken: Vec<(Option<DocumentRoute>, DocumentMutation)>,
+    ) -> Result<(), String> {
+        let holder = self.holder_of(route);
         for (changed, mutation) in taken {
             let changed = changed.unwrap_or_else(|| holder.clone());
             if changed != holder {
                 self.beside.insert(changed.clone(), holder.clone());
             }
-            self.commit(workspace_id, &changed, &mutation)
-                .map_err(|reason| {
-                    Outcome::Failed(ActionFailure {
-                        code: "commit_failed".into(),
-                        message: reason,
-                        details: None,
-                        retryable: true,
-                    })
-                })?;
+            self.commit(workspace_id, &changed, &mutation)?;
         }
-        Ok(output)
+        Ok(())
     }
 
     /// Whether `caller` is the host's own person, whom the service acts for.
@@ -1734,7 +1747,7 @@ impl Worker {
         // A part is held beside the record of its app that keeps it, as the
         // host's own mount holds it.
         let holder = self.holder_of(route);
-        let changes = state.records.get(&holder).ok_or_else(refused)?;
+        let held = state.records.get(&holder).ok_or_else(refused)?;
         let replica = ConfinedReplica::open(
             &self.catalogue,
             &holder.app_id,
@@ -1747,7 +1760,7 @@ impl Worker {
             },
             Seed::Existing {
                 record: reads::record_id(&holder.record).map_err(unavailable)?,
-                changes: changes.iter().map(|(_, bytes)| bytes.clone()).collect(),
+                changes: held.iter().map(|(_, bytes)| bytes.clone()).collect(),
             },
         )
         .map_err(|error| unavailable(error.to_string()))?;

@@ -304,7 +304,7 @@ fn readable_export_contains_sent_content_and_shared_draft_without_changing_heads
     let writer_export = readable("so.tilo.word-processor", "tab:0000000000000001", writer).unwrap();
     assert_eq!(writer_export["body_text"], "Recovery test");
     assert_eq!(writer.base_heads(), before);
-    let mut chat = recovered.docs[&("so.tilo.chat".into(), String::new())].clone();
+    let chat = recovered.docs[&("so.tilo.chat".into(), String::new())].clone();
     let channel = chat::projection::read(&chat).channel_rows().remove(0).id;
     let mut part = AutoCommit::new();
     chat::demo::say_in_part(

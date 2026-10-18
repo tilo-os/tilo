@@ -198,7 +198,7 @@ impl Room {
                 DocumentMutation::Snapshot(bytes) => self
                     .rooms
                     .author_room_record(&self.id, &self.cert, (CHAT, record.as_str()), move |doc| {
-                        doc.load_incremental(&bytes)
+                        tilo_automerge::ApplyIncoming::load_incoming(doc, &bytes)
                             .map(drop)
                             .map_err(|error| error.to_string())
                     })
@@ -213,7 +213,7 @@ impl Room {
                         CHAT,
                         record.as_str(),
                         move |doc| {
-                            doc.load_incremental(&bytes)
+                            tilo_automerge::ApplyIncoming::load_incoming(doc, &bytes)
                                 .map(drop)
                                 .map_err(|error| error.to_string())
                         },
