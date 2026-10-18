@@ -157,6 +157,9 @@ pub fn ruleset_spec(rw: &[PathBuf], ro: &[PathBuf]) -> RulesetSpec {
         connect_ports: Vec::new(),
         rules,
         trim_file_rights: false,
+        // The guest's own namespaces bound its IPC; this ruleset stays the
+        // filesystem layer it has always been.
+        scoped: BitFlags::EMPTY,
     }
 }
 
