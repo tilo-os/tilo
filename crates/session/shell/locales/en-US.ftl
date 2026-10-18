@@ -3044,14 +3044,6 @@ strip-switcher-name-placeholder = Strip name
 strip-switcher-refused = Couldn't change the strip
 
 
-## The community workspace's steps (Settings).
-community-resource = Community workspace
-community-status = Community workspace
-community-status-subtitle = Whether this computer is in its community workspace
-community-join = Join the community workspace again
-community-join-subtitle = Join the workspace you left, as you
-community-leave = Leave the community workspace
-community-leave-subtitle = Leave it on this computer; you can join it again in Settings
 
 ## Pairing a new device of the person.
 pairing-title = Pair a new device

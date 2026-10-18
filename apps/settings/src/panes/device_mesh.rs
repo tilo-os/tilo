@@ -3174,31 +3174,6 @@ mod tests {
         );
     }
 
-    /// Joining a public workspace (the community's among them) is the
-    /// workspace overview's and the directory's now: Devices & sync shows
-    /// no community switch and never asks the host about it. The host keeps
-    /// whoever was in the community workspace in it.
-    #[test]
-    fn devices_and_sync_has_no_community_switch_any_more() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
-        let host = Arc::new(PairingHost::default());
-        pane.remote = ui::RemoteActions::with_host(
-            host.clone(),
-            ui::tilo_actions::remote::Caller::local_person("owner"),
-        );
-        pane.refresh_personal_devices();
-        pane.poll_background_tasks();
-        pane.poll_background_tasks();
-        assert!(
-            host.asked()
-                .iter()
-                .all(|request| request.target.provider
-                    != ui::tilo_actions::remote::community::PROVIDER),
-            "the pane asks the host nothing about the community workspace"
-        );
-    }
-
     /// Removing a home server signs its revocation with the root key, so
     /// the host runs it: the pane invokes the host's removal with the
     /// person's confirmation and runs no relay process.

@@ -282,6 +282,7 @@ impl ShellNetwork {
     /// # Errors
     ///
     /// When what was left is not kept.
+    #[cfg(test)]
     pub(crate) fn leave_community(&self, site: &url::Url) -> Result<(), String> {
         match self.hosted_sites.room_of_site(site) {
             Some(room) => self.leave_site(room),
@@ -290,6 +291,7 @@ impl ShellNetwork {
     }
 
     /// Whether the person left the workspace of `site`.
+    #[cfg(test)]
     pub(crate) fn left_site(&self, site: &url::Url) -> bool {
         self.hosted_sites.left(site)
     }

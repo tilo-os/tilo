@@ -1,6 +1,6 @@
 //! The community workspace a computer is in by default: joined without a
 //! prompt, left for good once the person leaves it, joined again from
-//! Settings, and joined anew when its host was set up again.
+//! the directory, and joined anew when its host was set up again.
 
 use super::community::Pass;
 use super::site_join_tests::{Site, computer, held, key};
@@ -53,7 +53,7 @@ fn the_community_workspace_is_joined_by_default_and_leaving_it_lasts() {
     assert_eq!(net.keep_community(&site.entry), Pass::Idle);
     assert!(!holds(&tree, room));
 
-    // Settings' Join again brings it back.
+    // Joining it from the directory brings it back.
     net.rejoin_site(&site.entry).unwrap();
     held(&net, &tree, room);
     assert!(!net.left_site(&site.entry));

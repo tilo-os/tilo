@@ -577,52 +577,6 @@ pub mod identity_admin {
     }
 }
 
-/// The community workspace a Tilo computer is in by default (the image
-/// names its site), as the host that keeps the membership answers it to
-/// Settings: where the person stands, joining it again after leaving, and
-/// leaving it.
-pub mod community {
-    use serde::{Deserialize, Serialize};
-
-    use super::{ActionAddress, RemoteActionTarget};
-
-    /// The provider the host answers the community steps under.
-    pub const PROVIDER: &str = "tilo.community";
-    /// The resource the steps are actions of.
-    pub const RESOURCE: &str = "community";
-    /// Where the person stands, as a [`CommunityStatus`].
-    pub const STATUS: &str = "status";
-    /// Join the community workspace again after leaving it.
-    pub const JOIN: &str = "join";
-    /// Leave it (`confirm`).
-    pub const LEAVE: &str = "leave";
-
-    /// Every step, in the order a catalogue lists them.
-    pub const STEPS: [&str; 3] = [STATUS, JOIN, LEAVE];
-
-    /// The target of community step `step`.
-    #[must_use]
-    pub fn target(step: &str) -> RemoteActionTarget {
-        RemoteActionTarget {
-            provider: PROVIDER.to_owned(),
-            address: ActionAddress::new(RESOURCE, step),
-        }
-    }
-
-    /// Where the person stands with the community workspace, as [`STATUS`]
-    /// answers it.
-    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct CommunityStatus {
-        /// The site whose workspace it is; `None` when this computer has no
-        /// community workspace configured.
-        pub site: Option<String>,
-        /// Whether this computer holds the workspace now.
-        pub joined: bool,
-        /// Whether the person left it, so it is not joined unasked.
-        pub left: bool,
-    }
-}
-
 /// Why a host refuses a directory action that asks for confirmation when
 /// the request names no revision: the confirmation covers the action as the
 /// person was shown it, which only that revision identifies. A caller that
