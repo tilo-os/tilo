@@ -1537,57 +1537,8 @@ fn revalidate_native_agent_markers(
     if !source.is_current(state, frame) {
         return changed;
     }
-    let Some(session) = broker.as_ref() else {
-        return changed;
-    };
-    let Some(identity) = session.certified_marker_agent(&marker.room, &marker.interaction.actor.id)
-    else {
-        return changed;
-    };
-    if identity.agent_key != marker.agent {
-        return changed;
-    }
-    let Some(identity_revision) = session.identity_revision(&marker.room) else {
-        return changed;
-    };
     drop(broker);
-    let person = frame.chrome_handle().borrow().active_local_user();
-    if frame
-        .host()
-        .certified_marker_task(
-            &marker.room,
-            &marker.app_id,
-            &marker.agent,
-            &marker.interaction,
-        )
-        .as_ref()
-        != Some(&marker.task)
-    {
-        return changed;
-    }
-    let task = marker.task.clone();
-    let painted_origin = (marker.app_id.clone(), marker.interaction.clone());
-    let opened = frame.host_mut().open_agent_quick_composer(
-        crate::shell::agent_quick_composer::ComposerOwner {
-            room: marker.room,
-            agent: identity.agent_key,
-            person,
-            identity_revision,
-        },
-        &marker.label,
-        crate::shell::agent_quick_composer::AgentQuickComposerOrigin {
-            marker: marker.marker,
-            protected: marker.protected,
-            context: marker.description,
-        },
-    );
-    if opened {
-        frame
-            .host_mut()
-            .agent_quick_composer_mut()
-            .bind_painted_task(task, painted_origin.0, painted_origin.1);
-    }
-    opened || changed
+    frame.host_mut().open_certified_agent_marker(marker) || changed
 }
 
 fn external_floating_parts(id: &str) -> Option<(u64, &str)> {

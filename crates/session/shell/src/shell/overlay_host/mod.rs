@@ -2063,6 +2063,21 @@ impl ShellOverlayHost {
             theme,
             presence,
         );
+        overlay_part(
+            above_quick_settings,
+            "shell.private-composers",
+            desktop,
+            |scene| {
+                self.draw_private_composers_and_markers(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    presence,
+                );
+                None
+            },
+        );
         overlay_part(above_quick_settings, "shell.tour", desktop, |scene| {
             if contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
                 onboarding.draw(scene, transform, text_renderer, theme, presence);
@@ -20964,31 +20979,7 @@ impl Widget for ShellOverlayHost {
         }
         self.draw_dropdowns_and_sheets(scene, transform, text_renderer, theme, presence, flags);
         self.draw_top_overlays(scene, transform, text_renderer, theme, presence);
-        let suppress_agent_markers = self.agent_quick_composer.is_open()
-            || self.person_quick_composer.is_open()
-            || self.onboarding_active()
-            || self.inner_surface_captures_input()
-            || self.modal_sheet_owns_keyboard();
-        self.agent_markers.refresh(presence, suppress_agent_markers);
-        self.agent_markers
-            .draw(scene, transform, text_renderer, theme, presence);
-        self.person_markers.refresh(suppress_agent_markers);
-        self.person_markers
-            .draw(scene, transform, text_renderer, theme, presence);
-        // Native confirmation and authentication sheets keep the top layer.
-        // Keep the retained private draft, but never paint it above a sheet.
-        if !self.modal_sheet_owns_keyboard() && !self.onboarding_active() {
-            self.person_quick_composer.draw_overlay(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-            );
-        }
-        self.agent_quick_composer
-            .draw_overlay(scene, transform, text_renderer, theme, presence);
-        self.draw_bar_popovers(scene, transform, text_renderer, theme, presence);
+        self.draw_private_composers_and_markers(scene, transform, text_renderer, theme, presence);
         if contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
             onboarding.draw(scene, transform, text_renderer, theme, presence);
             self.draw_portal_dialog_sheet(scene, transform, text_renderer, theme);
@@ -23071,6 +23062,41 @@ struct OverviewPanelCache {
 }
 
 impl ShellOverlayHost {
+    /// Keep retained presentation and dense capture on the same interactive paint path.
+    fn draw_private_composers_and_markers(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        let suppressed = self.agent_quick_composer.is_open()
+            || self.person_quick_composer.is_open()
+            || self.onboarding_active()
+            || self.inner_surface_captures_input()
+            || self.modal_sheet_owns_keyboard();
+        self.agent_markers.refresh(presence, suppressed);
+        self.agent_markers
+            .draw(scene, transform, text_renderer, theme, presence);
+        self.person_markers.refresh(suppressed);
+        self.person_markers
+            .draw(scene, transform, text_renderer, theme, presence);
+        // Native confirmation and authentication sheets keep the top layer.
+        if !self.modal_sheet_owns_keyboard() && !self.onboarding_active() {
+            self.person_quick_composer.draw_overlay(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            );
+        }
+        self.agent_quick_composer
+            .draw_overlay(scene, transform, text_renderer, theme, presence);
+        self.draw_bar_popovers(scene, transform, text_renderer, theme, presence);
+    }
+
     /// Base desktop layer: window content, remote-peer presence, the
     /// permission prompt bar, the toast stack and the
     /// visual-alert edge. First of four passes split out of `draw`, which

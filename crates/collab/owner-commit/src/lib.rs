@@ -93,6 +93,10 @@ pub enum CommitTarget {
     NativeCheckpointRoot {
         root: [u8; 32],
     },
+    /// Exact managed actor admission; not a content checkpoint index.
+    NativeManagedAgentAdmission {
+        device: [u8; 32],
+    },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommitBinding {

@@ -18,6 +18,18 @@ pub use tilo_joined_room::task_admission::model::{
 /// Implemented by the broker from a certificate-authenticated, delivered lease.
 /// Never constructed from inference JSON or a sender's display name/profile.
 pub trait NativeModelLease: Send + Sync {
+    /// Hold the actual delivered lease and protected connection gates through
+    /// synchronous enqueue. Unsupported adapters fail closed, never cache live().
+    fn with_current(
+        &self,
+        _view: &NativeCommittedView,
+        _contract: NativeModelContract,
+        _now: SystemTime,
+        _enqueue: &mut dyn FnMut(NativeModelContext) -> Result<(), String>,
+    ) -> Result<(), String> {
+        Err("native MODEL pinned lease unavailable".into())
+    }
+
     fn room(&self) -> &str;
     fn binding(&self) -> &NativeTaskBinding;
     fn live(&self) -> bool;

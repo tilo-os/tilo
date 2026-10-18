@@ -341,6 +341,16 @@ impl PrivateTaskTextStore {
             {
                 Self::prepare_private_agent_request(title, assigned_agent, *route, resource.clone())
             }
+            C::Queue { title, .. } => Ok((
+                command.clone(),
+                Some(NativePrivateInstructionWrite {
+                    // A title-only request is still a real instruction. Retain
+                    // it in the same owner custody used to bind model dispatch.
+                    instruction: Some(title.clone()),
+                    agent_request: None,
+                    direction: None,
+                }),
+            )),
             C::QueuePrivateSubtask {
                 parent_task_id,
                 title,

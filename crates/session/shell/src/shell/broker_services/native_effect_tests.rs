@@ -1,4 +1,6 @@
 //! Real native clock, certified local action, and durable terminal owner barrier.
+#[path = "certified_cursor_tests.rs"]
+mod certified_cursor;
 #[path = "native_checkpoint_tests.rs"]
 mod checkpoints;
 #[path = "model_start_tests.rs"]

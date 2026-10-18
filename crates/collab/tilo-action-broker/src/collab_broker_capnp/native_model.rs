@@ -142,14 +142,19 @@ impl Lease {
             std::time::SystemTime,
         )>,
     ) -> bool {
-        if !self.local.current()
-            || self
-                .callbacks
-                .lock()
-                .map_or(true, |callbacks| callbacks.is_none())
-        {
+        if !self.local.current() || self.closed() {
             return false;
         }
+        self.live_registered(current)
+    }
+
+    fn live_registered(
+        &self,
+        current: Option<(
+            &tilo_joined_room::NativeCommittedView,
+            std::time::SystemTime,
+        )>,
+    ) -> bool {
         let Some(state) = self.state.upgrade() else {
             return false;
         };
@@ -198,6 +203,30 @@ impl Drop for Lease {
 }
 
 impl NativeModelLease for Lease {
+    fn with_current(
+        &self,
+        view: &tilo_joined_room::NativeCommittedView,
+        contract: NativeModelContract,
+        now: std::time::SystemTime,
+        enqueue: &mut dyn FnMut(NativeModelContext) -> Result<(), String>,
+    ) -> Result<(), String> {
+        // Owner -> connection -> delivered lease. close() releases its lease
+        // gate before notifying listeners; neither path reenters the owner.
+        self.local.with_current(|| {
+            let callbacks = self
+                .callbacks
+                .lock()
+                .map_err(|_| "MODEL lease gate unavailable")?;
+            if callbacks.is_none() || !self.live_registered(Some((view, now))) {
+                return Err("native MODEL connection or delivered lease ended".into());
+            }
+            enqueue(self.certified_context(
+                view,
+                contract,
+                now.max(std::time::SystemTime::now()),
+            )?)
+        })
+    }
     fn connection(&self) -> Option<NativeModelConnection> {
         Some(self.connection.clone())
     }
@@ -238,6 +267,17 @@ impl NativeModelLease for Lease {
         if !self.live_with_view(Some((view, now))) {
             return Err("native MODEL connection or delivered lease ended".into());
         }
+        self.certified_context(view, contract, now)
+    }
+}
+
+impl Lease {
+    fn certified_context(
+        &self,
+        view: &tilo_joined_room::NativeCommittedView,
+        contract: NativeModelContract,
+        now: std::time::SystemTime,
+    ) -> Result<NativeModelContext, String> {
         let certificate = self
             .identity
             .certificate

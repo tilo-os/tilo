@@ -49,6 +49,24 @@ pub(crate) fn validate(
     tree: &super::state::WorkspaceTree,
     inputs: &super::hosted_inputs::HostedTileInputs,
 ) -> Result<(), ShellFixtureError> {
+    validate_with_projected_tiles(tree, inputs, false)
+}
+
+/// Native owner projections include the Lounge's peer windows and local activity.
+/// Keep these out of scratch fixtures, whose apps must all mount with owned inputs.
+#[cfg(test)]
+pub(crate) fn validate_native(
+    tree: &super::state::WorkspaceTree,
+    inputs: &super::hosted_inputs::HostedTileInputs,
+) -> Result<(), ShellFixtureError> {
+    validate_with_projected_tiles(tree, inputs, true)
+}
+
+fn validate_with_projected_tiles(
+    tree: &super::state::WorkspaceTree,
+    inputs: &super::hosted_inputs::HostedTileInputs,
+    native_projection: bool,
+) -> Result<(), ShellFixtureError> {
     use super::state::{AppKind, TileContent};
     if tree.persist_path.is_some() || tree.fs_acl_path.is_some() {
         return Err(ShellFixtureError::InvalidTree(
@@ -77,6 +95,11 @@ pub(crate) fn validate(
                         } => ["Notes", "Editor", "Word"]
                             .iter()
                             .any(|allowed| name.eq_ignore_ascii_case(allowed)),
+                        TileContent::WorkspaceActivity => native_projection,
+                        TileContent::PeerWindow { app_id, .. } => {
+                            native_projection
+                                && matches!(app_id.as_str(), "so.tilo.chat" | "so.tilo.notes")
+                        }
                         _ => false,
                     };
                     if !supported {
@@ -107,6 +130,38 @@ mod tests {
         );
         let renderer = ui::text_render::TextRenderer::with_font_catalog(&catalog).unwrap();
         ShellFixtureInputs::new(parent, renderer, ui::theme::Theme::dark()).unwrap()
+    }
+
+    #[test]
+    fn native_projection_validation_does_not_expand_scratch_fixture_support() {
+        use crate::shell::state::TileContent;
+        let parent = tempfile::tempdir().unwrap();
+        let inputs = inputs(parent.path());
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        for tile in [
+            TileContent::WorkspaceActivity,
+            TileContent::PeerWindow {
+                app_id: "so.tilo.chat".into(),
+                label: "Chat".into(),
+                note: String::new(),
+                missing: None,
+            },
+            TileContent::PeerWindow {
+                app_id: "so.tilo.notes".into(),
+                label: "Notes".into(),
+                note: String::new(),
+                missing: None,
+            },
+        ] {
+            tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].tile = tile;
+            assert!(validate(&tree, &inputs.hosted).is_err());
+            validate_native(&tree, &inputs.hosted).unwrap();
+        }
+        tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].tile = TileContent::Foreign {
+            app_id: "so.tilo.notes".into(),
+            surface_id: 1,
+        };
+        assert!(validate_native(&tree, &inputs.hosted).is_err());
     }
 
     #[test]

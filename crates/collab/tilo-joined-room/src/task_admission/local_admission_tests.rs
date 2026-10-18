@@ -599,6 +599,15 @@ fn local_model_admission_publishes_once_with_actual_typed_policy_and_signed_prov
     use crate::task_admission::model::*;
     struct Authority(NativeModelContext);
     impl NativeModelAuthority for Authority {
+        fn with_current_model_context(
+            &self,
+            _: &NativeCommittedView,
+            _: SystemTime,
+            enqueue: &mut dyn FnMut(NativeModelContext) -> Result<(), String>,
+        ) -> Result<(), String> {
+            // This fixture's context is immutable for its entire lifetime.
+            enqueue(self.0.clone())
+        }
         fn current_model_context(
             &self,
             _: &NativeCommittedView,

@@ -1,6 +1,6 @@
 //! Actual kernel peer-process observation; this does not fabricate launcher admission.
 use super::*;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[tokio::test]

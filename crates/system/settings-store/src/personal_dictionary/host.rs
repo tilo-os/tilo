@@ -63,6 +63,13 @@ impl Host {
 }
 
 impl SettingsSource for Host {
+    fn with_committed(
+        &self,
+        use_document: &mut dyn FnMut(&Map<String, Value>) -> Result<(), String>,
+    ) -> Result<(), String> {
+        self.source.with_committed(use_document)
+    }
+
     fn load_committed(&self) -> Option<Map<String, Value>> {
         self.source.load_committed()
     }

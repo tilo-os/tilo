@@ -1284,6 +1284,19 @@ impl NativeWorkspaceOwner {
         check: impl Fn(&NativeCommittedView, &NativeInvocationBinding, SystemTime) -> Result<(), String>,
         admit: impl FnOnce() -> Result<T, String>,
     ) -> Result<(T, NativeInvocationPermit), String> {
+        self.admit_local_native_invocation_with_view(binding, host, key, check, |_| admit())
+    }
+
+    /// As atomic local admission, exposing the already-locked published view to
+    /// the final synchronous authority fence. Never reenter the owner here.
+    pub fn admit_local_native_invocation_with_view<T>(
+        &self,
+        binding: NativeInvocationBinding,
+        host: &DeviceCert,
+        key: &SigningKey,
+        check: impl Fn(&NativeCommittedView, &NativeInvocationBinding, SystemTime) -> Result<(), String>,
+        admit: impl FnOnce(&NativeCommittedView) -> Result<T, String>,
+    ) -> Result<(T, NativeInvocationPermit), String> {
         let _turn = self.0.mutation.lock();
         let room = binding.room;
         let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
@@ -1315,8 +1328,8 @@ impl NativeWorkspaceOwner {
             host,
             |view, now| check(view, &reservation.binding, now),
         )?;
-        self.publish_task_admission(room, candidate)?;
-        let result = admit()?;
+        self.publish_task_admission(room, candidate.clone())?;
+        let result = admit(&candidate)?;
         Ok((result, permit))
     }
 
@@ -1376,14 +1389,26 @@ impl NativeWorkspaceOwner {
         check: impl FnOnce(&crate::NativeCommittedView, SystemTime) -> Result<(), String>,
         admit: impl FnOnce() -> Result<T, String>,
     ) -> Result<T, String> {
+        self.admit_reserved_native_invocation_with_view(permit, exact, source, check, |_| admit())
+    }
+
+    /// Final enqueue receives the current candidate without reentrant owner reads.
+    pub fn admit_reserved_native_invocation_with_view<T>(
+        &self,
+        permit: &NativeInvocationPermit,
+        exact: &NativeInvocationBinding,
+        source: &DeviceCert,
+        check: impl FnOnce(&NativeCommittedView, SystemTime) -> Result<(), String>,
+        admit: impl FnOnce(&NativeCommittedView) -> Result<T, String>,
+    ) -> Result<T, String> {
         permit.verify()?;
         let reservation = &permit.reservation;
         let _turn = self.0.mutation.lock();
         let room = reservation.binding.room;
         let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
         consume_local_candidate(&mut candidate, permit, exact, source, check)?;
-        self.publish_task_admission(room, candidate)?;
-        admit()
+        self.publish_task_admission(room, candidate.clone())?;
+        admit(&candidate)
     }
 
     /// Persist the local host fence, reject queued/unstarted work, then sign its

@@ -139,6 +139,12 @@ fn live_config() -> Result<ProviderConfig, String> {
     let document = source
         .load_committed()
         .ok_or("native MODEL committed Settings unavailable")?;
+    config_from_document(&document)
+}
+
+fn config_from_document(
+    document: &serde_json::Map<String, serde_json::Value>,
+) -> Result<ProviderConfig, String> {
     let section = document
         .get(agent_provider_config::SETTINGS_SECTION)
         .and_then(serde_json::Value::as_object)
@@ -161,7 +167,14 @@ fn live_config() -> Result<ProviderConfig, String> {
 }
 
 fn check_selection(profile: &ProviderProfile, model: &str) -> Result<(), String> {
-    let config = live_config()?;
+    check_config(&live_config()?, profile, model)
+}
+
+fn check_config(
+    config: &ProviderConfig,
+    profile: &ProviderProfile,
+    model: &str,
+) -> Result<(), String> {
     if !config.validation_errors().is_empty()
         || config.active_profile() != Some(profile)
         || profile.default_model.as_deref() != Some(model)
@@ -273,6 +286,39 @@ struct Authority<'a> {
     dispatch: &'a Dispatch,
 }
 impl NativeModelAuthority for Authority<'_> {
+    fn with_current_model_context(
+        &self,
+        view: &NativeCommittedView,
+        now: SystemTime,
+        enqueue: &mut dyn FnMut(NativeModelContext) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let dispatch = self.dispatch;
+        dispatch.lease.with_current(
+            view,
+            dispatch.frozen.contract.clone(),
+            now,
+            &mut |mut context| {
+                // Global order: owner -> connection/lease -> source -> Settings.
+                // Publication has completed: no owner read or publication under these gates.
+                let tree = dispatch.owner.tree.read();
+                SourceCustody::freeze(&tree, dispatch.lease.as_ref(), &dispatch.frozen.contract)?;
+                settings_store::with_installed_committed(&mut |document| {
+                    check_config(
+                        &config_from_document(document)?,
+                        &dispatch.frozen.profile,
+                        &dispatch.frozen.model,
+                    )?;
+                    if view.device() != view.governor() {
+                        context.private_run_digest = dispatch.private_run_digest;
+                    }
+                    if context.private_run_digest != dispatch.private_run_digest {
+                        return Err("native MODEL private run changed".into());
+                    }
+                    enqueue(context.clone())
+                })
+            },
+        )
+    }
     fn current_model_context(
         &self,
         view: &NativeCommittedView,
@@ -323,8 +369,10 @@ impl Dispatch {
         if signer != host {
             return Err("native MODEL physical host signer changed".into());
         }
-        let tree = self.owner.tree.read();
-        SourceCustody::freeze(&tree, self.lease.as_ref(), &self.frozen.contract)?;
+        {
+            let tree = self.owner.tree.read();
+            SourceCustody::freeze(&tree, self.lease.as_ref(), &self.frozen.contract)?;
+        }
         let authority = Authority { dispatch: self };
         let context = owner.with_current(room, |view| {
             authority.current_model_context(view, SystemTime::now())
@@ -357,7 +405,6 @@ impl Dispatch {
         } else {
             None
         };
-        drop(tree);
         let registration = registration
             .map(|registration| self.enroll(registration, &requirement))
             .transpose()?;
@@ -572,8 +619,10 @@ impl NativeModelDispatch for Dispatch {
         if prepared.endpoint != attempt.endpoint {
             return Err("native MODEL final endpoint changed".into());
         }
-        let tree = self.owner.tree.read();
-        SourceCustody::freeze(&tree, self.lease.as_ref(), &self.frozen.contract)?;
+        {
+            let tree = self.owner.tree.read();
+            SourceCustody::freeze(&tree, self.lease.as_ref(), &self.frozen.contract)?;
+        }
         let enrollment = prepared
             .registration
             .as_ref()
@@ -594,6 +643,17 @@ impl NativeModelDispatch for Dispatch {
             owner: &prepared.owner,
             authority: &authority,
         };
+        // Admission publishes through this tree's writer. Pin the live source
+        // only after that publication, inside the final synchronous enqueue,
+        // or local governor dispatch deadlocks its own publication writer.
+        let enqueue = |_: &[u8]| {
+            if let Some(state) = &enrollment {
+                if !state.live || SystemTime::now() >= state.registration.expires_at() {
+                    return Err("native MODEL host enrollment expired or revoked".into());
+                }
+            }
+            start()
+        };
         let result = if let Some(permit) = &prepared.permit {
             gate.dispatch(
                 &prepared.requirement,
@@ -602,7 +662,7 @@ impl NativeModelDispatch for Dispatch {
                     governor: &prepared.governor,
                     outbound_body: &attempt.body,
                 },
-                |_| start(),
+                enqueue,
             )
         } else {
             let (key, host) = tilo_identity_host::broker::trusted_current_device(self.lease.room())
@@ -615,13 +675,12 @@ impl NativeModelDispatch for Dispatch {
                     now: SystemTime::now(),
                 },
                 &attempt.body,
-                |_| start(),
+                enqueue,
             )
             .map(|((), permit)| {
                 prepared.permit = Some(permit);
             })
         };
-        drop(tree);
         drop(enrollment);
         result?;
         *self

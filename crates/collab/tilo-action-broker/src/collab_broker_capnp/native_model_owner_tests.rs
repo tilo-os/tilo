@@ -15,6 +15,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 mod combined;
 #[path = "native_model_owner_tests/legacy.rs"]
 pub(super) mod legacy;
+#[path = "native_model_owner_tests/publication.rs"]
+mod publication;
 #[path = "native_model_owner_tests/queued.rs"]
 mod queued;
 #[path = "native_model_owner_tests/receipt.rs"]
@@ -31,6 +33,7 @@ pub(super) struct Models {
     prepared: Arc<tokio::sync::Notify>,
     resume: Arc<tokio::sync::Notify>,
     queued: QueuedModel,
+    final_time: Arc<Mutex<Option<std::time::SystemTime>>>,
     closed: Arc<std::sync::atomic::AtomicUsize>,
     close_notify: Arc<tokio::sync::Notify>,
 }
@@ -43,6 +46,7 @@ impl Models {
             prepared: Arc::new(tokio::sync::Notify::new()),
             resume: Arc::new(tokio::sync::Notify::new()),
             queued: Arc::new(Mutex::new(None)),
+            final_time: Arc::default(),
             closed: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             close_notify: Arc::new(tokio::sync::Notify::new()),
         }
@@ -149,6 +153,7 @@ impl NativeModelHost for Models {
             pause: self.pause.clone(),
             ready: self.prepared.clone(),
             resume: self.resume.clone(),
+            final_time: self.final_time.clone(),
             queued: self.queued.clone(),
         }))
     }
@@ -166,12 +171,31 @@ struct Dispatch {
     ready: Arc<tokio::sync::Notify>,
     resume: Arc<tokio::sync::Notify>,
     queued: QueuedModel,
+    final_time: Arc<Mutex<Option<std::time::SystemTime>>>,
 }
 struct Authority<'a> {
     lease: &'a dyn NativeModelLease,
     contract: NativeModelContract,
+    final_time: &'a Mutex<Option<std::time::SystemTime>>,
 }
 impl NativeModelAuthority for Authority<'_> {
+    fn with_current_model_context(
+        &self,
+        view: &tilo_joined_room::NativeCommittedView,
+        now: std::time::SystemTime,
+        enqueue: &mut dyn FnMut(NativeModelContext) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let config = agent_provider_config::ProviderConfig::load();
+        let frozen: agent_provider_config::ProviderProfile =
+            serde_json::from_value(self.contract.selection.contract["profile"].clone())
+                .map_err(|e| e.to_string())?;
+        if config.active_profile() != Some(&frozen) {
+            return Err("MODEL live full profile changed".into());
+        }
+        let now = self.final_time.lock().unwrap().unwrap_or(now);
+        self.lease
+            .with_current(view, self.contract.clone(), now, enqueue)
+    }
     fn current_model_context(
         &self,
         view: &tilo_joined_room::NativeCommittedView,
@@ -195,6 +219,7 @@ impl Dispatch {
         let authority = Authority {
             lease: self.lease.as_ref(),
             contract: contract.clone(),
+            final_time: &self.final_time,
         };
         let context = self.native.owner.with_current(room(), |view| {
             authority.current_model_context(view, std::time::SystemTime::now())
@@ -274,6 +299,7 @@ impl NativeModelDispatch for Dispatch {
         let authority = Authority {
             lease: self.lease.as_ref(),
             contract: requirement.modelselection.clone(),
+            final_time: &self.final_time,
         };
         let ((), permit) = HostDispatchModel {
             owner: &self.native.owner,

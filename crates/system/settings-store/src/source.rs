@@ -125,6 +125,15 @@ pub type SectionChange<'a> = dyn FnMut(&Map<String, Value>) -> Map<String, Value
 
 /// Where the settings document lives when it is not the local file.
 pub trait SettingsSource: Send + Sync {
+    /// Hold the committed document's publication gate through a synchronous
+    /// authority decision and enqueue. No storage, refresh or deferred work.
+    fn with_committed(
+        &self,
+        _use_document: &mut dyn FnMut(&Map<String, Value>) -> Result<(), String>,
+    ) -> Result<(), String> {
+        Err("Settings committed custody unavailable".into())
+    }
+
     /// The whole document. Forgiving like the file: never fails.
     fn load(&self) -> Map<String, Value>;
 
@@ -397,6 +406,18 @@ pub fn installed_source() -> Option<Arc<dyn SettingsSource>> {
     SOURCE.read_recover().clone()
 }
 
+/// Pin both the installed source identity and its current committed document.
+/// The callback must not reenter Settings or perform asynchronous work.
+pub fn with_installed_committed(
+    use_document: &mut dyn FnMut(&Map<String, Value>) -> Result<(), String>,
+) -> Result<(), String> {
+    let source = SOURCE.read_recover();
+    source
+        .as_ref()
+        .ok_or("Settings source unavailable")?
+        .with_committed(use_document)
+}
+
 /// Merge `values` into section `name` of `doc`, keeping every other section
 /// and every key `values` does not mention. A section of the wrong type is
 /// replaced: there is nothing to preserve in a value that cannot be read.
@@ -442,6 +463,13 @@ impl HostDocument {
 }
 
 impl SettingsSource for HostDocument {
+    fn with_committed(
+        &self,
+        use_document: &mut dyn FnMut(&Map<String, Value>) -> Result<(), String>,
+    ) -> Result<(), String> {
+        use_document(&self.doc.lock_recover())
+    }
+
     fn load_committed(&self) -> Option<Map<String, Value>> {
         Some(self.doc.lock_recover().clone())
     }
@@ -538,6 +566,44 @@ mod tests {
         assert_eq!(Value::Object(doc.load()), expected);
         assert_eq!(persisted.lock().unwrap().last(), Some(&expected));
         assert_eq!(doc.revision(), before + 2);
+    }
+
+    #[test]
+    fn committed_custody_serializes_live_profile_writes_through_enqueue() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let enqueued = Arc::new(AtomicBool::new(false));
+        let observed = enqueued.clone();
+        let doc = HostDocument::new(
+            object(json!({"provider": {"account": "approved"}})),
+            move |_| {
+                assert!(
+                    observed.load(Ordering::SeqCst),
+                    "Settings changed before guarded enqueue"
+                );
+                Ok(())
+            },
+        );
+        std::thread::scope(|scope| {
+            doc.with_committed(&mut |document| {
+                assert_eq!(document["provider"]["account"], "approved");
+                let (started, waiting) = std::sync::mpsc::channel();
+                let doc = &doc;
+                scope.spawn(move || {
+                    started.send(()).unwrap();
+                    doc.update_section("provider", object(json!({"account": "replacement"})))
+                        .unwrap();
+                });
+                waiting.recv().unwrap();
+                assert!(
+                    doc.doc.try_lock().is_err(),
+                    "the actual writer gate must stay pinned"
+                );
+                enqueued.store(true, Ordering::SeqCst);
+                Ok(())
+            })
+            .unwrap();
+        });
+        assert_eq!(doc.load()["provider"]["account"], "replacement");
     }
 
     #[test]

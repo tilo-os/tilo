@@ -16,6 +16,17 @@ struct DeliveredLease {
     binding: NativeTaskBinding,
 }
 impl NativeModelLease for DeliveredLease {
+    fn with_current(
+        &self,
+        view: &tilo_joined_room::NativeCommittedView,
+        contract: NativeModelContract,
+        now: SystemTime,
+        enqueue: &mut dyn FnMut(
+            tilo_action_broker::native_model::NativeModelContext,
+        ) -> Result<(), String>,
+    ) -> Result<(), String> {
+        enqueue(self.current(view, contract, now)?)
+    }
     fn room(&self) -> &str {
         &self.room
     }
@@ -71,15 +82,6 @@ async fn approved(
     service: &NativeOwnerCommitService,
     resource: WorkspaceTaskResource,
 ) -> Arc<DeliveredLease> {
-    membership(
-        fixture,
-        service,
-        WorkspaceMembershipCommand::AddAgent {
-            agent: "scribe".into(),
-            preset: tilo_action_policy::roles::AgentPreset::Operator,
-        },
-    )
-    .await;
     service
         .execute(request(
             fixture,
@@ -101,8 +103,20 @@ async fn approved(
     let task_id = task.id.clone();
     assert!(pending.controls[&task_id].active_run.is_none());
     assert!(pending.controls[&task_id].model_authority.is_none());
-    // Permit MODEL as an agent capability without widening the attached data
-    // scope. Person approval below still supplies separate frozen authority.
+    // Permit only the actual MODEL action, not a room-wide outside-effects
+    // grant competing with the delegation's Editor cap at the same specificity.
+    let model_node = if let Some(origin) = resource.agent_request.as_ref() {
+        let tree = crate::shell::native_workspace_owner::test_tree_of(&fixture.owner);
+        crate::shell::host_window_contracts::published(&tree.read())
+            .into_iter()
+            .find(|window| window.record.as_deref() == Some(origin.chat_record.as_str()))
+            .unwrap()
+            .request_model
+    } else {
+        NativeModelContract::task_resource(&fixture.room.to_string(), &task_id)
+            .action("requestModel")
+    };
+    // Person approval below still supplies independent frozen model authority.
     membership(
         fixture,
         service,
@@ -110,7 +124,7 @@ async fn approved(
             grant: tilo_action_policy::Grant::new(
                 "model-source-capability",
                 tilo_action_policy::Subject::agent("scribe"),
-                TreePath::room(fixture.room.to_string()),
+                model_node,
                 tilo_action_policy::KindSet::ALL,
                 tilo_action_policy::Answer::Allow,
                 tilo_action_policy::Subject::person(hex::encode(
@@ -169,6 +183,23 @@ fn inference(invocation: uuid::Uuid, profile: &agent_provider_config::ProviderPr
     }
 }
 
+fn completion(invocation: uuid::Uuid, profile: &agent_provider_config::ProviderProfile) -> Request {
+    use agent_provider_config::protocol::{Message, ModelRequest, Role, ToolChoice};
+    Request::NativeComplete {
+        invocation: serde_json::json!(invocation),
+        profile_id: profile.id.clone(),
+        model_id: "selected-model".into(),
+        request: ModelRequest {
+            messages: vec![Message::text(Role::User, "private draft")],
+            tools: vec![],
+            tool_choice: ToolChoice::None,
+            max_output_tokens: 16,
+        },
+        timeout_ms: 2000,
+        stream: false,
+    }
+}
+
 async fn read_post(socket: &mut tokio::net::TcpStream) -> serde_json::Value {
     let mut head = Vec::new();
     while !head.ends_with(b"\r\n\r\n") {
@@ -211,6 +242,7 @@ async fn no_http(listener: &tokio::net::TcpListener) {
 fn attached_windowless_task_claim_reaches_protected_gateway_without_data_scope_widening() {
     let fixture = fixture();
     let (_initial_settings, mut profile) = settings();
+    let executor = executor::start(&fixture);
     let runtime = tokio::runtime::Runtime::new().unwrap();
     runtime.block_on(async {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -218,7 +250,7 @@ fn attached_windowless_task_claim_reaches_protected_gateway_without_data_scope_w
         let _settings = install_profile(&profile);
         let tree = crate::shell::native_workspace_owner::test_tree_of(&fixture.owner);
         assert!(crate::shell::host_window_contracts::published(&tree.read()).is_empty());
-        let service = Arc::new(NativeOwnerCommitService::new(tree, None));
+        let service = Arc::new(executor.service.clone());
         let lease = approved(&fixture, &service, WorkspaceTaskResource {
             app_id: Some("so.tilo.notes".into()), app_label: None,
             id: "attached".into(), kind: "document".into(), label: "Proposal".into(),
@@ -243,7 +275,7 @@ fn attached_windowless_task_claim_reaches_protected_gateway_without_data_scope_w
             requirement.resource = "unattached".into();
             let denial = view.check_native_task_preflight(&requirement, "scribe", SystemTime::now())
                 .unwrap_err();
-            assert!(denial.contains("frozen execution authority"), "{denial}");
+            assert_eq!(denial, "native task starter or frozen execution scope changed");
             Ok(())
         }).unwrap();
         let models = crate::shell::broker_services::native_model::NativeModels::new(service);
@@ -270,11 +302,9 @@ fn attached_windowless_task_claim_reaches_protected_gateway_without_data_scope_w
 fn prepared_model_uses_desired_frontier_and_fences_stale_final_dispatch() {
     let fixture = fixture();
     let (_settings, profile) = settings();
+    let executor = executor::start(&fixture);
     tokio::runtime::Runtime::new().unwrap().block_on(async {
-        let service = Arc::new(NativeOwnerCommitService::new(
-            crate::shell::native_workspace_owner::test_tree_of(&fixture.owner),
-            None,
-        ));
+        let service = Arc::new(executor.service.clone());
         let initial = approved(&fixture, &service, chat_origin(&fixture)).await;
         let steer = |after_revision| {
             request(
@@ -388,15 +418,13 @@ fn prepared_model_uses_desired_frontier_and_fences_stale_final_dispatch() {
 fn claimed_chat_source_refuses_profile_change_and_same_tab_record_retarget() {
     let fixture = fixture();
     let (_initial_settings, mut profile) = settings();
+    let executor = executor::start(&fixture);
     let runtime = tokio::runtime::Runtime::new().unwrap();
     runtime.block_on(async {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         profile.endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
         let settings = install_profile(&profile);
-        let service = Arc::new(NativeOwnerCommitService::new(
-            crate::shell::native_workspace_owner::test_tree_of(&fixture.owner),
-            None,
-        ));
+        let service = Arc::new(executor.service.clone());
         let lease = approved(&fixture, &service, chat_origin(&fixture)).await;
         let models = crate::shell::broker_services::native_model::NativeModels::new(service);
         let invocation = uuid::Uuid::new_v4();
@@ -413,7 +441,7 @@ fn claimed_chat_source_refuses_profile_change_and_same_tab_record_retarget() {
         assert!(denial.contains("selection changed"), "{denial}");
         let response = Gateway::new()
             .unwrap()
-            .execute(&session, inference(invocation, &changed), &mut |_| true)
+            .execute(&session, completion(invocation, &changed), &mut |_| true)
             .await;
         assert!(
             !response.ok,
@@ -434,22 +462,34 @@ fn claimed_chat_source_refuses_profile_change_and_same_tab_record_retarget() {
         let tree = crate::shell::native_workspace_owner::test_tree_of(&fixture.owner);
         {
             let mut tree = tree.write();
-            let strip = tree
-                .desktop
-                .workspaces
-                .iter()
-                .find(|w| w.room == fixture.room)
-                .unwrap()
-                .strips[0]
-                .id;
-            tilo_desktop_model::apps::bind_tab_record(
-                tree.room_docs.get_mut(&fixture.room).unwrap(),
-                strip,
-                500,
-                501,
-                "retargeted-conversation",
-            )
-            .unwrap();
+            let doc = tree.room_docs.get_mut(&fixture.room).unwrap();
+            assert!(matches!(
+                tilo_desktop_model::apps::bind_tab_record(
+                    doc,
+                    CHAT_STRIP,
+                    CHAT_GROUP,
+                    CHAT_TAB,
+                    "retargeted-conversation",
+                ),
+                Err(tilo_desktop_model::apps::BindRecordError::AlreadyBound)
+            ));
+            // Canonical routes cannot be rebound. Corrupt only the host's
+            // publication cache to prove even an already claimed dispatch
+            // refuses a mismatched live source, not to invent canonical state.
+            use automerge::{ReadDoc, transaction::Transactable};
+            let mut object = automerge::ROOT;
+            for key in [
+                "contents".to_owned(),
+                format!("{:016x}", CHAT_STRIP.raw()),
+                "groups".into(),
+                format!("{CHAT_GROUP:016x}"),
+                "tabs".into(),
+                format!("{CHAT_TAB:016x}"),
+            ] {
+                object = doc.get(&object, key).unwrap().unwrap().1;
+            }
+            doc.put(&object, "record_id", "retargeted-conversation")
+                .unwrap();
         }
         let denial = models
             .claim(lease, uuid::Uuid::new_v4())
@@ -458,7 +498,7 @@ fn claimed_chat_source_refuses_profile_change_and_same_tab_record_retarget() {
         assert!(denial.contains("originating window changed"), "{denial}");
         let response = Gateway::new()
             .unwrap()
-            .execute(&session, inference(invocation, &profile), &mut |_| true)
+            .execute(&session, completion(invocation, &profile), &mut |_| true)
             .await;
         assert!(
             !response.ok,

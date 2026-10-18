@@ -11,9 +11,9 @@ struct PublicationGate {
     release: std::sync::mpsc::Receiver<()>,
 }
 // Unwinding an assertion must release the blocking owner worker too.
-struct PublicationRelease(Option<std::sync::mpsc::Sender<()>>);
+pub(super) struct PublicationRelease(Option<std::sync::mpsc::Sender<()>>);
 impl PublicationRelease {
-    fn release(mut self) {
+    pub(super) fn release(mut self) {
         self.0.take().unwrap().send(()).unwrap();
     }
 }
@@ -31,7 +31,7 @@ impl TestOwnerWriter {
             gate: Mutex::new(None),
         }
     }
-    fn hold_next(&self) -> (tokio::sync::oneshot::Receiver<()>, PublicationRelease) {
+    pub(super) fn hold_next(&self) -> (tokio::sync::oneshot::Receiver<()>, PublicationRelease) {
         let (entered, observed) = tokio::sync::oneshot::channel();
         let (release, receiver) = std::sync::mpsc::channel();
         let previous = self.gate.lock().unwrap().replace(PublicationGate {

@@ -86,6 +86,13 @@ impl HostView {
 }
 
 impl SettingsSource for HostView {
+    fn with_committed(
+        &self,
+        use_document: &mut dyn FnMut(&Map<String, Value>) -> Result<(), String>,
+    ) -> Result<(), String> {
+        use_document(&self.session.committed.lock_recover().document)
+    }
+
     fn load_committed(&self) -> Option<Map<String, Value>> {
         Some(self.session.committed.lock_recover().document.clone())
     }

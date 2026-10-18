@@ -2506,7 +2506,11 @@ pub(crate) mod marker {
             origin: AgentQuickComposerOrigin,
             viewport: Rect,
         ) {
-            self.save_draft();
+            // Dismissal already saved the editor before the popover hid it.
+            // A closed popover exposes no children to snapshot.
+            if self.is_open() {
+                self.save_draft();
+            }
             let remembered = self
                 .remembered_selection
                 .get(&draft_identity(&owner))
@@ -2591,6 +2595,9 @@ pub(crate) mod marker {
         }
 
         pub(crate) fn dismiss(&mut self) {
+            if !self.is_open() {
+                return;
+            }
             self.input_context = self.input_context.saturating_add(1);
             self.save_draft();
             self.popover.close();
@@ -2974,14 +2981,26 @@ pub(crate) mod marker {
                 self.remembered_selection
                     .insert(draft_identity(owner), task);
             }
-            let private_editor = self.editor_snapshot();
+            // Opening and binding a painted task happen before the next sync.
+            // Until then the mounted editor still belongs to the previous draft.
+            let retained = self
+                .pending_editor
+                .as_ref()
+                .filter(|editor| editor.revision == self.draft.revision());
+            let editor = retained
+                .map(|editor| editor.caret.clone())
+                .or_else(|| editor_state(&self.popover));
+            let private_editor = retained
+                .and_then(|editor| editor.private.clone())
+                .or_else(|| self.editor_snapshot());
+
             if let Some(owner) = &self.owner {
                 self.drafts.insert(
                     (draft_identity(owner), self.shown, self.shown_task.clone()),
                     Draft {
                         text: self.draft.get(),
                         revision: self.draft.revision(),
-                        editor: editor_state(&self.popover),
+                        editor,
                         private_editor,
                     },
                 );
@@ -2994,6 +3013,7 @@ pub(crate) mod marker {
             };
             let key = (draft_identity(owner), self.shown, self.shown_task.clone());
             let saved = self.drafts.get(&key).cloned();
+
             self.draft.set(
                 saved
                     .as_ref()
@@ -3144,6 +3164,7 @@ pub(crate) mod marker {
             let changed = self.popover.update(state, path);
             self.task_options
                 .with(|options| refresh_task_picker(&mut self.popover, options));
+
             changed
         }
         fn build_layout(
@@ -3165,7 +3186,18 @@ pub(crate) mod marker {
         }
 
         fn take_focus_reset(&mut self) -> bool {
-            std::mem::take(&mut self.focus_reset) | self.popover.take_focus_reset()
+            let reset = std::mem::take(&mut self.focus_reset) | self.popover.take_focus_reset();
+            if self.is_open() && self.pending_editor.is_none() {
+                // App can blur controls during any structure rebuild, including
+                // one that preserves the focus ordinal rather than resetting it.
+                // Restore private state in the post-focus sync in either case.
+                self.pending_editor = editor_state(&self.popover).map(|caret| RetainedEditor {
+                    revision: self.draft.revision(),
+                    caret,
+                    private: self.editor_snapshot(),
+                });
+            }
+            reset
         }
         fn handle_event(
             &mut self,
@@ -3371,6 +3403,63 @@ pub(crate) mod marker {
             composer
                 .take_request()
                 .expect("the enabled ordinary button emits one intention")
+        }
+
+        #[test]
+        fn reopening_and_binding_retains_private_ime_through_focus_reset_and_expansion() {
+            fn editor(widget: &mut dyn Widget) -> Option<&mut TextInput> {
+                if widget.test_id() == Some("agent-quick-editor") {
+                    return widget.as_any_mut()?.downcast_mut::<TextInput>();
+                }
+                widget.children_mut().into_iter().find_map(editor)
+            }
+
+            let mut composer = AgentQuickComposer::default();
+            let owner = owner("agent");
+            let task = ComposerTask {
+                task_id: "task:original".into(),
+                run_epoch: 4,
+                revision: 0,
+                label: "Original task".into(),
+            };
+            open(&mut composer, owner.clone());
+            composer.bind_marker_task(task.clone());
+            let mut doc = automerge::AutoCommit::new();
+            edit(&mut composer, &mut doc, "Original private draft");
+            let input = editor(&mut composer).unwrap();
+            input.set_focus(true);
+            input.set_selection(12, 5);
+            input.restore_private_preedit("候補", Some((0, 3)));
+            let expected = input.private_draft_editor();
+            composer.dismiss();
+            // The shell wrapper also dismisses before reopening a closed marker.
+            composer.dismiss();
+
+            // The real marker adapter opens first and binds the exact run
+            // before either operation gets a widget sync.
+            open(&mut composer, owner);
+            composer.bind_marker_task(task);
+            Widget::sync(&mut composer, &doc, &automerge::ROOT);
+            assert!(composer.editor_snapshot() == Some(expected.clone()));
+
+            // App's structure rebuild resets focus after the first sync and
+            // then syncs again before painting. Blur clears TextInput's IME.
+            assert!(Widget::take_focus_reset(&mut composer));
+            let input = editor(&mut composer).unwrap();
+            input.set_focus(false);
+            input.set_focus(true);
+            Widget::sync(&mut composer, &doc, &automerge::ROOT);
+            assert!(composer.editor_snapshot() == Some(expected.clone()));
+
+            // Later layout rebuilds can also blur the editor without requesting
+            // a new focus target, for example while capturing the current frame.
+            assert!(!Widget::take_focus_reset(&mut composer));
+            let input = editor(&mut composer).unwrap();
+            input.set_focus(false);
+            input.set_focus(true);
+            Widget::sync(&mut composer, &doc, &automerge::ROOT);
+            assert!(composer.editor_snapshot() == Some(expected.clone()));
+            assert!(composer.expansion_request().unwrap().editor == expected);
         }
 
         #[test]

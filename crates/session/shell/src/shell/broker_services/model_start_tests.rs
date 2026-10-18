@@ -1,6 +1,13 @@
 //! Exercise the production person-commit adapters with actual pending tasks.
+#[path = "model_start_tests/executor.rs"]
+mod executor;
 #[path = "model_start_tests/gateway.rs"]
 mod gateway;
+
+const CHAT_GROUP: u64 = (1 << 48) | 500;
+const CHAT_TAB: u64 = (1 << 48) | 501;
+const OTHER_TAB: u64 = (1 << 48) | 502;
+const CHAT_STRIP: tilo_desktop_model::StripId = tilo_desktop_model::StripId((1 << 48) | 499);
 
 use super::{NativeFixture, fixture};
 use crate::shell::broker_services::NativeOwnerCommitService;
@@ -64,22 +71,21 @@ fn install_profile(
 }
 
 fn chat_origin(fixture: &NativeFixture) -> WorkspaceTaskResource {
-    let tree = crate::shell::native_workspace_owner::test_tree_of(&fixture.owner);
-    let mut tree = tree.write();
-    let workspace = tree
-        .desktop
-        .workspaces
-        .iter_mut()
-        .find(|w| w.room == fixture.room)
+    // Publish topology through admitted owner ingress, not a cache-only tab.
+    let mut doc = fixture
+        .owner
+        .with_current(fixture.room, |view| {
+            Ok(view.peer().admitted_room().unwrap().clone())
+        })
         .unwrap();
-    let strip = workspace.strips[0].id;
-    workspace.strips[0].window_groups.push(WindowGroup {
-        id: 500,
-        active_tab: 501,
+    let heads = doc.get_heads();
+    let group = WindowGroup {
+        id: CHAT_GROUP,
+        active_tab: CHAT_TAB,
         width: WindowWidth::Normal,
         maximized: false,
         focus_history: Vec::new(),
-        tabs: [501, 502]
+        tabs: [CHAT_TAB, OTHER_TAB]
             .into_iter()
             .map(|id| Tab {
                 id,
@@ -90,24 +96,76 @@ fn chat_origin(fixture: &NativeFixture) -> WorkspaceTaskResource {
                 },
             })
             .collect(),
-    });
-    tree.sync_room_doc(fixture.room);
-    tilo_desktop_model::apps::bind_tab_record(
-        tree.room_docs.get_mut(&fixture.room).unwrap(),
-        strip,
-        500,
-        501,
-        "conversation",
+    };
+    let strip = tilo_desktop_model::Strip {
+        id: CHAT_STRIP,
+        name: "Chat".into(),
+        window_groups: vec![group],
+    };
+    tilo_desktop_model::projection::project_owned_contents(
+        &mut doc,
+        &[strip],
+        1,
+        None,
+        tilo_desktop_model::projection::EmptyStrips::Skip,
     )
     .unwrap();
-    tilo_desktop_model::apps::bind_tab_record(
-        tree.room_docs.get_mut(&fixture.room).unwrap(),
-        strip,
-        500,
-        502,
-        "other-conversation",
-    )
-    .unwrap();
+    for (tab, record) in [
+        (CHAT_TAB, "conversation"),
+        (OTHER_TAB, "other-conversation"),
+    ] {
+        tilo_desktop_model::apps::bind_tab_record(&mut doc, CHAT_STRIP, CHAT_GROUP, tab, record)
+            .unwrap();
+    }
+    let changes = doc
+        .get_changes(&heads)
+        .into_iter()
+        .map(|change| change.raw_bytes().to_vec())
+        .collect();
+    fixture
+        .owner
+        .receive(
+            fixture.room,
+            tilo_peer_state::TransportOrigin::RelayDelta(fixture.certificate.device_public_key),
+            neighbour_wire::NeighbourMsg::SyncResp {
+                room: fixture.room.to_string(),
+                changes,
+            },
+            std::time::SystemTime::now(),
+        )
+        .unwrap();
+    // Instantiate only the actual canonical UUIDs projected by the owner.
+    let tree = crate::shell::native_workspace_owner::test_tree_of(&fixture.owner);
+    {
+        let mut tree = tree.write();
+        let workspace = tree
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|w| w.room == fixture.room)
+            .unwrap();
+        let strip = workspace
+            .strips
+            .iter_mut()
+            .find(|s| s.id == CHAT_STRIP)
+            .unwrap();
+        let group = strip
+            .window_groups
+            .iter_mut()
+            .find(|g| g.id == CHAT_GROUP)
+            .unwrap();
+        for tab in &mut group.tabs {
+            tab.tile = TileContent::Foreign {
+                app_id: "so.tilo.chat".into(),
+                surface_id: tab.id,
+            };
+        }
+        assert_eq!(
+            tree.room_tab_record(fixture.room, CHAT_TAB).as_deref(),
+            Some("conversation")
+        );
+    }
+    let invocation = tilo_actions::InvocationId::new();
     WorkspaceTaskResource {
         app_id: Some("so.tilo.chat".into()),
         app_label: None,
@@ -117,9 +175,9 @@ fn chat_origin(fixture: &NativeFixture) -> WorkspaceTaskResource {
         agent_request: Some(WorkspaceAgentRequest {
             chat_record: "conversation".into(),
             channel_id: "channel".into(),
-            message_id: "message".into(),
+            message_id: format!("m_{}", invocation.0),
             instruction: "Review this message".into(),
-            invocation: tilo_actions::InvocationId::new(),
+            invocation,
         }),
     }
 }
@@ -128,25 +186,9 @@ fn chat_origin(fixture: &NativeFixture) -> WorkspaceTaskResource {
 fn production_person_start_freezes_pending_task_or_chat_origin_without_widening_attachment() {
     let fixture = fixture();
     let (_settings, profile) = settings();
-    let service = NativeOwnerCommitService::new(
-        crate::shell::native_workspace_owner::test_tree_of(&fixture.owner),
-        None,
-    );
+    let executor = executor::start(&fixture);
+    let service = executor.service.clone();
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    runtime
-        .block_on(service.execute(OwnerCommitRequest {
-            room: fixture.room.to_string(),
-            operation: CommitOperation::WorkspaceMembershipCommand {
-                invocation: uuid::Uuid::new_v4(),
-                caller: fixture.certificate.clone(),
-                command:
-                    tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::AddAgent {
-                        agent: "scribe".into(),
-                        preset: tilo_action_policy::roles::AgentPreset::Operator,
-                    },
-            },
-        }))
-        .unwrap();
     let attached = chat_origin(&fixture);
     for resource in [None, Some(attached)] {
         let receipt = runtime
@@ -236,7 +278,7 @@ fn assert_snapshot(
         let tree = crate::shell::native_workspace_owner::test_tree_of(&fixture.owner);
         let origin = crate::shell::host_window_contracts::published(&tree.read())
             .into_iter()
-            .find(|window| window.tab == 501)
+            .find(|window| window.tab == CHAT_TAB)
             .unwrap();
         serde_json::json!({"profile": profile, "origin": origin})
     } else {
@@ -251,7 +293,7 @@ fn assert_snapshot(
             room.clone()
                 .app("so.tilo.shell")
                 .kind("host-window")
-                .resource("501")
+                .resource(CHAT_TAB.to_string())
         );
         room.app("so.tilo.chat")
             .kind(&resource.kind)

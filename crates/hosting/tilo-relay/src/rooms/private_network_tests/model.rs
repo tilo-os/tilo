@@ -5,7 +5,7 @@
 use super::*;
 use ed25519_dalek::Signer;
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::RwLock;
 use tilo_joined_room::task_admission::model::{
     FrozenNativeModelSelection, HostDispatchModel, NativeModelAuthority, NativeModelContext,
     NativeModelContract, NativeModelHttpAttempt, NativeModelPlanning, NativeModelStartAuthority,
@@ -87,15 +87,27 @@ impl NativeModelStartAuthority for Selection {
 /// digest and contract reads, independently of each request's wire requirement.
 struct Lease {
     context: NativeModelContext,
-    connected: AtomicBool,
+    connected: RwLock<bool>,
 }
 impl NativeModelAuthority for Lease {
+    fn with_current_model_context(
+        &self,
+        _: &tilo_joined_room::NativeCommittedView,
+        _: SystemTime,
+        enqueue: &mut dyn FnMut(NativeModelContext) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let connected = self.connected.read().unwrap();
+        if !*connected {
+            return Err("native connection replaced".into());
+        }
+        enqueue(self.context.clone())
+    }
     fn current_model_context(
         &self,
         _: &tilo_joined_room::NativeCommittedView,
         _: SystemTime,
     ) -> Result<NativeModelContext, String> {
-        if !self.connected.load(Ordering::SeqCst) {
+        if !*self.connected.read().unwrap() {
             return Err("native connection replaced".into());
         }
         Ok(self.context.clone())
@@ -254,7 +266,7 @@ async fn lease(
             private_run_digest: digest,
             contract: serde_json::from_str(&contract).unwrap(),
         },
-        connected: AtomicBool::new(true),
+        connected: RwLock::new(true),
     }
 }
 
@@ -877,7 +889,7 @@ async fn two_authenticated_native_hosts_dispatch_exact_model_http_and_persist_st
         |_| -> Result<(), String> { panic!("changed final bytes must enqueue zero HTTP requests") },
     )
     .unwrap_err();
-    lease_a.connected.store(false, Ordering::SeqCst);
+    *lease_a.connected.write().unwrap() = false;
     HostDispatchModel {
         owner: &a.owner,
         authority: &lease_a,
@@ -894,7 +906,7 @@ async fn two_authenticated_native_hosts_dispatch_exact_model_http_and_persist_st
         },
     )
     .unwrap_err();
-    lease_a.connected.store(true, Ordering::SeqCst);
+    *lease_a.connected.write().unwrap() = true;
     assert!(matches!(
         command(
             &a,

@@ -31,6 +31,12 @@ impl NativeWorkspaceOwner {
         {
             return Err("managed admission lacks exact current governor signing custody".into());
         }
+        let device = certificate.device_public_key;
+        let request_digest = *blake3::hash(
+            &postcard::to_allocvec(&(&certificate, &delegation))
+                .map_err(|error| error.to_string())?,
+        )
+        .as_bytes();
         let mut peer = candidate.peer.clone();
         if !peer
             .governance_mut()
@@ -53,8 +59,15 @@ impl NativeWorkspaceOwner {
         candidate.peer = peer;
         candidate.record.peer = candidate.peer.durable()?;
         candidate.record.generation = generation;
-        let binding =
-            crate::checkpoint::binding(room, *blake3::hash(&candidate.record.peer).as_bytes());
+        // Actor enrollment does not create a content checkpoint index. Using
+        // NativeCheckpointRoot here makes publication require an unrelated root
+        // that an empty, newly enrolled workspace legitimately does not have.
+        let binding = tilo_owner_commit::CommitBinding {
+            room: room.to_string(),
+            target: tilo_owner_commit::CommitTarget::NativeManagedAgentAdmission { device },
+            request_digest,
+            basis: *blake3::hash(&candidate.record.peer).as_bytes(),
+        };
         crate::publication::replace_governance_checkpoint(&mut candidate, binding, now)?;
         self.publish_room(room, candidate, None)
     }

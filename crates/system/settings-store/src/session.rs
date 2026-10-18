@@ -815,6 +815,13 @@ impl SessionSettings {
 }
 
 impl SettingsSource for SessionSettings {
+    fn with_committed(
+        &self,
+        use_document: &mut dyn FnMut(&Map<String, Value>) -> Result<(), String>,
+    ) -> Result<(), String> {
+        use_document(&self.committed.lock_recover().document)
+    }
+
     fn load_committed(&self) -> Option<Map<String, Value>> {
         Some(self.committed.lock_recover().document.clone())
     }

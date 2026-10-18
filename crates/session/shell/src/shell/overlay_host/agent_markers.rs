@@ -501,6 +501,65 @@ fn task_from_view(
 }
 
 impl super::ShellOverlayHost {
+    /// Open a painted marker after the compositor has revalidated its native source.
+    pub(crate) fn open_certified_agent_marker(&mut self, marker: AccessibleAgentMarker) -> bool {
+        let Some(session) = self.marker_action_session_source() else {
+            return false;
+        };
+        let Some(identity) =
+            session.certified_marker_agent(&marker.room, &marker.interaction.actor.id)
+        else {
+            return false;
+        };
+        if identity.agent_key != marker.agent {
+            return false;
+        }
+        let Some(identity_revision) = session.identity_revision(&marker.room) else {
+            return false;
+        };
+        drop(session);
+        let Some(chrome) = self.chrome.as_ref() else {
+            return false;
+        };
+        let person = chrome.borrow().active_local_user();
+        if self
+            .certified_marker_task(
+                &marker.room,
+                &marker.app_id,
+                &marker.agent,
+                &marker.interaction,
+            )
+            .as_ref()
+            != Some(&marker.task)
+        {
+            return false;
+        }
+        let task = marker.task.clone();
+        let painted_origin = (marker.app_id.clone(), marker.interaction.clone());
+        let opened = self.open_agent_quick_composer(
+            crate::shell::agent_quick_composer::ComposerOwner {
+                room: marker.room,
+                agent: identity.agent_key,
+                person,
+                identity_revision,
+            },
+            &marker.label,
+            crate::shell::agent_quick_composer::AgentQuickComposerOrigin {
+                marker: marker.marker,
+                protected: marker.protected,
+                context: marker.description,
+            },
+        );
+        if opened {
+            self.agent_quick_composer_mut().bind_painted_task(
+                task,
+                painted_origin.0,
+                painted_origin.1,
+            );
+        }
+        opened
+    }
+
     pub(crate) fn attach_agent_marker_task_review(
         &mut self,
         review: crate::shell::task_review::NativeTaskReview,

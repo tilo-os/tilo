@@ -1,7 +1,7 @@
 //! Local media authority originates at the real launcher handoff, never wire JSON.
 #[cfg(target_os = "linux")]
 use super::AsRawFd;
-use super::{Arc, AtomicBool, CapnpBrokerState, CapnpChannelHandle, Ordering, Rc};
+use super::{Arc, CapnpBrokerState, CapnpChannelHandle, Rc};
 use runtime_collab::native_media::{Request, Snapshot};
 
 /// Immutable route plus a live connection/process/admission check. There is no
@@ -78,7 +78,7 @@ pub(super) struct LocalAppConnection {
     /// app whose selected objects this broker takes. Other apps' descriptors
     /// are closed on receipt.
     pub(super) descriptors: Option<runtime_portal::descriptor_lane::ReceivedDescriptors>,
-    connected: AtomicBool,
+    connected: std::sync::RwLock<bool>,
 }
 
 /// The only app that hands this broker selected objects.
@@ -234,7 +234,7 @@ impl LocalAppConnection {
                 creation: launch.creation,
                 continuation_instance: launch.continuation_instance,
                 process,
-                connected: AtomicBool::new(true),
+                connected: std::sync::RwLock::new(true),
             })
         })
     }
@@ -251,7 +251,7 @@ impl LocalAppConnection {
         })
     }
     pub(super) fn current(&self) -> bool {
-        self.connected.load(Ordering::Acquire) && self.process.alive()
+        self.connected.read().is_ok_and(|connected| *connected) && self.process.alive()
     }
     /// Match the task pinned by the kernel pidfd, never a namespace-local app PID.
     #[cfg(target_os = "linux")]
@@ -280,8 +280,21 @@ impl LocalAppConnection {
         let _ = self;
         false
     }
+    pub(super) fn with_current<T>(
+        &self,
+        send: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        let connected = self
+            .connected
+            .read()
+            .map_err(|_| "MODEL connection gate unavailable")?;
+        if !*connected || !self.process.alive() {
+            return Err("MODEL protected connection ended".into());
+        }
+        send()
+    }
     pub(super) fn stop(&self) {
-        self.connected.store(false, Ordering::Release);
+        *self.connected.write().unwrap_or_else(|e| e.into_inner()) = false;
     }
 }
 

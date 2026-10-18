@@ -1088,6 +1088,45 @@ impl FrameBuilder {
         ))
     }
 
+    /// Render a native owner's actual shared tree with controlled, owned services.
+    /// Unlike a scratch fixture, the owner may persist its tree under its test home.
+    /// The caller must provision the native session identity before constructing this frame.
+    /// # Errors
+    /// Rejects unsupported tiles or missing fixture services.
+    #[cfg(test)]
+    pub fn with_native_fixture_inputs(
+        tree: crate::shell::state::WorkspaceTreeHandle,
+        viewport: (u32, u32),
+        inputs: super::fixture_inputs::ShellFixtureInputs,
+    ) -> Result<Self, super::fixture_inputs::ShellFixtureError> {
+        let mut snapshot = tree.read().clone();
+        // Validate the owner's projected tiles and the same service boundary without
+        // rejecting its persistence. Never clear paths on the shared owner itself.
+        snapshot.persist_path = None;
+        snapshot.fs_acl_path = None;
+        super::fixture_inputs::validate_native(&snapshot, &inputs.hosted)?;
+        let person = crate::shell::state::local_user_id();
+        let hosted = inputs
+            .hosted
+            .with_native_fixture_person(&person)
+            .map_err(super::fixture_inputs::ShellFixtureError::Hosted)?;
+        let chrome = super::chrome_state::ChromeState::new_with_fixture_handle(tree, hosted);
+        chrome.borrow_mut().act_as(person.clone());
+        // The scratch-host helper rejects durable trees; use its same owned host
+        // construction here, retaining the actual tree handle in Chrome.
+        let parts = super::build_overlay_host_from_chrome(&snapshot, chrome, false, true);
+        Ok(Self::from_parts_with_presentation(
+            parts,
+            viewport,
+            FramePresentationInputs {
+                text_renderer: inputs.text_renderer,
+                theme: inputs.theme,
+                own_identity: person,
+                theme_store_stamp: None,
+            },
+        ))
+    }
+
     fn from_parts(parts: (ShellOverlayHost, Chrome), viewport: (u32, u32)) -> Self {
         #[cfg(test)]
         crate::shell::test_support::ambient_start("Frame production presentation");
@@ -1443,9 +1482,13 @@ impl FrameBuilder {
         // Rebuilt overlays can retain their own focus while the compositor
         // still names a desktop control. Only one live widget may own the
         // keyboard and its accessibility cursor, even when ids are replaced.
-        for &widget in self.node_map.values() {
-            // SAFETY: every pointer belongs to the current live tree.
-            unsafe { (*widget).set_focus(false) };
+        for (&node, &widget) in &self.node_map {
+            if Some(node) != target {
+                // SAFETY: every pointer belongs to the current live tree.
+                // Do not blur the retained target just to refocus it below:
+                // TextInput correctly discards display-only IME on blur.
+                unsafe { (*widget).set_focus(false) };
+            }
         }
         if let Some(new) = target
             && let Some(&widget) = self.node_map.get(&new)
@@ -4113,6 +4156,17 @@ impl FrameBuilder {
     /// Read-only view of the presence the next paint will draw.
     pub fn presence(&self) -> &PresenceCtx {
         &self.presence
+    }
+
+    /// Fold an actual native semantic interaction into the presence drawn next frame.
+    /// # Errors
+    /// Returns the interaction contract's validation error without altering metadata.
+    #[cfg(test)]
+    pub fn apply_native_interaction_for_test(
+        &mut self,
+        interaction: tilo_actions::SemanticInteraction,
+    ) -> Result<bool, tilo_actions::InteractionViolation> {
+        self.presence.observe_interaction(interaction)
     }
 
     /// Put an authenticated remote-presence payload through the same fold

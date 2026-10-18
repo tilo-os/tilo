@@ -222,6 +222,26 @@ impl HostedTileInputs {
         })
     }
 
+    /// Use the provisioned native person for apps while retaining the fixture's
+    /// owned profile and absent session services. Call before mounting any apps.
+    #[cfg(test)]
+    pub(crate) fn with_native_fixture_person(
+        mut self,
+        person: &str,
+    ) -> Result<Self, HostedTileError> {
+        let profile = self
+            .fixture
+            .as_ref()
+            .and_then(|fixture| fixture.0.get(1))
+            .ok_or(HostedTileError::RequiredServiceMissing(
+                "owned native fixture app profile",
+            ))?;
+        let apps = super::in_process::InProcessApps::at(profile, person)
+            .map_err(|error| HostedTileError::Fixture(error.to_string()))?;
+        self.in_process = Some(Rc::new(RefCell::new(apps)));
+        Ok(self)
+    }
+
     /// Mount framework apps (the terminal, Files, the browser) in this
     /// process through `apps`, as a real session does: its terminals open
     /// sessions on the session's process supervisor.

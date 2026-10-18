@@ -206,6 +206,17 @@ pub struct NativeModelContext {
 /// callback runs while owner mutation is locked: it must not reenter the owner,
 /// block on a queue or load secrets asynchronously.
 pub trait NativeModelAuthority {
+    /// Pin connection, lease and configuration through the synchronous transfer.
+    /// The view is already under the owner turn; implementations must not reenter it.
+    fn with_current_model_context(
+        &self,
+        _view: &NativeCommittedView,
+        _now: SystemTime,
+        _enqueue: &mut dyn FnMut(NativeModelContext) -> Result<(), String>,
+    ) -> Result<(), String> {
+        Err("native MODEL pinned authority unavailable".into())
+    }
+
     /// # Errors
     /// Missing or changed authenticated connection, lease or selection.
     fn current_model_context(
@@ -451,6 +462,40 @@ pub struct HostDispatchModel<'a, A> {
 }
 
 impl<A: NativeModelAuthority> HostDispatchModel<'_, A> {
+    fn enqueue_current<T>(
+        &self,
+        view: &NativeCommittedView,
+        requirement: &TypedNativeModelRequirement,
+        enqueue: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        struct Pinned(NativeModelContext);
+        impl NativeModelAuthority for Pinned {
+            fn current_model_context(
+                &self,
+                _: &NativeCommittedView,
+                _: SystemTime,
+            ) -> Result<NativeModelContext, String> {
+                Ok(self.0.clone())
+            }
+        }
+        let mut enqueue = Some(enqueue);
+        let mut result = None;
+        self.authority
+            .with_current_model_context(view, SystemTime::now(), &mut |current| {
+                // Fresh wall clock after publication and after acquiring every gate.
+                requirement.check(
+                    view,
+                    &requirement.binding()?,
+                    &Pinned(current),
+                    SystemTime::now(),
+                )?;
+                let send = enqueue.take().ok_or("native MODEL duplicate enqueue")?;
+                result = Some(send()?);
+                Ok(())
+            })?;
+        result.ok_or_else(|| "native MODEL enqueue absent".into())
+    }
+
     /// Local governor/physical-host admission, with no externally exposed
     /// intermediate reservation or permit. Returns the consumed signed permit
     /// for the actual successful-response delivery receipt, never for replay.
@@ -466,12 +511,12 @@ impl<A: NativeModelAuthority> HostDispatchModel<'_, A> {
         if *blake3::hash(outbound_body).as_bytes() != requirement.requestdigest {
             return Err("native MODEL final HTTP body changed".into());
         }
-        self.owner.admit_local_native_invocation(
+        self.owner.admit_local_native_invocation_with_view(
             requirement.binding()?,
             custody.host,
             custody.key,
             |view, exact, now| requirement.check(view, exact, self.authority, now),
-            || enqueue(outbound_body),
+            |view| self.enqueue_current(view, requirement, || enqueue(outbound_body)),
         )
     }
 
@@ -493,12 +538,12 @@ impl<A: NativeModelAuthority> HostDispatchModel<'_, A> {
             return Err("native MODEL final HTTP body changed".into());
         }
         let exact = requirement.binding()?;
-        self.owner.admit_reserved_native_invocation_checked(
+        self.owner.admit_reserved_native_invocation_with_view(
             permit,
             &exact,
             attempt.governor,
             |view, now| requirement.check(view, &exact, self.authority, now),
-            || enqueue(attempt.outbound_body),
+            |view| self.enqueue_current(view, requirement, || enqueue(attempt.outbound_body)),
         )
     }
 }
