@@ -96,6 +96,63 @@ fn making(guild: &Guild) -> bool {
     })
 }
 
+/// The Discord categories not joined yet, each adopting the workspace's
+/// category of its name or made anew; `pending` when there was one.
+fn plan_categories(
+    guild: &Guild,
+    (workspace_id, workspace): (&str, &Workspace),
+    discord_categories: &[&DChannel],
+    plan: &mut ImportPlan,
+    pending: &mut bool,
+) {
+    for category in discord_categories {
+        if guild
+            .by_discord(MappedKind::Category, &category.id)
+            .is_some()
+        {
+            continue;
+        }
+        *pending = true;
+        match workspace.categories.iter().find(|c| {
+            guild.mapping(MappedKind::Category, &c.id).is_none()
+                && c.name.eq_ignore_ascii_case(&category.name)
+        }) {
+            Some(existing) => plan.adopt.push(AdoptItem {
+                kind: MappedKind::Category,
+                tilo: existing.id.clone(),
+                discord: category.id.clone(),
+            }),
+            None => plan.categories.push(CategoryItem {
+                workspace: workspace_id.into(),
+                name: category.name.clone(),
+                discord: category.id.clone(),
+            }),
+        }
+    }
+}
+
+/// The import done: the workspace's categories and channels no Discord one
+/// joined stay Tilo's own.
+fn finish(guild: &Guild, workspace: &Workspace) -> FinishItem {
+    let unmatched = |kind, id: &String| guild.mapping(kind, id).is_none();
+    FinishItem {
+        tilo_only: workspace
+            .categories
+            .iter()
+            .map(|c| &c.id)
+            .filter(|id| unmatched(MappedKind::Category, id))
+            .chain(
+                workspace
+                    .channels
+                    .iter()
+                    .map(|c| &c.id)
+                    .filter(|id| unmatched(MappedKind::Channel, id)),
+            )
+            .cloned()
+            .collect(),
+    }
+}
+
 /// The next import round for `guild` into `workspace` (id `workspace_id`).
 #[must_use]
 pub fn plan(guild: &Guild, workspace_id: &str, workspace: &Workspace) -> ImportPlan {
@@ -122,30 +179,13 @@ pub fn plan(guild: &Guild, workspace_id: &str, workspace: &Workspace) -> ImportP
                 })
     };
     let mut claimed: HashSet<&str> = HashSet::new();
-    for category in &discord_categories {
-        if guild
-            .by_discord(MappedKind::Category, &category.id)
-            .is_some()
-        {
-            continue;
-        }
-        pending = true;
-        match workspace.categories.iter().find(|c| {
-            guild.mapping(MappedKind::Category, &c.id).is_none()
-                && c.name.eq_ignore_ascii_case(&category.name)
-        }) {
-            Some(existing) => plan.adopt.push(AdoptItem {
-                kind: MappedKind::Category,
-                tilo: existing.id.clone(),
-                discord: category.id.clone(),
-            }),
-            None => plan.categories.push(CategoryItem {
-                workspace: workspace_id.into(),
-                name: category.name.clone(),
-                discord: category.id.clone(),
-            }),
-        }
-    }
+    plan_categories(
+        guild,
+        (workspace_id, workspace),
+        &discord_categories,
+        &mut plan,
+        &mut pending,
+    );
     // Text channels before voice, as Discord lists them.
     for channel in ordered(guild, &[ChannelKind::Text])
         .into_iter()
@@ -192,7 +232,7 @@ pub fn plan(guild: &Guild, workspace_id: &str, workspace: &Workspace) -> ImportP
                     .channels
                     .iter()
                     .filter(free)
-                    .find(|c| c.category.as_ref().is_none_or(|k| tilo_own(k)))
+                    .find(|c| c.category.as_ref().is_none_or(&tilo_own))
             });
         match existing {
             Some(existing) => {
@@ -213,23 +253,7 @@ pub fn plan(guild: &Guild, workspace_id: &str, workspace: &Workspace) -> ImportP
         }
     }
     if !pending && guild.ownership == Ownership::Importing {
-        let unmatched = |kind, id: &String| guild.mapping(kind, id).is_none();
-        plan.finish.push(FinishItem {
-            tilo_only: workspace
-                .categories
-                .iter()
-                .map(|c| &c.id)
-                .filter(|id| unmatched(MappedKind::Category, id))
-                .chain(
-                    workspace
-                        .channels
-                        .iter()
-                        .map(|c| &c.id)
-                        .filter(|id| unmatched(MappedKind::Channel, id)),
-                )
-                .cloned()
-                .collect(),
-        });
+        plan.finish.push(finish(guild, workspace));
     }
     plan
 }
