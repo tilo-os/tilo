@@ -1648,7 +1648,7 @@ fn load_into(
         match read {
             Ok(()) => {
                 if merged {
-                    mark_merged(out);
+                    mark_merged(&mut *out);
                 }
                 Ok(())
             }
@@ -2119,7 +2119,7 @@ fn refresh_entries(
             Touched::Fresh { entry, order } => {
                 let slot = crate::model::get_slot(doc, &entry, VALUE).located(key)?;
                 let mut merged = false;
-                let mut fill = |into: &mut dyn Any| {
+                let mut fill = |into: &mut dyn Any| -> Result<(), ModelError> {
                     let slot = slot.as_ref().map(|(v, i)| (v, i));
                     merged = fill_item(item, doc, (id, key), slot, into)
                         .located(VALUE)
