@@ -297,6 +297,22 @@ impl CollabClient {
         self
     }
 
+    /// [`Self::with_descriptors`] for a caller that only knows the lane
+    /// [`runtime_portal::descriptor_lane_stream`] handed it: on a host
+    /// without descriptors the lane is empty and the client stays as it was.
+    #[must_use]
+    pub fn with_optional_descriptors(mut self, lane: runtime_portal::DescriptorLane) -> Self {
+        #[cfg(unix)]
+        {
+            self.descriptors = lane;
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = lane;
+        }
+        self
+    }
+
     /// Join (or implicitly create) a channel by id, presenting the
     /// given opaque identity blob. `identity` is the postcard
     /// encoding of a `collab-types` identity record — opaque
