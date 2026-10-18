@@ -5057,6 +5057,22 @@ impl DrmDispatchState {
                     transaction.state = DisplayTransactionState::Rejected;
                     transaction.message =
                         Some(format!("Rejected unsupported display plan: {error:?}"));
+                } else if !transaction
+                    .candidate
+                    .needs_confirmation_from(&transaction.previous)
+                {
+                    // Nothing here can leave a screen dark (a scale, a
+                    // position, a colour profile): it stays at once rather
+                    // than counting down to a restore nobody needs.
+                    if let Err(error) = transaction.candidate.save_for(&transaction.set) {
+                        transaction.state = DisplayTransactionState::Rejected;
+                        transaction.message =
+                            Some(format!("Could not commit display plan: {error}"));
+                    } else {
+                        transaction.state = DisplayTransactionState::Confirmed;
+                        transaction.deadline_unix_ms = None;
+                        transaction.message = Some("Display configuration applied".into());
+                    }
                 } else {
                     transaction.state = DisplayTransactionState::AwaitingConfirmation;
                     transaction.deadline_unix_ms =
