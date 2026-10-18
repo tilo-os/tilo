@@ -234,6 +234,7 @@ fn choose(
     let (reply, mut chosen) = tokio::sync::oneshot::channel();
     context.pickers.spawn(FilePickerRequest {
         caller: caller.clone(),
+        parent_window: None,
         title: pick.title,
         save: false,
         directory: false,

@@ -176,6 +176,40 @@ pub fn is_focused_app_tab(tree: &WorkspaceTree, app_id: &str, instance: Option<u
         .is_some_and(|anchor| focused_tab(tree) == Some(anchor.tab))
 }
 
+/// The window a dialog `app_id` asks for in `workspace` belongs to: the
+/// focused tab when it shows the app, else the app's tab in front of its
+/// window group, else any tab of the app there. Only that app's own tabs
+/// are candidates, so a request can never hang a dialog on another app.
+pub fn asking_tab(
+    tree: &WorkspaceTree,
+    workspace: crate::shell::state::WorkspaceId,
+    app_id: &str,
+) -> Option<TabId> {
+    let shows_app = |tile: &TileContent| {
+        tile_app_id(tile).is_some_and(|tile_app| launcher::app_id_matches_package(tile_app, app_id))
+    };
+    let space = tree
+        .desktop
+        .workspaces
+        .iter()
+        .find(|candidate| candidate.id == workspace)?;
+    let focused = focused_tab(tree).filter(|_| tree.desktop.active == workspace);
+    let mut fallback = None;
+    let mut in_front = None;
+    for group in space.strips.iter().flat_map(|strip| &strip.window_groups) {
+        for tab in group.tabs.iter().filter(|tab| shows_app(&tab.tile)) {
+            if Some(tab.id) == focused {
+                return Some(tab.id);
+            }
+            if group.active_tab == tab.id {
+                in_front = in_front.or(Some(tab.id));
+            }
+            fallback = fallback.or(Some(tab.id));
+        }
+    }
+    in_front.or(fallback)
+}
+
 /// Where the new instance's window lands: right after `anchor`, in front
 /// unless `background`; without an anchor, wherever a launch lands.
 pub fn placement_after(st: &ChromeState, anchor: Option<TabAnchor>, background: bool) -> Placement {

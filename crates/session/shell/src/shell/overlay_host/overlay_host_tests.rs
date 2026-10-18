@@ -1601,6 +1601,7 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
         let (reply, _parked) = tokio::sync::oneshot::channel();
         pickers.spawn(crate::portal::FilePickerRequest {
             caller: crate::portal::PortalCaller::new(workspace, "org.tilo.audit"),
+            parent_window: None,
             title: "Save document".to_string(),
             save: true,
             directory: false,
@@ -1843,6 +1844,7 @@ fn a_save_over_an_existing_file_asks_and_its_semantic_replace_answers() {
     let (reply, mut received) = tokio::sync::oneshot::channel();
     pickers.spawn(crate::portal::FilePickerRequest {
         caller: crate::portal::PortalCaller::new(workspace, "so.tilo.canvas"),
+        parent_window: None,
         title: "Export a picture".to_string(),
         save: true,
         directory: false,

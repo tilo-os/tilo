@@ -2189,6 +2189,7 @@ mod tests {
             let (reply, _parked) = tokio::sync::oneshot::channel();
             queue.spawn(crate::portal::FilePickerRequest {
                 caller: crate::portal::PortalCaller::new(workspace, "so.tilo.tests"),
+                parent_window: None,
                 title: "Insert image".into(),
                 save: false,
                 directory: false,

@@ -176,6 +176,7 @@ mod tests {
         (
             FilePickerRequest {
                 caller: PortalCaller::new(WorkspaceId(1), "app"),
+                parent_window: None,
                 title: title.to_string(),
                 save: false,
                 directory: false,
