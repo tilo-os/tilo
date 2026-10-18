@@ -66,7 +66,10 @@ pub enum LinkError {
     /// The host speaks peer protocol `theirs`, not this device's: they do
     /// not sync until the one behind has updated
     /// (docs/architecture/compatibility.md).
-    #[error("the host speaks peer protocol {theirs}, this device {}", tilo_relay_protocol::auth::PEER_PROTOCOL_VERSION)]
+    #[error(
+        "the host speaks peer protocol {theirs}, this device {}",
+        tilo_relay_protocol::auth::PEER_PROTOCOL_VERSION
+    )]
     PeerVersion {
         /// The host's version.
         theirs: u32,

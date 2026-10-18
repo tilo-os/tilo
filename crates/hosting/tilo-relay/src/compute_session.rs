@@ -817,9 +817,8 @@ impl ComputeClient {
         let own_device = own_cert.device_public_key;
         let hello = Hello::new(own_cert, nonce);
         write_frame(&mut send, &postcard::to_allocvec(&hello)?).await?;
-        let acknowledgement: HelloAck = auth::decode_handshake(
-            &read_frame(&mut receive, MAX_COMPUTE_FRAME_BYTES).await?,
-        )?;
+        let acknowledgement: HelloAck =
+            auth::decode_handshake(&read_frame(&mut receive, MAX_COMPUTE_FRAME_BYTES).await?)?;
         let relay_peer = auth::verify_hello_ack(
             &acknowledgement,
             &expected_server_user,

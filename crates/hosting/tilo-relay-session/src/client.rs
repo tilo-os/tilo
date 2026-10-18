@@ -242,7 +242,10 @@ pub enum ClientError {
     /// The other device speaks peer protocol `theirs`, not this one's: they
     /// do not sync until the one behind has updated
     /// (docs/architecture/compatibility.md).
-    #[error("the other device speaks peer protocol {theirs}, this one {}", crate::auth::PEER_PROTOCOL_VERSION)]
+    #[error(
+        "the other device speaks peer protocol {theirs}, this one {}",
+        crate::auth::PEER_PROTOCOL_VERSION
+    )]
     PeerVersion {
         /// The other device's version.
         theirs: u32,
@@ -406,7 +409,7 @@ impl RelayClient {
         write_frame(
             &mut send,
             &postcard::to_allocvec(&Hello::new(own_cert, nonce))
-            .map_err(|error| ClientError::Codec(error.to_string()))?,
+                .map_err(|error| ClientError::Codec(error.to_string()))?,
         )
         .await?;
         let ack: HelloAck = handshake_frame(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)?;
@@ -522,7 +525,7 @@ impl RelayClient {
         write_frame(
             &mut send,
             &postcard::to_allocvec(&Hello::new(own_cert.clone(), nonce))
-            .map_err(|error| ClientError::Codec(error.to_string()))?,
+                .map_err(|error| ClientError::Codec(error.to_string()))?,
         )
         .await?;
         let ack: HelloAck = handshake_frame(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)?;

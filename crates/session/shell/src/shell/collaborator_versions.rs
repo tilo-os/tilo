@@ -74,15 +74,24 @@ pub(crate) fn notice(name: Option<&str>, theirs: u32) -> (String, String) {
     let behind = theirs < neighbour_wire::PEER_PROTOCOL_VERSION;
     match (name, behind) {
         (Some(name), true) => (
-            t_args("collaborator-needs-update", &[("name", name.to_owned().into())]),
-            t_args("collaborator-needs-update-body", &[("name", name.to_owned().into())]),
+            t_args(
+                "collaborator-needs-update",
+                &[("name", name.to_owned().into())],
+            ),
+            t_args(
+                "collaborator-needs-update-body",
+                &[("name", name.to_owned().into())],
+            ),
         ),
         (None, true) => (
             crate::shell::i18n::t("collaborator-host-needs-update"),
             crate::shell::i18n::t("collaborator-host-needs-update-body"),
         ),
         (Some(name), false) => (
-            t_args("collaborator-update-self", &[("name", name.to_owned().into())]),
+            t_args(
+                "collaborator-update-self",
+                &[("name", name.to_owned().into())],
+            ),
             crate::shell::i18n::t("collaborator-update-self-body"),
         ),
         (None, false) => (

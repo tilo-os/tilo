@@ -96,8 +96,7 @@ async fn browser(addr: SocketAddr, key: &SigningKey, cert: &DeviceCert) -> [u8; 
         addr,
         "/session",
         None,
-        postcard::to_allocvec(&crate::auth::Hello::new(cert.clone(), [9; 32]))
-        .unwrap(),
+        postcard::to_allocvec(&crate::auth::Hello::new(cert.clone(), [9; 32])).unwrap(),
     )
     .await;
     assert_eq!(status, 200);
