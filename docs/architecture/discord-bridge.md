@@ -200,7 +200,10 @@ it did not make, and never changes a permission it does not own.
   `Guild::channels` and joins it with the workspace. A Discord category
   adopts the workspace's unmapped category of the same name; a Discord
   channel adopts the unmapped Tilo channel whose slug matches in the same
-  category. What has no match is created in Tilo. When every Discord channel
+  category, else one whose slug matches in a category of Tilo's own (one no
+  Discord category joins, such as the channels a room opened with), so the
+  room's `general` is the server's #general rather than a second one. What
+  has no match is created in Tilo. When every Discord channel
   is mapped, the Tilo categories and channels that matched nothing are
   listed in `tilo_only` and `ownership` becomes `Adopted`. Message history is
   not imported.
