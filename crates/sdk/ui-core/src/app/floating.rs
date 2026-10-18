@@ -958,22 +958,7 @@ fn tab_request_message(
     request: crate::shell_tabs::TabRequest,
     instance: Option<u64>,
 ) -> crate::floating_surface::FloatingSurfaceClientMessage {
-    use crate::floating_surface::FloatingSurfaceClientMessage as Message;
-    use crate::shell_tabs::TabRequest;
-    match request {
-        TabRequest::OpenBeside { target, background } => Message::OpenTabBeside {
-            target,
-            background,
-            instance,
-        },
-        TabRequest::CloseThis => Message::CloseTab { instance },
-        TabRequest::ReopenClosed => Message::ReopenClosedTab,
-        TabRequest::CycleTab { forward } => Message::CycleTab { forward, instance },
-        TabRequest::PlaceNextWindowBeside { background } => Message::PlaceNextWindowBeside {
-            background,
-            instance,
-        },
-    }
+    request.message(instance)
 }
 
 impl App {

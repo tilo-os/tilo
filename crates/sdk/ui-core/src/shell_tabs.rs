@@ -49,6 +49,32 @@ pub enum TabRequest {
     PlaceNextWindowBeside { background: bool },
 }
 
+impl TabRequest {
+    /// The `shell-ui` message that carries this request for the app the
+    /// shell launched as record `instance`.
+    #[must_use]
+    pub fn message(
+        self,
+        instance: Option<u64>,
+    ) -> crate::floating_surface::FloatingSurfaceClientMessage {
+        use crate::floating_surface::FloatingSurfaceClientMessage as Message;
+        match self {
+            Self::OpenBeside { target, background } => Message::OpenTabBeside {
+                target,
+                background,
+                instance,
+            },
+            Self::CloseThis => Message::CloseTab { instance },
+            Self::ReopenClosed => Message::ReopenClosedTab,
+            Self::CycleTab { forward } => Message::CycleTab { forward, instance },
+            Self::PlaceNextWindowBeside { background } => Message::PlaceNextWindowBeside {
+                background,
+                instance,
+            },
+        }
+    }
+}
+
 /// Upper bound on undelivered requests. A held key repeating faster than
 /// frames are drawn must not queue unbounded launches.
 const MAX_PENDING: usize = 16;

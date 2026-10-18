@@ -1864,6 +1864,31 @@ fn apply_app_tab_request(
     true
 }
 
+/// Step through the tabs of the group `app_id`'s focused tab is in: the app
+/// had the Ctrl+Tab first and left it alone. The connection vouches for the
+/// app id, so an app steps only through its own focused tab's group; a
+/// request that arrives after focus moved elsewhere does nothing.
+fn apply_app_cycle_tab(
+    frame_builder: &mut FrameBuilder,
+    app_id: &str,
+    instance: Option<u64>,
+    forward: bool,
+) -> bool {
+    let focused = crate::shell::app_tabs::is_focused_app_tab(
+        &frame_builder.chrome().tree(),
+        app_id,
+        instance,
+    );
+    focused
+        && frame_builder
+            .host_mut()
+            .cycle_focused_tab(if forward { 1 } else { -1 })
+}
+
+#[cfg(test)]
+#[path = "native_app_tab_tests.rs"]
+mod app_tab_tests;
+
 // This is the ordered protocol event pump; its branches share authentication
 // and handoff state that is clearer when kept in a single state-machine tick.
 #[allow(
@@ -2314,21 +2339,7 @@ fn pump_floating_surface_service(
                     forward,
                     instance,
                 } => {
-                    // The app had the Ctrl+Tab first and left it alone. The
-                    // connection vouches for the app id, so an app can only
-                    // step through the group its own focused tab is in.
-                    let focused = crate::shell::app_tabs::is_focused_app_tab(
-                        &frame_builder.chrome().tree(),
-                        &app_id,
-                        instance,
-                    );
-                    if focused {
-                        changed |= frame_builder.host_mut().cycle_focused_tab(if forward {
-                            1
-                        } else {
-                            -1
-                        });
-                    }
+                    changed |= apply_app_cycle_tab(frame_builder, &app_id, instance, forward);
                 }
                 ui::floating_surface::FloatingSurfaceClientMessage::PlaceNextWindowBeside {
                     background,
