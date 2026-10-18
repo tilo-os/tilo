@@ -1069,6 +1069,9 @@ pub struct ShellOverlayHost {
     /// Live window previews the switcher and the overview show, rendered
     /// by the compositor only while one of them is up.
     window_previews: crate::shell::window_previews::WindowPreviews,
+    /// Each window the overview's row last drew, in order, and whether its
+    /// well showed its live picture: what the panel on screen holds.
+    overview_row_drawn: Vec<(u64, tilo_desktop::window_switcher::PreviewState)>,
     /// The focused text field's caret in desktop coordinates, as the
     /// compositor last reported it; the emoji picker and clipboard history
     /// open against it.
@@ -2636,6 +2639,7 @@ impl ShellOverlayHost {
             wifi_password_prompt: None,
             display_identify: crate::shell::display_identify::DisplayIdentify::default(),
             window_previews: crate::shell::window_previews::WindowPreviews::default(),
+            overview_row_drawn: Vec::new(),
             text_caret: None,
             clipboard_pastes: Vec::new(),
             in_process_pastes: (0, 0),
@@ -7694,10 +7698,11 @@ impl ShellOverlayHost {
         self.layers.window_switcher.is_active()
     }
 
-    /// The windows whose live previews chrome is showing or about to show:
-    /// the open switcher's (from the first Alt+Tab, so they are ready when
-    /// it appears), else the current room's while the overview is up.
-    /// Nothing while the session is locked.
+    /// The windows whose offscreen previews chrome is showing or about to
+    /// show: the open switcher's (from the first Alt+Tab, so they are ready
+    /// when it appears). The overview asks for none: it draws every window
+    /// live in the frame that shows it. Nothing while the session is
+    /// locked.
     fn window_preview_targets(&self) -> Vec<tilo_desktop::window_switcher::PreviewRequest> {
         let Some(chrome) = self.chrome.as_ref() else {
             return Vec::new();
@@ -7710,18 +7715,6 @@ impl ShellOverlayHost {
         }
         if self.layers.window_switcher.is_active() {
             return self.layers.window_switcher.preview_requests();
-        }
-        if state.overlays.overview {
-            let tree = state.tree();
-            return self
-                .overview_windows(&tree)
-                .into_iter()
-                .filter(|window| window.preview.renderable())
-                .map(|window| tilo_desktop::window_switcher::PreviewRequest {
-                    tab: window.address.tab,
-                    source: window.preview,
-                })
-                .collect();
         }
         Vec::new()
     }
@@ -7766,6 +7759,12 @@ impl ShellOverlayHost {
         stamp: Option<u64>,
     ) {
         self.window_previews.store(tab, rgba, width, height, stamp);
+    }
+
+    /// Each window the overview's row last drew and what its well showed,
+    /// for readers and tests.
+    pub fn overview_row_drawn(&self) -> &[(u64, tilo_desktop::window_switcher::PreviewState)] {
+        &self.overview_row_drawn
     }
 
     /// The previews on hand, for readers and tests.
@@ -13120,11 +13119,102 @@ impl ShellOverlayHost {
             + self.overview_shares_height()
     }
 
-    /// The current room's windows get a row of live previews once any of
-    /// them has one; until then (and for a room whose windows all hold
-    /// secrets) the app marks beside the room's name say what is open.
+    /// The current room's windows get a row of live previews from the
+    /// overview's first frame: each is drawn from what the compositor
+    /// already holds, so the row is laid out at its final size at once and
+    /// nothing fills in later. A room whose windows all hold secrets gets
+    /// no row; the app marks beside the room's name say what is open.
     fn overview_shows_windows(&self) -> bool {
-        !self.layers.window_switcher.is_active() && !self.window_previews.is_empty()
+        if self.layers.window_switcher.is_active() {
+            return false;
+        }
+        let Some(chrome) = self.chrome.as_ref() else {
+            return false;
+        };
+        let Ok(state) = chrome.try_borrow() else {
+            return false;
+        };
+        let tree = state.tree();
+        self.overview_windows(&tree).iter().any(|window| {
+            !matches!(
+                window.preview,
+                tilo_desktop::window_switcher::PreviewSource::Withheld
+            )
+        })
+    }
+
+    /// Every window in the overview's row, drawn live for this frame: a
+    /// client from its current buffer, a shell-drawn window from a live
+    /// paint of it made now (the same path a screenshot of it takes).
+    fn overview_live_thumbnails(
+        &mut self,
+        windows: &[tilo_desktop::window_switcher::SwitcherWindow],
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) -> crate::shell::window_previews::LiveThumbnails {
+        let mut live = crate::shell::window_previews::LiveThumbnails::default();
+        let locked = self
+            .chrome
+            .as_ref()
+            .and_then(|chrome| chrome.try_borrow().ok().map(|state| state.session_locked()))
+            .unwrap_or(true);
+        if locked {
+            return live;
+        }
+        for window in windows {
+            let tilo_desktop::window_switcher::PreviewSource::Painted { capture_id } =
+                &window.preview
+            else {
+                continue;
+            };
+            let mut painted = Scene::new();
+            let rects = {
+                let _capture = crate::shell::capture_protection::CapturePaint::begin();
+                self.draw_capture_targets(
+                    &ui::widget::LiveCapture {
+                        target_ids: std::slice::from_ref(capture_id),
+                        extent: ui::widget::CaptureExtent::FullApp,
+                        complete_semantic_content: false,
+                    },
+                    &mut ui::paint::PaintCtx::new(
+                        &mut painted,
+                        Affine::IDENTITY,
+                        text_renderer,
+                        theme,
+                    ),
+                    &PresenceCtx::default(),
+                )
+            };
+            if let Some(rect) = rects.first().copied().filter(|rect| rect.area() > 0.0) {
+                live.painted.insert(
+                    window.address.tab,
+                    crate::shell::window_previews::PaintedWindow {
+                        scene: painted,
+                        window: rect,
+                    },
+                );
+            }
+        }
+        live
+    }
+
+    /// Identity of what the overview row draws from: each client window's
+    /// current frame, so the cached panel redraws when one commits and
+    /// stays put while none does.
+    fn overview_row_fingerprint(&self) -> u64 {
+        self.overview_row_windows()
+            .iter()
+            .fold(0_u64, |fingerprint, window| {
+                let seq = match &window.preview {
+                    tilo_desktop::window_switcher::PreviewSource::Client { surface } => {
+                        crate::shell::window_previews::client_frame_seq(*surface)
+                    }
+                    _ => 0,
+                };
+                fingerprint.rotate_left(7)
+                    ^ window.address.tab.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                    ^ seq
+            })
     }
 
     /// One preview tile of the overview's window row: `OVERVIEW_WINDOWS_MAX`
@@ -23423,7 +23513,7 @@ impl ShellOverlayHost {
                 .chrome
                 .as_ref()
                 .map_or(0, |chrome| chrome.borrow().revision),
-            preview_fingerprint: self.window_previews.content_fingerprint(),
+            preview_fingerprint: self.overview_row_fingerprint(),
             reduce_motion,
         }
     }
@@ -25906,7 +25996,7 @@ impl ShellOverlayHost {
         if whole {
             scene.pop_layer();
         }
-        self.draw_overview_carried_window(scene, transform, theme);
+        self.draw_overview_carried_window(scene, transform, text_renderer, theme);
     }
 
     fn draw_overview_backdrop(
@@ -25962,6 +26052,8 @@ impl ShellOverlayHost {
         theme: &Theme,
     ) {
         let windows = self.overview_row_windows();
+        let mut thumbnails = self.overview_live_thumbnails(&windows, text_renderer, theme);
+        self.overview_row_drawn.clear();
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let m = self.overview_metrics;
@@ -26021,7 +26113,7 @@ impl ShellOverlayHost {
                     &bounds,
                 );
             }
-            let _ = tilo_desktop::window_switcher::draw_preview_well(
+            let live = tilo_desktop::window_switcher::draw_preview_well(
                 scene,
                 transform,
                 theme,
@@ -26031,8 +26123,19 @@ impl ShellOverlayHost {
                     icon: mark,
                 },
                 window,
-                &mut self.window_previews,
+                &mut thumbnails,
             );
+            self.overview_row_drawn.push((
+                window.address.tab,
+                if live {
+                    tilo_desktop::window_switcher::PreviewState::Live
+                } else {
+                    tilo_desktop::window_switcher::WindowSwitcher::preview_state(
+                        window,
+                        &thumbnails,
+                    )
+                },
+            ));
             let title = text_renderer.elide_to_width_style(
                 &window.title,
                 f32_of_f64(bounds.width()),
@@ -26062,6 +26165,7 @@ impl ShellOverlayHost {
         &mut self,
         scene: &mut Scene,
         transform: Affine,
+        text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
         let Some(press) = self
@@ -26104,7 +26208,7 @@ impl ShellOverlayHost {
                 icon: f64::from(theme.tokens.metrics.icon_lg),
             },
             &window,
-            &mut self.window_previews,
+            &mut self.overview_live_thumbnails(std::slice::from_ref(&window), text_renderer, theme),
         );
     }
 

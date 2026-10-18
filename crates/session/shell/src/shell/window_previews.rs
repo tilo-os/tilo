@@ -1,22 +1,33 @@
 //! Live window previews for the Alt+Tab switcher and the overview.
 //!
-//! A preview is a small picture of a window as it looks now. The compositor
-//! renders it (`crate::compositor::window_previews`); this module decides
-//! which windows get one and keeps the results:
+//! A preview is a picture of a window as it looks now, drawn the way its
+//! tile draws it:
 //!
-//! - **Only while needed.** Previews are asked for only while the switcher
-//!   or the overview is up, and all of them are dropped the moment neither
-//!   is, so a closed switcher holds no pixels.
-//! - **Throttled.** A refresh round runs at most every [`REFRESH_INTERVAL`],
-//!   renders at most [`RENDERS_PER_REFRESH`] windows, and takes turns
-//!   through the rest, so a desktop with many windows never stalls a frame.
-//! - **Bounded.** At most [`MAX_PREVIEWS`] previews of at most
-//!   [`MAX_PREVIEW_WIDTH`] × [`MAX_PREVIEW_HEIGHT`] pixels exist at once.
+//! - **A client window** is drawn straight from its current buffer in the
+//!   frame store, scaled into its card in the same scene. Nothing is
+//!   captured, read back or copied, so the preview is there in the very
+//!   first frame that shows the card and moves with every commit. A window
+//!   off screen (another strip or workspace) shows the last buffer it
+//!   presented: the store keeps a reference to it, not a copy. One that has
+//!   never presented shows its app mark at the card's final size.
+//! - **A window the shell draws itself** is painted live into the overview
+//!   through the same path a screenshot of it takes ([`LiveThumbnails`]).
+//!   The switcher, which draws through its own layer, still receives those
+//!   few as small offscreen renders (`crate::compositor::window_previews`),
+//!   kept here:
+//!   - **Only while needed.** They are asked for only while the switcher is
+//!     up, and dropped the moment it is not, so a closed switcher holds no
+//!     pixels.
+//!   - **Throttled.** A refresh round runs at most every
+//!     [`REFRESH_INTERVAL`] and renders at most [`RENDERS_PER_REFRESH`]
+//!     windows.
+//!   - **Bounded.** At most [`MAX_PREVIEWS`] of at most
+//!     [`MAX_PREVIEW_WIDTH`] × [`MAX_PREVIEW_HEIGHT`] pixels exist at once.
 //! - **Private.** A capture-protected window
-//!   ([`crate::shell::capture_protection`]) never gets one: the card shows its app
-//!   mark and title instead. Previews live only in this device's chrome;
-//!   nothing here is shared with collaborators, streamed, or dumped as
-//!   pixels.
+//!   ([`crate::shell::capture_protection`]) never gets one: the card shows
+//!   its app mark and title instead. Previews live only in this device's
+//!   chrome; nothing here is shared with collaborators, streamed, or dumped
+//!   as pixels.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -28,8 +39,11 @@ use ui::theme::Theme;
 use ui::widget::{Image, ImageFit};
 
 use tilo_desktop::window_switcher::{
-    PreviewRequest, PreviewSource, WindowSource, WindowThumbnails,
+    PreviewRequest, PreviewSource, SwitcherWindow, WindowSource, WindowThumbnails,
 };
+use vello::Scene;
+use vello::kurbo::Affine;
+use vello::peniko::{Extend, Fill, ImageBrush, ImageQuality};
 
 use crate::shell::state::{GroupId, TileContent};
 
@@ -158,8 +172,10 @@ impl WindowPreviews {
 
     /// Start a refresh round for the windows `wanted` now, in display
     /// order. Previews of windows no longer wanted are dropped. Returns the
-    /// renderable requests, rotated so this round starts where the last one
-    /// stopped; empty when the round is not due yet.
+    /// requests that need an offscreen render (shell-drawn windows; a
+    /// client window is drawn live from its buffer and never rendered
+    /// here), rotated so this round starts where the last one stopped;
+    /// empty when the round is not due yet.
     pub fn begin_refresh(
         &mut self,
         now: Instant,
@@ -167,7 +183,7 @@ impl WindowPreviews {
     ) -> Vec<PreviewRequest> {
         let wanted: Vec<PreviewRequest> = wanted
             .iter()
-            .filter(|request| request.source.renderable())
+            .filter(|request| matches!(request.source, PreviewSource::Painted { .. }))
             .take(MAX_PREVIEWS)
             .cloned()
             .collect();
@@ -271,19 +287,6 @@ impl WindowPreviews {
             .fold(0, usize::saturating_add)
     }
 
-    /// Order-independent identity of the stored pixels, so a panel cache
-    /// rebuilds when a preview arrives and stays put while it does not.
-    pub fn content_fingerprint(&self) -> u64 {
-        let mut fingerprint = u64::try_from(self.previews.len()).unwrap_or(u64::MAX);
-        for (tab, preview) in &self.previews {
-            fingerprint ^= tab.wrapping_mul(0x9E37_79B9_7F4A_7C15)
-                ^ preview.stamp.unwrap_or(0)
-                ^ (u64::from(preview.width) << 32)
-                ^ u64::from(preview.height);
-        }
-        fingerprint
-    }
-
     /// Previews changed since the last paint.
     pub fn changed(&self) -> bool {
         self.changed
@@ -295,22 +298,139 @@ impl WindowPreviews {
 }
 
 impl WindowThumbnails for WindowPreviews {
-    fn has(&self, tab: u64) -> bool {
-        self.previews.contains_key(&tab)
+    fn has(&self, window: &SwitcherWindow) -> bool {
+        match &window.preview {
+            PreviewSource::Client { surface } => client_has_frame(*surface),
+            _ => self.previews.contains_key(&window.address.tab),
+        }
     }
 
     fn paint(
         &mut self,
-        tab: u64,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
+        window: &SwitcherWindow,
+        scene: &mut Scene,
+        transform: Affine,
         rect: Rect,
         theme: &Theme,
     ) -> Option<Rect> {
-        let preview = self.previews.get_mut(&tab)?;
+        if let PreviewSource::Client { surface } = &window.preview {
+            return paint_client_frame(*surface, scene, transform, rect);
+        }
+        let preview = self.previews.get_mut(&window.address.tab)?;
         let fitted = fit_rect(rect, preview.width, preview.height);
         preview.image.paint_at_on(scene, transform, fitted, theme);
         Some(fitted)
+    }
+}
+
+/// Whether client `surface` has presented a frame a card can draw.
+pub fn client_has_frame(surface: u64) -> bool {
+    crate::shell::foreign::store().frame_size(surface).is_some()
+}
+
+/// The frame counter of client `surface`'s current picture, so a cached
+/// scene that drew it knows when to draw it again.
+pub fn client_frame_seq(surface: u64) -> u64 {
+    crate::shell::foreign::store().frame_seq(surface)
+}
+
+/// Draw client `surface`'s current frame fitted inside `rect`, straight
+/// from the buffer the frame store holds (the GPU texture when it stayed
+/// there), as its tile draws it. Copies nothing.
+pub fn paint_client_frame(
+    surface: u64,
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+) -> Option<Rect> {
+    let (image, _) = crate::shell::foreign::store().frame_image(surface)?;
+    let (width, height) = (image.width, image.height);
+    if width == 0 || height == 0 || rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return None;
+    }
+    let fitted = fit_rect(rect, width, height);
+    let brush = ImageBrush::new(image)
+        .with_extend(Extend::Pad)
+        .with_quality(ImageQuality::Medium);
+    scene.fill(
+        Fill::NonZero,
+        transform
+            * Affine::translate((fitted.x0, fitted.y0))
+            * Affine::scale_non_uniform(
+                fitted.width() / f64::from(width),
+                fitted.height() / f64::from(height),
+            ),
+        &brush,
+        None,
+        &Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
+    );
+    Some(fitted)
+}
+
+/// A shell-drawn window painted live for one frame of chrome: the scene
+/// its live paint produced, and the window's rect inside that scene.
+pub struct PaintedWindow {
+    pub scene: Scene,
+    pub window: Rect,
+}
+
+/// The overview's pictures: every window drawn live in the frame that
+/// shows it. Client windows come from their buffers; shell-drawn ones from
+/// a live paint made for this frame ([`PaintedWindow`]).
+#[derive(Default)]
+pub struct LiveThumbnails {
+    pub painted: HashMap<u64, PaintedWindow>,
+}
+
+impl WindowThumbnails for LiveThumbnails {
+    fn has(&self, window: &SwitcherWindow) -> bool {
+        match &window.preview {
+            PreviewSource::Client { surface } => client_has_frame(*surface),
+            PreviewSource::Painted { .. } => self.painted.contains_key(&window.address.tab),
+            PreviewSource::Withheld | PreviewSource::Unavailable => false,
+        }
+    }
+
+    fn paint(
+        &mut self,
+        window: &SwitcherWindow,
+        scene: &mut Scene,
+        transform: Affine,
+        rect: Rect,
+        _theme: &Theme,
+    ) -> Option<Rect> {
+        match &window.preview {
+            PreviewSource::Client { surface } => {
+                paint_client_frame(*surface, scene, transform, rect)
+            }
+            PreviewSource::Painted { .. } => {
+                let painted = self.painted.get(&window.address.tab)?;
+                let source = painted.window;
+                if source.width() <= 0.0 || source.height() <= 0.0 {
+                    return None;
+                }
+                let fitted = fit_extent(rect, source.width(), source.height());
+                let place = Affine::translate((fitted.x0, fitted.y0))
+                    * Affine::scale_non_uniform(
+                        fitted.width() / source.width(),
+                        fitted.height() / source.height(),
+                    )
+                    * Affine::translate((-source.x0, -source.y0));
+                let mut clipped = Scene::new();
+                clipped.push_layer(
+                    Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    1.0,
+                    Affine::IDENTITY,
+                    &source,
+                );
+                clipped.append(&painted.scene, None);
+                clipped.pop_layer();
+                scene.append(&clipped, Some(transform * place));
+                Some(fitted)
+            }
+            PreviewSource::Withheld | PreviewSource::Unavailable => None,
+        }
     }
 }
 
@@ -324,7 +444,10 @@ pub fn rgba_len(width: u32, height: u32) -> Option<usize> {
 
 /// `width` × `height` scaled to fit inside `rect`, centred.
 fn fit_rect(rect: Rect, width: u32, height: u32) -> Rect {
-    let (w, h) = (f64::from(width.max(1)), f64::from(height.max(1)));
+    fit_extent(rect, f64::from(width.max(1)), f64::from(height.max(1)))
+}
+
+fn fit_extent(rect: Rect, w: f64, h: f64) -> Rect {
     let scale = (rect.width() / w).min(rect.height() / h);
     let (fw, fh) = (w * scale, h * scale);
     let center = rect.center();
@@ -345,10 +468,12 @@ mod tests {
         Arc::from(vec![0x80_u8; rgba_len(width, height).unwrap_or(0)])
     }
 
-    fn client(tab: u64) -> PreviewRequest {
+    fn painted(tab: u64) -> PreviewRequest {
         PreviewRequest {
             tab,
-            source: PreviewSource::Client { surface: tab },
+            source: PreviewSource::Painted {
+                capture_id: format!("group:1:tab:{tab}"),
+            },
         }
     }
 
@@ -365,7 +490,7 @@ mod tests {
     fn a_round_runs_at_most_every_interval() {
         let mut previews = WindowPreviews::default();
         let start = Instant::now();
-        let wanted = [client(1), client(2)];
+        let wanted = [painted(1), painted(2)];
         assert_eq!(previews.begin_refresh(start, &wanted).len(), 2);
         let soon = start + REFRESH_INTERVAL / 2;
         assert!(previews.begin_refresh(soon, &wanted).is_empty());
@@ -382,7 +507,7 @@ mod tests {
     fn rounds_take_turns_through_the_windows() {
         let mut previews = WindowPreviews::default();
         let start = Instant::now();
-        let wanted = [client(1), client(2), client(3)];
+        let wanted = [painted(1), painted(2), painted(3)];
         let first = previews.begin_refresh(start, &wanted);
         assert_eq!(first.first().map(|r| r.tab), Some(1));
         previews.advance(2);
@@ -416,9 +541,9 @@ mod tests {
         // A round for other windows forgets the ones no longer wanted.
         previews.store(1, pixels(4, 4), 4, 4, None);
         previews.store(2, pixels(4, 4), 4, 4, None);
-        let _ = previews.begin_refresh(Instant::now(), &[client(2)]);
-        assert!(!previews.has(1));
-        assert!(previews.has(2));
+        let _ = previews.begin_refresh(Instant::now(), &[painted(2)]);
+        assert!(previews.pixels(1).is_none());
+        assert!(previews.pixels(2).is_some());
     }
 
     #[test]

@@ -3,12 +3,12 @@
 //! ```text
 //!   tab_binding::adopt_toplevel
 //!     → ForeignFrameStore::publish_rgba       (what a client commit fills)
-//!     → the overview opens / Alt+Tab is held  (chrome now wants previews)
-//!     → WindowPreviewRenderer::refresh        (what CaptureExecutor runs each frame)
-//!     → ShellOverlayHost::window_previews     (what the cards paint)
+//!     → Super+Tab / Alt+Tab                   (chrome shows window cards)
+//!     → FrameBuilder::paint                   (cards draw each client's buffer)
+//!     → WindowPreviewRenderer::refresh        (offscreen renders, shell-drawn windows only)
 //! ```
 //!
-//! Assertions are on the preview pixels and sizes the cards receive.
+//! Assertions are on what the cards drew and what was rendered offscreen.
 
 use std::time::Instant;
 
@@ -20,7 +20,7 @@ use shell::shell::state::TileContent;
 use shell::shell::window_previews::{
     MAX_PREVIEW_HEIGHT, MAX_PREVIEW_WIDTH, MAX_PREVIEWS, REFRESH_INTERVAL, RENDERS_PER_REFRESH,
 };
-use tilo_desktop::window_switcher::WindowThumbnails as _;
+use tilo_desktop::window_switcher::PreviewState;
 use winit::event::{ElementState, Modifiers, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
@@ -94,12 +94,43 @@ fn tab_of(fb: &FrameBuilder, surface: u64) -> u64 {
         .expect("the client's tab is in the rendered tree")
 }
 
-fn open_overview(fb: &mut FrameBuilder, open: bool) {
-    fb.with_chrome(|state| {
-        state.overlays.overview = open;
-        state.bump();
-    });
-    frame(fb);
+/// Turn one of the demo room's placeholder cards into a window the shell
+/// draws itself, shown in its group, and return its tab.
+fn make_shell_drawn(fb: &mut FrameBuilder) -> u64 {
+    let id = {
+        let chrome = fb.chrome();
+        let mut rendered = chrome.tree_mut();
+        let active = rendered.desktop.active;
+        let group = rendered
+            .desktop
+            .workspaces
+            .iter_mut()
+            .filter(|ws| ws.id == active)
+            .flat_map(|ws| ws.strips.iter_mut())
+            .flat_map(|strip| strip.window_groups.iter_mut())
+            .find(|group| {
+                group
+                    .tabs
+                    .iter()
+                    .any(|tab| matches!(tab.tile, TileContent::AppPlaceholder { .. }))
+            })
+            .expect("the demo room has a placeholder window");
+        let tab = group
+            .tabs
+            .iter_mut()
+            .rev()
+            .find(|tab| matches!(tab.tile, TileContent::AppPlaceholder { .. }))
+            .expect("a placeholder tab");
+        tab.tile = TileContent::Stub {
+            kind: shell::shell::state::AppKind::Terminal,
+            label: "Terminal".into(),
+        };
+        let id = tab.id;
+        group.active_tab = id;
+        id
+    };
+    fb.with_chrome(shell::shell::chrome_state::ChromeState::bump);
+    id
 }
 
 fn key_event(key: Key, state: ElementState) -> WindowEvent {
@@ -131,95 +162,148 @@ fn hold_alt_tab(fb: &mut FrameBuilder) {
     );
 }
 
-fn pixel(rgba: &[u8], width: u32, x: u32, y: u32) -> (u8, u8, u8, u8) {
-    let at =
-        usize::try_from(y.saturating_mul(width).saturating_add(x).saturating_mul(4)).unwrap_or(0);
-    let px = rgba
-        .get(at..at.saturating_add(4))
-        .expect("the pixel is inside the preview");
-    (px[0], px[1], px[2], px[3])
+/// Press Super+Tab: the workspace overview opens.
+fn press_super_tab(fb: &mut FrameBuilder) {
+    let mut doc = automerge::AutoCommit::new();
+    let mut focus = None;
+    let super_key = Modifiers::from(ModifiersState::SUPER);
+    for (key, state) in [
+        (Key::Named(NamedKey::Super), ElementState::Pressed),
+        (Key::Named(NamedKey::Tab), ElementState::Pressed),
+        (Key::Named(NamedKey::Tab), ElementState::Released),
+    ] {
+        let _ = fb.dispatch_event(
+            &key_event(key, state),
+            &super_key,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &mut focus,
+        );
+    }
 }
 
-fn near(a: (u8, u8, u8, u8), rgb: (u8, u8, u8)) -> bool {
-    a.0.abs_diff(rgb.0) <= 6 && a.1.abs_diff(rgb.1) <= 6 && a.2.abs_diff(rgb.2) <= 6
-}
-
+// USER REQUIREMENT (2026-10-18): "win+tab only loads the windows after its already open/takes way too long, unacceptable"
 #[test]
-fn a_client_window_gets_a_downscaled_live_preview_at_most_ten_times_a_second() {
-    let surface = 0x9E_0001;
-    let mut fb = desktop(&[(surface, "org.example.previewed")]);
-    let tab = tab_of(&fb, surface);
-    store().publish_rgba(surface, &solid(1600, 1000, (0xE0, 0x30, 0x90)), 1600, 1000);
-
+fn the_first_overview_frame_after_super_tab_already_shows_every_window() {
+    let clients = [
+        (0x9E_0011_u64, "org.example.first"),
+        (0x9E_0012, "org.example.second"),
+        (0x9E_0013, "org.example.third"),
+        (0x9E_0014, "org.example.fourth"),
+        (0x9E_0015, "org.example.fifth"),
+    ];
+    let mut fb = desktop(&clients);
+    for (index, (surface, _)) in clients.iter().enumerate() {
+        let shade = u8::try_from(index * 40).unwrap_or(0);
+        store().publish_rgba(*surface, &solid(1280, 800, (shade, 0x60, 0x90)), 1280, 800);
+    }
+    let painted = make_shell_drawn(&mut fb);
+    // Nothing is captured or held while the overview is closed.
     let mut renderer = WindowPreviewRenderer::default();
     let start = Instant::now();
-    // Nothing is asked for, and nothing held, while no chrome shows previews.
     assert_eq!(renderer.refresh(&mut fb, start).visited, 0);
+    assert!(fb.host().window_previews().is_empty());
+
+    let pressed = Instant::now();
+    press_super_tab(&mut fb);
+    assert!(
+        fb.chrome().overlays.overview,
+        "Super+Tab opens the overview"
+    );
+    // The very next frame, with no preview round, render thread or client
+    // redraw in between.
+    let _ = fb.paint_settled();
+    let first_frame = pressed.elapsed();
+    let drawn = fb.host().overview_row_drawn().to_vec();
+    let tabs: Vec<u64> = clients
+        .iter()
+        .map(|(surface, _)| tab_of(&fb, *surface))
+        .collect();
+    eprintln!(
+        "Super+Tab to first complete overview frame: {first_frame:?} ({} windows)",
+        drawn.len()
+    );
+    // The row holds the room's most recently used windows, laid out in the
+    // first frame, the shell-drawn one and the clients among them.
+    assert!(
+        !drawn.is_empty(),
+        "the first frame already has the window row"
+    );
+    assert!(
+        drawn.iter().any(|(drawn, _)| tabs.contains(drawn)),
+        "the clients are in the row: {drawn:?}"
+    );
+    assert!(
+        drawn.iter().any(|(drawn, _)| *drawn == painted),
+        "the shell-drawn window is in the row: {drawn:?}"
+    );
+    // Every window that has presented, and every window the shell draws,
+    // is pictured in that first frame. (The demo room's other windows are placeholder cards with no app
+    // behind them: they show their app mark, as they always did.)
+    for (tab, state) in &drawn {
+        if tabs.contains(tab) || *tab == painted {
+            assert_eq!(
+                *state,
+                PreviewState::Live,
+                "window {tab} is pictured in the first overview frame: {drawn:?}"
+            );
+        }
+    }
+    // And nothing was captured or rendered offscreen to get there.
+    let round = renderer.refresh(&mut fb, start);
+    assert_eq!(round.rendered, 0, "{round:?}");
+    renderer.settle(&mut fb);
     assert!(fb.host().window_previews().is_empty());
     assert!(!renderer.holds_gpu_target());
 
-    open_overview(&mut fb, true);
-    let first = renderer.refresh(&mut fb, start);
+    // The row is live: the next commit is what the next frame draws.
+    let (last_surface, _) = clients[clients.len() - 1];
+    store().publish_rgba(
+        last_surface,
+        &solid(800, 1000, (0x20, 0xB0, 0x40)),
+        800,
+        1000,
+    );
+    let _ = fb.paint_settled();
     assert!(
-        first.rendered >= 1,
-        "the first round renders the client: {first:?}"
+        fb.host()
+            .overview_row_drawn()
+            .iter()
+            .any(|(tab, state)| tabs.contains(tab) && *state == PreviewState::Live)
     );
-    // The render thread hands it back; the next round collects it.
-    renderer.settle(&mut fb);
-    let previews = fb.host().window_previews();
-    let (width, height) = previews.size(tab).expect("the client has a preview");
-    // 1600×1000 is 16:10, scaled to fit the preview bound.
-    assert_eq!((width, height), (MAX_PREVIEW_WIDTH, 220));
-    assert!(width <= MAX_PREVIEW_WIDTH && height <= MAX_PREVIEW_HEIGHT);
-    let pixels = previews.pixels(tab).expect("pixels");
-    assert_eq!(
-        pixels.len(),
-        usize::try_from(width * height * 4).unwrap_or(0)
-    );
-    for (x, y) in [(width / 2, height / 2), (2, 2), (width - 3, height - 3)] {
-        let sample = pixel(&pixels, width, x, y);
-        assert!(
-            near(sample, (0xE0, 0x30, 0x90)),
-            "the preview shows the client's pixels at ({x}, {y}): {sample:?}"
-        );
-    }
-
-    // Throttled: a round inside the interval does nothing at all.
-    let soon = start + REFRESH_INTERVAL / 2;
-    assert_eq!(renderer.refresh(&mut fb, soon).visited, 0);
-
-    // A new commit is picked up by the next round, in the window's new shape.
-    store().publish_rgba(surface, &solid(800, 1000, (0x20, 0xB0, 0x40)), 800, 1000);
-    let later = start + REFRESH_INTERVAL;
-    let _ = renderer.refresh(&mut fb, later);
-    renderer.settle(&mut fb);
-    let previews = fb.host().window_previews();
-    let (width, height) = previews.size(tab).expect("still previewed");
-    assert_eq!((width, height), (176, 220), "a tall window keeps its shape");
-    let pixels = previews.pixels(tab).expect("pixels");
-    assert!(near(
-        pixel(&pixels, width, width / 2, height / 2),
-        (0x20, 0xB0, 0x40)
-    ));
-
-    // An unchanged buffer is not rendered again.
-    let stamp = fb.host().window_preview_stamp(tab);
-    let unchanged = renderer.refresh(&mut fb, later + REFRESH_INTERVAL);
-    assert_eq!(unchanged.rendered, 0, "{unchanged:?}");
-    renderer.settle(&mut fb);
-    assert_eq!(fb.host().window_preview_stamp(tab), stamp);
-
-    // Closing the overview drops every preview and the GPU target.
-    open_overview(&mut fb, false);
-    let _ = renderer.refresh(&mut fb, later + REFRESH_INTERVAL * 2);
-    renderer.settle(&mut fb);
-    let previews = fb.host().window_previews();
-    let (emptied, memory_bytes) = (previews.is_empty(), previews.memory_bytes());
     drop(fb);
-    assert!(emptied);
-    assert_eq!(memory_bytes, 0);
-    assert!(!renderer.holds_gpu_target());
-    store().forget(surface);
+    for (surface, _) in &clients {
+        store().forget(*surface);
+    }
+}
+
+/// A window that has never presented shows its app mark in the first frame,
+/// at the card's final size; the row does not wait for it.
+#[test]
+fn a_window_that_never_presented_shows_its_mark_from_the_first_frame() {
+    let shown = 0x9E_0021_u64;
+    let silent = 0x9E_0022_u64;
+    // Opened last, the silent one leads the row.
+    let mut fb = desktop(&[(shown, "org.example.shown"), (silent, "org.example.silent")]);
+    store().publish_rgba(shown, &solid(640, 400, (0x30, 0x30, 0xC0)), 640, 400);
+    let (shown_tab, silent_tab) = (tab_of(&fb, shown), tab_of(&fb, silent));
+    press_super_tab(&mut fb);
+    let _ = fb.paint_settled();
+    let drawn = fb.host().overview_row_drawn().to_vec();
+    let state_of = |tab: u64| {
+        drawn
+            .iter()
+            .find(|(drawn, _)| *drawn == tab)
+            .map(|(_, state)| *state)
+    };
+    assert_eq!(state_of(silent_tab), Some(PreviewState::None), "{drawn:?}");
+    assert!(
+        state_of(shown_tab).is_none_or(|state| state == PreviewState::Live),
+        "{drawn:?}"
+    );
+    drop(fb);
+    store().forget(shown);
+    store().forget(silent);
 }
 
 #[test]
@@ -236,18 +320,14 @@ fn a_password_manager_never_gets_a_preview_and_the_switcher_says_so() {
     store().publish_rgba(editor, &solid(640, 400, (0x00, 0x00, 0xFF)), 640, 400);
     hold_alt_tab(&mut fb);
 
+    // A client window is drawn from its buffer, so its card is live the
+    // moment the switcher opens; the password manager never is.
     let mut renderer = WindowPreviewRenderer::default();
-    let start = Instant::now();
-    for round in 0..6_u32 {
-        let _ = renderer.refresh(&mut fb, start + REFRESH_INTERVAL * round);
-        renderer.settle(&mut fb);
-    }
+    let _ = renderer.refresh(&mut fb, Instant::now());
+    renderer.settle(&mut fb);
     let previews = fb.host().window_previews();
-    assert!(previews.has(editor_tab), "an ordinary window is previewed");
-    assert!(
-        !previews.has(vault_tab),
-        "a password manager is never pictured"
-    );
+    assert!(previews.pixels(vault_tab).is_none());
+    assert!(previews.pixels(editor_tab).is_none(), "nothing is copied");
     assert_eq!(fb.host().window_preview_stamp(vault_tab), None);
 
     // state-dump reports each card's preview, never its pixels.
@@ -296,8 +376,16 @@ fn previews_stay_within_their_memory_bound() {
         );
         renderer.settle(&mut fb);
     }
+    let client_tabs: Vec<u64> = clients
+        .iter()
+        .map(|(surface, _)| tab_of(&fb, *surface))
+        .collect();
     let previews = fb.host().window_previews();
     let (count, memory_bytes) = (previews.len(), previews.memory_bytes());
+    let copied = client_tabs
+        .iter()
+        .filter(|tab| previews.pixels(**tab).is_some())
+        .count();
     drop(fb);
     let bound =
         MAX_PREVIEWS * usize::try_from(MAX_PREVIEW_WIDTH * MAX_PREVIEW_HEIGHT * 4).unwrap_or(0);
@@ -305,10 +393,7 @@ fn previews_stay_within_their_memory_bound() {
         count <= MAX_PREVIEWS,
         "at most {MAX_PREVIEWS} previews, got {count}"
     );
-    assert!(
-        count > RENDERS_PER_REFRESH * 2,
-        "rounds take turns until the windows past the first are pictured too, got {count}"
-    );
+    assert_eq!(copied, 0, "client windows are drawn live, never copied");
     assert!(memory_bytes <= bound);
     for (surface, _) in &clients {
         store().forget(*surface);
@@ -348,18 +433,37 @@ impl PreviewBackend for Gated {
 fn a_preview_render_never_blocks_the_frame_loop() {
     let surface = 0x9E_2001;
     let mut fb = desktop(&[(surface, "org.example.slow")]);
-    let tab = tab_of(&fb, surface);
     store().publish_rgba(surface, &solid(640, 400, (0x10, 0x20, 0x30)), 640, 400);
     let (release, gate) = std::sync::mpsc::channel();
     let mut renderer =
         WindowPreviewRenderer::with_backend(move || Box::new(Gated { gate, held: false }));
-    open_overview(&mut fb, true);
+    // A shell-drawn window is what the switcher renders offscreen; the
+    // client is drawn live and never queued.
+    let _ = make_shell_drawn(&mut fb);
+    let _ = fb.paint_settled();
+    hold_alt_tab(&mut fb);
     let start = Instant::now();
 
     // The render is held up for as long as the test likes; refresh returns.
-    // (The demo desktop's shell windows are previewed beside the client.)
     let queued = renderer.refresh(&mut fb, start);
-    assert!(queued.rendered >= 1, "{queued:?}");
+    assert!(
+        queued.rendered >= 1,
+        "{queued:?} {} {:?}",
+        fb.host().window_switcher_state_json(),
+        fb.chrome()
+            .tree()
+            .desktop
+            .workspaces
+            .iter()
+            .flat_map(|ws| ws.strips.iter())
+            .flat_map(|strip| strip.window_groups.iter())
+            .flat_map(|group| group.tabs.iter().map(move |tab| (
+                group.active_tab,
+                tab.id,
+                format!("{:?}", tab.tile)
+            )))
+            .collect::<Vec<_>>()
+    );
     assert_eq!(renderer.in_flight(), queued.rendered);
     assert!(
         fb.host().window_previews().is_empty(),
@@ -372,7 +476,7 @@ fn a_preview_render_never_blocks_the_frame_loop() {
         assert_eq!(report.collected, 0, "{report:?}");
         assert!(renderer.in_flight() >= queued.rendered);
     }
-    assert!(!fb.host().window_previews().has(tab), "still not rendered");
+    assert!(fb.host().window_previews().is_empty(), "still not rendered");
 
     // Let every render through, and collect them.
     for _ in 0..64 {
@@ -382,10 +486,10 @@ fn a_preview_render_never_blocks_the_frame_loop() {
     }
     renderer.settle(&mut fb);
     let _ = renderer.refresh(&mut fb, start + REFRESH_INTERVAL * 5);
-    let previews = fb.host().window_previews();
-    assert!(previews.has(tab), "the finished preview is collected");
-    let stamp = fb.host().window_preview_stamp(tab);
-    assert_eq!(stamp, Some(store().frame_seq(surface)));
+    assert!(
+        !fb.host().window_previews().is_empty(),
+        "the finished previews are collected"
+    );
     drop(fb);
     store().forget(surface);
 }
