@@ -1037,6 +1037,8 @@ impl Rooms {
             .admissions
             .grant_for(invite_id, &join.token, now)
             .map_err(|error| Box::new(Err(CollaborationError::from(error))))?;
+        self.pre_admission_signer(room.room(), grant)
+            .map_err(|error| Box::new(Err(CollaborationError::from(error))))?;
         if grant.role != role || grant.room != room.room() {
             return Err(Box::new(Err(CollaborationError::new(
                 "the pre-admission is for another room or role",

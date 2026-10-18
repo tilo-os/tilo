@@ -1448,13 +1448,33 @@ async fn serve_operator(
                     .seated_spectators(&context.room)
                     .await
                     .unwrap_or(0);
+                // Who of the members is here, for the site's directory.
+                let here: std::collections::BTreeSet<[u8; 32]> =
+                    sessions.keys().filter(|user| **user != spectator).copied().collect();
+                let (faces, _, members) = context
+                    .rooms
+                    .presence(&context.room, &here)
+                    .await
+                    .unwrap_or_default();
                 let online = (
                     u32::try_from(people).unwrap_or(u32::MAX),
                     u32::try_from(spectators).unwrap_or(u32::MAX),
+                    faces,
+                    // The spectator person is a member nobody counts.
+                    members.saturating_sub(1),
                 );
-                if last_online != Some(online) {
+                if last_online.as_ref() != Some(&online) {
+                    println!(
+                        "{}",
+                        RoomEvent::Online {
+                            people: online.0,
+                            spectators: online.1,
+                            here: online.2.clone(),
+                            members: online.3,
+                        }
+                        .to_line()
+                    );
                     last_online = Some(online);
-                    println!("{}", RoomEvent::Online { people: online.0, spectators: online.1 }.to_line());
                 }
                 let now = tilo_clock::unix_now_ms();
                 for user in sessions.keys() {

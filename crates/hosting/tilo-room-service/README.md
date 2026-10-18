@@ -178,8 +178,9 @@ the browser redeems the bound invitation. A read-only embed joins as the
 room's spectator through `POST /spectate`. `GET /presence` answers
 `{online, watching}`. `GET`/`POST /directory` lists the room as the site's
 own public workspace (`tilo_relay_protocol::directory`): its name, its
-description (`TILO_ROOMS_DESCRIPTION`), the role a visitor gets, how many
-are online, and its door (this service's `/join`). The web entry names it
+description (`TILO_ROOMS_DESCRIPTION`), the role a visitor gets, who is
+online (the members' faces the relay reports with its online count) and how
+many belong, and its door (this service's `/join`). The web entry names it
 as the site's `directory`, so a Tilo computer's "Join a workspace…" sheet
 lists it first. The owner root comes from a mounted secret; without
 it the service refuses to start. The full design is in
