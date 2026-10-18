@@ -337,6 +337,23 @@ impl MailState {
         }
     }
 
+    /// [`Self::submit`] of the person's own press: a destructive verb the
+    /// window offers with its own way back (sending, held so Undo takes it
+    /// back) applies without asking; under an invocation it asks as any
+    /// caller's does.
+    pub(crate) fn submit_gesture(
+        &self,
+        doc: &mut ui::widget::Edits<'_>,
+        submit: impl Submit<Mail>,
+    ) {
+        let Some(dispatcher) = &self.dispatcher else {
+            return;
+        };
+        if let Err(error) = dispatcher.submit_gesture(doc, submit) {
+            tracing::warn!(%error, "mail: an edit was refused");
+        }
+    }
+
     /// Record what the source of `messages` reports of them, as one
     /// [`Mail::INGEST`]. What the mailbox already says wins.
     pub(crate) fn ingest_messages(

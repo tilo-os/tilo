@@ -393,7 +393,7 @@ pub enum DockState {
 }
 
 /// Which compose control currently has keyboard focus.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Field {
     None,
     To,
@@ -1904,6 +1904,10 @@ impl ComposeWindow {
             self.close();
             return (true, ComposeAction::Close);
         }
+        // Ctrl+Enter sends, from any field.
+        if Self::is_send_press(event, ctx.modifiers) {
+            return (true, ComposeAction::Send);
+        }
         // Body editor.
         if matches!(self.focus, Field::Body) {
             self.handle_body_key(event, ctx);
@@ -1956,6 +1960,23 @@ impl ComposeWindow {
         }
         self.dirty = true;
         (true, ComposeAction::None)
+    }
+
+    /// Ctrl+Enter (Cmd+Enter on a Mac keyboard): send the message.
+    fn is_send_press(event: &WindowEvent, modifiers: winit::event::Modifiers) -> bool {
+        let state = modifiers.state();
+        (state.control_key() || state.super_key())
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput {
+                    event: winit::event::KeyEvent {
+                        logical_key: winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                    ..
+                }
+            )
     }
 
     fn is_escape_press(event: &WindowEvent) -> bool {
@@ -2856,6 +2877,44 @@ mod tests {
                 w.to_draft(&mut ui::widget::Edits::lend(&mut doc)).body,
                 "Hi\ntwo",
                 "Enter split the body across two lines"
+            );
+        }
+    }
+
+    /// Ctrl+Enter sends from the body and from a header field alike; Enter
+    /// alone stays a new line.
+    #[test]
+    fn ctrl_enter_sends_from_any_field() {
+        let mut w = win();
+        let mut doc = crate::resource::TestMail::doc();
+        let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
+        let node = taffy::NodeId::new(0);
+        let ctrl = winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+        let plain = winit::event::Modifiers::default();
+        let enter = key(Key::Named(NamedKey::Enter), None);
+        for field in [Field::Body, Field::Subject] {
+            w.set_focus(field);
+            let mut press = |modifiers| {
+                w.handle_event(
+                    &enter,
+                    &mut ComposeEventContext {
+                        scale_factor: 1.0,
+                        modifiers,
+                        state: ui::widget::Edits::lend(&mut doc),
+                        path: &automerge::ROOT,
+                        node_id: node,
+                        taffy: &taffy,
+                    },
+                )
+                .1
+            };
+            assert!(
+                matches!(press(ctrl), ComposeAction::Send),
+                "{field:?}: Ctrl+Enter sends"
+            );
+            assert!(
+                !matches!(press(plain), ComposeAction::Send),
+                "{field:?}: Enter alone does not"
             );
         }
     }

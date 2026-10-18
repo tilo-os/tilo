@@ -1,6 +1,6 @@
 //! A small IMAP server for tests, laid out like the servers people use.
 //!
-//! It speaks enough IMAP4rev1 for the engine's whole life with an account:
+//! It speaks enough `IMAP4rev1` for the engine's whole life with an account:
 //! LOGIN, CAPABILITY, LIST with special-use marks (RFC 6154), SELECT with
 //! UIDVALIDITY and UIDNEXT, FETCH by position and by UID (`n:*` included),
 //! UID SEARCH (TEXT, HEADER, FLAGGED, ALL), UID STORE, UID MOVE, UID
@@ -8,6 +8,7 @@
 //! changes the mailbox as another client would (new mail, a flag) and the
 //! server tells an idling connection, as a real one does.
 
+use std::fmt::Write as _;
 use std::sync::{Arc, Mutex};
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -142,6 +143,7 @@ impl FakeImap {
                 flags: flags.iter().map(|flag| (*flag).to_owned()).collect(),
                 raw: raw.replace('\n', "\r\n").into_bytes(),
             });
+            drop(state);
             uid
         };
         self.changed.notify_waiters();
@@ -159,6 +161,7 @@ impl FakeImap {
             if !message.flags.iter().any(|kept| kept == flag) {
                 message.flags.push(flag.to_owned());
             }
+            drop(state);
         }
         self.changed.notify_waiters();
     }
@@ -261,6 +264,11 @@ impl FakeImap {
     }
 
     /// The whole answer to one command but IDLE and LOGOUT.
+    #[expect(
+        clippy::too_many_lines,
+        clippy::significant_drop_tightening,
+        reason = "one IMAP command's dispatch, all of it under the one mailbox lock, as a server answers it"
+    )]
     fn answer(
         &self,
         tag: &str,
@@ -280,11 +288,12 @@ impl FakeImap {
             for mailbox in &state.boxes {
                 let mut attributes = vec!["\\HasNoChildren"];
                 attributes.extend(mailbox.uses.iter().copied());
-                out.push_str(&format!(
+                let _ = write!(
+                    out,
                     "* LIST ({}) \"/\" \"{}\"\r\n",
                     attributes.join(" "),
                     mailbox.name
-                ));
+                );
             }
             return format!("{out}{tag} OK LIST\r\n");
         }
@@ -405,15 +414,16 @@ impl FakeImap {
 fn fetch_line(position: usize, message: &Stored, asked: &str) -> String {
     let mut items = format!("UID {}", message.uid);
     if asked.contains("FLAGS") {
-        items.push_str(&format!(" FLAGS ({})", message.flags.join(" ")));
+        let _ = write!(items, " FLAGS ({})", message.flags.join(" "));
     }
     if asked.contains("BODY") {
-        items.push_str(&format!(
+        let _ = write!(
+            items,
             " INTERNALDATE \"01-Jan-2026 09:{:02}:00 +0000\" BODY[] {{{}}}\r\n{}",
             message.uid % 60,
             message.raw.len(),
             String::from_utf8_lossy(&message.raw)
-        ));
+        );
     }
     format!("* {position} FETCH ({items})\r\n")
 }
