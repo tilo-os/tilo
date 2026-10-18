@@ -24,7 +24,7 @@
 //! | timecode | [`timecode`] | `1:01:01` | `1:01:01` |
 //! | size | [`size`] | `1.5 MB` | `1,5 MB` |
 //! | memory | [`memory`] | `1.5 GiB` | `1,5 GiB` |
-//! | rate | [`rate`] | `6.4 MiB/s` | `6,4 MiB/s` |
+//! | rate | [`rate`] | `6.7 MB/s` | `6,7 MB/s` |
 //! | count | [`count`], [`items`] | `12,345`, `12 items` | `12.345`, `12 Objekte` |
 //! | decimal | [`decimal`] | `3.14` | `3,14` |
 //!
@@ -43,8 +43,9 @@
 mod dates;
 pub mod region;
 
-use chrono::{NaiveDate, NaiveDateTime, Timelike};
+use chrono::Timelike;
 
+pub use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Weekday};
 pub use region::{DateStyle, FirstDayOfWeek, NumberStyle, RegionFormats};
 
 use crate::i18n::widget_format;
@@ -118,7 +119,7 @@ impl Formats {
     }
 
     /// The **size** style: bytes stored or transferred, in SI decimal units
-    /// (`999 B`, `1.0 kB`, `1.5 MB`).
+    /// (`999 B`, `1 kB`, `1.5 MB`).
     #[must_use]
     pub fn size(&self, n: u64) -> String {
         const UNITS: [&str; 7] = ["B", "kB", "MB", "GB", "TB", "PB", "EB"];
@@ -126,27 +127,57 @@ impl Formats {
     }
 
     /// The **memory** style: bytes of memory, in IEC binary units
-    /// (`1,023 B`, `1.0 KiB`, `5.0 MiB`).
+    /// (`1,023 B`, `1 KiB`, `5 MiB`).
     #[must_use]
     pub fn memory(&self, n: u64) -> String {
         const UNITS: [&str; 7] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"];
         self.scaled(n, 1024.0, &UNITS)
     }
 
-    /// A transfer rate from bytes per second, in IEC binary units
-    /// (`512 B/s`, `6.4 MiB/s`). Negative rates read as zero.
+    /// A signed amount of memory with `digits` fractional digits, for chart
+    /// axes whose ticks need a fixed precision (`-1.50 GiB`).
     #[must_use]
-    pub fn rate(&self, bytes_per_sec: f64) -> String {
-        const UNITS: [&str; 5] = ["B/s", "KiB/s", "MiB/s", "GiB/s", "TiB/s"];
-        let mut value = bytes_per_sec.max(0.0);
+    pub fn memory_value(&self, value: f64, digits: usize) -> String {
+        const UNITS: [&str; 7] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"];
+        let mut scaled = value.abs();
         let mut unit = 0;
-        while value >= 1024.0 && unit < UNITS.len().saturating_sub(1) {
-            value /= 1024.0;
+        while scaled >= 1024.0 && unit < UNITS.len().saturating_sub(1) {
+            scaled /= 1024.0;
             unit = unit.saturating_add(1);
         }
-        let digits = usize::from(unit > 0);
+        let name = UNITS.get(unit).copied().unwrap_or_default();
+        format!("{} {name}", self.decimal(scaled.copysign(value), digits))
+    }
+
+    /// A transfer rate from bytes per second, in SI decimal units like every
+    /// transferred size (`512 B/s`, `6.7 MB/s`). Negative rates read as zero.
+    #[must_use]
+    pub fn rate(&self, bytes_per_sec: f64) -> String {
+        const UNITS: [&str; 5] = ["B/s", "kB/s", "MB/s", "GB/s", "TB/s"];
+        let mut value = bytes_per_sec.max(0.0);
+        let mut unit = 0;
+        while value >= 1000.0 && unit < UNITS.len().saturating_sub(1) {
+            value /= 1000.0;
+            unit = unit.saturating_add(1);
+        }
+        let digits = if unit > 0 { tenths(value) } else { 0 };
         let unit = UNITS.get(unit).copied().unwrap_or_default();
         format!("{} {unit}", self.decimal(value, digits))
+    }
+
+    /// The rate unit a scale up to `peak` bytes per second reads in, and the
+    /// bytes per second one of it is: `(1e6, "MB/s")` for 7.6 MB/s. For chart
+    /// axes that label round numbers of one unit ([`Self::decimal`] writes
+    /// the number).
+    #[must_use]
+    pub fn rate_unit(&self, peak: f64) -> (f64, &'static str) {
+        const UNITS: [&str; 5] = ["B/s", "kB/s", "MB/s", "GB/s", "TB/s"];
+        let (mut unit, mut scale) = (0, 1.0_f64);
+        while peak / scale >= 1000.0 && unit < UNITS.len().saturating_sub(1) {
+            unit = unit.saturating_add(1);
+            scale *= 1000.0;
+        }
+        (scale, UNITS.get(unit).copied().unwrap_or("B/s"))
     }
 
     /// Divide by `base` until below one step; whole bytes print with no
@@ -162,7 +193,7 @@ impl Formats {
         if unit == 0 {
             format!("{} {name}", self.count(n))
         } else {
-            format!("{} {name}", self.decimal(value, 1))
+            format!("{} {name}", self.decimal(value, tenths(value)))
         }
     }
 
@@ -190,6 +221,12 @@ impl Formats {
             .collect::<Vec<_>>()
             .join(" ")
     }
+}
+
+/// How many fractional digits a scaled size shows: one, unless it reads as a
+/// whole number at that precision (`1.5 MB`, but `2 MB`, never `2.0 MB`).
+fn tenths(value: f64) -> usize {
+    usize::from(!format!("{value:.1}").ends_with(".0"))
 }
 
 /// The group separator and decimal mark a language writes numbers with.
@@ -221,37 +258,73 @@ fn group_digits(digits: &str, separator: &str) -> String {
     out
 }
 
-/// A date and time in any time zone, on the local wall clock.
-fn local<Tz: chrono::TimeZone>(at: &chrono::DateTime<Tz>) -> NaiveDateTime {
-    at.with_timezone(&chrono::Local).naive_local()
+/// A moment the formatters can show: a `chrono` date and time in any zone,
+/// a local [`NaiveDateTime`], a [`std::time::SystemTime`] or [`UnixSecs`].
+pub trait Moment {
+    /// The moment on the local wall clock, or `None` outside the calendar's
+    /// range.
+    fn local(&self) -> Option<NaiveDateTime>;
 }
 
-/// The local date and time of a Unix timestamp in seconds, or `None` when it
-/// lies outside the calendar's range.
-#[must_use]
-pub fn from_unix_secs(secs: i64) -> Option<chrono::DateTime<chrono::Local>> {
-    chrono::DateTime::from_timestamp(secs, 0).map(|utc| utc.with_timezone(&chrono::Local))
+impl<Tz: chrono::TimeZone> Moment for chrono::DateTime<Tz> {
+    fn local(&self) -> Option<NaiveDateTime> {
+        Some(self.with_timezone(&chrono::Local).naive_local())
+    }
 }
 
-/// The local date and time of a [`std::time::SystemTime`] (a file's
-/// modification time, say).
+/// Already on the local wall clock.
+impl Moment for NaiveDateTime {
+    fn local(&self) -> Option<NaiveDateTime> {
+        Some(*self)
+    }
+}
+
 #[cfg(not(target_family = "wasm"))]
-#[must_use]
-pub fn from_system_time(at: std::time::SystemTime) -> chrono::DateTime<chrono::Local> {
-    chrono::DateTime::<chrono::Local>::from(at)
+impl Moment for std::time::SystemTime {
+    fn local(&self) -> Option<NaiveDateTime> {
+        Some(chrono::DateTime::<chrono::Local>::from(*self).naive_local())
+    }
+}
+
+/// Seconds since the Unix epoch, as protocols and files keep them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UnixSecs(pub i64);
+
+impl Moment for UnixSecs {
+    fn local(&self) -> Option<NaiveDateTime> {
+        chrono::DateTime::from_timestamp(self.0, 0)
+            .map(|utc| utc.with_timezone(&chrono::Local).naive_local())
+    }
 }
 
 /// The **list** style for `at`, relative to now: `16:02`, `Yesterday`,
 /// `Sun`, `Jun 30`, `Jun 30, 2025`. See [`Formats::list_date`].
 #[must_use]
-pub fn list_date<Tz: chrono::TimeZone>(at: &chrono::DateTime<Tz>) -> String {
-    Formats::current().list_date(local(at), crate::clock::local_now().naive_local())
+pub fn list_date(at: &impl Moment) -> String {
+    at.local().map_or_else(String::new, |at| {
+        Formats::current().list_date(at, crate::clock::local_now().naive_local())
+    })
 }
 
 /// The **timestamp** style: `2026-06-30 13:42`. See [`Formats::timestamp`].
 #[must_use]
-pub fn timestamp<Tz: chrono::TimeZone>(at: &chrono::DateTime<Tz>) -> String {
-    Formats::current().timestamp(local(at))
+pub fn timestamp(at: &impl Moment) -> String {
+    at.local()
+        .map_or_else(String::new, |at| Formats::current().timestamp(at))
+}
+
+/// The **date** style for a moment's local calendar day.
+#[must_use]
+pub fn date_of(at: &impl Moment) -> String {
+    at.local()
+        .map_or_else(String::new, |at| Formats::current().date(at.date()))
+}
+
+/// The time of day of a moment: `14:05` or `2:05 PM`.
+#[must_use]
+pub fn time_of(at: &impl Moment) -> String {
+    at.local()
+        .map_or_else(String::new, |at| Formats::current().time(&at))
 }
 
 /// The **date** style: `2026-06-30`. See [`Formats::date`].
@@ -272,6 +345,31 @@ pub fn day_heading(day: NaiveDate, with_year: bool) -> String {
     Formats::current().day_heading(day, with_year)
 }
 
+/// The short day heading: `Tue, Jun 30`. See [`Formats::day_heading_short`].
+#[must_use]
+pub fn day_heading_short(day: NaiveDate) -> String {
+    Formats::current().day_heading_short(day)
+}
+
+/// A span of days: `Jun 23 – 29`. See [`Formats::day_range`].
+#[must_use]
+pub fn day_range(start: NaiveDate, end: NaiveDate) -> String {
+    Formats::current().day_range(start, end)
+}
+
+/// Any span between two formatted values: `Mon, Jun 29 – Sun, Jul 5`,
+/// `9:00 – 10:30`.
+#[must_use]
+pub fn range(start: &str, end: &str) -> String {
+    widget_format("format-range", &[("start", start.into()), ("end", end.into())])
+}
+
+/// A month in a tight space: `Jun 2026`.
+#[must_use]
+pub fn month_heading_short(day: NaiveDate) -> String {
+    Formats::current().month_heading_short(day)
+}
+
 /// The **month heading** style: `June 2026`.
 #[must_use]
 pub fn month_heading(day: NaiveDate) -> String {
@@ -282,6 +380,12 @@ pub fn month_heading(day: NaiveDate) -> String {
 #[must_use]
 pub fn month_day(day: NaiveDate) -> String {
     Formats::current().month_day(day)
+}
+
+/// Month, day and year with the month named: `Jun 30, 2025`.
+#[must_use]
+pub fn month_day_year(day: NaiveDate) -> String {
+    Formats::current().month_day_year(day)
 }
 
 /// The abbreviated weekday: `Sun`.
@@ -325,7 +429,7 @@ pub fn first_weekday() -> chrono::Weekday {
 /// ```
 /// use tilo_ui::format::size;
 /// assert_eq!(size(999), "999 B");
-/// assert_eq!(size(1000), "1.0 kB");
+/// assert_eq!(size(1000), "1 kB");
 /// assert_eq!(size(1_500_000), "1.5 MB");
 /// ```
 #[must_use]
@@ -333,25 +437,25 @@ pub fn size(n: u64) -> String {
     Formats::current().size(n)
 }
 
-/// The **memory** style: `5.0 MiB`. See [`Formats::memory`].
+/// The **memory** style: `5 MiB`. See [`Formats::memory`].
 ///
 /// ```
 /// use tilo_ui::format::memory;
 /// assert_eq!(memory(1023), "1,023 B");
-/// assert_eq!(memory(1024), "1.0 KiB");
-/// assert_eq!(memory(5 * 1024 * 1024), "5.0 MiB");
+/// assert_eq!(memory(1024), "1 KiB");
+/// assert_eq!(memory(5 * 1024 * 1024), "5 MiB");
 /// ```
 #[must_use]
 pub fn memory(n: u64) -> String {
     Formats::current().memory(n)
 }
 
-/// A transfer rate: `6.4 MiB/s`. See [`Formats::rate`].
+/// A transfer rate: `6.7 MB/s`. See [`Formats::rate`].
 ///
 /// ```
 /// use tilo_ui::format::rate;
 /// assert_eq!(rate(0.0), "0 B/s");
-/// assert_eq!(rate(6_710_886.0), "6.4 MiB/s");
+/// assert_eq!(rate(6_710_886.0), "6.7 MB/s");
 /// ```
 #[must_use]
 pub fn rate(bytes_per_sec: f64) -> String {

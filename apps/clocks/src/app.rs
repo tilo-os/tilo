@@ -90,17 +90,7 @@ fn primary_button(id: &str, label: &str, f: impl FnMut() + 'static) -> Element {
 }
 
 pub(crate) fn duration(ms: u64) -> String {
-    let seconds = ms / 1_000;
-    if seconds >= 3_600 {
-        format!(
-            "{:02}:{:02}:{:02}",
-            seconds / 3_600,
-            seconds / 60 % 60,
-            seconds % 60
-        )
-    } else {
-        format!("{:02}:{:02}", seconds / 60, seconds % 60)
-    }
+    ui::format::timecode(ms / 1_000)
 }
 
 fn millis(duration: Duration) -> u64 {
@@ -164,9 +154,11 @@ fn city_time(zone: &str, now: chrono::DateTime<Utc>) -> String {
         |z| {
             let there = now.with_timezone(&z);
             format!(
-                "{} on {}",
+                "{} on {} {}",
                 ui::clock::time_of_day(&there),
-                there.format("%a %-d %b (%Z, UTC%:z)")
+                ui::format::day_heading_short(there.date_naive()),
+                // format: machine (the zone's designation and offset are identifiers)
+                there.format("(%Z, UTC%:z)")
             )
         },
     )
@@ -293,7 +285,8 @@ fn world_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element {
                                             .with_role(ui::TextRole::Display),
                                     ))
                                     .push(Box::new(
-                                        Text::new(&here.format("%A, %-d %B").to_string()).dimmed(),
+                                        Text::new(&ui::format::day_heading(here.date(), false))
+                                            .dimmed(),
                                     )),
                             ) as Element
                         })),

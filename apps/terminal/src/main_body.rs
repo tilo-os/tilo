@@ -2297,8 +2297,8 @@ impl TerminalWidget {
                 }
                 if text.len() > MAX_RESOURCE_SEND_BYTES {
                     return Err(format!(
-                        "text to send exceeds the {} KiB reviewed-command limit",
-                        MAX_RESOURCE_SEND_BYTES / 1024
+                        "text to send exceeds the {} reviewed-command limit",
+                        ui::format::memory(MAX_RESOURCE_SEND_BYTES as u64)
                     ));
                 }
                 if !is_reviewable_terminal_text(&text) {

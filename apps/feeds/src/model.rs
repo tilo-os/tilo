@@ -738,23 +738,19 @@ impl Library {
     }
 }
 
-/// Format an epoch-seconds timestamp as a compact relative string
-/// ("3h", "2d", "Mar 14"). `now` is passed so it's testable.
+/// An epoch-seconds timestamp in the toolkit's list style ("16:02",
+/// "Yesterday", "Sun", "Mar 14"), seen from `now` so it's testable.
 pub fn relative_time(published: i64, now: i64) -> String {
-    const WEEK: i64 = 7 * 86_400;
+    use ui::format::Moment as _;
     if published <= 0 {
         return "—".to_string();
     }
-    let delta = (now - published).max(0);
-    if delta < WEEK {
-        ui::format::relative_compact(delta)
-    } else {
-        // Fall back to an absolute month/day.
-        use chrono::{TimeZone, Utc};
-        match Utc.timestamp_opt(published, 0).single() {
-            Some(dt) => dt.format("%b %-d").to_string(),
-            None => "—".to_string(),
-        }
+    match (
+        ui::format::UnixSecs(published).local(),
+        ui::format::UnixSecs(now).local(),
+    ) {
+        (Some(at), Some(now)) => ui::format::Formats::current().list_date(at, now),
+        _ => "—".to_string(),
     }
 }
 
@@ -931,12 +927,19 @@ mod tests {
 
         // --- phase: relative_time_buckets ---
         {
+            use ui::format::Moment as _;
             let now = 2_000_000_000i64;
+            let local = |secs| ui::format::UnixSecs(secs).local().unwrap();
             assert_eq!(relative_time(0, now), "—");
-            assert_eq!(relative_time(now - 30, now), "now");
-            assert_eq!(relative_time(now - 120, now), "2m");
-            assert_eq!(relative_time(now - 3 * 3600, now), "3h");
-            assert_eq!(relative_time(now - 2 * 86400, now), "2d");
+            assert_eq!(relative_time(now - 30, now), ui::format::time(&local(now - 30)));
+            assert_eq!(
+                relative_time(now - 3 * 86400, now),
+                ui::format::weekday_short(chrono::Datelike::weekday(&local(now - 3 * 86400)))
+            );
+            assert_eq!(
+                relative_time(now - 400 * 86400, now),
+                ui::format::Formats::current().month_day_year(local(now - 400 * 86400).date())
+            );
         }
     }
 }

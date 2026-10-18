@@ -2938,12 +2938,14 @@ impl InstallerApp {
             Text::new("Choose the exact unallocated region for Tilo").with_role(TextRole::Body),
         ));
         for (index, plan) in plans.iter().enumerate() {
-            let start_gib = plan.free_start_bytes / (1024 * 1024 * 1024);
-            let size_gib = plan.free_size_bytes / (1024 * 1024 * 1024);
+            // The installer states its partition sizes in binary units
+            // throughout, so they compare with its GiB minimums.
+            let start = ui::format::memory(plan.free_start_bytes);
+            let size = ui::format::memory(plan.free_size_bytes);
             let label = if self.selected_guided_extent == Some(index) {
-                format!("✓ Selected · {size_gib} GiB free at {start_gib} GiB")
+                format!("✓ Selected · {size} free at {start}")
             } else {
-                format!("Use {size_gib} GiB free at {start_gib} GiB")
+                format!("Use {size} free at {start}")
             };
             children.push(Box::new(
                 ActionButton::new(

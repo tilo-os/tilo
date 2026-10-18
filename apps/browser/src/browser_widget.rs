@@ -4250,7 +4250,7 @@ fn engine_setup_state(
 }
 
 fn megabytes(bytes: u64) -> String {
-    format!("{} MB", bytes.div_ceil(1_000_000))
+    ui::format::size(bytes)
 }
 
 fn address_state(widget: &dyn Widget) -> Option<(String, String)> {

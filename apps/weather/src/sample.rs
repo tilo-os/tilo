@@ -126,6 +126,7 @@ fn synth_snapshot(loc: &SavedLocation, spec: &DaySpec) -> WeatherSnapshot {
             weather_code: code,
             wind_max: spec.wind + 6.0 + d as f64,
             uv_index_max: (spec.uv - d as f64 * 0.4).max(1.0),
+            // format: machine (the ISO 8601 times the forecast service sends)
             sunrise: format!("{date}T{:02}:{:02}", spec.sunrise_h, 12),
             sunset: format!("{date}T{:02}:{:02}", spec.sunset_h, 47),
         });

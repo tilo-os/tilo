@@ -108,6 +108,7 @@ pub fn install(title: &'static str) {
     let build = BuildInfo::current();
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        // format: machine (the crash report's file name)
         let timestamp = chrono::Local::now().format("%Y-%m-%d-%H%M%S").to_string();
         let backtrace = std::backtrace::Backtrace::force_capture().to_string();
         let message = info

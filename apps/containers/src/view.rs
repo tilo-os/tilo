@@ -901,7 +901,7 @@ pub(crate) fn images_page(engine: &Engine, controls: bool, intents: &Intents) ->
             let mut row = ListRow::new(format!("image-{r}"), r.clone())
                 .icon(Icon::Layers)
                 .secondary(used_by(image.in_use_by))
-                .meta(ui::format::memory(image.size_bytes));
+                .meta(ui::format::size(image.size_bytes));
             if controls {
                 row = row_action(
                     row,
@@ -936,7 +936,7 @@ pub(crate) fn images_page(engine: &Engine, controls: bool, intents: &Intents) ->
         } else {
             "images"
         },
-        ui::format::memory(engine.image_disk_bytes())
+        ui::format::size(engine.image_disk_bytes())
     );
     page(Some(summary), rows)
 }

@@ -117,12 +117,9 @@ impl Styles {
     }
 }
 
-/// The date an article was published, spelled out ("June 20, 2026").
+/// The date an article was published, in the person's date style.
 fn published_date(published: i64) -> Option<String> {
-    (published > 0)
-        .then(|| chrono::DateTime::from_timestamp(published, 0))
-        .flatten()
-        .map(|dt| dt.format("%B %-d, %Y").to_string())
+    (published > 0).then(|| ui::format::date_of(&ui::format::UnixSecs(published)))
 }
 
 impl Core {

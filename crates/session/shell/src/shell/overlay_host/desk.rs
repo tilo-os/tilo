@@ -451,7 +451,7 @@ impl ShellOverlayHost {
             .timestamp_opt(secs, 0)
             .single()
             .map_or_else(|| ui::clock::local_now().date_naive(), |at| at.date_naive());
-        Month::around(today)
+        Month::around(today, ui::format::first_weekday())
     }
 
     fn widget_sizes(&self, id: WidgetId, now: Instant) -> (Size, Size, bool) {
@@ -1485,7 +1485,7 @@ fn paint_calendar_glance(
         &RoundedRect::from_rect(rect, radius),
     );
     let colors = &theme.tokens.colors;
-    let weekday = month.today.format("%a").to_string();
+    let weekday = ui::format::weekday_short(month.today.weekday());
     draw_centered(
         text,
         scene,
@@ -1511,7 +1511,8 @@ fn paint_calendar_glance(
     );
 }
 
-/// The calendar's open card: the month, Monday first, today marked.
+/// The calendar's open card: the month from the person's first weekday,
+/// today marked.
 fn paint_calendar_card(
     scene: &mut Scene,
     transform: Affine,
@@ -1522,7 +1523,7 @@ fn paint_calendar_card(
 ) {
     let colors = &theme.tokens.colors;
     let heading = theme.text(TextRole::Body).with_weight(TextWeight::Semibold);
-    let title = month.first.format("%B %Y").to_string();
+    let title = ui::format::month_heading(month.first);
     let (_, title_h) = text.measure_style(&title, None, &heading);
     text.draw_style(
         scene,
@@ -1543,8 +1544,8 @@ fn paint_calendar_card(
     let center_x = |col: usize| grid_x0 + cell_w * (ui::num::f64_of_usize(col) + 0.5);
     let caption = theme.text(TextRole::Caption);
     let weekdays_y = card.y0 + CALENDAR_HEADER + CALENDAR_WEEKDAYS / 2.0;
-    for (col, weekday) in calendar::COLUMNS.iter().enumerate() {
-        let label: String = weekday.to_string().chars().take(2).collect();
+    for (col, weekday) in month.columns.iter().enumerate() {
+        let label = ui::format::weekday_short(*weekday);
         draw_centered(
             text,
             scene,

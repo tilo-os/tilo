@@ -660,8 +660,8 @@ pub fn sample_transit() -> Vec<TransitJourney> {
     // All departure/arrival clocks derive from the one shared demo base so the
     // Transit departures stay consistent with the Drive summary's clock.
     let clk = |off: i64| -> String {
-        let m = DEMO_CLOCK_BASE_MIN + off;
-        format!("{:02}:{:02}", m / 60, m % 60)
+        let m = u32::try_from((DEMO_CLOCK_BASE_MIN + off).rem_euclid(24 * 60)).unwrap_or(0);
+        ui::clock::hour_minute(m / 60, m % 60)
     };
     let walk = |from: &str, to: &str, dep: i64, arr: i64, min: u32, geom: Vec<LatLon>| TransitLeg {
         mode: TransitMode::Walk,

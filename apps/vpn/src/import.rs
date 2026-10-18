@@ -90,8 +90,8 @@ pub fn run(import: Import, progress: &Progress) -> Imported {
     progress.report("importing", None, None);
     if std::fs::metadata(&path).is_ok_and(|meta| meta.len() > config::MAX_CONFIG_BYTES) {
         return Imported::Failed(format!(
-            "The selected profile exceeds the {} KiB safety limit.",
-            config::MAX_CONFIG_BYTES / 1024
+            "The selected profile exceeds the {} safety limit.",
+            ui::format::memory(config::MAX_CONFIG_BYTES)
         ));
     }
     let mut text = match std::fs::read_to_string(&path) {

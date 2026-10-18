@@ -961,7 +961,7 @@ impl LockClock {
         let now = ui::clock::local_now();
         Self {
             clock: ui::clock::time_of_day(&now),
-            date: now.format("%A, %B %-d").to_string(),
+            date: ui::format::day_heading(now.date_naive(), false),
         }
     }
 

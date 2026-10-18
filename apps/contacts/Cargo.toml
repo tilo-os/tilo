@@ -68,6 +68,8 @@ serial_test.workspace = true
 # file-type association it declares is checked against the packaging schema.
 # Already resolved in the workspace lockfile.
 tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
+# Builds the pictures the photo import tests read.
+image = { workspace = true, features = ["png", "jpeg"] }
 # Reads the history sentences the book's changes record.
 
 [[test]]

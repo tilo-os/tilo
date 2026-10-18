@@ -10,6 +10,10 @@ use tilo_resource::{Collection, Id, Json, JsonSchema, Model, Refusal, SharedReco
 /// change, bounded so one payload stays a reasonable size.
 pub const MAX_PROJECTED: usize = 10_000;
 
+/// How much text one person's picture may take: Contacts keeps a small
+/// portrait, far below this.
+pub const MAX_PHOTO_BYTES: usize = 96 * 1024;
+
 /// One Contacts identity as Contacts projects it: its label and the phone
 /// and mailbox hints it holds.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -19,6 +23,10 @@ pub struct Projected {
     pub label: String,
     pub phones: Vec<String>,
     pub emails: Vec<String>,
+    /// The person's picture as Contacts keeps it (a small JPEG, base64);
+    /// empty for none.
+    #[serde(default)]
+    pub photo: String,
 }
 
 #[cfg(test)]
@@ -40,6 +48,9 @@ pub struct Person {
     pub phones: Json<Vec<String>>,
     /// Address-book mailboxes, never identity evidence or a sending grant.
     pub emails: Json<Vec<String>>,
+    /// The picture Contacts shows for the person (a small JPEG, base64), for
+    /// apps that show them; empty for none. Never fetched from anywhere.
+    pub photo: String,
     pub endpoints: Collection<Endpoint>,
 }
 
@@ -228,12 +239,18 @@ impl ContactDirectory {
             }
             hints_bounded(&projected.phones)?;
             hints_bounded(&projected.emails)?;
+            if projected.photo.len() > MAX_PHOTO_BYTES {
+                return Err(refused());
+            }
             match self.people.get_mut(&projected.person) {
                 Some(existing) if existing.removed => {}
                 Some(existing) => {
                     existing.label = projected.label;
                     existing.phones = Json(projected.phones);
                     existing.emails = Json(projected.emails);
+                    if existing.photo != projected.photo {
+                        existing.photo = projected.photo;
+                    }
                 }
                 None => {
                     self.people.push(
@@ -242,6 +259,7 @@ impl ContactDirectory {
                             label: projected.label,
                             phones: Json(projected.phones),
                             emails: Json(projected.emails),
+                            photo: projected.photo,
                             ..Person::default()
                         },
                     );
@@ -272,6 +290,18 @@ impl ContactDirectory {
 }
 
 impl ContactDirectory {
+    /// The picture of the one person in the book with mailbox `email`, if
+    /// they have one. Several people sharing the mailbox show none: a picture
+    /// never guesses between them.
+    pub fn photo_for_email(&self, email: &str) -> Option<&str> {
+        let candidates = self.email_candidates(email);
+        let [person] = candidates.as_slice() else {
+            return None;
+        };
+        let person = self.people.get(person)?;
+        (!person.removed && !person.photo.is_empty()).then_some(person.photo.as_str())
+    }
+
     /// Every matching person remains a candidate, including a unique match.
     /// Local-part case and provider-specific aliases are never guessed.
     pub fn email_candidates(&self, email: &str) -> Vec<Id> {

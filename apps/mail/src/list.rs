@@ -25,7 +25,7 @@ use ui::widget::{
 
 use crate::model::{Folder, MessageId};
 use crate::state::{CtxAction, Intent, MailState, Shared};
-use crate::util::{format_relative, gravatar_url, local_minutes};
+use crate::util::{format_relative, local_minutes};
 
 /// What the list says when it has no rows.
 pub(crate) fn zero_state(
@@ -418,7 +418,7 @@ impl MessageList {
         };
         let actions = row_actions(slot.starred);
         let action_faces: Vec<RowAction<'_>> = actions.iter().map(|(_, action)| *action).collect();
-        let image = state.images.get(&gravatar_url(text.email));
+        let image = state.avatars.image(text.email);
         let avatar = AvatarFace::new(&text.sender, text.email).image(image.as_ref());
         let mut face = ListRowFace::new(&text.sender)
             .leading(RowLeading::Avatar(avatar))
@@ -803,7 +803,7 @@ mod tests {
     use crate::state::MailState;
 
     fn shared() -> Shared {
-        MailState::shared(MailState::new_sample(crate::app::avatar_store_offline()))
+        MailState::shared(MailState::new_sample(crate::avatars::Avatars::new()))
     }
 
     fn draw(list: &mut MessageList) {

@@ -218,9 +218,7 @@ pub fn fit(text: &str, link: &str) -> String {
 }
 
 fn human_size(bytes: u64) -> String {
-    #[allow(clippy::cast_precision_loss, reason = "a size shown to one decimal")]
-    let mib = bytes as f64 / (1024.0 * 1024.0);
-    format!("{mib:.1} MiB")
+    ui::format::size(bytes)
 }
 
 /// What an edit of `message` becomes.

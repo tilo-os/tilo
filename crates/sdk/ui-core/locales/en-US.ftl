@@ -439,6 +439,12 @@ format-date-time-worded = { $date }, { $time }
 # The top of a day: "Tuesday, June 30" and "Tuesday, June 30, 2026".
 format-day-heading = { $weekday }, { $month } { $day }
 format-day-heading-year = { $weekday }, { $month } { $day }, { $year }
+# A day column or compact header: "Tue, Jun 30".
+format-day-heading-short = { $weekday }, { $month } { $day }
+# A span of days within one month: "Jun 23 – 29".
+format-day-range-in-month = { $month } { $start } – { $end }
+# Any span between two dates or times: "Jun 29 – Jul 5".
+format-range = { $start } – { $end }
 # The top of a month grid: "June 2026".
 format-month-heading = { $month } { $year }
 # The halves of a 12-hour clock: "2:05 PM".

@@ -578,13 +578,7 @@ impl NowPlayingView {
 /// `m:ss`, or `h:mm:ss` from an hour on.
 #[must_use]
 pub fn format_time(us: i64) -> String {
-    let seconds = us.max(0) / 1_000_000;
-    let (hours, minutes, seconds) = (seconds / 3600, (seconds / 60) % 60, seconds % 60);
-    if hours > 0 {
-        format!("{hours}:{minutes:02}:{seconds:02}")
-    } else {
-        format!("{minutes}:{seconds:02}")
-    }
+    ui::format::timecode(u64::try_from(us.max(0) / 1_000_000).unwrap_or(0))
 }
 
 /// A plain string from the shell's Fluent catalogue.

@@ -574,8 +574,8 @@ fn rate_tiles(rates: &Rates) -> Vec<Element> {
         tile("Upload", &rate(&rates.up)),
     ];
     if let Some(total) = rates.latest {
-        tiles.push(tile("Received", &ui::format::memory(total.rx)));
-        tiles.push(tile("Sent", &ui::format::memory(total.tx)));
+        tiles.push(tile("Received", &ui::format::size(total.rx)));
+        tiles.push(tile("Sent", &ui::format::size(total.tx)));
     }
     tiles
 }
@@ -731,17 +731,13 @@ fn shell_lines(command: &str) -> String {
 
 // ---- Throughput chart ---------------------------------------------------------
 
-/// A rate axis that ends on a round number of one binary unit, with the
-/// ticks it is labelled at: `(ceiling, ticks)` in bytes per second.
+/// A rate axis that ends on a round number of one unit, with the ticks it
+/// is labelled at: `(ceiling, ticks)` in bytes per second.
 fn rate_axis(peak: f64) -> (f64, Vec<AxisTick>) {
-    const UNITS: [&str; 4] = ["B/s", "KiB/s", "MiB/s", "GiB/s"];
     const DIVISIONS: u32 = 4;
     let peak = peak.max(1.0);
-    let (mut unit, mut scale) = (0, 1.0_f64);
-    while peak / scale >= 1024.0 && unit + 1 < UNITS.len() {
-        unit += 1;
-        scale *= 1024.0;
-    }
+    let formats = ui::format::Formats::current();
+    let (scale, name) = formats.rate_unit(peak);
     // A step of 1, 2, 2.5 or 5 times a power of ten, so every tick reads
     // as a round number of the unit.
     let raw = peak / scale / f64::from(DIVISIONS);
@@ -751,16 +747,14 @@ fn rate_axis(peak: f64) -> (f64, Vec<AxisTick>) {
         .map(|m| m * magnitude)
         .find(|step| *step >= raw)
         .unwrap_or(10.0 * magnitude);
-    let name = UNITS.get(unit).copied().unwrap_or("B/s");
     let ticks = (0..=DIVISIONS)
         .map(|i| {
             let value = step * f64::from(i);
             let label = if value == 0.0 {
                 "0".to_owned()
-            } else if value.fract() == 0.0 {
-                format!("{value:.0} {name}")
             } else {
-                format!("{value:.1} {name}")
+                let digits = usize::from(value.fract() != 0.0);
+                format!("{} {name}", formats.decimal(value, digits))
             };
             AxisTick::new(value * scale, label)
         })
@@ -953,12 +947,12 @@ mod tests {
 
     #[test]
     fn the_rate_axis_ends_on_a_round_number_of_one_unit() {
-        const MIB: f64 = 1024.0 * 1024.0;
-        let (ceiling, ticks) = rate_axis(7.6 * MIB);
-        assert!((ceiling - 8.0 * MIB).abs() < 1.0);
+        const MB: f64 = 1_000_000.0;
+        let (ceiling, ticks) = rate_axis(7.6 * MB);
+        assert!((ceiling - 8.0 * MB).abs() < 1.0);
         let labels: Vec<&str> = ticks.iter().map(|tick| tick.label.as_str()).collect();
-        assert_eq!(labels, ["0", "2 MiB/s", "4 MiB/s", "6 MiB/s", "8 MiB/s"]);
-        let (ceiling, _) = rate_axis(300.0 * 1024.0);
-        assert!((ceiling - 400.0 * 1024.0).abs() < 1.0);
+        assert_eq!(labels, ["0", "2 MB/s", "4 MB/s", "6 MB/s", "8 MB/s"]);
+        let (ceiling, _) = rate_axis(300.0 * 1000.0);
+        assert!((ceiling - 400.0 * 1000.0).abs() < 1.0);
     }
 }

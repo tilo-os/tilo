@@ -54,9 +54,9 @@ fn read_bounded(path: &Path) -> Result<Vec<u8>, String> {
     }
     if metadata.len() > MAX_FILE_BYTES {
         return Err(format!(
-            "{} is larger than {} MiB",
+            "{} is larger than {}",
             path.display(),
-            MAX_FILE_BYTES / (1024 * 1024)
+            ui::format::memory(MAX_FILE_BYTES)
         ));
     }
     std::fs::read(path).map_err(|error| format!("cannot read {}: {error}", path.display()))

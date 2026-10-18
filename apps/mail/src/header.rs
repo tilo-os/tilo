@@ -244,7 +244,7 @@ mod tests {
     use super::*;
 
     fn state() -> MailState {
-        MailState::new_sample(crate::app::avatar_store_offline())
+        MailState::new_sample(crate::avatars::Avatars::new())
     }
 
     fn labels(spec: &BarSpec) -> Vec<&str> {

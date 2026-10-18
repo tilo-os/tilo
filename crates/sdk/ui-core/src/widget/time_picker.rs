@@ -661,7 +661,9 @@ impl Widget for TimePicker {
     /// is enabled). The spinners render inline, so `expanded` is left unset.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
+        // format: machine (the value an assistive tool sets the picker to)
         let value = match self.seconds {
+            // format: machine (the same, with seconds)
             Some(s) => format!("{:02}:{:02}:{:02}", self.hours, self.minutes, s),
             None => format!("{:02}:{:02}", self.hours, self.minutes),
         };

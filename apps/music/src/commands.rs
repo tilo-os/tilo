@@ -171,6 +171,7 @@ fn probe_stream(
     );
     println!("   mime: {}", stream.mime);
     println!(
+        // format: machine (a diagnostic command's own output)
         "   API content-length: {} bytes ({mib:.2} MiB)",
         stream.size_bytes
     );

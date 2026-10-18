@@ -5,15 +5,7 @@
 //! selection follows the usual POSIX variables (`LC_ALL`, `LC_MESSAGES`,
 //! `LANGUAGE`, `LANG`) and falls back per-message to `en-US`.
 
-use icu_datetime::{
-    DateTimeFormatter,
-    fieldsets::YMD,
-    input::{Date, DateTime, Time},
-};
-use icu_decimal::{DecimalFormatter, input::Decimal};
-use icu_locale::Locale;
 use ui::i18n::ArgValue;
-use unic_langid::LanguageIdentifier;
 
 #[cfg(test)]
 const SOURCE_FTL: &str = include_str!("../locales/en-US.ftl");
@@ -24,17 +16,6 @@ const DE_FTL: &str = include_str!("../locales/de-DE.ftl");
 // catalog, while ICU and Fluent keep the requested locale for number,
 // plural and date rules.
 ui::embedded_catalog!(pub fn, ["en-US", "de-DE"]);
-
-fn source_lang() -> LanguageIdentifier {
-    "en-US".parse().unwrap_or_default()
-}
-
-fn active_locale() -> LanguageIdentifier {
-    CATALOG
-        .current_locale()
-        .parse()
-        .unwrap_or_else(|_| source_lang())
-}
 
 /// Change the Files locale without rebuilding the widget tree. The host can
 /// call this when the desktop locale changes; the next structural render
@@ -48,127 +29,20 @@ pub fn current_locale() -> String {
     CATALOG.current_locale()
 }
 
-fn data_locale(locale: &LanguageIdentifier) -> Locale {
-    // qps-ploc exercises copy expansion, not synthetic calendar data. Invalid
-    // identifiers have already fallen back in `set_locale`, but keep this
-    // boundary independently fail-safe for direct test helpers.
-    let locale = if locale.language.as_str() == "qps" {
-        source_lang()
-    } else {
-        locale.clone()
-    };
-    locale.to_string().parse().unwrap_or(Locale::UNKNOWN)
-}
-
-fn format_datetime_parts_for(
-    locale: &LanguageIdentifier,
-    year: i32,
-    month: u8,
-    day: u8,
-    hour: u8,
-    minute: u8,
-) -> Option<String> {
-    let formatter =
-        DateTimeFormatter::try_new(data_locale(locale).into(), YMD::medium().with_time_hm())
-            .ok()?;
-    let value = DateTime {
-        date: Date::try_new_iso(year, month, day).ok()?,
-        time: Time::try_new(hour, minute, 0, 0).ok()?,
-    };
-    Some(formatter.format(&value).to_string())
-}
-
-fn format_date_parts_for(
-    locale: &LanguageIdentifier,
-    year: i32,
-    month: u8,
-    day: u8,
-) -> Option<String> {
-    let formatter = DateTimeFormatter::try_new(data_locale(locale).into(), YMD::medium()).ok()?;
-    let value = DateTime {
-        date: Date::try_new_iso(year, month, day).ok()?,
-        time: Time::try_new(0, 0, 0, 0).ok()?,
-    };
-    Some(formatter.format(&value).to_string())
-}
-
-/// Format the date of a local wall-clock value with ICU4X/CLDR data for the
-/// active locale (the time of day left out, for a narrow column).
+/// A local modification time in the toolkit's date style (the time of day
+/// left out, for a narrow column).
 pub fn format_date(value: chrono::DateTime<chrono::Local>) -> String {
-    use chrono::Datelike;
-
-    format_date_parts_for(
-        &active_locale(),
-        value.year(),
-        value.month() as u8,
-        value.day() as u8,
-    )
-    .unwrap_or_else(|| value.format("%Y-%m-%d").to_string())
+    ui::format::date(value.date_naive())
 }
 
-/// Format a local wall-clock value with ICU4X/CLDR data for the active locale.
-/// The stable numeric fallback is used only if locale data or input validation
-/// unexpectedly fails.
+/// A local modification time in the toolkit's timestamp style.
 pub fn format_datetime(value: chrono::DateTime<chrono::Local>) -> String {
-    use chrono::{Datelike, Timelike};
-
-    format_datetime_parts_for(
-        &active_locale(),
-        value.year(),
-        value.month() as u8,
-        value.day() as u8,
-        value.hour() as u8,
-        value.minute() as u8,
-    )
-    .unwrap_or_else(|| value.format("%Y-%m-%d %H:%M").to_string())
+    ui::format::timestamp(&value)
 }
 
-fn format_bytes_for(locale: &LanguageIdentifier, bytes: u64) -> String {
-    // Decimal SI units preserve Files' existing 1000-byte thresholds. The
-    // value is computed as integer tenths, avoiding binary floating-point
-    // artifacts before ICU applies locale digits and decimal separators.
-    const UNITS: [&str; 7] = ["B", "kB", "MB", "GB", "TB", "PB", "EB"];
-    let mut unit = 0usize;
-    let mut divisor = 1u64;
-    while unit + 1 < UNITS.len() && bytes >= divisor.saturating_mul(1_000) {
-        unit += 1;
-        divisor = divisor.saturating_mul(1_000);
-    }
-
-    let mut decimal = if unit == 0 {
-        Decimal::from(bytes)
-    } else {
-        let tenths = ((u128::from(bytes) * 10) + u128::from(divisor / 2)) / u128::from(divisor);
-        let tenths = u64::try_from(tenths).unwrap_or(u64::MAX);
-        if tenths % 10 == 0 {
-            Decimal::from(tenths / 10)
-        } else {
-            let mut value = Decimal::from(tenths);
-            value.multiply_pow10(-1);
-            value
-        }
-    };
-    // Do not expose insignificant fractional zeros if a future Decimal
-    // constructor changes its default display magnitude.
-    decimal.trim_end();
-
-    let number = DecimalFormatter::try_new(
-        data_locale(locale).into(),
-        icu_decimal::options::DecimalFormatterOptions::default(),
-    )
-    .map_or_else(
-        |_| decimal.to_string(),
-        |formatter| formatter.format(&decimal).to_string(),
-    );
-    let unit = UNITS.get(unit).copied().unwrap_or("B");
-    format!("{number}\u{a0}{unit}")
-}
-
-/// Human-readable decimal byte quantity using the active locale's numbering
-/// system and separators. Unit choice and symbols follow SI, not a hand-built
-/// per-language table.
+/// A file size in the toolkit's size style (SI units).
 pub fn format_bytes(bytes: u64) -> String {
-    format_bytes_for(&active_locale(), bytes)
+    ui::format::size(bytes)
 }
 
 pub fn arg<V: Into<ArgValue>>(name: &str, value: V) -> (&str, ArgValue) {
@@ -262,38 +136,6 @@ mod tests {
             );
         }
 
-        // --- phase: cldr_formats_dates_for_en_us_de_de_and_invalid_locale_fallback ---
-        {
-            let en: LanguageIdentifier = "en-US".parse().unwrap();
-            let de: LanguageIdentifier = "de-DE".parse().unwrap();
-            let fallback: LanguageIdentifier =
-                "not a locale!".parse().unwrap_or_else(|_| source_lang());
-
-            assert_eq!(
-                format_datetime_parts_for(&en, 2025, 1, 15, 16, 9).unwrap(),
-                "Jan 15, 2025, 4:09\u{202f}PM"
-            );
-            assert_eq!(
-                format_datetime_parts_for(&de, 2025, 1, 15, 16, 9).unwrap(),
-                "15.01.2025, 16:09"
-            );
-            assert_eq!(
-                format_datetime_parts_for(&fallback, 2025, 1, 15, 16, 9).unwrap(),
-                format_datetime_parts_for(&en, 2025, 1, 15, 16, 9).unwrap()
-            );
-        }
-
-        // --- phase: cldr_formats_decimal_byte_quantities_without_float_artifacts ---
-        {
-            let en: LanguageIdentifier = "en-US".parse().unwrap();
-            let de: LanguageIdentifier = "de-DE".parse().unwrap();
-
-            assert_eq!(format_bytes_for(&en, 999), "999\u{a0}B");
-            assert_eq!(format_bytes_for(&en, 1_500), "1.5\u{a0}kB");
-            assert_eq!(format_bytes_for(&de, 1_500), "1,5\u{a0}kB");
-            assert_eq!(format_bytes_for(&de, 1_000_000), "1\u{a0}MB");
-            assert_eq!(format_bytes_for(&en, u64::MAX), "18.4\u{a0}EB");
-        }
     }
 
     /// Collaboration and generic surfaces take labels from the catalogue and the pseudolocale preserves paths and hostile names.

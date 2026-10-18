@@ -59,9 +59,6 @@ chrono = { workspace = true, default-features = true }
 # CLDR-backed date/time and decimal formatting. Keep these scoped to Files:
 # ICU4X's compiled data provides deterministic locale fallback without relying
 # on host libc locale installation.
-icu_datetime = "2.3.0"
-icu_decimal = "2.3.0"
-icu_locale = "2.3.0"
 # Reads the Tilo FUSE driver's `user.tilo.sync` extended attribute so the file
 # manager can show each workspace file's sync/hydration state, and performs
 # no-replace renames, private staging and trash management.

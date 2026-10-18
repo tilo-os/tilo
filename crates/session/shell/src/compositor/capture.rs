@@ -2355,6 +2355,7 @@ fn capture_folder(user_dir: Option<PathBuf>, name: &str) -> Result<PathBuf, Stri
 
 fn next_screenshot_path(sequence: u64) -> Result<PathBuf, String> {
     let root = capture_folder(tilo_paths::picture_dir(), "Screenshots")?;
+    // format: machine (file names sort by it and never change with the formats)
     let stamp = chrono::Local::now().format("%Y-%m-%d at %H.%M.%S");
     let suffix = if sequence == 0 {
         String::new()
@@ -2366,6 +2367,7 @@ fn next_screenshot_path(sequence: u64) -> Result<PathBuf, String> {
 
 fn next_recording_path(sequence: u64, include_audio: bool) -> Result<PathBuf, String> {
     let root = capture_folder(tilo_paths::video_dir(), "Screen Recordings")?;
+    // format: machine (file names sort by it and never change with the formats)
     let stamp = chrono::Local::now().format("%Y-%m-%d at %H.%M.%S");
     let extension = if include_audio { "mov" } else { "mp4" };
     Ok(root.join(format!("Tilo Recording {stamp}-{sequence}.{extension}")))
@@ -2373,6 +2375,7 @@ fn next_recording_path(sequence: u64, include_audio: bool) -> Result<PathBuf, St
 
 fn next_replay_path(sequence: u64, include_audio: bool) -> Result<PathBuf, String> {
     let root = capture_folder(tilo_paths::video_dir(), "Screen Recordings")?;
+    // format: machine (file names sort by it and never change with the formats)
     let stamp = chrono::Local::now().format("%Y-%m-%d at %H.%M.%S");
     let extension = if include_audio { "mov" } else { "mp4" };
     Ok(root.join(format!("Tilo Recent {stamp}-{sequence}.{extension}")))

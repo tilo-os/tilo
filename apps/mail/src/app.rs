@@ -52,7 +52,7 @@ use ui::widget::{
     Button, ContextMenu, EmptyState, MenuItem, ModalDialog, NavPane, NavShell, SidebarPlacement,
     TaffyTreeExt, Text, Widget,
 };
-use ui::{ImageStore, TextRole};
+use ui::TextRole;
 
 use crate::account::{Account, AccountStore};
 use crate::actions::{DraftData, Outgoing, ServerUpdate};
@@ -433,6 +433,9 @@ pub struct MailApp {
     /// shares, followed in a live window; and the revision last shown.
     person_accounts: Option<(PersonRecord<PersonAccounts>, Option<u64>)>,
     pub(crate) contact_directory: Option<PersonRecord<tilo_contact_directory::ContactDirectory>>,
+    /// The contact directory revision and own addresses the sender pictures
+    /// were last taken from.
+    sender_pictures_seen: Option<(u64, Vec<String>)>,
     pub(crate) has_contact_draft_conflict: bool,
     /// The person's Mail preferences, followed in a live window: the compose
     /// format and the folded account sidebars.
@@ -635,7 +638,7 @@ impl MailApp {
         let persist = profile_config_root(storage)
             .map_or(AccountsPersist::Disabled, AccountsPersist::Profile);
         let accounts = persist.load();
-        let shared = MailState::shared(MailState::new_live(accounts, avatar_store()));
+        let shared = MailState::shared(MailState::new_live(accounts, crate::avatars::Avatars::new()));
         let content = content.unwrap_or_else(ContentStore::memory);
         let waker: Arc<std::sync::Mutex<Option<ui::WakeHandle>>> = Arc::default();
         let (tx, rx) = crate::engine::spawn(content.clone(), wake_through(&waker));
@@ -656,7 +659,7 @@ impl MailApp {
     pub(crate) fn for_past_version() -> Self {
         let shared = MailState::shared(MailState::new_live(
             AccountStore::new(),
-            avatar_store_offline(),
+            crate::avatars::Avatars::new(),
         ));
         Self::assemble(
             shared,
@@ -669,7 +672,7 @@ impl MailApp {
     /// A screenshot: the scenario's fixture mailbox and accounts, no engine,
     /// a pinned clock and nothing written outside the document.
     pub(crate) fn for_capture(fixture: &crate::sample::MailFixture) -> Self {
-        let shared = MailState::shared(MailState::from_fixture(fixture, avatar_store_offline()));
+        let shared = MailState::shared(MailState::from_fixture(fixture, crate::avatars::Avatars::new()));
         Self::assemble(
             shared,
             ContentStore::memory(),
@@ -682,7 +685,7 @@ impl MailApp {
     /// persisting account changes into a sandbox.
     #[cfg(test)]
     pub fn new_sample() -> Self {
-        let shared = MailState::shared(MailState::new_sample(avatar_store_offline()));
+        let shared = MailState::shared(MailState::new_sample(crate::avatars::Avatars::new()));
         let mut app = Self::assemble(
             shared,
             ContentStore::memory(),
@@ -698,7 +701,7 @@ impl MailApp {
     pub fn new_first_run() -> Self {
         let shared = MailState::shared(MailState::new_live(
             AccountStore::new(),
-            avatar_store_offline(),
+            crate::avatars::Avatars::new(),
         ));
         let mut app = Self::assemble(
             shared,
@@ -768,6 +771,7 @@ impl MailApp {
             persisted_active_account: None,
             person_accounts: None,
             contact_directory: None,
+            sender_pictures_seen: None,
             has_contact_draft_conflict: false,
             preferences: None,
             followed_preferences: crate::resource::MailPreferences::default(),
@@ -1515,7 +1519,7 @@ impl MailApp {
             .collect();
         format!(
             "\n\nOn {}, {} wrote:\n{}",
-            format_absolute(msg.timestamp_min),
+            format_absolute(crate::util::local_minutes(msg.timestamp_min)),
             msg.from.display(),
             quoted.join("\n")
         )
@@ -3432,6 +3436,38 @@ impl MailApp {
     /// Show the person's accounts when their record moved: each account's
     /// settings from the record, its password from this device's vault. A
     /// newly shown active account is connected.
+    /// Take the sender pictures from Contacts' directory and the person's
+    /// own identity when either changed. A live window only: a capture or a
+    /// test shows initials.
+    fn adopt_sender_pictures(&mut self) {
+        let Some(directory) = &self.contact_directory else {
+            return;
+        };
+        let revision = directory.revision();
+        let mut st = self.shared.borrow_mut();
+        let own: Vec<String> = st
+            .accounts
+            .accounts
+            .iter()
+            .map(|account| account.config.email.clone())
+            .collect();
+        if self
+            .sender_pictures_seen
+            .as_ref()
+            .is_some_and(|(seen, addresses)| *seen == revision && *addresses == own)
+        {
+            return;
+        }
+        let book = directory.get();
+        st.avatars.follow(
+            Some((&book, revision)),
+            &own,
+            ui::local_identity::own_photo(),
+        );
+        drop(st);
+        self.sender_pictures_seen = Some((revision, own));
+    }
+
     fn adopt_person_accounts(&mut self) {
         let Some((record, seen)) = &mut self.person_accounts else {
             return;
@@ -3825,58 +3861,6 @@ fn report_account_sync(
     if let Err(error) = persisted {
         tracing::warn!(%error, account = account_id, "mail: could not persist sync status");
     }
-}
-
-/// The shared image store used for sender avatars in the **live** app: fetches
-/// real Gravatar images over HTTP when built with `live` (the default).
-pub fn avatar_store() -> ImageStore {
-    ImageStore::new(&avatar_fetcher())
-}
-
-/// The avatar store for the hermetic paths — `--shots`, the sample corpus, and
-/// tests. It is wired to a no-op fetcher **regardless of the `live` feature**,
-/// so a headless render never opens a socket to gravatar.com even though the
-/// live fetcher is now compiled in by default; avatars render as initials. This
-/// is the runtime half of "features compile the live code in; the runtime mode
-/// decides live vs sample".
-pub fn avatar_store_offline() -> ImageStore {
-    ImageStore::new(&noop_avatar_fetcher())
-}
-
-/// A fetcher that never touches the network — the hermetic default.
-fn noop_avatar_fetcher() -> ui::Fetcher {
-    std::sync::Arc::new(|_url: &str| None)
-}
-
-/// Real Gravatar HTTP under `--features live` (default); a no-op otherwise so a
-/// build without `live` never opens a socket (avatars then render as initials).
-#[cfg(feature = "live")]
-fn avatar_fetcher() -> ui::Fetcher {
-    use std::sync::{Arc, OnceLock};
-    static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
-    Arc::new(|url: &str| {
-        let client = CLIENT.get_or_init(|| {
-            tilo_net::http::blocking_client()
-                .timeout(std::time::Duration::from_secs(8))
-                .user_agent("Tilo Mail")
-                .build()
-                .unwrap_or_default()
-        });
-        let resp = client.get(url).send().ok()?;
-        if !resp.status().is_success() {
-            return None;
-        }
-        let bytes = resp.bytes().ok()?;
-        if bytes.is_empty() || bytes.len() > 2 * 1024 * 1024 {
-            return None;
-        }
-        Some(bytes.to_vec())
-    })
-}
-
-#[cfg(not(feature = "live"))]
-fn avatar_fetcher() -> ui::Fetcher {
-    noop_avatar_fetcher()
 }
 
 /// What the sheet shows for a provider found for `domain`: its name (the
@@ -4307,6 +4291,7 @@ impl Widget for MailApp {
         let (state, path) = ui::doc::document_ref(state, path);
         self.background_poll_deadline.set(None);
         self.adopt_person_accounts();
+        self.adopt_sender_pictures();
         self.open_kept_mail();
         {
             // The folders show the active account's mail, whichever way it
@@ -7100,7 +7085,7 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             )
             .unwrap();
             let mut doc = crate::resource::TestMail::doc();
-            let mut state = MailState::new_sample(avatar_store_offline());
+            let mut state = MailState::new_sample(crate::avatars::Avatars::new());
             state.save_draft(&mut ui::widget::Edits::lend(&mut doc), &draft);
             let stored = TestMail::load_draft(&doc);
             assert_eq!(stored.to, "guest@example.com");

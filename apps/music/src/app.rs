@@ -554,6 +554,9 @@ pub struct MusicApp {
     /// Entity id (album / artist / playlist / track) → best cover URL, folded
     /// in from live search/home/artist results and re-applied each frame.
     art_urls: HashMap<String, String>,
+    /// Playlist covers composed from their tracks' artwork, by playlist id,
+    /// with the covers each was made of.
+    playlist_mosaics: std::cell::RefCell<HashMap<String, (Vec<u64>, vello::peniko::ImageData)>>,
     /// The real YouTube-Music Home page (charts / new releases / top artists),
     /// once fetched. `None` offline / before it lands → the sample home shows.
     home: Option<HomeContent>,
@@ -903,6 +906,7 @@ impl MusicApp {
             staged_player_menu: false,
             images: ImageStore::new(&image_fetcher()),
             art_urls: HashMap::new(),
+            playlist_mosaics: std::cell::RefCell::default(),
             home: None,
             home_requested: false,
             home_failed: false,
@@ -4027,8 +4031,44 @@ impl MusicApp {
     /// async fetch+decode on first sight; returns `None` (placeholder) until it
     /// lands.
     fn art_image(&self, id: &str) -> Option<vello::peniko::ImageData> {
-        let url = self.art_urls.get(id)?;
-        self.images.get(url)
+        if let Some(image) = self.art_urls.get(id).and_then(|url| self.images.get(url)) {
+            return Some(image);
+        }
+        // A playlist without a cover of its own shows its tracks' artwork.
+        let playlist = self.lib.playlist(id)?;
+        self.playlist_mosaic(playlist)
+    }
+
+    /// A playlist's cover made from the artwork of its first tracks with
+    /// distinct covers: one cover whole, two to four as a 2×2 mosaic. `None`
+    /// when none of its tracks has artwork, where the card shows the
+    /// playlist's initials. Composed once per set of covers and cached.
+    fn playlist_mosaic(
+        &self,
+        playlist: &crate::model::Playlist,
+    ) -> Option<vello::peniko::ImageData> {
+        let mut covers = mosaic_covers(playlist.tracks.values(), |track_id| {
+            self.lib.track(track_id).and_then(|track| {
+                self.art_urls
+                    .get(&track.album_id)
+                    .or_else(|| self.art_urls.get(track_id))
+                    .and_then(|url| self.images.get(url))
+            })
+        });
+        if covers.len() < 2 {
+            return covers.pop();
+        }
+        let ids: Vec<u64> = covers.iter().map(|cover| cover.data.id()).collect();
+        let mut mosaics = self.playlist_mosaics.borrow_mut();
+        if let Some((seen, mosaic)) = mosaics.get(&playlist.id)
+            && *seen == ids
+        {
+            return Some(mosaic.clone());
+        }
+        let mosaic =
+            ui::held_images::mosaic_of(&covers, ui::held_images::PORTRAIT_SIDE.saturating_mul(2))?;
+        mosaics.insert(playlist.id.clone(), (ids, mosaic.clone()));
+        Some(mosaic)
     }
 
     /// Whether any cover fetch/decode is still in flight (keeps frames flowing).
@@ -5523,4 +5563,69 @@ fn recommendation_edits(lib: &Library, row: &str) -> Vec<ui::tilo_resource::Acti
         }];
     }
     Vec::new()
+}
+
+/// The covers a playlist's mosaic is made of: the artwork of its first tracks
+/// whose covers differ (`cover_of` a track id), at most four, in order.
+fn mosaic_covers<'a>(
+    tracks: impl IntoIterator<Item = &'a String>,
+    cover_of: impl Fn(&str) -> Option<vello::peniko::ImageData>,
+) -> Vec<vello::peniko::ImageData> {
+    let mut covers: Vec<vello::peniko::ImageData> = Vec::new();
+    for track in tracks {
+        let Some(cover) = cover_of(track) else {
+            continue;
+        };
+        if covers.iter().any(|seen| seen.data.id() == cover.data.id()) {
+            continue;
+        }
+        covers.push(cover);
+        if covers.len() == 4 {
+            break;
+        }
+    }
+    covers
+}
+
+#[cfg(test)]
+mod mosaic_tests {
+    use super::mosaic_covers;
+    use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
+
+    fn cover(shade: u8) -> ImageData {
+        ImageData {
+            data: Blob::new(std::sync::Arc::new([shade, shade, shade, 255].repeat(4))),
+            format: ImageFormat::Rgba8,
+            alpha_type: ImageAlphaType::Alpha,
+            width: 2,
+            height: 2,
+        }
+    }
+
+    /// A playlist's cover is its tracks' real artwork: the first four
+    /// distinct covers, skipping tracks without one and repeats of an album;
+    /// none at all leaves the letter tile.
+    #[test]
+    fn a_playlist_cover_takes_the_first_four_distinct_track_covers() {
+        let covers = [cover(10), cover(20), cover(30), cover(40), cover(50)];
+        let tracks: Vec<String> = ["a", "a2", "none", "b", "c", "d", "e"]
+            .map(str::to_owned)
+            .to_vec();
+        let cover_of = |track: &str| match track {
+            "a" | "a2" => Some(covers[0].clone()),
+            "b" => Some(covers[1].clone()),
+            "c" => Some(covers[2].clone()),
+            "d" => Some(covers[3].clone()),
+            "e" => Some(covers[4].clone()),
+            _ => None,
+        };
+        let chosen = mosaic_covers(&tracks, cover_of);
+        let ids: Vec<u64> = chosen.iter().map(|c| c.data.id()).collect();
+        let want: Vec<u64> = covers[..4].iter().map(|c| c.data.id()).collect();
+        assert_eq!(ids, want);
+        let mosaic = ui::held_images::mosaic_of(&chosen, 64).unwrap();
+        assert_eq!((mosaic.width, mosaic.height), (64, 64));
+
+        assert!(mosaic_covers(&tracks, |_| None).is_empty(), "no artwork: initials");
+    }
 }

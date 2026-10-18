@@ -586,6 +586,7 @@ fn iso_time(ms: i64) -> String {
         month_index - 9
     };
     let year = year_of_era + era * 400 + i64::from(month <= 2);
+    // format: machine (an RFC 3339 timestamp the document stores)
     format!(
         "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
         second_of_day / 3600,
