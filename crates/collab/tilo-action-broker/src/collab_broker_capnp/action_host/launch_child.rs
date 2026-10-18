@@ -114,7 +114,12 @@ impl CapnpBrokerState {
                 },
             })),
         )?;
-        let result = self.launch_retained(&app.package_id, &destination.workspace, record, place);
+        let workspace = self.reauthorize_launch_effect(
+            (caller, Some(&child_origin), &room),
+            &admitted,
+            &app.package_id,
+        )?;
+        let result = self.launch_retained(&app.package_id, &workspace, record, place);
         let update = match &result {
             Ok(()) => InvocationUpdate::Succeeded {
                 invocation: request.invocation,

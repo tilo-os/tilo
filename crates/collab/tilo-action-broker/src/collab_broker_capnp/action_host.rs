@@ -2003,7 +2003,24 @@ impl CapnpBrokerState {
                 if original.room != room {
                     return Err(ActionHostError::NotPermitted);
                 }
-                Some(self.current_action_caller(original).map_err(refusal)?)
+                // A durable barrier can outlive the synchronous admission
+                // memo too. Verify original custody without borrowing that
+                // earlier admission, even on the same dispatch thread.
+                self.checked_policy_time(original.policy_time.as_ref())
+                    .map_err(refusal)?;
+                let current = if let Some(evidence) = &original.network {
+                    self.verify_network_action_caller_with_policy_time(
+                        evidence,
+                        original.policy_time.as_ref(),
+                    )
+                } else {
+                    self.verify_action_caller(&original.room, &original.presentation)
+                }
+                .map_err(refusal)?;
+                if current.owner() != original.owner() {
+                    return Err(ActionHostError::NotPermitted);
+                }
+                Some(current.admitted.delegated_to(original.delegated.as_deref()))
             }
             Some(super::published_invocation::InvocationCaller::Local { route, admitted }) => {
                 if route.cluster_id != room {
@@ -2041,6 +2058,48 @@ impl CapnpBrokerState {
             }
         }
         Ok(())
+    }
+
+    /// Durable admission can block: recheck original custody and sample the
+    /// committed workspace and clock again immediately before the host effect.
+    fn reauthorize_launch_effect(
+        &self,
+        custody: (&Caller, Option<&super::InvocationCaller>, &str),
+        admitted: &super::host_action_admission::AdmittedHostAction,
+        app_id: &str,
+    ) -> Result<Workspace, ActionHostError> {
+        let (caller, origin, room) = custody;
+        let result = self
+            .check_launch_origin(caller, origin, room)
+            .and_then(|()| {
+                self.decide_for(caller, room, |workspace, policy, now| {
+                    policy
+                        .may_in(
+                            workspace,
+                            &app_node(workspace, app_id),
+                            tilo_action_policy::ActionKind::Undoable,
+                            now,
+                        )
+                        .then(|| workspace.clone())
+                })
+                .flatten()
+                .ok_or(ActionHostError::NotPermitted)
+            });
+        if result.is_err() {
+            self.complete_host_action(
+                admitted,
+                tilo_actions::InvocationUpdate::Failed {
+                    invocation: admitted.invocation,
+                    error: tilo_actions::ActionFailure {
+                        code: "launch_authority_changed".into(),
+                        message: "application authority is no longer available".into(),
+                        details: None,
+                        retryable: false,
+                    },
+                },
+            )?;
+        }
+        result
     }
 
     /// Start `app_id` in `workspace` on `record` at `place` through the
@@ -2584,7 +2643,7 @@ impl CapnpBrokerState {
                 },
             )?;
             return self.launch_application(
-                (&workspace, &policy, now),
+                (caller, origin, room),
                 admitted,
                 app_id,
                 crate::services::LaunchContent {
@@ -2629,7 +2688,7 @@ impl CapnpBrokerState {
                     request,
                 },
             )?;
-            return self.close_application((&workspace, &policy, now), admitted, app_id);
+            return self.close_application((caller, origin, room), admitted, app_id);
         }
         if address.resource == automation::LIBRARY_RESOURCE
             && self.services.shortcut_library.is_some()
@@ -3019,20 +3078,12 @@ impl CapnpBrokerState {
     /// Returns a message when the caller may not launch the application or no launcher is installed.
     pub(super) fn launch_application(
         &self,
-        (workspace, policy, now): (&Workspace, &BrokerActor, u64),
+        custody: (&Caller, Option<&super::InvocationCaller>, &str),
         admitted: super::host_action_admission::AdmittedHostAction,
         app_id: &str,
         content: crate::services::LaunchContent<'_>,
         place: &LaunchPlace,
     ) -> Result<u64, ActionHostError> {
-        if !policy.may_in(
-            workspace,
-            &app_node(workspace, app_id),
-            tilo_action_policy::ActionKind::Undoable,
-            now,
-        ) {
-            return Err(ActionHostError::NotPermitted);
-        }
         // Content is only ever read through the asking application's own
         // scope; a caller without one cannot open it by hash.
         if !content.hash.is_empty() && content.caller.is_none() {
@@ -3047,7 +3098,8 @@ impl CapnpBrokerState {
             .ok_or_else(|| refusal("application launch unsupported".into()))?;
         let id = admitted.id;
         let invocation = admitted.invocation;
-        match launcher.launch_content(app_id, workspace, content, place) {
+        let workspace = self.reauthorize_launch_effect(custody, &admitted, app_id)?;
+        match launcher.launch_content(app_id, &workspace, content, place) {
             // Answered with the instance it started, once that instance
             // connects with the launch's ticket and publishes.
             Ok(started) => {
@@ -3078,18 +3130,10 @@ impl CapnpBrokerState {
     /// the host cannot close applications.
     pub(super) fn close_application(
         &self,
-        (workspace, policy, now): (&Workspace, &BrokerActor, u64),
+        custody: (&Caller, Option<&super::InvocationCaller>, &str),
         admitted: super::host_action_admission::AdmittedHostAction,
         app_id: &str,
     ) -> Result<u64, ActionHostError> {
-        if !policy.may_in(
-            workspace,
-            &app_node(workspace, app_id),
-            tilo_action_policy::ActionKind::Undoable,
-            now,
-        ) {
-            return Err(ActionHostError::NotPermitted);
-        }
         let launcher = self
             .services
             .launcher
@@ -3098,7 +3142,8 @@ impl CapnpBrokerState {
             .ok_or_else(|| refusal("closing applications is unsupported on this host".into()))?;
         let id = admitted.id;
         let invocation = admitted.invocation;
-        let update = match launcher.close(app_id, workspace) {
+        let workspace = self.reauthorize_launch_effect(custody, &admitted, app_id)?;
+        let update = match launcher.close(app_id, &workspace) {
             Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
                 output: tilo_actions::ActionOutput::default(),
