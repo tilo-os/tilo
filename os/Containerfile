@@ -2335,6 +2335,7 @@ COPY \
     os/usr/lib/systemd/system/tilo-sandbox-view.service \
     os/usr/lib/systemd/system/tilo-sandbox-view.path \
     os/usr/lib/systemd/system/tilo-sandbox-view-retire@.service \
+    os/usr/lib/systemd/system/tilo-runtime-resident.service \
     os/usr/lib/systemd/system/tilo-firstboot-autologin-cleanup.service \
     os/usr/lib/systemd/system/tilo-session-recovery.service \
     os/usr/lib/systemd/system/tilo-ntfs-mount.socket \
@@ -2791,6 +2792,7 @@ RUN systemctl enable greetd.service && \
     systemctl enable tilo-network-start.service && \
     systemctl enable tilo-extension-activate.service tilo-extension-refresh.timer && \
     systemctl enable tilo-sandbox-view.service tilo-sandbox-view.path && \
+    systemctl enable tilo-runtime-resident.service && \
     systemctl enable NetworkManager-dispatcher.service
 
 # Boot-time prune. These units sit on the critical chain but their work
