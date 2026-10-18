@@ -553,6 +553,31 @@ env = { CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS = "-D warnings" }
 inputs = ["crates/system/accounts/**", "crates/system/secret-vault/**", "crates/system/advisory-lock/**", "crates/system/bounded-command/**", "crates/system/cloud-source/**", "crates/system/tilo-seal/**", "crates/platform/**", "vendor/**", "Cargo.toml", "Cargo.lock", "tools/web/chrome.mjs", "tools/web/owned_browser.py", "tools/ci/ensure-browser-dependencies.sh", "os/Containerfile.builder"]
 cost = "minutes"
 
+# The native Chromium host (apps/browser/chromium), built from the pinned CEF SDK as the
+# OS image builds it, its C++ unit tests, and real pages driven through its protocol.
+# Without it the host is compiled only by os-image builds, an hour away from a change.
+[[check]]
+name = "chromium-host"
+requires = ["arch=x86_64"]
+# Chromium's renderers are confined in user namespaces of their own.
+nested_sandboxes = true
+run = """
+bash tools/ci/ensure-browser-dependencies.sh
+command -v cmake >/dev/null || dnf install -y cmake
+python3 scripts/browser/build-host.py --jobs 8
+ctest --test-dir target/chromium-build --output-on-failure
+# Chromium refuses root, and the host never turns its sandbox off: the page tests run as a user.
+chmod -R a+rX target/chromium apps/browser/chromium/tests
+mkdir -p -m 1777 /tmp/host-test
+HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- \
+  python3 apps/browser/chromium/tests/document_size.py target/chromium/tilo-chromium-host
+"""
+inputs = ["apps/browser/chromium/**", "scripts/browser/build-host.py", "scripts/browser/cef-lock.json", "crates/**", "vendor/**", "Cargo.toml", "Cargo.lock", "tools/ci/ensure-browser-dependencies.sh"]
+writable_sources = true
+cost = "heavy"
+timeout_secs = 5400
+default = false
+
 # Every web-capable example, built for the web. The build runs `npm ci` in
 # scripts/moq-browser, so it writes into its own copy of the sources.
 [[check]]
