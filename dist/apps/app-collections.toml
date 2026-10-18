@@ -44,3 +44,6 @@ pdf-viewer = ["runtime-engine"]
 file-explorer = ["runtime-engine"]
 word-processor = ["runtime-engine"]
 print-centre = ["runtime-engine"]
+# Account custody with the WebDAV client, and the projection worker's FUSE
+# presentation, from their engine libraries beside the runtime.
+imager = ["runtime-engine"]

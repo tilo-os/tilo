@@ -1,17 +1,17 @@
 //! Raw-name Home presentation over existing directory/file/job capabilities.
 //! No source credentials or descriptors reach this target adapter. Native jobs
 //! provide durable NOREPLACE outcomes; replacing rename/history is unsupported.
-use crate::{
-    EntryKind, EntryName, Metadata, OpenMode,
-    directory_backend::{DirectoryStat, JobUpdate},
-    directory_connection::{DirectoryConnection, ROOT_DIRECTORY},
-    operations::ItemState,
-};
 use fuser::{
     FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo, InitFlags,
     IoctlFlags, KernelConfig, LockOwner, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate, ReplyData,
     ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyIoctl, ReplyOpen, ReplyStatfs, ReplyWrite,
     ReplyXattr, Request, WriteFlags,
+};
+use runtime_fs::{
+    EntryKind, EntryName, Metadata, OpenMode,
+    directory_backend::{DirectoryStat, JobUpdate},
+    directory_connection::{DirectoryConnection, ROOT_DIRECTORY},
+    operations::ItemState,
 };
 use std::os::unix::ffi::OsStringExt;
 use std::{
@@ -30,7 +30,6 @@ const NODES: usize = 4096;
 const RESIDENT_NODES: usize = 256;
 const TRIM_AT: usize = 64;
 const TRIM_TO: usize = 32;
-#[path = "directory_fuse/invalidation.rs"]
 mod invalidation;
 pub use invalidation::{InvalidationControl, InvalidationWorker};
 const HANDLES: usize = 64;
@@ -83,14 +82,21 @@ fn reply_errno(failure: io::Error) -> fuser::Errno {
     if failure.raw_os_error().is_some() {
         return failure.into();
     }
-    if crate::native_reply::is_native_refusal(&failure) {
+    if runtime_fs::native_reply::is_native_refusal(&failure) {
         return fuser::Errno::from_i32(libc::EACCES);
     }
-    if crate::native_reply::is_operation_refusal(&failure) {
+    if runtime_fs::native_reply::is_operation_refusal(&failure) {
         return fuser::Errno::from_i32(libc::ENFILE);
     }
     // Transport/authority errors remain I/O failure, never successful access.
     fuser::Errno::EIO
+}
+/// The errno a failed capability call reaches the kernel as: an OS error as
+/// itself, a native refusal as `EACCES`, an exhausted operation table as
+/// `ENFILE`, anything else (transport, authority) as `EIO`.
+#[must_use]
+pub fn kernel_errno(failure: io::Error) -> i32 {
+    reply_errno(failure).code()
 }
 /// The FUSE type of a native `S_IFMT` value. `DirectoryClient` already
 /// refuses any other value; one that still arrives is an I/O failure, never
@@ -1254,7 +1260,7 @@ impl Filesystem for DirectoryFilesystem {
 )]
 mod tests {
     use super::*;
-    use crate::{
+    use runtime_fs::{
         FsOwner, FsRight, NativeGrantAuthority, directory::DirectoryWorkspaceBackend,
         workspace_server::serve_workspace_connected,
     };

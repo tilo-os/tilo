@@ -7003,12 +7003,14 @@ dependencies = [
  "taffy",
  "tempfile",
  "test-http",
+ "tilo-accounts-engine",
  "tilo-actions",
  "tilo-app",
  "tilo-automerge-fork",
  "tilo-desktop-model",
  "tilo-files",
  "tilo-fs",
+ "tilo-fuse-engine",
  "tilo-identity-host",
  "tilo-image-codec",
  "tilo-lock",
@@ -7066,6 +7068,7 @@ dependencies = [
  "runtime-bundle",
  "runtime-collab",
  "runtime-fs",
+ "runtime-fs-fuse",
  "runtime-identity",
  "runtime-portal",
  "rusqlite",
@@ -13350,7 +13353,6 @@ dependencies = [
  "capnp-rpc",
  "ed25519-dalek 3.0.0",
  "fs-protocol",
- "fuser",
  "libc",
  "postcard",
  "runtime-portal",
@@ -13366,6 +13368,21 @@ dependencies = [
  "tokio-util",
  "uuid",
  "wire-frame",
+ "workspace-hack",
+]
+
+[[package]]
+name = "runtime-fs-fuse"
+version = "0.1.0"
+dependencies = [
+ "fs-protocol",
+ "fuser",
+ "libc",
+ "runtime-fs",
+ "tempfile",
+ "tilo-files",
+ "tokio",
+ "uuid",
  "workspace-hack",
 ]
 
@@ -17560,6 +17577,16 @@ dependencies = [
  "wire-frame",
  "workspace-hack",
  "zeroize",
+]
+
+[[package]]
+name = "tilo-fuse-engine"
+version = "0.1.0"
+dependencies = [
+ "fuser",
+ "runtime-dylib",
+ "runtime-fs-fuse",
+ "workspace-hack",
 ]
 
 [[package]]

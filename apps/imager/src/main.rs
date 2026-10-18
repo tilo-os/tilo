@@ -11,6 +11,12 @@
 
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
+// Account custody with the WebDAV client, and the projection worker's FUSE
+// presentation, come from their engine libraries, not the tapp.
+#[cfg(feature = "runtime-engine")]
+extern crate tilo_accounts_engine;
+#[cfg(all(feature = "runtime-engine", target_os = "linux"))]
+extern crate tilo_fuse_engine;
 
 fn main() {
     #[cfg(not(target_arch = "wasm32"))]
