@@ -526,12 +526,8 @@ mod tests {
         let (previous, _) = build(&data, None);
         let offset = previous.chunk_range(2).unwrap().start as usize;
         data[offset] ^= 1;
-        let (rebuilt, _) = rebuild(
-            Some(&previous),
-            &data,
-            &[offset as u64..offset as u64 + 1],
-            None,
-        );
+        let changed = offset as u64..offset as u64 + 1;
+        let (rebuilt, _) = rebuild(Some(&previous), &data, std::slice::from_ref(&changed), None);
         let (fresh, _) = build(&data, None);
         assert!(rebuilt.verify(&data));
         assert_eq!(rebuilt, fresh);

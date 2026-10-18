@@ -298,7 +298,7 @@ pub fn has_invocation() -> bool {
 pub(crate) fn reserve(
     encoded: &EncodedAction,
     context: Option<&ActionContext>,
-    doc: &mut AutoCommit,
+    doc: &AutoCommit,
     before: &[ChangeHash],
 ) -> Result<Option<Reservation>, ActionError> {
     // A continuation retains its original broker owner; a user-input scope

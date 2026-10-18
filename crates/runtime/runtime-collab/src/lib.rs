@@ -3823,11 +3823,6 @@ impl LocalDocumentActionReport {
     /// # Errors
     /// Returns an error if the report cannot be encoded.
     pub fn bound_invocation(&self) -> Result<uuid::Uuid, String> {
-        let mut value = serde_json::to_value(self).map_err(|_| "local report encoding failed")?;
-        value
-            .as_object_mut()
-            .ok_or("invalid local report")?
-            .remove("invocation");
         // Match the broker's journal request digest, including recursively sorted
         // object members even when serde_json's preserve_order feature is enabled.
         fn canonical(value: &serde_json::Value, out: &mut Vec<u8>) {
@@ -3859,6 +3854,11 @@ impl LocalDocumentActionReport {
                 scalar => out.extend_from_slice(scalar.to_string().as_bytes()),
             }
         }
+        let mut value = serde_json::to_value(self).map_err(|_| "local report encoding failed")?;
+        value
+            .as_object_mut()
+            .ok_or("invalid local report")?
+            .remove("invocation");
         let mut encoded = Vec::new();
         canonical(&value, &mut encoded);
         let mut request = blake3::Hasher::new_derive_key("tilo invocation journal request v1");
@@ -3888,7 +3888,11 @@ impl LocalDocumentActionReport {
             }
         }
         for hashes in [&self.original_heads, &self.mutation_hashes] {
-            if hashes.len() > 256 || hashes.windows(2).any(|pair| pair[0] >= pair[1]) {
+            if hashes.len() > 256
+                || hashes
+                    .windows(2)
+                    .any(|pair| matches!(pair, [left, right] if left >= right))
+            {
                 return Err("local document report hashes must be bounded sorted sets".into());
             }
         }

@@ -89,7 +89,9 @@ impl PrivateHistory {
         let entries = match store.read(&key).map_err(|e| e.to_string())? {
             Some(stored)
                 if stored.bytes.starts_with(MAGIC)
-                    && stored.bytes.get(MAGIC.len()..MAGIC.len() + ACTOR_BYTES)
+                    && stored
+                        .bytes
+                        .get(MAGIC.len()..MAGIC.len().saturating_add(ACTOR_BYTES))
                         == Some(actor.as_slice()) =>
             {
                 decode(&stored.bytes)?
@@ -245,7 +247,7 @@ fn field<'a>(bytes: &mut &'a [u8]) -> Result<&'a [u8], String> {
     take(bytes, len)
 }
 fn decode(mut bytes: &[u8]) -> Result<VecDeque<PrivateAction>, String> {
-    if bytes.len() > BUDGET.saturating_add(MAGIC.len() + ACTOR_BYTES)
+    if bytes.len() > BUDGET.saturating_add(MAGIC.len().saturating_add(ACTOR_BYTES))
         || take(&mut bytes, MAGIC.len())? != MAGIC
     {
         return Err("invalid private action checkpoint".into());
@@ -299,11 +301,11 @@ mod tests {
         let store: Rc<dyn DurableStore> = Rc::new(MemoryStore::new());
         let owner = StorageKey::package("so.tilo.test");
         let first = b"original actor";
-        let bucket = blake3::hash(first).as_bytes()[0] % SLOTS as u8;
-        let second = (0_u64..)
-            .map(|n| n.to_le_bytes())
-            .find(|actor| blake3::hash(actor).as_bytes()[0] % SLOTS as u8 == bucket)
-            .unwrap();
+        let bucket = u64::from(blake3::hash(first).as_bytes()[0]) % SLOTS;
+        let second = (0_u64..=u64::from(u16::MAX))
+            .map(u64::to_le_bytes)
+            .find(|actor| u64::from(blake3::hash(actor).as_bytes()[0]) % SLOTS == bucket)
+            .expect("a colliding actor bucket exists");
         let evidence = PrivateAction {
             id: [1; 16],
             hashes: vec![],

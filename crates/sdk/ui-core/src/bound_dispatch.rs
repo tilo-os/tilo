@@ -3031,7 +3031,7 @@ pub(crate) fn invoke_resource_action(
                         supplied.map(|arguments| {
                             crate::local_document_action::with_invocation(
                                 crate::local_document_action::PublishedInvocation {
-                                    resource: target.address.address.resource.to_string(),
+                                    resource: target.address.address.resource.clone(),
                                     action: target.address.address.action.clone(),
                                     arguments,
                                 },
