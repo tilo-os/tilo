@@ -2131,13 +2131,11 @@ impl Mount {
         let mut encoder = handle
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        gpu.surface.blitter.copy(
+        ui::gpu::draw_target_to_surface(
             &handle.device,
             &mut encoder,
-            &gpu.surface.target_view,
-            &output
-                .texture
-                .create_view(&wgpu::TextureViewDescriptor::default()),
+            &gpu.surface,
+            &output.texture,
         );
         handle.queue.submit([encoder.finish()]);
         // The first frame is out: the pipelines it did not need compile now.

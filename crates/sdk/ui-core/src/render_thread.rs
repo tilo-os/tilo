@@ -1471,8 +1471,8 @@ fn render_one_frame(
         if frame_ix == 0 {
             tilo_startup_metrics::mark("render-worker-first-direct-copy-done");
         }
-    } else {
-        surface.blitter.copy(
+    } else if let Some(blitter) = surface.blitter.as_ref() {
+        blitter.copy(
             &device_handle.device,
             &mut encoder,
             &surface.target_view,
@@ -1480,6 +1480,11 @@ fn render_one_frame(
                 .texture
                 .create_view(&vello::wgpu::TextureViewDescriptor::default()),
         );
+    } else {
+        // Only a surface configured for a texture copy is made without a
+        // blitter, and it takes the branch above.
+        tracing::error!("a surface without COPY_DST has no blitter; frame skipped");
+        return FrameOutcome::Skipped;
     }
     if frame_ix == 0 {
         tilo_startup_metrics::mark("render-worker-first-blit-copy-done");

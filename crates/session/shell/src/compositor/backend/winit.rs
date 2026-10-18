@@ -278,13 +278,11 @@ impl WinitPresenter {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("tilo compositor blit"),
                 });
-        render.surface.blitter.copy(
+        ui::gpu::draw_target_to_surface(
             &device_handle.device,
             &mut encoder,
-            &render.surface.target_view,
-            &surface_texture
-                .texture
-                .create_view(&wgpu::TextureViewDescriptor::default()),
+            &render.surface,
+            &surface_texture.texture,
         );
         device_handle.queue.submit([encoder.finish()]);
         surface_texture.present();
