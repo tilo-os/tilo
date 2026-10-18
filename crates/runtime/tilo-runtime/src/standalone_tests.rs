@@ -29,6 +29,13 @@ const PUBLICATION_HELPER: &str = "TILO_STANDALONE_PUBLICATION_HELPER";
 )]
 #[allow(clippy::too_many_lines, reason = "one end-to-end ownership scenario")]
 async fn runtime_invocation_ownership_survives_device_normalization() {
+    if isolated_signing_identity(
+        "standalone::tests::runtime_invocation_ownership_survives_device_normalization",
+    )
+    .is_none()
+    {
+        return;
+    }
     use tilo_action_broker::{
         collab_broker::CrdtRoute,
         collab_broker_capnp::{
@@ -45,6 +52,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
     workspace.set_owner(actor.clone());
     let room = workspace.room.to_string();
     let mut tree = WorkspaceTree::default();
+    tree.persist_path = Some(_directory.path().join("workspace.json"));
     tree.desktop.workspaces.push(workspace);
     let membership = tree.shared();
     let (_origin, time) = execution_policy_clock().unwrap();
@@ -55,7 +63,10 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
         cert: admission.certificate().clone(),
         time: time.clone(),
     }));
-    let broker = CapnpBrokerState::test_broker_with_authority(membership.authority(), services);
+    let (broker, turn) = CapnpBrokerState::test_broker_with_authority_and_invoke_turn(
+        membership.authority(),
+        services,
+    );
     let qualified = broker
         .certified_local_action_host(admission.caller(), admission.presentation())
         .unwrap();
@@ -118,8 +129,12 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
         wait_ms: None,
         appearance: None,
     };
-    let PendingPoll::Ready(Ok(receipt)) = host.invoke(&owner, request.clone()).poll_ready() else {
-        panic!("the synthetic app must accept the invocation");
+    let mut pending = host.invoke(&owner, request.clone());
+    assert!(matches!(pending.poll_ready(), PendingPoll::Waiting));
+    turn();
+    let outcome = pending.poll_ready();
+    let PendingPoll::Ready(Ok(receipt)) = outcome else {
+        panic!("the synthetic app must accept the invocation: {outcome:?}");
     };
     assert!(invocations.try_recv().is_ok());
     assert!(host.observe(&owner, &id).is_some());
@@ -188,6 +203,20 @@ pub(super) fn isolated_root(test: &str) -> Option<PathBuf> {
         "the isolated child ran no test: {stdout}"
     );
     None
+}
+
+/// Provision only the receipt signer's host custody in an isolated process.
+/// The synthetic caller still uses its independently certified admission.
+pub(super) fn isolated_signing_identity(test: &str) -> Option<PathBuf> {
+    let root = isolated_root(test)?;
+    let registry = tilo_identity_host::registry::IdentityRegistryStore::from_env().unwrap();
+    tilo_identity_host::provisioning::ensure_collaboration_identity(
+        registry.identity_dir(),
+        &tilo_identity_host::provisioning::collaboration_identity_paths(),
+        tilo_identity_host::provisioning::IdentityStorage::Files,
+    )
+    .unwrap();
+    Some(root)
 }
 
 /// An SDK app's collaboration manager once it has joined the broker.

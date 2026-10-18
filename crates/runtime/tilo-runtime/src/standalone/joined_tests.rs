@@ -359,7 +359,9 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, room: RoomId, actor: &
     workspace.set_owner(actor.to_owned());
     workspace.set_room(room);
     let room = room.to_string();
+    let directory = tempfile::tempdir().unwrap();
     let mut tree = WorkspaceTree::default();
+    tree.persist_path = Some(directory.path().join("workspace.json"));
     tree.desktop.workspaces.push(workspace);
     let membership = tree.shared();
     let origin = tilo_action_broker::peer_actions::OwnerPolicyClock::new()
@@ -374,7 +376,10 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, room: RoomId, actor: &
         cert: admission.certificate().clone(),
         time: origin.capture().unwrap(),
     }));
-    let broker = CapnpBrokerState::test_broker_with_authority(membership.authority(), services);
+    let (broker, turn) = CapnpBrokerState::test_broker_with_authority_and_invoke_turn(
+        membership.authority(),
+        services,
+    );
     let qualified = broker
         .certified_local_action_host(admission.caller(), admission.presentation())
         .unwrap();
@@ -434,8 +439,12 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, room: RoomId, actor: &
         wait_ms: None,
         appearance: None,
     };
-    let PendingPoll::Ready(Ok(_receipt)) = host.invoke(&owner, request.clone()).poll_ready() else {
-        panic!("the synthetic app must accept the invocation");
+    let mut pending = host.invoke(&owner, request.clone());
+    assert!(matches!(pending.poll_ready(), PendingPoll::Waiting));
+    turn();
+    let outcome = pending.poll_ready();
+    let PendingPoll::Ready(Ok(_receipt)) = outcome else {
+        panic!("the synthetic app must accept the invocation: {outcome:?}");
     };
     assert!(invocations.try_recv().is_ok());
     assert!(host.observe(&owner, &id).is_some());
@@ -460,6 +469,9 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, room: RoomId, actor: &
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways() {
+    if crate::standalone::tests::isolated_signing_identity("standalone::joined::tests::a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways").is_none() {
+        return;
+    }
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let governing = Box::pin(HostedRoom::start(directory.path())).await;
     let room = governing.room;
