@@ -43,7 +43,8 @@ if [ "$mode" = static ]; then
     bad 'app.slice or session.slice is an oomd target; the focused app could be killed'
   fi
   has "$etc/user/session.slice.d/50-tilo-interactive.conf" CPUWeight=400
-  has "$etc/system/user@.service.d/50-tilo-interactive.conf" Delegate=io
+  # The app tree hands each app every controller its tier and accounting use.
+  has "$etc/system/user@.service.d/50-tilo-interactive.conf" 'Delegate=cpu io memory pids'
   has "$etc/system/user.slice.d/50-tilo-interactive.conf" CPUWeight=500
   has "$etc/system/user-.slice.d/50-tilo-interactive.conf" MemoryMin=256M
   has "$etc/system/fs.service.d/30-tilo-priority.conf" ManagedOOMPreference=avoid
@@ -89,18 +90,26 @@ else
     prop --system "$scope" CPUWeight 1000
     prop --system "$scope" MemorySwapMax 0
   else bad 'no compositor running'; fi
-  # Every app scope is placed in app.slice with a tier.
-  while read -r unit; do
-    w=$(systemctl --user show -P CPUWeight "$unit")
-    case "$w" in 800|50) ;; *) bad "$unit has no foreground/background tier (CPUWeight=$w)" ;; esac
-    # One process the kernel kills for memory must not stop the whole app.
-    o=$(systemctl --user show -P OOMPolicy "$unit")
-    [ "$o" = continue ] || bad "$unit OOMPolicy=$o: one OOM kill would stop the whole app"
-  done < <(systemctl --user list-units --plain --no-legend 'app-tilo-*.scope' | awk '{print $1}')
-  # Exactly one scope is boosted: the focused one.
-  boosted=$(systemctl --user list-units --plain --no-legend 'app-tilo-*.scope' | awk '{print $1}' |
-    while read -r u; do [ "$(systemctl --user show -P CPUWeight "$u")" = 800 ] && echo "$u"; done | wc -l)
-  [ "$boosted" -le 1 ] && ok "at most one app scope is boosted ($boosted)" || bad "$boosted app scopes boosted"
+  # Every app is a cgroup of the session's delegated tree, with a tier, and
+  # the tree's scope keeps one OOM kill from stopping every app.
+  slice="/sys/fs/cgroup/user.slice/user-$uid.slice/user@$uid.service/app.slice"
+  trees=$(cd "$slice" && ls -d tilo-apps-*.scope 2>/dev/null || true)
+  [ -n "$trees" ] && ok "app trees: $(echo $trees)" || bad 'no tilo-apps-*.scope: the app spawner did not get its tree'
+  boosted=0
+  for tree in $trees; do
+    prop --user "$tree" Delegate yes
+    prop --user "$tree" OOMPolicy continue
+    for app in "$slice/$tree"/app-*; do
+      [ -d "$app" ] || continue
+      w=$(cat "$app/cpu.weight")
+      case "$w" in 800) boosted=$((boosted + 1)) ;; 50) ;;
+        *) bad "${app##*/} has no foreground/background tier (cpu.weight=$w)" ;; esac
+      # One process the kernel kills for memory must not take the whole app.
+      [ "$(cat "$app/memory.oom.group")" = 0 ] || bad "${app##*/} memory.oom.group is set"
+    done
+  done
+  # Exactly one app is boosted: the focused one.
+  [ "$boosted" -le 1 ] && ok "at most one app is boosted ($boosted)" || bad "$boosted apps boosted"
   # IO weights need a scheduler that honours them.
   for dev in /sys/block/nvme*n*; do
     [ -e "$dev/queue/scheduler" ] || continue
