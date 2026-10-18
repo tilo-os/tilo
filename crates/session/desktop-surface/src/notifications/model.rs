@@ -224,6 +224,10 @@ pub struct Notification {
     /// ([`Addressed`]); see [`Self::addressed`] for the reading every gate
     /// uses.
     pub addressed: Option<Addressed>,
+    /// About the whole machine rather than the work at hand (critical
+    /// battery): shown on every display, not only the one in use. Only the
+    /// system sets it; an app's notification never does.
+    pub machine_wide: bool,
 }
 
 impl Notification {
@@ -252,6 +256,7 @@ impl Notification {
             show_on_lock_screen: true,
             show_preview: true,
             addressed: None,
+            machine_wide: false,
         }
     }
 
@@ -277,6 +282,13 @@ impl Notification {
     #[must_use]
     pub fn with_addressed(mut self, addressed: Addressed) -> Self {
         self.addressed = Some(addressed);
+        self
+    }
+
+    /// About the whole machine: every display shows it.
+    #[must_use]
+    pub fn machine_wide(mut self) -> Self {
+        self.machine_wide = true;
         self
     }
 

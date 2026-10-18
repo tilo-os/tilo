@@ -923,6 +923,15 @@ pub struct ShellOverlayHost {
     acknowledgement_reduce_motion: std::cell::Cell<bool>,
     /// Where the hardware-key readout was last painted, `None` while none is.
     osd_painted: std::cell::Cell<Option<Rect>>,
+    /// The display the readout was raised on, kept while it is up
+    /// ([`crate::shell::osd::pin_display`]).
+    osd_pin: std::cell::Cell<Option<crate::shell::osd::OsdPin>>,
+    /// Where the last paint repeated banners about the whole machine on the
+    /// displays other than the one in use.
+    machine_banners: Vec<Rect>,
+    /// The displays the last paint edged for a ringing call, every display
+    /// but the one whose banner shows the call.
+    call_edges: Vec<Rect>,
     /// The motion the chrome may play as last drawn (`Theme::motion`), for
     /// transitions started outside a draw.
     motion: std::cell::Cell<ui::tokens::EffectiveMotion>,
@@ -2585,6 +2594,9 @@ impl ShellOverlayHost {
             notification_stack: NotificationStack::new(),
             acknowledgement_reduce_motion: std::cell::Cell::new(false),
             osd_painted: std::cell::Cell::new(None),
+            osd_pin: std::cell::Cell::new(None),
+            machine_banners: Vec::new(),
+            call_edges: Vec::new(),
             motion: std::cell::Cell::new(ui::tokens::EffectiveMotion::new(
                 ui::tokens::Motion::default(),
                 false,
@@ -3605,6 +3617,17 @@ impl ShellOverlayHost {
             .unwrap_or_default()
     }
 
+    /// Where the last paint repeated banners about the whole machine on the
+    /// displays other than the one in use.
+    pub(crate) fn machine_banner_rects(&self) -> &[Rect] {
+        &self.machine_banners
+    }
+
+    /// The displays the last paint edged for a ringing call.
+    pub(crate) fn call_edge_rects(&self) -> &[Rect] {
+        &self.call_edges
+    }
+
     /// The QS action dispatcher, for callers that actuate hardware
     /// outside the popover — the media keys, which drive the same
     /// volume and brightness the sliders do and must go through the same
@@ -3782,6 +3805,7 @@ impl ShellOverlayHost {
             st.expire_osd(now);
         }
         let Some(osd) = chrome.borrow().osd else {
+            self.osd_pin.set(None);
             return;
         };
         // The pad map names the mode itself.
@@ -3790,16 +3814,34 @@ impl ShellOverlayHost {
         {
             return;
         }
+        // On the display the person is working on when it was raised: across
+        // a 2x panel and a 1x monitor, the desktop's bottom centre is on the
+        // monitor, below the panel's last row. It stays there while it is up,
+        // and the next press made from another display brings it there.
+        let displays = self.layer_outputs();
+        let (pin, restart) = crate::shell::osd::pin_display(
+            self.osd_pin.get(),
+            &osd,
+            self.overlay_area(),
+            &displays,
+        );
+        self.osd_pin.set(Some(pin));
+        let osd = if restart {
+            let mut st = chrome.borrow_mut();
+            if let Some(live) = st.osd.as_mut() {
+                live.shown_since = live.raised_at;
+            }
+            st.osd.unwrap_or(osd)
+        } else {
+            osd
+        };
         let alpha = osd.alpha_in(theme, now);
         if alpha <= 0.0 {
             return;
         }
-
-        // On the display the person is working on: across a 2x panel and a
-        // 1x monitor, the desktop's bottom centre is on the monitor, below
-        // the panel's last row. Clear of the caret there.
+        // Clear of the caret there.
         let area = crate::shell::osd::OsdArea {
-            viewport: self.overlay_area(),
+            viewport: pin.display,
             caret: self.text_caret,
         };
         self.osd_painted
@@ -9264,6 +9306,11 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
+        // "Brighter" and "dimmer" act on the display the person works on.
+        let focused = self.focused_connector();
+        if chrome.borrow().quick_settings.focused_display != focused {
+            chrome.borrow_mut().quick_settings.focused_display = focused;
+        }
         let current_query = self.palette.query().to_string();
         let preserve_selection = current_query == self.last_search_query;
         if !preserve_selection {
@@ -11305,7 +11352,8 @@ impl ShellOverlayHost {
         if let Some(profiles) = power_profiles {
             st.quick_settings.power_profiles = profiles.into_iter().map(ui_power_profile).collect();
         }
-        Self::apply_qs_brightness(st, brightness, displays);
+        let focused = self.focused_connector_of(st);
+        Self::apply_qs_brightness(st, brightness, displays, focused.as_deref());
         if let Some(available) = volume_available {
             st.quick_settings.volume_available = available;
         }
@@ -11346,7 +11394,8 @@ impl ShellOverlayHost {
             }
             FieldReading::Vpns(Some(vpns)) => st.quick_settings.vpns = vpns,
             FieldReading::Brightness(brightness, displays) => {
-                Self::apply_qs_brightness(st, brightness, Some(displays));
+                let focused = self.focused_connector_of(st);
+                Self::apply_qs_brightness(st, brightness, Some(displays), focused.as_deref());
             }
             FieldReading::Volume(volume) => self.apply_qs_volume(st, volume),
             // Not read: leave the control as it is.
@@ -11372,15 +11421,32 @@ impl ShellOverlayHost {
         st.quick_settings.radios = radios;
     }
 
+    /// [`Self::focused_connector`] for a caller holding the chrome state
+    /// mutably, which that method would borrow again.
+    fn focused_connector_of(&self, st: &crate::shell::chrome_state::ChromeState) -> Option<String> {
+        let (partitioned, focused) = {
+            let tree = st.tree();
+            (
+                tree.desktop.outputs.displays.len(),
+                tree.desktop.outputs.focused_display(),
+            )
+        };
+        displays::focused_connector_in(&self.outputs, partitioned, focused)
+    }
+
     /// `displays: None` means the monitor list was not read this time, so
-    /// neither the list nor the slider's availability changes.
+    /// neither the list nor the slider's availability changes. The display
+    /// the person works on (`focused`, its connector) gets the first
+    /// slider.
     fn apply_qs_brightness(
         st: &mut crate::shell::chrome_state::ChromeState,
         brightness: Option<f32>,
         displays: Option<Vec<crate::shell::chrome_state::DisplayBrightness>>,
+        focused: Option<&str>,
     ) {
         let brightness = match displays {
-            Some(displays) => {
+            Some(mut displays) => {
+                crate::shell::chrome_state::focused_display_first(&mut displays, focused);
                 st.quick_settings.brightness_available =
                     brightness.is_some() || !displays.is_empty();
                 let brightness =
@@ -18295,21 +18361,34 @@ impl ShellOverlayHost {
                     .map(|()| crate::shell::osd::Osd::brightness(value_pct / 100.0)),
             ),
             SliderCommit::DisplayBrightness(index, value_pct) => {
-                let connector = self.chrome.as_ref().and_then(|chrome| {
-                    chrome
-                        .borrow()
-                        .quick_settings
-                        .displays
-                        .get(index)
-                        .map(|display| display.connector.clone())
+                // The readout names the display whenever more than one can
+                // be dimmed.
+                let target = self.chrome.as_ref().and_then(|chrome| {
+                    let state = chrome.borrow();
+                    let displays = &state.quick_settings.displays;
+                    displays.get(index).map(|display| {
+                        (
+                            display.connector.clone(),
+                            (displays.len() > 1).then(|| display.name.clone()),
+                        )
+                    })
                 });
-                let result = connector.map_or_else(
+                let result = target.map_or_else(
                     || Err("that monitor is no longer connected".to_owned()),
-                    |connector| actions.set_display_brightness(&connector, value_pct),
+                    |(connector, name)| {
+                        actions
+                            .set_display_brightness(&connector, value_pct)
+                            .map(|()| name)
+                    },
                 );
                 (
                     QsField::Brightness,
-                    result.map(|()| crate::shell::osd::Osd::brightness(value_pct / 100.0)),
+                    result.map(|name| {
+                        crate::shell::osd::Osd::display_brightness(
+                            value_pct / 100.0,
+                            name.as_deref(),
+                        )
+                    }),
                 )
             }
             SliderCommit::Volume(value_pct) => {
@@ -23112,6 +23191,58 @@ impl ShellOverlayHost {
                 let reach = f64::from(shadow.blur) * 2.0 + f64::from(shadow.offset_y).abs();
                 let travel = Rect::new(rest.x0, rest.y0, rest.x1 + rest.width(), rest.y1);
                 vec![transform.transform_rect_bbox(travel.inflate(reach, reach))]
+            });
+        }
+
+        // The state of the whole machine is on every display. Banners about
+        // the machine (critical battery) repeat, at rest, on the displays
+        // other than the one in use, where the stack takes clicks and keys;
+        // a ringing call, whose card is on the display in use, gives the
+        // others a quiet edge. Steady, so a ringing call keeps the loop idle.
+        let others: Vec<Rect> = if self.is_partitioned() {
+            self.layer_outputs()
+                .into_iter()
+                .filter(|display| *display != area)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        self.machine_banners.clear();
+        self.call_edges.clear();
+        if let Some(chrome) = self.chrome.as_ref()
+            && !others.is_empty()
+        {
+            let host = ChromeNotifications::new(chrome);
+            let ringing = NotificationStack::call_ringing(&host);
+            let top = f64::from(self.chrome_top_y);
+            let banners = &mut self.machine_banners;
+            let edges = &mut self.call_edges;
+            overlay_part(scene, "shell.machine-notices", desktop, |scene| {
+                for display in &others {
+                    let viewport = Rect::new(display.x0, display.y0 + top, display.x1, display.y1);
+                    let banner = NotificationStack::draw_machine_wide(
+                        &host,
+                        scene,
+                        transform,
+                        text_renderer,
+                        theme,
+                        viewport,
+                    );
+                    if !banner.is_zero_area() {
+                        banners.push(banner);
+                    }
+                    if ringing {
+                        edges.push(*display);
+                        scene.stroke(
+                            &vello::kurbo::Stroke::new(3.0),
+                            transform,
+                            theme.tokens.colors.border_focus,
+                            None,
+                            &display.inset(-1.5),
+                        );
+                    }
+                }
+                None
             });
         }
 

@@ -449,6 +449,18 @@ pub struct DisplayBrightness {
     pub level: f32,
 }
 
+/// Put the display the person works on (`focused`, its connector) first,
+/// keeping the others in their order: Quick Settings shows that display's
+/// slider at the top.
+pub fn focused_display_first(displays: &mut Vec<DisplayBrightness>, focused: Option<&str>) {
+    if let Some(index) =
+        focused.and_then(|focused| displays.iter().position(|d| d.connector == focused))
+    {
+        let display = displays.remove(index);
+        displays.insert(0, display);
+    }
+}
+
 /// Local UI state; does not sync to peers — device settings like
 /// brightness, volume, and radio toggles are always per-device.
 #[derive(Clone, Debug, PartialEq)]
@@ -467,6 +479,10 @@ pub struct QuickSettingsState {
     /// its own slider once there is more than one; empty falls back to the
     /// single `brightness` control.
     pub displays: Vec<DisplayBrightness>,
+    /// The connector of the display the person works on, when the desktop
+    /// spans several: what "brighter" and "dimmer" adjust. The overlay host
+    /// keeps it current whenever search refreshes.
+    pub focused_display: Option<String>,
     /// 0.0..=1.0.
     pub volume: f32,
     /// False after the audio service cannot provide a sink reading.
@@ -573,6 +589,7 @@ impl Default for QuickSettingsState {
             brightness: 0.6,
             brightness_available: false,
             displays: Vec::new(),
+            focused_display: None,
             volume: 0.4,
             volume_available: true,
             wifi: true,
@@ -614,6 +631,7 @@ impl QuickSettingsState {
             brightness: 0.6,
             brightness_available: true,
             displays: Vec::new(),
+            focused_display: None,
             volume: 0.4,
             volume_available: true,
             wifi: true,
@@ -3258,6 +3276,18 @@ impl ChromeState {
     /// exposing content.
     pub fn notification_count(&self) -> usize {
         self.notification_log.active().len()
+    }
+
+    /// The newest banner about the whole machine (critical battery) that is
+    /// up: the lock screen shows it on every display. Only its title, which
+    /// the system wrote; never an app's words.
+    pub fn machine_alert(&self) -> Option<String> {
+        self.notification_log
+            .active()
+            .iter()
+            .rev()
+            .find(|notification| notification.machine_wide)
+            .map(|notification| notification.title.clone())
     }
 
     // ---------- History ----------

@@ -25,7 +25,7 @@ use winit::event::WindowEvent;
 use winit::keyboard::{Key, NamedKey};
 
 use super::NotificationHost;
-use super::model::{Notification, NotificationSeverity, lock_suppressed_label};
+use super::model::{Addressed, Notification, NotificationSeverity, lock_suppressed_label};
 use crate::i18n::{t, t_args};
 use ui::TextRole;
 
@@ -814,6 +814,78 @@ impl NotificationStack {
         if bounds.min_y.is_finite() {
             self.rect = Rect::new(x0_rest, bounds.min_y, x0_rest + width, bounds.max_y);
         }
+    }
+
+    /// The banners about the whole machine (critical battery) on a display
+    /// other than the one the stack lives on, pinned top-right into
+    /// `viewport` as the stack pins its own: the same cards at rest, newest
+    /// first, without controls, hover or focus, which stay with the stack on
+    /// the display in use. Nothing while the session is locked. Returns what
+    /// the cards cover, zero when nothing was painted.
+    pub fn draw_machine_wide(
+        host: &dyn NotificationHost,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        viewport: Rect,
+    ) -> Rect {
+        if viewport.area() == 0.0 || host.session_locked() {
+            return Rect::ZERO;
+        }
+        let log = host.log();
+        let banners: Vec<&Notification> = log
+            .active()
+            .iter()
+            .rev()
+            .filter(|n| n.machine_wide)
+            .collect();
+        let width = (viewport.width() - EDGE_INSET * 2.0).clamp(0.0, TOAST_WIDTH);
+        if banners.is_empty() || width <= 0.0 {
+            return Rect::ZERO;
+        }
+        // Resolved type sizes, as the stack paints them (HIG §7a).
+        let renderer_scale = text_renderer.text_scale();
+        text_renderer.set_text_scale(1.0);
+        let x0 = viewport.x1 - EDGE_INSET - width;
+        let bottom = viewport.y1 - EDGE_INSET;
+        let mut y = viewport.y0 + EDGE_INSET;
+        let mut covered = Rect::ZERO;
+        for n in banners {
+            let card = ToastCard::new(&n.title, n.severity.toast_kind())
+                .icon(n.icon_kind.icon())
+                .body(if n.show_preview { &n.body } else { "" })
+                .caption(n.app_name.as_deref().unwrap_or(""))
+                .closable(false);
+            let height = ui::widget::toast::card_height(text_renderer, theme, &card, width)
+                .max(TOAST_HEIGHT);
+            if y + height > bottom {
+                break;
+            }
+            let rect = Rect::new(x0, y, x0 + width, y + height);
+            let _ =
+                ui::widget::toast::paint_card(scene, transform, text_renderer, theme, rect, &card);
+            covered = if covered.is_zero_area() {
+                rect
+            } else {
+                covered.union(rect)
+            };
+            y += height + TOAST_GAP;
+        }
+        text_renderer.set_text_scale(renderer_scale);
+        covered
+    }
+
+    /// A call rings now: an incoming-call banner is up and the session is
+    /// unlocked. Its card is on the display in use; the other displays show
+    /// a quiet edge.
+    pub fn call_ringing(host: &dyn NotificationHost) -> bool {
+        !host.session_locked()
+            && host
+                .log()
+                .active()
+                .iter()
+                .any(|n| n.addressed() == Some(Addressed::IncomingCall))
     }
 
     /// Activate a completed click at p. Interactive hosts forward the full

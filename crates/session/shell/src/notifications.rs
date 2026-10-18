@@ -262,6 +262,9 @@ pub struct IncomingNotification {
     /// person ([`Self::contact_endpoint`]): a bare category is the app's
     /// word alone.
     pub incoming_call: bool,
+    /// The system says something about the whole machine (critical battery):
+    /// shown on every display, not only the one in use. Never from the wire.
+    pub machine_wide: bool,
 }
 
 type ActionTap = Arc<dyn Fn(u32, &str) + Send + Sync + 'static>;
@@ -1816,6 +1819,7 @@ impl NotificationService {
                     .flatten(),
                 sound: parse_notification_sound(&hints),
                 incoming_call: parse_incoming_call(&hints),
+                machine_wide: false,
             },
             sharing,
             ongoing_owner,
@@ -2057,6 +2061,7 @@ mod tests {
                 sender_name: None,
                 sound: Some(settings_store::system_sounds::SystemSoundEvent::Notification),
                 incoming_call: false,
+                machine_wide: false,
             });
             assert_eq!(b.pending_incoming_len(), 1);
             let drained = b.drain_incoming();

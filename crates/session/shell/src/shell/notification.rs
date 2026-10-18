@@ -361,6 +361,7 @@ pub fn from_incoming(inc: IncomingNotification) -> Notification {
     if inc.incoming_call && notification.from.is_some() {
         notification.addressed = Some(tilo_desktop::notifications::Addressed::IncomingCall);
     }
+    notification.machine_wide = inc.machine_wide;
     notification.actions = inc.actions;
     // Never from the wire: an app that could ask to pierce Do-Not-Disturb
     // would ask every time.
@@ -896,6 +897,7 @@ mod tests {
             sender_name: None,
             sound: Some(settings_store::system_sounds::SystemSoundEvent::Notification),
             incoming_call: false,
+            machine_wide: false,
         }
     }
 

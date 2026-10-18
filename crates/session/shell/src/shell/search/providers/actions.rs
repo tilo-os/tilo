@@ -3299,8 +3299,10 @@ impl SearchProvider for ActionsProvider {
     }
     fn adjustable(&self, result: &SearchResult) -> bool {
         matches!(result.id.as_str(), QS_VOLUME_ID | QS_BRIGHTNESS_ID)
+            || display_brightness_connector(&result.id).is_some()
     }
     /// ←/→ on Volume or Brightness: the same step "louder" or "dimmer" takes.
+    /// On one display's brightness row, that display moves by the same step.
     fn adjust(
         &self,
         result: &SearchResult,
@@ -3309,6 +3311,29 @@ impl SearchProvider for ActionsProvider {
         root: &automerge::ObjId,
         chrome: &Chrome,
     ) -> Result<(), ActionError> {
+        if let Some(connector) = display_brightness_connector(&result.id) {
+            let level = chrome
+                .borrow()
+                .quick_settings
+                .displays
+                .iter()
+                .find(|display| display.connector == connector)
+                .map(|display| (display.level * 100.0).round())
+                .ok_or_else(|| ActionError::Refused(format!("{connector} has no brightness")))?;
+            let step = if delta > 0 {
+                DISPLAY_BRIGHTNESS_STEP
+            } else {
+                -DISPLAY_BRIGHTNESS_STEP
+            };
+            let mut arguments = serde_json::Map::new();
+            arguments.insert(
+                "percent".into(),
+                serde_json::json!(f64::from((level + step).clamp(0.0, 100.0))),
+            );
+            let args = ActionArgs::bind_json(&result.params, &arguments)
+                .map_err(ActionError::Arguments)?;
+            return (result.on_open)(doc, root, chrome, &args);
+        }
         let step = LEVEL_STEPS
             .iter()
             .find(|step| step.level == result.id && (step.delta > 0.0) == (delta > 0))
@@ -3461,6 +3486,71 @@ impl SearchProvider for ActionsProvider {
 }
 
 impl ActionsProvider {
+    /// With more than one display that can be dimmed, a brightness row for
+    /// each, named after its display, showing its level: ←/→ steps it in
+    /// place, Enter asks for a percentage. One display keeps the single
+    /// Brightness row.
+    fn push_display_brightness_rows(
+        &self,
+        out: &mut Vec<SearchResult>,
+        candidates: &mut ActionCandidates,
+        state: &ChromeState,
+    ) {
+        let displays = &state.quick_settings.displays;
+        if displays.len() < 2 || !self.qs_actions.action_available(QS_BRIGHTNESS_ID) {
+            return;
+        }
+        let Some(base) = out.iter().find(|row| row.id == QS_BRIGHTNESS_ID).cloned() else {
+            return;
+        };
+        let subtitle = t("search-brightness-display-subtitle");
+        for display in displays {
+            let id = format!("{QS_DISPLAY_BRIGHTNESS_PREFIX}{}", display.connector);
+            let run = Rc::clone(&base.on_open);
+            let params = base.params.clone();
+            let connector = display.connector.clone();
+            let on_open = Rc::new(
+                move |doc: &mut ui::widget::Edits<'_>,
+                      root: &automerge::ObjId,
+                      chrome: &Chrome,
+                      args: &ActionArgs| {
+                    let mut arguments = serde_json::Map::new();
+                    if let Some(percent) = args.number("percent") {
+                        arguments.insert("percent".into(), serde_json::json!(percent));
+                    }
+                    arguments.insert("display".into(), serde_json::json!(connector));
+                    let args = ActionArgs::bind_json(&params, &arguments)
+                        .map_err(ActionError::Arguments)?;
+                    run(doc, root, chrome, &args)
+                },
+            ) as Rc<crate::shell::search::OpenFn>;
+            let title = t_args(
+                "search-brightness-display",
+                &[("display", display.name.as_str().into())],
+            );
+            candidates.record(&title.to_lowercase(), &subtitle.to_lowercase(), &id);
+            out.push(SearchResult {
+                id,
+                title,
+                subtitle: Some(subtitle.clone()),
+                badge: Some(t_args(
+                    "search-level-percent",
+                    &[("percent", f64::from((display.level * 100.0).round()).into())],
+                )),
+                params: base
+                    .params
+                    .iter()
+                    .filter(|param| param.name != "display")
+                    .cloned()
+                    .collect(),
+                on_open,
+                on_invoke: None,
+                on_begin_invoke: None,
+                ..base.clone()
+            });
+        }
+    }
+
     /// Louder, quieter, brighter, dimmer and mute, each derived from the
     /// level's set row already in `out`, with the live level as its pill.
     fn push_level_steps(
@@ -4470,6 +4560,7 @@ impl ActionsProvider {
             }
         }
         self.push_level_steps(&mut out, &mut candidates, ctx.chrome);
+        self.push_display_brightness_rows(&mut out, &mut candidates, ctx.chrome);
         let actor = key.actor.clone();
         let ownership_resource = {
             let tree = ctx.chrome.tree();
@@ -4977,12 +5068,39 @@ const LEVEL_STEPS: &[LevelStep] = &[
 /// Muting is its own row: a step to zero would forget the level.
 pub(crate) const QS_MUTE_ID: &str = "quick-settings.volume.mute";
 
-/// The live level, in percent, of the Quick Settings set action `level`.
+/// One display's brightness row: `quick-settings.brightness.on.DP-2`.
+const QS_DISPLAY_BRIGHTNESS_PREFIX: &str = "quick-settings.brightness.on.";
+
+/// How far ←/→ moves one display's brightness row: the brightness keys'
+/// step, as "brighter" and "dimmer" take.
+const DISPLAY_BRIGHTNESS_STEP: f32 = 10.0;
+
+/// The connector a display's brightness row sets, from its id.
+fn display_brightness_connector(id: &str) -> Option<&str> {
+    id.strip_prefix(QS_DISPLAY_BRIGHTNESS_PREFIX)
+        .filter(|connector| !connector.is_empty())
+}
+
+/// The display the person works on, when the desktop spans several and its
+/// brightness can be set: what "brighter" and "dimmer" adjust.
+fn focused_brightness(
+    state: &ChromeState,
+) -> Option<&crate::shell::chrome_state::DisplayBrightness> {
+    let focused = state.quick_settings.focused_display.as_deref()?;
+    state
+        .quick_settings
+        .displays
+        .iter()
+        .find(|display| display.connector == focused)
+}
+
+/// The live level, in percent, of the Quick Settings set action `level`:
+/// for brightness, the level of the display the person works on.
 fn level_percent(state: &ChromeState, level: &str) -> f32 {
     let share = if level == QS_VOLUME_ID {
         state.quick_settings.volume
     } else {
-        state.quick_settings.brightness
+        focused_brightness(state).map_or(state.quick_settings.brightness, |display| display.level)
     };
     (share * 100.0).round()
 }
@@ -5002,9 +5120,18 @@ fn stepped(
     level: &str,
     delta: f32,
 ) -> Result<ActionArgs, ActionError> {
-    let percent = (level_percent(&chrome.borrow(), level) + delta).clamp(0.0, 100.0);
     let mut arguments = serde_json::Map::new();
-    arguments.insert("percent".into(), serde_json::json!(f64::from(percent)));
+    {
+        let state = chrome.borrow();
+        let percent = (level_percent(&state, level) + delta).clamp(0.0, 100.0);
+        arguments.insert("percent".into(), serde_json::json!(f64::from(percent)));
+        // "Brighter" acts on the display the person works on.
+        if level == QS_BRIGHTNESS_ID
+            && let Some(display) = focused_brightness(&state)
+        {
+            arguments.insert("display".into(), serde_json::json!(display.connector));
+        }
+    }
     ActionArgs::bind_json(params, &arguments).map_err(ActionError::Arguments)
 }
 
@@ -8009,6 +8136,97 @@ mod tests {
                 assert_eq!(contract.availability.is_available(), available, "{id}");
             }
         }
+    }
+
+    // USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
+    // brightness etc. should in general be raised on the correct (?)
+    // screen(s)… in consistent positions… also how to handle brightness
+    // controls on multiple screens" — search lists one brightness row per
+    // display, ←/→ adjusts it in place, and "brighter" acts on the display
+    // the person works on.
+    #[test]
+    fn search_has_a_brightness_row_per_display_and_brighter_moves_the_focused_one() {
+        use crate::shell::chrome_state::DisplayBrightness;
+        let recorder = Rc::new(RecordingQsActions::default());
+        let dispatcher: Rc<dyn crate::shell::quick_settings::actions::QsActions> = recorder.clone();
+        let provider = ActionsProvider::with_shared_qs_actions(Rc::new(SharedQsDispatcher::new(
+            dispatcher,
+            crate::shell::quick_settings::actions::QsActionAvailability::all(),
+        )));
+        let chrome = chrome_with_room();
+        {
+            let mut state = chrome.borrow_mut();
+            state.quick_settings.displays = vec![
+                DisplayBrightness {
+                    connector: "eDP-1".into(),
+                    name: "Built-in display".into(),
+                    level: 0.5,
+                },
+                DisplayBrightness {
+                    connector: "DP-1".into(),
+                    name: "Dell U2723".into(),
+                    level: 0.3,
+                },
+            ];
+            state.quick_settings.focused_display = Some("DP-1".into());
+        }
+        let mut doc = AutoCommit::new();
+        let results = provider.query(SearchContext {
+            query_scope: None,
+            include_programmatic: false,
+            needle: "quick-settings.",
+            wanted: &[ResourceKind::Action],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        });
+        let row = |id: &str| {
+            results
+                .iter()
+                .find(|result| result.id == id)
+                .cloned()
+                .unwrap_or_else(|| panic!("no row {id}"))
+        };
+        let panel = row("quick-settings.brightness.on.eDP-1");
+        assert_eq!(panel.title, "Brightness, Built-in display");
+        let monitor = row("quick-settings.brightness.on.DP-1");
+        assert_eq!(monitor.title, "Brightness, Dell U2723");
+        assert_eq!(monitor.badge.as_deref(), Some("30 %"));
+        assert!(provider.adjustable(&monitor), "←/→ steps it in place");
+        provider
+            .adjust(
+                &monitor,
+                1,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &chrome,
+            )
+            .expect("the step lands");
+        provider
+            .adjust(
+                &panel,
+                -1,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &chrome,
+            )
+            .expect("the step lands");
+        (row("quick-settings.brightness.up").on_open)(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &chrome,
+            &ActionArgs::none(),
+        )
+        .expect("brighter runs");
+        assert_eq!(
+            recorder.calls.borrow().as_slice(),
+            [
+                "brightness:DP-1:40",
+                "brightness:eDP-1:40",
+                "brightness:DP-1:50"
+            ],
+            "each row moves its own display; brighter moves the focused one"
+        );
     }
 
     #[derive(Default)]

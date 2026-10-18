@@ -15,7 +15,7 @@
 
 pub(crate) mod shared_displays;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -643,6 +643,28 @@ fn read_output_brightness(outputs: &[DisplayOutput]) -> BTreeMap<String, f32> {
     output_brightness_from(outputs, &os_actions::BrightnessService::global().levels())
 }
 
+/// The external monitors among `outputs` that are dimmed in software.
+fn read_dimmed_by_tilo(outputs: &[DisplayOutput]) -> BTreeSet<String> {
+    dimmed_by_tilo_from(outputs, &os_actions::BrightnessService::global().levels())
+}
+
+fn dimmed_by_tilo_from(
+    outputs: &[DisplayOutput],
+    levels: &[os_actions::MonitorLevel],
+) -> BTreeSet<String> {
+    outputs
+        .iter()
+        .filter(|output| output.connected && !output.builtin)
+        .filter(|output| {
+            levels.iter().any(|level| {
+                level.connector == output.connector_label
+                    && level.kind == os_actions::BrightnessKind::Software
+            })
+        })
+        .map(|output| output.connector.clone())
+        .collect()
+}
+
 fn output_brightness_from(
     outputs: &[DisplayOutput],
     levels: &[os_actions::MonitorLevel],
@@ -814,6 +836,9 @@ pub struct DisplayModel {
     /// with their last known level. The built-in panel's backlight is the
     /// Brightness card's slider.
     output_brightness: BTreeMap<String, f32>,
+    /// The monitors among [`Self::output_brightness`] with no hardware
+    /// control, which the compositor darkens instead: their slider says so.
+    dimmed_by_tilo: BTreeSet<String>,
     pending_candidate: Option<DisplayConfig>,
     last_seen_transaction: Option<(u64, DisplayTransactionState)>,
     host_state: Option<settings_store::display_control::DisplayReply>,
@@ -979,6 +1004,7 @@ impl DisplayModel {
         let outputs = read.unwrap_or_default();
         let output_config = DisplayConfig::load_for(&Self::display_set_of(&outputs));
         let output_brightness = read_output_brightness(&outputs);
+        let dimmed_by_tilo = read_dimmed_by_tilo(&outputs);
         let levels_landed = Arc::new(AtomicBool::new(false));
         let landed = Arc::clone(&levels_landed);
         let wake = ui::WakeHandle::new();
@@ -999,6 +1025,7 @@ impl DisplayModel {
             brightness: 0.5,
             output_config,
             output_brightness,
+            dimmed_by_tilo,
             pending_candidate: None,
             pending_device_move: None,
             awaiting_device_move: None,
@@ -1085,6 +1112,7 @@ impl DisplayModel {
             brightness: 0.62,
             output_config: DisplayConfig::default(),
             output_brightness: BTreeMap::new(),
+            dimmed_by_tilo: BTreeSet::new(),
             pending_candidate: None,
             pending_device_move: None,
             awaiting_device_move: None,
@@ -1998,8 +2026,12 @@ impl DisplayModel {
         // Monitor probing finishes in the background; a monitor that turns
         // out to speak DDC/CI gains its slider once the probe lands.
         let controllable = read_output_brightness(&self.outputs);
-        if controllable.keys().ne(self.output_brightness.keys()) {
+        let dimmed_by_tilo = read_dimmed_by_tilo(&self.outputs);
+        if controllable.keys().ne(self.output_brightness.keys())
+            || dimmed_by_tilo != self.dimmed_by_tilo
+        {
             self.output_brightness = controllable;
+            self.dimmed_by_tilo = dimmed_by_tilo;
             self.changed = true;
         }
         let transaction = self.transaction();
@@ -2402,6 +2434,9 @@ impl DisplayModel {
                     ),
                 ),
             ));
+            if self.dimmed_by_tilo.contains(&output.connector) {
+                output_rows.push(note(&t("display-brightness-dimmed-by-tilo")));
+            }
         }
         output_rows.extend(self.build_output_primary_rows(output, connected, &config));
         output_rows.extend(self.build_output_mode_and_rotation_rows(output, &config));
@@ -3782,6 +3817,11 @@ mod tests {
         let level = |connector: &str, level: f32| os_actions::MonitorLevel {
             connector: connector.into(),
             level,
+            kind: if connector == "eDP-1" {
+                os_actions::BrightnessKind::Backlight
+            } else {
+                os_actions::BrightnessKind::Ddc
+            },
         };
         let (mut pane, rec) = recording(vec![
             display_with_modes("eDP-1", "Built-in display", true, Vec::new()),
@@ -3794,6 +3834,19 @@ mod tests {
             pane.output_brightness.keys().collect::<Vec<_>>(),
             ["DP-2"],
             "the panel keeps the Brightness card; a monitor without DDC/CI gets no slider"
+        );
+        let dimmed = dimmed_by_tilo_from(
+            &pane.outputs,
+            &[os_actions::MonitorLevel {
+                connector: "DP-3".into(),
+                level: 1.0,
+                kind: os_actions::BrightnessKind::Software,
+            }],
+        );
+        assert_eq!(
+            dimmed.into_iter().collect::<Vec<_>>(),
+            ["DP-3"],
+            "a monitor the compositor dims says so beside its slider"
         );
         pane.apply(&DisplayEffect::SetMonitorBrightness {
             display: "DP-2".into(),

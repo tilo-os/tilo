@@ -80,7 +80,10 @@ pub use bluetooth::{
     BluetoothHandoffTarget, BtDeviceInfo, bt_connect, bt_disconnect, get_bluetooth,
     inspect_bluetooth_handoff_target, list_bt_devices, pair_bluetooth_handoff, set_bluetooth,
 };
-pub use brightness::{BrightnessService, BrightnessTarget, MonitorBrightness, MonitorLevel};
+pub use brightness::{
+    BrightnessKind, BrightnessService, BrightnessTarget, MonitorBrightness, MonitorLevel,
+    SOFTWARE_DIM_FLOOR, software_luminance, step_together,
+};
 pub use display::{
     AmbientBrightnessController, ambient_lux, get_brightness, has_ambient_light_sensor,
     set_brightness,

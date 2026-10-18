@@ -42,6 +42,7 @@ display-output-driver-rejected = Der Grafiktreiber hat das Einschalten dieses Bi
 # Displays pane: night light, rotation, built-in name
 display-builtin = Integrierter Bildschirm
 display-brightness = Helligkeit
+display-brightness-dimmed-by-tilo = Von Tilo abgedunkelt. Die eigene Helligkeit des Monitors bleibt gleich.
 display-auto-brightness = Automatische Helligkeit
 display-no-ambient = Kein Umgebungslichtsensor erkannt
 display-night-light = Nachtlicht
