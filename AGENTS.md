@@ -114,9 +114,9 @@ Before pushing:
    leave selection to normal CI. The current direct selector also rejects a local default;
    older worktrees require the stable launcher rather than their historical relative command.
    Unexpected full-workspace selection is a bug to understand before pushing.
-4. Run `t` for the checks your change affects ([docs/t.md](docs/t.md)), rebase on `main`
-   and push straight to `main`. CI on `main` informs and never reverts; if `t main` shows a
-   failure you caused, fix it forward. See "Routine delivery workflow" in `DEVELOPMENT.md`.
+4. Test what you changed with `t test <check>` ([docs/t.md](docs/t.md)), rebase on `main`
+   and push straight to `main`. CI on `main` informs and never reverts; if `t inbox` shows a
+   failure you caused, fix it forward.
 
 Full image: `./os/build.sh`; boot it with `./os/test-vm.sh`. VM login `tester` /
 `tilo`.
@@ -327,13 +327,12 @@ those subsystems. `DEVELOPMENT.md` for the build environment.
 ## CI
 
 Push your work straight to `main`; there are no pull requests to land and nothing
-reverts automatically. Before pushing, run `t` in your checkout and fix what fails
-because of you (exit code `3`: everything that failed also fails on `main` already).
+reverts automatically. Before pushing, test what you changed with `t test <check>` and fix
+what fails because of you (exit code `3`: everything that failed also fails on `main` already).
 Keep each push a small, coherent, tested increment, then `git pull --rebase` and push.
 CI on `main` informs: `t main` shows what fails there and who is on it. Fix your own
 failures forward, and `t claim` someone else's before you work on it. `stable` is
-moved by the stabilizer alone. The full workflow is in `DEVELOPMENT.md`, "Routine
-delivery workflow"; using t is in `docs/t.md`. A change that reaches the shell also
+moved by the stabilizer alone. The workflow and using t are in `docs/t.md`. A change that reaches the shell also
 runs the desktop smoke (`desktop_smoke::` in the shell `it` target): a frozen
 compositor fails it within half a second with every thread's backtrace, so treat that
 failure as a freeze, never as a timeout to retry (docs/headless-testing.md, "Desktop
