@@ -118,14 +118,17 @@ import re
 import sys
 
 source = open(sys.argv[1], encoding='utf-8').read()
-rootfs = source.split('FROM ${BASE_REF} AS rootfs-base\n', 1)[1].split('FROM rootfs AS split\n', 1)[0]
+# The root filesystem's layers, from the package transaction over the base to the
+# derived rootfs (os/image/layers.toml), as os/Containerfile builds them in order.
+start = 'FROM ${BASE_REF} AS packages\n'
+rootfs = source.split(start, 1)[1].split('FROM rootfs AS split\n', 1)[0]
 wrapper = rootfs.index('COPY --chmod=0755 os/scripts/dnf-fixed-time.sh /usr/local/bin/dnf')
 first_dnf = rootfs.index('dnf install -y --setopt=reposdir=/repo')
 assert wrapper < first_dnf
 assert rootfs.index('ARG FINALIZE_RPMDB=') < first_dnf
 assert rootfs.index('COPY --chmod=0755 os/scripts/dnf-fixed-time.sh /usr/local/bin/rpm') < first_dnf
 assert rootfs.index('/usr/local/bin/dnf /usr/local/bin/rpm /usr/libexec/tilo/build-clock.so') > first_dnf
-assert 'clean-dnf-layer-state' in source.split('FROM ${BASE_REF} AS rootfs-base\n', 1)[1]
+assert 'clean-dnf-layer-state' in source.split(start, 1)[1]
 from pathlib import Path
 assert '/usr/libexec/tilo/clean-dnf-layer-state' in (
     Path(sys.argv[1]).parent / 'scripts/finalize-rpmdb.sh').read_text(encoding='utf-8')

@@ -10,8 +10,8 @@
 #      (os/dev/build-image.sh, TILO_IMAGE_ONLY=1). auto rebuilds it only when its
 #      inputs changed since it was built (see below).
 #   1. rootless `podman build -f os/Containerfile.dev` FROM a production image
-#      that is already in local storage. The dev binaries compile inside the
-#      build, with the production builder's toolchain.
+#      that is already in local storage, over the dev binaries compiled before it
+#      by os/image/compile.sh --dev in the OS builder image (TILO_COMPILED_DEV).
 #   2. os/dev/build-image.sh with TILO_SKIP_BUILD=1 installs that image to
 #      $TILO_OUTPUT/qcow2/disk.qcow2. The dev image is unsealed, so this is a
 #      single `bootc install` pass with ordinary boot entries. This step needs
