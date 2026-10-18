@@ -172,9 +172,7 @@ impl Transfer {
 
     pub fn answer(&mut self, reply: &Reply) -> Step {
         match (&self.phase, reply) {
-            (Phase::Snapshot, Reply::Snapshot { offer: Some(offer) })
-                if offer.count > 0 && offer.count <= super::file_clipboard::MAX_OFFER_ENTRIES =>
-            {
+            (Phase::Snapshot, Reply::Snapshot { offer: Some(offer) }) if offer.count > 0 => {
                 self.offer = Some(offer.clone());
                 self.phase = Phase::Capture;
                 Step::Send(Command::Capture {
