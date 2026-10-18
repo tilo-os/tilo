@@ -30,6 +30,8 @@ mod cpu_raster;
 #[cfg(test)]
 mod deferred_pipelines_tests;
 mod native_gpu_trace;
+#[cfg(test)]
+mod surface_lifecycle_tests;
 
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{
@@ -1220,6 +1222,34 @@ fn rasterize_damage(
     Ok(raster_pixels)
 }
 
+/// A suboptimal acquisition still owns a swapchain texture. Discard it while
+/// the old swapchain is configured, before entering recovery; a wildcard match
+/// would keep the acquisition temporary alive across the reconfiguration.
+fn acquire_surface_texture(
+    surface: &vello::wgpu::Surface<'_>,
+    reconfigure: impl FnOnce() -> FrameOutcome,
+) -> Result<vello::wgpu::SurfaceTexture, FrameOutcome> {
+    use vello::wgpu::CurrentSurfaceTexture;
+
+    match surface.get_current_texture() {
+        CurrentSurfaceTexture::Success(texture) => Ok(texture),
+        CurrentSurfaceTexture::Suboptimal(texture) => {
+            drop(texture);
+            Err(reconfigure())
+        }
+        CurrentSurfaceTexture::Outdated => Err(reconfigure()),
+        CurrentSurfaceTexture::Occluded => Err(FrameOutcome::Occluded),
+        CurrentSurfaceTexture::Timeout => Err(FrameOutcome::Skipped),
+        CurrentSurfaceTexture::Lost | CurrentSurfaceTexture::Validation => {
+            // Same shutdown race as reconfiguration: an ordinary end of
+            // session must not become an uncaptured validation panic.
+            tracing::info!("drawing surface is no longer usable; stopping the render thread");
+            note_surface_loss("its drawing surface was lost".to_owned());
+            Err(FrameOutcome::SurfaceGone)
+        }
+    }
+}
+
 /// One frame's scene, surface size and damage, as the worker received it.
 #[derive(Clone, Copy)]
 struct FrameContent<'a> {
@@ -1291,44 +1321,36 @@ fn render_one_frame(
     // swapchain cannot consume the frame; discovering that only after Vello
     // packed and uploaded the scene wasted the entire GPU pass.
     let t_acquire = present_dbg.then(crate::time::now);
-    let surface_texture = match surface.surface.get_current_texture() {
-        vello::wgpu::CurrentSurfaceTexture::Success(t) => t,
-        vello::wgpu::CurrentSurfaceTexture::Outdated
-        | vello::wgpu::CurrentSurfaceTexture::Suboptimal(_) => {
-            // Surface drifted (resize, scale change). Reconfigure
-            // and ask main to redraw.
-            if let Err(err) = configure_surface_checked(render_cx, surface) {
-                tracing::info!(%err, "drawing surface is gone; abandoning the frame");
-                note_surface_loss(format!(
-                    "its drawing surface could not be reconfigured: {err}"
-                ));
-                return FrameOutcome::SurfaceGone;
-            }
-            if let Some(observer) = presentation.filter(|_| timing::enabled()) {
-                observer.log_native_config(surface);
-            }
-            return FrameOutcome::Reconfigured;
+    let surface_texture = match acquire_surface_texture(&surface.surface, || {
+        // Surface drifted (resize, scale change). Reconfigure and ask main
+        // to redraw, after acquisition has released any suboptimal texture.
+        if let Err(err) = configure_surface_checked(render_cx, surface) {
+            tracing::info!(%err, "drawing surface is gone; abandoning the frame");
+            note_surface_loss(format!(
+                "its drawing surface could not be reconfigured: {err}"
+            ));
+            return FrameOutcome::SurfaceGone;
         }
-        vello::wgpu::CurrentSurfaceTexture::Occluded => {
+        if let Some(observer) = presentation.filter(|_| timing::enabled()) {
+            observer.log_native_config(surface);
+        }
+        FrameOutcome::Reconfigured
+    }) {
+        Ok(texture) => texture,
+        Err(FrameOutcome::Reconfigured) => return FrameOutcome::Reconfigured,
+        Err(FrameOutcome::Occluded) => {
             if present_dbg {
                 eprintln!("render-skip {frame_ix}: occluded");
             }
             return FrameOutcome::Occluded;
         }
-        vello::wgpu::CurrentSurfaceTexture::Timeout => {
+        Err(FrameOutcome::Skipped) => {
             if present_dbg {
                 eprintln!("render-skip {frame_ix}: timeout");
             }
             return FrameOutcome::Skipped;
         }
-        vello::wgpu::CurrentSurfaceTexture::Lost
-        | vello::wgpu::CurrentSurfaceTexture::Validation => {
-            // Same shutdown race as the reconfigure above; panicking here
-            // used to abort the process for an ordinary end of session.
-            tracing::info!("drawing surface is no longer usable; stopping the render thread");
-            note_surface_loss("its drawing surface was lost".to_owned());
-            return FrameOutcome::SurfaceGone;
-        }
+        Err(outcome) => return outcome,
     };
 
     let acquire_us = t_acquire.map(|t| t.elapsed().as_secs_f64() * 1e6);
