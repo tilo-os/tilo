@@ -29,7 +29,7 @@ use crate::effects::BrowserEffect;
 use crate::library::{Bookmark, MAX_BOOKMARKS};
 use crate::settings::Settings;
 
-ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US"]);
+ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US", "de-DE"]);
 
 /// The browser's document: collaborative bookmarks, the preferences, and
 /// the origins tracker protection is off for.

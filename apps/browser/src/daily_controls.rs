@@ -163,10 +163,17 @@ impl DailyControls {
     /// The zoom row's label: the page's zoom level is always stated while it
     /// is not the default.
     pub fn zoom_label(&self) -> String {
+        let catalog = &crate::resource::CATALOG;
         if self.zoom.abs() < f64::EPSILON {
-            "Actual size".into()
+            catalog.t("browser-menu-actual-size")
         } else {
-            format!("Actual size ({:.0}%)", 100.0 * 1.2_f64.powf(self.zoom))
+            catalog.t_args(
+                "browser-menu-actual-size-zoomed",
+                &[(
+                    "percent",
+                    ui::i18n::ArgValue::Number((100.0 * 1.2_f64.powf(self.zoom)).round()),
+                )],
+            )
         }
     }
     pub fn bar(&self, theme: &ui::theme::Theme) -> Box<dyn Widget> {

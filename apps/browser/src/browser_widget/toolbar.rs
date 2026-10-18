@@ -13,7 +13,9 @@ use ui::icons::Icon;
 use ui::theme::Theme;
 use ui::webview::WebViewCommand;
 use ui::widget::floating_surface::PanelAlign;
-use ui::widget::{Button, MenuButton, MenuItem, Row, TextInput, TextInputKind, Widget};
+use ui::widget::{
+    Button, Chip, ChipLead, MenuButton, MenuItem, Row, TextInput, TextInputKind, Widget,
+};
 
 use super::{BrowserWidget, URL_INPUT_ID};
 
@@ -25,6 +27,11 @@ pub(super) const OVERFLOW_ID: &str = "browser.overflow";
 /// drains the queue in `sync`, so the request travels the same canonical
 /// action path as the keyboard shortcut for it.
 pub(super) type ResourceCommand = (String, String);
+
+/// The toolbar's and its menu's copy, from the browser's catalogue.
+fn t(key: &str) -> String {
+    crate::resource::CATALOG.t(key)
+}
 
 impl BrowserWidget {
     /// A closure that queues `action` of `resource` for the next `sync`.
@@ -94,18 +101,21 @@ impl BrowserWidget {
         let mut items = Vec::new();
         if self.compact_chrome {
             // What the narrow row has no room for.
-            items.push(row("Site information", self.site.open_command(true)));
             items.push(row(
-                if self.bookmarks.contains(&self.current_uri) {
-                    "Page bookmarked"
+                &t("browser-menu-site-information"),
+                self.site.open_command(true),
+            ));
+            items.push(row(
+                &t(if self.bookmarks.contains(&self.current_uri) {
+                    "browser-page-bookmarked"
                 } else {
-                    "Bookmark this page"
-                },
+                    "browser-bookmark-page"
+                }),
                 self.bookmark_command(),
             ));
             let (resource, action) = self.library_command();
             items.push(row(
-                "History, bookmarks and downloads",
+                &t("browser-menu-library"),
                 self.queue_command(resource, action),
             ));
             items.push(MenuItem::separator());
@@ -114,34 +124,34 @@ impl BrowserWidget {
         let (settings_resource, settings_action) = self.settings_command();
         items.extend([
             row(
-                "Picture in Picture",
+                &t("browser-menu-picture-in-picture"),
                 self.queue_command("browser.page", "picture-in-picture"),
             )
             .with_checked(self.active_pip),
             row(
-                "Reader view",
+                &t("browser-menu-reader-view"),
                 self.queue_command("browser.page", "reader-view"),
             )
             .with_checked(self.reader_view),
             row(
-                "Pause history",
+                &t("browser-menu-pause-history"),
                 self.queue_command("browser.session", "toggle-pause"),
             )
             .with_checked(self.history_paused()),
             row(
-                "Find in page",
+                &t("browser-menu-find"),
                 self.daily.command(crate::daily_controls::Action::Open),
             ),
-            row("Developer tools", move || {
+            row(&t("browser-menu-developer-tools"), move || {
                 developer_engine.send(WebViewCommand::ShowDeveloperTools);
             }),
             MenuItem::separator(),
             row(
-                "Zoom in",
+                &t("browser-menu-zoom-in"),
                 self.daily.command(crate::daily_controls::Action::Zoom(1)),
             ),
             row(
-                "Zoom out",
+                &t("browser-menu-zoom-out"),
                 self.daily.command(crate::daily_controls::Action::Zoom(-1)),
             ),
             row(
@@ -149,22 +159,26 @@ impl BrowserWidget {
                 self.daily.command(crate::daily_controls::Action::Zoom(0)),
             ),
             MenuItem::separator(),
-            row("Ads and trackers", self.site.open_command(false)),
-            row("New private window", {
+            row(
+                &t("browser-menu-ads-and-trackers"),
+                self.site.open_command(false),
+            ),
+            row(&t("browser-menu-new-private-window"), {
                 let request = self.private_window_request.clone();
                 move || request.set(true)
             }),
             row(
-                if self.show_settings {
-                    "Close settings"
+                &t(if self.show_settings {
+                    "browser-menu-close-settings"
                 } else {
-                    "Settings"
-                },
+                    "browser-menu-settings"
+                }),
                 self.queue_command(settings_resource, settings_action),
             ),
         ]);
-        Button::icon_only(OVERFLOW_ID, Icon::MoreHorizontal, "More commands")
-            .tooltip("More commands")
+        let more = t("browser-more-commands");
+        Button::icon_only(OVERFLOW_ID, Icon::MoreHorizontal, &more)
+            .tooltip(&more)
             .with_menu(items)
             .aligned(PanelAlign::Trailing)
     }
@@ -172,24 +186,16 @@ impl BrowserWidget {
     /// The whole toolbar row.
     pub(super) fn build_toolbar(&self, theme: &Theme) -> Box<dyn Widget> {
         let back = self.bind_button(
-            Button::icon_only(
-                "browser.back",
-                Icon::ArrowLeft,
-                "Back; hold or right-click for history",
-            )
-            .tooltip("Back (Alt+Left); hold or right-click for history")
-            .with_enabled(self.can_go_back),
+            Button::icon_only("browser.back", Icon::ArrowLeft, &t("browser-back"))
+                .tooltip(&t("browser-back-tooltip"))
+                .with_enabled(self.can_go_back),
             "browser.page",
             "back",
         );
         let forward = self.bind_button(
-            Button::icon_only(
-                "browser.forward",
-                Icon::ArrowRight,
-                "Forward; hold or right-click for history",
-            )
-            .tooltip("Forward (Alt+Right); hold or right-click for history")
-            .with_enabled(self.can_go_forward),
+            Button::icon_only("browser.forward", Icon::ArrowRight, &t("browser-forward"))
+                .tooltip(&t("browser-forward-tooltip"))
+                .with_enabled(self.can_go_forward),
             "browser.page",
             "forward",
         );
@@ -202,21 +208,25 @@ impl BrowserWidget {
                     "browser.reload"
                 },
                 if loading { Icon::X } else { Icon::Refresh },
-                if loading { "Stop loading" } else { "Reload" },
+                &t(if loading {
+                    "browser-stop"
+                } else {
+                    "browser-reload"
+                }),
             )
-            .tooltip(if loading {
-                "Stop loading"
+            .tooltip(&t(if loading {
+                "browser-stop"
             } else {
-                "Reload (Ctrl+R)"
-            }),
+                "browser-reload-tooltip"
+            })),
             "browser.page",
             if loading { "stop" } else { "reload" },
         );
         let address = TextInput::from_state(&self.address)
             .with_kind(TextInputKind::Url)
             .with_id(URL_INPUT_ID)
-            .with_accessible_name("Address and search")
-            .with_placeholder("Search or enter address");
+            .with_accessible_name(t("browser-address"))
+            .with_placeholder(t("browser-address-placeholder"));
 
         let mut row = Row::new()
             .no_wrap()
@@ -227,6 +237,18 @@ impl BrowserWidget {
         if !self.compact_chrome {
             row = row.push(Box::new(self.site.launcher()));
         }
+        if self.browsing_mode.is_private() {
+            // With the toolbar's tint (`draw`), what marks a private
+            // window, in compact chrome too; its tooltip says what that
+            // means.
+            row = row.push(Box::new(
+                Chip::new(t("browser-private"))
+                    .with_id("browser.private-indicator")
+                    .with_lead(ChipLead::Glyph(Icon::EyeOff))
+                    .with_accessible_name(t("browser-private-window"))
+                    .tooltip(t("browser-private-tooltip")),
+            ));
+        }
         row = row.push(Box::new(address));
         if !self.compact_chrome {
             let bookmarked = if self.person_bookmarks.is_some() {
@@ -236,11 +258,12 @@ impl BrowserWidget {
             } else {
                 self.bookmarks.contains(&self.current_uri)
             };
-            let label = if bookmarked {
-                "Page bookmarked"
+            let label = t(if bookmarked {
+                "browser-page-bookmarked"
             } else {
-                "Bookmark this page"
-            };
+                "browser-bookmark-page"
+            });
+            let label = label.as_str();
             let hosted = self
                 .is_framework_hosted()
                 .then(|| self.page_bookmark_action())
@@ -276,13 +299,13 @@ impl BrowserWidget {
                     Button::icon_only(
                         "browser.library",
                         Icon::History,
-                        if self.show_library {
-                            "Close browser library"
+                        &t(if self.show_library {
+                            "browser-library-close"
                         } else {
-                            "Open browser library"
-                        },
+                            "browser-library-open"
+                        }),
                     )
-                    .tooltip("History, bookmarks and downloads"),
+                    .tooltip(&t("browser-menu-library")),
                     resource,
                     action,
                 ),
