@@ -262,6 +262,17 @@ fn prove_store_directory(mut env: Environment) {
         .find(|row| row.resource_kind == "store.catalog" && row.action.is_none())
         .expect("actual readable Store root");
     assert!(container.has_children);
+    // Publishing the unchanged native View/Read surface must not turn the
+    // absence of process-local checkpoints into a sync failure every frame.
+    // That would retire this revision (and every bounded continuation) before
+    // the caller can use it, despite no resource or contract having changed.
+    let revision = page.revision.clone();
+    for _ in 0..3 {
+        pump_store(&mut app);
+        let current = store_directory_page(&mut app, &broker, &env, store_query(root.peer_id, ""))
+            .expect("unchanged Store publication");
+        assert_eq!(current.revision, revision);
+    }
     let children =
         store_directory_children(&mut app, &broker, &env, root.peer_id, &container.resource)
             .expect("actual Store child pages");
