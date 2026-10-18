@@ -34,7 +34,8 @@ fn retired_host_rejects_late_completion_without_rewriting_observation() {
         state.invocation_status(admitted.id),
         Some(InvocationUpdate::Accepted { .. })
     ));
-    let journal = invocation_journal::InvocationJournal::open(root.path()).unwrap();
+    let journal =
+        invocation_journal::InvocationJournal::open(&root.path().join("journal")).unwrap();
     let record = journal
         .lookup(admitted.key.as_ref().unwrap())
         .unwrap()
