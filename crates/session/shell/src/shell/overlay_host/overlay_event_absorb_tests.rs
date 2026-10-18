@@ -3599,6 +3599,8 @@ fn workspace_name_submit_ownership_ends_on_release_focus_loss_and_fresh_press() 
 
 #[test]
 fn notification_banner_completed_click_and_interrupted_gestures() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = ui::motion::testing::settled();
     for interruption in ["outside", "escape", "focus", "resize", "retired"] {
         let mut h = build_harness_sized(960.0, 540.0);
         let id = h.chrome.borrow_mut().push_notification_full(
@@ -3679,6 +3681,8 @@ fn notification_banner_completed_click_and_interrupted_gestures() {
 /// the chord opens the centre as before.
 #[test]
 fn notifications_chord_focuses_the_newest_banner_and_escape_dismisses_it() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = ui::motion::testing::settled();
     let mut h = build_harness_sized(960.0, 540.0);
     let theme = Theme::dark().with_reduce_motion(true);
     let older = h.chrome.borrow_mut().push_notification_full(
@@ -3792,6 +3796,8 @@ fn banner_pointer_capture_variants() -> [(&'static str, Theme, f64, u32); 6] {
 
 #[test]
 fn notification_banner_pointer_feedback_matches_shared_close_face() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = ui::motion::testing::settled();
     let out = std::env::var_os("TILO_BANNER_POINTER_EVIDENCE").map_or_else(
         || std::path::PathBuf::from("target/banner-pointer-review"),
         std::path::PathBuf::from,
@@ -3858,6 +3864,8 @@ fn notification_banner_pointer_feedback_matches_shared_close_face() {
 
 #[test]
 fn notification_banner_lost_release_does_not_capture_a_fresh_content_click() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = ui::motion::testing::settled();
     for lost_focus in [true, false] {
         let mut h = build_harness_sized(960.0, 540.0);
         h.chrome.borrow_mut().push_notification_full(
