@@ -4,13 +4,22 @@
 #   ./os/dev/build-image.sh
 #
 # Pipeline:
-#   1. rootless `podman build` of the bootc container image. The Rust binaries
-#      are now compiled INSIDE the image (multi-stage Containerfile, `builder`
-#      stage) — no host cargo build, no binary staging into os/, no F43->F44
-#      glibc coupling. The build context is the REPO ROOT (the in-image compile
-#      needs the workspace source); .containerignore trims target/, os/output
-#      and .git.
-#   2. os/dev/disk-image.sh -> os/output/qcow2/disk.qcow2: systemd-repart for the
+#   1. the compile: os/image/compile.sh in the OS builder image (the image's
+#      `builder-base` stage: the pinned base and RPM snapshot with the
+#      toolchains, so its glibc is the image's), rootless, into
+#      os/output/compiled, with cargo's home, the build directory and sccache
+#      kept under os/output between builds. TILO_COMPILED=<dir> names a tree
+#      compiled already (t's os-compile-<arch>) and skips it.
+#   2. rootless `podman build` of the bootc container image from os/Containerfile
+#      (os/image/'s pieces in one file), given the compiled tree as the `compiled`
+#      build context: no image build compiles. The build context is the REPO ROOT;
+#      .containerignore trims target/, os/output and .git.
+#      With TILO_LAYER_TARGET=<stage> and TILO_CONTAINERFILE=<one piece's
+#      Containerfile>, it builds that stage alone, with TILO_LAYER_ARGS (the
+#      layers below given as images), tags it TILO_IMAGE and stops: one layer
+#      action of t's (os/image/build-layer.sh), verified and given its build
+#      arguments exactly as a whole build is.
+#   3. os/dev/disk-image.sh -> os/output/qcow2/disk.qcow2: systemd-repart for the
 #      partitions, `bootc install to-filesystem` into them. That replaced
 #      bootc-image-builder, which has no composefs/UKI surface — and which cannot
 #      build this image at all, because Tilo asks for systemd-boot and bib's
@@ -18,8 +27,8 @@
 #      installs").
 #
 # Build notes:
-#   * First build is a long COLD Rust compile inside the container; the
-#     Containerfile uses cargo + sccache cache mounts so rebuilds are fast.
+#   * The first build is a long cold Rust compile; the build directory and
+#     sccache under os/output make the next one warm.
 #   * TILO_WITH_BROWSER=0 ./os/dev/build-image.sh omits the Browser and its
 #     Chromium engine runtime. The boot chain (kernel, initramfs, LUKS/TPM,
 #     greeter, installer, rollback) is all still there, so this is the image to
@@ -511,7 +520,8 @@ build_image() {
       (( TILO_RAW_LAYER_EPOCH <= 253402300799 )) || die "invalid raw layer epoch"
     layer_epoch="$TILO_RAW_LAYER_EPOCH"
   fi
-  podman "${_tilo_podman_args[@]}" build "${TILO_PODMAN_BUILD_FLAGS[@]}" -f "$TILO_OS_DIR/Containerfile" "${tag_args[@]}" \
+  podman "${_tilo_podman_args[@]}" build "${TILO_PODMAN_BUILD_FLAGS[@]}" -f "${TILO_CONTAINERFILE:-$TILO_OS_DIR/Containerfile}" "${tag_args[@]}" \
+    "${_tilo_compiled_args[@]}" \
     --build-context "github-assets=$TILO_REPO/os/external-assets/cache" \
     --build-arg "TILO_RUST_LTO=$TILO_RUST_LTO" \
     --build-arg "TILO_BUILD_CACHE_KEY=$TILO_BUILD_CACHE_KEY" \
@@ -557,6 +567,50 @@ if [ -n "${TILO_NATIVE_BUILDER_IMAGE_ID:-}" ]; then
   [ "${TILO_NATIVE_BUILDER_ONLY:-0}" = 0 ] || die "cannot compile and import a native builder together"
   _tilo_native_builder_args=(--build-context "builder=container-image://$TILO_NATIVE_BUILDER_IMAGE_ID")
 fi
+# The compiled tree the image packs: given (t's os-compile-<arch>), or compiled
+# here, in the OS builder image, rootless. Cargo's home, the build directory and
+# sccache stay under os/output, so the next build compiles only what changed.
+_tilo_compiled_args=()
+compile_outside() {
+  local builder=localhost/tilo-os-builder:latest cache="$TILO_OUTPUT/compile-cache"
+  mkdir -p "$cache/cargo-home" "$cache/target" "$cache/sccache" "$TILO_OUTPUT/compiled"
+  msg "compiling in the OS builder image ($builder): os/image/compile.sh"
+  podman "${_tilo_podman_args[@]}" build "${TILO_PODMAN_BUILD_FLAGS[@]}" -f "$TILO_OS_DIR/Containerfile" \
+    --target builder-base -t "$builder" \
+    --build-context "github-assets=$TILO_REPO/os/external-assets/cache" \
+    --build-arg "BASE_REF=$BASE_REF" --build-arg "RPMS_REF=$RPMS_REF" \
+    --build-arg "KERNEL_RPMS_REF=$KERNEL_RPMS_REF" --build-arg "ENV_RUNTIME_REF=${ENV_RUNTIME_REF:-scratch}" \
+    "$TILO_REPO"
+  podman "${_tilo_podman_args[@]}" run --rm --security-opt label=disable --userns=keep-id \
+    -v "$TILO_REPO:/src" -w /src \
+    -v "$cache/cargo-home:/cargo-home" -v "$cache/target:/build-target" -v "$cache/sccache:/sccache" \
+    -e CARGO_HOME=/cargo-home -e CARGO_TARGET_DIR=/build-target -e SCCACHE_DIR=/sccache \
+    -e TILO_COMPILER_CACHE=local -e TILO_CARGO_FRESHNESS=content \
+    -e TILO_RUST_LTO="$TILO_RUST_LTO" -e TILO_WITH_BROWSER="$TILO_WITH_BROWSER" \
+    -e TILO_RUST_DEBUGINFO="${TILO_RUST_DEBUGINFO:-line-tables-only}" \
+    -e TILO_CARGO_BUILD_JOBS="${TILO_CARGO_BUILD_JOBS:-4}" \
+    -e TILO_GITHUB_ASSET_CACHE=/src/os/external-assets/cache \
+    "$builder" bash os/image/compile.sh /src/os/output/compiled
+  TILO_COMPILED="$TILO_OUTPUT/compiled"
+}
+if [ "$TILO_SKIP_BUILD" != 1 ] && grep -q -- '--from=compiled' "${TILO_CONTAINERFILE:-$TILO_OS_DIR/Containerfile}"; then
+  [ -n "${TILO_COMPILED:-}" ] || compile_outside
+  [ -d "$TILO_COMPILED" ] || die "TILO_COMPILED=$TILO_COMPILED is not a directory"
+  _tilo_compiled_args=(--build-context "compiled=$(realpath "$TILO_COMPILED")")
+fi
+
+# One layer action (os/image/build-layer.sh): this stage of this piece, over the
+# layers below given as images, with every build argument and verification of a
+# whole build, and nothing after it.
+if [ -n "${TILO_LAYER_TARGET:-}" ]; then
+  [ -f "${TILO_CONTAINERFILE:-}" ] || die "TILO_LAYER_TARGET needs TILO_CONTAINERFILE, the piece's Containerfile"
+  read -r -a _tilo_layer_args <<< "${TILO_LAYER_ARGS:-}"
+  msg "layer $TILO_LAYER_TARGET of $TILO_CONTAINERFILE (SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; base=$BASE_REF; rpms=$RPMS_REF; kernel=$KERNEL_RPMS_REF)"
+  build_image "$TILO_PROVISIONAL_CFS_DIGEST" "$TILO_IMAGE" --target "$TILO_LAYER_TARGET" \
+    --skip-unused-stages=true "${_tilo_layer_args[@]}"
+  exit 0
+fi
+
 if [ "$TILO_SKIP_BUILD" = "1" ]; then
   podman image exists "$TILO_IMAGE" || die "TILO_SKIP_BUILD=1, but $TILO_IMAGE is not in local
   storage, so there is nothing to image. Pull the published image and tag it:
@@ -564,7 +618,7 @@ if [ "$TILO_SKIP_BUILD" = "1" ]; then
     podman tag  registry.tilo.so/tilo/tilo:<tag> $TILO_IMAGE"
   msg "1/2 skipped (TILO_SKIP_BUILD=1): imaging the existing $TILO_IMAGE"
 else
-  msg "1/2 podman build $TILO_IMAGE (in-image compile; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; base=$BASE_REF; rpms=$RPMS_REF; kernel=$KERNEL_RPMS_REF; browser=$TILO_WITH_BROWSER; windows=$TILO_WITH_WINDOWS; rust-lto=$TILO_RUST_LTO; cargo-target-cache=$TILO_BUILD_CACHE_KEY; generation=$TILO_GENERATION)"
+  msg "1/2 podman build $TILO_IMAGE (compiled tree: ${TILO_COMPILED:-none}; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; base=$BASE_REF; rpms=$RPMS_REF; kernel=$KERNEL_RPMS_REF; browser=$TILO_WITH_BROWSER; windows=$TILO_WITH_WINDOWS; rust-lto=$TILO_RUST_LTO; generation=$TILO_GENERATION)"
   if [ "${TILO_NATIVE_BUILDER_ONLY:-0}" = 1 ]; then
     [ "${TILO_PUBLIC_TRUST_MODE:-production}" = development ] || die "native payload compilation requires development mode"
     [ -n "${TILO_NATIVE_BUILDER_IIDFILE:-}" ] || die "native payload compilation requires an output iidfile"

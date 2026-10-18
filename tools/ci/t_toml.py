@@ -36,6 +36,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import affected_packages  # noqa: E402
 import products  # noqa: E402
 import suites  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent / "os"))
+import os_toml  # noqa: E402
 import workspace_graph  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -346,7 +348,9 @@ def generated(manifest: suites.Manifest) -> dict[str, str]:
             "check-package-inputs": inputs, "suites": suite_checks(manifest),
             "goldens": goldens(GOLDENS_IMAGE.read_text(encoding="utf-8").strip()),
             "arm64-goldens": arm64_goldens(GOLDENS_IMAGE.read_text(encoding="utf-8").strip()),
-            **product_blocks(products.load()), **cargo_checks(manifest)}
+            **product_blocks(products.load()), **cargo_checks(manifest),
+            # The OS image's layer actions, keyed by what each of os/image/'s pieces reads.
+            "os-layers": os_toml.block()}
 
 
 def product_blocks(manifest: dict) -> dict[str, str]:

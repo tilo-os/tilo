@@ -968,38 +968,18 @@ on = ["dispatch"]
 [[matrix]]
 family = "os"
 about = """
-The OS image (os/Containerfile, tools/ci/publish/os-image.sh), built natively per architecture
-as root in a micro-VM step: `t test os-image-x86_64` builds what a development VM runs from
-your tree, as Build / OS dev did (no LTO, the apps and desktop of the commit, the image only,
-its UKI sealing a placeholder composefs digest) and leaves it as an OCI archive (`t outputs`).
-Its inputs are what os/Containerfile copies from the repository; a cold build compiles for
-about an hour without a compiler cache, so it runs only when asked."""
+Images built on the OS image of the same tree: its image is os-image-<arch>, composed from the
+layer actions of os/image/layers.toml (the os-layers block, tools/ci/os/os_toml.py), as an OCI
+layout under /target/os/<arch>/image."""
 each = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
-
-[[matrix.check]]
-name = "os-image-{arch}"
-run = "bash tools/ci/publish/os-image.sh build {arch} /target/publish/os/{arch}"
-inputs = ["os/**", "crates/**", "apps/**", "vendor/**", "examples/**", "dist/**", "keys/**", "docs/developers/tasks/**", "scripts/**", "tools/apps/**", "tools/policy/**", "tools/protocols/**", "tools/test-assets.py", "tools/test-assets-build.rs", "tools/font-catalog.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/thin-app/**", "tools/ci/measure.sh", "tools/ci/install-xwayland-satellite.sh", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/**", ".containerignore"]
-# The RPM set of this tree, which the build installs from while no snapshot of it is published.
-needs = ["image-rpms-{arch}"]
-outputs = ["/target/publish/os/{arch}/image.oci.tar", "/target/publish/os/{arch}/digest", "/target/publish/os/{arch}/revision"]
-# The image is labelled with its commit.
-git = true
-requires = ["{node}", "disk-100g"]
-isolation = "vm"
-writable_sources = true
-cost = "heavy"
-cpus = 12
-memory = "24G"
-timeout_secs = 10800
-default = false
 
 [[matrix.check]]
 name = "os-dev-image-{arch}"
 comment = """
 The dev image a development VM runs (os/Containerfile.dev: tilo-vmd, sshd, the toolchain and the
 components with their dev features, compiled again) on os-image-{arch}."""
-run = "bash tools/ci/publish/os-image.sh dev {arch} /target/publish/os/{arch} /target/publish/os-dev/{arch}"
+image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
+run = "bash tools/ci/publish/os-image.sh dev {arch} /target/os/{arch}/image /target/publish/os-dev/{arch}"
 inputs = ["os/**", "crates/**", "apps/**", "vendor/**", "examples/**", "dist/**", "docs/developers/tasks/**", "tools/policy/**", "tools/protocols/airdrop_sender.py", "tools/test-assets.py", "tools/test-assets-build.rs", "tools/ci/measure.sh", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/**", ".containerignore"]
 needs = ["os-image-{arch}"]
 outputs = ["/target/publish/os-dev/{arch}/image.oci.tar", "/target/publish/os-dev/{arch}/digest", "/target/publish/os-dev/{arch}/revision"]
@@ -1023,7 +1003,8 @@ the desktop runs start (tools/ci/image_smoke.py); then the image is installed on
 release validation installs one and booted under KVM until the greeter accepts input, with no
 unit failed on the way. It installs from the RPM set of the same run when no snapshot of it is
 published, so a package-set change is checked on main before it reaches stable."""
-run = "bash tools/ci/publish/os-image-smoke.sh {arch} /target/publish/os/{arch} /target/publish/os-smoke/{arch}"
+image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
+run = "bash tools/ci/publish/os-image-smoke.sh {arch} /target/os/{arch}/image /target/publish/os-smoke/{arch}"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-image-smoke.sh", "tools/ci/image_smoke.py", "os/dev/vm.sh", "os/dev/_common.sh", "os/dev/installer-console.py", "os/dev/build-image.sh", "os/dev/disk-image.sh", "os/dev/reseal-image.sh"]
 needs = ["os-image-{arch}"]
 outputs = ["/target/publish/os-smoke/{arch}/**"]
@@ -1051,6 +1032,7 @@ each = [{ arch = "aarch64", board = "lenovo-83ed" }, { arch = "aarch64", board =
 
 [[matrix.check]]
 name = "os-board-{board}"
+image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
 run = "bash tools/ci/publish/os-image.sh board {board} /target/publish/os-dev/aarch64 /target/publish/os-board/{board}"
 inputs = ["os/Containerfile.board", "os/Containerfile.bootc-helper", "os/external-assets/**", "os/dev/**", "os/scripts/build-initramfs.sh", "os/scripts/verify-board-initramfs.py", "os/hardware/**", "os/usr/**", "os/etc/NetworkManager/**", "os/base-snapshot.env", "os/publication.env", ".containerignore"]
 needs = ["os-dev-image-aarch64"]

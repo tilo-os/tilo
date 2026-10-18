@@ -1,23 +1,23 @@
+# Written by `python3 tools/ci/os/pieces.py write` from os/image/: edit the pieces, not this file.
 # syntax=docker/dockerfile:1.7
 # ============================================================================
-# Tilo bootc image — multi-stage build
+# Tilo bootc image: the build arguments every piece of it reads
 # ----------------------------------------------------------------------------
-# Stage 1 (builder): compiles the Rust workspace binaries INSIDE the image
-#   build, on a Fedora 44 base whose glibc matches the runtime. This removes
-#   the old host-build + `COPY shell`/`COPY fs` hack and the F43->F44 glibc
-#   coupling it caused.
-# Stage 2 (final): the fedora-bootc:44 OS image. Installs the runtime
-#   packages + configs + systemd units and copies the binaries out of the
-#   builder. None of the builder's toolchain/-devel deps land here.
+# The image is built as layers, each its own action (os/image/layers.toml):
+# the packages over the pinned base, the kernel, the system configuration, the
+# public trust, the Tilo binaries (compiled outside any image build, by
+# os/image/compile.sh in the OS builder image), the derived state that reads
+# them all (initramfs, font and linker caches, the final checks), and the seal.
+# Each piece under os/image/ is one of them, and builds over the layers below
+# it given as an image (`--build-context <stage>=container-image://...`), so a
+# changed binary reruns the pieces above the binaries and never the package
+# transaction. No piece compiles the workspace: the compiled tree comes in as
+# the `compiled` build context.
 #
-# The build context MUST be the repo root (the builder needs the workspace
-# source). The OS config files live under os/, so their COPY sources are
-# `os/`-prefixed:
-#
-#     podman build -f os/Containerfile -t localhost/tilo:latest <repo-root>
-#
-# `.containerignore` at the repo root trims target/, os/output and .git from
-# the context. See os/dev/build-image.sh and os/build.sh.
+# os/Containerfile is these pieces in order, written by
+# `python3 tools/ci/os/pieces.py write`, for a build of the whole image in one
+# `podman build` (os/dev/build-image.sh) and for the checks that read the
+# image's recipe as one file.
 # ============================================================================
 
 
@@ -78,10 +78,12 @@ ARG CHROMIUM_RUNTIME_VERSION=2026.10.17-chromium
 # The pinned builder bootc-builder compiles the image's bootc in, the one
 # os/Containerfile.bootc-helper uses.
 ARG BOOTC_BUILD_IMAGE=registry.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
+
 FROM scratch AS public-trust
 COPY keys/cosign.pub keys/tpm2-pcr-signing.public.pem /
 
 FROM ${RPMS_REF} AS rpms
+
 FROM ${ENV_RUNTIME_REF} AS env-runtime
 
 # Public trust parsing is a build-only operation. The pinned base supplies the
@@ -150,7 +152,6 @@ FROM windows-provider-off AS windows-provider-x86_64-0
 
 FROM windows-provider-${TILO_WINDOWS_ARCH}-${TILO_WITH_WINDOWS} AS windows-provider
 
-
 # ---- Minimal Windows paravirtual driver media -----------------------------
 # Fedora's pinned virtio-win RPM expands to almost 2 GiB because it contains
 # the same driver tree in several layouts. Tilo only consumes the bootable ISO
@@ -182,7 +183,6 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo,ro \
       mv usr/share/virtio-win/installer/virtio-win-guest-tools.exe \
         /out/installer/virtio-win-guest-tools.exe; \
       chmod 0644 /out/virtio-win.iso /out/installer/virtio-win-guest-tools.exe'
-
 
 # ---- Pinned Windows compatibility runtimes -------------------------------
 # UMU is the upstream-supported way to run Proton outside Steam. Keep the
@@ -221,7 +221,6 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
     && tar -xzf /tilo-assets/bottles-programs-d1160b8.tar.gz --strip-components=1 -C /out/catalogues/bottles-programs \
     && chmod -R a-w /out/catalogues/bottles-programs
 
-
 # ---- Windows compatibility system extension ------------------------------
 # Everything Windows apps need that is large: the FEX payload and the x86 guest
 # root (ARM), Proton, the Steam runtime and the virtio-win media, about 3.1 GB.
@@ -249,7 +248,6 @@ RUN --network=none python3 /tilo/windows_provider.py host --manifest /provider.j
 FROM scratch AS windows-compat-sysext
 COPY --from=windows-compat-sysext-build /out/ /
 
-
 # ---- AirPlay sender ---------------------------------------------------------
 # Doubletake's current protocol implementation is newer than its last binary
 # release: it includes the CoreUtils/HAP pairing path required by current
@@ -268,7 +266,6 @@ RUN --mount=type=cache,target=/go/pkg/mod \
         -o /out/doubletake ./cmd/doubletake \
     && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w -extldflags=-static' \
         -o /out/doubletake-test-receiver ./cmd/doubletake-test-receiver
-
 
 # ---- Joy-Con pairing daemon -------------------------------------------------
 # joycond (GPL-3.0-only) folds a left and a right Joy-Con into one uinput
@@ -296,7 +293,6 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
       /out/usr/lib/modules-load.d/joycond.conf \
     && test -x /out/usr/bin/joycond \
     && test -f /out/usr/lib/systemd/system/joycond.service
-
 
 # ---- bootc ------------------------------------------------------------------
 # The base's own bootc release, rebuilt with os/external-assets/bootc-runtime/:
@@ -347,7 +343,6 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
       > /out/usr/share/licenses/tilo-bootc/NOTICE \
     && rm -rf "/bootc-${BOOTC_VERSION}"
 
-
 # ---- xwayland-satellite -----------------------------------------------------
 # The X11 bridge, built from pinned upstream source with the patch in
 # os/external-assets/xwayland-satellite/ that keeps a paste in flight while the
@@ -368,6 +363,36 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
     && dnf clean all \
     && bash /install-xwayland-satellite.sh /tilo-assets /out/usr /tilo-assets.tsv /patches
 
+# A throwaway builder, so ukify and binutils do not ship in the OS image. It comes
+# out of the same digest-pinned base and the same frozen RPM snapshot as
+# everything else, so no stage of this build reaches the network. The UKI is
+# self-contained: its EFI stub comes from this stage's systemd-boot and does not
+# have to match the systemd in the rootfs.
+#
+# Every sealed image (this file, os/Containerfile.board,
+# os/Containerfile.dev-installer-base) carries this stage and the `uki` stage
+# below with the same instructions; tools/policy/check_uki_pipeline.py fails
+# when one copy changes alone. Only the FROM line may differ.
+FROM ${BASE_REF} AS uki-tools
+# Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
+ARG RPMS_REF
+COPY os/dev/uki-tools.packages /usr/local/share/tilo/uki-tools.packages
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
+    grep -v '^#' /usr/local/share/tilo/uki-tools.packages \
+    | xargs dnf install -y --setopt=reposdir=/repo \
+    && dnf clean all
+COPY os/dev/uki.sh os/dev/uki-hardware-profile.py os/dev/hardware_profile.py os/dev/make-boot-splash.py /usr/local/bin/
+
+# Nothing ships from this stage. It gathers the image's small tool stages, which
+# change with neither the Rust build nor the rootfs, into one target that CI
+# caches with its intermediate steps: the image build then neither repeats
+# their dnf transactions nor pulls the RPM snapshot to run them.
+FROM scratch AS image-tool-stages
+COPY --from=uki-tools /usr/local/bin/uki.sh /uki-tools/
+COPY --from=doubletake-builder /out/ /doubletake/
+COPY --from=joycond-builder /out/ /joycond/
+COPY --from=bootc-builder /out/ /bootc/
+COPY --from=xwayland-satellite-builder /out/ /xwayland-satellite/
 
 # ---- The sources the Rust compile reads -------------------------------------
 # Only what the builder stage reads, never the whole context: with
@@ -414,7 +439,10 @@ COPY os/desktop-artifacts /build/os/desktop-artifacts
 COPY os/app-artifacts /build/os/app-artifacts
 COPY os/app-runtime /build/os/app-runtime
 
-# ---- Stage 1: builder ------------------------------------------------------
+# ---- The OS builder ---------------------------------------------------------
+# The image the OS's binaries are compiled in (os/image/compile.sh), as its own
+# image, pinned by what it is built from: the same base and frozen RPM snapshot
+# as the OS, so what it links resolves on the OS.
 # Base pinned by digest against our own mirror (BASE_REF, os/base-snapshot.env):
 # a tag can be repointed, a digest can't — but upstream deletes the manifest a
 # digest points at within about a day, so the pin remains usable only if we hold a
@@ -527,437 +555,36 @@ WORKDIR /build
 # made every commit, even one that touched only os/ configuration, recompile
 # and relink every binary. The packaging steps after the compile, which stamp
 # bundles and registry rows with it, take the real value (ARG below).
-ARG SCCACHE_BUCKET=""
-ARG SCCACHE_ENDPOINT=""
-ARG SCCACHE_REGION="auto"
-ARG SCCACHE_S3_KEY_PREFIX="tilo/image/v1"
-ARG SCCACHE_S3_USE_SSL="false"
-# BuildKit can overlap the production and dev compiles. Keep their servers
-# on private filesystem sockets instead of competing for localhost:4226.
-ENV CARGO_HOME=/build/.cargo-home \
-    SCCACHE_DIR=/build/.sccache \
-    SCCACHE_SERVER_UDS=/tmp/tilo-image-sccache.sock \
-    SCCACHE_BUCKET=${SCCACHE_BUCKET} \
-    SCCACHE_ENDPOINT=${SCCACHE_ENDPOINT} \
-    SCCACHE_REGION=${SCCACHE_REGION} \
-    SCCACHE_S3_KEY_PREFIX=${SCCACHE_S3_KEY_PREFIX} \
-    SCCACHE_S3_USE_SSL=${SCCACHE_S3_USE_SSL} \
-    SCCACHE_IGNORE_SERVER_IO_ERROR=1 \
-    SCCACHE_IDLE_TIMEOUT=0 \
-    RUSTC_WRAPPER=sccache \
-    CARGO_INCREMENTAL=0 \
+# No compiler cache settings here: the compile (os/image/compile.sh) takes the
+# one its caller gives, and t gives every build its own cache only when the
+# image names none.
+ENV CARGO_INCREMENTAL=0 \
     SOURCE_DATE_EPOCH=0 \
     LC_ALL=C.UTF-8 \
     TZ=UTC
 
-# Everything above is the build toolchain: it changes with packages and the
-# pinned tools, not with the workspace, and CI caches it on its own (the compile
-# below goes through the compiler cache instead).
-FROM builder-base AS builder
-
-# Copy the frequently changing workspace only after the stable toolchain. The
-# sources arrive as one layer (the builder-sources stage above): each
-# instruction here commits a layer of this multi-gigabyte stage, and rootless
-# podman commits one by walking the whole tree, minutes apiece.
+# ---- The runtime bundle, the browser engine runtime and the app store -------
+# Packed from the compiled tree (the `compiled` build context: os/image/compile.sh's
+# OUT) in the OS builder, whose rootfs is the base the runtime bundle collects its
+# native closure from. Nothing here compiles.
+FROM builder-base AS apps-payload
 COPY --from=builder-sources /build/ /build/
-# The cooperative editor stays an OS-owned asset, outside app/runtime grants.
-RUN python3 crates/runtime/ush/native/build.py --out /out/ush-editor/bash-editor.so
-# Preloaded into the confined NTFS driver (crates/system/ntfs-mount).
-RUN python3 crates/system/ntfs-mount/native/build.py --out /out/ntfs-mount/fuse-handoff.so
-
-# Compile the binaries the OS images need. Cache mounts persist cargo's
-# registry + git checkouts (CARGO_HOME), the target dir, and the sccache store
-# across rebuilds; a cache-mounted target/ isn't in any layer, so the binaries
-# are cp'd to /out (outside the cache mount) in the same RUN for the final stage
-# to COPY.
-#
-# Two CI guards (the image builds under buildkit, not just podman/buildah):
-#  - The resolve comes from the tracked `Cargo.lock`, which is why that file is
-#    committed: a fresh resolve picks incompatible transitive versions (iroh
-#    pulls a pre-release ed25519-dalek that does not compile against current
-#    `signature`), and the failure surfaces inside a dependency rather than
-#    anywhere this image touches. `cargo build` (not --locked) still lets the
-#    resolve adjust conservatively where a manifest here differs, while keeping
-#    the good pins.
-#  - Brace the trailing sccache stat so a failing `cargo build` fails the RUN
-#    instead of being swallowed by `|| true` (which masked a cargo failure as a
-#    confusing downstream "COPY --from /out: not found").
-#
-# The application set is read out of the workspace members rather than listed
-# here. A hand-maintained list is how the image came to ship two GUI apps while
-# the tree held forty-six: adding an app to the workspace and forgetting this
-# file was silent. Deriving it means a new `apps/<name>/` is shipped by the
-# build that follows it, and an empty match is a hard failure rather than an
-# image with no apps. The browser is filtered out only when TILO_WITH_BROWSER=0
-# leaves its engine out.
-#
-# `tilo-app-package-cli`, `install` and `cli-shim` build the packaging tools: `tilo-app-package` and
-# `tilo-install` pack and install those apps into the image-wide store below,
-# and `tilo-install` ships so the running system can install and remove
-# packages of its own.
-# Every media engine in this tree sits behind a cargo feature that is OFF by
-# default, and deliberately so: `--shots`, the offline tests and CI must build
-# without a GStreamer stack, a camera or a network. An image that takes those
-# defaults is the one case where the trade-off is wrong — it ships a music
-# player that cannot produce sound, a video player that synthesises frames
-# instead of decoding them, a camera that cannot capture and clients whose
-# network backends are compiled out. The features are named here so the image,
-# and only the image, turns them on.
-#
-# Package-qualified (`<pkg>/<feature>`). The tapp applications and their
-# versioned shared runtime are built together below: Rust dylib symbol names
-# contain crate hashes, so separate Cargo invocations are not ABI-compatible.
-#
-# No app takes a `portal` feature, because none has one: `ui` compiles the host
-# file chooser into every app on every build, including --shots. Asking for
-# `video-editor/portal` is not a no-op — cargo refuses the whole invocation with
-# "none of the selected packages contains these features", which fails the image
-# build after the package install and the cold Rust compile have already run.
-# os/tests/app_store.sh checks each pair against cargo metadata for that reason.
-#
-# Fat LTO with one codegen unit serialized the final links for roughly fifty
-# binaries and made a warm image rebuild spend over an hour in this step.
-# The image-only Cargo overrides below use thin LTO, retaining cross-crate
-# optimization while allowing LLVM to use the runner cores. Eight codegen
-# units also bound concurrent thin-LTO scratch data on the image runner.
-# Other release artifacts keep the workspace's stricter profile unchanged.
-#
-# TILO_RUST_LTO says which of two the image takes: `thin`, the default and what
-# every published image is built with, or `off`, for integration, dev and local
-# builds. Thin LTO re-optimizes each binary's whole dependency graph at link
-# time, which sccache cannot cache: a warm CI rebuild that hit the compiler
-# cache for every object still spent fifteen minutes relinking. Without it a
-# one-crate change relinks in seconds. The build scripts choose the value from
-# what the build is for (os/dev/build-image.sh, .forgejo/workflows/build-image.yml),
-# and the image says which it got in its org.tilo.rust-lto label.
-# Layer timestamp rewriting can make a restored target cache newer than changed
-# workspace sources. Profiles are cleaned before fingerprinting so Cargo never
-# accepts a stale path-dependency rlib; sccache still reuses compiler objects.
-# That is TILO_CARGO_FRESHNESS=clean, the default and what CI builds. Local
-# builds (os/dev/local-inputs.sh) pass `content`: os/scripts/cargo-freshness.sh
-# marks exactly the sources whose contents changed newer than the cached target,
-# and every other source older, so Cargo reuses what did not change instead of
-# relinking ~50 binaries through thin LTO on every rebuild.
-ARG TILO_CARGO_FRESHNESS=clean
-ARG TILO_RUST_LTO=thin
-ARG TILO_WITH_BROWSER
+COPY --from=compiled / /out/
 ARG TILO_PREBUILT_APPS=0
-ARG TILO_PREBUILT_DESKTOP=0
-ARG TILO_CARGO_BUILD_JOBS=4
-# Debug info the release profile compiles (it strips debug info from the
-# output either way, keeping the symbol table a crash log names functions
-# from): the profile's line tables by default; 0 skips them, which only makes
-# a dev build compile faster.
-ARG TILO_RUST_DEBUGINFO=line-tables-only
-# 1 prints where each cargo build spent its time (cargo --timings).
-ARG TILO_CARGO_TIMINGS=
-ARG TILO_REQUIRE_COMPILER_CACHE=0
-# `shared` compiles through sccache: CI's runner cache when the build passes
-# the actions_cache_url and actions_runtime_token secrets (the Actions cache
-# protocol the runners serve), an S3 bucket when SCCACHE_BUCKET is set, else
-# only the local cache mount. `off` is
-# the independent reproduction lane of a publication: with no cache at all, a
-# planted object in the shared cache makes the two builds differ. It runs no
-# wrapper, and refuses compiler-cache credentials or settings.
-# `publication` is a publication's own cache: short-lived role credentials
-# (a session token is required, so the shared static key cannot stand in)
-# for a bucket only publication runs can write, under tilo/publication/.
-ARG TILO_COMPILER_CACHE=shared
-ENV CARGO_BUILD_JOBS=${TILO_CARGO_BUILD_JOBS}
+ARG TILO_WITH_BROWSER
 ARG TILO_APP_COLLECTION_PUBLISHER=""
-# Names the target cache, so builds that compile differently (os/dev/build-image.sh
-# hashes the settings into it) keep separate target directories instead of
-# rebuilding each other's artifacts. The cargo home and sccache are shared.
-ARG TILO_BUILD_CACHE_KEY=default
-RUN --mount=type=cache,target=/build/.cargo-home \
-    --mount=type=cache,id=tilo-cargo-target-${TILO_BUILD_CACHE_KEY},target=/build/target,sharing=locked \
-    --mount=type=cache,target=/build/.sccache \
-    --mount=type=secret,id=aws_access_key_id \
-    --mount=type=secret,id=aws_secret_access_key \
-    --mount=type=secret,id=aws_session_token \
-    --mount=type=secret,id=actions_cache_url \
-    --mount=type=secret,id=actions_runtime_token \
-    --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
-    export AWS_ACCESS_KEY_ID="$(cat /run/secrets/aws_access_key_id 2>/dev/null || true)" \
-    && ACTIONS_CACHE_URL="$(cat /run/secrets/actions_cache_url 2>/dev/null || true)" \
-    && ACTIONS_RUNTIME_TOKEN="$(cat /run/secrets/actions_runtime_token 2>/dev/null || true)" \
-    && if [ -n "$ACTIONS_CACHE_URL" ] && [ -n "$ACTIONS_RUNTIME_TOKEN" ]; then \
-         export ACTIONS_CACHE_URL ACTIONS_RUNTIME_TOKEN SCCACHE_GHA_ENABLED=on SCCACHE_GHA_VERSION=tilo-image-v1; \
-       fi \
-    && export AWS_SECRET_ACCESS_KEY="$(cat /run/secrets/aws_secret_access_key 2>/dev/null || true)" \
-    && AWS_SESSION_TOKEN="$(cat /run/secrets/aws_session_token 2>/dev/null || true)" \
-    && { [ -z "$AWS_SESSION_TOKEN" ] || export AWS_SESSION_TOKEN; } \
-    && phase=rust-setup && started=$(date +%s) \
-    && build_phase() { \
-         now=$(date +%s); \
-         printf 'TILO_BUILD_TIMING phase=%s elapsed_seconds=%s exit_code=0\n' "$phase" "$((now - started))"; \
-         phase=$1; started=$now; \
-       } \
-    && trap 'status=$?; printf "TILO_BUILD_TIMING phase=%s elapsed_seconds=%s exit_code=%s\n" "$phase" "$(( $(date +%s) - started ))" "$status"; if [ "$status" != 0 ]; then df -h /build /build/target /tmp; df -i /build /build/target /tmp; fi; sccache --show-stats 2>/dev/null || true; exit "$status"' EXIT \
-    && case "$TILO_COMPILER_CACHE:$TILO_REQUIRE_COMPILER_CACHE" in \
-         shared:0|off:0|publication:0) ;; \
-         shared:1|publication:1) export SCCACHE_IGNORE_SERVER_IO_ERROR=0 ;; \
-         *) printf '%s\n' 'TILO_COMPILER_CACHE must be shared, publication or off, TILO_REQUIRE_COMPILER_CACHE 0 or 1 (0 when off)' >&2; exit 1 ;; \
-       esac \
-    && if [ "$TILO_COMPILER_CACHE" = publication ]; then \
-         case "${AWS_SESSION_TOKEN:-}:$SCCACHE_S3_KEY_PREFIX" in \
-           ?*:tilo/publication/*) ;; \
-           *) printf '%s\n' 'The publication cache needs role session credentials and a tilo/publication/ prefix' >&2; exit 1 ;; \
-         esac; \
-       fi \
-    && if [ "$TILO_COMPILER_CACHE" = off ]; then \
-         if [ -n "${AWS_ACCESS_KEY_ID}${AWS_SECRET_ACCESS_KEY}${SCCACHE_BUCKET}${SCCACHE_ENDPOINT}${ACTIONS_CACHE_URL}${ACTIONS_RUNTIME_TOKEN}" ]; then \
-           printf '%s\n' 'A build without the compiler cache received compiler-cache settings' >&2; exit 1; \
-         fi; \
-         export RUSTC_WRAPPER=; \
-         printf '%s\n' 'compiling without a compiler cache' >&2; \
-       elif ! sccache --start-server; then \
-         if [ "$TILO_REQUIRE_COMPILER_CACHE" = 1 ]; then \
-           printf '%s\n' 'Required compiler cache is unavailable; refusing an uncached build' >&2; exit 1; \
-         fi; \
-         export RUSTC_WRAPPER=; \
-         printf '%s\n' 'sccache backend unavailable; compiling normally' >&2; \
-       fi \
-    && { sccache --zero-stats 2>/dev/null || true; } \
-    && case "$TILO_RUST_LTO" in \
-         thin|off) ;; \
-         *) printf '%s\n' 'TILO_RUST_LTO must be thin or off' >&2; exit 1 ;; \
-       esac \
-    # A content record vouches only for the units its build compiles, so each
-    # set of prebuilt inputs keeps its own.
-    && built_sources="/build/target/.tilo-built-sources-apps${TILO_PREBUILT_APPS}-desktop${TILO_PREBUILT_DESKTOP}-browser${TILO_WITH_BROWSER}" \
-    && case "$TILO_CARGO_FRESHNESS" in \
-         clean) cargo clean --release && cargo clean --profile thin-app ;; \
-         content) sh os/scripts/cargo-freshness.sh /build "$built_sources" \
-                    || { cargo clean --release && cargo clean --profile thin-app; } ;; \
-         *) printf '%s\n' 'TILO_CARGO_FRESHNESS must be clean or content' >&2; exit 1 ;; \
-       esac \
-    # Thin apps use the same package set and features as dist/apps/app-collections.toml
-    # (default collection), the Browser included; its engine is the separate
-    # runtime built at the end of this step.
-    && if [ "${TILO_WITH_BROWSER}" = "0" ]; then THIN_EXCLUDES="browser"; else THIN_EXCLUDES=""; fi \
-    && APP_FEATURES="music/audio,music/live,music/runtime-engine,video-player/decode,camera/live-capture,tube/live,tube/media,tube/grayjay-sync,tube/runtime-engine,mail/live,disks/live,video-editor/decode,video-editor/gst,typst-editor/runtime-engine,canvas/runtime-engine,mail/runtime-engine,settings/runtime-engine,calendar/runtime-engine,clocks/runtime-engine,contacts/runtime-engine,messages/runtime-engine" \
-    && if [ "${TILO_PREBUILT_DESKTOP}" = 1 ]; then \
-         DESKTOP_RELEASE_ARGS=""; \
-       else \
-         DESKTOP_RELEASE_ARGS="-p shell --bin shell --bin tilo-runtime-mcp -p launcher --bin tilo-launcher -p tilo-unlock-helper --bin tilo-unlock-helper"; \
-       fi \
-    && RELEASE_ARGS="${DESKTOP_RELEASE_ARGS} -p tilo-fs -p greeter -p installer -p imager -p runtime-bundle -p tilo-rollback -p tilo-sibling-unlock -p tilo-esp-write -p tilo-extension -p tilo-staging-reclaim -p tilo-install-helpers -p tilo-boot-order -p tilo-image-policy-check -p tilo-board-successor -p tilo-firstboot-files -p tilo-crypto -p tilo-user-identity -p tilo-cli -p app-cli -p ush -p tilo-projector -p tilo-session-record -p tilo-pdf -p tilo-app-package-cli -p tilo-control -p install -p cli-shim -p app-host -p local-model-service -p tilo-model-gateway -p tilo-secret-service -p system-extension -p compat-service -p account-custody -p legacy-vm -p tilo-ntfs-mount" \
-    # Select the shipped executables explicitly: --bins also links shell dev tools.
-    && RELEASE_BINS="--bin fs --bin tilo-model-manager --bin tilo-speech-worker --bin tilo-model-gateway --bin tilo-model-http --bin tilo-secret-service --bin tilo-greeter --bin tilo-installer --bin tilo-firstboot-home-seeds --bin tilo-installer-prepared-setup-extract --bin tilo-prepared-setup --bin tilo-runtime-bundle --bin tilo-app-host --bin tilo-rollback --bin tilo-sibling-unlock --bin tilo-esp-write --bin tilo-extension --bin tilo-staging-reclaim --bin tilo-install-handoff-copy --bin tilo-install-dev-ssh --bin tilo-vm-bootc-copy-cache --bin tilo-installer-offline-target --bin tilo-staging-handoff --bin tilo-vm-install-proof --bin tilo-boot-order --bin tilo-image-policy-check --bin tilo-board-successor --bin tilo-firstboot-files --bin tilo-crypto --bin tilo-image-trust --bin tilo-device-key-init --bin tilo --bin app --bin tilo-app-package --bin tilo-control --bin tilo-install --bin tilo-cli-shim --bin tilo-ush --bin tilo-projector --bin tilo-flight-recorder --bin tilo-session-report --bin tilo-pdf-helper --bin tilo-system-extension-manager --bin tilo-windows-runtime --bin tilo-relay --bin tilo-relay-admin --bin tilo-enroll --bin tilo-home-peer-control --bin tilo-relay-environment --bin tilo-relay-offers --bin tilo-legacy --bin tilo-account-credential --bin tilo-ntfs-mount" \
-    # The thin-app profile compiles each crate as one codegen unit, for tapp
-    # size. Built in the image without LTO (a dev build) the runtime and its
-    # dependencies take 16: one unit made fs alone compile for ten minutes.
-    # The wrapper still builds each app binary as one unit.
-    && build_thin_apps() { \
-         EXCLUDE_PACKAGES="${THIN_EXCLUDES}" \
-         APP_FEATURES="${APP_FEATURES}" \
-         CARGO_PROFILE_THIN_APP_CODEGEN_UNITS="$([ "$TILO_RUST_LTO" = off ] && echo 16 || echo 1)" \
-         CARGO_PROFILE_THIN_APP_DEBUG="$TILO_RUST_DEBUGINFO" \
-         EXTRA_CARGO_ARGS="$1" \
-           /build/os/scripts/build-thin-apps.sh; \
-       } \
-    # A build without LTO (the dev lanes) compiles the thin apps alongside the
-    # release binaries: Cargo locks each profile's directory on its own, and
-    # the release graph mostly waits on a few long units (tilo-ui, shell)
-    # while the apps compile wide. With thin LTO the two would not fit in the
-    # builder's memory, so a release builds them one after the other.
-    && thin_pid="" \
-    && if [ "${TILO_PREBUILT_APPS}" != 1 ] && [ "$TILO_RUST_LTO" = off ]; then \
-         { ( thin_started=$(date +%s); build_thin_apps "" \
-             && printf 'TILO_BUILD_TIMING phase=rust-thin-apps-parallel elapsed_seconds=%s exit_code=0\n' "$(( $(date +%s) - thin_started ))" \
-           ) > /tmp/tilo-thin-apps.log 2>&1 & } \
-         && thin_pid=$!; \
-       fi \
-    && build_phase rust-release \
-    # The relay serves browsers (`run --web`): a machine set up as a node runs
-    # the person's rooms for their web pages.
-    # Without LTO nothing merges the units again, so a dev build splits the
-    # large crates (shell's library alone ran 180 s at eight) further.
-    && release_units="$([ "$TILO_RUST_LTO" = off ] && echo 16 || echo 8)" \
-    && CARGO_PROFILE_RELEASE_LTO="$TILO_RUST_LTO" \
-       CARGO_PROFILE_RELEASE_CODEGEN_UNITS="$release_units" \
-       CARGO_PROFILE_RELEASE_DEBUG="$TILO_RUST_DEBUGINFO" \
-       cargo build --release ${TILO_CARGO_TIMINGS:+--timings} ${RELEASE_ARGS} -p tilo-relay ${RELEASE_BINS} --features tilo-relay/web,tilo-model-gateway/local-models,tilo-model-gateway/host-backend \
-    && { [ -z "$TILO_CARGO_TIMINGS" ] || python3 os/scripts/cargo-timings-summary.py target/cargo-timings/cargo-timing.html; } \
-    && build_phase rust-windows-vm \
-    && CARGO_PROFILE_RELEASE_LTO="$TILO_RUST_LTO" \
-       CARGO_PROFILE_RELEASE_CODEGEN_UNITS="$release_units" \
-       CARGO_PROFILE_RELEASE_DEBUG="$TILO_RUST_DEBUGINFO" \
-       cargo build --release -p windows-vm \
-         --bin tilo-windows-vm-control --bin tilo-windows-rail \
-    && build_phase rust-output-validation \
-    && missing=0 \
-    && for b in shell tilo-runtime-mcp tilo-projector tilo-flight-recorder tilo-session-report tilo-pdf-helper fs tilo-relay tilo-relay-admin tilo-enroll tilo-home-peer-control tilo-relay-environment tilo-relay-offers tilo-legacy tilo-model-manager tilo-speech-worker tilo-model-gateway tilo-model-http tilo-secret-service tilo-greeter tilo-installer tilo-firstboot-home-seeds tilo-installer-prepared-setup-extract tilo-prepared-setup tilo-runtime-bundle tilo-launcher tilo-app-host tilo-unlock-helper tilo-rollback tilo-sibling-unlock tilo-esp-write tilo-extension tilo-staging-reclaim tilo-install-handoff-copy tilo-install-dev-ssh tilo-vm-bootc-copy-cache tilo-installer-offline-target tilo-staging-handoff tilo-vm-install-proof tilo-boot-order tilo-image-policy-check tilo-board-successor tilo-firstboot-files tilo-crypto tilo-image-trust tilo-device-key-init tilo app tilo-app-package tilo-control tilo-install tilo-cli-shim tilo-ush tilo-system-extension-manager tilo-windows-vm-control tilo-windows-rail tilo-windows-runtime tilo-account-credential tilo-ntfs-mount; do \
-         case "${TILO_PREBUILT_DESKTOP}:$b" in 1:shell|1:tilo-launcher|1:tilo-unlock-helper|1:tilo-runtime-mcp) continue ;; esac; \
-         if [ ! -x "target/release/$b" ]; then \
-           printf 'Required build output is missing: %s\n' "$b" >&2; missing=1; \
-         fi; \
-       done \
-    # Profiles were already cleaned before compilation. A missing output now
-    # indicates a build contract error; repeating the same full build hides it.
-    && [ "$missing" = 0 ] \
-    && build_phase rust-stage-outputs \
-    && mkdir -p /out /out/thin-apps \
-    && if [ "${TILO_PREBUILT_DESKTOP}" = 1 ]; then \
-         cp /build/os/desktop-artifacts/shell \
-            /build/os/desktop-artifacts/tilo-runtime-mcp \
-            /build/os/desktop-artifacts/tilo-launcher \
-            /build/os/desktop-artifacts/tilo-unlock-helper \
-            /out/; \
-       else \
-         cp target/release/shell \
-            target/release/tilo-runtime-mcp \
-            target/release/tilo-launcher \
-            target/release/tilo-unlock-helper \
-            /out/; \
-       fi \
-    && cp target/release/tilo-projector \
-          target/release/tilo-flight-recorder \
-          target/release/tilo-session-report \
-          target/release/tilo-pdf-helper \
-          target/release/fs \
-          target/release/tilo-relay \
-          target/release/tilo-relay-admin \
-          target/release/tilo-enroll \
-          target/release/tilo-home-peer-control \
-          target/release/tilo-relay-environment \
-          target/release/tilo-relay-offers \
-          target/release/tilo-legacy \
-          target/release/tilo-model-manager \
-          target/release/tilo-speech-worker \
-          target/release/tilo-model-gateway \
-          target/release/tilo-model-http \
-          target/release/tilo-secret-service \
-          target/release/tilo-system-extension-manager \
-          target/release/tilo-greeter \
-          target/release/tilo-installer \
-          target/release/tilo-firstboot-home-seeds \
-          target/release/tilo-installer-prepared-setup-extract \
-          target/release/tilo-prepared-setup \
-          target/release/tilo-runtime-bundle \
-          target/release/tilo-app-host \
-          target/release/tilo-rollback \
-          target/release/tilo-sibling-unlock \
-          target/release/tilo-esp-write \
-          target/release/tilo-extension \
-          target/release/tilo-staging-reclaim \
-          target/release/tilo-install-handoff-copy \
-          target/release/tilo-install-dev-ssh \
-          target/release/tilo-vm-bootc-copy-cache \
-          target/release/tilo-installer-offline-target \
-          target/release/tilo-staging-handoff \
-          target/release/tilo-vm-install-proof \
-          target/release/tilo-boot-order \
-          target/release/tilo-image-policy-check \
-          target/release/tilo-board-successor \
-          target/release/tilo-firstboot-files \
-          target/release/tilo-crypto \
-          target/release/tilo-image-trust \
-          target/release/tilo-device-key-init \
-          target/release/tilo \
-          target/release/app \
-          target/release/tilo-app-package \
-          target/release/tilo-control \
-          target/release/tilo-install \
-          target/release/tilo-cli-shim \
-          target/release/tilo-ush \
-          target/release/tilo-windows-vm-control \
-          target/release/tilo-windows-rail \
-          target/release/tilo-windows-runtime \
-          target/release/tilo-account-credential \
-          target/release/tilo-ntfs-mount \
-          /out/ \
-    && ln -s app /out/store \
-    && ln -s tilo /out/system \
-    && mkdir -p /out/completions/bash /out/completions/fish /out/completions/zsh \
-    && target/release/tilo completions bash > /out/completions/bash/tilo \
-    && target/release/app completions bash > /out/completions/bash/app \
-    && target/release/tilo completions fish > /out/completions/fish/tilo.fish \
-    && target/release/app completions fish > /out/completions/fish/app.fish \
-    && target/release/tilo completions zsh > /out/completions/zsh/_tilo \
-    && target/release/app completions zsh > /out/completions/zsh/_app \
-    # Files stays a standalone /usr/bin binary for recovery; its package is the
-    # thin build like every other app, matching the release collection.
-    && build_phase rust-thin-apps \
-    && if [ "${TILO_PREBUILT_APPS}" = 1 ]; then \
-         mkdir -p /out/prebuilt-apps \
-         && cp /build/os/app-artifacts/*.tapp /out/prebuilt-apps/ \
-         && cp -a /build/os/app-runtime/tilo-runtime /usr/lib/ \
-         && cp /build/os/app-runtime/runtime-bundle-publisher.hex /out/ \
-         && RUNTIME_DYLIB="$(find /usr/lib/tilo-runtime -name libruntime_dylib.so -print -quit)" \
-         && [ -n "$RUNTIME_DYLIB" ] \
-         && cp "$RUNTIME_DYLIB" /out/libruntime_dylib.so \
-         && test -x "$(dirname "$RUNTIME_DYLIB")/../bin/tilo-runtime-account-capability" \
-         && cp "$(dirname "$RUNTIME_DYLIB")/../bin/tilo-runtime-account-capability" /out/ \
-         && find "$(dirname "$RUNTIME_DYLIB")" -maxdepth 1 -name 'libtilo_*_engine.so' -printf '%f\n' \
-              | sort > /out/runtime-engines \
-         && while IFS= read -r engine; do cp "$(dirname "$RUNTIME_DYLIB")/$engine" /out/; done < /out/runtime-engines; \
-       else \
-         if [ -n "$thin_pid" ]; then \
-           thin_status=0; wait "$thin_pid" || thin_status=$?; \
-           cat /tmp/tilo-thin-apps.log; \
-           [ "$thin_status" = 0 ]; \
-         else \
-           build_thin_apps "${TILO_CARGO_TIMINGS:+--timings}" \
-           && { [ -z "$TILO_CARGO_TIMINGS" ] || python3 os/scripts/cargo-timings-summary.py target/cargo-timings/cargo-timing.html; }; \
-         fi \
-         && for m in /build/apps/*/tilo-app.toml; do \
-              p="$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$(dirname "$m")/Cargo.toml" | head -1)"; \
-              b="$(basename "$(sed -n 's/^bin  *= *"\([^"]*\)".*/\1/p' "$m" | head -1)")"; \
-              case " ${THIN_EXCLUDES} " in *" $p "*) continue ;; esac; \
-              [ -z "$b" ] || cp "target/thin-app/$b" /out/thin-apps/; \
-            done \
-         && cp target/thin-app/libruntime_dylib.so /out/ \
-         && cp target/thin-app/tilo-runtime-account-capability /out/ \
-         # The runtime engines: libraries one app maps beside the
-         # runtime, which build-thin-apps.sh lists; signed into the bundle below.
-         && cp target/thin-app/runtime-engines /out/runtime-engines \
-         && while IFS= read -r engine; do cp "target/thin-app/$engine" /out/; done < /out/runtime-engines \
-         && LIBSTD="$(find "$(rustc --print target-libdir)" -maxdepth 1 -name 'libstd-*.so' -print -quit)" \
-         && [ -n "${LIBSTD}" ] \
-         && cp "${LIBSTD}" /out/; \
-       fi \
-    # The browser engine: the native CEF host and the CEF files it loads,
-    # assembled as the tree the engine runtime bundle below signs.
-    && build_phase chromium-engine \
-    && if [ "${TILO_WITH_BROWSER}" != 0 ]; then \
-         case "$(uname -m)" in \
-           x86_64) cef_platform=linux64 ;; \
-           aarch64) cef_platform=linuxarm64 ;; \
-           *) echo "no Chromium engine for $(uname -m)" >&2; exit 1 ;; \
-         esac \
-         && cef_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["chromium_version"])' scripts/browser/cef-lock.json)" \
-         && python3 scripts/browser/build-host.py --platform "$cef_platform" \
-              --sdk-archive "/tilo-assets/cef-${cef_version}-${cef_platform}-minimal.tar.bz2" \
-              --runtime /out/chromium-engine --jobs "${TILO_CARGO_BUILD_JOBS}" \
-         && test -x /out/chromium-engine/chromium/tilo-chromium-host; \
-       fi \
-    # Only now does the target directory hold this workspace's build in every
-    # profile; a build that stopped earlier left the changed sources marked.
-    && if [ "$TILO_CARGO_FRESHNESS" = content ]; then \
-         sh os/scripts/cargo-freshness.sh --built "$built_sources"; \
-       fi \
-    && build_phase rust-cleanup \
-    # Every build product needed below now lives in /out. A clean build's
-    # target cache is disposable (sccache holds reusable compiler objects), so
-    # it is emptied to keep it from starving the later, large Windows
-    # compatibility RPM transaction. A content-fresh build keeps it: it is what
-    # the next build reuses, together with the hash record inside it, and
-    # emptying it made every local rebuild relink every binary.
-    && if [ "$TILO_CARGO_FRESHNESS" = clean ]; then \
-         find /build/target -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +; \
-       fi
-
-# Read the hardening back off the linked binaries. `.cargo/config.toml` sets
-# the flags; this is what proves they survived to the artifacts this image
-# ships — a dropped linker argument or a target change is otherwise invisible
-# until someone runs readelf on a released image. Fails the build, on purpose.
-RUN /build/os/scripts/verify-elf-hardening.sh /out \
-    && { [ "${TILO_PREBUILT_APPS}" = 1 ] \
-         || /build/os/scripts/verify-elf-hardening.sh /out/thin-apps; } \
-    && /build/os/scripts/verify-elf-hardening.sh /out/libruntime_dylib.so /out/tilo-runtime-account-capability \
-         $(sed 's|^|/out/|' /out/runtime-engines)
+# Development images sign their runtime bundle, browser runtime and apps with
+# identities derived from what they sign (os/scripts/derived-identity.py), so
+# the same payload gives the same signatures and the same layers in every build;
+# a key minted per build made every build's runtime and app layers new. Their
+# keys are no secret, and no trust list but the image's own names them, as
+# before. Releases pass 0 and their own identities.
+ARG TILO_DERIVED_IDENTITIES=0
+COPY --chmod=0755 os/scripts/derived-identity.py /usr/local/libexec/tilo-derived-identity
+# A prebuilt runtime (TILO_PREBUILT_APPS=1) is where the bake below looks for it.
+RUN if [ "${TILO_PREBUILT_APPS}" = 1 ]; then \
+      mkdir -p /usr/lib/tilo-runtime && cp -a /out/prebuilt-runtime/tilo-runtime/. /usr/lib/tilo-runtime/; \
+    fi
 
 # ---- Bake a signed runtime bundle from THIS image's rootfs -----------------
 # Runs at image-build time so the produced OS image ships a pre-mounted
@@ -1019,7 +646,13 @@ RUN --mount=type=bind,source=os/scripts/verify-runtime-bundle-closure.sh,target=
     else \
       python3 /build/tools/font-catalog.py prepare \
         /build/crates/sdk/ui-core/assets/fonts /out/fonts --scope product \
-      && /out/tilo-runtime-bundle key generate --out /out/runtime-bundle-identity.json \
+      && if [ "${TILO_DERIVED_IDENTITIES}" = 1 ]; then \
+           /usr/local/libexec/tilo-derived-identity runtime-bundle /out/libruntime_dylib.so \
+             /out/tilo-runtime-account-capability /out/runtime-engines $(sed 's|^|/out/|' /out/runtime-engines) \
+             $(find /out -maxdepth 1 -name 'libstd-*.so') /out/fonts > /out/runtime-bundle-identity.json; \
+         else \
+           /out/tilo-runtime-bundle key generate --out /out/runtime-bundle-identity.json; \
+         fi \
       && RUST_LIBSTD="$(find /out -maxdepth 1 -name 'libstd-*.so' -print -quit)" \
       && [ -n "${RUST_LIBSTD}" ] \
       && /bin/bash -eu -o pipefail -c ' \
@@ -1074,6 +707,10 @@ RUN --mount=type=secret,id=browser_runtime_identity \
                    --identity /run/secrets/browser_runtime_identity)" \
               && test "$actual" = "$TILO_BROWSER_RUNTIME_PUBLISHER" \
               && identity=/run/secrets/browser_runtime_identity; \
+            elif [ "${TILO_DERIVED_IDENTITIES}" = 1 ]; then \
+              /usr/local/libexec/tilo-derived-identity browser-runtime /out/chromium-engine/chromium \
+                > /out/browser-runtime-identity.json \
+              && identity=/out/browser-runtime-identity.json; \
             else \
               /out/tilo-runtime-bundle key generate --out /out/browser-runtime-identity.json \
               && identity=/out/browser-runtime-identity.json; \
@@ -1117,6 +754,10 @@ RUN --mount=type=secret,id=app_publisher_identity \
     export TILO_IMAGE_BUILD=1 \
     && if [ -s /run/secrets/app_publisher_identity ]; then \
          export IDENTITY_JSON=/run/secrets/app_publisher_identity; \
+       elif [ "${TILO_DERIVED_IDENTITIES}" = 1 ]; then \
+         /usr/local/libexec/tilo-derived-identity app-publisher /out/thin-apps /out/prebuilt-apps \
+           > /tmp/tilo-app-publisher.json \
+         && export IDENTITY_JSON=/tmp/tilo-app-publisher.json; \
        fi \
     && BIN_DIR=/out/thin-apps \
     TAPP_DIR=/out/prebuilt-apps \
@@ -1151,8 +792,8 @@ RUN --mount=type=bind,from=env-runtime,source=/,target=/tilo-env-runtime,ro \
 # applied to the multi-gigabyte bootc rootfs once, at the same logical boundary
 # where its individual files were previously copied.
 FROM scratch AS native-builder-payload
-COPY --from=builder /out/ /out/
-COPY --from=builder /usr/share/tilo-apps/ /usr/share/tilo-apps/
+COPY --from=apps-payload /out/ /out/
+COPY --from=apps-payload /usr/share/tilo-apps/ /usr/share/tilo-apps/
 
 # ---- One copy of the font catalog -------------------------------------------
 # The catalog's faces have three readers, each at its own path: the signed
@@ -1212,10 +853,10 @@ RUN --mount=type=cache,id=tilo-wallpaper-artifacts,target=/var/cache/tilo-wallpa
 # earlier invocation's cache while the builder re-runs) would not be theirs.
 FROM ${BASE_REF} AS runtime-image-payload
 RUN --network=none \
-    --mount=type=bind,from=builder,source=/usr/lib/tilo-runtime,target=/tilo-runtime,ro \
-    --mount=type=bind,from=builder,source=/out/runtime-version,target=/tilo-runtime-version,ro \
-    --mount=type=bind,from=builder,source=/out/runtime-bundle-publisher.hex,target=/tilo-runtime-publisher.hex,ro \
-    --mount=type=bind,from=builder,source=/out/browser-runtime-publisher.hex,target=/tilo-browser-runtime-publisher.hex,ro \
+    --mount=type=bind,from=apps-payload,source=/usr/lib/tilo-runtime,target=/tilo-runtime,ro \
+    --mount=type=bind,from=apps-payload,source=/out/runtime-version,target=/tilo-runtime-version,ro \
+    --mount=type=bind,from=apps-payload,source=/out/runtime-bundle-publisher.hex,target=/tilo-runtime-publisher.hex,ro \
+    --mount=type=bind,from=apps-payload,source=/out/browser-runtime-publisher.hex,target=/tilo-browser-runtime-publisher.hex,ro \
     --mount=type=bind,from=os-fonts,source=/out/fonts,target=/tilo-os-fonts,ro \
     --mount=type=bind,source=tools/font-catalog.py,target=/tilo-src/tools/font-catalog.py,ro \
     --mount=type=bind,source=crates/sdk/ui-core/assets/fonts,target=/tilo-src/crates/sdk/ui-core/assets/fonts,ro \
@@ -1241,7 +882,7 @@ RUN --network=none \
 # and its content-addressed payload objects, plus the packaging CLI that
 # submits them. Built only when that target is asked for; the image never
 # contains it.
-FROM builder AS engine-runtime-package-build
+FROM apps-payload AS engine-runtime-package-build
 ARG CHROMIUM_RUNTIME_VERSION
 ARG ENGINE_RUNTIME_PACKAGE_VERSION=0.1.0
 RUN --mount=type=secret,id=tapp_publisher_identity \
@@ -1307,30 +948,34 @@ RUN --network=none \
       --from /out \
       --dest /image --by-layer --all
 
+# The side builds come through image-tool-stages, so a build of the binaries
+# given that stage as an image (t's, os/image/layers.toml) doesn't build them again.
 FROM scratch AS desktop-binaries
 COPY --from=component-files /image/desktop-binaries/ /
-COPY --from=doubletake-builder /out/doubletake /usr/libexec/tilo-doubletake
-COPY --from=doubletake-builder /out/doubletake-test-receiver /usr/libexec/tilo-doubletake-test-receiver
-COPY --from=joycond-builder /out/usr/bin/joycond /usr/bin/joycond
-COPY --from=joycond-builder /out/usr/lib/systemd/system/joycond.service /usr/lib/systemd/system/joycond.service
-COPY --from=joycond-builder /out/usr/lib/modules-load.d/joycond.conf /usr/lib/modules-load.d/joycond.conf
+COPY --from=image-tool-stages /doubletake/doubletake /usr/libexec/tilo-doubletake
+COPY --from=image-tool-stages /doubletake/doubletake-test-receiver /usr/libexec/tilo-doubletake-test-receiver
+COPY --from=image-tool-stages /joycond/usr/bin/joycond /usr/bin/joycond
+COPY --from=image-tool-stages /joycond/usr/lib/systemd/system/joycond.service /usr/lib/systemd/system/joycond.service
+COPY --from=image-tool-stages /joycond/usr/lib/modules-load.d/joycond.conf /usr/lib/modules-load.d/joycond.conf
 # bootc that finds this system's ESP on a disk it shares (bootc-builder). It
 # replaces the base's binary of the same release; the rootfs's final checks run
 # it against the base's libostree.
-COPY --from=bootc-builder /out/usr/bin/bootc /usr/bin/bootc
-COPY --from=bootc-builder /out/usr/share/licenses/tilo-bootc/ /usr/share/licenses/tilo-bootc/
+COPY --from=image-tool-stages /bootc/usr/bin/bootc /usr/bin/bootc
+COPY --from=image-tool-stages /bootc/usr/share/licenses/tilo-bootc/ /usr/share/licenses/tilo-bootc/
 # The X11 bridge with the in-flight clipboard handoff fix
 # (xwayland-satellite-builder); its runtime packages are in the rootfs.
-COPY --from=xwayland-satellite-builder /out/usr/bin/xwayland-satellite /usr/bin/xwayland-satellite
-COPY --from=xwayland-satellite-builder /out/usr/share/licenses/tilo-xwayland-satellite/ /usr/share/licenses/tilo-xwayland-satellite/
+COPY --from=image-tool-stages /xwayland-satellite/usr/bin/xwayland-satellite /usr/bin/xwayland-satellite
+COPY --from=image-tool-stages /xwayland-satellite/usr/share/licenses/tilo-xwayland-satellite/ /usr/share/licenses/tilo-xwayland-satellite/
 
 FROM scratch AS remote-capture-files
 COPY os/etc/tilo/desktop.toml os/etc/tilo/cache-gc.toml /etc/tilo/
 COPY os/etc/modprobe.d/tilo-remote-camera.conf /etc/modprobe.d/tilo-remote-camera.conf
 COPY os/etc/modules-load.d/tilo-remote-camera.conf os/etc/modules-load.d/tilo-ddc.conf /etc/modules-load.d/
 
+# The files of this tree that are not compiled: scripts, units, keys. Its
+# compiled files are a layer of their own (binaries.Containerfile), so a changed
+# binary doesn't change the system layer these go into.
 FROM scratch AS rollback-files
-COPY --from=component-files /image/rollback-files/ /
 COPY \
     os/usr/libexec/tilo-rollback-common \
     os/usr/libexec/tilo-rollback-confirm \
@@ -1353,8 +998,10 @@ COPY \
 COPY os/tests/rollback-boot-check.sh /usr/libexec/tilo-rollback-boot-check
 COPY os/tests/boot_units_gate.sh /usr/libexec/tilo/boot-units-gate.sh
 
+# The files of this tree that are not compiled: scripts, units, keys. Its
+# compiled files are a layer of their own (binaries.Containerfile), so a changed
+# binary doesn't change the system layer these go into.
 FROM scratch AS recovery-files
-COPY --from=component-files /image/recovery-files/ /
 COPY --chmod=0755 \
     os/usr/libexec/tilo-deployment \
     os/usr/libexec/tilo-system-extension-activate \
@@ -1412,9 +1059,10 @@ COPY --chmod=0755 os/tests/recovery-boot-check.sh /usr/libexec/tilo-recovery-boo
 # (/usr/share/tilo/system-extensions/sysext.d, /usr/share/tilo/extensions.pub). The
 # image carries no extension payload. See
 # /usr/share/tilo/system-extensions/README.md.
+# The files of this tree that are not compiled: scripts, units, keys. Its
+# compiled files are a layer of their own (binaries.Containerfile), so a changed
+# binary doesn't change the system layer these go into.
 FROM scratch AS extension-files
-# The helper itself (os/components.toml, component `extension`).
-COPY --from=component-files /image/extension-files/ /
 # The only key a manifest may be signed with (KMS alias/tilo-extension-manifests);
 # separate from cosign.pub, so the OS update key cannot authorize one.
 COPY keys/extensions.pub /usr/share/tilo/extensions.pub
@@ -1435,13 +1083,12 @@ COPY os/usr/share/doc/tilo/codec-pack.md /usr/share/doc/tilo/codec-pack.md
 # License information only; Cisco binaries remain separate end-user downloads.
 COPY os/usr/share/licenses/tilo-openh264/BINARY_LICENSE.txt /usr/share/licenses/tilo-openh264/BINARY_LICENSE.txt
 
-
-# ---- Stage 2: rootfs (the OS filesystem) ------------------------------------
-# Named, because it is no longer the last stage: the sealed layout needs the
-# kernel moved out of this tree and into a Unified Kernel Image, and the UKI has
-# to be built over the *finished* rootfs (its composefs digest is the digest of
-# what will actually be mounted). See the split/uki/final stages at the end.
-FROM ${BASE_REF} AS rootfs-base
+# ---- The packages: the frozen RPM set over the pinned base -----------------
+# The first layer action of the OS: everything the package transaction puts over
+# the base, keyed by the package lists, the RPM snapshot and the base, so no
+# change to Tilo's code or configuration reruns it. The pieces above build over
+# it given as an image (os/image/layers.toml).
+FROM ${BASE_REF} AS packages
 ARG SOURCE_DATE_EPOCH=0
 
 # ---- Directory times independent of the builder ------------------------------
@@ -2131,6 +1778,162 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
 # login, so the first Store discovery sees defaults instead of racing lazy
 # initialization. Flatpak's applied-remotes history preserves disabled/removed
 # defaults; the initializer never uses unconditional remote-add.
+
+# The kernel is a package transaction of its own, over the packages: keyed by
+# the pinned kernel image and the RPM snapshot, it doesn't rerun when Tilo's
+# code or configuration changes. Its initramfs reads Tilo's binaries (the
+# rollback and unlock helpers it carries) and the public trust, so it is built
+# above them, with the derived state (rootfs.Containerfile).
+FROM packages AS kernel-installed
+# The build-only dnf/rpm wrappers read it.
+ARG SOURCE_DATE_EPOCH=0
+ARG FINALIZE_RPMDB="/usr/libexec/tilo/finalize-rpmdb"
+ARG RPMS_REF
+
+# ---------------------------------------------------------------------------
+# Custom Tilo kernel: swap Fedora's kernel-core for our tuned tilo-kernel-core.
+# ---------------------------------------------------------------------------
+# The kernel image (see os/kernel/Containerfile + .forgejo/workflows/
+# build-kernel.yml) rebuilds Fedora's kernel with a config fragment that:
+#   * links storage/USB/HID boot-path drivers statically while keeping network
+#     drivers signed and modular because networking is off the login path, so the
+#     boot path needs no module loading to reach the root device, and
+#   * tunes for interactive latency (PREEMPT + HZ=1000 + THP=madvise +
+#     SCHED_MC), and
+#   * drops DEBUG_INFO so the RPM doesn't carry ~800 MB of debuginfo.
+#
+# Because the tilo-kernel repo is a distinct OCI image (KERNEL_RPMS_REF),
+# we mount it alongside the frozen repo, write a two-repo dnf config on
+# the fly, and swap kernel-core → tilo-kernel-core.  --nogpgcheck: our
+# in-house RPMs aren't signed by Fedora's key. The image build verifies the
+# digest-pinned tilo-kernel image's cosign signature and provenance before
+# consuming it (os/dev/verify-kernel-provenance.sh, run by build-image.yml);
+# os/etc/containers/policy.json has no tilo-kernel scope, and an installed
+# machine never pulls that image.
+#
+# An initramfs is mandatory, and the static drivers do not remove the need
+# for one: unlocking an encrypted root takes early USERSPACE (device-mapper
+# setup, a TPM unseal or a passphrase prompt, systemd-cryptsetup). Static
+# drivers get the kernel as far as seeing the block device; they cannot open
+# a LUKS volume. Under the base's `layout=ostree` kernel-install config,
+# kernel-install deliberately does not run dracut, so the image build owns
+# initramfs generation — hence the explicit dracut call in rootfs.Containerfile,
+# once everything the initramfs carries is in place. The base's
+# dracut drop-ins (/usr/lib/dracut/dracut.conf.d/*bootc*) already add the
+# crypt, systemd-cryptsetup, tpm2-tss and clevis modules.
+ARG TILO_HARDWARE_PROFILE=generic
+# Buildah does not hash a `--mount=from=` stage into this RUN's cache key, so
+# a changed `FROM ${KERNEL_RPMS_REF} AS kernel-rpms` reused the previous swap
+# and the new kernel was never installed. Redeclaring the ref here (it is
+# already a build-arg) puts its value in this RUN's cache key only; layers
+# before this ARG stay cached. The shell below reads it, so the layer reruns
+# when the kernel image identity changes.
+ARG KERNEL_RPMS_REF
+# The Lenovo profile needs the Adreno SQE firmware from Fedora's qcom-firmware
+# RPM. Keep it in the frozen ARM package set, but install it only in that image.
+# tilo-rpm-snapshot-package[aarch64]: qcom-firmware
+# Hash only this profile's firmware. Later board imports must not rebuild the
+# generic kernel/initramfs when the runner seed publishes the same rootfs.
+RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
+    --mount=type=bind,from=kernel-rpms,source=/repo,target=/qkernel-repo \
+    set -eux; \
+    test -n "$KERNEL_RPMS_REF"; \
+    mkdir -p /etc/tilo-swap.d; \
+    printf '[frozen]\nname=frozen\nbaseurl=file:///frozen-repo\ngpgcheck=0\nenabled=1\n' \
+        > /etc/tilo-swap.d/frozen.repo; \
+    printf '[tilo-kernel]\nname=tilo-kernel\nbaseurl=file:///qkernel-repo\ngpgcheck=0\nenabled=1\n' \
+        > /etc/tilo-swap.d/tilo-kernel.repo; \
+    if [ "$TILO_HARDWARE_PROFILE" = lenovo-83ed ]; then \
+        dnf install -y --setopt=reposdir=/etc/tilo-swap.d qcom-firmware; \
+    fi; \
+    # --allowerasing lets the swap drop the base's `kernel` meta-package
+    # (it hard-requires kernel-core-uname-r = <exact-fedora-version>,
+    # which our tilo-kernel-core doesn't satisfy since it carries a
+    # different Release tag). tilo-kernel-core Provides: kernel so nothing
+    # downstream loses a dependency.
+    dnf swap -y --setopt=reposdir=/etc/tilo-swap.d --nogpgcheck --allowerasing \
+        kernel-core tilo-kernel-core; \
+    rm -rf /etc/tilo-swap.d; \
+    # Which kernel version did the swap leave behind? Ask the filesystem: rpm is
+    # no help here, because tilo-kernel-core provides no kernel-uname-r and its
+    # file list records /lib/modules/... where a query would say /usr/lib/... .
+    #
+    # Count kernel IMAGES, not directories. Removing kernel-core does not remove
+    # its modules directory: the base ships a prebuilt initramfs there that no
+    # package owns, so the directory survives with that file in it and a count of
+    # directories finds two. The loop further down exists to clear exactly that
+    # leftover — so asserting on directories here is the cleanup firing too late
+    # rather than a real ambiguity, and it failed every build that did not restore
+    # this layer from cache.
+    #
+    # A kernel image is /usr/lib/modules/<kver>/vmlinuz (Fedora's layout) or
+    # /boot/vmlinuz-<kver> (tilo-kernel-core's, moved into place below). The
+    # leftover directory has neither, because its vmlinuz belonged to the package
+    # that was just removed.
+    kver=""; n=0; \
+    for d in /usr/lib/modules/*/; do \
+      k="$(basename "$d")"; \
+      if [ -f "$d/vmlinuz" ] || [ -f "/boot/vmlinuz-$k" ]; then \
+        kver="$k"; n=$((n+1)); \
+      fi; \
+    done; \
+    if [ "$n" -ne 1 ]; then \
+      echo "expected exactly one kernel image after the kernel swap, found $n" >&2; \
+      ls -la /usr/lib/modules/ /boot >&2 || true; \
+      exit 1; \
+    fi; \
+    # tilo-kernel-core installs its kernel as /boot/vmlinuz-<kver>, not into the
+    # modules directory the way Fedora's kernel-core does. ostree does find it
+    # there — it falls back to /boot/vmlinuz-<kver> — which is why nobody noticed,
+    # but it means the image carried a kernel and no initramfs beside it, and
+    # every tool that goes looking for the pair (this build included) came up
+    # empty. Put both where the base image puts them.
+    if [ -f "/boot/vmlinuz-$kver" ] && [ ! -f "/usr/lib/modules/$kver/vmlinuz" ]; then \
+      mv "/boot/vmlinuz-$kver" "/usr/lib/modules/$kver/vmlinuz"; \
+    fi; \
+    test -f "/usr/lib/modules/$kver/vmlinuz"; \
+    # The base ships a prebuilt initramfs for ITS kernel, and that file is
+    # owned by no RPM — so removing kernel-core leaves the old modules
+    # directory behind and the image would carry two kernel versions.
+    for d in /usr/lib/modules/*; do \
+      [ "$d" = "/usr/lib/modules/$kver" ] || rm -rf "$d"; \
+    done; \
+    # /boot belongs to the deployment, not the image: whatever the kernel
+    # packages dropped there is now duplicated under the modules directory.
+    rm -f /boot/vmlinuz-* /boot/initramfs-* /boot/System.map-* /boot/config-*; \
+    dnf clean all && ${FINALIZE_RPMDB}
+
+# The rpm database this image ships is intact and carries no WAL sidecars.
+#
+# Asserted positively rather than by absence of an error, because that is how
+# this failed before: `rpm -qa` kept working off the Packages blob while the
+# Basenames/Dirnames indexes were structurally corrupt, so every step still
+# "succeeded" until a dnf resolve needed a file dependency and claimed the base
+# image did not provide /usr/bin/basename. `rpm -qf` on a file the base owns is
+# the cheapest query that actually reads those indexes.
+RUN owner="$(rpm -qf /usr/bin/basename 2>&1 || true)" \
+ && case "$owner" in \
+      coreutils-*) echo "rpmdb file index intact: /usr/bin/basename -> $owner" ;; \
+      *) echo "rpmdb file index is corrupt: /usr/bin/basename -> $owner" >&2; exit 1 ;; \
+    esac \
+ && rpm --verifydb \
+ && rm -f /usr/lib/sysimage/rpm/rpmdb.sqlite-wal \
+           /usr/lib/sysimage/rpm/rpmdb.sqlite-shm \
+ && ( test ! -e /usr/lib/sysimage/rpm/rpmdb.sqlite-wal \
+        || { echo "rpmdb.sqlite-wal is in the image; see FINALIZE_RPMDB" >&2; exit 1; } ) \
+ && ( test ! -e /usr/lib/sysimage/rpm/rpmdb.sqlite-shm \
+
+# ---- The system: configuration, units, policy over the packages -----------
+# Everything of the OS that is neither a package nor compiled here: files from
+# os/, the rendered splash and wallpapers, the SELinux module, the Windows
+# provider, enabled and masked units. It changes with os/ and nothing compiled.
+FROM kernel-installed AS system
+# The build-only dnf/rpm wrappers read it.
+ARG SOURCE_DATE_EPOCH=0
+ARG FINALIZE_RPMDB="/usr/libexec/tilo/finalize-rpmdb"
+ARG RPMS_REF
+ARG TILO_WINDOWS_ARCH
+
 COPY os/usr/share/flatpak/remotes.d/flathub.flatpakrepo /usr/share/flatpak/remotes.d/flathub.flatpakrepo
 
 # Keep encrypted-root unlock in the same visual path as the UKI splash. The
@@ -2847,6 +2650,12 @@ RUN for u in \
 # service is a decision to be argued for, not a default.
 RUN firewall-offline-cmd --set-default-zone=FedoraWorkstation
 
+# ---- The public trust ------------------------------------------------------
+# Its own piece because it is what development and release images differ by
+# below the binaries: the keys and owner anchor the image trusts. The pieces
+# under it are the same blobs for every variant.
+FROM system AS trust
+
 # Keep per-run public trust late: new development public keys must not
 # invalidate the invariant desktop/Windows/SELinux assembly prefix. It must
 # still precede board-origin validation and dracut's embedded PCR public key.
@@ -2906,166 +2715,6 @@ RUN --mount=type=bind,from=public-trust-tools,source=/usr/bin/openssl,target=/ru
 # admits it.
 
 
-# ---------------------------------------------------------------------------
-# Custom Tilo kernel: swap Fedora's kernel-core for our tuned tilo-kernel-core.
-# ---------------------------------------------------------------------------
-# The kernel image (see os/kernel/Containerfile + .forgejo/workflows/
-# build-kernel.yml) rebuilds Fedora's kernel with a config fragment that:
-#   * links storage/USB/HID boot-path drivers statically while keeping network
-#     drivers signed and modular because networking is off the login path, so the
-#     boot path needs no module loading to reach the root device, and
-#   * tunes for interactive latency (PREEMPT + HZ=1000 + THP=madvise +
-#     SCHED_MC), and
-#   * drops DEBUG_INFO so the RPM doesn't carry ~800 MB of debuginfo.
-#
-# Because the tilo-kernel repo is a distinct OCI image (KERNEL_RPMS_REF),
-# we mount it alongside the frozen repo, write a two-repo dnf config on
-# the fly, and swap kernel-core → tilo-kernel-core.  --nogpgcheck: our
-# in-house RPMs aren't signed by Fedora's key. The image build verifies the
-# digest-pinned tilo-kernel image's cosign signature and provenance before
-# consuming it (os/dev/verify-kernel-provenance.sh, run by build-image.yml);
-# os/etc/containers/policy.json has no tilo-kernel scope, and an installed
-# machine never pulls that image.
-#
-# An initramfs is mandatory, and the static drivers do not remove the need
-# for one: unlocking an encrypted root takes early USERSPACE (device-mapper
-# setup, a TPM unseal or a passphrase prompt, systemd-cryptsetup). Static
-# drivers get the kernel as far as seeing the block device; they cannot open
-# a LUKS volume. Under the base's `layout=ostree` kernel-install config,
-# kernel-install deliberately does not run dracut, so the image build owns
-# initramfs generation — hence the explicit dracut call below. The base's
-# dracut drop-ins (/usr/lib/dracut/dracut.conf.d/*bootc*) already add the
-# crypt, systemd-cryptsetup, tpm2-tss and clevis modules.
-ARG TILO_HARDWARE_PROFILE=generic
-ARG TILO_TARGET_IMGREF=
-# Buildah does not hash a `--mount=from=` stage into this RUN's cache key, so
-# a changed `FROM ${KERNEL_RPMS_REF} AS kernel-rpms` reused the previous swap
-# and the new kernel was never installed. Redeclaring the ref here (it is
-# already a build-arg) puts its value in this RUN's cache key only; layers
-# before this ARG stay cached. The shell below reads it, so the layer reruns
-# when the kernel image identity changes.
-ARG KERNEL_RPMS_REF
-# The Lenovo profile needs the Adreno SQE firmware from Fedora's qcom-firmware
-# RPM. Keep it in the frozen ARM package set, but install it only in that image.
-# tilo-rpm-snapshot-package[aarch64]: qcom-firmware
-# Hash only this profile's firmware. Later board imports must not rebuild the
-# generic kernel/initramfs when the runner seed publishes the same rootfs.
-RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
-    --mount=type=bind,from=kernel-rpms,source=/repo,target=/qkernel-repo \
-    --mount=type=bind,source=os/hardware/firmware/${TILO_HARDWARE_PROFILE},target=/run/tilo-hardware-firmware \
-    --mount=type=bind,source=os/dev/prepare-hardware-profile.py,target=/run/tilo-prepare-hardware-profile.py \
-    --mount=type=bind,source=os/scripts/build-initramfs.sh,target=/run/tilo-build-initramfs.sh \
-    --mount=type=bind,source=os/scripts/verify-board-initramfs.py,target=/run/verify-board-initramfs.py \
-    --mount=type=bind,source=os/dev/hardware_profile.py,target=/run/hardware_profile.py \
-    --mount=type=bind,source=os/hardware/profiles,target=/run/tilo-hardware-profiles \
-    set -eux; \
-    test -n "$KERNEL_RPMS_REF"; \
-    mkdir -p /etc/tilo-swap.d; \
-    printf '[frozen]\nname=frozen\nbaseurl=file:///frozen-repo\ngpgcheck=0\nenabled=1\n' \
-        > /etc/tilo-swap.d/frozen.repo; \
-    printf '[tilo-kernel]\nname=tilo-kernel\nbaseurl=file:///qkernel-repo\ngpgcheck=0\nenabled=1\n' \
-        > /etc/tilo-swap.d/tilo-kernel.repo; \
-    if [ "$TILO_HARDWARE_PROFILE" = lenovo-83ed ]; then \
-        dnf install -y --setopt=reposdir=/etc/tilo-swap.d qcom-firmware; \
-    fi; \
-    # --allowerasing lets the swap drop the base's `kernel` meta-package
-    # (it hard-requires kernel-core-uname-r = <exact-fedora-version>,
-    # which our tilo-kernel-core doesn't satisfy since it carries a
-    # different Release tag). tilo-kernel-core Provides: kernel so nothing
-    # downstream loses a dependency.
-    dnf swap -y --setopt=reposdir=/etc/tilo-swap.d --nogpgcheck --allowerasing \
-        kernel-core tilo-kernel-core; \
-    rm -rf /etc/tilo-swap.d; \
-    # Which kernel version did the swap leave behind? Ask the filesystem: rpm is
-    # no help here, because tilo-kernel-core provides no kernel-uname-r and its
-    # file list records /lib/modules/... where a query would say /usr/lib/... .
-    #
-    # Count kernel IMAGES, not directories. Removing kernel-core does not remove
-    # its modules directory: the base ships a prebuilt initramfs there that no
-    # package owns, so the directory survives with that file in it and a count of
-    # directories finds two. The loop further down exists to clear exactly that
-    # leftover — so asserting on directories here is the cleanup firing too late
-    # rather than a real ambiguity, and it failed every build that did not restore
-    # this layer from cache.
-    #
-    # A kernel image is /usr/lib/modules/<kver>/vmlinuz (Fedora's layout) or
-    # /boot/vmlinuz-<kver> (tilo-kernel-core's, moved into place below). The
-    # leftover directory has neither, because its vmlinuz belonged to the package
-    # that was just removed.
-    kver=""; n=0; \
-    for d in /usr/lib/modules/*/; do \
-      k="$(basename "$d")"; \
-      if [ -f "$d/vmlinuz" ] || [ -f "/boot/vmlinuz-$k" ]; then \
-        kver="$k"; n=$((n+1)); \
-      fi; \
-    done; \
-    if [ "$n" -ne 1 ]; then \
-      echo "expected exactly one kernel image after the kernel swap, found $n" >&2; \
-      ls -la /usr/lib/modules/ /boot >&2 || true; \
-      exit 1; \
-    fi; \
-    # tilo-kernel-core installs its kernel as /boot/vmlinuz-<kver>, not into the
-    # modules directory the way Fedora's kernel-core does. ostree does find it
-    # there — it falls back to /boot/vmlinuz-<kver> — which is why nobody noticed,
-    # but it means the image carried a kernel and no initramfs beside it, and
-    # every tool that goes looking for the pair (this build included) came up
-    # empty. Put both where the base image puts them.
-    if [ -f "/boot/vmlinuz-$kver" ] && [ ! -f "/usr/lib/modules/$kver/vmlinuz" ]; then \
-      mv "/boot/vmlinuz-$kver" "/usr/lib/modules/$kver/vmlinuz"; \
-    fi; \
-    test -f "/usr/lib/modules/$kver/vmlinuz"; \
-    # The base ships a prebuilt initramfs for ITS kernel, and that file is
-    # owned by no RPM — so removing kernel-core leaves the old modules
-    # directory behind and the image would carry two kernel versions.
-    for d in /usr/lib/modules/*; do \
-      [ "$d" = "/usr/lib/modules/$kver" ] || rm -rf "$d"; \
-    done; \
-    # Stage model firmware and the hashed device-tree profile before dracut and
-    # the rootfs split. The UKI builder then embeds that exact device tree.
-    # -B: the script imports hardware_profile from /run, and its bytecode
-    # (which records the checkout's mtime) would otherwise stay in the layer.
-    python3 -B /run/tilo-prepare-hardware-profile.py \
-        --profile "$TILO_HARDWARE_PROFILE" --root / --kernel-version "$kver" \
-        --profiles-dir /run/tilo-hardware-profiles \
-        --firmware-dir "/run/tilo-hardware-firmware" \
-        --target-update-ref "$TILO_TARGET_IMGREF"; \
-    # The initramfs recipe and its checks, shared with the dev image's board
-    # layer.
-    bash /run/tilo-build-initramfs.sh "$kver"; \
-    # /boot belongs to the deployment, not the image: whatever the kernel
-    # packages dropped there is now duplicated under the modules directory.
-    rm -f /boot/vmlinuz-* /boot/initramfs-* /boot/System.map-* /boot/config-*; \
-    dnf clean all && ${FINALIZE_RPMDB}
-
-# The rpm database this image ships is intact and carries no WAL sidecars.
-#
-# Asserted positively rather than by absence of an error, because that is how
-# this failed before: `rpm -qa` kept working off the Packages blob while the
-# Basenames/Dirnames indexes were structurally corrupt, so every step still
-# "succeeded" until a dnf resolve needed a file dependency and claimed the base
-# image did not provide /usr/bin/basename. `rpm -qf` on a file the base owns is
-# the cheapest query that actually reads those indexes.
-RUN owner="$(rpm -qf /usr/bin/basename 2>&1 || true)" \
- && case "$owner" in \
-      coreutils-*) echo "rpmdb file index intact: /usr/bin/basename -> $owner" ;; \
-      *) echo "rpmdb file index is corrupt: /usr/bin/basename -> $owner" >&2; exit 1 ;; \
-    esac \
- && rpm --verifydb \
- && rm -f /usr/lib/sysimage/rpm/rpmdb.sqlite-wal \
-           /usr/lib/sysimage/rpm/rpmdb.sqlite-shm \
- && ( test ! -e /usr/lib/sysimage/rpm/rpmdb.sqlite-wal \
-        || { echo "rpmdb.sqlite-wal is in the image; see FINALIZE_RPMDB" >&2; exit 1; } ) \
- && ( test ! -e /usr/lib/sysimage/rpm/rpmdb.sqlite-shm \
-        || { echo "rpmdb.sqlite-shm is in the image; see FINALIZE_RPMDB" >&2; exit 1; } )
-
-# Boot-chain invariants, asserted at BUILD time so the image cannot ship in the
-# state it once did: offering `tilo-install --encrypt` while carrying no
-# initramfs, which leaves the kernel able to see the LUKS device and unable to
-# open it. Also bundled so an operator can re-run it on a live machine.
-COPY os/tests/boot_chain_invariants.sh /usr/libexec/tilo/boot-chain-test.sh
-RUN chmod 0755 /usr/libexec/tilo/boot-chain-test.sh \
-    && OS_ROOT=/ bash /usr/libexec/tilo/boot-chain-test.sh
-
 # Public marketplace trust input. The private owner key never enters the image
 # or serving process. Releases may rotate this build input, but empty, malformed,
 # or all-zero anchors fail the image build instead of silently enabling TOFU.
@@ -3078,89 +2727,17 @@ RUN if ! printf '%s\n' "$TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY" | grep -Eq '^[0-9a
  && printf '%s\n' "$TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY" > /usr/share/tilo/trust/tilo-main-registry-owner.pub \
  && chmod 0644 /usr/share/tilo/trust/tilo-main-registry-owner.pub
 
-# Collaborative Files installed-image contract.  This is deliberately inside
-# the production rootfs build rather than a source-tree lint: it inspects the
-# copied binaries, enabled system/user units, FUSE package/config,
-# tmpfiles/ACL seed, and the Files package as installed in the launcher's
-# immutable registry.  It runs with the Tilo build outputs, below, bind-mounted
-# rather than copied: it and the in-guest smokes are test tooling, which the
-# image does not ship (os/dev/vm.sh test hands them to a booted guest). The
-# same script's runtime mode is run after a bootc install + graphical login by
-# build-image.yml.
-
-# Enrolment invariants, likewise at BUILD time. A build container has no
-# /dev/tpm*, which is exactly the path this needs to exercise: the machine with
-# no TPM, whose owner has nothing but the passphrase they were asked for. The
-# image once shipped an `enrol` that added no passphrase key slot on that path,
-# so the volume it produced could not be opened by the secret it had just asked
-# for and printed no usable recovery key either. Runs against a throwaway sparse
-# file, needs no device-mapper, and takes about ten seconds.
-COPY os/tests/luks_enrolment.sh /usr/libexec/tilo/luks-enrolment-test.sh
-RUN chmod 0755 /usr/libexec/tilo/luks-enrolment-test.sh \
-    && bash /usr/libexec/tilo/luks-enrolment-test.sh
-
-# ---- The generation --------------------------------------------------------
-# Last before the final check, and not beside the rollback machinery it belongs
-# to, because it is the one input that changes with every published image: an
-# ARG keys every step after it, so declaring it earlier rebuilt everything from
-# here back to the package transactions whenever the series moved on.
-#
-# The generation number this image carries. It MUST be a dense monotonic integer
-# (+1 per published image), because the retention window is arithmetic on it —
-# "the last three generations" is meaningless if the numbering is a timestamp, and
-# moving the floor costs one TPM NV write per step (tilo-rollback refuses an
-# advance of more than MAX_INCREMENTS_PER_ADVANCE at all). os/dev/build-image.sh
-# resolves it from the published series; the CI job that publishes an image
-# derives it the same way and tags the result `gen<N>`.
-#
-# It reaches the running system by two routes, for two different jobs:
-#
-#   /usr/lib/bootc/kargs.d/02-generation.toml
-#       `bootc container ukify` reads this directory and puts what it finds on the
-#       UKI's sealed command line, which systemd-stub measures into PCR 11. That
-#       is the authoritative copy — inside the signature, measured, and therefore
-#       the one an unseal can be bound to. A number the bootloader assembled from
-#       an editable file would look identical and be worth nothing.
-#   /usr/lib/tilo/generation
-#       A plain file holding the same number, for the one question the command
-#       line cannot answer: what generation is the deployment that has been
-#       *staged* but never booted? Its keyslot has to be sealed before the reboot
-#       that first runs it. Not trusted for anything — at that moment the machine
-#       is already unlocked.
-#
-# Both are written from the same build argument in the same step, so they cannot
-# disagree; rollback-boot-check.sh asserts on a booted machine that they don't.
-#
-# There is deliberately no default. A default is what a constant looks like once
-# a caller forgets the argument, and an image that silently ships generation 0 is
-# one whose rollback floor can never move — the failure would appear months later
-# as a machine that will not unseal.
-ARG TILO_GENERATION
-RUN case "${TILO_GENERATION}" in \
-      ''|*[!0-9]*) \
-        echo "TILO_GENERATION must be a decimal integer; got '${TILO_GENERATION}'." >&2; \
-        echo "It is the generation this image carries: +1 per published image, sealed" >&2; \
-        echo "onto the UKI command line. os/dev/build-image.sh resolves it from the" >&2; \
-        echo "published series; pass TILO_GENERATION=<N> to build one by hand." >&2; \
-        exit 1 ;; \
-    esac \
- && install -d -m 0755 /usr/lib/tilo \
- && printf '%s\n' "${TILO_GENERATION}" > /usr/lib/tilo/generation \
- && printf '# Written by the image build from the TILO_GENERATION build argument.\nkargs = ["tilo.generation=%s"]\n' \
-      "${TILO_GENERATION}" > /usr/lib/bootc/kargs.d/02-generation.toml \
- && echo "generation ${TILO_GENERATION}: sealed via kargs.d, readable at /usr/lib/tilo/generation"
-
 # ---- The app store, without the host's files twice --------------------------
 # The env-runtime the store preinstalls (the builder's install-env-runtime.sh)
 # is built from the same frozen RPM snapshot as this rootfs, so most of its
 # files are byte-identical to the host's /usr; but the store is its own layer,
 # which no hard link can reach across, and every pull carried those bytes twice.
-# Here, on the rootfs's packages, a copy of the store leaves them out
+# Here, over the rootfs's packages, system and trust, a copy of the store leaves them out
 # and names the host file for each in the image's host-sources; package-store
 # imports them from there, every byte checked against the image's signed hash.
 # The rootfs's final RUN checks each named host file again, after the last
 # step that changes one, and puts back any that no longer matches.
-FROM rootfs-base AS app-store
+FROM trust AS app-store
 RUN --network=none \
     --mount=type=bind,from=native-builder-payload,source=/usr/share/tilo-apps,target=/run/tilo-apps-built,ro \
     --mount=type=bind,source=os/scripts/seed-env-runtime.py,target=/run/tilo-seed-env-runtime.py,ro \
@@ -3168,15 +2745,21 @@ RUN --network=none \
     && cp -a /run/tilo-apps-built /out/usr/share/tilo-apps \
     && python3 /run/tilo-seed-env-runtime.py prune /out/usr/share/tilo-apps /
 
-# ---------------------------------------------------------------------------
-# The Tilo build outputs, last
-# ---------------------------------------------------------------------------
-# rootfs-base is everything above, built and cached on its own in CI: it
-# changes only with os/ inputs, packages and the kernel. This stage adds what
-# changes with almost every commit.
-FROM rootfs-base AS rootfs
-# The build-only dnf/rpm wrappers need it for the removals below.
-ARG SOURCE_DATE_EPOCH=0
+# ---- The Tilo binaries ------------------------------------------------------
+# What the workspace compiles, arranged by os/components.toml, each tree its own
+# layer: the rollback, recovery and extension helpers, the desktop binaries
+# (with the side builds: the AirPlay sender, joycond, bootc,
+# xwayland-satellite), the Windows components, the signed runtime bundle and
+# the font catalog's names, the runtimes' publishers, the app store (left out of
+# it what the layers below hold already). They are made over nothing, a scratch
+# stage, so they don't depend on the layers below them: t builds this stage
+# alone and puts its layers over the trust layer as they are, so the same binary
+# gives the same layer whatever the variant. One `podman build` of the whole
+# image (os/Containerfile) copies the stage into the rootfs whole.
+FROM scratch AS binaries-out
+COPY --from=component-files /image/rollback-files/ /
+COPY --from=component-files /image/recovery-files/ /
+COPY --from=component-files /image/extension-files/ /
 # Everything above changes only with os/ inputs, packages or the kernel. The
 # compiled binaries, the baked runtime and the app store change with almost
 # every commit, so they are copied here, after the RPM transactions,
@@ -3240,21 +2823,136 @@ COPY --from=native-builder-payload \
 # deliberately absent from it — a preinstalled package is self-signed by the
 # image build, and claims nothing more.
 COPY --from=app-store /out/usr/share/tilo-apps/ /usr/share/tilo-apps/
+
+FROM trust AS binaries
+COPY --from=binaries-out / /
+
+# ---- The derived state: what reads every layer below ----------------------
+# The initramfs (the kernel's modules, the rollback and unlock helpers, the
+# public PCR key), the font and linker caches, the hardware database, the
+# generation, and the checks of the finished rootfs. Each is a function of the
+# layers below it and SOURCE_DATE_EPOCH, so the same layers give the same bytes
+# here; nothing in this piece is copied in from outside. It reruns whenever a
+# layer below changes, and is small: whatever would make it large (a chmod of a
+# binary, a rewritten package file) belongs in the layer that owns the file.
+FROM binaries AS rootfs
+# The build-only dnf/rpm wrappers need it for the removals below, and the
+# initramfs and font cache are dated by it.
+ARG SOURCE_DATE_EPOCH=0
+ARG TILO_HARDWARE_PROFILE=generic
+ARG TILO_TARGET_IMGREF=
+
+# The board's hardware profile (its firmware and hashed device tree) and the
+# initramfs, now that the rollback and unlock helpers and the public trust it
+# carries are in place. dracut runs with --reproducible, so its archive is dated
+# by SOURCE_DATE_EPOCH, not the build: the same layers give the same initramfs.
+RUN --mount=type=bind,source=os/hardware/firmware/${TILO_HARDWARE_PROFILE},target=/run/tilo-hardware-firmware \
+    --mount=type=bind,source=os/dev/prepare-hardware-profile.py,target=/run/tilo-prepare-hardware-profile.py \
+    --mount=type=bind,source=os/scripts/build-initramfs.sh,target=/run/tilo-build-initramfs.sh \
+    --mount=type=bind,source=os/scripts/verify-board-initramfs.py,target=/run/verify-board-initramfs.py \
+    --mount=type=bind,source=os/dev/hardware_profile.py,target=/run/hardware_profile.py \
+    --mount=type=bind,source=os/hardware/profiles,target=/run/tilo-hardware-profiles \
+    set -eux; \
+    set -- /usr/lib/modules/*/vmlinuz; \
+    [ "$#" -eq 1 ] && [ -f "$1" ] || { echo "expected exactly one kernel in /usr/lib/modules, found $#" >&2; exit 1; }; \
+    kver="$(basename "$(dirname "$1")")"; \
+    # -B: the script imports hardware_profile from /run, and its bytecode
+    # (which records the checkout's mtime) would otherwise stay in the layer.
+    python3 -B /run/tilo-prepare-hardware-profile.py \
+        --profile "$TILO_HARDWARE_PROFILE" --root / --kernel-version "$kver" \
+        --profiles-dir /run/tilo-hardware-profiles \
+        --firmware-dir "/run/tilo-hardware-firmware" \
+        --target-update-ref "$TILO_TARGET_IMGREF"; \
+    bash /run/tilo-build-initramfs.sh "$kver"
+
+# Boot-chain invariants, asserted at BUILD time so the image cannot ship in the
+# state it once did: offering `tilo-install --encrypt` while carrying no
+# initramfs, which leaves the kernel able to see the LUKS device and unable to
+# open it. Also bundled so an operator can re-run it on a live machine.
+COPY os/tests/boot_chain_invariants.sh /usr/libexec/tilo/boot-chain-test.sh
+RUN chmod 0755 /usr/libexec/tilo/boot-chain-test.sh \
+    && OS_ROOT=/ bash /usr/libexec/tilo/boot-chain-test.sh
+
+# Enrolment invariants, likewise at BUILD time. A build container has no
+# /dev/tpm*, which is exactly the path this needs to exercise: the machine with
+# no TPM, whose owner has nothing but the passphrase they were asked for. The
+# image once shipped an `enrol` that added no passphrase key slot on that path,
+# so the volume it produced could not be opened by the secret it had just asked
+# for and printed no usable recovery key either. Runs against a throwaway sparse
+# file, needs no device-mapper, and takes about ten seconds.
+COPY os/tests/luks_enrolment.sh /usr/libexec/tilo/luks-enrolment-test.sh
+RUN chmod 0755 /usr/libexec/tilo/luks-enrolment-test.sh \
+    && bash /usr/libexec/tilo/luks-enrolment-test.sh
+
+# ---- The generation --------------------------------------------------------
+# Last before the final check, and not beside the rollback machinery it belongs
+# to, because it is the one input that changes with every published image: an
+# ARG keys every step after it, so declaring it earlier rebuilt everything from
+# here back to the package transactions whenever the series moved on.
+#
+# The generation number this image carries. It MUST be a dense monotonic integer
+# (+1 per published image), because the retention window is arithmetic on it —
+# "the last three generations" is meaningless if the numbering is a timestamp, and
+# moving the floor costs one TPM NV write per step (tilo-rollback refuses an
+# advance of more than MAX_INCREMENTS_PER_ADVANCE at all). os/dev/build-image.sh
+# resolves it from the published series; the CI job that publishes an image
+# derives it the same way and tags the result `gen<N>`.
+#
+# It reaches the running system by two routes, for two different jobs:
+#
+#   /usr/lib/bootc/kargs.d/02-generation.toml
+#       `bootc container ukify` reads this directory and puts what it finds on the
+#       UKI's sealed command line, which systemd-stub measures into PCR 11. That
+#       is the authoritative copy — inside the signature, measured, and therefore
+#       the one an unseal can be bound to. A number the bootloader assembled from
+#       an editable file would look identical and be worth nothing.
+#   /usr/lib/tilo/generation
+#       A plain file holding the same number, for the one question the command
+#       line cannot answer: what generation is the deployment that has been
+#       *staged* but never booted? Its keyslot has to be sealed before the reboot
+#       that first runs it. Not trusted for anything — at that moment the machine
+#       is already unlocked.
+#
+# Both are written from the same build argument in the same step, so they cannot
+# disagree; rollback-boot-check.sh asserts on a booted machine that they don't.
+#
+# There is deliberately no default. A default is what a constant looks like once
+# a caller forgets the argument, and an image that silently ships generation 0 is
+# one whose rollback floor can never move — the failure would appear months later
+# as a machine that will not unseal.
+ARG TILO_GENERATION
+RUN case "${TILO_GENERATION}" in \
+      ''|*[!0-9]*) \
+        echo "TILO_GENERATION must be a decimal integer; got '${TILO_GENERATION}'." >&2; \
+        echo "It is the generation this image carries: +1 per published image, sealed" >&2; \
+        echo "onto the UKI command line. os/dev/build-image.sh resolves it from the" >&2; \
+        echo "published series; pass TILO_GENERATION=<N> to build one by hand." >&2; \
+        exit 1 ;; \
+    esac \
+ && install -d -m 0755 /usr/lib/tilo \
+ && printf '%s\n' "${TILO_GENERATION}" > /usr/lib/tilo/generation \
+ && printf '# Written by the image build from the TILO_GENERATION build argument.\nkargs = ["tilo.generation=%s"]\n' \
+      "${TILO_GENERATION}" > /usr/lib/bootc/kargs.d/02-generation.toml \
+ && echo "generation ${TILO_GENERATION}: sealed via kargs.d, readable at /usr/lib/tilo/generation"
+
 # The shell and the browser engine must resolve every library they load from
 # this rootfs: a gap is a loader error at the first launch, on a device.
 ARG TILO_WITH_BROWSER
 ARG CHROMIUM_RUNTIME_VERSION
 RUN --mount=type=bind,source=os/tests/collaborative-files-image-contract.sh,target=/run/tilo-collaborative-files-image-contract.sh,ro \
-    chmod 0755 /usr/bin/tilo-relay /usr/bin/tilo-relay-admin /usr/bin/tilo-enroll \
+    for f in /usr/bin/tilo-relay /usr/bin/tilo-relay-admin /usr/bin/tilo-enroll \
         /usr/libexec/tilo-home-peer-control /usr/libexec/tilo-relay-firstboot \
         /usr/libexec/tilo-windows-vm-control /usr/libexec/tilo-windows-rail \
-    && chmod 755 /usr/bin/shell /usr/bin/fs /usr/bin/tilo-greeter \
-              /usr/bin/tilo-installer /usr/bin/tilo-launcher /usr/bin/tilo-runtime-bundle \
-              /usr/bin/tilo-install /usr/bin/tilo-app-package /usr/libexec/tilo-cli-shim \
-              /usr/libexec/tilo-unlock-helper /usr/libexec/tilo-ush \
-              /usr/libexec/tilo-projector /usr/libexec/tilo-doubletake \
-              /usr/libexec/tilo-doubletake-test-receiver \
-              /usr/libexec/tilo-account-credential /usr/libexec/tilo-prepared-setup \
+        /usr/bin/shell /usr/bin/fs /usr/bin/tilo-greeter \
+        /usr/bin/tilo-installer /usr/bin/tilo-launcher /usr/bin/tilo-runtime-bundle \
+        /usr/bin/tilo-install /usr/bin/tilo-app-package /usr/libexec/tilo-cli-shim \
+        /usr/libexec/tilo-unlock-helper /usr/libexec/tilo-ush \
+        /usr/libexec/tilo-projector /usr/libexec/tilo-doubletake \
+        /usr/libexec/tilo-doubletake-test-receiver \
+        /usr/libexec/tilo-account-credential /usr/libexec/tilo-prepared-setup; do \
+      test -e "$f" || { echo "$f is not in the image" >&2; exit 1; }; \
+      [ "$(stat -c %a "$f")" = 755 ] || chmod 0755 "$f"; \
+    done \
     && missing="$(ldd /usr/bin/shell /usr/bin/xwayland-satellite | awk '/not found/ { print $1 }')" \
     && { if [ -n "$missing" ]; then \
          printf 'shell or xwayland-satellite has unresolved runtime libraries:\n%s\n' "$missing" >&2; \
@@ -3448,37 +3146,6 @@ FROM rootfs AS split
 RUN test "$(readlink /etc/resolv.conf)" = ../run/NetworkManager/resolv.conf \
     && mkdir /kernel && bootc container split-kernel-and-rootfs --rootfs / --output /kernel \
     && rm /kernel/*/initramfs.img
-
-# A throwaway builder, so ukify and binutils do not ship in the OS image. It comes
-# out of the same digest-pinned base and the same frozen RPM snapshot as
-# everything else, so no stage of this build reaches the network. The UKI is
-# self-contained: its EFI stub comes from this stage's systemd-boot and does not
-# have to match the systemd in the rootfs.
-#
-# Every sealed image (this file, os/Containerfile.board,
-# os/Containerfile.dev-installer-base) carries this stage and the `uki` stage
-# below with the same instructions; tools/policy/check_uki_pipeline.py fails
-# when one copy changes alone. Only the FROM line may differ.
-FROM ${BASE_REF} AS uki-tools
-# Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
-ARG RPMS_REF
-COPY os/dev/uki-tools.packages /usr/local/share/tilo/uki-tools.packages
-RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
-    grep -v '^#' /usr/local/share/tilo/uki-tools.packages \
-    | xargs dnf install -y --setopt=reposdir=/repo \
-    && dnf clean all
-COPY os/dev/uki.sh os/dev/uki-hardware-profile.py os/dev/hardware_profile.py os/dev/make-boot-splash.py /usr/local/bin/
-
-# Nothing ships from this stage. It gathers the image's small tool stages, which
-# change with neither the Rust build nor the rootfs, into one target that CI
-# caches with its intermediate steps: the image build then neither repeats
-# their dnf transactions nor pulls the RPM snapshot to run them.
-FROM scratch AS image-tool-stages
-COPY --from=uki-tools /usr/local/bin/uki.sh /uki-tools/
-COPY --from=doubletake-builder /out/ /doubletake/
-COPY --from=joycond-builder /out/ /joycond/
-COPY --from=bootc-builder /out/ /bootc/
-COPY --from=xwayland-satellite-builder /out/ /xwayland-satellite/
 
 # BuildKit keys a RUN by a content hash of every bind mount, read-only or not,
 # so mounting the whole split rootfs into the uki stage hashed every file of it,
