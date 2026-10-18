@@ -107,9 +107,16 @@ impl CapnpBrokerState {
                 }
                 // Revalidation checks the full certificate, not a principal supplied
                 // by the transport or an actor reconstructed from a display name.
-                current.certificate.as_ref().ok_or_else(|| {
+                let certificate = current.certificate.as_ref().ok_or_else(|| {
                     unavailable("action_evidence_unavailable: caller certificate missing")
                 })?;
+                if caller.device_public_key().is_none() {
+                    // Only the native facade combines a physical projection
+                    // with retained signed admission. Recheck its protected seat
+                    // at the effect barrier, not only when it queued the request.
+                    self.current_native_person(room, certificate)
+                        .map_err(unavailable)?;
+                }
                 original.owner()
             }
             Some(InvocationCaller::Local { route, admitted }) => {
@@ -117,6 +124,11 @@ impl CapnpBrokerState {
                     .revalidate_admission(route, admitted)
                     .map_err(|error| unavailable(error.to_string()))?;
                 let Some(certificate) = current.certificate.as_ref() else {
+                    if self.services.local_person.is_some() {
+                        return Err(unavailable(
+                            "action_evidence_unavailable: original certificate missing",
+                        ));
+                    }
                     // Retain pre-identity connection compatibility without
                     // upgrading its displayed actor into signed user evidence.
                     let expected = current.broker_actor();
@@ -171,7 +183,10 @@ impl CapnpBrokerState {
             None => {
                 // A transport key is not retained certificate custody. Do not
                 // silently downgrade a certified caller to actor-only ownership.
-                if caller.device_public_key().is_some() || caller.user_public_key().is_some() {
+                if self.services.local_person.is_some()
+                    || caller.device_public_key().is_some()
+                    || caller.user_public_key().is_some()
+                {
                     return Err(unavailable(
                         "action_evidence_unavailable: original caller missing",
                     ));
@@ -282,6 +297,32 @@ impl CapnpBrokerState {
             owner,
             key,
         })
+    }
+
+    /// Native host activation retains its run-scoped durable identity, but its
+    /// attestation must name the original authenticated channel's certificate.
+    /// The owner serializes task admission before invoking this barrier.
+    pub(super) fn native_host_action_evidence(
+        &self,
+        caller: &super::durable_local_invocation::LocalCaller,
+        key: &InvocationKey,
+        intent: &serde_json::Value,
+    ) -> Result<crate::action_evidence::AdmissionEvidence, String> {
+        let current = caller.current(self)?;
+        let certificate = current
+            .certificate
+            .as_ref()
+            .ok_or("task caller certificate missing")?;
+        let mut facts = invocation_journal::evidence_facts(key, intent)?;
+        let crate::action_evidence::VerifiedActor::NativeTask { root, device, .. } =
+            &mut facts.actor
+        else {
+            return Err("native activation requires task-owned admission".into());
+        };
+        *root = certificate.user_public_key;
+        *device = certificate.device_public_key;
+        crate::action_evidence::mint(facts, intent)
+            .map_err(|_| "action_evidence_unavailable: host signing identity unavailable".into())
     }
 
     /// Recover an observation, never a service dispatch permit. Ownership uses

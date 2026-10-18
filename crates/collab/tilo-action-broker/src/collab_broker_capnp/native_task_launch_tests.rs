@@ -41,6 +41,28 @@ impl LauncherServices for Launcher {
         if !retained.contains("AuthenticatedLocal") {
             return Err("custody must retain the real signed caller identity".into());
         }
+        let snapshot: serde_json::Value = serde_json::from_str(&retained).unwrap();
+        let activation = snapshot["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|record| record["intent"]["host_activation"] == true)
+            .expect("the host effect has a persisted activation");
+        let evidence: crate::action_evidence::AdmissionEvidence =
+            serde_json::from_value(activation["admission"].clone())
+                .expect("activation must be signed before the host launcher runs");
+        evidence.validate(&evidence.receipt.facts).unwrap();
+        let facts = &evidence.receipt.facts;
+        assert_eq!(facts.app_id, WRITER);
+        assert_eq!(facts.resource, format!("app.{WRITER}"));
+        assert_eq!(facts.action, "open");
+        let crate::action_evidence::VerifiedActor::NativeTask { root, device, .. } = &facts.actor
+        else {
+            panic!("host activation must retain task identity");
+        };
+        let owner = &activation["intent"]["caller"]["AuthenticatedLocal"];
+        assert_eq!(serde_json::to_value(root).unwrap(), owner["root"]);
+        assert_eq!(serde_json::to_value(device).unwrap(), owner["device"]);
         self.launches
             .send(app.into())
             .map_err(|error| error.to_string())
@@ -50,7 +72,21 @@ impl LauncherServices for Launcher {
     }
 }
 
-fn fixture() -> (Fixture, tokio::sync::mpsc::UnboundedReceiver<String>) {
+struct SignedLaunchFixture {
+    fixture: Fixture,
+    _identity_env: tilo_test_env::ScopedEnv,
+}
+impl std::ops::Deref for SignedLaunchFixture {
+    type Target = Fixture;
+    fn deref(&self) -> &Fixture {
+        &self.fixture
+    }
+}
+
+fn fixture() -> (
+    SignedLaunchFixture,
+    tokio::sync::mpsc::UnboundedReceiver<String>,
+) {
     let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
     let launcher = Arc::new(Launcher {
         launches: sender,
@@ -59,7 +95,24 @@ fn fixture() -> (Fixture, tokio::sync::mpsc::UnboundedReceiver<String>) {
     let f = Fixture::with_launcher(Some(launcher.clone()));
     *launcher.custody.lock().unwrap() = Some(f.directory.path().join("journal/records.json"));
     permission(&f, true);
-    (f, receiver)
+    let mut identity_env = tilo_test_env::ScopedEnv::new();
+    identity_env
+        .set("XDG_CONFIG_HOME", f.directory.path().join("config"))
+        .set("TILO_IDENTITY_ROOT", f.directory.path().join("identity"))
+        .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
+    tilo_identity_host::provisioning::ensure_collaboration_identity(
+        &f.directory.path().join("config/tilo/identity"),
+        &tilo_user_identity::IdentityPaths::under(f.directory.path().join("identity")),
+        tilo_identity_host::provisioning::IdentityStorage::Files,
+    )
+    .expect("provision the real host activation receipt signer");
+    (
+        SignedLaunchFixture {
+            fixture: f,
+            _identity_env: identity_env,
+        },
+        receiver,
+    )
 }
 
 fn permission(f: &Fixture, allow: bool) {
@@ -240,6 +293,39 @@ impl Writer {
             "a refused cold action reached the real UI owner"
         );
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_task_activation_refuses_missing_host_signer_before_launching() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (f, mut launches) = fixture();
+            f.approve();
+            let agent = f.channel(100, true);
+            let run = delivered(&agent).await;
+            let paths =
+                tilo_user_identity::IdentityPaths::under(f.directory.path().join("identity"));
+            std::fs::remove_file(paths.device_privkey).unwrap();
+            let result = invoke_provider(
+                &agent,
+                &run,
+                &tilo_actions::remote::workspace_provider(&room().to_string()),
+                &format!("app.{WRITER}"),
+                "open",
+                serde_json::json!({}),
+            )
+            .await;
+            let error = result.expect_err("host activation requires the original host signer");
+            assert!(
+                error.to_string().contains("action_evidence_unavailable"),
+                "{error}"
+            );
+            assert!(
+                launches.try_recv().is_err(),
+                "no launcher effect precedes signed admission"
+            );
+        })
+        .await;
 }
 
 #[tokio::test(flavor = "current_thread")]

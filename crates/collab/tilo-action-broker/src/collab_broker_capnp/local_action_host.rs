@@ -12,6 +12,8 @@ struct CertifiedLocalActionHost {
     caller: Caller,
     effective: Caller,
     admission: VerifiedActionCaller,
+    /// Only the protected native-seat entrypoint supplies physical intent.
+    native_projection: Option<Caller>,
 }
 
 impl CapnpBrokerState {
@@ -235,6 +237,38 @@ impl CapnpBrokerState {
         Ok(self.checked_local_host(caller, presentation)?)
     }
 
+    /// Preserve native physical intent without dropping the signed session.
+    /// Network, app and delegated-agent doors never select this entrypoint.
+    ///
+    /// # Errors
+    /// Refuses missing or replaced protected seat custody and invalid admission.
+    pub fn certified_native_action_host(
+        self: &Arc<Self>,
+        caller: &Caller,
+        presentation: &[u8],
+    ) -> Result<Arc<dyn ActionHost + Send + Sync>, String> {
+        let mut checked = (*self.checked_local_host(caller, presentation)?).clone();
+        if checked.effective.is_foreign_device() {
+            return Err("native action requires this device's person".into());
+        }
+        let CallerPrincipal::Person(person) = caller.principal() else {
+            return Err("native action requires a person".into());
+        };
+        let mut projection = Caller::local_person(person).in_room(&checked.admission.room);
+        if let Some(lease) = caller.execution_lease() {
+            projection = projection.in_execution(lease);
+        }
+        let certificate = self
+            .native_local_person_certificate(&projection)?
+            .ok_or("native seat custody unavailable")?;
+        if checked.admission.admitted.certificate.as_ref() != Some(&certificate) {
+            return Err("native seat differs from original certified admission".into());
+        }
+        checked.effective = projection.clone();
+        checked.native_projection = Some(projection);
+        Ok(Arc::new(checked))
+    }
+
     /// Retain the exact certificate owner for the native Jobs projection.
     /// Every read and control revalidates the original session admission.
     ///
@@ -304,6 +338,7 @@ impl CapnpBrokerState {
             caller: caller.clone(),
             effective,
             admission,
+            native_projection: None,
         });
         // The presentation was verified against current membership and
         // policy above, with this clock sample; only the lease is new.
@@ -462,6 +497,13 @@ impl CapnpBrokerState {
 }
 
 impl CertifiedLocalActionHost {
+    fn invocation_origin(&self) -> InvocationCaller {
+        InvocationCaller::Certified {
+            caller: Box::new(self.admission.clone()),
+            foreign_restriction: self.effective.is_foreign_device(),
+        }
+    }
+
     /// This door, handed to agent `agent` by the person's own device.
     fn delegated_to(&self, agent: &str) -> Self {
         Self {
@@ -469,6 +511,7 @@ impl CertifiedLocalActionHost {
             caller: self.caller.clone(),
             effective: self.effective.clone().delegated_to(agent),
             admission: self.admission.clone().delegated_to(agent),
+            native_projection: None,
         }
     }
 
@@ -482,6 +525,17 @@ impl CertifiedLocalActionHost {
             || self.admission.policy_time.is_none()
         {
             return Err(ActionHostError::NotPermitted);
+        }
+        if let Some(projection) = &self.native_projection {
+            let certificate = self
+                .state
+                .native_local_person_certificate(projection)
+                .map_err(|_| ActionHostError::NotPermitted)?;
+            if certificate.is_none()
+                || certificate.as_ref() != self.admission.admitted.certificate.as_ref()
+            {
+                return Err(ActionHostError::NotPermitted);
+            }
         }
         Ok(())
     }
@@ -577,14 +631,10 @@ impl ActionHost for CertifiedLocalActionHost {
         {
             return Pending::ready(Err(ActionHostError::NotPermitted));
         }
-        match self.state.host_action_replay(
-            &self.effective,
-            &InvocationCaller::Certified {
-                caller: Box::new(self.admission.clone()),
-                foreign_restriction: self.effective.is_foreign_device(),
-            },
-            &request,
-        ) {
+        match self
+            .state
+            .host_action_replay(&self.effective, &self.invocation_origin(), &request)
+        {
             Ok(Some(receipt)) => return Pending::ready(Ok(receipt)),
             Err(error) => return Pending::ready(Err(error)),
             Ok(None) => {}
@@ -619,10 +669,7 @@ impl ActionHost for CertifiedLocalActionHost {
                 &self.effective,
                 None,
                 None,
-                Some(&InvocationCaller::Certified {
-                    caller: Box::new(self.admission.clone()),
-                    foreign_restriction: self.effective.is_foreign_device(),
-                }),
+                Some(&self.invocation_origin()),
                 &request,
             )
         };
@@ -687,36 +734,15 @@ impl ActionHost for CertifiedLocalActionHost {
 
 /// `page` without rows or providers outside this door.
 fn certified_page(mut page: CataloguePage) -> CataloguePage {
-    page.rows.retain(|row| {
-        certified_provider(&row.provider)
-            && if tilo_actions::remote::workspace_provider_room(&row.provider).is_some() {
-                row.action
-                    .as_ref()
-                    .is_some_and(|action| certified_target(&row.provider, &action.address))
-            } else {
-                true
-            }
-    });
+    page.rows.retain(|row| certified_provider(&row.provider));
     page.providers
         .retain(|provider| certified_provider(&provider.provider));
     page
 }
 
-// A workspace provider mixes signed host actions with branches that do not
-// retain original custody. Classify its exact dispatch target, not just its token.
-fn certified_target(provider: &str, address: &tilo_actions::ActionAddress) -> bool {
-    use tilo_actions::remote::{
-        APPLICATION_CLOSE_ACTION, APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX,
-        workspace_provider_room,
-    };
-    if workspace_provider_room(provider).is_some() {
-        return (address.resource.starts_with(APPLICATION_RESOURCE_PREFIX)
-            && matches!(
-                address.action.as_str(),
-                APPLICATION_OPEN_ACTION | APPLICATION_CLOSE_ACTION
-            ))
-            || crate::automation::run_target(address).is_some();
-    }
+// Registered workspace services now all retain original host admission. The
+// live dispatcher, not this syntactic provider gate, resolves the descriptor.
+fn certified_target(provider: &str, _address: &tilo_actions::ActionAddress) -> bool {
     certified_provider(provider)
 }
 
@@ -754,26 +780,19 @@ mod tests {
                     tilo_automation::shortcut_resource_id("test-shortcut"),
                     tilo_automation::SHORTCUT_RUN_ACTION,
                 ),
-            ],
-            vec![
-                ActionAddress::new("workspace", "rename"),
+                ActionAddress::new("workspace", "grant"),
+                ActionAddress::new("workspace", "preset.assign"),
                 ActionAddress::new(crate::automation::LIBRARY_RESOURCE, "create"),
                 ActionAddress::new(crate::automation::LIBRARY_RESOURCE, "list"),
-                ActionAddress::new("keyboard-shortcuts", "update"),
-                ActionAddress::new("workspace", "open"),
-                ActionAddress::new("keyboard-shortcuts", "close"),
-                ActionAddress::new("app.so.tilo.notes", "delete"),
-                ActionAddress::new(
-                    tilo_automation::shortcut_resource_id("test-shortcut"),
-                    "update",
-                ),
-                ActionAddress::new(crate::automation::LIBRARY_RESOURCE, "run"),
+                ActionAddress::new("keyboard-shortcuts", "list"),
+                ActionAddress::new("keyboard-shortcut:show-overview", "rebind"),
             ],
+            vec![],
         )
     }
 
     #[test]
-    fn workspace_requests_only_allow_admission_wired_targets() {
+    fn workspace_requests_leave_descriptor_resolution_to_the_live_dispatcher() {
         let provider = workspace_provider("room");
         assert!(certified_provider(&provider));
         let (allowed, blocked) = workspace_targets();
@@ -814,7 +833,7 @@ mod tests {
     }
 
     #[test]
-    fn workspace_page_keeps_safe_actions_and_provider_without_unsigned_rows() {
+    fn workspace_page_keeps_registered_service_actions_and_resource_rows() {
         let provider = workspace_provider("room");
         let (allowed, blocked) = workspace_targets();
         let mut rows: Vec<_> = allowed
@@ -845,7 +864,8 @@ mod tests {
             next_cursor: vec![1],
             ..CataloguePage::default()
         });
-        assert_eq!(page.rows.len(), allowed.len() + 1);
+        assert_eq!(page.rows.len(), allowed.len() + 2);
+        assert!(page.rows[allowed.len()].action.is_none());
         assert_eq!(
             page.rows[..allowed.len()]
                 .iter()

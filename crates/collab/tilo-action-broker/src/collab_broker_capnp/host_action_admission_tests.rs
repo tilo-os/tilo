@@ -56,6 +56,47 @@ fn request(descriptor: &ActionDescriptor) -> InvokeRequest {
     }
 }
 
+struct ClosedSeat;
+impl crate::services::LocalPersonServices for ClosedSeat {
+    fn certificate(&self, _: &str, _: &str) -> Result<tilo_user_identity::DeviceCert, String> {
+        Err("native seat unavailable".into())
+    }
+}
+
+#[test]
+fn configured_native_seat_never_admits_an_unsigned_actor_label() {
+    let (state, _) = CapnpBrokerState::new_configured(
+        &Arc::new(FanoutState::new()),
+        Arc::new(Mutex::new(BrokerChannels::default())),
+        PeerPublisher::disabled(),
+        None,
+        None,
+        None,
+        crate::services::HostServices {
+            local_person: Some(Arc::new(ClosedSeat)),
+            ..Default::default()
+        },
+    );
+    let descriptor = descriptor();
+    let request = request(&descriptor);
+    let caller = Caller::local_person("owner");
+    assert!(
+        state
+            .admit_host_action(
+                &caller,
+                None,
+                HostActionAdmission {
+                    room: "room",
+                    app_id: "host-test",
+                    descriptor: &descriptor,
+                    request: &request,
+                }
+            )
+            .is_err()
+    );
+    assert!(state.completed_invocations.lock().unwrap().is_empty());
+}
+
 #[test]
 fn host_uuid_and_terminal_use_the_same_durable_record() {
     let root = tempfile::tempdir().unwrap();

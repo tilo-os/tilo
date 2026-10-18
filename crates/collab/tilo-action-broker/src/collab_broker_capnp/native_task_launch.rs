@@ -196,6 +196,10 @@ impl NativeLaunch {
                     )?;
                     let key = self.launch_key(state)?;
                     let intent = serde_json::json!({"host_activation":true,"app_id":self.app,
+                    "actor":binding.actor()?.id(),"record_id":self.record.as_deref().unwrap_or(""),
+                    "resource":format!("app.{}", self.app),"resource_kind":"applications.app","action":"open",
+                    "contract":tilo_actions::ActionContract::default(),
+                    "bootstrap":self.bootstrap,"confirmed":self.confirmed,
                     "task":binding.task_id,"epoch":binding.epoch,"revision":binding.revision,
                     "caller":self.caller.owner(),
                     "retained_contract":self.retained.as_ref().map(|action| &action.contract),
@@ -211,18 +215,22 @@ impl NativeLaunch {
                         .map_err(|error| error.clone())?
                         .as_mut()
                         .ok_or("durable launch journal absent")?;
-                    let wire = state.invocation_id.fetch_add(1, Ordering::Relaxed);
-                    if !journal.admit(key.clone(), intent, wire)? {
-                        let retained = journal.lookup(&key)?.ok_or("launch custody disappeared")?;
-                        return if !retained.uncertain
-                            && matches!(
-                                retained.update,
-                                tilo_actions::InvocationUpdate::Succeeded { .. }
-                            ) {
+                    if let Some(retained) = journal.lookup(&key)? {
+                        let original_request = intent.get("request").ok_or("launch request absent")?;
+                        return if retained.admitted_request_is(original_request)
+                            && retained.intent.get("caller") == intent.get("caller")
+                            && !retained.uncertain
+                            && matches!(retained.update, tilo_actions::InvocationUpdate::Succeeded { .. })
+                        {
                             Ok(())
                         } else {
-                            Err("host activation outcome uncertain; review before retrying".into())
+                            Err("host activation changed or its outcome is uncertain; review before retrying".into())
                         };
+                    }
+                    let wire = state.invocation_id.fetch_add(1, Ordering::Relaxed);
+                    let evidence = state.native_host_action_evidence(&self.caller, &key, &intent)?;
+                    if !journal.admit_with_evidence(key.clone(), intent, wire, Some(evidence))? {
+                        return Err("native host activation already admitted".into());
                     }
                     drop(guard);
                     state.spend_once_grants(&self.run.cluster_id, &spent);
