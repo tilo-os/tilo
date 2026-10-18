@@ -23,10 +23,7 @@ pub(super) fn certified_device(
     sign_device_cert(&mut cert, root).unwrap();
     // Exercise certificate signature and nonce proof, matching the relay
     // handshake rather than constructing unchecked AuthenticatedPeer data.
-    let hello = crate::auth::Hello {
-        cert,
-        client_nonce: [2; 32],
-    };
+    let hello = crate::auth::Hello::new(cert, [2; 32]);
     let peer = crate::auth::accept_hello(
         &hello,
         &user,
@@ -4183,10 +4180,7 @@ async fn bounded_private_queue_for_room_namespace() {
     expiring.source.cert.expires_at_ns = Some(unix_now_ns().saturating_add(100_000_000));
     sign_device_cert(&mut expiring.source.cert, &root).unwrap();
     expiring.source = crate::auth::accept_hello(
-        &crate::auth::Hello {
-            cert: expiring.source.cert.clone(),
-            client_nonce: [9; 32],
-        },
+        &crate::auth::Hello::new(expiring.source.cert.clone(), [9; 32]),
         &user.public_key,
         &crate::policy::TrustPolicy::AllowMatchingUser,
         &RevocationList::new(),
@@ -4219,10 +4213,7 @@ async fn bounded_private_queue_for_room_namespace() {
     relay_peer.cert.capabilities = DeviceCapabilities::host();
     sign_device_cert(&mut relay_peer.cert, &root).unwrap();
     relay_peer = crate::auth::accept_hello(
-        &crate::auth::Hello {
-            cert: relay_peer.cert.clone(),
-            client_nonce: [7; 32],
-        },
+        &crate::auth::Hello::new(relay_peer.cert.clone(), [7; 32]),
         &user.public_key,
         &crate::policy::TrustPolicy::AllowMatchingUser,
         &RevocationList::new(),

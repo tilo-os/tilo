@@ -151,6 +151,7 @@ fn native_publication_rechecks_pinned_publisher_and_original_author_revocations(
             .receive_from(
                 TransportOrigin::RelayDelta(sender),
                 NeighbourMsg::IdentityHello {
+                    protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                     cert: Box::new(cert),
                     revocations: vec![revocation(target)],
                 },
@@ -191,6 +192,7 @@ fn native_publication_identity_keeps_original_certificate_signature_checks() {
     peer.receive_from(
         origin,
         NeighbourMsg::IdentityHello {
+            protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
             cert: Box::new(cert.clone()),
             revocations: vec![revocation([99; 32])],
         },
@@ -208,6 +210,7 @@ fn native_publication_identity_keeps_original_certificate_signature_checks() {
         peer.receive_from(
             origin,
             NeighbourMsg::IdentityHello {
+                protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(bad),
                 revocations: vec![]
             },
@@ -291,6 +294,7 @@ fn assert_deferred_governor_revalidation(reopen: bool) {
             .receive_from(
                 TransportOrigin::RelayDelta(member_cert.device_public_key),
                 NeighbourMsg::IdentityHello {
+                    protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                     cert: Box::new(member_cert.clone()),
                     revocations: vec![revocation(receiver.authority().device_public_key)],
                 },
@@ -374,6 +378,7 @@ fn native_publication_streaming_cut_rolls_back_on_governor_revocation() {
     assert!(
         cut.push(
             NeighbourMsg::IdentityHello {
+                protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(member_cert),
                 revocations: vec![revocation(publisher)]
             },
@@ -400,6 +405,7 @@ fn native_publication_streaming_cut_checks_expiry_at_push_and_finish() {
     )
     .unwrap();
     let message = NeighbourMsg::IdentityHello {
+        protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
         cert: Box::new(other),
         revocations: vec![],
     };
@@ -447,6 +453,7 @@ fn native_publication_streaming_cut_preserves_preexisting_relay_pending() {
         .unwrap()
         .push(
             NeighbourMsg::IdentityHello {
+                protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(cert),
                 revocations: vec![],
             },
@@ -497,6 +504,7 @@ fn native_publication_streaming_cut_cannot_drop_rejected_deferred_input() {
         .unwrap()
         .push(
             NeighbourMsg::IdentityHello {
+                protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(receiver.core.authority.clone()),
                 revocations: vec![revocation(cert.device_public_key)],
             },

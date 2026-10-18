@@ -29,6 +29,43 @@ pub use retention::{
 
 use serde::{Deserialize, Serialize};
 
+/// The device ↔ device interface's one version: the certified handshake
+/// (`tilo_relay_protocol::auth`), the relay session's frames and the
+/// peer-sync messages they carry. Two devices sync only when theirs are
+/// equal; there is no negotiation and nothing kept for an older version
+/// (docs/architecture/compatibility.md). `interface.toml` beside this crate
+/// holds the schema, and the repository policy fails a change to it that
+/// keeps the number.
+///
+/// [`NeighbourMsg::IdentityHello`] carries it first, at a variant index that
+/// never changes ([`IDENTITY_HELLO_INDEX`]), so every version reads another
+/// device's number before anything else it says.
+pub const PEER_PROTOCOL_VERSION: u32 = 2;
+
+/// [`NeighbourMsg::IdentityHello`]'s postcard variant index, frozen: the one
+/// message every version decodes far enough to learn the sender's
+/// [`PEER_PROTOCOL_VERSION`].
+pub const IDENTITY_HELLO_INDEX: u8 = 11;
+
+/// The [`PEER_PROTOCOL_VERSION`] an encoded [`NeighbourMsg`] says it is
+/// from, when it is an identity announcement: read from its frozen prefix,
+/// whatever the rest of a message from another version looks like.
+#[must_use]
+pub fn identity_hello_version(bytes: &[u8]) -> Option<u32> {
+    let (&index, rest) = bytes.split_first()?;
+    if index != IDENTITY_HELLO_INDEX {
+        return None;
+    }
+    let mut version: u32 = 0;
+    for (shift, byte) in rest.iter().take(5).enumerate() {
+        version |= u32::from(byte & 0x7f) << (7 * shift);
+        if byte & 0x80 == 0 {
+            return Some(version);
+        }
+    }
+    None
+}
+
 /// Peer identifier — opaque numeric handle assigned per session.
 pub type PeerId = u64;
 
@@ -226,7 +263,12 @@ pub enum NeighbourMsg {
     /// The certificate binds the Iroh endpoint/device key to a user root. The
     /// additive, root-signed revocations let receivers reject a lost device
     /// before any of its collaboration payload reaches an app or replica.
+    ///
+    /// `protocol` is the sender's [`PEER_PROTOCOL_VERSION`], first, at the
+    /// frozen [`IDENTITY_HELLO_INDEX`]: a receiver at another version admits
+    /// nothing from the sender and knows which of the two is behind.
     IdentityHello {
+        protocol: u32,
         cert: Box<tilo_user_identity::DeviceCert>,
         #[serde(default)]
         revocations: Vec<tilo_user_identity::RevocationEntry>,
@@ -631,6 +673,25 @@ mod tests {
         })
     }
 
+    /// Every version reads another device's version from its identity
+    /// announcement: the variant index and the leading field never move.
+    #[test]
+    fn an_identity_hello_says_its_version_first_at_a_frozen_index() {
+        for protocol in [PEER_PROTOCOL_VERSION, PEER_PROTOCOL_VERSION + 1, 300] {
+            let bytes = postcard::to_allocvec(&NeighbourMsg::IdentityHello {
+                protocol,
+                cert: device_cert(),
+                revocations: Vec::new(),
+            })
+            .unwrap();
+            assert_eq!(bytes[0], IDENTITY_HELLO_INDEX);
+            assert_eq!(identity_hello_version(&bytes), Some(protocol));
+        }
+        let beat = postcard::to_allocvec(&NeighbourMsg::Heartbeat { peer: 1, ts: 2 }).unwrap();
+        assert_eq!(identity_hello_version(&beat), None);
+        assert_eq!(identity_hello_version(&[]), None);
+    }
+
     /// Every [`NeighbourMsg`] variant, split into thematic groups so no one
     /// function runs long — the round-trip test below exercises the
     /// concatenation.
@@ -856,6 +917,7 @@ mod tests {
             (
                 "identity hello",
                 NeighbourMsg::IdentityHello {
+                    protocol: crate::PEER_PROTOCOL_VERSION,
                     cert: device_cert(),
                     revocations: Vec::new(),
                 },
@@ -1121,7 +1183,9 @@ mod tests {
         (
             "identity hello",
             concat!(
-                "0b01010101010101010101010101010101010101010101010101010101010101",
+                // The variant index and the sender's peer protocol version.
+                "0b02",
+                "01010101010101010101010101010101010101010101010101010101010101",
                 "0102020202020202020202020202020202020202020202020202020202020202",
                 "02064c6170746f70010000000a00400303030303030303030303030303030303",
                 "0303030303030303030303030303030303030303030303030303030303030303",

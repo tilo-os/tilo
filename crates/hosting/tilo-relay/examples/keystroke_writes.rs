@@ -64,10 +64,7 @@ impl Member {
             .await
             .unwrap();
         let (mut send, mut recv) = connection.open_bi().await.unwrap();
-        let hello = tilo_relay::auth::Hello {
-            cert: device.cert.clone(),
-            client_nonce: [7; 32],
-        };
+        let hello = tilo_relay::auth::Hello::new(device.cert.clone(), [7; 32]);
         tilo_relay::frame::write_frame(&mut send, &postcard::to_allocvec(&hello).unwrap())
             .await
             .unwrap();

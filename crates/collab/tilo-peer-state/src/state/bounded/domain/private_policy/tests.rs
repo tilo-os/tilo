@@ -122,6 +122,7 @@ fn private_basis_uses_actual_signed_roster_and_verified_sorted_revocation_union(
     peer.receive_from(
         TransportOrigin::UntrustedPresence(peer.authority().device_public_key),
         NeighbourMsg::IdentityHello {
+            protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
             cert: Box::new(peer.authority().clone()),
             revocations: entries,
         },

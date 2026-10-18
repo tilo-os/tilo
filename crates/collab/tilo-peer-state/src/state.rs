@@ -1449,7 +1449,19 @@ impl StatePeer {
             self.validate_native_publisher(publisher, now)?;
         }
         match message {
-            NeighbourMsg::IdentityHello { cert, revocations } => {
+            NeighbourMsg::IdentityHello {
+                protocol,
+                cert,
+                revocations,
+            } => {
+                // A device at another peer protocol version is admitted to
+                // nothing: what it says is not read at this one.
+                if protocol != neighbour_wire::PEER_PROTOCOL_VERSION {
+                    return Err(AdmissionError::Rejected(format!(
+                        "the device speaks peer protocol {protocol}, this one {}",
+                        neighbour_wire::PEER_PROTOCOL_VERSION
+                    )));
+                }
                 self.receive_identity_hello(source, &cert, revocations, now)
             }
             NeighbourMsg::SyncResp {

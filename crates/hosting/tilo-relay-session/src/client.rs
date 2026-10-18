@@ -239,6 +239,23 @@ pub enum ClientError {
     /// The device signer refused or failed.
     #[error("signer: {0}")]
     Sign(String),
+    /// The other device speaks peer protocol `theirs`, not this one's: they
+    /// do not sync until the one behind has updated
+    /// (docs/architecture/compatibility.md).
+    #[error("the other device speaks peer protocol {theirs}, this one {}", crate::auth::PEER_PROTOCOL_VERSION)]
+    PeerVersion {
+        /// The other device's version.
+        theirs: u32,
+    },
+}
+
+/// A handshake frame read as this device's version, or the other side's
+/// version when it speaks another.
+fn handshake_frame<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, ClientError> {
+    crate::auth::decode_handshake(bytes).map_err(|error| match error {
+        crate::auth::HandshakeFrameError::Version { theirs } => ClientError::PeerVersion { theirs },
+        crate::auth::HandshakeFrameError::Codec(error) => ClientError::Codec(error.to_string()),
+    })
 }
 
 fn classify_connect_error(error: &iroh::endpoint::ConnectError) -> ClientError {
@@ -388,15 +405,11 @@ impl RelayClient {
         }
         write_frame(
             &mut send,
-            &postcard::to_allocvec(&Hello {
-                cert: own_cert,
-                client_nonce: nonce,
-            })
+            &postcard::to_allocvec(&Hello::new(own_cert, nonce))
             .map_err(|error| ClientError::Codec(error.to_string()))?,
         )
         .await?;
-        let ack: HelloAck = postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
-            .map_err(|error| ClientError::Codec(error.to_string()))?;
+        let ack: HelloAck = handshake_frame(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)?;
         auth::verify_hello_ack(
             &ack,
             &expected_server_user,
@@ -508,15 +521,11 @@ impl RelayClient {
         }
         write_frame(
             &mut send,
-            &postcard::to_allocvec(&Hello {
-                cert: own_cert.clone(),
-                client_nonce: nonce,
-            })
+            &postcard::to_allocvec(&Hello::new(own_cert.clone(), nonce))
             .map_err(|error| ClientError::Codec(error.to_string()))?,
         )
         .await?;
-        let ack: HelloAck = postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
-            .map_err(|error| ClientError::Codec(error.to_string()))?;
+        let ack: HelloAck = handshake_frame(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)?;
         match expected_server.as_ref() {
             Some((user, _)) => {
                 auth::verify_hello_ack(&ack, user, &revocations, tilo_clock::unix_now_ns(), &nonce)?
@@ -893,17 +902,13 @@ impl RelayClient {
             use rand::Rng;
             rand::rng().fill_bytes(&mut client_nonce);
         }
-        let hello = Hello {
-            cert: own_cert.clone(),
-            client_nonce,
-        };
+        let hello = Hello::new(own_cert.clone(), client_nonce);
         let hello_bytes =
             postcard::to_allocvec(&hello).map_err(|e| ClientError::Codec(e.to_string()))?;
         write_frame(&mut send, &hello_bytes).await?;
 
         let ack_bytes = read_frame(&mut recv, MAX_FRAME_BYTES).await?;
-        let ack: HelloAck =
-            postcard::from_bytes(&ack_bytes).map_err(|e| ClientError::Codec(e.to_string()))?;
+        let ack: HelloAck = handshake_frame(&ack_bytes)?;
         let now_ns = tilo_clock::unix_now_ns();
         let relay_peer = if let Some(scope) = interactive_scope.as_ref() {
             auth::verify_interactive_owner_ack(

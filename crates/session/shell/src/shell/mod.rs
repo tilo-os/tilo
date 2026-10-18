@@ -40,6 +40,7 @@ pub mod collab_core;
 pub mod collab_history;
 pub mod collab_outbound;
 pub mod collab_presence;
+pub(crate) mod collaborator_versions;
 pub mod color_pipeline;
 pub(crate) mod community_steps;
 pub mod continuity_policy;

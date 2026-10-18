@@ -91,6 +91,21 @@ fn refusal(error: &LinkError) -> Refusal {
         | LinkError::Malformed(_)
         | LinkError::Sign(_) => Refusal::Reachability,
         LinkError::Refused(_) => Refusal::Unexplained,
+        // Another peer protocol version: whichever side is behind updates
+        // (docs/architecture/compatibility.md). This page is the host's
+        // build, so a newer host means a reload brings it up to date.
+        LinkError::PeerVersion { theirs }
+            if tilo_relay_protocol::auth::this_device_is_behind(*theirs) =>
+        {
+            Refusal::Final(
+                "update-required",
+                "This page is out of date. Reload it to keep working together.",
+            )
+        }
+        LinkError::PeerVersion { .. } => Refusal::Final(
+            "host-update-required",
+            "This workspace’s host needs to update to keep working together.",
+        ),
     }
 }
 /// How long a connected session waits for the host to admit its rooms before
@@ -2977,6 +2992,7 @@ impl Task {
 /// the host, which authenticates the author and keeps it for later joiners.
 fn identity_hello(workspace_id: u64, cert: &DeviceCert) -> Option<Envelope> {
     let hello = neighbour_wire::NeighbourMsg::IdentityHello {
+        protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
         cert: Box::new(cert.clone()),
         revocations: Vec::new(),
     };
@@ -3133,6 +3149,7 @@ fn iroh_link_error(error: tilo_relay_session::ClientError) -> LinkError {
         }
         ClientError::Sign(reason) => LinkError::Sign(reason),
         ClientError::Codec(reason) => LinkError::Malformed(reason),
+        ClientError::PeerVersion { theirs } => LinkError::PeerVersion { theirs },
         // A host that rejects the device either fails its ack (auth) or
         // closes the handshake stream, which surfaces as an I/O error on the
         // next frame read.

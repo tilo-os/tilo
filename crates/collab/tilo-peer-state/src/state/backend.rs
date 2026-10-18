@@ -404,6 +404,7 @@ mod tests {
         peer.receive_from(
             TransportOrigin::RelayDelta(peer.authority().device_public_key),
             NeighbourMsg::IdentityHello {
+                protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(peer.authority().clone()),
                 revocations: vec![entry],
             },

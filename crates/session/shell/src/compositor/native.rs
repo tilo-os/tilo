@@ -4615,6 +4615,23 @@ fn post_system_update_asks(frame_builder: &mut FrameBuilder) -> bool {
     true
 }
 
+/// A collaborator's device at another peer protocol version: who has to
+/// update ([`crate::shell::collaborator_versions`]).
+fn post_collaborator_version_notices(frame_builder: &mut FrameBuilder) -> bool {
+    let mut posted = false;
+    frame_builder.with_chrome(|chrome| {
+        let notices = crate::shell::collaborator_versions::drain(&chrome.tree());
+        for notice in notices {
+            chrome.push_notification_full(notice);
+            posted = true;
+        }
+        if posted {
+            chrome.bump();
+        }
+    });
+    posted
+}
+
 fn post_storage_notices(frame_builder: &mut FrameBuilder) -> bool {
     let notices = crate::shell::storage_notice::drain();
     if notices.is_empty() {
@@ -11827,6 +11844,7 @@ pub fn run() {
         session_changed |= post_codec_pack_notices(&mut frame_builder);
         session_changed |= post_storage_notices(&mut frame_builder);
         session_changed |= post_system_update_asks(&mut frame_builder);
+        session_changed |= post_collaborator_version_notices(&mut frame_builder);
         session_changed |= post_drive_events(&mut frame_builder);
         run_autostart_once(&frame_builder);
         if let Some(published) = published_room.as_mut() {

@@ -18802,6 +18802,7 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "hex",
  "iroh-base",
+ "neighbour-wire",
  "postcard",
  "serde",
  "serde_bytes",

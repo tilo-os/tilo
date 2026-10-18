@@ -5,6 +5,17 @@
 
 pub(crate) mod governor_lane;
 pub(crate) mod native_ingress;
+
+/// A workspace host connection's error, as the actor reports it. A host at
+/// another peer protocol version is also the person's to know about: one of
+/// the two devices has to update (`crate::shell::collaborator_versions`).
+fn relay_error(host: &iroh::EndpointId, error: tilo_relay_session::ClientError) -> String {
+    if let tilo_relay_session::ClientError::PeerVersion { theirs } = &error {
+        crate::shell::collaborator_versions::note(host.to_string(), String::new(), *theirs);
+    }
+    error.to_string()
+}
+
 #[cfg(test)]
 mod nearby_transfer_tests;
 pub(crate) mod room_governance;
@@ -3029,6 +3040,18 @@ impl ActorState {
                 let decoded = postcard::from_bytes::<NeighbourMsg>(&message.content);
                 self.tally
                     .note(decoded.as_ref().map_or("Undecodable", NeighbourMsg::kind));
+                // An identity announcement from another peer protocol version
+                // may not decode at this one; its frozen prefix still says
+                // which, and so which of the two devices has to update.
+                if decoded.is_err()
+                    && let Some(theirs) = neighbour_wire::identity_hello_version(&message.content)
+                {
+                    crate::shell::collaborator_versions::note(
+                        peer.to_string(),
+                        String::new(),
+                        theirs,
+                    );
+                }
                 let fingerprint = message_fingerprint(&message.content);
                 // An advert describes its sender rather than reporting an
                 // event: it is news when it differs from the last one this
@@ -3594,6 +3617,7 @@ impl ActorState {
     fn identity_hello(&self, ws: WorkspaceId) -> Option<NeighbourMsg> {
         let (cert, revocations) = self.host_identity.as_ref()?.material_for(ws);
         Some(NeighbourMsg::IdentityHello {
+            protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
             cert: Box::new(cert),
             revocations,
         })
@@ -4575,7 +4599,7 @@ impl HostRouteScheduler<'_> {
                 )
                 .await
                 .map_err(|_| "workspace host connection timed out".to_string())
-                .and_then(|result| result.map_err(|error| error.to_string()))
+                .and_then(|result| result.map_err(|error| relay_error(&host, error)))
                 .and_then(|client| {
                     RelayCoeditSession::join(
                         client,
@@ -4624,7 +4648,7 @@ impl HostRouteScheduler<'_> {
             })
             .await
             .map_err(|_| "workspace host connection timed out".to_string())
-            .and_then(|result| result.map_err(|error| error.to_string()))
+            .and_then(|result| result.map_err(|error| relay_error(&host, error)))
             .and_then(|client| {
                 RelayCoeditSession::join(
                     client,

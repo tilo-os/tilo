@@ -649,10 +649,7 @@ impl RawSession {
             .unwrap();
         let connection = endpoint.connect(relay.node_addr(), alpn).await.unwrap();
         let (mut send, mut recv) = connection.open_bi().await.unwrap();
-        let hello = tilo_relay::auth::Hello {
-            cert,
-            client_nonce: [seed; 32],
-        };
+        let hello = tilo_relay::auth::Hello::new(cert, [seed; 32]);
         tilo_relay::frame::write_frame(&mut send, &postcard::to_allocvec(&hello).unwrap())
             .await
             .unwrap();

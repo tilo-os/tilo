@@ -167,6 +167,7 @@ fn every_variant() -> Vec<(NeighbourMsg, Option<RoomAction>)> {
         (NeighbourMsg::Heartbeat { peer: 1, ts: 0 }, Some(read())),
         (
             NeighbourMsg::IdentityHello {
+                protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: device_cert(),
                 revocations: Vec::new(),
             },
@@ -445,6 +446,7 @@ fn viewer_app_document_is_dropped_at_the_gate() {
         None,
         false,
         NeighbourMsg::IdentityHello {
+            protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
             cert: Box::new(device_cert.clone()),
             revocations: Vec::new(),
         },

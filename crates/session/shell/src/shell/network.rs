@@ -7139,12 +7139,28 @@ impl ShellNetwork {
             return;
         }
         let origin = crate::shell::state::PeerOrigin::peer(&peer);
-        if let NeighbourMsg::IdentityHello { cert, revocations } = &msg {
+        if let NeighbourMsg::IdentityHello {
+            protocol,
+            cert,
+            revocations,
+        } = &msg
+        {
             // A new hello is a full replacement attempt for this exact route.
             // Purge first so a wrong-user/revoked replacement can never leave
             // the old same-user authority alive.
             if let Ok(mut routes) = self.authenticated_personal_routes.lock() {
                 routes.remove(&(ws, peer));
+            }
+            // A device at another peer protocol version is admitted to
+            // nothing; the one behind updates (docs/architecture/compatibility.md).
+            if *protocol != neighbour_wire::PEER_PROTOCOL_VERSION {
+                self.peer_identities.remove(&origin);
+                crate::shell::collaborator_versions::note(
+                    peer.to_string(),
+                    cert.device_label.clone(),
+                    *protocol,
+                );
+                return;
             }
             self.accept_identity_hello(ws, &origin, &peer, cert, revocations);
             self.refresh_authenticated_persons();
@@ -10369,6 +10385,7 @@ mod tests {
             Some(membership_epoch),
             false,
             NeighbourMsg::IdentityHello {
+                protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(cert),
                 revocations: Vec::new(),
             },
@@ -12907,6 +12924,7 @@ mod tests {
                     membership_epoch: None,
                     replayed: false,
                     msg: NeighbourMsg::IdentityHello {
+                        protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                         cert: Box::new(cert.clone()),
                         revocations: Vec::new(),
                     },
@@ -14778,6 +14796,7 @@ mod tests {
             Some(crate::network::actor::MembershipEpoch::for_test(1)),
             false,
             NeighbourMsg::IdentityHello {
+                protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(cert),
                 revocations: Vec::new(),
             },
@@ -14966,6 +14985,7 @@ mod tests {
                 membership_epoch: None,
                 replayed: false,
                 msg: NeighbourMsg::IdentityHello {
+                    protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                     cert: Box::new(cert.clone()),
                     revocations: Vec::new(),
                 },

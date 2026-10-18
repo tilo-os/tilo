@@ -1179,7 +1179,24 @@ async fn route(
             ))
         }
         "/session" => {
-            let hello = decode(&bytes)?;
+            // A device at another peer protocol version is told this host's
+            // and reads nothing else.
+            let hello = match crate::auth::decode_handshake(&bytes) {
+                Ok(hello) => hello,
+                Err(crate::auth::HandshakeFrameError::Version { theirs }) => {
+                    tracing::info!(
+                        theirs,
+                        "a browser device at another protocol version was told this host's"
+                    );
+                    return Ok(match crate::auth::version_answer() {
+                        Ok(answer) => reply(StatusCode::CONFLICT, answer),
+                        Err(_) => reply(StatusCode::INTERNAL_SERVER_ERROR, Vec::new()),
+                    });
+                }
+                Err(crate::auth::HandshakeFrameError::Codec(_)) => {
+                    return Err(status(StatusCode::BAD_REQUEST, "malformed body"));
+                }
+            };
             sessions
                 .hello(&hello)
                 .map(|challenge| encoded(&challenge))

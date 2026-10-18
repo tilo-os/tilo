@@ -1005,6 +1005,13 @@ codec-app-name = Video- und Audioformate
 system-update-app-name = Updates
 system-update-restart-title = Neu starten, um die Updates abzuschließen
 system-update-restart-body = Deine Fenster sind nach dem Neustart wieder da.
+collaborator-needs-update = { $name } muss aktualisieren, damit ihr weiter zusammenarbeiten könnt
+collaborator-needs-update-body = Deine Änderungen erreichen { $name }, sobald das geschehen ist.
+collaborator-host-needs-update = Der Host dieses Arbeitsbereichs muss aktualisieren, damit ihr weiter zusammenarbeiten könnt
+collaborator-host-needs-update-body = Deine Änderungen erreichen ihn, sobald das geschehen ist.
+collaborator-update-self = Tilo wird aktualisiert, um weiter mit { $name } zusammenzuarbeiten
+collaborator-update-self-host = Tilo wird aktualisiert, um weiter zusammenzuarbeiten
+collaborator-update-self-body = Deine Änderungen bleiben bis dahin hier.
 
 # Screen capture surfaces
 capture-live-alt = Live-Aufnahme: { $title }
