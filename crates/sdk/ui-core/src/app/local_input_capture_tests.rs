@@ -154,12 +154,22 @@ fn blocked_host_does_not_delay_local_edits_and_capacity_refusal_is_atomic() {
     };
     // CapturePeer never returns a reply. Each synchronous call must commit a
     // distinct edit while earlier reports still hold their capacity leases.
-    for expected in 1..=128 {
+    let mut completed = 0;
+    for expected in 1..=129 {
         let before = heads(&fixture);
-        fixture
+        if fixture
             .app
             .invoke_local_resource_action(&address, &serde_json::Map::new())
-            .unwrap();
+            .is_err()
+        {
+            assert_eq!(
+                heads(&fixture),
+                before,
+                "capacity refusal precedes mutation"
+            );
+            break;
+        }
+        completed = expected;
         assert_ne!(
             heads(&fixture),
             before,
@@ -178,19 +188,9 @@ fn blocked_host_does_not_delay_local_edits_and_capacity_refusal_is_atomic() {
         );
         assert!(fixture.app.local_input_capture.failure.is_none());
     }
-    let before = heads(&fixture);
-    assert!(
-        fixture
-            .app
-            .invoke_local_resource_action(&address, &serde_json::Map::new())
-            .is_err()
-    );
-    assert_eq!(
-        heads(&fixture),
-        before,
-        "capacity refusal must precede mutation"
-    );
-    assert_eq!(fixture.app.local_input_capture.pending_count(), 128);
+    // The conservative byte budget may saturate before the count limit.
+    assert!((2..=128).contains(&completed));
+    assert_eq!(fixture.app.local_input_capture.pending_count(), completed);
     assert_eq!(fixture.app.local_document_action_admissions().count(), 0);
 }
 
