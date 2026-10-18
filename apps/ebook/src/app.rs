@@ -41,12 +41,11 @@ use vello::peniko::{BlendMode, Blob, Color, Fill, ImageData as PenikoImage};
 use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
-use ui::time::{Duration, Instant};
+use ui::time::Instant;
 
 use ui::ColorCompat;
 use ui::TextRole;
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Role};
-use ui::animation::{Animated, Curve};
 use ui::chrome::NavRowFace;
 use ui::chrome::SelectionState;
 use ui::gesture::{DragSelect, Granularity};
@@ -581,31 +580,38 @@ struct PaneBands {
 /// `-1` back) while fading up. Continuous scroll never uses this.
 #[derive(Clone, Copy)]
 struct PageTurn {
-    anim: Animated<f64>,
+    anim: ui::motion::Presence,
     dir: f64,
 }
 
 impl PageTurn {
-    const DURATION: Duration = Duration::from_millis(240);
-    /// Peak horizontal travel of the incoming page, as a fraction of page width.
-    const SLIDE_FRAC: f64 = 0.14;
-
+    /// The next page arrives from the side it lives on, on the shared axis
+    /// a drill uses (`ui::motion::Drill`).
     fn start(dir: f64) -> Self {
-        Self {
-            anim: Animated::new(0.0, 1.0, Self::DURATION, Curve::EaseOut),
-            dir,
-        }
+        let mut anim = ui::motion::Presence::closed();
+        anim.show(
+            true,
+            ui::motion::Drill::SPEC,
+            ui::tokens::EffectiveMotion::default(),
+            ui::tokens::MotionSource::Pointer,
+            ui::time::now(),
+        );
+        Self { anim, dir }
     }
 
     /// `(horizontal offset px, opacity)` of the incoming page at `now`.
     fn visual(&self, now: Instant, page_w: f64) -> (f64, f32) {
-        let p = self.anim.current(now);
-        let offset = self.dir * (1.0 - p) * page_w * Self::SLIDE_FRAC;
-        (offset, (0.35 + 0.65 * p) as f32)
+        let p = self.anim.progress(now);
+        let pose = ui::motion::Drill::pose(
+            self.dir * (1.0 - p),
+            page_w,
+            ui::tokens::EffectiveMotion::default(),
+        );
+        (pose.to_drawn(Point::ZERO).x, pose.opacity)
     }
 
     fn done(&self, now: Instant) -> bool {
-        self.anim.done(now)
+        !self.anim.is_moving(now)
     }
 }
 

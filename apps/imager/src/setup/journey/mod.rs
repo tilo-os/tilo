@@ -70,7 +70,6 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use ui::animation::{Animated, Curve};
 use ui::framework::{
     EffectAnswer, EffectCx, EffectStatus, Effected, ResourceSurface, SurfaceCx, ViewCx,
 };
@@ -86,7 +85,7 @@ use ui::widget::{
     TextInputKind, Widget,
 };
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, Vec2};
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use super::strings::{t, t_args};
@@ -605,7 +604,9 @@ pub struct InstallerPreview {
     capture: bool,
     last_frame: Option<Scene>,
     outgoing: Option<Scene>,
-    slide: Option<Animated<f64>>,
+    /// A page push in flight: the direction it came from (`1` forward,
+    /// `-1` back) and its arrival on the drill (`ui::motion::Drill`).
+    slide: Option<(f64, ui::motion::Presence)>,
     pending_slide: Option<f64>,
     layout_metrics: Option<(f32, f32, f32)>,
     profile_breakpoint: f64,
@@ -5862,15 +5863,22 @@ impl Widget for InstallerPreview {
             // Only the new page is live; the departing page is a paint snapshot.
             self.outgoing = self.last_frame.take();
             self.slide = self.outgoing.as_ref().map(|_| {
-                Animated::new(
-                    direction,
-                    0.0,
-                    theme.tokens.motion.durations.base(),
-                    Curve::EaseInOut,
-                )
+                let mut arriving = ui::motion::Presence::closed();
+                arriving.show(
+                    true,
+                    ui::motion::Drill::SPEC,
+                    theme.motion(),
+                    ui::tokens::MotionSource::Pointer,
+                    now,
+                );
+                (direction, arriving)
             });
         }
-        if self.slide.as_ref().is_some_and(|slide| slide.done(now)) {
+        if self
+            .slide
+            .as_ref()
+            .is_some_and(|(_, slide)| !slide.is_moving(now) && !slide.is_held())
+        {
             self.slide = None;
             self.outgoing = None;
         }
@@ -5885,20 +5893,19 @@ impl Widget for InstallerPreview {
             transform,
             &self.rect,
         );
-        if let Some(slide) = &self.slide {
-            let position = slide.current(now);
-            let incoming_x = position * self.rect.width();
-            let outgoing_x = (position - slide.from()) * self.rect.width();
+        if let Some((direction, slide)) = &self.slide {
+            // A whole-page push: the new page slides in over the old one,
+            // which trails behind (`ui::motion::Drill::screen_pose`).
+            let arrived = slide.progress(now);
+            let width = self.rect.width();
+            let motion = theme.motion();
+            let incoming =
+                ui::motion::Drill::screen_pose(direction * (1.0 - arrived), width, motion);
+            let leaving = ui::motion::Drill::screen_pose(-direction * arrived, width, motion);
             if let Some(outgoing) = &self.outgoing {
-                scene.append(
-                    outgoing,
-                    Some(transform.pre_translate(Vec2::new(outgoing_x, 0.0))),
-                );
+                scene.append(outgoing, Some(leaving.applied_to(transform)));
             }
-            scene.append(
-                &current,
-                Some(transform.pre_translate(Vec2::new(incoming_x, 0.0))),
-            );
+            scene.append(&current, Some(incoming.applied_to(transform)));
         } else {
             scene.append(&current, Some(transform));
         }
@@ -10935,7 +10942,7 @@ mod tests {
         choose(&mut app, "computer");
         app.with_widget::<InstallerPreview, _>(|preview| {
             paint(preview, &Theme::dark());
-            assert_eq!(preview.slide.as_ref().unwrap().from(), 1.0);
+            assert_eq!(preview.slide.as_ref().unwrap().0, 1.0);
             assert!(preview.outgoing.is_some());
             assert!(preview.needs_animation_frame());
             let mut reduced = Theme::dark();
@@ -10960,15 +10967,8 @@ mod tests {
         app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| {
             paint(preview, &Theme::dark());
-            assert_eq!(preview.slide.as_ref().unwrap().from(), -1.0);
-            let slide = preview.slide.as_ref().unwrap();
-            preview.slide = Some(Animated::starting_at(
-                -1.0,
-                0.0,
-                ui::time::now().checked_sub(slide.duration()).unwrap(),
-                slide.duration(),
-                Curve::EaseInOut,
-            ));
+            assert_eq!(preview.slide.as_ref().unwrap().0, -1.0);
+            preview.slide = Some((-1.0, ui::motion::Presence::opened()));
             paint(preview, &Theme::dark());
             assert!(
                 !preview.needs_animation_frame(),

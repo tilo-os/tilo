@@ -174,8 +174,9 @@ pub struct CanvasSurface {
     moved_by_hand: bool,
     /// Mouse-wheel notches use the shared motion driver; trackpad input
     /// follows the hand directly. This is view state, never document history.
-    zoom_motion: Option<(ui::animation::Animated<f64>, Point)>,
-    zoom_duration: ui::time::Duration,
+    /// A wheel zoom gliding on the log scale (`ui::motion::Snap::WHEEL`),
+    /// about its focal point.
+    zoom_motion: Option<(ui::motion::MotionValue<f64>, Point)>,
     motion_reduced: bool,
     /// Shapes text for looks and exports, which run outside a frame.
     look_text: Option<TextRenderer>,
@@ -241,7 +242,6 @@ impl CanvasSurface {
             fitted_to: None,
             moved_by_hand: false,
             zoom_motion: None,
-            zoom_duration: ui::tokens::Durations::default().fast(),
             motion_reduced: false,
             look_text: None,
             pictures: crate::background::Pictures::default(),
@@ -1513,18 +1513,22 @@ impl CanvasSurface {
             let target = self
                 .zoom_motion
                 .as_ref()
-                .map_or_else(|| self.zoom(), |(motion, _)| motion.to().exp());
+                .map_or_else(|| self.zoom(), |(motion, _)| motion.target().exp());
             let (min, max) = self.viewport.zoom_bounds();
             let target = (target * factor).clamp(min, max).ln();
-            self.zoom_motion = Some((
-                ui::animation::Animated::new(
-                    from,
-                    target,
-                    self.zoom_duration,
-                    ui::animation::Curve::EaseOut,
-                ),
-                self.cursor,
-            ));
+            // A further notch retargets the glide from where it is and how
+            // fast it is going, so a spin of the wheel is one motion.
+            let mut motion = self
+                .zoom_motion
+                .take()
+                .map_or_else(|| ui::motion::MotionValue::new(from), |(motion, _)| motion);
+            let timing = ui::motion::Snap::WHEEL.timing(
+                ui::motion::Direction::Enter,
+                ui::tokens::EffectiveMotion::default(),
+                ui::tokens::MotionSource::Pointer,
+            );
+            motion.set(target, timing, ui::time::now());
+            self.zoom_motion = Some((motion, self.cursor));
             self.moved_by_hand = true;
             return true;
         }
@@ -1641,8 +1645,8 @@ impl CanvasSurface {
         };
         let now = ui::time::now();
         self.viewport
-            .zoom_at(motion.current(now).exp() / self.zoom(), focal);
-        if motion.done(now) {
+            .zoom_at(motion.get(now).exp() / self.zoom(), focal);
+        if !motion.is_moving(now) {
             self.zoom_motion = None;
         }
     }
@@ -3103,7 +3107,7 @@ impl Widget for CanvasSurface {
         self.motion_reduced = reduced;
         if reduced && let Some((motion, focal)) = self.zoom_motion.take() {
             self.viewport
-                .zoom_at(motion.to().exp() / self.zoom(), focal);
+                .zoom_at(motion.target().exp() / self.zoom(), focal);
         }
     }
 
@@ -3117,7 +3121,6 @@ impl Widget for CanvasSurface {
         self.metrics = theme.tokens.metrics;
         self.spacing = theme.tokens.spacing;
         self.set_motion_reduced(theme.reduce_motion);
-        self.zoom_duration = theme.tokens.motion.durations.fast();
         // Room for a selection frame's handles and the rotation handle.
         let least = taffy::Dimension::length(self.metrics.min_pointer_target * 4.0);
         // The room its parent leaves along either axis: in a column under

@@ -2644,8 +2644,6 @@ impl Widget for SlidesApp {
             self.presentation.invalidate_cache();
         }
         // Expire a settled cross-fade so `needs_animation_frame` can rest.
-        self.presentation
-            .set_fade(theme.tokens.motion.durations.base());
         self.presentation.expire_transition(theme.reduce_motion);
         // Measure first, so everything this frame lays out — the flap and rail
         // sync below, `compute_chrome`, and the hit-rects later events derive
