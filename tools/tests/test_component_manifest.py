@@ -36,11 +36,12 @@ class ComponentManifestPolicyTests(unittest.TestCase):
             if (REPO / shared).exists():
                 (root / shared).symlink_to(REPO / shared)
         (root / "os/scripts").mkdir(parents=True)
+        (root / "os/image").mkdir(parents=True)
         (root / "os/usr").symlink_to(REPO / "os/usr")
         (root / "os/dev").symlink_to(REPO / "os/dev")
         (root / "os/kernel").symlink_to(REPO / "os/kernel")
         for name in ("os/Containerfile", "os/components.toml", "os/scripts/install-components.py",
-                     "os/scripts/build-thin-apps.sh"):
+                     "os/scripts/build-thin-apps.sh", "os/image/compile.sh"):
             shutil.copy(REPO / name, root / name)
         return root
 
@@ -55,14 +56,14 @@ class ComponentManifestPolicyTests(unittest.TestCase):
         self.edit(root / "os/components.toml", entry + "\n", "")
         self.assertIn("shell must ship its matching mandatory PAM session wrapper", "\n".join(check.audit(root)))
 
-    def test_component_manifest_is_the_only_source_of_builder_copies_and_layers(self):
+    def test_component_manifest_is_the_only_source_of_build_output_copies_and_layers(self):
         with self.subTest(phase='repository passes'):
             self.assertEqual(check.audit(REPO), [])
-        with self.subTest(phase='hand written builder copy names line and fix'):
+        with self.subTest(phase='hand written build output copy names line and fix'):
             root = self.fixture()
             self.edit(root / "os/Containerfile", "COPY --from=component-files /image/windows/ /\n",
                       "COPY --from=component-files /image/windows/ /\n"
-                      "COPY --from=builder /out/tilo-example /usr/libexec/tilo-example\n")
+                      "COPY --from=apps-payload /out/tilo-example /usr/libexec/tilo-example\n")
             line = next(n for n, text in enumerate((root / "os/Containerfile").read_text().splitlines(), 1)
                         if "tilo-example" in text)
             errors = check.audit(root)
@@ -78,10 +79,17 @@ class ComponentManifestPolicyTests(unittest.TestCase):
             errors = "\n".join(check.audit(root))
             self.assertIn("ships cargo bin 'tilo-cryptoo'", errors)
             self.assertIn("os/components.toml:", errors)
-        with self.subTest(phase='builder bin missing from manifest fails'):
+        with self.subTest(phase='compiled bin missing from manifest fails'):
             root = self.fixture()
-            self.edit(root / "os/Containerfile", "--bin tilo-projector ", "--bin tilo-projector --bin tilo-new ")
+            self.edit(root / "os/image/compile.sh", "--bin tilo-projector ", "--bin tilo-projector --bin tilo-new ")
+            self.assertIn("os/image/compile.sh:", "\n".join(check.audit(root)))
             self.assertIn("compiles --bin tilo-new", "\n".join(check.audit(root)))
+        with self.subTest(phase='a copy straight from the compiled tree bypasses the manifest'):
+            root = self.fixture()
+            self.edit(root / "os/Containerfile", "COPY --from=component-files /image/windows/ /\n",
+                      "COPY --from=component-files /image/windows/ /\n"
+                      "COPY --from=compiled /tilo-example /usr/libexec/tilo-example\n")
+            self.assertIn("installs a Tilo build output outside os/components.toml", "\n".join(check.audit(root)))
         with self.subTest(phase='boot component needs existing scenario'):
             root = self.fixture()
             manifest = root / "os/components.toml"
@@ -106,10 +114,10 @@ class ComponentManifestPolicyTests(unittest.TestCase):
                 "/image/usr/share/tilo/font-catalogs", "/image/elsewhere"))
             self.assertIn("direct file /usr/share/tilo/font-catalogs/ (component 'apps+runtime') is never copied",
                           "\n".join(check.audit(root)))
-        with self.subTest(phase='a runtime publisher key travels from the builder with its runtime'):
+        with self.subTest(phase='a runtime publisher key travels from the stage that packed its runtime'):
             root = self.fixture()
             self.edit(root / "os/Containerfile",
-                      "--mount=type=bind,from=builder,source=/out/runtime-bundle-publisher.hex,",
+                      "--mount=type=bind,from=apps-payload,source=/out/runtime-bundle-publisher.hex,",
                       "--mount=type=bind,from=native-builder-payload,source=/out/runtime-bundle-publisher.hex,")
             self.assertIn("direct file /usr/share/tilo/runtime-bundle-publisher.hex (component 'apps+runtime') "
                           "is never copied", "\n".join(check.audit(root)))
@@ -130,7 +138,7 @@ class ComponentManifestPolicyTests(unittest.TestCase):
             self.edit(root / "os/Containerfile",
                       "--mount=type=bind,from=native-builder-payload,source=/usr/share/tilo-apps,"
                       "target=/run/tilo-apps-built,ro",
-                      "--mount=type=bind,from=builder,source=/usr/share/tilo-apps,target=/run/tilo-apps-built,ro")
+                      "--mount=type=bind,from=apps-payload,source=/usr/share/tilo-apps,target=/run/tilo-apps-built,ro")
             self.assertIn("copy the seeded store whole", "\n".join(check.audit(root)))
         with self.subTest(phase='unapplied layer fails'):
             root = self.fixture()

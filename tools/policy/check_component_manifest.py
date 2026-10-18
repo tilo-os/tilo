@@ -4,11 +4,12 @@
 The production image and development sysext layers are both assembled from
 os/components.toml. This check fails when the two could drift:
 
-* os/Containerfile copies a builder output into the image other than through
+* os/Containerfile copies a build output into the image other than through
   the manifest (`COPY --from=component-files /image/<layer>/ /`), or through a
   `direct` entry the manifest declares;
-* the builder compiles or stages a binary the manifest does not declare, or the
-  manifest declares one the builder never compiles;
+* os/image/compile.sh, which compiles the image's binaries outside any image
+  build, compiles or stages a binary the manifest does not declare, or the
+  manifest declares one it never compiles;
 * the manifest names a cargo package, bin or feature missing from the
   workspace, or a systemd unit the image does not ship.
 
@@ -32,6 +33,12 @@ RERUN = "python3 tools/policy/check_component_manifest.py   (or tools/policy/run
 WHY = ("the image and dev layers are both assembled from os/components.toml, so a Tilo "
        "build output that bypasses it ships in one and not the other, and they drift")
 PAYLOAD_STAGE = "native-builder-payload"
+# The stage that takes the compiled tree (the `compiled` build context,
+# os/image/compile.sh's output) and packs the runtimes and the app store from it.
+BUILDER_STAGE = "apps-payload"
+COMPILED_CONTEXT = "compiled"
+# What compiles the image's binaries: its release part, after the `--dev` branch.
+COMPILE_SCRIPT = "os/image/compile.sh"
 INSTALL_STAGE = "component-files"
 # The baked runtime with the font catalog's other two names hard-linked to its
 # fonts, assembled under /image so the rootfs copies it in one COPY and the
@@ -90,6 +97,33 @@ def instructions(path: Path) -> list[Instruction]:
             stage = words[-1] if len(words) >= 4 and words[-2].upper() == "AS" else words[-1]
         result.append(Instruction(start, stage, words, logical))
         logical = ""
+    return result
+
+
+def compile_steps(path: Path) -> list[Instruction]:
+    """The logical lines of the release compile in `path` (os/image/compile.sh), with their
+    first line number: what the image build's builder stage ran before compiling left it."""
+    if not path.is_file():
+        return []
+    result: list[Instruction] = []
+    logical, start, release = "", 0, False
+    for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not release:
+            # The `--dev` branch ends with the script's first top-level `fi`.
+            release = raw == "fi"
+            continue
+        line = raw.strip()
+        if not logical and (not line or line.startswith("#")):
+            continue
+        if logical and line.startswith("#"):
+            continue
+        if not logical:
+            start = number
+        continued = line.endswith("\\")
+        logical = f"{logical} {line[:-1].rstrip() if continued else line}".strip()
+        if not continued:
+            result.append(Instruction(start, "compile", tuple(logical.split()), logical))
+            logical = ""
     return result
 
 
@@ -279,8 +313,10 @@ def check_units(report: Report, manifest, containerfile_text: str) -> None:
                                  f"COPY {source} in the rootfs stage, or drop the unit from the component.")
 
 
-def check_containerfile(report: Report, manifest, installer, containerfile: Path, thin_script: Path) -> None:
+def check_containerfile(report: Report, manifest, installer, containerfile: Path, thin_script: Path,
+                        compile_script: Path) -> None:
     relative = containerfile.relative_to(report.repo)
+    compiler = compile_script.relative_to(report.repo)
     parsed = instructions(containerfile)
     # Dev-only components (files in `dev-*` layers) are os/Containerfile.dev's;
     # tools/policy/check_dev_image_contract.py keeps them out of this image.
@@ -333,7 +369,7 @@ def check_containerfile(report: Report, manifest, installer, containerfile: Path
                 # (a runtime's publisher key) the stage mounts from the same
                 # builder result as the runtime it signs.
                 if source == destination or (not source.startswith("/")
-                                             and f"from=builder,source=/out/{source}," in assembled):
+                                             and f"from={BUILDER_STAGE},source=/out/{source}," in assembled):
                     matched_direct.add(key)
             continue
         if source_stage == SEEDED_STAGE and instruction.stage != SEEDED_STAGE:
@@ -349,8 +385,9 @@ def check_containerfile(report: Report, manifest, installer, containerfile: Path
             matched_direct.add((SEEDED_TREE, SEEDED_TREE))
             continue
         # The image stages take build outputs from the payload stage, an exact
-        # copy of the builder's outputs.
-        if source_stage not in ("builder", PAYLOAD_STAGE) or instruction.stage == PAYLOAD_STAGE:
+        # copy of what the builder stage packed from the compiled tree.
+        if source_stage not in (COMPILED_CONTEXT, BUILDER_STAGE, PAYLOAD_STAGE) \
+                or instruction.stage in (BUILDER_STAGE, PAYLOAD_STAGE):
             continue
         for source, destination in pairs:
             key = (source.removeprefix("/out/") if source.startswith("/out/") else source, destination)
@@ -392,43 +429,43 @@ def check_containerfile(report: Report, manifest, installer, containerfile: Path
                      "python3 .../install-components.py --from /out --dest /image "
                      "--by-layer --all")
 
-    # Build/stage drift: what the builder compiles and stages versus the manifest.
+    # Build/stage drift: what the compile builds and stages versus the manifest.
     release = [c for c in production if c.profile == "release"]
     declared_bins = {b: c.name for c in release for b in c.bins}
     declared_outputs = {e.source for e in files if e.source and not e.source.startswith("/")}
-    builder_runs = [i for i in parsed if i.stage == "builder" and i.words and i.words[0].upper() == "RUN"]
+    builder_runs = compile_steps(compile_script)
     for instruction in builder_runs:
-        where = f"{relative}:{instruction.line}"
+        where = f"{compiler}:{instruction.line}"
         body = instruction.text
         for binary in sorted(set(re.findall(r"--bin\s+([A-Za-z0-9_-]+)", body))):
             if binary not in declared_bins:
                 owner = next((e.component for e in files if e.source == binary), None)
                 fix = (f'add "{binary}" to `bins` of component {owner!r} in os/components.toml, which '
                        "already installs that output." if owner else snippet(binary, binary, f"/usr/bin/{binary}"))
-                report.error(where, f"the builder compiles --bin {binary}, which no os/components.toml "
+                report.error(where, f"{compiler} compiles --bin {binary}, which no os/components.toml "
                              "component declares", fix)
         for output in sorted(set(re.findall(r"(?:target/release|desktop-artifacts)/([A-Za-z0-9_-]+)", body))):
             if output not in declared_outputs:
-                report.error(where, f"the builder stages build output {output!r}, which os/components.toml "
+                report.error(where, f"{compiler} stages build output {output!r}, which os/components.toml "
                              "does not install", snippet(output, output, f"/usr/bin/{output}"))
     builder_text = "\n".join(i.text for i in builder_runs)
     for component in release:
         where = report.manifest_line(component.name)
         for package in component.packages:
             if not re.search(rf"-p\s+{re.escape(package)}(\s|$|\")", builder_text):
-                report.error(where, f"component {component.name!r} declares package {package!r}, which the "
-                             f"{relative} builder never builds",
-                             f"add `-p {package}` to the builder's cargo invocation, or fix `packages`.")
+                report.error(where, f"component {component.name!r} declares package {package!r}, which "
+                             f"{compiler} never builds",
+                             f"add `-p {package}` to its cargo invocation, or fix `packages`.")
         for binary in component.bins:
             if not re.search(rf"--bin\s+{re.escape(binary)}(\s|$|\")", builder_text):
-                report.error(where, f"component {component.name!r} declares bin {binary!r}, which the "
-                             f"{relative} builder never builds",
-                             f"add `--bin {binary}` to the builder's cargo invocation, or fix `bins`.")
+                report.error(where, f"component {component.name!r} declares bin {binary!r}, which "
+                             f"{compiler} never builds",
+                             f"add `--bin {binary}` to its cargo invocation, or fix `bins`.")
         for feature in component.features:
             if feature not in builder_text:
-                report.error(where, f"component {component.name!r} declares feature {feature!r}, which the "
-                             f"{relative} builder never enables",
-                             "enable it in the builder's cargo invocation, or drop it from `features`.")
+                report.error(where, f"component {component.name!r} declares feature {feature!r}, which "
+                             f"{compiler} never enables",
+                             "enable it in its cargo invocation, or drop it from `features`.")
     thin_text = thin_script.read_text(encoding="utf-8") if thin_script.is_file() else ""
     for component in manifest.components:
         if component.profile != "thin-app":
@@ -444,9 +481,9 @@ def check_containerfile(report: Report, manifest, installer, containerfile: Path
         for feature in component.features:
             if feature not in image_features:
                 report.error(where, f"feature {feature!r} is declared but missing from APP_FEATURES in "
-                             f"{relative}", "add it to APP_FEATURES, or drop it from `features`.")
+                             f"{compiler}", "add it to APP_FEATURES, or drop it from `features`.")
         for feature in sorted(image_features - set(component.features)):
-            report.error(f"{relative}", f"APP_FEATURES enables {feature!r}, which component "
+            report.error(f"{compiler}", f"APP_FEATURES enables {feature!r}, which component "
                          f"{component.name!r} does not declare",
                          f"add \"{feature}\" to `features` of {component.name!r} in os/components.toml.")
 
@@ -465,7 +502,8 @@ def audit(repo: Path) -> list[str]:
     containerfile = repo / "os/Containerfile"
     check_manifest_against_workspace(report, manifest, workspace_packages(repo))
     check_units(report, manifest, containerfile.read_text(encoding="utf-8"))
-    check_containerfile(report, manifest, installer, containerfile, repo / "os/scripts/build-thin-apps.sh")
+    check_containerfile(report, manifest, installer, containerfile, repo / "os/scripts/build-thin-apps.sh",
+                        repo / COMPILE_SCRIPT)
     return report.errors
 
 
@@ -478,7 +516,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"component manifest check failed ({len(errors)} problem(s)):\n", file=sys.stderr)
         print("\n\n".join(errors), file=sys.stderr)
         return 1
-    print("os/components.toml matches os/Containerfile and the Cargo workspace")
+    print(f"os/components.toml matches os/Containerfile, {COMPILE_SCRIPT} and the Cargo workspace")
     return 0
 
 
