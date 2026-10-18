@@ -558,6 +558,19 @@ impl OriginalInvocationData {
         )
     }
 
+    /// Retain the caller's custody for a host-minted launch child. Native
+    /// admission binds its UUID as well as its original certificate and time.
+    pub(super) fn launch_child_caller(
+        &self,
+        invocation: tilo_actions::InvocationId,
+    ) -> InvocationCaller {
+        let mut caller = self.caller.clone();
+        if let InvocationCaller::NativePerson { invocation: id, .. } = &mut caller {
+            *id = invocation;
+        }
+        caller
+    }
+
     pub(super) fn permits_launch_in(&self, room: &str) -> bool {
         self.route.cluster_id == room
             && self.spec.contract.kind >= tilo_actions::ActionKind::Undoable

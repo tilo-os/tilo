@@ -11935,10 +11935,6 @@ impl channel_handle::Server for CapnpChannelHandle {
             Ok(parent) => parent,
             Err(error) => return Promise::err(error),
         };
-        let actor = match self.launch_actor(parent) {
-            Ok(actor) => actor,
-            Err(error) => return Promise::err(capnp::Error::failed(error)),
-        };
         let app_id = match request.get_app_id() {
             Ok(value) => match value.to_str() {
                 Ok(value) => value.to_owned(),
@@ -11954,50 +11950,34 @@ impl channel_handle::Server for CapnpChannelHandle {
             Ok(root) => root,
             Err(error) => return Promise::err(error),
         };
-        let Some(membership) = self.state.membership.as_ref() else {
-            return Promise::err(capnp::Error::failed(
-                "the action broker has no workspace authority".into(),
-            ));
-        };
-        let now = match self.state.policy_now_ns() {
-            Ok(now) => now / 1_000_000_000,
-            Err(error) => return Promise::err(capnp::Error::failed(error)),
-        };
-        // The launcher keeps the one admitted room's workspace past the
-        // read, so only that workspace is copied, after the check passes.
-        let workspace = match membership
-            .decide_in_room(&self.route().cluster_id, |workspace| {
-                let workspace = workspace.ok_or("the application workspace is no longer hosted")?;
-                if !actor.may_in(
-                    workspace,
-                    &app_node(workspace, &app_id),
-                    ActionKind::Undoable,
-                    now,
-                ) {
-                    return Err("the caller is not allowed to launch that application");
-                }
-                Ok(workspace.clone())
-            })
-            .and_then(|decided| decided.map_err(str::to_owned))
-        {
-            Ok(workspace) => workspace,
-            Err(error) => return Promise::err(capnp::Error::failed(error)),
-        };
+        if let Err(error) = self.current_launch_authority(&app_id, parent) {
+            return Promise::err(capnp::Error::failed(error));
+        }
 
-        let id = self.state.invocation_id.fetch_add(1, Ordering::Relaxed);
-        // Authorship is judged at the same policy time as the launch check.
-        let author = observed_launch::launch_author(&actor, &workspace, now);
-        let started = self.begin_original_launch(
-            &app_id,
-            package_root.as_deref(),
-            &workspace,
-            author.as_deref(),
-            parent,
-        );
-        let actor = actor.id().to_owned();
+        let admitted = match self.admit_observed_launch(&app_id, package_root.as_deref(), parent) {
+            Ok(admitted) => admitted,
+            Err(error) => return Promise::err(capnp::Error::failed(error)),
+        };
+        #[cfg(test)]
+        self.observed_launch_effect_barrier();
+        // Admission may block on durable storage. Discard the earlier policy
+        // snapshot and judge both launch and authorship again at the effect.
+        let started =
+            self.current_launch_authority(&app_id, parent)
+                .and_then(|(workspace, actor, now)| {
+                    let author = observed_launch::launch_author(&actor, &workspace, now);
+                    self.begin_original_launch(
+                        &app_id,
+                        package_root.as_deref(),
+                        &workspace,
+                        author.as_deref(),
+                        parent,
+                    )
+                });
         Promise::from_future(async move {
             let outcome = observed_launch::wait_for_startup(started).await;
-            let update = self.finish_observed_launch(&app_id, actor, parent, id, outcome);
+            let update = self.finish_observed_launch(&app_id, parent, &admitted, outcome)?;
+            let id = admitted.id;
             let json = serde_json::to_string(&update)
                 .map_err(|error| capnp::Error::failed(error.to_string()))?;
             results.get().set_id(id);
