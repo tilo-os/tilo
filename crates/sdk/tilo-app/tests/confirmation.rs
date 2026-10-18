@@ -108,6 +108,8 @@ enum Now {
     Group,
     Typed,
     Queued,
+    Gesture,
+    InvokedGesture,
 }
 
 thread_local! {
@@ -168,6 +170,13 @@ impl Widget for Remover {
                     Notes::ADD.with("Bread").into_invoke().unwrap(),
                 ]),
             ),
+            Now::Gesture => dispatch.submit_gesture(edits, Notes::REMOVE.with(first)),
+            Now::InvokedGesture => {
+                let _agent = tilo_app::invocation_scope::InvokerScope::enter(
+                    tilo_actions::ActionInvoker::actor("agent:helper"),
+                );
+                dispatch.submit_gesture(edits, Notes::REMOVE.with(first))
+            }
             Now::Queued => {
                 dispatch.submit(Invoke::edit(&Notes::paths().notes.remove(&first)).unwrap());
                 Ok(())
@@ -242,6 +251,26 @@ fn asks_before_applying_now(now: Now) {
         !app.state().notes.values().any(|note| note.text == "Milk"),
         "{now:?}: the first note is gone"
     );
+}
+
+/// The person's own gesture is its own confirmation: the verb applies at
+/// once. The same call under an invocation (an agent driving the surface)
+/// asks as any caller's does.
+#[test]
+fn a_destructive_verb_of_the_persons_own_gesture_applies_without_asking() {
+    let mut app = TestApp::<RemoverApp>::new().unwrap();
+    app.invoke(Notes::ADD.with("Milk")).unwrap();
+    app.invoke(Notes::ADD.with("Eggs")).unwrap();
+    NOW.set(Some(Now::Gesture));
+    app.settle();
+    assert_eq!(app.asking(), None, "nothing is asked");
+    assert_eq!(app.state().notes.len(), 1, "removed at once");
+    assert!(!app.state().notes.values().any(|note| note.text == "Milk"));
+}
+
+#[test]
+fn a_destructive_gesture_under_an_invocation_asks_first() {
+    asks_before_applying_now(Now::InvokedGesture);
 }
 
 #[test]
