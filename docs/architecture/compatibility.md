@@ -12,15 +12,56 @@ behaviour. The one thing that survives every change is the person's data.
   `tilo-app-update.timer` runs `app update` hourly, except on a connection the
   owner marked metered. No restart: a running app keeps its build until it
   next starts.
-- **The system image** is fetched and staged by
-  `bootc-fetch-apply-updates.timer`, at least daily, and applies at the next
-  restart. The shell asks for that restart at most every two days
-  (`shell::system_update`), so the updates of those days apply with one
-  restart.
+- **The system image** is fetched, verified and staged by
+  `bootc-fetch-apply-updates.timer`, at least daily, and then applied live,
+  component by component, without a reboot (below). Only a kernel,
+  bootloader or initramfs change, or an update that could not apply live,
+  waits for a restart of the machine. The shell asks for it, and restarts the
+  desktop to finish an update, at most every two days together
+  (`shell::system_update`), so the updates of those days apply with one.
 - Something that needs a newer system than this one (an app build, a
   collaborator's device) starts the system update at once
-  (`tilo-deployment-update.service`), and the restart is asked for as soon as
-  the image is staged.
+  (`tilo-deployment-update.service`): what applies live has applied when it
+  returns, the desktop finishes the rest at the next moment the person is
+  away, and a restart is asked for at once if one is needed.
+
+### Live system updates
+
+`tilo-live-update.service` (`tilo-extension live:system`,
+`crates/system/extension-helper/src/live.rs`) runs after every staging, with
+the machinery `tilo-vm swap` uses on a development machine:
+
+1. It opens the staged and the booted deployment read-only: on the sealed
+   layout each is mounted from its composefs image with the fs-verity digest
+   bootc reports, so it reads exactly the verified, signed image; on the
+   ostree layout each is its deployment checkout.
+2. It compares their `/usr` and classifies every difference by the staged
+   image's `/usr/share/tilo/components.toml`: a system component (`vm`
+   scope), a session component, the image's apps and runtime, the base OS,
+   or what only a boot changes (`/usr/lib/modules`, firmware, bootloader,
+   initramfs). `/usr/etc`, os-release and the rpm database stay as booted
+   until the next boot.
+3. It builds one system extension of everything but the session components
+   (and the image's apps when `system-interfaces.toml` changed), in
+   `/var/lib/tilo/live-update/layers`, linked from `/run/extensions`, merges
+   it through `tilo-extension activate` (the only merger on the sealed
+   image), and try-restarts the changed system components' units, system and
+   user. Apps and the runtime need no restart. The greeter under a login
+   runs its new build next time it starts.
+4. When part waits for the desktop and the screen is locked or blanked for
+   two minutes, the shell starts `tilo-live-update-session.service`
+   (`live:session`): it merges the whole update, restarts the changed session
+   services and restarts every desktop in place through `tilo-session`
+   (SIGUSR1): the login, the lock and the windows stay.
+5. A restarted unit that fails, or a desktop that does not come back within
+   20 s, puts the previous layer back, restarts the same parts again and
+   marks the update failed; it then applies with the next restart of the
+   machine, which the shell asks for.
+
+The state the shell reads is `/run/tilo/live-update/state.json`. Layers
+last until the next boot, which boots the staged deployment that holds them
+all; every boot deletes them, and every apply rebuilds its layer from the
+mounted image.
 
 ## One version per interface
 

@@ -1,4 +1,6 @@
-// Let the person sitting at the machine roll it back and control its updates.
+// Let the person sitting at the machine roll it back and control its updates,
+// and let its desktop finish a live system update at an idle moment
+// (tilo-live-update-session.service restarts the desktop in place).
 //
 // Settings shows a rollback control and an "Automatic updates" switch. Both need
 // root: one reorders the boot loader's entries, the other enables or disables a
@@ -21,7 +23,7 @@ polkit.addRule(function (action, subject) {
 
 // The remaining grant is deliberately narrow on three axes at once:
 //
-//   * BY UNIT. Not "manage units", but these three unit names. Anything else on
+//   * BY UNIT. Not "manage units", but these unit names. Anything else on
 //     the system bus falls through to the default policy unchanged.
 //   * BY SUBJECT. subject.local && subject.active: a session physically at this
 //     machine's seat and currently in the foreground. An ssh session, a screen
@@ -35,6 +37,7 @@ polkit.addRule(function (action, subject) {
 polkit.addRule(function (action, subject) {
     var units = {
         "tilo-deployment-rollback.service": true,
+        "tilo-live-update-session.service": true,
         "bootc-fetch-apply-updates.timer": true,
         "tilo-update-policy@schedule-system.service": true,
         "tilo-update-policy@schedule-daily.service": true,

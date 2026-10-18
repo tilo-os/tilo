@@ -126,11 +126,17 @@ pub fn all_of(text: &str, allowed: impl Fn(char) -> bool) -> bool {
 pub fn parse_command(argv: &[String]) -> Result<(String, String)> {
     let [argument] = argv else {
         return Err(Error::pack(
-            "expected exactly one argument: activate, refresh:all or <verb>:<id>",
+            "expected exactly one argument: activate, refresh:all, live:<phase> or <verb>:<id>",
         ));
     };
     if argument == "activate" {
         return Ok(("activate".to_owned(), String::new()));
+    }
+    if let Some(phase) = argument.strip_prefix("live:") {
+        if !matches!(phase, "system" | "session" | "status") {
+            return Err(Error::pack("live takes system, session or status"));
+        }
+        return Ok(("live".to_owned(), phase.to_owned()));
     }
     let Some((verb, ident)) = argument
         .split_once(':')
