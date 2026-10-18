@@ -582,6 +582,9 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
             argv.extend(["--dir".to_string(), directory.to_string()]);
         }
         launcher::profile::push_system_profile(&mut argv, network == NetworkShape::Unrestricted);
+        // A Windows program draws with its own device (Wine's Vulkan and
+        // OpenGL): the GPU nodes are no longer in the default app profile.
+        launcher::profile::push_gpu_devices(&mut argv);
         for (fd, destination) in [
             (crate::execute::PASSWD_CHILD_FD, "/etc/passwd"),
             (crate::execute::GROUP_CHILD_FD, "/etc/group"),

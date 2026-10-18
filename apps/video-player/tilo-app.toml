@@ -23,7 +23,7 @@ aarch64 = "aarch64"
 
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
-optional = ["files.open", "app-files", "settings", "media.decode", "open-uri"]
+optional = ["files.open", "app-files", "settings", "media.decode", "open-uri", "gpu"]
 
 [resources]
 kinds = ["video-player.library"]

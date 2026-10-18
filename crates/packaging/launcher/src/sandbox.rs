@@ -351,14 +351,15 @@ pub fn push_gpu_landlock_rules(argv: &mut Vec<String>, selection: &crate::gpu::G
     }
 }
 
-/// Whether this launch exposes `/dev/dri` at all — consults both
-/// sources rather than a constant, since [`push_gpu_selection`]'s
-/// narrowing needs something actually mounted regardless of a future
-/// profile change.
-pub fn grants_drm(_manifest: &ManifestView, capabilities: &CapabilityPlan) -> bool {
-    let from_profile = crate::profile::SYSTEM_DEVICE_PATHS
-        .iter()
-        .any(|entry| is_drm_path(Path::new(entry)));
+/// Whether this launch exposes `/dev/dri` at all: an app granted `gpu`
+/// ([`crate::gpu::granted`]), or a capability naming a DRM path. Consulted
+/// rather than assumed, since [`push_gpu_selection`]'s narrowing needs
+/// something actually mounted.
+pub fn grants_drm(gpu_granted: bool, capabilities: &CapabilityPlan) -> bool {
+    let from_profile = gpu_granted
+        && crate::profile::GPU_DEVICE_PATHS
+            .iter()
+            .any(|entry| is_drm_path(Path::new(entry)));
     let from_capabilities = capabilities
         .ro_paths
         .iter()
@@ -2301,32 +2302,49 @@ mod tests {
                 "the loader that did resolve must still be pinned: {argv:?}"
             );
         }
-        // Phase `drm_grant_detection_follows_the_profile_and_capability_grants`.
-        // The device is in the namespace because the *system* put it there,
-        // so the narrowing must fire for every app — including one whose
-        // manifest says nothing. A user-granted node counts too.
+        // Phase `drm_grant_detection_follows_the_gpu_capability_and_grants`.
+        // An app draws through its room's render service and has no GPU
+        // node, unless it declares `gpu`; then its node is narrowed to the
+        // compositor's. A user-granted node counts too.
         {
             let none = CapabilityPlan::empty();
+            let off = mk_manifest("off");
             assert!(
-                grants_drm(&mk_manifest("off"), &none),
-                "the system profile binds /dev/dri for every app, so every app \
-                 must have its device view narrowed"
+                !grants_drm(crate::gpu::granted(&off, &none, true), &none),
+                "an app without `gpu` has no /dev/dri at all"
+            );
+            let mut gpu = mk_manifest("off");
+            gpu.capabilities.push(crate::gpu::CAPABILITY.to_string());
+            assert!(
+                grants_drm(crate::gpu::granted(&gpu, &none, true), &none),
+                "an app the image ships declaring `gpu` gets the device, narrowed"
+            );
+            assert!(
+                !crate::gpu::granted(&gpu, &none, false),
+                "an app the person installed declaring `gpu` waits for their grant"
+            );
+            let mut person = CapabilityPlan::empty();
+            person.devices.push(crate::gpu::CAPABILITY.to_string());
+            assert!(crate::gpu::granted(&gpu, &person, false));
+            assert!(
+                !crate::gpu::granted(&off, &person, false),
+                "a grant does not reach past the manifest"
             );
 
             let mut granted = CapabilityPlan::empty();
             granted.rw_paths.push(PathBuf::from("/dev/dri/renderD129"));
             assert!(
-                grants_drm(&mk_manifest("off"), &granted),
+                grants_drm(false, &granted),
                 "a user-granted node must be narrowed too"
             );
 
-            // The manifest is not consulted. A package that writes
+            // Only the `gpu` capability counts. A package that writes
             // `/dev/dri` into its (retired) fs block changes nothing.
             let mut hostile = mk_manifest("off");
             hostile.sandbox.fs.write.push("/dev/dri".to_string());
             assert_eq!(
-                grants_drm(&hostile, &none),
-                grants_drm(&mk_manifest("off"), &none),
+                crate::gpu::granted(&hostile, &none, true),
+                crate::gpu::granted(&mk_manifest("off"), &none, true),
                 "a manifest entry must not change the GPU decision"
             );
         }
@@ -2477,13 +2495,8 @@ mod tests {
                 (*p).to_string(),
             ));
         }
-        for p in crate::profile::SYSTEM_DEVICE_PATHS {
-            expected.push((
-                "--dev-bind-try".to_string(),
-                (*p).to_string(),
-                (*p).to_string(),
-            ));
-        }
+        // No GPU node: an app without `gpu` draws through its room's render
+        // service.
         expected
     }
 

@@ -53,7 +53,7 @@ use std::path::{Component, Path, PathBuf};
 
 use advisory_lock::{FileLock, TryLockError};
 
-use crate::profile::{NETWORK_READ_PATHS, SYSTEM_DEVICE_PATHS, SYSTEM_READ_PATHS};
+use crate::profile::{GPU_DEVICE_PATHS, NETWORK_READ_PATHS, SYSTEM_READ_PATHS};
 
 /// Where the root service keeps the view.
 pub const DEFAULT_ROOT: &str = "/run/tilo-sandbox-view";
@@ -121,7 +121,7 @@ fn profile_digest() -> String {
         LIVE_READ_PATHS,
         LAUNCH_FILES,
         NETWORK_READ_PATHS,
-        SYSTEM_DEVICE_PATHS,
+        GPU_DEVICE_PATHS,
     ] {
         for path in list {
             hasher.update(path.as_bytes());
@@ -838,8 +838,9 @@ impl SystemView {
         Ok(moved)
     }
 
-    /// The view's binds, then what stays per launch: live `/sys`, the
-    /// resolver files, the device nodes.
+    /// The view's binds, then what stays per launch: live `/sys` and the
+    /// resolver files. GPU device nodes are not the profile's: a `gpu` app's
+    /// are bound outside the profile block and survive the replacement.
     fn replacement(&self, variant: Variant, tops: &[String]) -> Vec<String> {
         let mut replacement = Vec::new();
         let root = self.variant_root(variant);
@@ -859,9 +860,6 @@ impl SystemView {
             for path in NETWORK_READ_PATHS {
                 replacement.extend(["--ro-bind-try", path, path].map(str::to_string));
             }
-        }
-        for path in SYSTEM_DEVICE_PATHS {
-            replacement.extend(["--dev-bind-try", path, path].map(str::to_string));
         }
         replacement
     }
@@ -1157,9 +1155,12 @@ mod tests {
             })
             .unwrap();
         assert!(sys < hidden, "{argv:?}");
-        for device in SYSTEM_DEVICE_PATHS {
+        // No GPU node: the default profile has none, and the view adds none
+        // (a `gpu` app's nodes are bound outside the profile block).
+        for device in GPU_DEVICE_PATHS {
             assert!(
-                argv.windows(3)
+                !argv
+                    .windows(3)
                     .any(|w| w[0] == "--dev-bind-try" && w[2] == *device)
             );
         }
