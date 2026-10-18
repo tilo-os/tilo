@@ -469,7 +469,6 @@ async fn live(token: String, guild_id: String) -> usize {
     discord::connect(&room.rooms, &room.id, &cert, &bridged, &server_name)
         .await
         .unwrap();
-    let workspace = room.guild().await.workspace;
     room.chat_as({
         let ada = room.ada.clone();
         move |doc| chat::demo::introduce(doc, &ada, "Ada", "AD").map_err(|error| error.to_string())
@@ -628,7 +627,6 @@ async fn live(token: String, guild_id: String) -> usize {
     room.act(
         &room.owner,
         chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
-            workspace: Id::from_raw(&workspace),
             name: "made-in-tilo".into(),
             category: None,
             kind: None,

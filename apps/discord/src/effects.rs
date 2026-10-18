@@ -54,8 +54,7 @@ pub enum DiscordEffect {
     /// Find the message an event is about
     ///
     /// The Chat message and channel the bridge reads before planning
-    /// `event`, each empty when it is about none, and the Chat workspace
-    /// the server mirrors.
+    /// `event`, each empty when it is about none.
     #[effect(kind = "read", returns, programmatic)]
     PlanRoute { event: Value },
     /// Plan an event
@@ -64,7 +63,7 @@ pub enum DiscordEffect {
     #[effect(kind = "read", returns, programmatic)]
     PlanEvent {
         event: Value,
-        #[param("Chat's read-workspace answer")]
+        #[param("Chat's read-room answer")]
         chat: Value,
         #[param("Where avatars and Tilo links point; an install may give none")]
         context: Option<Context>,
@@ -85,7 +84,6 @@ pub fn plan(guild: &Guild, effect: &DiscordEffect) -> Option<Value> {
         DiscordEffect::PlanRoute { event } => Some(json!({
             "message": bridge::route(guild, event),
             "channel": bridge::route_channel(event),
-            "workspace": guild.workspace,
         })),
         DiscordEffect::PlanEvent {
             event,

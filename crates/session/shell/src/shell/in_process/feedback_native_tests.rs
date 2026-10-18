@@ -242,7 +242,6 @@ fn prepare_existing_chat(owner: &NativeWorkspaceOwner, key: &ed25519_dalek::Sign
                 .map_err(|error| error.to_string())?;
                 let heads = document.get_heads();
                 let person = hex::encode(view.device().user_public_key);
-                let workspace = room.to_string();
                 // The room's seed holds a voice channel its media binding names.
                 // The chat's first state is written over what the record holds,
                 // keeping that channel's objects, so the binding still resolves.
@@ -259,19 +258,12 @@ fn prepare_existing_chat(owner: &NativeWorkspaceOwner, key: &ed25519_dalek::Sign
                             .with_message(tilo_actions::FrameworkChange::Genesis.change_message()),
                     );
                 }
-                chat::demo::start_in(
-                    &mut document,
-                    &person,
-                    (&workspace, "Fixture"),
-                    "Fixture",
-                    "F",
-                )
-                .map_err(|error| error.to_string())?;
+                chat::demo::start(&mut document, &person, "Fixture", "F")
+                    .map_err(|error| error.to_string())?;
                 chat::demo::insert_category(
                     &mut document,
                     &person,
                     "feedback-category",
-                    &workspace,
                     "Feedback",
                 )
                 .map_err(|error| error.to_string())?;
@@ -279,7 +271,7 @@ fn prepare_existing_chat(owner: &NativeWorkspaceOwner, key: &ed25519_dalek::Sign
                     &mut document,
                     &person,
                     "feedback",
-                    (&workspace, "feedback-category"),
+                    "feedback-category",
                     "Feedback",
                     chat::model::ChannelKind::Text,
                 )

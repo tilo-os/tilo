@@ -38,10 +38,15 @@ fn agent_semantic_identity(agent: &str) -> Option<ResourceSemanticIdentity> {
 }
 
 /// The views an item of the chat opens in, each opened by the item's own
-/// view effect: a message (to a range of its text). A conversation's view
-/// depends on its kind and is offered by its row.
+/// view effect: a category (its first conversation), and a message (to a
+/// range of its text). A conversation's view depends on its kind and is
+/// offered by its row.
 pub(crate) fn item_views(field: &str, _item: &tilo_resource::Id) -> Vec<ResourceViewSpec> {
     match field {
+        "categories" => vec![
+            ResourceViewSpec::new("category", "Category", ChatEffect::OPEN_CATEGORY.id)
+                .with_primary(true),
+        ],
         "messages" => vec![
             ResourceViewSpec::new("message", "Message", ChatEffect::REVEAL_MESSAGE.id)
                 .with_primary(true)

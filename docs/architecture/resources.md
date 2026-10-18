@@ -81,7 +81,7 @@ shared ones (`RichText`, `Grid`). An app does not implement `Resource` by hand.
   every word: for short texts such as a note's body or a slide's text box.
 - `#[model(default = expr)]` is what the field reads as when the document holds
   none: a required field with a sensible derivation (`#[model(default =
-  Id::from_raw("ws_home"))]`), so an item written without it still reads. The
+  Id::from_raw("home"))]`), so an item written without it still reads. The
   next whole write of the item stores it.
 - `#[model(rename = "key")]`, `#[model(skip)]` as before.
 - `#[model(check = path)]` on a type names an invariant,

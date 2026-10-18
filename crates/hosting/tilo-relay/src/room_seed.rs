@@ -14,8 +14,8 @@ use tilo_resource::{Fields, Model, Replica, Resource};
 /// title and a body, the simplest of the document apps.
 pub(crate) const WELCOME_APP: &str = "so.tilo.notes";
 pub(crate) const CANVAS_APP: &str = "so.tilo.canvas";
-/// The app whose content persists: it is given the room's name and its
-/// starting channels, and never reset.
+/// The app whose content persists: it is given its starting channels, and
+/// never reset.
 pub(crate) const CHAT_APP: &str = "so.tilo.chat";
 /// The category the chat's starting channels open under. Its id and each
 /// channel's are derived, never random, so what maps onto them (a bridged
@@ -97,54 +97,32 @@ where
     Ok(())
 }
 
-/// Give the chat `doc` of `room` the room's name `shown`, and the starting
-/// `channels` (names) while it has none. Messages, people and channels
-/// people made are left as they are, so this runs at every start and never
-/// resets.
+/// Give the chat `doc` the starting `channels` (names) while it has only
+/// the `#chat` and `#voice` every room opens with: those make way for the
+/// operator's. Messages, people and channels people made are left as they
+/// are, so this runs at every start and never resets.
 pub(crate) fn settle_chat(
     doc: &mut automerge::AutoCommit,
-    room: &str,
-    shown: &str,
     channels: &[String],
 ) -> Result<(), String> {
-    use chat::record::{Category, Channel, Workspace};
+    use chat::record::{CHAT_CHANNEL, Category, Channel, VOICE_CHANNEL};
     use tilo_resource::Id;
 
     let current = chat::Chat::read(doc).map_err(|error| format!("read the chat: {error}"))?;
     let mut target = current.clone();
-    let workspace = Id::from_raw(room);
-    let glyph = chat::record::monogram(shown);
-    match target.workspaces.get_mut(&workspace) {
-        Some(entry) => {
-            shown.clone_into(&mut entry.name);
-            entry.glyph = glyph;
-        }
-        None => {
-            target.workspaces.push(
-                workspace.clone(),
-                Workspace {
-                    name: shown.to_owned(),
-                    glyph,
-                    color: 0,
-                },
-            );
-        }
-    }
+    let opened_with = |id: &Id| id.as_str() == CHAT_CHANNEL || id.as_str() == VOICE_CHANNEL;
     let has_channels = target
         .channels
-        .values()
-        .any(|channel| channel.workspace == workspace);
+        .iter()
+        .any(|(id, channel)| channel.conversation_with.is_none() && !opened_with(id));
     if !has_channels && !channels.is_empty() {
+        target.channels.retain(|id, _| !opened_with(id));
         let (category, label) = CHAT_CATEGORY;
         let category = Id::from_raw(category);
         if !target.categories.contains(&category) {
-            target.categories.push(
-                category.clone(),
-                Category {
-                    workspace: workspace.clone(),
-                    name: label.into(),
-                },
-            );
+            target
+                .categories
+                .push(category.clone(), Category { name: label.into() });
         }
         for name in channels {
             let id = channel_id(name);
@@ -154,7 +132,6 @@ pub(crate) fn settle_chat(
             target.channels.push(
                 Id::from_raw(&id),
                 Channel {
-                    workspace: workspace.clone(),
                     category: Some(category.clone()),
                     name: name.clone(),
                     ..Channel::default()
@@ -317,13 +294,11 @@ mod tests {
         assert_eq!(canvas::Artwork::read(&art).unwrap().marks.len(), seeded);
     }
 
-    const ROOM: &str = "0b5c7d2e-1f3a-4b6c-8d9e-a0b1c2d3e4f5";
-
-    /// The chat as the room's host prepares it: a workspace for the room,
-    /// labelled with nothing but its id.
+    /// The chat as the room's host prepares it: opened with `#chat` and
+    /// `#voice`.
     fn prepared_chat() -> automerge::AutoCommit {
         let mut doc = record::<chat::Chat>();
-        chat::demo::start_in(&mut doc, "host", (ROOM, ""), "Host", "H").unwrap();
+        chat::demo::start(&mut doc, "host", "Host", "H").unwrap();
         doc
     }
 
@@ -340,28 +315,22 @@ mod tests {
     }
 
     #[test]
-    fn the_chat_is_named_after_the_room_and_opens_with_the_named_channels() {
+    fn the_chat_opens_with_the_named_channels() {
         let mut doc = prepared_chat();
         let channels = names(&["general", "help", "show-and-tell"]);
-        settle_chat(&mut doc, ROOM, "Plaza", &channels).unwrap();
+        settle_chat(&mut doc, &channels).unwrap();
         let chat = chat::Chat::read(&doc).unwrap();
-        let workspace = chat
-            .workspaces
-            .get(&tilo_resource::Id::from_raw(ROOM))
-            .unwrap();
-        assert_eq!(workspace.name, "Plaza");
-        assert_eq!(workspace.glyph, "P");
         assert_eq!(channel_names(&doc), channels);
         let ids: Vec<&str> = chat.channels.iter().map(|(id, _)| id.as_str()).collect();
         assert_eq!(ids, ["c_general", "c_help", "c_show_and_tell"]);
     }
 
     #[test]
-    fn without_channels_named_the_chat_opens_with_none() {
+    fn without_channels_named_the_chat_opens_with_chat_and_voice() {
         let mut doc = prepared_chat();
-        settle_chat(&mut doc, ROOM, "Plaza", &[]).unwrap();
+        settle_chat(&mut doc, &[]).unwrap();
         let chat = chat::Chat::read(&doc).unwrap();
-        assert!(channel_names(&doc).is_empty());
+        assert_eq!(channel_names(&doc), ["chat", "voice"]);
         assert!(
             !chat
                 .categories
@@ -378,15 +347,15 @@ mod tests {
         }
     }
 
-    /// Every start settles the chat again: it renames, and never brings
-    /// back or doubles channels, nor undoes what people did. (What they
+    /// Every start settles the chat again: it never brings back or doubles
+    /// channels, nor undoes what people did. (What they
     /// wrote is kept in the chat's message parts, which settling never
     /// opens.)
     #[test]
-    fn settling_the_chat_again_renames_and_keeps_what_people_did() {
+    fn settling_the_chat_again_keeps_what_people_did() {
         let mut doc = prepared_chat();
         let channels = names(&["general", "help", "show-and-tell"]);
-        settle_chat(&mut doc, ROOM, "Plaza", &channels).unwrap();
+        settle_chat(&mut doc, &channels).unwrap();
         chat::demo::apply_as(
             &mut doc,
             "host",
@@ -398,16 +367,7 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        settle_chat(&mut doc, ROOM, "Town Plaza", &channels).unwrap();
-        let chat = chat::Chat::read(&doc).unwrap();
-        let workspace = chat
-            .workspaces
-            .get(&tilo_resource::Id::from_raw(ROOM))
-            .unwrap();
-        assert_eq!(
-            (workspace.name.as_str(), workspace.glyph.as_str()),
-            ("Town Plaza", "TP")
-        );
+        settle_chat(&mut doc, &channels).unwrap();
         assert_eq!(channel_names(&doc), ["general", "show-and-tell"]);
     }
 
@@ -419,14 +379,12 @@ mod tests {
         use tilo_resource::Id;
         let mut doc = prepared_chat();
         let channels = names(&["general"]);
-        settle_chat(&mut doc, ROOM, "Plaza", &channels).unwrap();
+        settle_chat(&mut doc, &channels).unwrap();
         let current = chat::Chat::read(&doc).unwrap();
         let mut adopted = current.clone();
-        let workspace = Id::from_raw(ROOM);
         adopted.categories.push(
             Id::from_raw("k_chat"),
             chat::record::Category {
-                workspace: workspace.clone(),
                 name: "chat".into(),
             },
         );
@@ -438,7 +396,6 @@ mod tests {
         adopted.channels.push(
             Id::from_raw("c_goal"),
             chat::record::Channel {
-                workspace,
                 name: "goal".into(),
                 ..chat::record::Channel::default()
             },
@@ -447,7 +404,7 @@ mod tests {
         {
             edit.apply_local(&mut doc).unwrap();
         }
-        settle_chat(&mut doc, ROOM, "Plaza", &channels).unwrap();
+        settle_chat(&mut doc, &channels).unwrap();
         let chat = chat::Chat::read(&doc).unwrap();
         assert_eq!(channel_names(&doc), ["general", "goal"]);
         assert_eq!(

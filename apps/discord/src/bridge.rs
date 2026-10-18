@@ -3,7 +3,7 @@
 //!
 //! The bot's program only sequences steps, so everything it does comes from
 //! two effects. `plan-route` names the Chat message an event is about, for
-//! the program to read with Chat's `read-workspace`. `plan-event` answers a
+//! the program to read with Chat's `read-room`. `plan-event` answers a
 //! [`BridgePlan`]: one list per verb, each element holding exactly that
 //! verb's arguments, so the program is a fixed run of loops with no
 //! conditions. Work that needs an earlier result (a thread before the reply
@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 use crate::inbound::{self, InboundPlan};
 use crate::outbound::{self, Context};
 use crate::record::{Guild, MappedKind, Ownership, map_key};
-use crate::tilo::{self, Workspace};
+use crate::tilo::{self, RoomChat};
 use crate::{import, layout, roles};
 use ui::tilo_resource::Id;
 
@@ -276,8 +276,8 @@ fn values<T: Serialize>(items: impl IntoIterator<Item = T>) -> Vec<Value> {
         .collect()
 }
 
-/// What a plan reads: the guild, Chat's `read-workspace` answer for the
-/// bridged workspace and the routed message, and where links point.
+/// What a plan reads: the guild, Chat's `read-room` answer for the room
+/// and the routed message, and where links point.
 #[derive(Clone, Copy)]
 pub struct Reading<'a> {
     pub guild: &'a Guild,
@@ -374,13 +374,11 @@ fn post(plan: &mut BridgePlan, guild: &Guild, chat: &Value, message: &str, conte
 /// imported, and the layout and role reconciles do the rest.
 fn reconcile(plan: &mut BridgePlan, read: Reading<'_>) {
     let guild = read.guild;
-    let workspace = &guild.workspace;
-    let tilo = Workspace::from_chat(read.chat, workspace);
-    let import = import::plan(guild, workspace, &tilo);
+    let tilo = RoomChat::from_chat(read.chat);
+    let import = import::plan(guild, &tilo);
     plan.import_categories
         .extend(import.categories.into_iter().map(|c| {
             json!({
-                "workspace": c.workspace,
                 "name": c.name,
                 "discord": c.discord,
             })
@@ -388,7 +386,6 @@ fn reconcile(plan: &mut BridgePlan, read: Reading<'_>) {
     plan.import_channels
         .extend(import.channels.into_iter().map(|c| {
             json!({
-                "workspace": c.workspace,
                 "name": c.name,
                 "category": c.category,
                 "kind": c.kind,

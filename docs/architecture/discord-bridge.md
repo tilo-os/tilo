@@ -233,12 +233,12 @@ The bot's guards are in the record as well as in the bot: `apply-channel`
 and `delete-channel` are refused without `mirror_channels`, before adoption,
 and for any channel the bridge did not make.
 
-For the Tilo Discord server, joined with a Chat workspace that already has
+For the Tilo Discord server, joined with a room whose Chat already has
 "Channels" with #general, #help and #show-and-tell, adoption produces this:
 
 | Discord | Tilo |
 |---|---|
-| category "Channels" | the workspace's `Channels` |
+| category "Channels" | the room's `Channels` |
 | #general and voice channel "voice" in "Channels" | its `general`, and a new Voice channel `voice` |
 | #goal, #roadmap, #progress (no category) | new Text channels with no category |
 | empty category "chat" | new category `chat` |

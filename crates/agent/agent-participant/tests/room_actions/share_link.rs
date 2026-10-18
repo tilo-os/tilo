@@ -47,8 +47,11 @@ async fn the_host_mints_a_message_link_with_its_range() {
     chat::demo::apply_as(
         &mut doc,
         &writer,
-        chat::Chat::CREATE_WORKSPACE.with(chat::record::chat::CreateWorkspace {
-            name: "Linked space".into(),
+        chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
+            name: "general".into(),
+            category: None,
+            kind: None,
+            topic: None,
         }),
     )
     .unwrap();

@@ -25,25 +25,15 @@ async fn create_feedback_record(browser: &mut Browser) -> DocumentRoute {
     );
     let mut doc = source.read(Clone::clone).unwrap();
     assert!(
-        chat::projection::read(&doc)
-            .workspace_rows()
-            .iter()
-            .any(|workspace| workspace.id == browser.room),
-        "the production seed uses its host-selected room"
+        !chat::projection::read(&doc).channel_rows().is_empty(),
+        "the production seed opens the room's channels"
     );
-    chat::demo::insert_category(
-        &mut doc,
-        "fixture",
-        "feedback-category",
-        &browser.room,
-        "Feedback",
-    )
-    .unwrap();
+    chat::demo::insert_category(&mut doc, "fixture", "feedback-category", "Feedback").unwrap();
     chat::demo::insert_channel(
         &mut doc,
         "fixture",
         "feedback",
-        (&browser.room, "feedback-category"),
+        "feedback-category",
         "Feedback",
         chat::model::ChannelKind::Text,
     )

@@ -297,19 +297,12 @@ pub async fn create_voice_channel(
     })
     .await;
     let mut chat = AutoCommit::new();
-    chat::demo::apply_as(
-        &mut chat,
-        "fixture",
-        chat::Chat::CREATE_WORKSPACE.with(chat::record::chat::CreateWorkspace {
-            name: "Standup".into(),
-        }),
-    )
-    .unwrap();
+    chat::demo::start(&mut chat, "fixture", "Fixture", "F").unwrap();
     let voice = chat::projection::read(&chat)
         .channel_rows()
         .into_iter()
         .find(|channel| channel.kind == chat::model::ChannelKind::Voice)
-        .expect("a new chat workspace has a voice channel")
+        .expect("a room's chat opens with a voice channel")
         .id;
     let message = peer
         .publish_incremental(

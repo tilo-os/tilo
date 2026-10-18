@@ -24,7 +24,7 @@ use std::time::Duration;
 use discord::layout;
 use discord::record::{Guild, MappedKind, Mapping, Ownership};
 use discord::roles;
-use discord::tilo::{Category, Channel, Workspace};
+use discord::tilo::{Category, Channel, RoomChat};
 use discord_wire::event::{LayoutChanged, source};
 use serde_json::{Map, Value};
 use tilo_connector::framing::{read_frame_async, write_frame_async};
@@ -139,12 +139,11 @@ async fn main() {
     plan(&layout, only_channel);
 }
 
-/// The adoption into an empty Tilo workspace, round by round, then the
+/// The adoption into an empty room's Chat, round by round, then the
 /// writes the bridge would queue for Discord once the server is adopted.
 fn plan(layout: &LayoutChanged, only_channel: Option<String>) {
     let mut guild = Guild {
         guild_id: layout.guild_id.clone(),
-        workspace: "w".into(),
         only_channel,
         ownership: Ownership::Importing,
         ..Guild::default()
@@ -165,9 +164,9 @@ fn plan(layout: &LayoutChanged, only_channel: Option<String>) {
             channel.kind, channel.name, channel.id, channel.parent, channel.position
         );
     }
-    let mut workspace = Workspace::default();
+    let mut workspace = RoomChat::default();
     for round in 1.. {
-        let import = discord::import::plan(&guild, "w", &workspace);
+        let import = discord::import::plan(&guild, &workspace);
         if !import.finish.is_empty() {
             println!("import round {round}: finished");
             break;
