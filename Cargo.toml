@@ -23,6 +23,7 @@ exclude = [
     "vendor/wgpu",
     "vendor/wgpu-hal",
     "vendor/wayland-backend",
+    "vendor/pulldown-cmark",
     # Built only by the OS image's bootc (os/Containerfile, bootc-builder).
     "vendor/zlink-macros",
     "vendor/web-transport-quinn",
@@ -1072,6 +1073,11 @@ rustls-native-certs = { path = "crates/system/tilo-native-certs" }
 # compositor alive and treat the vanished object as a disconnected client.
 # See vendor/wayland-backend/TILO-PATCH.md.
 wayland-backend = { path = "vendor/wayland-backend" }
+# The HTML5 entity table as offsets into two string literals instead of 2125
+# pairs of pointers the loader relocates in every app process (it is in the
+# shared runtime through the Markdown codec). See
+# vendor/pulldown-cmark/TILO-PATCH.md.
+pulldown-cmark = { path = "vendor/pulldown-cmark" }
 # An idle endpoint wakes for nothing: no re-STUN tick and no home relay once
 # the relay map is empty, no wall-clock poll on Linux (a timerfd that the
 # kernel cancels on resume or a clock step replaces it), and no gossip cache
