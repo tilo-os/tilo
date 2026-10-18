@@ -8,7 +8,7 @@
 # version indexes and channel authorizations, each carrying this version in
 # its `protocol` field.
 name = "package"
-version = 1
+version = 2
 version_const = "crates/packaging/registry-types/src/lib.rs:PACKAGE_FORMAT_VERSION"
 encoding = "json"
 served_to_apps = false

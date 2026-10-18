@@ -129,10 +129,32 @@ pub fn unmet_at(provided: Option<&ProvidedInterfaces>, manifest_path: &Path) -> 
     let Some(provided) = provided else {
         return Vec::new();
     };
-    std::fs::read_to_string(manifest_path)
+    let mut unmet = std::fs::read_to_string(manifest_path)
         .ok()
         .and_then(|raw| Manifest::from_toml_str(&raw).ok())
-        .map_or_else(Vec::new, |manifest| unmet(Some(provided), &manifest))
+        .map_or_else(Vec::new, |manifest| unmet(Some(provided), &manifest));
+    unmet.extend(package_format_unmet(manifest_path));
+    unmet
+}
+
+/// The interface name an installed package's recorded format is judged as.
+pub const PACKAGE_INTERFACE: &str = "package";
+
+/// An installed package whose signed record, beside its manifest, is at
+/// another package format than this build reads: it was installed before
+/// the format changed. It is behind like an app built for an older
+/// interface, and its next install replaces it
+/// ([`crate::integrity::record_current`]).
+fn package_format_unmet(manifest_path: &Path) -> Option<Unmet> {
+    let signed = manifest_path
+        .parent()?
+        .join(crate::layout::SIGNED_ROOT_FILE);
+    let bytes = std::fs::read(signed).ok()?;
+    let format = tilo_app_package::SignedRoot::format_of(&bytes)?;
+    (format != tilo_app_package::TAPP_FORMAT_VERSION).then(|| Unmet {
+        requirement: format!("{PACKAGE_INTERFACE}@{format}"),
+        provided: Some(tilo_app_package::TAPP_FORMAT_VERSION),
+    })
 }
 
 #[cfg(test)]
@@ -226,5 +248,36 @@ system = "required@2"
         let old_os = parse_interfaces("[interfaces]\nsystem = 1\n").unwrap();
         assert_eq!(unmet_at(Some(&old_os), &manifest).len(), 2);
         assert!(unmet_at(Some(&old_os), &dir.path().join("missing.toml")).is_empty());
+    }
+
+    /// A package installed before the package format changed is behind,
+    /// like an app built for an older interface: it is updated, never
+    /// refused on every launch.
+    #[test]
+    fn an_installed_record_at_another_package_format_is_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = dir.path().join("manifest.toml");
+        std::fs::write(&manifest, SETTINGS).unwrap();
+        let os = parse_interfaces("[interfaces]\nsystem = 2\n").unwrap();
+        let current = unmet_at(Some(&os), &manifest).len();
+        let root = |format: u32| {
+            let mut bytes = b"TLOPKG\0\0".to_vec();
+            bytes.extend(format.to_le_bytes());
+            bytes.resize(tilo_app_package::SIGNED_ROOT_LEN, 0);
+            bytes
+        };
+        let signed = dir.path().join(crate::layout::SIGNED_ROOT_FILE);
+        std::fs::write(&signed, root(tilo_app_package::TAPP_FORMAT_VERSION)).unwrap();
+        assert_eq!(unmet_at(Some(&os), &manifest).len(), current);
+        let older = tilo_app_package::TAPP_FORMAT_VERSION - 1;
+        std::fs::write(&signed, root(older)).unwrap();
+        let unmet = unmet_at(Some(&os), &manifest);
+        assert_eq!(unmet.len(), current + 1);
+        let format = unmet.last().unwrap();
+        assert_eq!(format.requirement, format!("package@{older}"));
+        assert_eq!(
+            format.behind(),
+            tilo_app_package::interfaces::Behind::Package
+        );
     }
 }

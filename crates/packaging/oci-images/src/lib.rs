@@ -583,7 +583,10 @@ mod tests {
         let images = OciImages::new(Vec::new(), dir.path().join("cache"));
         let id = PackageId::from_bytes([7; 32]);
         let mut tapp = tar::Builder::new(Vec::new());
-        let header = format!("package_id = \"{id}\"\nformat = 1\n");
+        let header = format!(
+            "package_id = \"{id}\"\nformat = {}\n",
+            tilo_app_package::TAPP_FORMAT_VERSION
+        );
         let mut entry = tar::Header::new_gnu();
         entry.set_size(header.len() as u64);
         entry.set_mode(0o644);
