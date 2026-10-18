@@ -71,7 +71,10 @@ pub fn self_check() -> Result<String, String> {
     if pixel.first().copied().unwrap_or(0) < 200 || pixel.get(1).copied().unwrap_or(255) > 50 {
         return Err(format!("the page's centre is {pixel:?}, not red"));
     }
-    Ok(format!("1 page of {}x{} pt rendered to {width}x{height} pixels", size.width, size.height))
+    Ok(format!(
+        "1 page of {}x{} pt rendered to {width}x{height} pixels",
+        size.width, size.height
+    ))
 }
 
 /// A PDF of one 72 x 36 pt page filled red, with its cross-reference table
@@ -84,17 +87,28 @@ fn one_page_document() -> Vec<u8> {
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 72 36] /Contents 4 0 R >>".to_string(),
         {
             let content = "1 0 0 rg 0 0 72 36 re f";
-            format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len())
+            format!(
+                "<< /Length {} >>\nstream\n{content}\nendstream",
+                content.len()
+            )
         },
     ];
     let mut pdf = b"%PDF-1.4\n".to_vec();
     let mut offsets = Vec::with_capacity(objects.len());
     for (index, body) in objects.iter().enumerate() {
         offsets.push(pdf.len());
-        pdf.extend_from_slice(format!("{} 0 obj\n{body}\nendobj\n", index.saturating_add(1)).as_bytes());
+        pdf.extend_from_slice(
+            format!("{} 0 obj\n{body}\nendobj\n", index.saturating_add(1)).as_bytes(),
+        );
     }
     let xref = pdf.len();
-    pdf.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len().saturating_add(1)).as_bytes());
+    pdf.extend_from_slice(
+        format!(
+            "xref\n0 {}\n0000000000 65535 f \n",
+            objects.len().saturating_add(1)
+        )
+        .as_bytes(),
+    );
     for offset in offsets {
         pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
     }

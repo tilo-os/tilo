@@ -96,7 +96,10 @@ pub fn bundle_libraries(bundle: &Path) -> io::Result<Vec<PathBuf>> {
 /// # Errors
 ///
 /// Returns an I/O error from reading a library's dynamic section.
-pub fn resident_files(versions: &BTreeSet<String>, runtime_root: &Path) -> io::Result<Vec<PathBuf>> {
+pub fn resident_files(
+    versions: &BTreeSet<String>,
+    runtime_root: &Path,
+) -> io::Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     for version in versions {
         files.extend(bundle_libraries(&runtime_root.join(version))?);
@@ -219,13 +222,25 @@ mod tests {
         let lib = dir.path().join("lib");
         write(
             &lib.join(RUNTIME_LIBRARY),
-            &elf_fixture(&["libstd-0123.so", "libc.so.6", "libnot-in-bundle.so.1"], None),
+            &elf_fixture(
+                &["libstd-0123.so", "libc.so.6", "libnot-in-bundle.so.1"],
+                None,
+            ),
         );
-        write(&lib.join("libstd-0123.so"), &elf_fixture(&["libc.so.6"], None));
-        write(&lib.join("libc.so.6"), &elf_fixture(&["ld-linux-aarch64.so.1"], None));
+        write(
+            &lib.join("libstd-0123.so"),
+            &elf_fixture(&["libc.so.6"], None),
+        );
+        write(
+            &lib.join("libc.so.6"),
+            &elf_fixture(&["ld-linux-aarch64.so.1"], None),
+        );
         write(&lib.join("ld-linux-aarch64.so.1"), &elf_fixture(&[], None));
         // An engine library sits beside the runtime; no runtime library names it.
-        write(&lib.join("libtilo_typst_engine.so"), &elf_fixture(&[RUNTIME_LIBRARY], None));
+        write(
+            &lib.join("libtilo_typst_engine.so"),
+            &elf_fixture(&[RUNTIME_LIBRARY], None),
+        );
 
         let names: Vec<String> = bundle_libraries(dir.path())
             .unwrap()
@@ -234,7 +249,12 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            [RUNTIME_LIBRARY, "libstd-0123.so", "libc.so.6", "ld-linux-aarch64.so.1"]
+            [
+                RUNTIME_LIBRARY,
+                "libstd-0123.so",
+                "libc.so.6",
+                "ld-linux-aarch64.so.1"
+            ]
         );
     }
 
@@ -243,7 +263,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write(&dir.path().join("lib/libcef.so"), &elf_fixture(&[], None));
         assert!(bundle_libraries(dir.path()).unwrap().is_empty());
-        assert!(bundle_libraries(&dir.path().join("absent")).unwrap().is_empty());
+        assert!(
+            bundle_libraries(&dir.path().join("absent"))
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -295,7 +319,9 @@ mod tests {
         .unwrap();
         let registry = package_store::Registry::load(&path).unwrap();
         assert_eq!(
-            registered_versions(&registry).into_iter().collect::<Vec<_>>(),
+            registered_versions(&registry)
+                .into_iter()
+                .collect::<Vec<_>>(),
             ["2026.07+native.abc"]
         );
     }
@@ -324,6 +350,9 @@ mod tests {
             .and_then(|value| value.trim().trim_end_matches("kB").trim().parse().ok())
             .unwrap();
         let wanted = u64::try_from(page.saturating_mul(4)).unwrap();
-        assert!(locked_kb.saturating_mul(1024) >= wanted, "VmLck {locked_kb} kB");
+        assert!(
+            locked_kb.saturating_mul(1024) >= wanted,
+            "VmLck {locked_kb} kB"
+        );
     }
 }
