@@ -40,6 +40,14 @@ const ALLOWED: &[(&str, &str)] = &[
         "shell/launcher.rs",
         "the command does not fit a terminal launch",
     ),
+    (
+        "shell/launcher.rs",
+        "selected open cannot borrow a host path or URI",
+    ),
+    (
+        "shell/doc_open.rs",
+        "this device's identity cannot vouch for the document's read",
+    ),
     ("shell/tool_intents.rs", "invalid tool request"),
     ("shell/tool_intents.rs", "tool request is too large"),
     ("shell/tool_intents.rs", "unsupported tool protocol"),

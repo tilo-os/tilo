@@ -2081,6 +2081,11 @@ pub const ADMIN_CONTROL_NOT_PERMITTED: &str = "the admin control socket serves t
      (actions list/invoke/status/cancel, windows, state-dump, foreign-frames); synthetic input and \
      screenshots exist only on a development session's test-control socket ($TILO_TEST_CONTROL)";
 
+/// Protocol error for an admin control command while first use runs: only
+/// the onboarding and authentication actions are served until it ends.
+pub const ADMIN_CONTROL_FIRST_USE_ONLY: &str =
+    "first use serves only its trusted onboarding and authentication actions";
+
 /// Protocol error for an action or screenshot asked for while the session
 /// is locked: nothing ran, and only the person at the device can unlock it.
 pub const SESSION_LOCKED: &str = "the session is locked; unlock it at the device, then retry";

@@ -6319,7 +6319,7 @@ fn pump_test_control_conn(
                     }
                     Ok(request) if conn.admin && frame_builder.host().onboarding_active()
                         && !super::admin_control::first_use_permitted(&request.command) => (
-                            test_control::Response::Err { code: "not_permitted".into(), message: "first use serves only its trusted onboarding and authentication actions".into() },
+                            test_control::Response::Err { code: "not_permitted".into(), message: test_control::ADMIN_CONTROL_FIRST_USE_ONLY.into() },
                             Vec::new(),
                         ),
                     Ok(request) if conn.agent && !request.command.agent_permitted() => (
