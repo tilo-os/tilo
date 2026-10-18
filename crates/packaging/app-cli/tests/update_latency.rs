@@ -154,7 +154,6 @@ fn snapshot(
         entries,
         owner_signature_hex: String::new(),
         channel_authorization: None,
-        bots_signature_hex: String::new(),
     };
     sign_snapshot(&mut snapshot, owner).unwrap();
     snapshot

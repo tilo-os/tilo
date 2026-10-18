@@ -547,7 +547,6 @@ mod tests {
             entries: vec![entry],
             owner_signature_hex: String::new(),
             channel_authorization: None,
-            bots_signature_hex: String::new(),
         };
         registry_types::sign_snapshot(&mut snapshot, owner).unwrap();
         snapshot

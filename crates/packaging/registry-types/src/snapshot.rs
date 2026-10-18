@@ -1,12 +1,8 @@
 //! Registry-owner signed, replay-resistant catalogue snapshots.
 //!
-//! A snapshot carries app entries under `entries`, signed exactly as every
-//! released client checks them, and bot entries under `bots` with a second
-//! signature by the same key (`bots_signature_hex`) that binds them to the
-//! snapshot's signed content. The owner signature and the snapshot's hash
-//! (its identity in the chain and in client checkpoints) cover app entries
-//! only. In memory
-//! [`SignedRegistrySnapshot::entries`] holds both kinds.
+//! A snapshot lists app and bot entries alike under `entries`; the owner
+//! signature and the snapshot's hash (its identity in the chain and in
+//! client checkpoints) cover all of them.
 
 use std::collections::HashSet;
 
@@ -18,7 +14,6 @@ use crate::{INDEX_DOMAIN, PACKAGE_FORMAT_VERSION, RegistryEntry, verify_entry_si
 
 const CHANNEL_AUTHORIZATION_DOMAIN: &[u8] = b"tilo-registry-channel-authorization-v1\0";
 const DELEGATED_INDEX_DOMAIN: &[u8] = b"tilo-registry-index-v3\0";
-const BOTS_DOMAIN: &[u8] = b"tilo-registry-bots-v1\0";
 pub const MAX_SNAPSHOT_VALIDITY_SECONDS: u64 = 7 * 24 * 60 * 60;
 pub const MAX_SNAPSHOT_ENTRIES: usize = 10_000;
 pub const MAX_SNAPSHOT_PUBLISHERS: usize = 4_096;
@@ -49,10 +44,9 @@ pub struct ChannelAuthorization {
     pub owner_signature_hex: String,
 }
 
-/// One immutable view of a registry. The signature binds every app entry,
-/// the publisher authorization set, expiry, predecessor and moderation-log
-/// head; `bots_signature_hex` binds the bot entries to all of that.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// One immutable view of a registry. The signature binds every entry, the
+/// publisher authorization set, expiry, predecessor and moderation-log head.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SignedRegistrySnapshot {
     pub protocol: u32,
     pub sequence: u64,
@@ -61,171 +55,11 @@ pub struct SignedRegistrySnapshot {
     pub previous_snapshot_hash_hex: String,
     pub moderation_head_hex: String,
     pub publishers: Vec<PublisherAuthorization>,
-    /// App and bot entries. On the wire app entries travel under `entries`
-    /// and bot entries under `bots`.
+    /// App and bot entries.
     pub entries: Vec<RegistryEntry>,
     pub owner_signature_hex: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel_authorization: Option<ChannelAuthorization>,
-    /// The signing key's signature over the bot entries and the snapshot's
-    /// signed content; empty when the snapshot lists no bots.
-    pub bots_signature_hex: String,
-}
-
-/// App entries first-class, bot entries apart: the split every snapshot form
-/// shares on the wire.
-pub(crate) fn split_kinds<T>(
-    items: &[T],
-    entry: impl Fn(&T) -> &RegistryEntry,
-) -> (Vec<&T>, Vec<&T>) {
-    items
-        .iter()
-        .partition(|item| entry(item).kind == crate::EntryKind::App)
-}
-
-/// Rejoin the wire's app and bot lists, refusing an entry filed under the
-/// other kind.
-pub(crate) fn join_kinds<T, E: serde::de::Error>(
-    mut apps: Vec<T>,
-    bots: Vec<T>,
-    entry: impl Fn(&T) -> &RegistryEntry,
-) -> Result<Vec<T>, E> {
-    if apps
-        .iter()
-        .any(|item| entry(item).kind != crate::EntryKind::App)
-        || bots
-            .iter()
-            .any(|item| entry(item).kind != crate::EntryKind::Bot)
-    {
-        return Err(E::custom("an entry is filed under the other kind"));
-    }
-    apps.extend(bots);
-    Ok(apps)
-}
-
-#[derive(Serialize)]
-#[serde(rename = "SignedRegistrySnapshot")]
-struct SnapshotOut<'a> {
-    protocol: u32,
-    sequence: u64,
-    issued_at_unix: u64,
-    expires_at_unix: u64,
-    previous_snapshot_hash_hex: &'a str,
-    moderation_head_hex: &'a str,
-    publishers: &'a [PublisherAuthorization],
-    entries: Vec<&'a RegistryEntry>,
-    owner_signature_hex: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    channel_authorization: Option<&'a ChannelAuthorization>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    bots: Vec<&'a RegistryEntry>,
-    #[serde(skip_serializing_if = "str::is_empty")]
-    bots_signature_hex: &'a str,
-}
-
-#[derive(Deserialize)]
-struct SnapshotIn {
-    protocol: u32,
-    sequence: u64,
-    issued_at_unix: u64,
-    expires_at_unix: u64,
-    previous_snapshot_hash_hex: String,
-    moderation_head_hex: String,
-    publishers: Vec<PublisherAuthorization>,
-    entries: Vec<RegistryEntry>,
-    owner_signature_hex: String,
-    #[serde(default)]
-    channel_authorization: Option<ChannelAuthorization>,
-    #[serde(default)]
-    bots: Vec<RegistryEntry>,
-    #[serde(default)]
-    bots_signature_hex: String,
-}
-
-impl SignedRegistrySnapshot {
-    /// The app entries, in order: what the owner signature covers.
-    #[must_use]
-    pub fn apps(&self) -> Vec<&RegistryEntry> {
-        split_kinds(&self.entries, |entry| entry).0
-    }
-
-    /// The bot entries, in order: what `bots_signature_hex` covers.
-    #[must_use]
-    pub fn bots(&self) -> Vec<&RegistryEntry> {
-        split_kinds(&self.entries, |entry| entry).1
-    }
-
-    /// The snapshot without its bot entries: what the owner signature and
-    /// the chain hash cover.
-    fn core(&self) -> SnapshotOut<'_> {
-        SnapshotOut {
-            protocol: self.protocol,
-            sequence: self.sequence,
-            issued_at_unix: self.issued_at_unix,
-            expires_at_unix: self.expires_at_unix,
-            previous_snapshot_hash_hex: &self.previous_snapshot_hash_hex,
-            moderation_head_hex: &self.moderation_head_hex,
-            publishers: &self.publishers,
-            entries: self.apps(),
-            owner_signature_hex: &self.owner_signature_hex,
-            channel_authorization: self.channel_authorization.as_ref(),
-            bots: Vec::new(),
-            bots_signature_hex: "",
-        }
-    }
-}
-
-impl Serialize for SignedRegistrySnapshot {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let (entries, bots) = split_kinds(&self.entries, |entry| entry);
-        SnapshotOut {
-            entries,
-            bots,
-            bots_signature_hex: &self.bots_signature_hex,
-            ..self.core()
-        }
-        .serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for SignedRegistrySnapshot {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let wire = SnapshotIn::deserialize(deserializer)?;
-        Ok(Self {
-            protocol: wire.protocol,
-            sequence: wire.sequence,
-            issued_at_unix: wire.issued_at_unix,
-            expires_at_unix: wire.expires_at_unix,
-            previous_snapshot_hash_hex: wire.previous_snapshot_hash_hex,
-            moderation_head_hex: wire.moderation_head_hex,
-            publishers: wire.publishers,
-            entries: join_kinds(wire.entries, wire.bots, |entry| entry)?,
-            owner_signature_hex: wire.owner_signature_hex,
-            channel_authorization: wire.channel_authorization,
-            bots_signature_hex: wire.bots_signature_hex,
-        })
-    }
-}
-
-#[derive(Serialize)]
-struct BotsSigningPayload<'a, T> {
-    /// The digest the snapshot's own signature covers.
-    signed: [u8; 32],
-    bots: Vec<&'a T>,
-}
-
-/// `domain || postcard(signed, bots)`, hashed: what `bots_signature_hex`
-/// signs in every snapshot form.
-pub(crate) fn bots_signing_message<T: Serialize>(
-    domain: &[u8],
-    signed: [u8; 32],
-    bots: Vec<&T>,
-) -> Result<[u8; 32], SnapshotError> {
-    let body = postcard::to_stdvec(&BotsSigningPayload { signed, bots })
-        .map_err(|_| SnapshotError::Encoding)?;
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(domain);
-    hasher.update(&body);
-    Ok(*hasher.finalize().as_bytes())
 }
 
 #[derive(Serialize)]
@@ -237,7 +71,7 @@ struct SnapshotSigningPayload<'a> {
     previous_snapshot_hash_hex: &'a str,
     moderation_head_hex: &'a str,
     publishers: &'a [PublisherAuthorization],
-    entries: Vec<&'a RegistryEntry>,
+    entries: &'a [RegistryEntry],
 }
 
 #[derive(Serialize)]
@@ -249,7 +83,7 @@ struct DelegatedSnapshotSigningPayload<'a> {
     previous_snapshot_hash_hex: &'a str,
     moderation_head_hex: &'a str,
     publishers: &'a [PublisherAuthorization],
-    entries: Vec<&'a RegistryEntry>,
+    entries: &'a [RegistryEntry],
     channel_authorization: &'a ChannelAuthorization,
 }
 
@@ -291,8 +125,6 @@ pub enum SnapshotError {
     UnauthorizedPublisher,
     #[error("canonical registry snapshot encoding failed")]
     Encoding,
-    #[error("registry snapshot's bot entries are not signed with it")]
-    BotsSignature,
 }
 
 fn payload(snapshot: &SignedRegistrySnapshot) -> SnapshotSigningPayload<'_> {
@@ -304,7 +136,7 @@ fn payload(snapshot: &SignedRegistrySnapshot) -> SnapshotSigningPayload<'_> {
         previous_snapshot_hash_hex: &snapshot.previous_snapshot_hash_hex,
         moderation_head_hex: &snapshot.moderation_head_hex,
         publishers: &snapshot.publishers,
-        entries: snapshot.apps(),
+        entries: &snapshot.entries,
     }
 }
 
@@ -324,7 +156,7 @@ pub fn snapshot_signing_message(
             previous_snapshot_hash_hex: &snapshot.previous_snapshot_hash_hex,
             moderation_head_hex: &snapshot.moderation_head_hex,
             publishers: &snapshot.publishers,
-            entries: snapshot.apps(),
+            entries: &snapshot.entries,
             channel_authorization: authorization,
         };
         (
@@ -349,7 +181,7 @@ pub fn snapshot_signing_message(
 /// # Errors
 /// Returns an encoding error if the signed snapshot cannot be serialized.
 pub fn snapshot_hash(snapshot: &SignedRegistrySnapshot) -> Result<String, SnapshotError> {
-    let bytes = postcard::to_stdvec(&snapshot.core()).map_err(|_| SnapshotError::Encoding)?;
+    let bytes = postcard::to_stdvec(snapshot).map_err(|_| SnapshotError::Encoding)?;
     Ok(blake3::hash(&bytes).to_hex().to_string())
 }
 
@@ -367,36 +199,6 @@ pub fn sign_snapshot(
     snapshot.owner_signature_hex.clear();
     snapshot.owner_signature_hex =
         hex::encode(key.sign(&snapshot_signing_message(snapshot)?).to_bytes());
-    sign_snapshot_bots(snapshot, key)
-}
-
-/// The digest `bots_signature_hex` signs: the bot entries bound to what the
-/// snapshot's own signature covers.
-///
-/// # Errors
-/// Returns an encoding error if the canonical payload cannot be serialized.
-pub fn snapshot_bots_signing_message(
-    snapshot: &SignedRegistrySnapshot,
-) -> Result<[u8; 32], SnapshotError> {
-    bots_signing_message(
-        BOTS_DOMAIN,
-        snapshot_signing_message(snapshot)?,
-        snapshot.bots(),
-    )
-}
-
-fn sign_snapshot_bots(
-    snapshot: &mut SignedRegistrySnapshot,
-    key: &SigningKey,
-) -> Result<(), SnapshotError> {
-    snapshot.bots_signature_hex = if snapshot.bots().is_empty() {
-        String::new()
-    } else {
-        hex::encode(
-            key.sign(&snapshot_bots_signing_message(snapshot)?)
-                .to_bytes(),
-        )
-    };
     Ok(())
 }
 
@@ -454,7 +256,7 @@ pub fn sign_snapshot_delegated(
             .sign(&snapshot_signing_message(snapshot)?)
             .to_bytes(),
     );
-    sign_snapshot_bots(snapshot, channel_key)
+    Ok(())
 }
 
 pub(crate) fn valid_hex(value: &str, bytes: usize) -> bool {
@@ -508,12 +310,6 @@ pub fn verify_snapshot(
     let publishers = header.check_signature(
         pinned_owner_pubkey_hex,
         &snapshot_signing_message(snapshot)?,
-    )?;
-    header.check_bots_signature(
-        pinned_owner_pubkey_hex,
-        !snapshot.bots().is_empty(),
-        &snapshot.bots_signature_hex,
-        &snapshot_bots_signing_message(snapshot)?,
     )?;
     let mut packages = HashSet::with_capacity(snapshot.entries.len());
     for entry in &snapshot.entries {
@@ -612,36 +408,6 @@ impl SignedHeader<'_> {
             }
         }
         Ok(publishers)
-    }
-
-    /// The same key's signature over the bot entries, when there are any;
-    /// none may be claimed when there are not.
-    pub(crate) fn check_bots_signature(
-        &self,
-        pinned_owner_pubkey_hex: &str,
-        has_bots: bool,
-        bots_signature_hex: &str,
-        message: &[u8; 32],
-    ) -> Result<(), SnapshotError> {
-        if !has_bots {
-            return if bots_signature_hex.is_empty() {
-                Ok(())
-            } else {
-                Err(SnapshotError::BotsSignature)
-            };
-        }
-        SignedHeader {
-            signature_hex: bots_signature_hex,
-            ..*self
-        }
-        .check_signature(pinned_owner_pubkey_hex, message)
-        .map(|_| ())
-        .map_err(|error| match error {
-            SnapshotError::OwnerSignature | SnapshotError::ChannelSignature => {
-                SnapshotError::BotsSignature
-            }
-            other => other,
-        })
     }
 
     fn scope(&self) -> Scope<'_> {
@@ -862,7 +628,6 @@ mod tests {
             entries: vec![entry],
             owner_signature_hex: String::new(),
             channel_authorization: None,
-            bots_signature_hex: String::new(),
         };
         sign_snapshot(&mut snapshot, &owner).unwrap();
         (snapshot, owner)
@@ -893,74 +658,39 @@ mod tests {
     }
 
     #[test]
-    fn bot_entries_ride_beside_what_older_clients_verify() {
+    fn bot_entries_are_signed_with_the_app_entries() {
         let (plain, owner) = fixture();
         let owner_hex = hex::encode(owner.verifying_key().to_bytes());
         let mut mixed = with_bot(&plain);
         sign_snapshot(&mut mixed, &owner).unwrap();
         assert_eq!(verify_snapshot(&mixed, &owner_hex, 15), Ok(()));
-        // phase: app_part_is_unchanged
+        // phase: bots_change_the_signature_and_the_identity
         {
-            // The owner signature and the chain identity cover app entries
-            // only, so they equal those of the same snapshot without bots.
-            assert_eq!(mixed.owner_signature_hex, plain.owner_signature_hex);
-            assert_eq!(snapshot_hash(&mixed), snapshot_hash(&plain));
-            assert!(plain.bots_signature_hex.is_empty());
-        }
-        // phase: older_clients_see_only_app_entries
-        {
-            let mut json = serde_json::to_value(&mixed).unwrap();
-            assert_eq!(json["entries"].as_array().unwrap().len(), 1);
-            assert_eq!(json["bots"].as_array().unwrap().len(), 1);
-            assert_eq!(json, {
-                let mut with_bots = serde_json::to_value(&plain).unwrap();
-                with_bots["bots"] = json["bots"].clone();
-                with_bots["bots_signature_hex"] = json["bots_signature_hex"].clone();
-                with_bots
-            });
-            let object = json.as_object_mut().unwrap();
-            object.remove("bots");
-            object.remove("bots_signature_hex");
-            let read: SignedRegistrySnapshot = serde_json::from_value(json).unwrap();
-            assert_eq!(read, plain);
-            assert_eq!(verify_snapshot(&read, &owner_hex, 15), Ok(()));
+            assert_ne!(mixed.owner_signature_hex, plain.owner_signature_hex);
+            assert_ne!(snapshot_hash(&mixed), snapshot_hash(&plain));
         }
         // phase: wire_round_trip_keeps_both_kinds
         {
-            let read: SignedRegistrySnapshot =
-                serde_json::from_slice(&serde_json::to_vec(&mixed).unwrap()).unwrap();
-            assert_eq!(read.bots(), mixed.bots());
-            assert_eq!(read.apps(), mixed.apps());
+            let json = serde_json::to_value(&mixed).unwrap();
+            assert_eq!(json["entries"].as_array().unwrap().len(), 2);
+            let read: SignedRegistrySnapshot = serde_json::from_value(json).unwrap();
+            assert_eq!(read, mixed);
             assert_eq!(verify_snapshot(&read, &owner_hex, 15), Ok(()));
         }
-        // phase: bots_are_bound_to_the_snapshot
+        // phase: a_dropped_or_added_bot_breaks_the_signature
         {
-            let mut swapped = mixed.clone();
-            swapped.entries.retain(|entry| entry.kind == EntryKind::App);
-            swapped.bots_signature_hex = mixed.bots_signature_hex.clone();
+            let mut dropped = mixed.clone();
+            dropped.entries.retain(|entry| entry.kind == EntryKind::App);
             assert_eq!(
-                verify_snapshot(&swapped, &owner_hex, 15),
-                Err(SnapshotError::BotsSignature)
+                verify_snapshot(&dropped, &owner_hex, 15),
+                Err(SnapshotError::OwnerSignature)
             );
-            let mut unsigned = mixed.clone();
-            unsigned.bots_signature_hex.clear();
-            assert!(verify_snapshot(&unsigned, &owner_hex, 15).is_err());
-            let mut replayed = with_bot(&plain);
-            replayed.sequence = 2;
-            replayed.previous_snapshot_hash_hex = snapshot_hash(&plain).unwrap();
-            sign_snapshot(&mut replayed, &owner).unwrap();
-            replayed.bots_signature_hex = mixed.bots_signature_hex.clone();
+            let mut added = with_bot(&plain);
+            added.owner_signature_hex = plain.owner_signature_hex.clone();
             assert_eq!(
-                verify_snapshot(&replayed, &owner_hex, 15),
-                Err(SnapshotError::BotsSignature)
+                verify_snapshot(&added, &owner_hex, 15),
+                Err(SnapshotError::OwnerSignature)
             );
-        }
-        // phase: an_entry_under_the_other_kind_is_refused
-        {
-            let mut json = serde_json::to_value(&mixed).unwrap();
-            let bot = json["bots"][0].clone();
-            json["entries"].as_array_mut().unwrap().push(bot);
-            assert!(serde_json::from_value::<SignedRegistrySnapshot>(json).is_err());
         }
     }
 

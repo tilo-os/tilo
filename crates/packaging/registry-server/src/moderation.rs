@@ -1729,7 +1729,6 @@ mod tests {
                 entries: vec![selected.change.entry.clone()],
                 owner_signature_hex: "test fixture".into(),
                 channel_authorization: None,
-                bots_signature_hex: String::new(),
             };
             service
                 .storage
@@ -1817,7 +1816,6 @@ mod tests {
                 entries: vec![selected.change.entry.clone()],
                 owner_signature_hex: "test fixture".into(),
                 channel_authorization: None,
-                bots_signature_hex: String::new(),
             };
             service
                 .storage

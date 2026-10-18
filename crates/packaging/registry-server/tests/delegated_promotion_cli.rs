@@ -156,7 +156,6 @@ async fn networkless_publisher_reverifies_content_addressed_bytes_and_delegated_
             entries: Vec::new(),
             owner_signature_hex: "unfinished fixture".into(),
             channel_authorization: None,
-            bots_signature_hex: String::new(),
         },
     };
     storage
@@ -788,7 +787,6 @@ fn selected_partial_inventory_recovers_without_consuming_deferred_requests() {
                 ],
                 owner_signature_hex: String::new(),
                 channel_authorization: None,
-                bots_signature_hex: String::new(),
             };
             registry_types::sign_snapshot_delegated(&mut candidate, &channel, authorization)
                 .unwrap();
