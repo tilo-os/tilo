@@ -5,7 +5,7 @@
 
 use std::ops::Range;
 
-use crate::fold::{fold, fold_char};
+use tilo_search_model::fold::{fold, fold_char};
 
 /// The byte range in raw `text` of the best occurrence of `query` under
 /// folding: the first one starting a word, else the first. `None` when the

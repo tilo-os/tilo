@@ -46,7 +46,7 @@ unsafe extern "C" {
     reason = "the function pointer only passes between Rust"
 )]
 extern "C" fn export_search_engine() -> tilo_search::MakeEngine {
-    tilo_search::tantivy_engine
+    tilo_search_tantivy::tantivy_engine
 }
 
 #[unsafe(export_name = "__wasm_split_00___spelling___00_export_3e9a71c4d05b28f6_dictionaries")]
