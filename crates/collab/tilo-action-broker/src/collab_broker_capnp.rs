@@ -2336,6 +2336,15 @@ impl CapnpBrokerState {
         if let Some(admitted) = admission_memo::admitted_now(caller) {
             return Ok(admitted);
         }
+        self.live_action_caller(caller)
+    }
+
+    /// Effect barriers must not reuse the synchronous dispatch admission memo.
+    fn live_action_caller(
+        &self,
+        caller: &VerifiedActionCaller,
+    ) -> Result<AdmittedJoinIdentity, String> {
+        self.checked_policy_time(caller.policy_time.as_ref())?;
         let current = if let Some(evidence) = &caller.network {
             self.verify_network_action_caller_with_policy_time(
                 evidence,

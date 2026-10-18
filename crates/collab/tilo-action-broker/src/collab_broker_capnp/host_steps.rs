@@ -341,6 +341,7 @@ impl CapnpBrokerState {
         let state = Arc::clone(self);
         started.then(move |outcome| {
             let invocation = admitted.invocation;
+            let uncertain = outcome.is_none();
             let update = match outcome {
                 Some(Ok(output)) => {
                     tilo_actions::InvocationUpdate::Succeeded { invocation, output }
@@ -355,7 +356,12 @@ impl CapnpBrokerState {
                     "the host step stopped without an answer",
                 ),
             };
-            if let Err(error) = state.complete_host_action(&admitted, update) {
+            let completed = if uncertain {
+                state.complete_uncertain_host_action(&admitted, update)
+            } else {
+                state.complete_host_action(&admitted, update)
+            };
+            if let Err(error) = completed {
                 tracing::warn!(?error, "could not persist host step completion");
             }
         });
@@ -1017,6 +1023,9 @@ mod identity_admin_tests {
             });
             let asked = request(identity_admin::REMOVE, Some(Confirmation::Confirmed));
             f.invoke(&asked).unwrap();
+            // The service has accepted the effect; losing its answer does not
+            // prove that the effect failed or make it safe to repeat.
+            assert_eq!(host.started.lock().unwrap().len(), 1);
             let answer = host.answers.lock().unwrap().pop().unwrap();
             if dropped {
                 drop(answer);
@@ -1032,6 +1041,17 @@ mod identity_admin_tests {
             assert!(
                 matches!(completed.update, tilo_actions::InvocationUpdate::Failed { invocation, .. } if invocation == asked.invocation)
             );
+            assert_eq!(completed.uncertain, dropped);
+            assert_eq!(
+                completed.terminal.as_ref().unwrap().category,
+                if dropped {
+                    crate::action_evidence::TerminalCategory::Uncertain
+                } else {
+                    crate::action_evidence::TerminalCategory::Failed
+                }
+            );
+            f.reopen_journal();
+            assert_eq!(f.assert_signed(&asked, true), completed);
             f.invoke(&asked).unwrap();
             assert_eq!(host.started.lock().unwrap().len(), 1);
         }

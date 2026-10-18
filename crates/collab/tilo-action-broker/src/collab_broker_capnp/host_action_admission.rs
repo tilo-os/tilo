@@ -458,6 +458,24 @@ impl CapnpBrokerState {
         admitted: &AdmittedHostAction,
         update: InvocationUpdate,
     ) -> Result<(), ActionHostError> {
+        self.complete_host_action_outcome(admitted, update, false)
+    }
+
+    /// A lost service answer cannot establish whether its effect completed.
+    pub(super) fn complete_uncertain_host_action(
+        &self,
+        admitted: &AdmittedHostAction,
+        update: InvocationUpdate,
+    ) -> Result<(), ActionHostError> {
+        self.complete_host_action_outcome(admitted, update, true)
+    }
+
+    fn complete_host_action_outcome(
+        &self,
+        admitted: &AdmittedHostAction,
+        update: InvocationUpdate,
+        uncertain: bool,
+    ) -> Result<(), ActionHostError> {
         let _admission = self
             .admission_lock
             .lock()
@@ -487,7 +505,7 @@ impl CapnpBrokerState {
                 .map_err(|error| unavailable(error.clone()))?
                 .as_mut()
                 .ok_or_else(|| unavailable("durable admission unavailable"))?
-                .update(key, update.clone(), false)
+                .update(key, update.clone(), uncertain)
                 .map_err(unavailable)?;
         }
         self.record_completion(admitted.id, admitted.owner.clone(), update);

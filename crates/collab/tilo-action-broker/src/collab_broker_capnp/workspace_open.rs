@@ -181,9 +181,8 @@ impl CapnpBrokerState {
     }
 
     /// Give up on every `open` past its deadline at `now`. An instance that
-    /// connected but published nothing is still the one it started; one
-    /// that never connected is named by none, rather than by another
-    /// instance of the app.
+    /// connected but published nothing is still the one it started. Without
+    /// an authenticated connection, launch completion remains uncertain.
     pub(super) fn expire_workspace_opens(&self, now: Instant) {
         let expired = {
             let mut openings = self.workspace_opens.lock();
@@ -194,8 +193,19 @@ impl CapnpBrokerState {
             expired
         };
         for opening in expired {
-            let peer = opening.peer;
-            self.complete_open(opening.opened(peer));
+            if let Some(peer) = opening.peer {
+                self.complete_open(opening.opened(Some(peer)));
+            } else {
+                let opened = opening.failed(
+                    "application_connection_timeout",
+                    "the application did not connect before the launch deadline".into(),
+                );
+                if let Err(error) =
+                    self.complete_uncertain_host_action(&opened.admitted, opened.update)
+                {
+                    tracing::error!(?error, "could not record uncertain application launch");
+                }
+            }
         }
     }
 
@@ -474,7 +484,7 @@ mod tests {
             assert!(update.is_terminal());
             assert_eq!(
                 matches!(update, InvocationUpdate::Failed { .. }),
-                matches!(step, 1 | 5)
+                matches!(step, 1 | 2 | 5)
             );
             assert_eq!(update.invocation(), request.invocation);
             let journal = state.journal.lock().unwrap();
@@ -491,6 +501,17 @@ mod tests {
             };
             let record = journal.lookup(&key).unwrap().unwrap();
             assert_eq!(record.update, update);
+            assert_eq!(record.uncertain, step == 2);
+            assert_eq!(
+                record.terminal.as_ref().unwrap().category,
+                if step == 2 {
+                    crate::action_evidence::TerminalCategory::Uncertain
+                } else if matches!(step, 1 | 5) {
+                    crate::action_evidence::TerminalCategory::Failed
+                } else {
+                    crate::action_evidence::TerminalCategory::Succeeded
+                }
+            );
             let evidence = record.admission.as_ref().unwrap();
             crate::action_evidence::verify_terminal(
                 record.terminal.as_ref().unwrap(),
@@ -631,11 +652,11 @@ mod tests {
         );
         assert!(accepted(&state, silent));
         state.expire_workspace_opens(now.checked_add(CONNECT_WAIT).unwrap());
-        assert_eq!(
-            answered(&state, silent),
-            Some(serde_json::Value::Null),
-            "a launch whose instance never connected names none"
-        );
+        assert!(matches!(
+            state.invocation_status(silent),
+            Some(InvocationUpdate::Failed { error, .. })
+                if error.code == "application_connection_timeout"
+        ));
         assert!(state.workspace_opens.next_deadline().is_none());
     }
 }

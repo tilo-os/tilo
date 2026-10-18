@@ -824,8 +824,8 @@ impl InvocationJournal {
             .cloned())
     }
 
-    /// A true return is the sole dispatch permit. Caller must serialize the
-    /// authorization / confirmation / admission / dispatch transaction.
+    /// Journal fixtures may exercise admission without signing identities.
+    #[cfg(test)]
     pub fn admit(
         &mut self,
         key: InvocationKey,
