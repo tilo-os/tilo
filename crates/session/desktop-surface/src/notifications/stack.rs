@@ -18,6 +18,7 @@ use ui::theme::Theme;
 use ui::time::{Duration, Instant};
 use ui::widget::PaintedTargets;
 use ui::widget::toast::ToastCard;
+use ui::widget::top_edge_reveal::AIM_HOLD;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
@@ -130,8 +131,14 @@ pub struct NotificationStack {
     /// The control keyboard focus is on, while the person moved focus into
     /// the stack ([`Self::focus_newest`]).
     focus: Option<BannerTarget>,
-    /// Whether the pointer rests on the stack.
-    pointer_over: bool,
+    /// Where the pointer is (logical), followed also while a window under
+    /// it takes the motion.
+    pointer: Option<Point>,
+    /// The pointer's trajectory, read for aim: heading for the stack and
+    /// coming to rest on it, or passing over it on the way elsewhere.
+    aim: ui::widget::EdgeAim,
+    /// The last sample that confirmed the pointer was aiming at the stack.
+    aimed_at: Option<Instant>,
 }
 
 impl NotificationStack {
@@ -152,10 +159,31 @@ impl NotificationStack {
         self.rect
     }
 
-    /// Whether the person holds the banners: the pointer rests on the
-    /// stack, or keyboard focus is in it. Held banners do not age.
+    /// Whether the person holds the banners: keyboard focus is in the
+    /// stack, or the pointer reaches for it ([`Self::pointer_holds`]).
+    /// Held banners do not age.
     pub fn held(&self) -> bool {
-        self.pointer_over || self.focus.is_some()
+        self.held_at(ui::time::now())
+    }
+
+    fn held_at(&self, now: Instant) -> bool {
+        self.focus.is_some() || self.pointer_holds(now)
+    }
+
+    /// Whether the pointer holds the banners at `now`, by the toolkit's
+    /// hover-intent rules ([`ui::widget::EdgeAim`]): it rests on the stack,
+    /// or it is heading for it and coming to rest there (held for
+    /// [`AIM_HOLD`] past the last sample that said so, so a hand that
+    /// stops short lets go). A pointer passing over the stack on its way
+    /// elsewhere is in transit and holds nothing.
+    fn pointer_holds(&self, now: Instant) -> bool {
+        let resting = self
+            .pointer
+            .is_some_and(|p| self.rect.contains(p) && self.aim.settled(now));
+        resting
+            || self
+                .aimed_at
+                .is_some_and(|at| now.saturating_duration_since(at) < AIM_HOLD)
     }
 
     fn register_target(&mut self, target: BannerTarget, rect: Rect, label: &str) {
@@ -249,15 +277,32 @@ impl NotificationStack {
     }
 
     /// Follow the pointer at `point` (logical; `None` once it left the
-    /// display), also while a window under it takes the motion: resting on
-    /// the stack holds the banners. Returns whether that changed.
+    /// display), also while a window under it takes the motion: reaching
+    /// for the stack holds the banners. Returns whether that changed.
     pub fn note_pointer(&mut self, host: &dyn NotificationHost, point: Option<Point>) -> bool {
-        let over = point.is_some_and(|point| self.rect.contains(point));
-        if over == self.pointer_over {
+        self.note_pointer_at(host, point, ui::time::now())
+    }
+
+    fn note_pointer_at(
+        &mut self,
+        host: &dyn NotificationHost,
+        point: Option<Point>,
+        now: Instant,
+    ) -> bool {
+        let before = self.pointer_holds(now);
+        self.pointer = point;
+        if let Some(p) = point {
+            if !self.rect.is_zero_area() && self.aim.on_motion(p, now, &[self.rect]).is_some() {
+                self.aimed_at = Some(now);
+            }
+        } else {
+            self.aim.clear();
+            self.aimed_at = None;
+        }
+        if self.pointer_holds(now) == before {
             return false;
         }
-        self.pointer_over = over;
-        self.present(host);
+        host.present(now, &self.on_screen, self.held_at(now));
         true
     }
 
@@ -705,7 +750,7 @@ impl NotificationStack {
             self.focus = None;
         }
         if self.rect.is_zero_area() {
-            self.pointer_over = false;
+            self.aimed_at = None;
         }
         self.paint_focus(scene, transform, theme);
         self.present(host);
@@ -828,7 +873,18 @@ impl NotificationStack {
     pub fn next_wake_deadline(&self, host: &dyn NotificationHost) -> Option<Instant> {
         let window = Duration::from_millis(ANIM_MS);
         let now = ui::time::now();
-        host.log()
+        // The pointer's hold changes with no further input: a pointer that
+        // stops on the stack comes to rest, an aim lapses.
+        let resting = self
+            .pointer
+            .filter(|p| self.rect.contains(*p))
+            .and_then(|_| self.aim.deadline(now));
+        let aim_lapses = self
+            .aimed_at
+            .and_then(|at| at.checked_add(AIM_HOLD))
+            .filter(|at| *at > now);
+        let banners = host
+            .log()
             .active()
             .iter()
             .filter_map(|notification| {
@@ -841,7 +897,8 @@ impl NotificationStack {
                 // useful sleeping deadline is the next phase edge.
                 Some(if exit_start > now { exit_start } else { expiry })
             })
-            .min()
+            .min();
+        [banners, resting, aim_lapses].into_iter().flatten().min()
     }
 
     /// A live region, so a screen reader announces a freshly-posted banner.
@@ -1331,6 +1388,75 @@ pub(super) mod tests {
         assert!(stack.handle_pointer_event(&host, &at(Point::new(5.0, 590.0)), 1.0, &mut handled));
         assert!(!stack.held());
         assert!(host.log().active()[0].dwell.is_running());
+    }
+
+    /// Passing over the stack on the way elsewhere is transit and holds
+    /// nothing; heading for it and slowing to a stop there holds it, and a
+    /// hand that stops short lets go after the aim lapses.
+    #[test]
+    fn only_a_pointer_reaching_for_the_stack_holds_it() {
+        let host = TestHost::default();
+        host.push(Notification::new("Ada", "Can you look?"));
+        let mut stack = NotificationStack::new();
+        stack.set_viewport(Rect::new(0.0, 0.0, 800.0, 600.0));
+        draw(&mut stack, &host, &Theme::dark().with_reduce_motion(true));
+        let card = stack.rect();
+        let y = card.center().y;
+        let t0 = ui::time::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+
+        // A fast sweep down the screen across the stack, 40 px every 8 ms.
+        let x = card.center().x;
+        let mut ms = 0;
+        // From well above the stack to well below it.
+        for step in 0..16_u32 {
+            let py = card.y0 - 120.0 + 40.0 * f64::from(step);
+            stack.note_pointer_at(&host, Some(Point::new(x, py)), at(ms));
+            if card.contains(Point::new(x, py)) {
+                assert!(!stack.pointer_holds(at(ms)), "in transit at {py}");
+            }
+            ms += 8;
+        }
+        assert!(!host.log().held());
+        stack.note_pointer_at(&host, None, at(ms));
+
+        // Reaching for the stack from the left: slowing to a stop on it.
+        let t1 = ms + 500;
+        let path = [
+            (card.x0 - 200.0, 0),
+            (card.x0 - 100.0, 16),
+            (card.x0 - 40.0, 32),
+            (card.x0 - 10.0, 48),
+            (card.x0 + 2.0, 64),
+        ];
+        for (px, dt) in path {
+            stack.note_pointer_at(&host, Some(Point::new(px, y)), at(t1 + dt));
+        }
+        assert!(
+            stack.pointer_holds(at(t1 + 64)),
+            "heading there and coming to rest"
+        );
+        assert!(host.log().held());
+        assert!(
+            stack.pointer_holds(at(t1 + 64 + 200)),
+            "resting on the stack keeps holding it"
+        );
+
+        // Heading for it but stopping short: the aim lapses.
+        stack.note_pointer_at(&host, None, at(t1 + 1000));
+        let t2 = t1 + 2000;
+        for (px, dt) in [
+            (card.x0 - 300.0, 0),
+            (card.x0 - 150.0, 16),
+            (card.x0 - 60.0, 32),
+        ] {
+            stack.note_pointer_at(&host, Some(Point::new(px, y)), at(t2 + dt));
+        }
+        let lapse = at(t2 + 32) + AIM_HOLD;
+        assert!(
+            !stack.pointer_holds(lapse),
+            "a hand that stops short lets go"
+        );
     }
 
     /// The Notifications chord moves focus into the newest banner: arrows
