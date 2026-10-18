@@ -231,6 +231,25 @@ enum Cmd {
     /// namespace. Run by `tilo-sandbox-view.service`.
     #[command(subcommand)]
     SandboxView(SandboxViewCmd),
+    /// The compositor's app spawner: starts each launch born in a cgroup of
+    /// its own (`launcher::spawner`). Internal: its stdin is the compositor's
+    /// socket.
+    #[command(name = "app-spawner", hide = true)]
+    AppSpawner {
+        /// Serve this cgroupfs directory as the app tree instead of asking
+        /// the user manager for one.
+        #[arg(long)]
+        tree: Option<PathBuf>,
+    },
+    /// List the apps running in this person's session, each with its
+    /// cgroup's processes, memory, CPU time, tier and OOM kills. Apps are
+    /// cgroups of one delegated scope (`tilo-apps-<n>.scope`), not units of
+    /// their own, so `systemctl --user` does not list them.
+    Apps {
+        /// Print JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -428,6 +447,8 @@ fn dispatch_command(
         ),
         Cmd::RunHost(args) => run_host(args),
         Cmd::SandboxView(command) => sandbox_view(command),
+        Cmd::AppSpawner { tree } => run_app_spawner(tree),
+        Cmd::Apps { json } => list_apps(json),
     }
 }
 
@@ -469,6 +490,52 @@ fn sandbox_view(command: SandboxViewCmd) -> ExitCode {
             }
         }
     }
+}
+
+/// Serve the compositor on the socket it gave as stdin.
+fn run_app_spawner(tree: Option<PathBuf>) -> ExitCode {
+    use std::os::fd::{AsRawFd as _, OwnedFd};
+    // SAFETY: fd 0 is the socket the compositor handed over; it is moved to a
+    // close-on-exec descriptor before anything is started, so no launch
+    // inherits it, and /dev/null takes its place.
+    let socket = unsafe { libc::fcntl(0, libc::F_DUPFD_CLOEXEC, 3) };
+    if socket < 0 {
+        eprintln!("tilo-spawner: {}", std::io::Error::last_os_error());
+        return ExitCode::from(1);
+    }
+    // SAFETY: the descriptor was just created and is owned here alone.
+    let socket = unsafe { OwnedFd::from_raw_fd(socket) };
+    match std::fs::File::open("/dev/null") {
+        // SAFETY: both are descriptors this process owns.
+        Ok(null) => unsafe {
+            libc::dup2(null.as_raw_fd(), 0);
+        },
+        Err(error) => eprintln!("tilo-spawner: /dev/null: {error}"),
+    }
+    match launcher::spawner::serve(&socket, tree) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("tilo-spawner: {error}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn list_apps(json: bool) -> ExitCode {
+    let uid = rustix::process::getuid().as_raw();
+    let apps = launcher::app_cgroup::running_apps(&launcher::app_cgroup::user_app_slice(uid));
+    if json {
+        match serde_json::to_string_pretty(&apps) {
+            Ok(text) => println!("{text}"),
+            Err(error) => {
+                eprintln!("tilo-launcher: {error}");
+                return ExitCode::from(1);
+            }
+        }
+    } else {
+        print!("{}", launcher::app_cgroup::format_table(&apps));
+    }
+    ExitCode::SUCCESS
 }
 
 #[derive(Debug, clap::Args)]
@@ -579,31 +646,7 @@ fn run_gui_command(
             return exit_code(e.to_exit_code());
         }
     };
-    // Joining the app's scope (a round trip to the user manager) and
-    // verifying the package (reading and hashing its files) need nothing
-    // from each other, so they run side by side. The join completes before
-    // anything below starts a process: every process of the launch, the
-    // D-Bus proxies and the sandbox included, starts inside the scope.
-    let manifest = std::thread::scope(|scope| {
-        let joining = opts.app_id.as_deref().map(|app_id| {
-            std::thread::Builder::new()
-                .name("launch-scope".into())
-                .spawn_scoped(scope, move || enter_app_scope(app_id))
-                .map_err(|_| app_id)
-        });
-        let manifest = launch_manifest(&args.manifest, &args.payload_root, &opts);
-        match joining {
-            Some(Ok(handle)) => {
-                if let Err(panic) = handle.join() {
-                    std::panic::resume_unwind(panic);
-                }
-            }
-            // No thread to spare: join here, as before.
-            Some(Err(app_id)) => enter_app_scope(app_id),
-            None => {}
-        }
-        manifest
-    });
+    let manifest = verify_in_app_cgroup(&args.manifest, &args.payload_root, &opts);
     let result = manifest.and_then(|manifest| {
         if let Some(endpoint) = retained_endpoint {
             let cancellation = launcher::owned_service::ServiceCancellation::default();
@@ -677,11 +720,57 @@ fn report_launch_result(
     }
 }
 
-/// Move this launcher into the app's own systemd user scope before it forks
-/// the sandbox, so the app's memory, OOM handling and lifetime are its own
-/// and never the compositor's (see [`launcher::scope`]). The compositor
-/// always names the app; without a reachable user manager the app still
-/// starts, where the launcher already runs.
+/// Verify the package, with this launcher in the app's own cgroup by the
+/// time it returns ([`enter_app_scope`]).
+fn verify_in_app_cgroup(
+    manifest: &std::path::Path,
+    payload_root: &std::path::Path,
+    opts: &RunOptions,
+) -> Result<launcher::manifest::ManifestView, launcher::run::RunError> {
+    // Started by the compositor's spawner, the launcher was born in its app
+    // cgroup and there is nothing to join.
+    let born_in_cgroup = launcher::app_cgroup::current_is_app_cgroup();
+    if born_in_cgroup {
+        tilo_startup_metrics::handoff_mark("scope-joined");
+    }
+    // Otherwise joining the app's scope (a round trip to the user manager)
+    // and verifying the package (reading and hashing its files) need nothing
+    // from each other, so they run side by side. The join completes before
+    // anything after this starts a process: every process of the launch, the
+    // D-Bus proxies and the sandbox included, starts inside the scope.
+    std::thread::scope(|scope| {
+        let joining = opts
+            .app_id
+            .as_deref()
+            .filter(|_| !born_in_cgroup)
+            .map(|app_id| {
+                std::thread::Builder::new()
+                    .name("launch-scope".into())
+                    .spawn_scoped(scope, move || enter_app_scope(app_id))
+                    .map_err(|_| app_id)
+            });
+        let manifest = launch_manifest(manifest, payload_root, opts);
+        match joining {
+            Some(Ok(handle)) => {
+                if let Err(panic) = handle.join() {
+                    std::panic::resume_unwind(panic);
+                }
+            }
+            // No thread to spare: join here, as before.
+            Some(Err(app_id)) => enter_app_scope(app_id),
+            None => {}
+        }
+        manifest
+    })
+}
+
+/// Make sure this launcher is in the app's own cgroup before it forks the
+/// sandbox, so the app's memory, OOM handling and lifetime are its own and
+/// never the compositor's (see [`launcher::scope`]). A launcher the
+/// compositor's spawner started was born there; any other asks the user
+/// manager for a scope and moves into it. The compositor always names the
+/// app; without a reachable user manager the app still starts, where the
+/// launcher already runs.
 fn enter_app_scope(app_id: &str) {
     if let Err(error) = launcher::scope::join(app_id, app_id) {
         eprintln!("tilo-launcher: {app_id} runs outside a session scope: {error}");
