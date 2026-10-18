@@ -395,6 +395,11 @@ mod tests {
         let executable = std::env::current_exe().unwrap();
         for case in ["valid", "mutable", "malformed"] {
             let mut command = namespace(&executable, &operator);
+            if std::fs::metadata(&pin).unwrap().uid() != 0 {
+                // As in the pin test: the runner's own files look root-owned
+                // in the namespace, as the image files the pins come from are.
+                command.args(["--uid", "0", "--gid", "0"]);
+            }
             command.args(["--dir", "/usr/share/tilo/runtime-retained"]);
             command.arg("--ro-bind").arg(&pin).arg(PINS[0]);
             for (source, target) in [(&old, "/old"), (&other, "/other"), (&new, "/new")] {
