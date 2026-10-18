@@ -117,9 +117,12 @@ build_out=$repo_root/target/nested-session
 bin=$build_out/bin
 thin=$build_out/thin-app
 if ((build)); then
-    say "building the nested session on t (t outputs nested-session)"
-    (cd "$repo_root" && t outputs nested-session --human >/dev/null) \
-        || die "the nested-session build failed (t log nested-session shows why)"
+    # The build runs on a node of this machine's architecture.
+    check=nested-session
+    [[ $(uname -m) == aarch64 ]] && check=nested-session-arm64
+    say "building the nested session on t (t outputs $check)"
+    (cd "$repo_root" && t outputs "$check" --human >/dev/null) \
+        || die "the nested-session build failed (t log $check shows why)"
 fi
 for name in shell tilo-launcher tilo-install tilo-app-package tilo-runtime-bundle \
             tilo-model-gateway tilo-control examples/packaged_native_governor; do

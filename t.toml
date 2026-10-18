@@ -3127,6 +3127,21 @@ cost = "heavy"
 timeout_secs = 5400
 default = false
 
+# The same build for an arm64 machine (a Snapdragon laptop): its binaries run only there.
+[[check]]
+name = "nested-session-arm64"
+run = "bash dist/dev/nested-session-build.sh /target/nested-session"
+inputs = ["apps/**", "crates/**", "vendor/**", "dist/apps/**", "dist/dev/nested-session-build.sh", "os/scripts/build-thin-apps.sh", "tools/apps/**", "tools/ci/__init__.py", "tools/ci/python.py", "tools/ci/runner_labels.py", "tools/ci/workspace_graph.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/thin-app/**", "Cargo.toml", "Cargo.lock"]
+outputs = ["/target/nested-session/**"]
+requires = ["arch=arm64"]
+# The shell's optimised link and the runtime library's link run side by side; under a
+# compile-sized cap they were killed for memory.
+cpus = 16
+memory = "32G"
+cost = "heavy"
+timeout_secs = 5400
+default = false
+
 # The desktop session for other distributions (release-desktop.yml, dist/): its packaging inputs,
 # checked before anything is built: the install contract, the packaging scripts' syntax, the
 # version each format carries, the RPM signing client's contract, the development session and
