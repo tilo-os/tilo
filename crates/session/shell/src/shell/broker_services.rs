@@ -1909,7 +1909,6 @@ pub fn native_services(
             }) as Arc<dyn tilo_action_broker::services::DevicePairingServices>
         }),
         identity_admin: membership.as_ref().map(super::identity_admin::broker_door),
-        community: network.as_ref().map(super::community_steps::broker_door),
         legacy_workspace: membership.map(|tree| {
             Arc::new(NativeWorkspaceAuthority(tree)) as Arc<dyn LegacyWorkspaceProjection>
         }),

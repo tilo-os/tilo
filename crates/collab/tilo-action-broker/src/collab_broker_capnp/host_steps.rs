@@ -10,13 +10,13 @@
 
 use std::sync::Arc;
 
-use tilo_actions::remote::{Pending, community, device_pairing, identity_admin};
+use tilo_actions::remote::{Pending, device_pairing, identity_admin};
 use tilo_actions::{ActionAddress, ActionDescriptor};
 
 use super::{BrokerActor, CapnpBrokerState};
 use crate::services::{
-    CommunityRequest, CommunityServices, DevicePairingOutcome, DevicePairingRequest,
-    DevicePairingServices, HostServices, IdentityAdminRequest, IdentityAdminServices,
+    DevicePairingOutcome, DevicePairingRequest, DevicePairingServices, HostServices,
+    IdentityAdminRequest, IdentityAdminServices,
 };
 use tilo_actions::remote::{
     ActionHostError, Caller, InvocationReceipt, InvokeRequest, Reservation,
@@ -27,7 +27,6 @@ use tilo_actions::remote::{
 pub(super) enum HostSteps {
     Pairing(Arc<dyn DevicePairingServices>),
     Identity(Arc<dyn IdentityAdminServices>),
-    Community(Arc<dyn CommunityServices>),
 }
 
 impl HostSteps {
@@ -35,12 +34,7 @@ impl HostSteps {
     pub(super) fn installed(services: &HostServices) -> Vec<Self> {
         let pairing = services.device_pairing.clone().map(Self::Pairing);
         let identity = services.identity_admin.clone().map(Self::Identity);
-        let community = services.community.clone().map(Self::Community);
-        pairing
-            .into_iter()
-            .chain(identity)
-            .chain(community)
-            .collect()
+        pairing.into_iter().chain(identity).collect()
     }
 
     /// The installed service that answers under `provider`, if any.
@@ -55,7 +49,6 @@ impl HostSteps {
         match self {
             Self::Pairing(_) => device_pairing::PROVIDER,
             Self::Identity(_) => identity_admin::PROVIDER,
-            Self::Community(_) => community::PROVIDER,
         }
     }
 
@@ -64,7 +57,6 @@ impl HostSteps {
         match self {
             Self::Pairing(service) => service.app_id(),
             Self::Identity(service) => service.app_id(),
-            Self::Community(service) => service.app_id(),
         }
     }
 
@@ -73,7 +65,6 @@ impl HostSteps {
         match self {
             Self::Pairing(service) => service.descriptors(),
             Self::Identity(service) => service.descriptors(),
-            Self::Community(service) => service.descriptors(),
         }
     }
 
@@ -97,12 +88,6 @@ impl HostSteps {
                 argument,
             }),
             Self::Identity(service) => service.start(&IdentityAdminRequest {
-                room,
-                actor,
-                address,
-                argument,
-            }),
-            Self::Community(service) => service.start(&CommunityRequest {
                 room,
                 actor,
                 address,
@@ -1129,47 +1114,11 @@ mod identity_admin_tests {
         }
     }
 
-    /// Like the production community service, this effect trusts the actor the
-    /// broker supplies; it cannot recover the original certificate itself.
-    #[derive(Default)]
-    struct CommunityHost(Host);
-
-    impl crate::services::CommunityServices for CommunityHost {
-        fn app_id(&self) -> &str {
-            self.0.app_id()
-        }
-
-        fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
-            let mut descriptor = self
-                .0
-                .descriptors()
-                .into_iter()
-                .find(|descriptor| descriptor.address.action == identity_admin::REMOVE)
-                .unwrap();
-            descriptor.address =
-                tilo_actions::remote::community::target(tilo_actions::remote::community::LEAVE)
-                    .address;
-            descriptor.resource_kind = tilo_actions::remote::community::RESOURCE.into();
-            vec![descriptor]
-        }
-
-        fn start(
-            &self,
-            request: &crate::services::CommunityRequest<'_>,
-        ) -> Result<Pending<crate::services::CommunityOutcome>, String> {
-            request
-                .actor
-                .direct_person()
-                .ok_or("a person is required")?;
-            self.0.start(request)
-        }
-    }
-
     #[test]
     fn host_steps_recheck_live_authority_after_blocked_durable_admission() {
         use std::sync::{atomic::Ordering, mpsc};
         use std::time::Duration;
-        use tilo_actions::{InvocationUpdate, remote::community};
+        use tilo_actions::InvocationUpdate;
 
         for certified in [false, true] {
             for change in [
@@ -1179,9 +1128,9 @@ mod identity_admin_tests {
                 "permission",
                 "time",
             ] {
-                let host = Arc::new(CommunityHost::default());
+                let host = Arc::new(Host::default());
                 let services = crate::services::HostServices {
-                    community: Some(host.clone()),
+                    identity_admin: Some(host.clone()),
                     ..Default::default()
                 };
                 let mut f = if certified {
@@ -1190,8 +1139,7 @@ mod identity_admin_tests {
                     super::signed_test_support::Fixture::new(services)
                 };
                 f.caller = f.caller.clone().in_new_execution();
-                let mut asked = request(identity_admin::REMOVE, Some(Confirmation::Confirmed));
-                asked.target = community::target(community::LEAVE);
+                let asked = request(identity_admin::REMOVE, Some(Confirmation::Confirmed));
                 let (entered, blocked) = mpsc::sync_channel(0);
                 let (release, resume) = mpsc::sync_channel(0);
                 f.state
@@ -1210,7 +1158,7 @@ mod identity_admin_tests {
                     let state = f.state.clone();
                     let caller = f.caller.clone();
                     let origin = f.origin.clone();
-                    let steps = super::HostSteps::Community(host.clone());
+                    let steps = super::HostSteps::Identity(host.clone());
                     let asked = &asked;
                     let worker = scope.spawn(move || {
                         state.invoke_host_step(&caller, Some(&origin), &steps, asked)
@@ -1230,9 +1178,8 @@ mod identity_admin_tests {
                 });
                 if change == "unchanged" {
                     result.expect("unchanged custody must still start");
-                    assert_eq!(host.0.started.lock().unwrap().len(), 1);
-                    host.0
-                        .answers
+                    assert_eq!(host.started.lock().unwrap().len(), 1);
+                    host.answers
                         .lock()
                         .unwrap()
                         .pop()
@@ -1243,7 +1190,7 @@ mod identity_admin_tests {
                 } else {
                     assert!(result.is_err(), "{certified}/{change}");
                     assert!(
-                        host.0.started.lock().unwrap().is_empty(),
+                        host.started.lock().unwrap().is_empty(),
                         "{certified}/{change}"
                     );
                     let record = f.assert_signed(&asked, true);

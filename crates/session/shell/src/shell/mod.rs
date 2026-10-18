@@ -42,7 +42,6 @@ pub mod collab_outbound;
 pub mod collab_presence;
 pub(crate) mod collaborator_versions;
 pub mod color_pipeline;
-pub(crate) mod community_steps;
 pub mod continuity_policy;
 pub mod continuity_suggestion;
 pub mod desk_widgets;

@@ -3003,14 +3003,6 @@ strip-switcher-name-placeholder = Name der Leiste
 strip-switcher-refused = Die Leiste konnte nicht geändert werden
 
 
-## The community workspace's steps (Settings).
-community-resource = Community-Arbeitsbereich
-community-status = Community-Arbeitsbereich
-community-status-subtitle = Ob dieser Computer in seinem Community-Arbeitsbereich ist
-community-join = Dem Community-Arbeitsbereich wieder beitreten
-community-join-subtitle = Dem verlassenen Arbeitsbereich wieder beitreten, als du
-community-leave = Community-Arbeitsbereich verlassen
-community-leave-subtitle = Auf diesem Computer verlassen; in den Einstellungen kannst du wieder beitreten
 
 ## Pairing a new device of the person.
 pairing-title = Neues Gerät koppeln
