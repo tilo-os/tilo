@@ -114,7 +114,7 @@ class CopyLanguageTests(unittest.TestCase):
             root = Path(tmp)
             locales = root / "apps/demo/locales"
             locales.mkdir(parents=True)
-            (locales / "en-US.ftl").write_text("old = YOU LEFT OFF\nfine = Saved\n")
+            (locales / "en-US.ftl").write_text("old = YOU LEFT OFF\nfine = Synced\n")
             glossary = root / "glossary.toml"
             glossary.write_text(GLOSSARY)
             baseline = root / "baseline"
@@ -126,7 +126,7 @@ class CopyLanguageTests(unittest.TestCase):
             shard.write_text("# old copy\nen-US old all-caps\n")
             self.assertEqual(copy.check(root, glossary, baseline), [])
 
-            (locales / "en-US.ftl").write_text("old = Where you left off\nfine = Saved\n")
+            (locales / "en-US.ftl").write_text("old = Where you left off\nfine = Synced\n")
             errors = copy.check(root, glossary, baseline)
             self.assertEqual(len(errors), 1)
             self.assertIn("no longer applies", errors[0])
@@ -137,6 +137,71 @@ class CopyLanguageTests(unittest.TestCase):
             self.assertEqual(len(errors), 1)
             self.assertIn("fine", errors[0])
 
+    def test_routine_saving_is_caught_and_outcomes_pass(self):
+        text = "\n".join([
+            "a = Saving…",
+            "b = Saved",
+            "c = Saved { $file }",
+            "d = { $file } saved",
+            "e = Draft saved",
+            "f = Saving latest changes…",
+            "g = Saved — waiting for the agent to apply it",
+            "h = All changes saved.",
+            "ok-copy = Saved a copy as { $name }",
+            "ok-button = Save",
+            "ok-failure = Couldn't save. Try again.",
+            "ok-place = Saved places",
+            "ok-where = Saved as { $name }.",
+        ]) + "\n"
+        self.assertEqual(rules("en-US", text), [
+            (key, "save-status") for key in "abcdefgh"
+        ])
+        german = "\n".join([
+            "a = Gespeichert.",
+            "b = { $file } gespeichert",
+            "c = Wird gespeichert…",
+            "d = Änderungen werden gespeichert…",
+            "ok-button = Speichern",
+        ]) + "\n"
+        self.assertEqual(rules("de-DE", german), [(key, "save-status") for key in "abcd"])
+
+    def test_save_exceptions_are_narrow_and_shrink(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-saved = Saved\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text(
+                'fn label() -> &\'static str { "Saving…" }\n'
+                'fn id() -> &\'static str { "saved" }\n'
+                '#[cfg(test)]\nmod tests { fn t() { let _ = "Saved"; } }\n')
+            glossary = root / "glossary.toml"
+            glossary.write_text(GLOSSARY)
+            baseline = root / "baseline"
+            baseline.mkdir()
+            exceptions = root / "exceptions.toml"
+            exceptions.write_text("")
+            errors = copy.check(root, glossary, baseline, exceptions)
+            self.assertEqual(len(errors), 2, errors)
+            self.assertIn("demo-saved", errors[0])
+            self.assertIn("apps/demo/src/lib.rs:1", errors[1])
+
+            exceptions.write_text(
+                '[[allow]]\nunit = "apps-demo"\nkey = "demo-saved"\nreason = "A name."\n'
+                '[[allow]]\nfile = "apps/demo/src/lib.rs"\ntext = "Saving…"\nreason = "A name."\n')
+            self.assertEqual(copy.check(root, glossary, baseline, exceptions), [])
+
+            (locales / "en-US.ftl").write_text("demo-saved = Saved a copy\n")
+            errors = copy.check(root, glossary, baseline, exceptions)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("no longer matches", errors[0])
+
+            exceptions.write_text('[[allow]]\nunit = "apps-demo"\nkey = "demo-saved"\n')
+            with self.assertRaises(ValueError):
+                copy.check(root, glossary, baseline, exceptions)
+
     def test_glossary_terms_need_a_reason(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "glossary.toml"
@@ -145,7 +210,8 @@ class CopyLanguageTests(unittest.TestCase):
                 copy.load_glossary(path)
 
     def test_the_tree_passes(self):
-        self.assertEqual(copy.check(copy.ROOT, copy.GLOSSARY, copy.BASELINE), [])
+        self.assertEqual(
+            copy.check(copy.ROOT, copy.GLOSSARY, copy.BASELINE, copy.SAVE_EXCEPTIONS), [])
 
 
 if __name__ == "__main__":
