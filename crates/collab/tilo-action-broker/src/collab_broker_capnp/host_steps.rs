@@ -483,11 +483,11 @@ pub(super) mod signed_test_support {
             let mut tree = WorkspaceTree::default();
             tree.workspaces.push(workspace);
             let clock = crate::peer_actions::OwnerPolicyClock::new().unwrap();
-            let origin = clock.new_origin();
+            let policy_origin = clock.new_origin();
             let authority = Arc::new(Authority {
                 certificate: certificate.clone(),
                 revoked: AtomicBool::new(false),
-                time: origin.capture().unwrap(),
+                time: policy_origin.capture().unwrap(),
             });
             let config = crate::peer_actions::NativePeerBrokerConfig {
                 journal_root: directory.path().join("journal"),
@@ -529,7 +529,7 @@ pub(super) mod signed_test_support {
                 _environment: environment,
                 _directory: directory,
                 _clock: clock,
-                _origin: origin,
+                _origin: policy_origin,
             }
         }
 
