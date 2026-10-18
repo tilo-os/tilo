@@ -162,6 +162,10 @@ pub enum DisplayEffect {
     SetAutomaticDisplayInput { on: bool },
 }
 
+/// What staging a display change answers; the page shows the staged
+/// change in its own card rather than as a notice.
+const STAGED: &str = "Display change staged. Apply it to preview the new configuration.";
+
 /// Answer `effect` on the area's model.
 #[expect(
     clippy::needless_pass_by_value,
@@ -229,11 +233,23 @@ pub(crate) fn answer(
             app.displays().model().borrow().inspection(),
         ));
     }
-    app.displays()
-        .model()
-        .borrow_mut()
-        .apply(&effect)
-        .map(Effected::value)
+    let staged = {
+        let model = app.displays().model();
+        let mut model = model.borrow_mut();
+        let staged = model.apply(&effect)?;
+        if staged == STAGED {
+            model.notice = None;
+        }
+        staged
+    };
+    // A change that cannot leave a screen dark applies as it is chosen;
+    // only one that can is tried with Keep and Revert first.
+    if app.displays().model().borrow().of_device
+        && app.displays().model().borrow().staged_applies_at_once()
+    {
+        return answer(app, DisplayEffect::ApplyDisplayChanges, cx);
+    }
+    Ok(Effected::value(staged))
 }
 
 fn request_host_display(
@@ -1111,6 +1127,33 @@ impl DisplayModel {
         self.outputs.iter().filter(|o| o.connected).collect()
     }
 
+    /// Whether the staged change can apply at once on this device, without
+    /// the 15-second try: nothing in it can leave a screen dark
+    /// ([`DisplayConfig::needs_confirmation_from`]), and no other change is
+    /// being tried.
+    fn staged_applies_at_once(&self) -> bool {
+        let Some(candidate) = &self.pending_candidate else {
+            return false;
+        };
+        let trying = self.transaction().is_some_and(|transaction| {
+            matches!(
+                transaction.state,
+                DisplayTransactionState::Requested
+                    | DisplayTransactionState::AwaitingConfirmation
+                    | DisplayTransactionState::ConfirmRequested
+                    | DisplayTransactionState::RevertRequested
+            )
+        });
+        let mut committed = self.output_config.clone();
+        for output in self.connected_outputs() {
+            committed
+                .outputs
+                .entry(output.connector.clone())
+                .or_insert_with(|| output.unconfigured());
+        }
+        !trying && !candidate.needs_confirmation_from(&committed)
+    }
+
     /// The arrangement as it stands: the staged one, else the committed one.
     fn staged(&self) -> &DisplayConfig {
         self.pending_candidate
@@ -1780,7 +1823,7 @@ impl DisplayModel {
             format!("That display configuration is not possible: {error:?}")
         })?;
         self.pending_candidate = Some(next);
-        Ok("Display change staged. Apply it to preview the new configuration.".into())
+        Ok(STAGED.into())
     }
 
     /// Reconstruct the compositor's descriptor contract from a Settings
@@ -2001,24 +2044,28 @@ impl DisplayModel {
         let arrangement = self.build_arrangement_card(&connected);
         let brightness = self.build_brightness_card();
 
-        let mut cards = vec![arrangement];
+        // What is being tried, or waits to be, leads: its countdown must be
+        // seen. Then the arrangement and the brightness people reach for
+        // most, each display's own settings, and the displays of other
+        // devices.
+        let mut cards: Vec<SettingsSection> = self.build_safety_card().into_iter().collect();
+        cards.push(arrangement);
+        if let Some(notice) = &self.notice {
+            cards.push(card(&t("display-card-title"), rows(vec![note(notice)])));
+        }
+        cards.push(brightness);
+        for (index, output) in connected.iter().enumerate() {
+            cards.push(self.build_output_card(index, output, &connected));
+        }
         if let Some(shared) = self.build_shared_displays_card() {
             cards.push(shared);
         }
         if let Some(devices) = self.build_device_arrangement_card() {
             cards.push(devices);
         }
-        if let Some(notice) = &self.notice {
-            cards.push(card(&t("display-card-title"), rows(vec![note(notice)])));
-        }
-        for (index, output) in connected.iter().enumerate() {
-            cards.push(self.build_output_card(index, output, &connected));
-        }
-        cards.push(self.build_safety_card());
         if let Some(tools) = self.build_trusted_tools_card() {
             cards.push(tools);
         }
-        cards.push(brightness);
         crate::widgets::cards(cards)
     }
 
@@ -2596,7 +2643,7 @@ impl DisplayModel {
 
     /// The safety/apply-transaction card, driven by the on-disk
     /// [`DisplayTransaction`] state machine.
-    fn build_safety_card(&self) -> SettingsSection {
+    fn build_safety_card(&self) -> Option<SettingsSection> {
         let transaction = self.transaction();
         match transaction.as_ref().map(|transaction| transaction.state) {
             Some(DisplayTransactionState::AwaitingConfirmation) => {
@@ -2606,27 +2653,25 @@ impl DisplayModel {
                     .map(|deadline| deadline.saturating_sub(unix_now_ms()).div_ceil(1_000))
                     .unwrap_or_default();
                 let seconds = i64::try_from(seconds).unwrap_or(i64::MAX);
-                let keep = t("display-keep");
-                let revert = t("display-revert-now");
-                card(
+                // One question, one pair of answers.
+                let revert = self.cx.bind_invocation(
+                    ui::widget::Button::new("settings.display.revert", &t("display-revert-now")),
+                    DisplayEffect::RevertDisplayChanges,
+                );
+                let keep = self.cx.bind_invocation(
+                    ui::widget::Button::new("settings.display.keep", &t("display-keep"))
+                        .role(ui::widget::ButtonRole::Primary),
+                    DisplayEffect::KeepDisplayChanges,
+                );
+                Some(card(
                     &t("display-keep-title"),
-                    rows(vec![
-                        note(&t_args(
-                            "display-keep-caption",
-                            &[("seconds", seconds.into())],
-                        )),
-                        self.cx.row(t("display-keep-ok")).button(
-                            "settings.display.keep",
-                            &keep,
-                            DisplayEffect::KeepDisplayChanges,
-                        ),
-                        self.cx.row(t("display-keep-wrong")).button(
-                            "settings.display.revert",
-                            &revert,
-                            DisplayEffect::RevertDisplayChanges,
-                        ),
-                    ]),
-                )
+                    rows(vec![crate::widgets::item_row(
+                        &t_args("display-keep-caption", &[("seconds", seconds.into())]),
+                        Vec::new(),
+                        &[],
+                        vec![revert, keep],
+                    )]),
+                ))
             }
             Some(
                 DisplayTransactionState::Requested
@@ -2637,7 +2682,10 @@ impl DisplayModel {
                     .as_ref()
                     .and_then(|transaction| transaction.message.as_deref())
                     .map_or_else(|| t("display-applying-caption"), str::to_string);
-                card(&t("display-applying-title"), rows(vec![note(&applying)]))
+                Some(card(
+                    &t("display-applying-title"),
+                    rows(vec![note(&applying)]),
+                ))
             }
             Some(DisplayTransactionState::Rejected) => {
                 let rejected = transaction
@@ -2653,26 +2701,26 @@ impl DisplayModel {
                         DisplayEffect::ApplyDisplayChanges,
                     ));
                 }
-                card(&t("display-rejected-title"), rows(content))
+                Some(card(&t("display-rejected-title"), rows(content)))
             }
             _ if self.pending_candidate.is_some() => {
                 let apply = t("display-apply");
-                card(
+                Some(card(
                     &t("display-apply-title"),
                     rows(vec![
-                        note(&t("display-apply-caption")),
-                        self.cx.row(t("display-apply-row")).button(
-                            "settings.display.apply",
-                            &apply,
-                            DisplayEffect::ApplyDisplayChanges,
-                        ),
+                        self.cx
+                            .row(t("display-apply-row"))
+                            .described(t("display-apply-caption"))
+                            .button(
+                                "settings.display.apply",
+                                &apply,
+                                DisplayEffect::ApplyDisplayChanges,
+                            ),
                     ]),
-                )
+                ))
             }
-            _ => card(
-                &t("display-config-title"),
-                rows(vec![note(&t("display-config-empty"))]),
-            ),
+            // Nothing staged and nothing being tried: no card.
+            _ => None,
         }
     }
 

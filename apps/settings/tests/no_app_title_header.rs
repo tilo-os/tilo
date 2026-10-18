@@ -1,7 +1,7 @@
 //! The OS draws the window chrome; the app must NOT draw its own title / app-
 //! name header (that would duplicate the compositor's window-group pill). This
 //! guards the removal of the old in-pane **app-name** title and the sidebar's
-//! "Personal Settings" title. The category's name is the page's heading, in
+//! "Settings" title. The category's name is the page's heading, in
 //! the shell's header row: it says where the detail screen is, especially
 //! after a narrow-screen back affordance.
 //!
@@ -50,8 +50,12 @@ fn rendered_names(app: &SettingsApp) -> Vec<String> {
             walk(c, out);
         }
     }
+    // The app's own landmark is named for assistive technology; what is
+    // painted is below it.
     let mut out = Vec::new();
-    walk(app, &mut out);
+    for child in app.children() {
+        walk(child, &mut out);
+    }
     out
 }
 
@@ -76,7 +80,7 @@ fn app_title_lives_only_in_the_window_chrome() {
         let config = crate::support::ScratchConfig::new();
         // The sanctioned channel: the OS pill reads this. Present and correct.
         let app = config.app();
-        assert_eq!(app.app_title(), "Personal Settings");
+        assert_eq!(app.app_title(), "Settings");
         assert!(matches!(app.app_icon(), IconDescriptor::Glyph(_)));
     }
 
@@ -97,8 +101,8 @@ fn app_title_lives_only_in_the_window_chrome() {
             let names = rendered_names(&app);
 
             assert!(
-                !names.iter().any(|n| n == "Personal Settings"),
-                "{cat:?}: the app must not draw its own \"Personal Settings\" app-name header \
+                !names.iter().any(|n| n == "Settings"),
+                "{cat:?}: the app must not draw its own \"Settings\" app-name header \
              (the OS pill carries it); rendered names were {names:?}"
             );
             assert!(

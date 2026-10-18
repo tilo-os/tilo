@@ -1654,6 +1654,9 @@ pub struct MouseKeyboardPane {
     /// Why the device's layout list could not be read; `catalog` is then a
     /// short built-in list and says so.
     catalog_error: Option<String>,
+    /// The device's layout list is still being read: the page shows what
+    /// it holds, and only the chooser of layouts to add waits for it.
+    catalog_pending: bool,
     /// Which sections the attached devices call for.
     sections: InputSections,
     /// Attached drawing tablets and pads, one card each.
@@ -1698,8 +1701,9 @@ impl MouseKeyboardPane {
             dictionary_edits: RefCell::new(HashMap::new()),
             paste_app: ui::LocalState::new(String::new()),
             last,
-            catalog: area.catalog().to_vec(),
-            catalog_error: area.catalog_error().map(str::to_owned),
+            catalog_pending: area.catalog_pending(),
+            catalog: Vec::new(),
+            catalog_error: None,
             sections: InputSections::for_devices(None),
             tablets: Vec::new(),
             pads: Vec::new(),
@@ -1718,6 +1722,10 @@ impl MouseKeyboardPane {
             last_editor: area.editor.get(),
             scopes: area.keyboard_scopes(),
         };
+        if !pane.catalog_pending {
+            pane.catalog = area.catalog().to_vec();
+            pane.catalog_error = area.catalog_error().map(str::to_owned);
+        }
         if pane.scopes.len() == 1 {
             let mut editor = pane.editor.get();
             editor.scope = pane
@@ -2913,16 +2921,14 @@ mod tests {
     pub(super) fn show_add_source(app: &mut TestApp<SettingsShell>, viewport: (u32, u32)) {
         crate::effects::show_pane(app, crate::categories::Category::Keyboard);
         app.settle();
-        // The page is read off the UI thread; it is built once the read has
-        // landed, and the chooser is used only then.
-        let reading = crate::i18n::t("settings-pane-reading");
-        assert!(
-            app.harness()
-                .wait_until(ui::time::Duration::from_secs(30), |harness| harness
-                    .inspection_json()
-                    .is_ok_and(|frame| !frame.contains(&reading))),
-            "the Keyboard page is built"
-        );
+        // The layouts to add are read off the UI thread; the chooser offers
+        // them once the read has landed.
+        tilo_test_env::wait_until("the device's layouts are read", || {
+            app.settle();
+            app.with_widget::<crate::settings_app::SettingsApp, _>(|settings| {
+                !settings.input().catalog_pending()
+            }) == Some(true)
+        });
         for _ in 0..5 {
             app.settle();
             let _ = app.harness().poll_frame();

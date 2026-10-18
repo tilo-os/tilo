@@ -190,10 +190,13 @@ fn compile(
             .collect::<Vec<_>>(),
     )
     .map_err(|error| error.to_string())?;
+    // The legends printed on a keyboard of the previewed layout, whatever
+    // language the desktop speaks.
     let caps = ui::Keycaps::from_xkb(
         source.layout.as_str(),
         source.variant.as_deref().unwrap_or(""),
     );
+    let english = ui::Keycaps::from_xkb("us", "");
     native
         .into_iter()
         .zip(geometry)
@@ -205,10 +208,16 @@ fn compile(
                     symbols
                         .into_iter()
                         .map(|symbol| {
-                            short_legend(&symbol.name).map_or_else(
-                                || caps.native_symbol(&symbol.name, &symbol.text),
-                                str::to_owned,
-                            )
+                            let printed = caps.native_symbol(&symbol.name, &symbol.text);
+                            // A layout whose keyboards print their own word
+                            // for the key (German "Entf", "Feststell") keeps
+                            // it; the English names are shortened as US
+                            // keycaps spell them.
+                            if printed == english.native_symbol(&symbol.name, &symbol.text) {
+                                short_legend(&symbol.name).map_or(printed, str::to_owned)
+                            } else {
+                                printed
+                            }
                         })
                         .collect::<Vec<_>>()
                         .join(" ")
@@ -355,6 +364,16 @@ mod tests {
         let dvorak = at("us:dvorak", "AD01");
         assert_eq!(dvorak.physical, PhysicalKey::Code(KeyCode::KeyQ));
         assert_eq!(dvorak.levels.first().map(String::as_str), Some("'"));
+        // Every key reads as a keyboard of that layout prints it, whatever
+        // the desktop's language: German keyboards say "Rück", "Strg",
+        // "Umschalt"; US keycaps say "Bksp", "Ctrl", "Shift".
+        let legend = |source: &str, name: &str| at(source, name).levels.first().cloned();
+        assert_eq!(legend("de", "BKSP").as_deref(), Some("Rück"));
+        assert_eq!(legend("de", "LCTL").as_deref(), Some("Strg"));
+        assert_eq!(legend("de", "LFSH").as_deref(), Some("Umschalt"));
+        assert_eq!(legend("us", "BKSP").as_deref(), Some("Bksp"));
+        assert_eq!(legend("us", "LCTL").as_deref(), Some("Ctrl"));
+        assert_eq!(legend("us", "CAPS").as_deref(), Some("Caps"));
         assert!(map_with_options("ime/rime", "pc105", String::new(), Some("")).is_err());
         assert!(map_with_options("us", "../../attacker", String::new(), Some("")).is_err());
     }

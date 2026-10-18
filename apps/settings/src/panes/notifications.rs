@@ -32,8 +32,8 @@ use crate::host::{Followed, PaneCx};
 use crate::i18n::{english, t, t_args};
 use crate::prefs::NotificationPrefs;
 use crate::widgets::{
-    SettingsSection, StatusTone, card, error_row, note, rows, semantic_status_pill, setting_row,
-    value_row,
+    Item, SettingsSection, StatusTone, card, error_row, note, rows, semantic_status_pill,
+    setting_row, value_row,
 };
 
 const FOCUS_DAYS: &[(&str, u8)] = &[
@@ -593,42 +593,45 @@ impl NotificationsPane {
         let app_cards = self.build_app_cards();
         let mut cards = vec![
             self.build_dnd_card(),
-            self.build_focus_card(),
             self.build_banners_card(),
             self.build_delivery_card(),
-            Self::build_apps_card(app_cards.is_empty()),
-            Self::build_explainer_card(),
         ];
+        // The apps' own cards follow; with none yet, one line says why.
+        if app_cards.is_empty() {
+            cards.push(card(
+                &t("notif-apps-title"),
+                rows(vec![note(&t("notif-apps-empty"))]),
+            ));
+        }
         cards.extend(app_cards);
         cards.push(Self::build_priority_contacts_card());
         crate::widgets::cards(cards)
     }
 
     fn build_dnd_card(&self) -> SettingsSection {
+        // Do not disturb, and only while something holds notifications back
+        // (banners off, an app muted for a while) a line saying so.
         let (status_label, status_tone) = self.status();
-
-        // A label-left / status-pill-right row, so the combined effect of the
-        // toggles is legible at the top of the pane.
-        let status_row = setting_row(
-            &t("notif-delivery"),
-            semantic_status_pill(&status_label, status_tone),
+        let mut content = Vec::new();
+        if status_label != t("notif-status-active") {
+            content.push(setting_row(
+                &t("notif-delivery"),
+                semantic_status_pill(&status_label, status_tone),
+            ));
+        }
+        content.push(
+            self.cx
+                .row(t("notif-dnd"))
+                .described(t("notif-dnd-desc"))
+                .id("notifications.dnd")
+                .toggle(
+                    &self.shown.do_not_disturb,
+                    NotificationPrefs::paths().do_not_disturb,
+                ),
         );
-
-        // Master Do Not Disturb, with the visible delivery-status pill.
-        card(
-            &t("notif-dnd-title"),
-            rows(vec![
-                status_row,
-                self.cx
-                    .row(t("notif-dnd"))
-                    .described(t("notif-dnd-desc"))
-                    .id("notifications.dnd")
-                    .toggle(
-                        &self.shown.do_not_disturb,
-                        NotificationPrefs::paths().do_not_disturb,
-                    ),
-            ]),
-        )
+        // Quiet hours sit with it: the same silence, on a schedule.
+        content.extend(self.focus_rows());
+        card(&t("notif-dnd-title"), rows(content))
     }
 
     fn build_banners_card(&self) -> SettingsSection {
@@ -653,57 +656,61 @@ impl NotificationsPane {
     }
 
     fn build_delivery_card(&self) -> SettingsSection {
+        // Sounds that work need no line of their own: the switch says it.
         let sounds_row = match (
             media::event_sound::sound_backend(),
             super::installed_programs_unreadable(),
         ) {
-            (media::event_sound::SoundBackend::PipeWire, _) => {
-                value_row(&t("notif-sounds"), &t("notif-sounds-pipewire"))
-            }
-            (media::event_sound::SoundBackend::Unavailable, Some(error)) => error_row(
+            (media::event_sound::SoundBackend::PipeWire, _) => None,
+            (media::event_sound::SoundBackend::Unavailable, Some(error)) => Some(error_row(
                 &t("notif-sounds"),
                 &t_args("settings-programs-error", &[("error", error.into())]),
-            ),
+            )),
             (media::event_sound::SoundBackend::Unavailable, None) => {
-                value_row(&t("notif-sounds"), &t("notif-sounds-missing"))
+                Some(value_row(&t("notif-sounds"), &t("notif-sounds-missing")))
             }
         };
-        card(
-            &t("notif-delivery-title"),
-            rows(vec![
-                self.cx
-                    .row(t("notif-lock-screen"))
-                    .described(t("notif-lock-screen-desc"))
-                    .id("notifications.lock_screen")
-                    .toggle(
-                        &self.shown.lock_screen,
-                        NotificationPrefs::paths().show_on_lock_screen,
-                    ),
-                sounds_row,
-                self.cx
-                    .row(t("notif-play-sounds"))
-                    .described(t("notif-play-sounds-desc"))
-                    .id("notifications.sounds")
-                    .toggle(&self.shown.sounds, NotificationPrefs::paths().play_sounds),
-                self.cx
-                    .row(t("notif-badges"))
-                    .described(t("notif-badges-desc"))
-                    .id("notifications.badges")
-                    .toggle(&self.shown.badges, NotificationPrefs::paths().show_badges),
-            ]),
-        )
+        let mut content = vec![
+            self.cx
+                .row(t("notif-lock-screen"))
+                .described(t("notif-lock-screen-desc"))
+                .id("notifications.lock_screen")
+                .toggle(
+                    &self.shown.lock_screen,
+                    NotificationPrefs::paths().show_on_lock_screen,
+                ),
+        ];
+        content.extend(sounds_row);
+        content.push(
+            self.cx
+                .row(t("notif-play-sounds"))
+                .described(t("notif-play-sounds-desc"))
+                .id("notifications.sounds")
+                .toggle(&self.shown.sounds, NotificationPrefs::paths().play_sounds),
+        );
+        content.push(
+            self.cx
+                .row(t("notif-badges"))
+                .described(t("notif-badges-desc"))
+                .id("notifications.badges")
+                .toggle(&self.shown.badges, NotificationPrefs::paths().show_badges),
+        );
+        card(&t("notif-delivery-title"), rows(content))
     }
 
-    fn build_focus_card(&self) -> SettingsSection {
+    /// Quiet hours: the switch, and while it is on, when they start and
+    /// end and on which days.
+    fn focus_rows(&self) -> Vec<Item> {
         let focus_options: Vec<String> = english(FOCUS_TIMES).map(str::to_owned).collect();
-        card(
-            &t("notif-focus-title"),
-            rows(vec![
-                self.cx
-                    .row(t("notif-focus-enabled"))
-                    .described(t("notif-focus-enabled-desc"))
-                    .id("notifications.focus.enabled")
-                    .toggle(&self.shown.focus, NotificationPrefs::paths().focus.enabled),
+        let mut content = vec![
+            self.cx
+                .row(t("notif-focus-enabled"))
+                .described(t("notif-focus-enabled-desc"))
+                .id("notifications.focus.enabled")
+                .toggle(&self.shown.focus, NotificationPrefs::paths().focus.enabled),
+        ];
+        if self.shown.focus.get() {
+            content.extend([
                 self.cx
                     .row(t("notif-focus-from"))
                     .id("notifications.focus.start")
@@ -711,6 +718,15 @@ impl NotificationsPane {
                         focus_options.clone(),
                         &self.shown.focus_start,
                         NotificationPrefs::paths().focus.start_minute,
+                        |label: String| focus_minutes(&label),
+                    ),
+                self.cx
+                    .row(t("notif-focus-until"))
+                    .id("notifications.focus.end")
+                    .choice(
+                        focus_options,
+                        &self.shown.focus_end,
+                        NotificationPrefs::paths().focus.end_minute,
                         |label: String| focus_minutes(&label),
                     ),
                 self.cx
@@ -725,18 +741,9 @@ impl NotificationsPane {
                                 .ok_or_else(|| format!("`{shown}` is not offered"))
                         },
                     ),
-                self.cx
-                    .row(t("notif-focus-until"))
-                    .id("notifications.focus.end")
-                    .choice(
-                        focus_options,
-                        &self.shown.focus_end,
-                        NotificationPrefs::paths().focus.end_minute,
-                        |label: String| focus_minutes(&label),
-                    ),
-                note(&t("notif-focus-caption")),
-            ]),
-        )
+            ]);
+        }
+        content
     }
 
     fn build_app_cards(&self) -> Vec<SettingsSection> {
@@ -829,27 +836,6 @@ impl NotificationsPane {
             ));
         }
         app_cards
-    }
-
-    fn build_apps_card(is_empty: bool) -> SettingsSection {
-        if is_empty {
-            card(
-                &t("notif-apps-title"),
-                rows(vec![note(&t("notif-apps-empty"))]),
-            )
-        } else {
-            card(
-                &t("notif-apps-title"),
-                rows(vec![note(&t("notif-apps-caption"))]),
-            )
-        }
-    }
-
-    fn build_explainer_card() -> SettingsSection {
-        card(
-            &t("notif-how-title"),
-            rows(vec![note(&t("notif-how-caption"))]),
-        )
     }
 
     fn build_priority_contacts_card() -> SettingsSection {
