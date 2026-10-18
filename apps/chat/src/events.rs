@@ -150,6 +150,31 @@ impl ChatApp {
         handled
     }
 
+    /// Scroll what is under the pointer: the emoji grid, an open thread
+    /// (which keeps the wheel from the timeline behind it), or the timeline.
+    fn handle_wheel(&mut self, delta: &MouseScrollDelta, scale: f64) {
+        let dy = match delta {
+            MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 44.0,
+            MouseScrollDelta::PixelDelta(p) => p.y / scale,
+        };
+        if self.emoji_open && self.emoji_grid.contains(self.last_mouse) {
+            // Clamped against the content height when painted.
+            self.emoji_scroll = (self.emoji_scroll - dy).max(0.0);
+            return;
+        }
+        if self.thread_open.is_some() && self.thread_body.contains(self.last_mouse) {
+            return;
+        }
+        self.scroll += dy;
+        // A positive offset moves away from the live edge. Do this at event
+        // time rather than waiting for paint: `sync` may run between the
+        // input event and the next frame, and must not acknowledge messages
+        // the reader has just scrolled away from.
+        if dy > 0.0 {
+            self.timeline_at_end = false;
+        }
+    }
+
     pub(crate) fn dispatch_event(
         &mut self,
         event: &WindowEvent,
@@ -199,30 +224,7 @@ impl ChatApp {
                 *handled = true;
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 44.0,
-                    MouseScrollDelta::PixelDelta(p) => p.y / scale,
-                };
-                if self.emoji_open && self.emoji_grid.contains(self.last_mouse) {
-                    // Clamped against the content height when painted.
-                    self.emoji_scroll = (self.emoji_scroll - dy).max(0.0);
-                    *handled = true;
-                    return false;
-                }
-                if self.thread_open.is_some() && self.thread_body.contains(self.last_mouse) {
-                    // At a thread boundary, do not bubble wheel input to the
-                    // hidden/main timeline behind the detail view.
-                    *handled = true;
-                    return false;
-                }
-                self.scroll += dy;
-                // A positive offset moves away from the live edge. Do this at
-                // event time rather than waiting for paint: `sync` may run
-                // between the input event and the next frame, and must not
-                // acknowledge messages the reader has just scrolled away from.
-                if dy > 0.0 {
-                    self.timeline_at_end = false;
-                }
+                self.handle_wheel(delta, scale);
                 *handled = true;
             }
             WindowEvent::MouseInput {
@@ -2278,14 +2280,15 @@ fn store_attachment(
     if content.read(&blob).as_deref() != Some(bytes) {
         return fail("the stored copy did not match; try again");
     }
+    let video = crate::picker::is_video_name(&name);
     AttachmentImportResult::Ready {
         token,
-        name: name.clone(),
+        name,
         blob,
         size: u64::try_from(bytes.len()).unwrap_or(crate::record::MAX_ATTACHMENT_BYTES),
         width: meta.w,
         height: meta.h,
-        video: crate::picker::is_video_name(&name),
+        video,
     }
 }
 
