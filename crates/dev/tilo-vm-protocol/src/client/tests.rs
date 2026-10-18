@@ -114,7 +114,7 @@ impl Write for Writer {
             Request::LayerUploadBinary(_) => {
                 wire.binary_requests = wire.binary_requests.saturating_add(1);
                 error = Some(
-                    json!({"code":crate::code::INVALID_PARAMS,"message":"unknown optional method","hint":"legacy upload"}),
+                    json!({"code":crate::code::INVALID_PARAMS,"message":"binary uploads are not served here","hint":"upload in chunks"}),
                 );
                 json!(null)
             }
@@ -174,7 +174,7 @@ fn upload_acknowledges_each_chunk_and_preserves_the_tail() {
     let bytes = vec![19; UPLOAD_CHUNK_BYTES * 6 + 7];
     let (mut client, wire) = client(Wire::default());
     assert_eq!(
-        client.upload_legacy(bytes.as_slice()).unwrap(),
+        client.upload_json_lines(bytes.as_slice()).unwrap(),
         "test-upload"
     );
     assert_eq!(wire.borrow().received, bytes.len() as u64);
@@ -191,7 +191,7 @@ fn upload_errors_stop_before_sending_another_chunk() {
             failure: Some(failure),
             ..Wire::default()
         });
-        let error = client.upload_legacy(bytes.as_slice()).unwrap_err();
+        let error = client.upload_json_lines(bytes.as_slice()).unwrap_err();
         match failure {
             "rpc" => assert!(matches!(error, ClientError::Rpc(_))),
             _ => assert!(matches!(error, ClientError::Protocol(_))),
@@ -201,7 +201,7 @@ fn upload_errors_stop_before_sending_another_chunk() {
         assert!(client.call(LayerList {}).unwrap().is_empty());
     }
     let (mut client, wire) = client(Wire::default());
-    client.upload_legacy(&b""[..]).unwrap();
+    client.upload_json_lines(&b""[..]).unwrap();
     assert_eq!(wire.borrow().chunks, 0);
 }
 
@@ -219,7 +219,7 @@ fn source_failure_leaves_no_pending_acknowledgment() {
     let (mut client, wire) = client(Wire::default());
     let bytes = FailingRead(Cursor::new(vec![17; UPLOAD_CHUNK_BYTES]));
     assert!(matches!(
-        client.upload_legacy(bytes),
+        client.upload_json_lines(bytes),
         Err(ClientError::Io(_))
     ));
     assert_eq!(wire.borrow().chunks, 1);
@@ -293,18 +293,6 @@ fn unusually_large_rpc_frames_are_sent_but_not_retained() {
 }
 
 #[test]
-fn binary_optional_method_falls_back_only_before_sending_bytes() {
-    let (mut client, wire) = client(Wire::default());
-    assert_eq!(
-        client.upload(&b"fallback payload"[..]).unwrap(),
-        "test-upload"
-    );
-    assert_eq!(wire.borrow().received, 16);
-    assert_eq!(wire.borrow().chunks, 1);
-    assert!(client.call(LayerList {}).unwrap().is_empty());
-}
-
-#[test]
 fn binary_partial_transport_failure_poison_prevents_framing_reuse() {
     struct PartialWriter {
         calls: usize,
@@ -363,7 +351,7 @@ fn binary_final_ack_and_authority_errors_do_not_fall_back() {
 }
 
 #[test]
-fn default_client_keeps_json_line_bridges_on_legacy_framing() {
+fn default_client_keeps_json_line_bridges_on_json_line_framing() {
     let (existing, wire) = client(Wire::default());
     let mut client = Client::new(existing.reader, existing.writer);
     assert_eq!(client.upload(&b"peer fixture"[..]).unwrap(), "test-upload");

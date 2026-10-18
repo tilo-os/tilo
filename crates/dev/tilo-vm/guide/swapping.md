@@ -38,44 +38,10 @@ defaults to the one named after your branch. Components and their scope
 come from `os/components.toml`
 (`python3 os/scripts/install-components.py --list`).
 
-## Bootstrapping an older daemon
+## A daemon at another protocol
 
-Ordinary slot, control, status and swap operations require the current protocol.
-A protocol-5 dev image can upgrade only its VM-wide daemon through its existing
-authenticated SSH route:
-
-```sh
-TILO_VM=<owned-vm> tilo-vm swap vmd --slot vm --from worktree --builder host --profile dev
-```
-
-Use `TILO_VM_CARGO` for a cargo drop-in that builds remotely, or select
-`--builder remote` with the existing architecture-specific builder configuration.
-No OS image build, raw deployment, new VM, or access-policy change is involved.
-A stopped VM may first need `tilo-vm vm start <owned-vm>`; its readiness
-handshake can report the old protocol while leaving the VM running.
-
-This exception is intentionally limited to version 5, whose hello, status,
-upload, import and layer-list schemas match the audited implementation.
-It negotiates a second version-5 hello only after the normal hello reports
-exactly version 5. It requires the standard state root, a known architecture,
-and no unrecognized capability extensions. Only unscoped storage diagnostics
-and uploaded `vmd` imports are allowed on that connection. No legacy slot,
-control, apply, cached-layer reuse, in-guest build, or arbitrary-path import
-is permitted. Unknown versions and failed SSH authentication remain errors.
-
-The assembler's content hash must match the import result. The imported
-receipt must identify `vmd`, the guest architecture, source commit, lockfile
-and toolchain. The replacement then completes a **current-protocol** handshake
-for the same root and architecture and verifies the stored layer before the
-ordinary VM-wide swap. A wrong component, missing provenance or incompatible
-replacement fails before activation; nothing falls back to applying through
-the old daemon. The run receipt records the negotiated protocol, daemon import,
-handoff and applying layer. If interrupted, inspect that receipt and rerun the
-same command; importing alone does not activate a layer.
-
-Upgrading VM-wide services affects every slot. Bootstrap only a VM you own or
-have explicit permission to upgrade. Image-level upgrades remain
-`tilo-vm vm upgrade` (`tilo-vm guide images`).
+Every operation requires the daemon's protocol to be the client's. A device
+whose daemon speaks another one is updated with its image (`tilo-vm vm upgrade`).
 
 ## Build profile
 
