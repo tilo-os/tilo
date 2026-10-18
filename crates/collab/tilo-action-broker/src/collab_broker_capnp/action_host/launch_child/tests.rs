@@ -19,6 +19,10 @@ fn app() -> LaunchableApplication {
 }
 
 impl LauncherServices for Launcher {
+    fn attest_process(&self, _: u32, _: &str, _: &str) -> bool {
+        false
+    }
+
     fn applications(&self) -> Vec<LaunchableApplication> {
         vec![app()]
     }

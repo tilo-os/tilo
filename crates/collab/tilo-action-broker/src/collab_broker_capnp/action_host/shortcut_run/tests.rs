@@ -1,6 +1,6 @@
 use super::*;
+use crate::collab_broker_capnp::invocation_journal::{InvocationJournal, InvocationKey};
 use crate::collab_broker_capnp::{BrokerChannels, FanoutState, PeerPublisher};
-use crate::invocation_journal::{InvocationJournal, InvocationKey};
 use crate::services::{
     HostServices, LocalPersonServices, ShortcutLibraryRequest, ShortcutLibraryServices,
 };
