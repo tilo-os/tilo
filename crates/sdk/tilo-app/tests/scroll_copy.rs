@@ -33,7 +33,7 @@ use tilo_app::offscreen::OffscreenRenderer;
 use tilo_app::prelude::*;
 use tilo_app::theme::Theme;
 use tilo_app::winit::dpi::{PhysicalPosition, PhysicalSize};
-use tilo_app::winit::event::{DeviceId, MouseScrollDelta, TouchPhase};
+use tilo_app::winit::event::{DeviceId, ElementState, MouseButton, MouseScrollDelta, TouchPhase};
 use tilo_app::winit::window::CursorIcon;
 
 static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
@@ -464,4 +464,107 @@ fn a_host_that_does_not_copy_repaints_the_view_and_matches() {
     .unwrap();
     eprintln!("without copies: {run:?}");
     assert_eq!(run.copied_frames, 0, "{run:?}");
+}
+
+/// What each step left the History bar saying.
+type Statuses = Vec<(&'static str, Option<String>)>;
+/// The frames repainted whole, by step, with why.
+type Whole = Vec<(&'static str, Option<&'static str>)>;
+
+/// Each of `events` given to the window, then three frames drawn as a
+/// copying window draws them; what each step left the History bar saying,
+/// and the frames repainted whole, with why.
+fn without_edits(
+    app: &mut tilo_app::App,
+    surface: &Surface,
+    events: Vec<(&'static str, WindowEvent)>,
+) -> (Statuses, Whole) {
+    let mut damage = SurfaceDamage::copying();
+    let mut scene = Scene::new();
+    for _ in 0..5 {
+        scene.reset();
+        app.surface_frame_with_damage(surface, &mut scene, &mut damage);
+    }
+    let _ = damage.take_copying();
+    let mut statuses = Vec::new();
+    let mut whole = Vec::new();
+    for (what, event) in events {
+        app.surface_input(surface, event, false);
+        for _ in 0..3 {
+            scene.reset();
+            app.surface_frame_with_damage(surface, &mut scene, &mut damage);
+            if damage.take_copying().is_none() {
+                whole.push((what, damage.repainted()));
+            }
+        }
+        statuses.push((
+            what,
+            app.document_sync_status().map(std::borrow::Cow::into_owned),
+        ));
+    }
+    (statuses, whole)
+}
+
+// USER REQUIREMENT (2026-10-19, ledger "Saving"): "Autosave is silent; show
+// something only when a save stalls or fails"
+#[test]
+fn scrolling_selecting_and_hovering_change_no_history_chrome_or_repaint() {
+    let at = |x: f64, y: f64| PhysicalPosition::new(x, y);
+    let moved = |x: f64, y: f64| WindowEvent::CursorMoved {
+        device_id: DeviceId::dummy(),
+        position: at(x, y),
+    };
+    let button = |state: ElementState| WindowEvent::MouseInput {
+        device_id: DeviceId::dummy(),
+        state,
+        button: MouseButton::Left,
+    };
+    let wheel = |dy: f64| WindowEvent::MouseWheel {
+        device_id: DeviceId::dummy(),
+        delta: MouseScrollDelta::PixelDelta(at(0.0, dy)),
+        phase: TouchPhase::Moved,
+    };
+    let (before, (statuses, whole)) = drive_live_window::<Window, _>(|app| {
+        app.set_theme(Theme::dark());
+        app.init_layout();
+        let surface = Surface {
+            scale: 1.0,
+            copying: true,
+            peer: None,
+        };
+        let before = app.document_sync_status().map(std::borrow::Cow::into_owned);
+        let seen = without_edits(
+            app,
+            &surface,
+            vec![
+                // Hovering over the list, then over another row.
+                ("hover", moved(300.0, 400.0)),
+                ("hover", moved(320.0, 440.0)),
+                // Scrolling down, and back up.
+                ("scroll", wheel(-40.0)),
+                ("scroll", wheel(-40.0)),
+                ("scroll", wheel(40.0)),
+                // Selecting across a task's title, away from its checkbox.
+                ("select", moved(40.0, 400.0)),
+                ("select", button(ElementState::Pressed)),
+                ("select", moved(200.0, 400.0)),
+                ("select", button(ElementState::Released)),
+                ("hover", moved(300.0, 300.0)),
+            ],
+        );
+        (before, seen)
+    })
+    .unwrap();
+    assert_eq!(before, None, "an untouched document says nothing");
+    for (what, status) in &statuses {
+        assert_eq!(
+            status, &before,
+            "{what} edits nothing, so History must not change ({statuses:?})"
+        );
+    }
+    assert!(
+        whole.is_empty(),
+        "input that edits nothing repaints only what it changed, never the window \
+         whole ({whole:?})"
+    );
 }

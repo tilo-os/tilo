@@ -132,6 +132,21 @@ thread_local! {
     static INPUT_ROUTES: RefCell<Vec<InputRoute>> = const { RefCell::new(Vec::new()) };
     static ACTIVE: RefCell<Option<Active>> = const { RefCell::new(None) };
     static PUBLISHED: RefCell<Option<PublishedInvocation>> = const { RefCell::new(None) };
+    static UNSIGNED: RefCell<Option<UnsignedEdits>> = const { RefCell::new(None) };
+}
+
+/// Set when local input actually changed a document while no authenticated
+/// publication could observe it. Input that edits nothing (scroll, selection,
+/// hover, focus) never sets it: unsigned history is a fact about recorded
+/// edits, not about input.
+#[derive(Clone, Default)]
+pub(crate) struct UnsignedEdits(Rc<std::cell::Cell<bool>>);
+
+impl UnsignedEdits {
+    /// Whether an edit was recorded since the last call; clears it.
+    pub(crate) fn take(&self) -> bool {
+        self.0.replace(false)
+    }
 }
 
 /// Nestable scope guard. Not transferable to another thread.
@@ -139,12 +154,14 @@ pub struct Scope {
     previous: Option<Active>,
     published: Option<PublishedInvocation>,
     routes: Vec<InputRoute>,
+    unsigned: Option<UnsignedEdits>,
 }
 impl Drop for Scope {
     fn drop(&mut self) {
         ACTIVE.with(|active| *active.borrow_mut() = self.previous.take());
         PUBLISHED.with(|published| *published.borrow_mut() = self.published.take());
         INPUT_ROUTES.with(|routes| *routes.borrow_mut() = std::mem::take(&mut self.routes));
+        UNSIGNED.with(|unsigned| *unsigned.borrow_mut() = self.unsigned.take());
     }
 }
 
@@ -173,6 +190,31 @@ pub(crate) fn enter_input(routes: Vec<InputRoute>) -> Scope {
     scope
 }
 
+/// Local input with no authenticated publication to observe it. Editing
+/// proceeds unobserved; `edits` learns only of input that changed a document.
+pub(crate) fn enter_unsigned_input(edits: UnsignedEdits) -> Scope {
+    let scope = suspend();
+    UNSIGNED.with(|unsigned| *unsigned.borrow_mut() = Some(edits));
+    scope
+}
+
+/// The unsigned input scope a local typed execution runs in, if any.
+/// Continuations and external content are not this person's edits.
+pub(crate) fn unsigned_input(context: Option<&ActionContext>) -> Option<UnsignedEdits> {
+    if context.is_some_and(|context| {
+        context.source_invocation.is_some()
+            || matches!(context.change, tilo_actions::ChangeKind::External)
+    }) {
+        return None;
+    }
+    UNSIGNED.with_borrow(Option::clone)
+}
+
+/// A typed execution under [`unsigned_input`] changed its document.
+pub(crate) fn note_unsigned_edit(edits: &UnsignedEdits) {
+    edits.0.set(true);
+}
+
 impl Queue {
     pub fn new() -> Self {
         Self::default()
@@ -191,10 +233,12 @@ impl Queue {
         });
         let published = PUBLISHED.with(|published| published.take());
         let routes = INPUT_ROUTES.with(|routes| routes.take());
+        let unsigned = UNSIGNED.with(|unsigned| unsigned.take());
         Scope {
             previous,
             published,
             routes,
+            unsigned,
         }
     }
 
@@ -267,10 +311,12 @@ pub fn suspend() -> Scope {
     let previous = ACTIVE.with(|active| active.take());
     let published = PUBLISHED.with(|published| published.take());
     let routes = INPUT_ROUTES.with(|routes| routes.take());
+    let unsigned = UNSIGNED.with(|unsigned| unsigned.take());
     Scope {
         previous,
         published,
         routes,
+        unsigned,
     }
 }
 
