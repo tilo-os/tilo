@@ -257,7 +257,12 @@ containerfile="$repo/os/Containerfile"
 # verify-no-python-runtime.sh is copied in for the rootfs's final checks.
 # The community workspace's vendor default (/usr/share/tilo/community.toml),
 # which names the site a computer is in by default, is a deliberate addition.
-expected_contract=5b38cfd346cedfff89c98654689de89a044d790bcb627df9222f63bd42df30a6
+# The image is built as layers (os/image/layers.toml), so the rootfs is every
+# layer stage's copies (CONTAINERFILE_ROOTFS_STAGES), and the side builds
+# (bootc, doubletake, joycond, xwayland-satellite) reach desktop-binaries
+# through image-tool-stages, which only gathers them: every source file and
+# destination is the one it was.
+expected_contract=b5e4109cd36ad815a656d7f6c7c45a47b7033376dc2d2df783b57003ecbf6ffa
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

@@ -25,11 +25,18 @@ containerfile_instructions() {
 #   source-stage<TAB>source<TAB>destination
 # The `context` source stage denotes the build context. Grouped COPY destinations
 # must be directories; Docker installs each source under its basename there.
+#
+# `rootfs` names the image's root filesystem: every stage that builds one of its
+# layers, as os/image/layers.toml stacks them (packages, kernel, system, trust,
+# binaries, the derived rootfs), which os/Containerfile builds one over the other.
+CONTAINERFILE_ROOTFS_STAGES="packages kernel-installed system trust binaries-out binaries rootfs-base rootfs"
 containerfile_copy_contract() {
   file="$1" wanted_stage="${2:-}"
-  containerfile_instructions "$file" | awk -v wanted="$wanted_stage" '
+  containerfile_instructions "$file" | awk -v wanted="$wanted_stage" -v rootfs="$CONTAINERFILE_ROOTFS_STAGES" '
+    BEGIN { n = split(rootfs, list, " "); for (i = 1; i <= n; i++) layer[list[i]] = 1 }
     $1 == "FROM" { current = $NF; next }
-    $1 == "COPY" && (wanted == "" || current == wanted || current == wanted "-base") {
+    $1 == "COPY" && (wanted == "" || current == wanted || current == wanted "-base" ||
+                     (wanted == "rootfs" && current in layer)) {
       stage = "context"; first = 2
       while (first <= NF && substr($first, 1, 2) == "--") {
         if ($first ~ /^--from=/) { stage = $first; sub(/^--from=/, "", stage) }
@@ -96,6 +103,9 @@ containerfile_expanded_rootfs_copy_contract() {
         desktop-binaries:/:/|remote-capture-files:/:/|rollback-files:/:/|recovery-files:/:/|extension-files:/:/)
           containerfile_copy_contract "$file" "$stage"
           ;;
+        # The binaries layer, made over nothing and put over the trust layer whole: its
+        # rows are the rootfs's already (CONTAINERFILE_ROOTFS_STAGES).
+        binaries-out:/:/) ;;
         *) printf '%s\t%s\t%s\n' "$stage" "$source" "$destination" ;;
       esac
     done
