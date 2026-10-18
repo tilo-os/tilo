@@ -100,8 +100,8 @@ fn authorized_browser_directory_waits_for_primary_and_person_documents() {
         .unwrap();
     assert_eq!(
         embedded.component_root_mut().unwrap().record_owners().len(),
-        2,
-        "the original Browser must retain its history and address-book owners"
+        3,
+        "the original Browser must retain its history, address-book and imported-bookmarks owners"
     );
     let provider = wait_native_directory(
         &mut shown,

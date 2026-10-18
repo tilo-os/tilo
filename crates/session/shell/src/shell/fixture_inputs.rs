@@ -123,7 +123,7 @@ mod tests {
             .unwrap();
             assert_eq!(
                 frame.host().fixture_provider_ids(),
-                vec!["actions", "records", "file-picker"]
+                vec!["actions", "records", "authentication-prompts", "file-picker"]
             );
             assert_eq!(frame.chrome().active_local_user(), "shell-fixture");
             assert!(!frame.paint().encoding().is_empty());
@@ -268,7 +268,7 @@ mod tests {
             assert!(frame.chrome().records().open_records().is_empty());
             assert_eq!(
                 frame.host().fixture_provider_ids(),
-                vec!["actions", "records", "file-picker"]
+                vec!["actions", "records", "authentication-prompts", "file-picker"]
             );
             assert!(!frame.paint().encoding().is_empty());
             click(&mut frame, "topbar_tray_pill", &mut document);
@@ -335,7 +335,7 @@ mod tests {
             assert_rebuilt_files(&mut frame, strip, files, &child, &document);
             assert_eq!(
                 frame.host().fixture_provider_ids(),
-                vec!["actions", "records", "file-picker"]
+                vec!["actions", "records", "authentication-prompts", "file-picker"]
             );
             assert_eq!(guard.attempts(), 0);
         }

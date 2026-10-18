@@ -1012,14 +1012,17 @@ fn keyboard_and_swipe_stepping_walks_the_strip_without_wrapping() {
     }
 
     // Phase `ctrl_tab_cycles_tabs_inside_the_focused_group`.
+    // Ctrl+Tab belongs to the focused app first (77e9eebc32); the desktop's
+    // own spelling is Super+Ctrl+Tab.
     {
         let mut h = Harness::new();
         assert_eq!(h.active_window(), (h.groups[0], h.tabs[0][0]));
 
-        h.key(Key::Named(NamedKey::Tab), ModifiersState::CONTROL);
+        let desktop_tab = ModifiersState::SUPER | ModifiersState::CONTROL;
+        h.key(Key::Named(NamedKey::Tab), desktop_tab);
         assert_eq!(h.active_window(), (h.groups[0], h.tabs[0][1]));
 
-        h.key(Key::Named(NamedKey::Tab), ModifiersState::CONTROL);
+        h.key(Key::Named(NamedKey::Tab), desktop_tab);
         assert_eq!(
             h.active_window(),
             (h.groups[0], h.tabs[0][0]),
