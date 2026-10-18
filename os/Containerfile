@@ -867,6 +867,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           target/release/tilo-windows-runtime \
           target/release/tilo-account-credential \
           target/release/tilo-ntfs-mount \
+          target/release/tilo-net-answers \
           /out/ \
     && ln -s app /out/store \
     && ln -s tilo /out/system \
