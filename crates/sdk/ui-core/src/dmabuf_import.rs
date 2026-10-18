@@ -49,11 +49,12 @@ use vello::wgpu;
 use vello::wgpu::hal::Device as _;
 use vello::wgpu::hal::vulkan;
 
+pub use media::dmabuf::Colorimetry;
 use media::dmabuf::{
-    Colorimetry, DRM_FORMAT_ABGR8888, DRM_FORMAT_ABGR2101010, DRM_FORMAT_ABGR16161616F,
-    DRM_FORMAT_ARGB8888, DRM_FORMAT_MOD_INVALID, DRM_FORMAT_MOD_LINEAR, DRM_FORMAT_NV12,
-    DRM_FORMAT_P010, DRM_FORMAT_XBGR8888, DRM_FORMAT_XBGR2101010, DRM_FORMAT_XBGR16161616F,
-    DRM_FORMAT_XRGB8888, DRM_FORMAT_YUYV, fourcc_str,
+    DRM_FORMAT_ABGR8888, DRM_FORMAT_ABGR2101010, DRM_FORMAT_ABGR16161616F, DRM_FORMAT_ARGB8888,
+    DRM_FORMAT_MOD_INVALID, DRM_FORMAT_MOD_LINEAR, DRM_FORMAT_NV12, DRM_FORMAT_P010,
+    DRM_FORMAT_XBGR8888, DRM_FORMAT_XBGR2101010, DRM_FORMAT_XBGR16161616F, DRM_FORMAT_XRGB8888,
+    DRM_FORMAT_YUYV, fourcc_str,
 };
 
 /// One plane of a buffer being imported, borrowed for the call.
@@ -338,6 +339,93 @@ pub fn import_render_target(
     })
 }
 
+/// Import the one linear plane of an `ABGR8888`/`XBGR8888` dma-buf as a
+/// texture a frame is copied into (`COPY_DST`).
+///
+/// The render service draws each app's frame into a retained `Rgba8Unorm`
+/// target and copies what changed into the buffer the app then attaches to
+/// its surface. These formats store R, G, B, A bytes in memory order, which is
+/// `Rgba8Unorm`, so that copy is a plain `copy_texture_to_texture` with no
+/// format conversion, and the compositor composites or scans the buffer out
+/// as it would any client's.
+///
+/// With `VK_EXT_image_drm_format_modifier` the producer's exact row pitch is
+/// used (a GBM buffer's pitch is aligned for scanout); without it the
+/// driver's own linear pitch has to agree.
+///
+/// # Errors
+///
+/// As [`import_render_target`], for another format or a tiled layout.
+pub fn import_copy_target(
+    device: &wgpu::Device,
+    image: &DmabufRef<'_>,
+) -> Result<ImportedRenderTarget, ImportError> {
+    if !matches!(image.fourcc, DRM_FORMAT_ABGR8888 | DRM_FORMAT_XBGR8888) {
+        return Err(ImportError::UnsupportedFormat {
+            fourcc: image.fourcc,
+        });
+    }
+    let (format, wgpu_format, texel_bytes) = (
+        vk::Format::R8G8B8A8_UNORM,
+        wgpu::TextureFormat::Rgba8Unorm,
+        4,
+    );
+    check_single_linear_plane(image, texel_bytes)?;
+    let plane = image.planes[0];
+    let spec = PlaneSpec {
+        format,
+        wgpu_format,
+        width: image.width,
+        height: image.height,
+        texel_bytes,
+    };
+    let hal = {
+        // Safety: the guard only lends this device's Vulkan handles. The raw
+        // texture is wrapped by the same wgpu device immediately afterward.
+        let guard = unsafe { device.as_hal::<vulkan::Api>() }.ok_or(ImportError::NotVulkan)?;
+        let hal_device: &vulkan::Device = &guard;
+        unsafe {
+            VulkanImporter::new(hal_device).import_plane_with_usage(
+                &plane,
+                &spec,
+                0,
+                PlaneUsage {
+                    modifier: Some(image.modifier),
+                    vk: vk::ImageUsageFlags::TRANSFER_DST,
+                    hal: vello::wgpu::wgt::TextureUses::COPY_DST,
+                    label: "dmabuf-copy-target",
+                },
+            )
+        }?
+    };
+    let desc = wgpu::TextureDescriptor {
+        label: Some("dmabuf-copy-target"),
+        size: wgpu::Extent3d {
+            width: image.width,
+            height: image.height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu_format,
+        usage: wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    };
+    // Safety: `hal` was created from `device`, with a descriptor exactly
+    // matching `desc`, and ownership is transferred into this texture.
+    let texture = unsafe { device.create_texture_from_hal::<vulkan::Api>(hal, &desc) };
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    Ok(ImportedRenderTarget {
+        texture,
+        view,
+        format: wgpu_format,
+        width: image.width,
+        height: image.height,
+        stride: plane.stride,
+    })
+}
+
 fn validate_render_target(
     image: &DmabufRef<'_>,
 ) -> Result<(vk::Format, wgpu::TextureFormat, u32), ImportError> {
@@ -346,6 +434,12 @@ fn validate_render_target(
             fourcc: image.fourcc,
         });
     };
+    check_single_linear_plane(image, texel_bytes)?;
+    Ok((format, wgpu_format, texel_bytes))
+}
+
+/// One linear plane at offset zero whose pitch holds a row.
+fn check_single_linear_plane(image: &DmabufRef<'_>, texel_bytes: u32) -> Result<(), ImportError> {
     if !is_linear(image.modifier) {
         return Err(ImportError::UnsupportedModifier {
             modifier: image.modifier,
@@ -382,8 +476,7 @@ fn validate_render_target(
             driver: u64::from(minimum_stride),
         });
     }
-
-    Ok((format, wgpu_format, texel_bytes))
+    Ok(())
 }
 
 /// The Vulkan format and extent one plane of `fourcc` is imported as.
