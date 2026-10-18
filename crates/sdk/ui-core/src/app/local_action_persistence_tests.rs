@@ -137,6 +137,15 @@ fn private_checkpoints_follow_the_executed_child_owner_not_the_primary_document(
                 inner: CapturePeer(sent.clone()),
                 custody,
             });
+        assert!(
+            fixture
+                .app
+                .local_document_action_checkpoint(&route)
+                .unwrap()
+                .is_empty(),
+            "mismatched sessions must not expose private intents or receipts"
+        );
+        assert!(fixture.app.restore_local_input_checkpoint(&route).is_err());
         fixture.app.local_input_capture.retry_now();
         fixture.app.drain_local_input_capture();
         assert!(
