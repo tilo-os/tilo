@@ -40,6 +40,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use accounts::person::PersonAccounts;
 use tilo_content::ContentStore;
+use ui::TextRole;
 use ui::framework::PersonRecord;
 use ui::icons::Icon;
 use ui::portal::{FileFilter, OpenFileChannel, OpenFileOutcome, PickRequest};
@@ -52,7 +53,6 @@ use ui::widget::{
     Button, ContextMenu, EmptyState, MenuItem, ModalDialog, NavPane, NavShell, SidebarPlacement,
     TaffyTreeExt, Text, Widget,
 };
-use ui::TextRole;
 
 use crate::account::{Account, AccountStore};
 use crate::actions::{DraftData, Outgoing, ServerUpdate};
@@ -638,7 +638,10 @@ impl MailApp {
         let persist = profile_config_root(storage)
             .map_or(AccountsPersist::Disabled, AccountsPersist::Profile);
         let accounts = persist.load();
-        let shared = MailState::shared(MailState::new_live(accounts, crate::avatars::Avatars::new()));
+        let shared = MailState::shared(MailState::new_live(
+            accounts,
+            crate::avatars::Avatars::new(),
+        ));
         let content = content.unwrap_or_else(ContentStore::memory);
         let waker: Arc<std::sync::Mutex<Option<ui::WakeHandle>>> = Arc::default();
         let (tx, rx) = crate::engine::spawn(content.clone(), wake_through(&waker));
@@ -672,7 +675,10 @@ impl MailApp {
     /// A screenshot: the scenario's fixture mailbox and accounts, no engine,
     /// a pinned clock and nothing written outside the document.
     pub(crate) fn for_capture(fixture: &crate::sample::MailFixture) -> Self {
-        let shared = MailState::shared(MailState::from_fixture(fixture, crate::avatars::Avatars::new()));
+        let shared = MailState::shared(MailState::from_fixture(
+            fixture,
+            crate::avatars::Avatars::new(),
+        ));
         Self::assemble(
             shared,
             ContentStore::memory(),
@@ -7665,14 +7671,9 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             };
             let before = hosted.with_surface(snapshot).unwrap();
             let heads_before = hosted.read_document(|doc| doc.clone().get_heads());
-            let instance_id = hosted.harness().component_instance_id().unwrap();
-            let legacy = ui::bound_dispatch::BoundActionAddress {
-                instance_id,
-                address: tilo_actions::ActionAddress::new("mail.mailbox", "mail.operation"),
-            };
             let error = hosted
                 .harness()
-                .invoke_bound_action(&legacy, &serde_json::Map::new())
+                .call_on("mail.mailbox", "mail.operation", serde_json::json!({}))
                 .expect_err("the removed protocol is not an admitted mutable operation");
             assert!(
                 !error.to_string().is_empty(),

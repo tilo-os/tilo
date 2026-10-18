@@ -181,6 +181,14 @@ pub trait Effect: Sized + 'static {
         item_specs(Self::declarations(), Self::OPERATION, field, item)
     }
 
+    /// This effect as the published resource `resource` offers it (the
+    /// record, or a child or live row it is bound on, by its published id):
+    /// what a search hit invokes or a caller addresses through the host's
+    /// door. Its id comes from the effect itself.
+    fn address_on(&self, resource: impl Into<String>) -> tilo_actions::ActionAddress {
+        tilo_actions::ActionAddress::new(resource, self.id())
+    }
+
     /// Decode one invocation's payload, as the operation's specs encode it.
     ///
     /// # Errors

@@ -655,6 +655,19 @@ impl Resource {
         self.children.extend(children);
         self
     }
+
+    /// The address of the action `action` this resource publishes, or `None`
+    /// when it publishes none by that id. A caller holding a published
+    /// resource (a survey's, a search hit's, a bound tree's) addresses its
+    /// actions from it rather than writing an address of its own, so an
+    /// action the resource stopped publishing fails here, at the caller.
+    #[must_use]
+    pub fn action_address(&self, action: &str) -> Option<ActionAddress> {
+        self.actions
+            .iter()
+            .any(|spec| spec.id == action)
+            .then(|| ActionAddress::new(self.id.as_str(), action))
+    }
 }
 
 /// What kind of thing an action's one text argument names. Words are

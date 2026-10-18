@@ -11,16 +11,15 @@ pub(crate) const READER: RegisteredSemanticReader =
 
 pub(crate) fn spec(id: &str) -> ActionSpec {
     let id = id.to_owned();
-    super::receipt_read::read_spec(
-        (
-            "read-feedback-status",
-            "Read feedback status",
-            "Read this report's recent attributed triage history",
-        ),
+    ui::semantic_document_read::read_action(
+        ui::semantic_document_read::ReadName {
+            id: "read-feedback-status",
+            label: "Read feedback status",
+            description: "Read this report's recent attributed triage history",
+        },
         OPERATION,
-        Vec::new(),
         schema,
-        move |_| super::receipt_read::Request {
+        move |_: ui::semantic_document_read::NoReadParams| super::receipt_read::Request {
             id: id.clone(),
             expected_author: None,
         },

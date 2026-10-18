@@ -3023,15 +3023,14 @@ mod tests {
 
     #[test]
     fn committed_text_cache_tracks_pending_remote_and_rebound_content() {
-        use automerge::transaction::Transactable;
         let (mut view, mut doc) = bound_editor("base");
         doc.commit();
         view.sync(&doc, &automerge::ROOT);
         let mut left = doc.clone();
         let mut right = doc.clone();
         let text = view.text_obj.clone().unwrap();
-        left.splice_text(&text, 0, 4, "left").unwrap();
-        right.splice_text(&text, 0, 4, "else").unwrap();
+        EditorDoc::splice(&mut left, &text, 0, 4, "left");
+        EditorDoc::splice(&mut right, &text, 0, 4, "else");
         assert_eq!(left.pending_ops(), right.pending_ops());
         view.sync(&left, &automerge::ROOT);
         assert_eq!(view.text_for_test(), "left");
@@ -3046,10 +3045,7 @@ mod tests {
             "base",
             "restoring earlier heads refreshes text"
         );
-        let other = doc
-            .put_object(automerge::ROOT, "other", automerge::ObjType::Text)
-            .unwrap();
-        doc.splice_text(&other, 0, 0, "another buffer").unwrap();
+        let other = EditorDoc::ensure_buffer_key(&mut doc, "other", "another buffer").unwrap();
         doc.commit();
         view.bind(other, Language::PlainText);
         view.sync(&doc, &automerge::ROOT);
@@ -3131,7 +3127,6 @@ mod tests {
     #[test]
     fn recent_buffer_projections_restore_viewports_and_follow_changed_source_heads() {
         use automerge::ReadDoc;
-        use automerge::transaction::Transactable;
         use std::fmt::Write as _;
         let mut source = String::new();
         for line in 0..120 {
@@ -3139,10 +3134,7 @@ mod tests {
         }
         let (mut view, mut doc) = bound_editor(&source);
         let first = view.text_obj.clone().unwrap();
-        let second = doc
-            .put_object(automerge::ROOT, "second", automerge::ObjType::Text)
-            .unwrap();
-        doc.splice_text(&second, 0, 0, &source).unwrap();
+        let second = EditorDoc::ensure_buffer_key(&mut doc, "second", &source).unwrap();
         doc.commit();
         view.sync(&doc, &automerge::ROOT);
         view.carets = vec![Caret::at(80, 3)];
@@ -3171,7 +3163,7 @@ mod tests {
         view.sync(&doc, &automerge::ROOT);
         assert_eq!(view.primary_caret(), (90, 4));
         assert_eq!(view.native_scroll_offsets().1.to_bits(), 70.0_f64.to_bits());
-        doc.splice_text(&first, 0, 0, "remote\n").unwrap();
+        EditorDoc::splice(&mut doc, &first, 0, 0, "remote\n");
         doc.commit();
         view.bind(first.clone(), Language::Rust);
         view.sync(&doc, &automerge::ROOT);
@@ -3182,14 +3174,9 @@ mod tests {
         );
         assert!(!Arc::ptr_eq(&view.lines, &cached_lines));
         for number in 0..3 {
-            let object = doc
-                .put_object(
-                    automerge::ROOT,
-                    format!("other{number}"),
-                    automerge::ObjType::Text,
-                )
-                .unwrap();
-            doc.splice_text(&object, 0, 0, "new buffer").unwrap();
+            let object =
+                EditorDoc::ensure_buffer_key(&mut doc, &format!("other{number}"), "new buffer")
+                    .unwrap();
             doc.commit();
             view.bind(object, Language::Rust);
             view.sync(&doc, &automerge::ROOT);

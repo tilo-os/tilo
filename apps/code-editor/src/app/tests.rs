@@ -103,12 +103,8 @@ fn navigation_and_result_changes_reuse_symbols_but_pending_forks_do_not() {
         let object = EditorDoc::buffer_text_key(doc, &key).expect("authoritative text");
         let mut first = doc.doc().clone();
         let mut second = doc.doc().clone();
-        first
-            .splice_text(&object, 0, 0, "fn pending_first() {}\n")
-            .unwrap();
-        second
-            .splice_text(&object, 0, 0, "fn pending_other() {}\n")
-            .unwrap();
+        EditorDoc::splice(&mut first, &object, 0, 0, "fn pending_first() {}\n");
+        EditorDoc::splice(&mut second, &object, 0, 0, "fn pending_other() {}\n");
         assert_eq!(first.pending_ops(), second.pending_ops());
         assert!(first.pending_ops() > 0);
         assert_eq!(first.committed_heads(), second.committed_heads());
@@ -521,10 +517,8 @@ fn quick_open_and_go_to_line_open_the_host_palette() {
     assert_eq!(
         ui::host_palette::take(),
         Some(ui::host_palette::PaletteRequest::Action(
-            ui::tilo_actions::ActionAddress::new(
-                <crate::project::Project as ui::tilo_resource::Resource>::KIND,
-                "go-to-line"
-            )
+            crate::effects::CodeEditorEffect::GO_TO_LINE
+                .on(<crate::project::Project as ui::tilo_resource::Resource>::KIND)
         )),
         "go to line asks for its line on the published effect"
     );

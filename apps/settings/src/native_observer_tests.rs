@@ -126,11 +126,17 @@ fn native_observer_tracks_search_without_committing_pending_changes() {
 
     // Case `native_observer_does_not_commit_original_pending_changes`.
     {
-        use automerge::transaction::Transactable;
         let config = crate::prefs::test_env::ScratchConfig::new();
         let app = config.app();
         let mut doc = AutoCommit::new();
-        doc.put(root(), "diagnostic_test", "pending").unwrap();
+        // A change made and not yet committed, as a field write leaves one.
+        ui::tilo_resource::write_key(
+            &mut doc,
+            &root(),
+            "diagnostic_test",
+            &ui::tilo_resource::Atom("pending".into()),
+        )
+        .unwrap();
         let debug_before = format!("{doc:?}");
         let pending = doc.pending_ops();
         let a = app.native_input_snapshot(&doc, &root()).unwrap();

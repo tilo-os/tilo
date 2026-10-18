@@ -138,10 +138,9 @@ fn replicas_converge_on_one_pane() {
 
 #[test]
 fn a_session_nested_in_another_record_stays_under_its_object() {
-    use automerge::transaction::Transactable as _;
     let mut doc = Doc::new();
-    let panel = doc
-        .put_object(automerge::ROOT, "terminal_panel", automerge::ObjType::Map)
+    let panel = ui::tilo_resource::Slot::Key(&automerge::ROOT, "terminal_panel")
+        .object(&mut doc, automerge::ObjType::Map)
         .unwrap();
     let pane = uuid::Uuid::new_v4().to_string();
     let action = Terminal::CLAIM_PANE.with(pane.clone()).build(0).unwrap();

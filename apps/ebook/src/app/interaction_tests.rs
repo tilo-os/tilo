@@ -4720,14 +4720,9 @@ fn comments_are_added_edited_and_deleted_through_the_overlay() {
                 Arc::new(TestLibrary::read_library_entries(&doc)),
                 1,
             );
-            let comment = ui::search::SearchProvider::resolve_action_resource(
-                &provider,
-                &tilo_actions::ActionAddress::new(
-                    crate::resource::mark_place_resource(&cm, true),
-                    "open",
-                ),
-            )
-            .expect("exact comment resource");
+            let comment = provider
+                .resolve(&crate::resource::mark_place_resource(&cm, true))
+                .expect("exact comment resource");
             let spec = comment
                 .actions
                 .iter()

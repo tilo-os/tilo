@@ -5,7 +5,6 @@ use ui::application::{
     RestoreInput,
 };
 use ui::application_view::InstanceViewStore;
-use ui::bound_dispatch::BoundActionAddress;
 use ui::headless::FrameHarness;
 use ui::permissions::{PermissionContext, Role, UserId};
 use ui::portable_storage::PortableStorage;
@@ -154,18 +153,7 @@ fn invoke(
     action: &str,
     arguments: serde_json::Value,
 ) -> Result<(), tilo_actions::DoorError> {
-    let address = BoundActionAddress {
-        instance_id: driver.component_instance_id().expect("component"),
-        address: tilo_actions::ActionAddress::new(resource, action),
-    };
-    let serde_json::Value::Object(arguments) = arguments else {
-        return Err(tilo_actions::DoorError::InvalidArguments(
-            "arguments are an object".into(),
-        ));
-    };
-    driver.invoke_bound_action(&address, &arguments)?;
-    driver.relayout();
-    Ok(())
+    driver.call_on(resource, action, arguments).map(drop)
 }
 
 /// The library resource, which every edit is published on.

@@ -156,7 +156,7 @@ fn canonical_chat_repaints_only_for_document_changes_and_consumed_input() {
         "unconsumed pointer motion must not repaint"
     );
 
-    doc.put(ROOT, "remote-change", "newer").unwrap();
+    remote_change(&mut doc, "remote-change", "newer");
     doc.commit();
     app.sync(&doc, &ROOT);
     assert!(app.needs_redraw(), "a document change repaints");
@@ -192,7 +192,7 @@ fn component_local_view_restores_presentation_without_reverting_document() {
         .capture_application_view()
         .unwrap()
         .expect("Chat local view");
-    doc.put(ROOT, "remote-change", "newer").unwrap();
+    remote_change(&mut doc, "remote-change", "newer");
     doc.commit();
     let before = doc.base_heads();
     let mut restored = projection(&doc, identity);
@@ -217,7 +217,7 @@ fn canonical_idle_projection_does_not_request_perpetual_frames() {
         "idle Chat must not keep requesting frames"
     );
     assert!(!app.needs_redraw());
-    doc.put(ROOT, "remote-change", "newer").unwrap();
+    remote_change(&mut doc, "remote-change", "newer");
     doc.commit();
     app.sync(&doc, &ROOT);
     assert!(
@@ -540,7 +540,9 @@ fn two_real_components_open_the_existing_recordless_chat_without_mutation() {
     let mut doc = AutoCommit::new();
     let identity = LocalIdentity::demo();
     // Existing app-state document envelope; opening it must not migrate or restamp.
-    doc.put(ROOT, "tilo:schema_version", 1u64).unwrap();
+    ui::tilo_resource::Slot::Key(&ROOT, "tilo:schema_version")
+        .put_scalar(&mut doc, automerge::ScalarValue::Uint(1))
+        .unwrap();
     crate::testing::starter(&mut doc, &identity.id, &identity.name, &identity.initials);
     doc.commit();
     let heads = doc.base_heads();
@@ -598,7 +600,7 @@ fn two_real_components_open_the_existing_recordless_chat_without_mutation() {
     );
     records
         .with(&checkout.id, |doc| {
-            doc.put(ROOT, "peer-message", "shared").unwrap();
+            remote_change(doc, "peer-message", "shared");
         })
         .unwrap();
     assert_eq!(components[0].record(), components[1].record());
@@ -840,15 +842,8 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
                   resource: &str,
                   action: &str,
                   args: serde_json::Value| {
-        let address = ui::bound_dispatch::BoundActionAddress {
-            instance_id: frame.component_instance_id().unwrap(),
-            address: tilo_actions::ActionAddress::new(resource, action),
-        };
-        let started = frame
-            .invoke_bound_action(&address, args.as_object().unwrap())
-            .unwrap();
         // The published tree follows the record on the next frame.
-        frame.relayout();
+        let started = frame.call_on(resource, action, args).unwrap();
         started
             .completed()
             .unwrap_or_else(|| panic!("{action} completes"))
@@ -946,17 +941,11 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
         (Some("Reading agent"), Some("agent")),
         "the reply names its agent"
     );
-    let address = ui::bound_dispatch::BoundActionAddress {
-        instance_id: visitor.component_instance_id().unwrap(),
-        address: tilo_actions::ActionAddress::new(message_item(&question), "record-work"),
-    };
-    let _ = visitor.invoke_bound_action(
-        &address,
-        serde_json::json!({"work": {"state": "refused"}})
-            .as_object()
-            .unwrap(),
+    let _ = visitor.call_on(
+        &message_item(&question),
+        crate::parts::ChatPart::RECORD_WORK.id,
+        serde_json::json!({"work": {"state": "refused"}}),
     );
-    visitor.relayout();
     agent.wait_until(ui::time::Duration::ZERO, |_| true);
     let read = invoke(&mut agent, &reply, "read-message", serde_json::json!({}))
         .value
@@ -981,10 +970,7 @@ fn browser_media_lane_routes_shared_chat_actions_and_retires_closed_owners() {
     let before = records.replication_snapshot(&checkout.id).unwrap().0;
     let address = ui::bound_dispatch::BoundActionAddress {
         instance_id: 1,
-        address: tilo_actions::ActionAddress::new(
-            crate::testing::call_row("c_lounge"),
-            "join-call",
-        ),
+        address: crate::effects::ChatEffect::JOIN_CALL.on(crate::testing::call_row("c_lounge")),
     };
     frame
         .invoke_bound_action(&address, &serde_json::Map::new())
@@ -1115,7 +1101,7 @@ fn browser_catalogue_and_media_polls_preserve_each_others_requests() {
             component_mount_in_room(&cache, "author", 1, "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71");
         let share = BoundActionAddress {
             instance_id: 1,
-            address: tilo_actions::ActionAddress::new(crate::testing::chain(), "share-resource"),
+            address: crate::parts::ChatPart::SHARE_RESOURCE.on(crate::testing::chain()),
         };
         frame
             .invoke_bound_action(
@@ -1137,17 +1123,13 @@ fn browser_catalogue_and_media_polls_preserve_each_others_requests() {
             .unwrap();
         let copy = BoundActionAddress {
             instance_id: 1,
-            address: tilo_actions::ActionAddress::new(
-                crate::testing::item("messages", &shared.id),
-                "share-link",
-            ),
+            address: ui::tilo_resource::share::share_link_address(crate::testing::item(
+                "messages", &shared.id,
+            )),
         };
         let join = BoundActionAddress {
             instance_id: 1,
-            address: tilo_actions::ActionAddress::new(
-                crate::testing::call_row("c_lounge"),
-                "join-call",
-            ),
+            address: crate::effects::ChatEffect::JOIN_CALL.on(crate::testing::call_row("c_lounge")),
         };
         frame
             .invoke_bound_action(&copy, &serde_json::Map::new())
@@ -1191,10 +1173,8 @@ fn catalogue_poll_cannot_deliver_queued_media_after_its_owner_closes() {
         .invoke_bound_action(
             &BoundActionAddress {
                 instance_id: 1,
-                address: tilo_actions::ActionAddress::new(
-                    crate::testing::call_row("c_lounge"),
-                    "join-call",
-                ),
+                address: crate::effects::ChatEffect::JOIN_CALL
+                    .on(crate::testing::call_row("c_lounge")),
             },
             &serde_json::Map::new(),
         )
@@ -1212,4 +1192,9 @@ fn catalogue_poll_cannot_deliver_queued_media_after_its_owner_closes() {
         media.iter().all(|request| request.retired),
         "queued commands cannot outlive their bound component"
     );
+}
+
+/// A change to the record from elsewhere: one field written, not committed.
+fn remote_change(doc: &mut AutoCommit, key: &str, value: &str) {
+    ui::tilo_resource::write_key(doc, &ROOT, key, &ui::tilo_resource::Atom(value.into())).unwrap();
 }

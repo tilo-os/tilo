@@ -119,7 +119,7 @@ fn semantic_read_pending_stale_and_work_exhaustion_do_not_commit() {
     let mut doc = fixture(&["a", "b"]);
     let page = read_messages(&doc, &doc.base_heads(), "one", None, limits(1)).unwrap();
     let before = doc.base_heads();
-    doc.put(ROOT, "pending", true).unwrap();
+    ui::tilo_resource::write_key(&mut doc, &ROOT, "pending", &true).unwrap();
     let pending = doc.pending_ops();
     assert_eq!(
         read_messages(&doc, &doc.base_heads(), "one", None, limits(1)).unwrap_err(),
@@ -197,7 +197,10 @@ fn semantic_read_full_requested_capacity_and_noncanonical_cursor() {
 fn semantic_read_preserves_existing_numeric_timestamp_projection() {
     let mut doc = fixture(&["hello"]);
     let message = stored(&doc, "m0");
-    doc.put(&message, "ts", 17u64).unwrap();
+    // An unsigned timestamp, as older writers stored it.
+    ui::tilo_resource::Slot::Key(&message, "ts")
+        .put_scalar(&mut doc, automerge::ScalarValue::Uint(17))
+        .unwrap();
     doc.commit();
     assert_eq!(
         read_messages(&doc, &doc.base_heads(), "one", None, limits(1))

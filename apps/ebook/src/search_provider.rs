@@ -697,6 +697,12 @@ impl BookSearchProvider {
     pub(crate) fn shares_prose_index_with(&self, other: &Self) -> bool {
         self.books.shares_prose_index_with(&other.books)
     }
+
+    /// The exact resource the hit anchored at `id` resolves to, as the
+    /// palette resolves a hit's address.
+    pub(crate) fn resolve(&self, id: &str) -> Option<Resource> {
+        self.books.resolve(id)
+    }
 }
 
 #[cfg(test)]

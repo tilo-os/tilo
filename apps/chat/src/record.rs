@@ -60,7 +60,10 @@ fn migrate(
             doc.delete(ROOT, dropped)?;
         }
     }
-    doc.put_object(ROOT, "read", ui::automerge::ObjType::Map)?;
+    // Read marks start over as positions in the parts.
+    let read = ui::tilo_resource::Slot::Key(&ROOT, "read");
+    read.remove(doc)?;
+    read.object(doc, ui::automerge::ObjType::Map)?;
     Ok(())
 }
 

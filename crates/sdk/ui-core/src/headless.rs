@@ -6518,6 +6518,84 @@ impl FrameHarness {
             .map_err(crate::bound_dispatch::BoundActionError::into_door)
     }
 
+    /// Invoke the action `action` that the hosted component publishes on its
+    /// resource `resource` (its own, an item, a child or a live row, by the
+    /// id it publishes), with JSON `arguments`, the way an agent's call
+    /// reaches it, then lay out again.
+    ///
+    /// # Errors
+    /// Refuses when no component is hosted or `arguments` is no object, and
+    /// as [`Self::invoke_bound_action`].
+    pub fn call_on(
+        &mut self,
+        resource: &str,
+        action: &str,
+        arguments: serde_json::Value,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        self.call_on_as(resource, action, arguments, false)
+    }
+
+    /// [`Self::call_on`] after the caller confirmed this invocation, as the
+    /// host's confirmation prompt does for a destructive action.
+    ///
+    /// # Errors
+    /// As [`Self::call_on`], except that no confirmation is required.
+    pub fn call_on_confirmed(
+        &mut self,
+        resource: &str,
+        action: &str,
+        arguments: serde_json::Value,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        self.call_on_as(resource, action, arguments, true)
+    }
+
+    fn call_on_as(
+        &mut self,
+        resource: &str,
+        action: &str,
+        arguments: serde_json::Value,
+        confirmed: bool,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        let serde_json::Value::Object(arguments) = arguments else {
+            return Err(tilo_actions::DoorError::InvalidArguments(
+                "arguments are an object".into(),
+            ));
+        };
+        let instance_id = self.component_instance_id().ok_or_else(|| {
+            tilo_actions::DoorError::Failed("no application component is hosted".into())
+        })?;
+        let address = crate::bound_dispatch::BoundActionAddress {
+            instance_id,
+            address: tilo_actions::ActionAddress::new(resource, action),
+        };
+        let started = if confirmed {
+            self.invoke_bound_action_confirmed(&address, &arguments)
+        } else {
+            self.invoke_bound_action(&address, &arguments)
+        }?;
+        self.relayout();
+        Ok(started)
+    }
+
+    /// Invoke one published action of the tree the app publishes now (see
+    /// [`Self::invoke_action`]) by its resource id and action id, unconfirmed.
+    ///
+    /// # Errors
+    /// As [`Self::invoke_action`].
+    pub fn invoke_published(
+        &mut self,
+        resource: &str,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        self.invoke_action(
+            &tilo_actions::ActionAddress::new(resource, action),
+            arguments,
+            false,
+            None,
+        )
+    }
+
     /// [`Self::invoke_bound_action`] (confirmed when `confirmed`) for an
     /// operation that may run as a job: answers with the invocation whose
     /// progress and result [`Self::job_updates`] then report, as the frames

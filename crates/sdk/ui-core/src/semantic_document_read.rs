@@ -135,6 +135,66 @@ pub fn encode_cursor<C: serde::Serialize>(
     .transpose()
 }
 
+/// What a registered read's published action is called: its id, its label
+/// and the line that says what it takes.
+#[derive(Clone, Copy, Debug)]
+pub struct ReadName<'a> {
+    pub id: &'a str,
+    pub label: &'a str,
+    pub description: &'a str,
+}
+
+/// The parameters of a read that takes none.
+#[derive(Clone, Copy, Debug, Default, serde::Deserialize, tilo_resource::JsonSchema)]
+pub struct NoReadParams {}
+
+/// The published action of the registered read whose operation is
+/// `operation`. Its parameters are the fields of `P` as `P`'s JSON Schema
+/// describes them (doc comments, `#[schema(range(..))]` bounds, choices); a
+/// caller's arguments, bound strictly to them, become a `P` with serde, and
+/// `request` turns that into the reader's request. It answers `schema`, and
+/// it is a view of the document: it changes nothing.
+#[must_use]
+pub fn read_action<P, Q>(
+    name: ReadName<'_>,
+    operation: &'static str,
+    schema: fn() -> &'static serde_json::Value,
+    request: impl Fn(P) -> Q + Send + Sync + 'static,
+) -> ActionSpec
+where
+    P: serde::de::DeserializeOwned + tilo_resource::JsonSchema,
+    Q: serde::Serialize,
+{
+    use tilo_actions::{ActionContract, OperationKind, ResultSpec};
+    let params = tilo_resource::__private::flat_params(&P::json_schema());
+    ActionSpec::typed_operation(
+        name.id,
+        name.label,
+        name.description,
+        OperationKind::Effect,
+        operation,
+        params,
+        move |args| {
+            serde_json::from_value::<P>(serde_json::Value::Object(args.to_json()))
+                .ok()
+                .and_then(|params| {
+                    EncodedAction::encode_operation(operation, &request(params)).ok()
+                })
+                // An empty payload is no request: the reader refuses it.
+                .unwrap_or_else(|| EncodedAction {
+                    type_id: operation.into(),
+                    payload: Vec::new(),
+                })
+        },
+    )
+    .with_contract(ActionContract {
+        result: ResultSpec::Json {
+            schema: schema().clone(),
+        },
+        ..ActionContract::view()
+    })
+}
+
 /// One page an app's projection produced at the heads it was given.
 pub struct ReadPage {
     pub content: serde_json::Value,
