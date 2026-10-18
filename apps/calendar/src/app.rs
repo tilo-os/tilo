@@ -222,6 +222,15 @@ type NotesEditor = RichTextSurface<RichTextField>;
 
 type SyncWorkerResult = (caldav::SyncResult, SyncOutcome);
 
+/// What the scheduled reminders follow: the document, the hidden calendars
+/// and the hour (the horizon moves on with it).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RemindersBasis {
+    heads: (Vec<ChangeHash>, usize),
+    hidden: Vec<String>,
+    hour: i64,
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent, unrelated flag (demo mode, sidebar state, sync status, form scratch state); grouping them into enums would not express any real invariant between them and would touch every read/write site across this file"
@@ -386,6 +395,13 @@ pub struct CalendarApp {
     /// What a search hit or an agent's `open` asked to show, shown on the
     /// next sync.
     opens: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+    /// Where reminders are scheduled, in a live window.
+    notifier: Option<std::sync::Arc<dyn ui::notify::Notifier>>,
+    /// What clicked reminders asked to open, taken on the next sync.
+    activations: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    /// What the reminders were last reconciled from, and what was scheduled:
+    /// they are worked out again only when it changes.
+    reminders: Option<(RemindersBasis, Vec<crate::reminders::Reminder>)>,
 
     /// Where the calendar's edits go: the framework's dispatcher, attached
     /// before the first frame.
@@ -527,6 +543,9 @@ impl CalendarApp {
             sync_requested: false,
             sync_reply: None,
             opens: std::rc::Rc::default(),
+            notifier: None,
+            activations: std::sync::Arc::default(),
+            reminders: None,
             dispatcher: None,
             #[cfg(test)]
             last_dispatched: std::cell::RefCell::default(),
@@ -3966,7 +3985,15 @@ impl Widget for CalendarApp {
             self.revalidate_selection();
             self.model_heads.clone_from(&heads);
         }
-        let opens = std::mem::take(&mut *self.opens.borrow_mut());
+        self.roll_today();
+        let mut opens = std::mem::take(&mut *self.opens.borrow_mut());
+        opens.extend(std::mem::take(
+            &mut *self
+                .activations
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        ));
+        self.schedule_reminders();
         for item in opens {
             if let Err(error) = self.open_item(&item) {
                 tracing::debug!(%error, "calendar: an item to open is gone");
@@ -4487,6 +4514,23 @@ impl Widget for CalendarApp {
         self.notes_editor.take_structure_dirty() || width_changed
     }
 
+    /// Wake for the next minute while the now line is on screen, else for
+    /// the next hour: today rolls over, and the reminders' horizon moves on.
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        if self.pinned_now.is_some() {
+            return None;
+        }
+        let now = self.now();
+        let now_line = matches!(self.view, View::Week | View::Day)
+            && self.timeline_days().contains(&self.today);
+        let seconds = if now_line {
+            60 - u64::from(now.second())
+        } else {
+            3600 - u64::from(now.minute()) * 60 - u64::from(now.second())
+        };
+        ui::time::now().checked_add(std::time::Duration::from_secs(seconds.max(1)))
+    }
+
     fn needs_animation_frame(&self) -> bool {
         // A background CalDAV pull wakes the app when it replies
         // (`waking_channel`); frames are only for a scroll container still
@@ -4652,6 +4696,89 @@ impl CalendarApp {
         }
         self.dirty = true;
         Ok(())
+    }
+
+    /// Schedule reminders as system notifications from a live window, and
+    /// open the event of a reminder the person clicks.
+    pub(crate) fn notify_with(
+        &mut self,
+        notifier: std::sync::Arc<dyn ui::notify::Notifier>,
+        waker: ui::WakeHandle,
+    ) {
+        self.notifier = Some(notifier);
+        let activations = std::sync::Arc::clone(&self.activations);
+        ui::notify::set_activation_handler(crate::reminders::SCHEME, move |uri| {
+            if let Some(item) = uri
+                .strip_prefix(crate::reminders::SCHEME)
+                .and_then(|rest| rest.strip_prefix(":open/"))
+            {
+                activations
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(item.to_owned());
+                waker.wake();
+            }
+        });
+    }
+
+    /// Reconcile the scheduled reminders with what is due, when what they
+    /// follow moved.
+    fn schedule_reminders(&mut self) {
+        let Some(notifier) = self.notifier.clone() else {
+            return;
+        };
+        let now = chrono::DateTime::<chrono::Utc>::from(ui::time::to_std(ui::time::wall()));
+        let hidden_ids = self.hidden_calendar_ids();
+        let mut hidden: Vec<String> = hidden_ids.iter().cloned().collect();
+        hidden.sort_unstable();
+        let basis = RemindersBasis {
+            heads: self.model_heads.clone(),
+            hidden,
+            hour: now.timestamp() / 3600,
+        };
+        if self
+            .reminders
+            .as_ref()
+            .is_some_and(|(seen, _)| *seen == basis)
+        {
+            return;
+        }
+        let due = crate::reminders::due(&self.model, self.viewer, now, &hidden_ids);
+        if self
+            .reminders
+            .as_ref()
+            .is_some_and(|(_, scheduled)| *scheduled == due)
+        {
+            self.reminders = Some((basis, due));
+            return;
+        }
+        match crate::reminders::reconcile(&*notifier, &due) {
+            Ok(()) => self.reminders = Some((basis, due)),
+            // Tried again when the hour or the calendar moves on.
+            Err(error) => {
+                tracing::debug!(%error, "calendar: reminders were not scheduled");
+                self.reminders = Some((basis, Vec::new()));
+            }
+        }
+    }
+
+    /// Move today on at midnight in a window left open: the highlight, the
+    /// now line and the anchor when it was on today.
+    fn roll_today(&mut self) {
+        if self.pinned_now.is_some() {
+            return;
+        }
+        let today = ui::clock::today();
+        if today == self.today {
+            return;
+        }
+        if self.anchor == self.today {
+            self.anchor = today;
+        }
+        self.today = today;
+        self.mini_month.set_today(today);
+        self.task_due_picker.set_today(today);
+        self.dirty = true;
     }
 
     /// Show every calendar again, after one calendar's events were shown.
