@@ -19,10 +19,8 @@
 //!   pull at once instead of at their next reconciliation tick.
 //!
 //! Every request is authorised on its own against the live policy and the
-//! peer's live certification, exactly as the per-request protocols decide;
-//! only the handshake is shared. Peers that do not speak this protocol are
-//! served and reached through the per-request protocols, which stay
-//! registered unchanged.
+//! peer's live certification; only the handshake is shared. A peer that does
+//! not speak this protocol is not reconciled with: it is at another version.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -91,9 +89,6 @@ const MAX_STREAMS_PER_CONNECTION: usize = 16;
 const MAX_SYNC_ROUNDS: usize = 200;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
-/// How long a peer that does not speak this protocol is reached through
-/// the per-request protocols before trying again.
-const LEGACY_RETRY: Duration = Duration::from_secs(300);
 /// A session quiet for longer than this is pinged before use.
 const PING_AFTER: Duration = Duration::from_secs(2);
 const PING_TIMEOUT: Duration = Duration::from_secs(2);
@@ -1082,18 +1077,8 @@ pub(super) struct SessionPool {
     identity: FsTransportIdentity,
     workspace_id: uuid::Uuid,
     sessions: tokio::sync::Mutex<HashMap<iroh_base::PublicKey, Arc<Session>>>,
-    legacy: Mutex<HashMap<iroh_base::PublicKey, Instant>>,
     /// Serves the requests peers send on sessions this device opened.
     server: std::sync::OnceLock<SessionProtocol>,
-}
-
-/// Whether a connection attempt failed because the peer does not offer the
-/// protocol (TLS `no_application_protocol`), as opposed to being away.
-fn protocol_unsupported(error: &anyhow::Error) -> bool {
-    let text = format!("{error:#}");
-    text.contains("peer doesn't support any known protocol")
-        || text.contains("no_application_protocol")
-        || text.contains("no application protocol")
 }
 
 impl SessionPool {
@@ -1107,7 +1092,6 @@ impl SessionPool {
             identity,
             workspace_id,
             sessions: tokio::sync::Mutex::new(HashMap::new()),
-            legacy: Mutex::new(HashMap::new()),
             server: std::sync::OnceLock::new(),
         }
     }
@@ -1160,9 +1144,8 @@ impl SessionPool {
         );
     }
 
-    /// The live session to `addr`, opening one if needed. `Ok(None)` means
-    /// the peer only speaks the per-request protocols.
-    pub(super) async fn get(&self, addr: &EndpointAddr) -> Result<Option<Arc<Session>>> {
+    /// The live session to `addr`, opening one if needed.
+    pub(super) async fn get(&self, addr: &EndpointAddr) -> Result<Arc<Session>> {
         if self.identity.partitioned() {
             anyhow::bail!("transport partition gate is closed");
         }
@@ -1170,20 +1153,12 @@ impl SessionPool {
             // A peer that restarted leaves a connection that looks open until
             // QUIC's idle timeout; a quiet session proves itself first.
             if session.heard_within(PING_AFTER) || self.ping(&session).await {
-                return Ok(Some(session));
+                return Ok(session);
             }
             session.connection.close(0u32.into(), b"unresponsive");
             self.forget(&session).await;
         }
-        if self
-            .legacy
-            .lock_recover()
-            .get(&addr.id)
-            .is_some_and(|until| Instant::now() < *until)
-        {
-            return Ok(None);
-        }
-        let opened = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
+        let (connection, peer) = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
             let connection = self
                 .endpoint
                 .connect(addr.clone(), TILO_FS_SESSION_ALPN)
@@ -1201,48 +1176,37 @@ impl SessionPool {
             Ok::<_, anyhow::Error>((connection, peer))
         })
         .await
-        .map_err(|_| anyhow!("opening a session to {} timed out", addr.id))?;
-        match opened {
-            Ok((connection, peer)) => {
-                let session = Arc::new(Session {
-                    connection,
-                    peer,
-                    addr: addr.clone(),
-                    last_heard: Mutex::new(Instant::now()),
-                    changesets: std::sync::atomic::AtomicBool::new(true),
-                });
-                // Another caller may have opened one meanwhile; keep one.
-                let mut sessions = self.sessions.lock().await;
-                let kept = match sessions.get(&addr.id) {
-                    Some(existing) if existing.connection.close_reason().is_none() => {
-                        session.connection.close(0u32.into(), b"duplicate");
-                        Arc::clone(existing)
-                    }
-                    _ => {
-                        sessions.insert(addr.id, Arc::clone(&session));
-                        if let Some(server) = self.server.get() {
-                            let server = server.clone();
-                            let session = Arc::clone(&session);
-                            tokio::spawn(async move {
-                                server
-                                    .serve_connection(&session.connection, &session.peer)
-                                    .await;
-                            });
-                        }
-                        session
-                    }
-                };
-                drop(sessions);
-                Ok(Some(kept))
+        .map_err(|_| anyhow!("opening a session to {} timed out", addr.id))??;
+        let session = Arc::new(Session {
+            connection,
+            peer,
+            addr: addr.clone(),
+            last_heard: Mutex::new(Instant::now()),
+            changesets: std::sync::atomic::AtomicBool::new(true),
+        });
+        // Another caller may have opened one meanwhile; keep one.
+        let mut sessions = self.sessions.lock().await;
+        let kept = match sessions.get(&addr.id) {
+            Some(existing) if existing.connection.close_reason().is_none() => {
+                session.connection.close(0u32.into(), b"duplicate");
+                Arc::clone(existing)
             }
-            Err(error) if protocol_unsupported(&error) => {
-                if let Some(until) = Instant::now().checked_add(LEGACY_RETRY) {
-                    self.legacy.lock_recover().insert(addr.id, until);
+            _ => {
+                sessions.insert(addr.id, Arc::clone(&session));
+                if let Some(server) = self.server.get() {
+                    let server = server.clone();
+                    let session = Arc::clone(&session);
+                    tokio::spawn(async move {
+                        server
+                            .serve_connection(&session.connection, &session.peer)
+                            .await;
+                    });
                 }
-                Ok(None)
+                session
             }
-            Err(error) => Err(error),
-        }
+        };
+        drop(sessions);
+        Ok(kept)
     }
 
     /// The pooled session to `id` if its connection is open and the peer's
