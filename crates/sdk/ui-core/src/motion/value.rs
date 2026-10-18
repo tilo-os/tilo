@@ -185,7 +185,9 @@ impl<T: Animatable> MotionValue<T> {
 
     /// Whether the value is still on its way at `now`.
     pub fn is_moving(&self, now: Instant) -> bool {
-        self.settles_at.is_some_and(|at| now < at)
+        // The settled clock (captures and tests) reads every motion at its
+        // end.
+        !super::clock::testing::is_settled() && self.settles_at.is_some_and(|at| now < at)
     }
 
     /// When the current motion arrives; `None` at rest. A host that sleeps

@@ -4294,10 +4294,13 @@ impl FrameBuilder {
                 .floating_overlays
                 .iter()
                 .any(|(_, surface)| surface.needs_animation_frame()),
+            // A toolkit menu or popover a shell surface draws in its own
+            // overlay pass asks through the motion clock.
             transient: self
                 .transient_overlays
                 .iter()
-                .any(|(_, surface)| surface.needs_animation_frame()),
+                .any(|(_, surface)| surface.needs_animation_frame())
+                || ui::motion::frames_wanted(now),
             osk: self
                 .osk_overlay
                 .as_ref()

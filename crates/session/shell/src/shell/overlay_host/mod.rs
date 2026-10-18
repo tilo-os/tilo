@@ -21161,6 +21161,8 @@ impl Widget for ShellOverlayHost {
         if let Some(source) = ui::motion::source_of(event) {
             self.input_source = source;
         }
+        // The toolkit's own menus and popovers inside the shell follow it too.
+        ui::motion::note_input(event);
         // MouseInput carries no coordinates. Keep the host's pointer cache
         // current before any modal can return early, because onboarding and
         // the other compositor-owned gates hit-test the following button edge

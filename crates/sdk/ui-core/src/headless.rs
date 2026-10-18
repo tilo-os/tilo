@@ -1763,6 +1763,7 @@ impl FrameHarness {
         event: &WindowEvent,
         modifiers: &winit::event::Modifiers,
     ) -> RootDispatch {
+        crate::motion::note_input(event);
         self.invalidate_local();
         self.settle_replayed_draws();
         if let Err(error) = self.readmit_owner_service_layout() {
@@ -2498,6 +2499,7 @@ impl FrameHarness {
                 .is_some_and(|wake| wake.dirty.get());
         self.with_schedule_roots(|roots| FrameSchedule {
             needs_animation_frame: roots.iter().any(|root| root.needs_animation_frame())
+                || crate::motion::frames_wanted(crate::time::now())
                 || self
                     .presence
                     .interaction_animation_demand(crate::time::now(), &self.theme),
@@ -4855,6 +4857,8 @@ impl FrameHarness {
         target: accesskit::NodeId,
         action: &crate::a11y::Action,
     ) -> Result<(), String> {
+        // An action performed for someone lands at once (`motion`).
+        crate::motion::note_source(crate::tokens::MotionSource::Action);
         self.invalidate_local();
         self.settle_replayed_draws();
         use crate::accesskit_bridge::A11yTarget;
@@ -5155,6 +5159,8 @@ impl FrameHarness {
         semantic_target: Option<&str>,
         action: &crate::a11y::Action,
     ) -> Result<(), String> {
+        // An action performed for someone lands at once (`motion`).
+        crate::motion::note_source(crate::tokens::MotionSource::Action);
         self.invalidate_local();
         use crate::a11y::Action as SemanticAction;
         use automerge::transaction::Transactable;
@@ -5871,6 +5877,7 @@ impl FrameHarness {
     /// Deliver platform input including host keyboard policy. Browser/native adapters
     /// forward real events here; synthetic helpers use the same path.
     pub fn send_host_event(&mut self, event: &WindowEvent) {
+        crate::motion::note_input(event);
         // A wheel whose frame the host takes is judged once dispatched
         // (`dispatch_with_host_navigation`): only one the root declares
         // view-only leaves the next frame quiet. Every other event counts.
@@ -5985,6 +5992,7 @@ impl FrameHarness {
 
     /// Deliver one event through the production dispatch path.
     pub fn send(&mut self, event: &WindowEvent) {
+        crate::motion::note_input(event);
         self.invalidate_local();
         if self.pump_component_wakes_checked().is_err() {
             return;

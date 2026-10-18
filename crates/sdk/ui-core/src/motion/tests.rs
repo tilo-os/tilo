@@ -547,3 +547,158 @@ fn a_deferred_motion_resumes_where_it_stood() {
         "the wait was not progress"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Appearing, the motion clock and the input a change follows
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_appearing_surface_follows_the_input_that_asked() {
+    use crate::time::testing::with_monotonic_time;
+    let start = crate::time::now();
+    let mut clicked = Appearing::closed();
+    with_monotonic_time(start, || {
+        note_source(MotionSource::Pointer);
+        clicked.follow(true, on());
+        assert!(clicked.is_open(), "the intent changes at once");
+        assert!(clicked.is_moving(), "a click brings it in");
+        assert!(clicked.progress() < 0.01);
+    });
+    let entered = Appear::SPEC.settle_time(Direction::Enter, on(), MotionSource::Pointer);
+    // Settle times are whole milliseconds; a millisecond past is at rest.
+    with_monotonic_time(start + entered + Duration::from_millis(1), || {
+        assert!(!clicked.is_moving(), "it arrives after `base`");
+        assert!(
+            clicked
+                .pose(Rect::new(0.0, 0.0, 100.0, 100.0), Point::ZERO)
+                .is_rest()
+        );
+    });
+
+    let mut typed = Appearing::closed();
+    with_monotonic_time(start, || {
+        note_source(MotionSource::Keyboard);
+        typed.follow(true, on());
+        assert!(!typed.is_moving(), "a key lands it at once");
+        assert!(typed.progress() >= 1.0);
+        typed.follow(false, on());
+        assert!(!typed.is_drawn(), "and closes it at once");
+    });
+}
+
+#[test]
+fn a_cursor_merely_moving_asks_for_nothing() {
+    note_source(MotionSource::Keyboard);
+    note_input(&crate::synthetic_input::cursor_moved(10.0, 10.0));
+    assert_eq!(input_source(), MotionSource::Keyboard);
+}
+
+#[test]
+fn an_appearing_surface_scales_about_the_point_nearest_its_control() {
+    use crate::time::testing::with_monotonic_time;
+    let start = crate::time::now();
+    let surface = Rect::new(100.0, 60.0, 300.0, 260.0);
+    // A button above the surface's leading half.
+    let button = Point::new(140.0, 40.0);
+    let mut menu = Appearing::closed();
+    with_monotonic_time(start, || {
+        note_source(MotionSource::Pointer);
+        menu.follow(true, on());
+    });
+    with_monotonic_time(ms(start, 20), || {
+        let pose = menu.pose(surface, button);
+        let origin = Point::new(140.0, 60.0);
+        assert!(
+            (pose.to_drawn(origin) - origin).hypot() < 1e-9,
+            "the edge under the button stays put"
+        );
+        let far = Point::new(300.0, 260.0);
+        assert!(
+            (pose.to_drawn(far) - far).hypot() > 0.5,
+            "the far corner grows out of it"
+        );
+        assert!(pose.opacity > 0.0 && pose.opacity < 1.0);
+    });
+}
+
+#[test]
+fn a_leaving_surface_is_drawn_until_it_has_gone_and_exits_are_shorter() {
+    use crate::time::testing::with_monotonic_time;
+    let start = crate::time::now();
+    let mut popover = Appearing::opened();
+    with_monotonic_time(start, || {
+        note_source(MotionSource::Pointer);
+        popover.follow(false, on());
+        assert!(!popover.is_open());
+        assert!(popover.is_drawn(), "it is still drawn as it leaves");
+    });
+    let exit = Appear::SPEC.settle_time(Direction::Exit, on(), MotionSource::Pointer);
+    let enter = Appear::SPEC.settle_time(Direction::Enter, on(), MotionSource::Pointer);
+    assert!(exit < enter, "exits are shorter: {exit:?} vs {enter:?}");
+    with_monotonic_time(start + exit + Duration::from_millis(1), || {
+        assert!(!popover.is_drawn(), "gone once the exit settles");
+    });
+}
+
+#[test]
+fn reduced_motion_appears_by_fading_in_place() {
+    use crate::time::testing::with_monotonic_time;
+    let start = crate::time::now();
+    let mut sheet = Appearing::closed();
+    with_monotonic_time(start, || {
+        note_source(MotionSource::Pointer);
+        sheet.follow(true, reduced());
+    });
+    with_monotonic_time(ms(start, 40), || {
+        let pose = sheet.pose(Rect::new(0.0, 0.0, 200.0, 100.0), Point::new(100.0, 50.0));
+        assert_eq!(
+            pose.transform,
+            vello::kurbo::Affine::IDENTITY,
+            "nothing scales"
+        );
+        assert!(pose.opacity > 0.0 && pose.opacity < 1.0, "it fades");
+    });
+    let fast = Appear::SPEC.settle_time(Direction::Enter, reduced(), MotionSource::Pointer);
+    with_monotonic_time(start + fast + Duration::from_millis(1), || {
+        assert!(!sheet.is_moving(), "at `fast`");
+    });
+}
+
+#[test]
+fn a_started_motion_asks_for_frames_until_it_settles_and_no_longer() {
+    use crate::time::testing::with_monotonic_time;
+    let start = crate::time::now();
+    let mut menu = Appearing::closed();
+    with_monotonic_time(start, || {
+        note_source(MotionSource::Pointer);
+        menu.follow(true, on());
+    });
+    assert!(frames_wanted(start), "the arrival asks for frames");
+    let until = frames_until().expect("a motion is moving");
+    assert!(frames_wanted(until - Duration::from_millis(1)));
+    assert!(!frames_wanted(until), "a settled motion asks for nothing");
+    assert!(frames_until().is_none(), "and holds nothing");
+}
+
+#[test]
+fn the_settled_clock_reads_every_motion_at_its_end() {
+    let start = crate::time::now();
+    let mut v = MotionValue::new(0.0_f64);
+    v.set(100.0, base_timing(), start);
+    assert!(v.is_moving(ms(start, 10)));
+    {
+        let _settled = testing::settled();
+        assert!(testing::is_settled());
+        assert!(
+            !v.is_moving(ms(start, 10)),
+            "moving motions read as arrived"
+        );
+        assert!((v.get(ms(start, 10)) - 100.0).abs() < f64::EPSILON);
+        assert!(!frames_wanted(start), "and ask for no frames");
+    }
+    assert!(
+        !testing::is_settled(),
+        "dropping the guard restores the clock"
+    );
+    assert!(v.is_moving(ms(start, 10)));
+}

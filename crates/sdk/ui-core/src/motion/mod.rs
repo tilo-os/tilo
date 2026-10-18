@@ -5,7 +5,7 @@
 //!
 //! | Motion | For |
 //! |---|---|
-//! | [`Appear`] | popovers, menus, sheets, dialogs coming from their origin and going back |
+//! | [`Appear`] / [`Appearing`] | popovers, menus, dropdowns, tooltips, sheets, dialogs coming from their origin and going back |
 //! | [`Drill`] / [`DrillDepth`] | drill-in and back inside a panel; whole-column pushes |
 //! | [`Disclose`] / [`Extent`] | expand and collapse; a panel's height following its content |
 //! | [`PanelSlide`] | sidebars, drawers, the inspector |
@@ -40,6 +40,8 @@
 //! rather than written at its call site: `tools/policy/check_motion_library.py`
 //! rejects easing math, ad-hoc springs and lerp-over-time anywhere else.
 
+mod appearing;
+mod clock;
 mod named;
 mod pose;
 mod presence;
@@ -51,6 +53,8 @@ mod value;
 #[cfg(test)]
 mod tests;
 
+pub use appearing::Appearing;
+pub use clock::{frames_until, frames_wanted, testing, want_frames_until};
 pub use named::{
     Ambient, Appear, Attention, CROSS_FADE, CrossFade, Disclose, Drill, DrillDepth, Extent,
     Feedback, Follow, ListChange, PanelSlide, Reveal, Snap, Transient, WindowMotion, Zoom,
@@ -58,7 +62,7 @@ pub use named::{
 };
 pub use pose::Pose;
 pub use presence::Presence;
-pub use source::source_of;
+pub use source::{input_source, note_input, note_source, recent_input, source_of};
 pub use spec::{Direction, MotionSpec, Pace, Reduced, Shortcut};
 pub use spring::SpringSpec;
 pub use value::{Animatable, Channels, MotionValue, Timing};

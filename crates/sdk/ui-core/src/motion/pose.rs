@@ -89,6 +89,35 @@ impl Pose {
         self.transform.transform_rect_bbox(rect)
     }
 
+    /// [`Self::paint`] for a caller that paints in steps: pushes the
+    /// opacity layer when one is needed and returns the transform to draw
+    /// with, or `None` (pushing nothing) when nothing of it shows. Every
+    /// `Some` is closed by [`Self::end`].
+    #[must_use]
+    pub fn begin(&self, scene: &mut Scene, placement: Affine, bounds: Rect) -> Option<Affine> {
+        if !self.is_visible() {
+            return None;
+        }
+        let xform = self.applied_to(placement);
+        if self.opacity < 1.0 {
+            scene.push_layer(
+                Fill::NonZero,
+                BlendMode::default(),
+                self.opacity,
+                xform,
+                &bounds,
+            );
+        }
+        Some(xform)
+    }
+
+    /// Close what [`Self::begin`] opened.
+    pub fn end(&self, scene: &mut Scene) {
+        if self.is_visible() && self.opacity < 1.0 {
+            scene.pop_layer();
+        }
+    }
+
     /// Draw a surface in this pose. `placement` is where the caller would draw
     /// it at rest; `bounds` (in the surface's coordinates) is everything it
     /// paints, shadows included, which the opacity layer clips to. `paint`
