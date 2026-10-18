@@ -2174,6 +2174,16 @@ pub trait Widget {
         None
     }
 
+    /// The narrowest this window still works at, in logical pixels: the
+    /// minimum of its compact layout (a `NavShell` answers with one column
+    /// at a time). The host states it to the window system, so the desktop
+    /// stops a resize there. `None`: no opinion. The host walks the tree
+    /// itself ([`minimum_window_width`]), so containers need not forward
+    /// it; the first `Some` wins.
+    fn minimum_window_width(&self) -> Option<f64> {
+        None
+    }
+
     /// Apply the effective reduced-motion preference before the host asks this
     /// subtree whether it needs another animation frame. The default forwards
     /// recursively, making the preference a framework policy instead of an
@@ -3095,9 +3105,31 @@ pub use sidebar::{
     SidebarSide,
 };
 mod nav_shell;
+
+/// The narrowest the window `root` lays out still works at
+/// ([`Widget::minimum_window_width`]): the first widget in the tree with an
+/// opinion, outermost first.
+pub fn minimum_window_width<W: Widget + ?Sized>(root: &W) -> Option<f64> {
+    // A retained boundary (an app in a tile) answers inside its own scope.
+    let _entry = root
+        .callback_binding()
+        .map(|binding| binding.enter())
+        .transpose()
+        .ok()?;
+    if let Some(width) = root.minimum_window_width() {
+        return Some(width);
+    }
+    let mut found = None;
+    root.for_each_child(&mut |child| {
+        if found.is_none() {
+            found = minimum_window_width(child);
+        }
+    });
+    found
+}
 pub mod window_header;
 pub use nav_shell::{
-    InspectorPlacement, NavGeometry, NavMode, NavPane, NavShell, OverviewPlacement,
+    ContentKind, InspectorPlacement, NavGeometry, NavMode, NavPane, NavShell, OverviewPlacement,
     SidebarPlacement,
 };
 pub use window_header::{

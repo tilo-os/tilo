@@ -227,14 +227,6 @@ impl SidePanel {
         self.drawer.snap(open);
     }
 
-    /// Paint the scrim a floating drawer dims the content with. Call after
-    /// the content is drawn.
-    pub fn paint_scrim(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
-        if self.drawer.is_overlay() {
-            self.drawer.draw_scrim(scene, transform, theme);
-        }
-    }
-
     /// Paint the panel's ground and return the theme its contents draw with.
     pub fn paint_panel(&self, scene: &mut Scene, transform: Affine, theme: &Theme) -> Theme {
         self.drawer.paint_panel(scene, transform, theme)

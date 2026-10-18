@@ -276,6 +276,7 @@ pub(crate) fn root(cx: &ViewCx<Workbench>) -> Element {
 
     let follow = Rc::new(RefCell::new(follow(cx.live().clone(), &ui)));
     let shell = NavShell::new()
+        .content_kind(ui::widget::ContentKind::Page)
         .with_id("shortcuts-shell")
         .mode(NavMode::Push)
         .with_pane_state(&ui.pane)

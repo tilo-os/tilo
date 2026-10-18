@@ -328,6 +328,13 @@ impl SettingsApp {
         }
     }
 
+    /// The narrowest window the shell docks the list in: the list at its
+    /// minimum beside a settings page's (`NavShell`, `ContentKind::Page`).
+    fn dock_width() -> f32 {
+        let m = Metrics::BASE;
+        m.sidebar_min_width + ui::widget::ContentKind::Page.min_width(&m)
+    }
+
     /// Whether the current frame resolves to the narrow (phone) layout.
     pub fn is_narrow(&self) -> bool {
         match &self.shell {
@@ -336,7 +343,7 @@ impl SettingsApp {
             }
             _ => self
                 .width_hint
-                .is_some_and(|w| w < Metrics::BASE.compact_breakpoint * self.shell_text_scale),
+                .is_some_and(|w| w < Self::dock_width() * self.shell_text_scale),
         }
     }
 
@@ -779,6 +786,7 @@ impl SettingsApp {
             .with_placeholder(&crate::i18n::t("settings-search-placeholder"));
         filter.set_query(&self.search_query);
         let mut shell = NavShell::new()
+            .content_kind(ui::widget::ContentKind::Page)
             .with_id("settings.shell")
             .mode(NavMode::Push)
             .sidebar(nav)

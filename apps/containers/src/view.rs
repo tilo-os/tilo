@@ -1134,6 +1134,7 @@ fn window_shell(m: &Model, parts: &Parts) -> ui::widget::NavShell {
     let section = m.view.section;
     let intents = &parts.intents;
     let shell = ui::widget::NavShell::new()
+        .content_kind(ui::widget::ContentKind::Page)
         .with_id("containers-shell")
         .with_pane_state(&parts.pane)
         .sidebar(sidebar_view(parts));

@@ -362,6 +362,7 @@ impl MonitorApp {
         let shown_tab = Rc::new(std::cell::Cell::new(Tab::Processes));
         let prefs = Prefs::default();
         let shell = NavShell::new()
+            .content_kind(ui::widget::ContentKind::List)
             .with_id("monitor.shell")
             .content(Box::new(tab_content(&shared, &shown_tab)));
         Self {

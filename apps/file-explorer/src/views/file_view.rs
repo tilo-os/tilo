@@ -1699,6 +1699,7 @@ mod tests {
         let sink = new_sink();
         let view = FileView::new(&items(2), &SelectionModel::new(), &sink);
         let nav = ui::widget::NavShell::new()
+            .content_kind(ui::widget::ContentKind::List)
             .sidebar(Box::new(ui::widget::Text::new("Places")))
             .content(Box::new(view));
         let theme = Theme::dark().with_text_scale(2.0);

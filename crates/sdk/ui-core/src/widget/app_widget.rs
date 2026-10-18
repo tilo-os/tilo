@@ -325,10 +325,13 @@ pub trait AppWidget: Widget {
     /// The narrowest window this app is still usable in, in logical px: a
     /// Tilo app's compact layout, a client's `xdg_toplevel` min-size hint.
     /// Resizing a window stops its edge here rather than squeezing the app
-    /// (`widget::edge_resize`). `None` says nothing, and the strip's floor
-    /// applies.
+    /// (`widget::edge_resize`). By default what the app's tree says
+    /// ([`crate::widget::minimum_window_width`]: a `NavShell` states its
+    /// compact layout's minimum), so an app in the shell's process is
+    /// stopped where its own window would be. `None` says nothing, and the
+    /// strip's floor applies.
     fn min_window_width(&self) -> Option<f64> {
-        None
+        crate::widget::minimum_window_width(self)
     }
 
     /// The widest window this app can fill, in logical px: a client's

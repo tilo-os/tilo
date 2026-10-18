@@ -694,6 +694,7 @@ impl NotesApp {
         // Maximized, the header lives in the window's bar: the note has the
         // whole window until the person reaches for the top edge.
         NavShell::new()
+            .content_kind(ui::widget::ContentKind::Document)
             .with_id("notes-shell")
             .with_header_in_window_bar()
             .sidebar(Box::new(columns.sidebar.slot()))

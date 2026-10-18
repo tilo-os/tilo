@@ -228,7 +228,7 @@ pub mod prelude {
     };
     pub use ui_core::widget::{
         ActionEmitter, AudiencePresentationProvider, Banner, Button, Card, Checkbox, Collaborative,
-        Column, CompleteContentProvider, Container, Continuable, ControlBindingKind,
+        Column, CompleteContentProvider, Container, ContentKind, Continuable, ControlBindingKind,
         ControlBindingMetadata, Dropdown, Element, EmptyState, EventCtx, FilterCount, Filterable,
         Filtered, FindBar, FindMatch, FindOptions, FindScope, Findable, FloatingSurfaceProvider,
         FullscreenProvider, ModelView, NativeViewLifecycle, NavItem, NavList, NavMode, NavPane,

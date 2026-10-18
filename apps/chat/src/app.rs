@@ -3370,12 +3370,11 @@ impl ChatApp {
 
     /// The leading navigation drawer: the workspace's channel list, at the
     /// shell's sidebar metrics. One workspace is one place, so there is no
-    /// rail of other places beside it. It docks only while the conversation
-    /// column keeps the shared detail minimum; below that it becomes a
-    /// floating drawer.
+    /// rail of other places beside it. It docks while the conversation keeps
+    /// a reading column's minimum; below that the channel list and the
+    /// conversation take turns filling the window.
     fn navigation_drawer() -> SidebarDrawer {
-        let m = ui::tokens::Metrics::BASE;
-        SidebarDrawer::new().content_min_width(f64::from(m.detail_min_width))
+        SidebarDrawer::new().content_kind(ui::widget::ContentKind::Reading)
     }
 
     /// The trailing detail drawer, summoned on demand. It docks while the
@@ -5614,7 +5613,6 @@ impl ChatApp {
             } else {
                 let scrim = self.right_flap.scrim_rect();
                 if scrim.width() > 0.5 {
-                    self.right_flap.draw_scrim(scene, tf, theme);
                     ChatApp::push_hit(hits, scrim, Hit::Dismiss);
                 }
                 let panel = self.right_flap.sidebar_rect();
@@ -5640,7 +5638,6 @@ impl ChatApp {
         }
         let scrim = self.left_flap.scrim_rect();
         if scrim.width() > 0.5 {
-            self.left_flap.draw_scrim(scene, tf, theme);
             ChatApp::push_hit(hits, scrim, Hit::Dismiss);
         }
         let nav = self.nav_rect();

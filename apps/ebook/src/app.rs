@@ -8400,13 +8400,12 @@ impl BooksApp {
     }
 
     /// The contents sidebar and the annotations inspector: docked regions
-    /// beside the page, or floating drawers over it behind a scrim that
-    /// dismisses them.
+    /// beside the page, or floating drawers over it; a press on the page
+    /// beside an open drawer dismisses it.
     fn draw_rails(&mut self, ctx: &mut PaintCtx<'_>, lib: &[Arc<Book>]) {
         let theme = ctx.theme;
         if let Some(panel) = self.toc_panel_rect() {
             if self.toc_drawer.is_overlay() {
-                self.toc_drawer.draw_scrim(ctx.scene, ctx.transform, theme);
                 self.push_hit(self.toc_drawer.scrim_rect(), Action::DismissOverlay);
                 self.push_hit(panel, Action::Swallow);
             }
@@ -8416,8 +8415,6 @@ impl BooksApp {
         }
         if let Some(panel) = self.notes_panel_rect() {
             if self.notes_drawer.is_overlay() {
-                self.notes_drawer
-                    .draw_scrim(ctx.scene, ctx.transform, theme);
                 self.push_hit(self.notes_drawer.scrim_rect(), Action::DismissOverlay);
                 self.push_hit(panel, Action::Swallow);
             }

@@ -38,13 +38,15 @@ fn sidebar_remains_docked_and_semantically_resizable_in_a_medium_chat_window() {
         Some((true, 304.0, 456.0))
     );
     assert!(app.harness().component_contract_violations().is_empty());
-    app.harness().resize((600, 720)).unwrap();
+    // Below the sidebar's minimum beside the conversation's (560), the
+    // channel list and the conversation take turns.
+    app.harness().resize((540, 720)).unwrap();
     assert!(
         app.harness()
             .resources()
             .iter()
             .all(|resource| resource.label != "Resize sidebar"),
-        "a genuinely narrow window uses the shared overlay drawer"
+        "a genuinely narrow window shows one column at a time"
     );
     app.harness().resize((760, 720)).unwrap();
     assert_eq!(

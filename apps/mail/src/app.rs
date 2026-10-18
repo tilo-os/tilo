@@ -1062,6 +1062,7 @@ impl MailApp {
             )
         };
         NavShell::new()
+            .content_kind(ui::widget::ContentKind::Reading)
             .with_id("mail-shell")
             .sidebar(Box::new(sidebar::sidebar(shared)))
             .overview(Box::new(MessageList::new(shared.clone())))

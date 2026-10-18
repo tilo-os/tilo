@@ -3,7 +3,7 @@
 //! Presentation state and geometry come from the shared
 //! [`ui::widget::SidebarDrawer`]: docked beside the calendar when the window
 //! is wide, a floating drawer over it when narrow, and the person's show/hide
-//! choice per size class. The drawer paints the panel, the scrim and the
+//! choice per size class. The drawer paints the panel and the
 //! sidebar toggle; this module adds the header row's overflow menu button and
 //! (when the top bar has no room for it) the view switcher. The navigation
 //! rows themselves are painted by `CalendarApp`, which owns the model.
@@ -52,14 +52,6 @@ pub(crate) struct Chrome {
     pub(crate) hits: Vec<(Rect, Action)>,
 }
 
-/// The window width below which the sidebar floats as a drawer: the docked
-/// sidebar plus a calendar two columns wide (an overview and a detail), so a
-/// month grid is never squeezed beside it.
-fn dock_breakpoint() -> f64 {
-    let m = ui::tokens::Metrics::BASE;
-    f64::from(m.sidebar_width + m.overview_width + m.detail_min_width)
-}
-
 pub(crate) struct Sidebar {
     drawer: SidebarDrawer,
     /// Open once the next layout has decided docked or drawer, so the
@@ -70,7 +62,11 @@ pub(crate) struct Sidebar {
 impl Sidebar {
     pub(crate) fn new() -> Self {
         Self {
-            drawer: SidebarDrawer::new().left().breakpoint(dock_breakpoint()),
+            // Docked while the calendar keeps the room a list of days needs
+            // beside it; the timeline narrows its density below that.
+            drawer: SidebarDrawer::new()
+                .left()
+                .content_kind(ui::widget::ContentKind::List),
             open_after_layout: false,
         }
     }
@@ -187,7 +183,6 @@ impl Sidebar {
         let theme = ctx.theme;
         let mut hits = Vec::new();
         if self.mode() == Mode::Overlay {
-            self.drawer.draw_scrim(ctx.scene, ctx.transform, theme);
             let scrim = self.drawer.scrim_rect();
             if scrim.area() > 0.0 {
                 hits.push((scrim, Action::Dismiss));
@@ -284,8 +279,14 @@ mod tests {
             assert_eq!(sidebar.mode(), Mode::Persistent);
             assert_eq!(sidebar.rect().width(), docked);
 
+            // The sidebar shrinks toward its minimum before it stops docking.
             assert_eq!(
                 sidebar.layout(Rect::new(0.0, 0.0, 800.0, 600.0), &theme),
+                docked
+            );
+            assert_eq!(sidebar.mode(), Mode::Persistent);
+            assert_eq!(
+                sidebar.layout(Rect::new(0.0, 0.0, 480.0, 600.0), &theme),
                 0.0
             );
             assert_eq!(sidebar.mode(), Mode::Overlay);
@@ -299,7 +300,7 @@ mod tests {
             assert!(!sidebar.visible());
             assert!(sidebar.is_collapsed());
 
-            sidebar.layout(Rect::new(0.0, 0.0, 800.0, 600.0), &theme);
+            sidebar.layout(Rect::new(0.0, 0.0, 480.0, 600.0), &theme);
             assert!(!sidebar.visible());
             sidebar.toggle_open();
             assert!(sidebar.visible());
@@ -310,7 +311,13 @@ mod tests {
             let mut sidebar = Sidebar::new();
             let large = Theme::dark().with_text_scale(2.0);
             assert_eq!(
-                sidebar.layout(Rect::new(0.0, 0.0, 1280.0, 900.0), &large),
+                sidebar.layout(Rect::new(0.0, 0.0, 1000.0, 900.0), &theme),
+                docked,
+                "1000 px docks at 1x"
+            );
+            let mut sidebar = Sidebar::new();
+            assert_eq!(
+                sidebar.layout(Rect::new(0.0, 0.0, 1000.0, 900.0), &large),
                 0.0
             );
             assert_eq!(sidebar.mode(), Mode::Overlay);

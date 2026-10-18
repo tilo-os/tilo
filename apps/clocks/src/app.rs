@@ -958,6 +958,7 @@ fn surface(
     });
     Box::new(
         ui::widget::NavShell::new()
+            .content_kind(ui::widget::ContentKind::Page)
             .with_id("clocks.shell")
             .mode(ui::widget::NavMode::Push)
             .with_pane_state(&ui::LocalState::new(ui::widget::NavPane::Content))

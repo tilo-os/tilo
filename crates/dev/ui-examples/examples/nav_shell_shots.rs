@@ -14,19 +14,21 @@
 //!   content docked, one header row across the window.
 //! - `mail-1280-hidden.png` — the sidebar hidden; the toggle stays
 //!   top-leading.
-//! - `mail-800.png`, `mail-800-drawer.png` — the sidebar collapses to a
-//!   floating drawer instead of squeezing the columns.
+//! - `mail-800.png` — too narrow to dock: the mailboxes are the first
+//!   screen, one column at a time.
+//! - `mail-800-drawer.png` — a content-primary window (`ContentKind::Document`)
+//!   floats its sidebar as a drawer over the content instead, with no scrim.
 //! - `mail-560.png`, `mail-560-detail.png` — overview and content become
 //!   push screens with a Back button.
 //! - `mail-1280-text2x.png` — 200 % text.
-//! - `settings-560.png` — `NavMode::Push`: the sidebar is the first screen.
+//! - `settings-360.png` — phone width: the sidebar is the first screen.
 //! - `rail-1280.png` — a docked icon rail.
 //! - `mail-1280-history-{dark,light}.png` — a document with History: its
 //!   control at the trailing edge of the header row.
 //! - `mail-1280-history-open-{dark,light}.png` — History showing beside the
 //!   app, its control reading as on.
-//! - `mail-800-drawer-history-{dark,light}.png` — the drawer open under the
-//!   header row: the columns stay under the scrim, History stays reachable.
+//! - `mail-800-drawer-history-{dark,light}.png` — the mailboxes screen at
+//!   800 × 600: History stays reachable.
 //! - `mail-800-history-open-{dark,light}.png` — History showing at 800 × 600.
 //! - `actions-{1280,800,520}-{dark,light}.png` — labelled actions, then
 //!   their icons, then the More menu, as the row narrows.
@@ -45,8 +47,8 @@ use tilo_ui::icons::Icon;
 use tilo_ui::state::State;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::{
-    Button, Column, Element, NavAction, NavItem, NavList, NavMode, NavPane, NavSection, NavShell,
-    Text,
+    Button, Column, ContentKind, Element, NavAction, NavItem, NavList, NavMode, NavPane,
+    NavSection, NavShell, Text,
 };
 
 fn mailboxes() -> NavList {
@@ -125,8 +127,8 @@ fn message() -> Element {
             .push(Box::new(
                 Text::new(
                     "Hi! The design review moved to Thursday at 14:00. I put the \
-                     navigation shots in the shared folder; the sidebar now collapses \
-                     into a drawer at narrow widths instead of squeezing the list.",
+                     navigation shots in the shared folder; a narrow window now shows \
+                     one column at a time instead of squeezing the list.",
                 )
                 .with_role(TextRole::Body),
             )),
@@ -139,6 +141,7 @@ fn icon_button(id: &str, icon: Icon, name: &str) -> Element {
 
 fn mail() -> NavShell {
     NavShell::new()
+        .content_kind(ContentKind::Reading)
         .sidebar(Box::new(mailboxes()))
         .overview(messages())
         .content(message())
@@ -158,7 +161,7 @@ fn mail() -> NavShell {
 
 fn settings() -> NavShell {
     NavShell::new()
-        .mode(NavMode::Push)
+        .content_kind(ContentKind::Page)
         .sidebar(Box::new(
             NavList::new(vec![NavSection::untitled(
                 "categories",
@@ -353,7 +356,7 @@ pub fn run(args: &[String]) {
         |_| {},
     );
     shoot(
-        mail(),
+        mail().content_kind(ContentKind::Document),
         &theme,
         (800, 600),
         &dir.join("mail-800-drawer.png"),
@@ -385,8 +388,8 @@ pub fn run(args: &[String]) {
     shoot(
         settings(),
         &Theme::light(),
-        (560, 800),
-        &dir.join("settings-560.png"),
+        (360, 800),
+        &dir.join("settings-360.png"),
         |_| {},
     );
     shoot(
@@ -418,8 +421,8 @@ pub fn run(args: &[String]) {
 fn shoot_header_row(theme: &Theme, name: &str, dir: &Path) {
     {
         let theme = theme.clone();
-        // An open drawer under the header row: History stays reachable, the
-        // columns stay under the scrim.
+        // The mailboxes screen under the header row: History stays
+        // reachable.
         shoot_history_at(
             &theme,
             false,

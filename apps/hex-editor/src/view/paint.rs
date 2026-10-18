@@ -512,7 +512,6 @@ impl HexView {
         let g = self.geo.clone();
         let mut toggle_theme = theme.clone();
         if g.inspector_visible {
-            self.drawer.draw_scrim(scene, transform, theme);
             let local = self.drawer.paint_panel(scene, transform, theme);
             self.paint_inspector(scene, transform, tr, &local, presence, &g);
             if g.inspector.contains(g.toggle.center()) {

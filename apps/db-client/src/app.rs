@@ -141,6 +141,7 @@ impl DbClientApp {
         let search = ui::search::search_button(ui::search::SearchRequest::this_app());
         let actions: Vec<ui::widget::Element> = vec![Box::new(search)];
         let shell = NavShell::new()
+            .content_kind(ui::widget::ContentKind::Document)
             .with_id("db-client")
             .sidebar(Box::new(Navigator::new(&link)))
             .with_filter(ui::widget::SearchField::filter().with_placeholder("Filter tables"))

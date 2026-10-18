@@ -333,11 +333,16 @@ fn back_follows_the_apps_page_stack() {
     assert!(g.toggle.width() > 0.0 && g.back.x0 > g.toggle.x1);
 }
 
-/// Behind an open drawer the other columns stay laid out and painted,
-/// inert; the drawer opens under the header row, which stays live.
+/// Beside an open drawer the other columns stay laid out, painted and live:
+/// a drawer is not modal. It opens under the header row, which stays live.
 #[test]
-fn an_open_drawer_keeps_the_window_under_its_scrim() {
-    let mut h = harness(mail_shell(), 800, 600, Theme::dark());
+fn an_open_drawer_leaves_the_window_live_beside_it() {
+    let mut h = harness(
+        mail_shell().content_kind(ContentKind::Document),
+        800,
+        600,
+        Theme::dark(),
+    );
     h.root_mut::<NavShell>()
         .set_history_control(Some(HistoryControl::Closed));
     settle(&mut h, 800, 600);
@@ -345,11 +350,11 @@ fn an_open_drawer_keeps_the_window_under_its_scrim() {
     h.root_mut::<NavShell>().open_sidebar();
     settle(&mut h, 800, 600);
     let g = geometry(&h);
+    assert_eq!(g.sidebar, SidebarPlacement::Drawer);
     assert!(
         g.sidebar_column.y0 >= g.header_height,
         "under the header row"
     );
-    assert!(g.scrim.y0 >= g.header_height - 0.5, "the row is not dimmed");
     let shell = h.root::<NavShell>();
     assert!(shell.host_parts.contains(&Part::Body(Column::Content)));
     assert_eq!(
@@ -357,10 +362,10 @@ fn an_open_drawer_keeps_the_window_under_its_scrim() {
             .part(Part::Body(Column::Content))
             .map(Widget::get_rect),
         Some(before),
-        "the content keeps its place under the scrim"
+        "the content keeps its place beside the drawer"
     );
     let ids = exposed_ids(&h);
-    assert!(!ids.contains(&"content".to_owned()), "inert: {ids:?}");
+    assert!(ids.contains(&"content".to_owned()), "not inert: {ids:?}");
     assert!(
         ids.contains(&"nav-shell-history".to_owned()),
         "History stays reachable"
@@ -369,11 +374,12 @@ fn an_open_drawer_keeps_the_window_under_its_scrim() {
 }
 
 #[test]
-fn enlarged_drawers_leave_a_pointer_target_on_the_dismissible_scrim() {
+fn enlarged_drawers_leave_a_pointer_target_that_dismisses_them() {
     for theme in [Theme::light(), Theme::dark().with_text_scale(2.0)] {
         let band = f64::from(theme.tokens.metrics.min_pointer_target + theme.tokens.spacing.s4);
         for inspector in [false, true] {
             let shell = NavShell::new()
+                .content_kind(ContentKind::Document)
                 .sidebar(Probe::boxed("sidebar").0)
                 .content(Probe::boxed("content").0)
                 .inspector(Probe::boxed("inspector").0);
@@ -392,12 +398,13 @@ fn enlarged_drawers_leave_a_pointer_target_on_the_dismissible_scrim() {
                 assert!(480.0 - g.sidebar_column.x1 >= band - 0.5);
                 (480.0 + g.sidebar_column.x1) / 2.0
             };
-            h.click_at(x, g.scrim.center().y);
+            assert!(g.open_drawer().is_some());
+            h.click_at(x, g.content_column.center().y);
             settle(&mut h, 480, 800);
             assert_eq!(
-                geometry(&h).scrim,
-                Rect::ZERO,
-                "scrim press closes the drawer"
+                geometry(&h).open_drawer(),
+                None,
+                "a press beside the drawer closes it"
             );
         }
     }
@@ -406,7 +413,9 @@ fn enlarged_drawers_leave_a_pointer_target_on_the_dismissible_scrim() {
 #[test]
 fn a_bound_state_opens_a_drawer_and_hears_the_persons_choice() {
     let open = LocalState::new(true);
-    let shell = mail_shell().with_sidebar_state(&open);
+    let shell = mail_shell()
+        .content_kind(ContentKind::Document)
+        .with_sidebar_state(&open);
     let mut h = harness(shell, 800, 600, Theme::dark());
     settle(&mut h, 800, 600);
     assert!(
@@ -667,7 +676,7 @@ fn the_overview_collapses_into_its_rail_before_it_pushes() {
     settle(&mut h, 1280, 800);
     assert_eq!(geometry(&h).overview, OverviewPlacement::List);
     // Wider than the rail and the detail, narrower than the list and it.
-    assert!(m.rail + m.detail_min < 600.0 && 600.0 < m.overview + m.detail_min);
+    assert!(m.rail + m.page_min < 600.0 && 600.0 < m.overview + m.page_min);
     settle(&mut h, 600, 800);
     let g = geometry(&h);
     assert_eq!(g.overview, OverviewPlacement::Rail, "{g:?}");

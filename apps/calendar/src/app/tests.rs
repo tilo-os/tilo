@@ -470,7 +470,7 @@ fn layout_reflows_on_resize_instead_of_caching_first_frame_geometry() {
 
         // Resize the SAME instance narrow. A cached-from-first-frame mode would
         // stay Persistent; a correctly re-derived one flips to Overlay.
-        app.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
+        app.rect = Rect::new(0.0, 0.0, 480.0, 720.0);
         app.relayout();
         assert_eq!(
             app.sidebar.mode(),
@@ -479,7 +479,7 @@ fn layout_reflows_on_resize_instead_of_caching_first_frame_geometry() {
         );
         // Narrow + detail open: the sheet floats over the full-width
         // calendar.
-        assert_eq!(app.content_rect.width(), 560.0);
+        assert_eq!(app.content_rect.width(), 480.0);
         assert!(app.detail_rect.width() > 0.0);
         assert_ne!(
             app.content_rect, wide_content,
@@ -1470,17 +1470,21 @@ fn sidebar_presentation_follows_width_and_hides_via_its_toggle() {
     // Case `narrow_window_turns_the_sidebar_into_a_drawer`.
     {
         let mut app = CalendarApp::new_demo();
-        app.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
+        app.rect = Rect::new(0.0, 0.0, 480.0, 600.0);
         app.relayout();
         assert_eq!(app.sidebar.mode(), SidebarMode::Overlay);
         assert_eq!(app.content_rect.x0, app.rect.x0);
-        assert!(!app.sidebar.visible(), "the drawer is closed by default");
+        assert!(
+            !app.sidebar.visible(),
+            "the calendar is in front by default"
+        );
         app.sidebar.set_open(true);
         app.relayout();
         assert!(app.sidebar.visible());
-        assert!(
-            app.sidebar.rect().width() < app.rect.width() - 1.0,
-            "the drawer floats inside the window"
+        assert_eq!(
+            app.sidebar.rect().width(),
+            app.rect.width(),
+            "the list and the calendar take turns filling the window"
         );
     }
     // Case `desktop_sidebar_hides_and_only_the_sidebar_hides`.
@@ -1703,10 +1707,12 @@ fn view_switcher_lives_in_the_header_or_the_drawer_without_duplicates() {
 
         app.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
         app.relayout();
-        assert_eq!(app.sidebar.mode(), SidebarMode::Overlay);
+        assert_eq!(app.sidebar.mode(), SidebarMode::Persistent);
+        app.sidebar.set_collapsed(true);
+        app.relayout();
         assert!(
             app.topbar.switcher_visible(),
-            "a roomy header keeps the switcher beside a drawer"
+            "a roomy header keeps the switcher beside a hidden sidebar"
         );
 
         app.rect = Rect::new(0.0, 0.0, 460.0, 800.0);

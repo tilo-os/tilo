@@ -509,6 +509,7 @@ impl ContactsApp {
         let destination = LocalState::new(Some(ALL_DESTINATION.to_owned()));
         let sort_choice = LocalState::new(sort_value(SortKey::Name).to_owned());
         let mut shell = NavShell::new()
+            .content_kind(ui::widget::ContentKind::Page)
             .with_id("contacts.shell")
             .sidebar(Box::new(Self::sidebar_list(&[], &destination)))
             .overview(Box::new(ContactList::new(std::rc::Rc::clone(&shared))))

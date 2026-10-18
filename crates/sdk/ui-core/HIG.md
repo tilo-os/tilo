@@ -84,22 +84,49 @@ email client's accounts + folders.
   Dragging the sidebar's trailing edge resizes it between
   `sidebar_min_width` and `sidebar_max_width`; dragging it below the minimum
   hides it. The person's choice is remembered per window size class.
-- **Mobile / narrow:** below the width where the content beside it would be
-  squeezed (`sidebar_width` + the content's minimum), it **stays a genuine
-  sidebar** as a **floating drawer** over the content — the floating
-  material, `radii.panel`, the floating shadow, `surfaces.scrim` behind —
-  summoned and dismissed by the same toggle, a scrim press or Esc. It opens
-  under the header row, which stays live (the toggle does not move, History
-  stays reachable); the columns behind it stay in place under the scrim
-  and take no input. Choosing
-  a destination in it closes it. It remains a menu; it does **not** turn
-  into a full-screen page. (`NavMode::Push` is the exception for a list of
-  *categories* such as Settings: there the sidebar is the first screen of
-  the push stack and choosing pushes the content. `NavMode::Docked` is for a
-  compact icon rail, `NavList::rail`, which fits beside content at every
-  width.)
-- A docked sidebar is never kept beside columns that no longer fit: at 800 px
-  a window with a sidebar, an overview and a detail shows the drawer.
+- **At any width, the layout in which everything shown is usable.**
+  Darkening content the person works with is never the automatic answer.
+  - **Docked** while the sidebar fits beside the content's *real* minimum:
+    the app says what its content is (`.content_kind(ContentKind::List)`,
+    `Reading`, `Page`, `Grid`, `Document`) and the shell knows what that
+    needs (`list_min_width` 320, `reading_min_width` 360, `page_min_width`
+    360, `grid_min_width` 280). The sidebar first shrinks from
+    `sidebar_width` toward `sidebar_min_width`; the layout changes only
+    below `sidebar_min_width` + the content's minimum (a Files window docks
+    down to 520). Hiding it is the person's choice, remembered per size
+    class; showing it again docks it and the content reflows.
+  - **One at a time (push)** below that: the list (sidebar or overview) or
+    the page fills the window, with Back — the Settings list or a setting,
+    Files' places or a folder. A new narrow window opens on the list;
+    narrowing a docked window keeps the person's place (they land on the
+    page they were on, Back goes to the list), and widening docks again
+    with the same page open. Choosing a destination pushes the content.
+  - **A floating drawer** only for a *content-primary* app
+    (`ContentKind::Document`: a document or editor whose sidebar is an
+    occasional outline or list of documents) too narrow to dock. It opens
+    under the header row, which stays live, with the floating material,
+    `radii.panel` and the floating shadow — and **no scrim**: a drawer is
+    not modal, the content beside it stays visible, exposed and live, and a
+    press on it, the toggle or Esc puts the drawer away (the press does
+    nothing else). Choosing a destination in it closes it.
+  - Every threshold has **hysteresis** (`layout_hysteresis`, 24): a layout
+    that switched away comes back only that far past its threshold, so a
+    window resized near it never flickers.
+  - **A switch moves, it does not jump.** Narrowing into one column at a
+    time, the page slides from where it stood beside the sidebar to fill the
+    window; widening, the sidebar slides back in and the content makes room
+    (`motion.durations.base`). A column that appears where nothing slides
+    fades in. Under reduced motion nothing slides: the columns stand in
+    their new place at once and fade in there.
+  - **The narrowest window** is the compact layout's: one column at a time,
+    `window_min_width` (320, phone width) or the content's minimum where
+    that is wider. The shell states it to the window system
+    (`Widget::minimum_window_width`, `xdg_toplevel.set_min_size`), and an
+    app in the Tilo shell's own process states it through
+    `AppWidget::min_window_width`, so the desktop stops a resize there.
+  - `NavMode::Docked` is for a compact icon rail, `NavList::rail`, which fits
+    beside content at every width.
+- A docked sidebar is never kept beside columns that no longer fit.
 
 ### 1b. Content panels  (overview + detail)
 
@@ -110,7 +137,7 @@ list (overview) + the message (detail).
 - **Desktop / wide:** shown **side by side** (alongside the genuine sidebar, if
   any). Only the sidebar collapses; the content panels stay abreast.
 - **Mobile / narrow:** when the overview and the detail no longer fit side by
-  side (`overview_width` + `detail_min_width`), show **only one of
+  side (`overview_width` + the content kind's minimum), show **only one of
   {overview, detail} at a time**. The overview is the default
   **full-screen** view; selecting an entry **slides the detail in from the
   right**, over the overview, with a **Back button top-left** in the header
@@ -118,8 +145,9 @@ list (overview) + the message (detail).
   never a scrim-overlay of content over content. A `NavList` in the overview
   pushes by itself; any other overview pushes with `shell.show(NavPane::Content)`
   or a `LocalState<NavPane>` bound with `with_pane_state`.
-- The sidebar collapses first, then the split: at 800 px a mail window shows
-  the drawer and keeps the list beside the message; at 560 px it pushes.
+- The sidebar goes first, then the split: at 800 px a mail window shows its
+  mailboxes as the first screen and the list beside the message as the
+  next; at 560 px the list and the message are screens of their own too.
 
 ### 1c. How to decide which a panel is
 
@@ -134,8 +162,9 @@ list (overview) + the message (detail).
   queue, browse history? → the content's own page stack, with the shell's
   Back (`with_back`), never a hand-placed Back button.
 - Is it *properties of the selection*? → the **inspector**; it docks while
-  the content keeps its room, floats as a drawer otherwise, and keeps the
-  person's docked or closed choice per window size class.
+  the content keeps its kind's minimum beside it, floats as a drawer (no
+  scrim, as above) otherwise, and keeps the person's docked or closed
+  choice per window size class.
 
 ### 1d. Concrete app mappings
 
@@ -149,9 +178,9 @@ list (overview) + the message (detail).
   §1b).
   - Desktop: `[ sidebar | overview | detail ]` three abreast; **only the sidebar
     collapses**.
-  - Mobile: the sidebar is an overlay drawer summoned by the collapse button; the
-    overview is full-screen and the detail slides over from the right with a back
-    button.
+  - Mobile: one column at a time — the calendars or mailboxes, then the
+    overview full-screen, then the detail sliding over from the right with a
+    back button.
 
 ### 1e. Immersive / full-bleed apps  (no sidebar at all)
 
@@ -1230,23 +1259,34 @@ is a field of `theme.tokens.metrics` (`ui::tokens::Metrics`), scaled by
   | `drawer_width` | 320 | the floating drawer, `s2` in from the window edges |
   | `rail_width` | 76 | a docked icon rail (`NavMode::Docked`, `NavList::rail`) |
   | `overview_width` | 340 | the overview column |
-  | `detail_min_width` | 360 | narrowest the detail beside an overview may get before they push |
-  | `content_min_width` | 560 | the room the content beside a sidebar needs, a readable column the width of a sheet; narrower, the sidebar becomes a drawer (`compact_breakpoint` 840 − `sidebar_width`) |
+  | `list_min_width` | 320 | the narrowest a list or table works at (`ContentKind::List`) |
+  | `reading_min_width` | 360 | the narrowest a reading column works at (`Reading`, `Document`) |
+  | `page_min_width` | 360 | the narrowest a settings page or form works at, a four-way switch beside its gutters (`Page`, the default) |
+  | `grid_min_width` | 280 | the narrowest a grid of media tiles works at (`Grid`) |
+  | `window_min_width` | 320 | the narrowest window: phone width, one column at a time |
+  | `layout_hysteresis` | 24 | how far past a threshold a layout that switched away comes back |
   | `inspector_width` | 300 | the inspector; it floats from the trailing edge when it does not fit |
   | `nav_row_height` | 32 | a navigation row (`NavList`, `paint_nav_row`) |
 
   The breakpoints follow from them: the sidebar docks while
-  `sidebar_width + overview_width + detail_min_width` (980) — or
-  `sidebar_width + content_min_width` (840) without an overview — fits, so
-  collapse follows the room the content needs: an 800 × 600 window shows its
-  sidebar as a drawer rather than squeeze a document to 520; the
-  overview and detail stand side by side while `overview_width +
-  detail_min_width` (700) fits. The shell's buttons (sidebar toggle, Back,
+  `sidebar_min_width` + the content's minimum fits (with an overview,
+  `sidebar_min_width + overview_width +` the minimum), shrinking from
+  `sidebar_width` first: Files docks down to 520, Settings to 560, Mail to
+  900. The overview and detail stand side by side while `overview_width +`
+  the minimum fits. The shell's buttons (sidebar toggle, Back,
   inspector toggle, the window's History control) are Plain icon buttons of
-  `min_pointer_target` in the `s3` inset.
+  `min_pointer_target` in the `s3` inset. `content_min_width` (560) and
+  `detail_min_width` (360) remain for painted apps that split their own
+  window; a painted app's `SidebarDrawer` takes the same content kinds
+  (`.content_kind(..)`) and shrinks, docks and keeps hysteresis the same way.
+  Too narrow to dock, its list and its content take turns filling the
+  window (`SidebarDrawer::is_push`: the list on the sidebar region under the
+  header row, the toggle bringing the content back) — Music, Calendar, Chat;
+  only a `Document` kind floats as a drawer.
   Chat's channel list and conversation form a master/detail composition:
-  its conversation reserves `detail_min_width`, rather than the form-sheet
-  `content_min_width`. With its rail, the initial docked breakpoint is 716.
+  its conversation reserves a reading column, rather than the form-sheet
+  `content_min_width`: it is a `Reading` kind, and the panel docks down to
+  560 (`sidebar_min_width` and the conversation).
   Adaptive sidebar resizing reserves the declared content minimum, so
   enlarging a docked panel cannot hide its own resize control.
 - **One text-scale rule (`Theme::responsive_scale`).** The shell grows its

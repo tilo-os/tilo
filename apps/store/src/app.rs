@@ -1087,6 +1087,7 @@ impl Widget for StoreApp {
             let requested = Rc::clone(&self.back_requested);
             Box::new(
                 ui::widget::NavShell::new()
+                    .content_kind(ui::widget::ContentKind::Grid)
                     .with_id("store.shell")
                     .on_back(move || can.get(), move || requested.set(true)),
             )
