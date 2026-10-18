@@ -110,6 +110,7 @@ QUALITY_ONLY_HELPERS = {
     "tools/policy/run.sh": "tools/tests/test_ci_select.py",
     "tools/policy/added_line_policy.py": "tools/tests/test_added_line_policy.py",
     "tools/policy/check_commit_policy.py": "tools/tests/test_commit_hooks.py",
+    "tools/policy/check_user_requirement_tests.py": "tools/tests/test_user_requirement_tests.py",
     "scripts/scan-secrets.sh": "tools/tests/test_added_line_policy.py",
     "tools/policy/check_workspace_members.py": "tools/tests/test_check_workspace_members.py",
     "tools/policy/check_repository_layout.py": "tools/tests/test_check_repository_layout.py",

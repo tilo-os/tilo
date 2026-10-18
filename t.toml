@@ -392,8 +392,8 @@ inputs = ["**/Cargo.toml", "**/*.rs", ".gitignore", "tools/ci/check-unused-depen
 
 # lint.yml's diff-based gates, against the commit the tree branched from (on main,
 # the previous commit): reasons for new Rust `allow`s, commit messages and new
-# blob contents, and the tapp and runtime size budgets, which may only shrink
-# unless a raise file says why.
+# blob contents, USER REQUIREMENT tests keeping their assertions, and the tapp
+# and runtime size budgets, which may only shrink unless a raise file says why.
 [[check]]
 name = "changes"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
@@ -403,6 +403,7 @@ base=$(git rev-parse main)
 if [ "$base" = "$(git rev-parse HEAD)" ]; then base=$(git rev-parse HEAD^); fi
 python3 tools/ci/check_changed_rust_allows.py "$base"
 python3 tools/policy/check_commit_policy.py "$base"
+python3 tools/policy/check_user_requirement_tests.py "$base"
 python3 tools/perf/tapp_size_ratchet.py check-budget --base "$base"
 python3 tools/perf/runtime_size_ratchet.py check-budget --base "$base"
 """
