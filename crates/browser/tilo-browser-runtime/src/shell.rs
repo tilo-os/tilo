@@ -841,7 +841,7 @@ impl BrowserShell {
         }
     }
 
-    fn apply_profile_choice(&mut self, choice: ProfileChoice) {
+    fn apply_profile_choice(&self, choice: ProfileChoice) {
         let request = match choice {
             ProfileChoice::Rename(name) => HostRequest::Named(name),
             ProfileChoice::Action(id) => HostRequest::Action(id),
@@ -854,7 +854,7 @@ impl BrowserShell {
     /// Ask the room's host to link (or unlink) the person's account with
     /// `app`'s service; the open card shows what came of it once the host
     /// answered ([`Self::follow_room_actions`]).
-    fn link_account(&mut self, app: &str, link: bool) {
+    fn link_account(&self, app: &str, link: bool) {
         let linked = &self.chrome.shared.linked;
         if link {
             linked.link(app);
