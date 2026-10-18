@@ -209,7 +209,7 @@ impl CalendarAccount {
 
     /// Rebuild a calendar account from a shared [`StoredAccount`], reading the
     /// password back from `vault`.
-    fn from_stored(stored: &StoredAccount, vault: &AccountCredentials) -> Option<Self> {
+    fn from_stored(stored: &StoredAccount, vault: Option<&AccountCredentials>) -> Option<Self> {
         let payload: StoredConfig = stored
             .config
             .get("calendar")
@@ -219,7 +219,7 @@ impl CalendarAccount {
         if config.display_name.is_empty() {
             config.display_name.clone_from(&stored.display_name);
         }
-        if let Some(secret) = vault.get(&stored.id) {
+        if let Some(secret) = vault.and_then(|vault| vault.get(&stored.id)) {
             #[cfg(feature = "live")]
             {
                 config.password = tilo_dav::oauth::calendar_password(&secret);
@@ -321,7 +321,7 @@ impl AccountStore {
         let credentials = AccountCredentials::open()?;
         Ok(Self::from_shared(
             &SharedStore::load_in(&root),
-            &credentials,
+            Some(&credentials),
         ))
     }
 
@@ -359,16 +359,20 @@ impl AccountStore {
         let credentials = AccountCredentials::open_in(config_root)?;
         Ok(Self::from_shared(
             &SharedStore::load_in(config_root),
-            &credentials,
+            Some(&credentials),
         ))
     }
 
     /// Project the shared accounts using the trusted account-owner credentials.
     pub fn from_store(shared: &SharedStore, vault: &AccountCredentials) -> Self {
-        Self::from_shared(shared, vault)
+        Self::from_shared(shared, Some(vault))
     }
 
-    fn from_shared(shared: &SharedStore, vault: &AccountCredentials) -> Self {
+    /// The accounts `shared` holds, with the passwords from `vault` when this
+    /// device's credential store could be opened. Without it the accounts and
+    /// their calendars still show; signing in to their servers fails until
+    /// the store is back, and says so.
+    pub(crate) fn from_shared(shared: &SharedStore, vault: Option<&AccountCredentials>) -> Self {
         let ty = AccountTypeId::from(TYPE_ID);
         let accounts = shared
             .list(&ty)

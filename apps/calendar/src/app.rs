@@ -2025,12 +2025,15 @@ impl CalendarApp {
         if person.accounts.is_empty() {
             return;
         }
-        let Ok(credentials) = accounts::AccountCredentials::open() else {
-            tracing::error!("calendar account credentials could not be opened");
-            *seen = None;
-            return;
-        };
-        let adopted = AccountStore::from_store(&person.store(), &credentials);
+        // The accounts show whether or not this device's credential store
+        // opens: without it their servers refuse the sign-in, and the sync
+        // says so, instead of the calendars vanishing.
+        let credentials = accounts::AccountCredentials::open()
+            .inspect_err(|error| {
+                tracing::error!(%error, "calendar account credentials could not be opened");
+            })
+            .ok();
+        let adopted = AccountStore::from_shared(&person.store(), credentials.as_ref());
         if adopted != self.configured {
             self.configured = adopted;
             self.show_accounts();
