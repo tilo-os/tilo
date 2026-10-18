@@ -564,14 +564,6 @@ impl Shared {
         };
         Some((app, record))
     }
-
-    /// The record `tab` shows, once its component bound one.
-    pub fn record_of(&self, tab: TabId) -> Option<String> {
-        self.records
-            .borrow()
-            .get(&tab)
-            .map(|checkout| checkout.id.as_str().to_owned())
-    }
 }
 
 /// The Settings app, which the page lends the person's linked accounts.
