@@ -424,7 +424,7 @@ pub fn locate<'a>(
 /// in `resources`; [`DoorError::UnexpectedArgument`] if `argument` is
 /// `Some` for an [`ActionInput::Immediate`] action; or
 /// [`DoorError::MissingArgument`] if it's `None` for an
-/// [`ActionInput::Prompted`] one.
+/// [`ActionInput::Prompted`] one whose text is required.
 pub fn encode(
     resources: &[Resource],
     address: &ActionAddress,
@@ -457,6 +457,22 @@ pub fn encode(
         (ActionInput::Immediate(_), Some(_)) => Err(DoorError::UnexpectedArgument(address.clone())),
         (ActionInput::Prompted { build, .. }, Some(text)) => {
             let encoded = build(text);
+            if encoded.type_id == crate::resource::INVALID_ARGUMENTS_TYPE {
+                return Err(DoorError::InvalidArguments(
+                    String::from_utf8_lossy(&encoded.payload).into_owned(),
+                ));
+            }
+            Ok(encoded)
+        }
+        // A prompt whose text is optional (a choice with a default) is
+        // invoked without it through the typed parameters, as any caller
+        // omitting an optional argument is.
+        (ActionInput::Prompted { .. }, None)
+            if !spec.params().is_empty() && spec.params().iter().all(|param| !param.required) =>
+        {
+            let encoded = spec
+                .build_json(&serde_json::Map::new())
+                .map_err(DoorError::from)?;
             if encoded.type_id == crate::resource::INVALID_ARGUMENTS_TYPE {
                 return Err(DoorError::InvalidArguments(
                     String::from_utf8_lossy(&encoded.payload).into_owned(),
@@ -1031,6 +1047,41 @@ mod tests {
         assert_eq!(doc.get_heads(), before, "a refused call left no change");
         assert!(doc.get(&ROOT, "title").unwrap().is_none());
         assert!(doc.get(&ROOT, "starred").unwrap().is_none());
+    }
+
+    /// A prompt whose only parameter is optional runs when the caller omits
+    /// it, bound through the typed parameters exactly as an omitted optional
+    /// argument is; a required one is still refused.
+    #[test]
+    fn an_optional_only_prompt_runs_without_its_argument() {
+        let tree = vec![
+            Resource::new("notes.note:1", "notes.note", "Harbour").with_action(
+                ActionSpec::prompted_param(
+                    "retitle",
+                    "Rename",
+                    ActionParam::optional("title", crate::ParamType::Text, "New title"),
+                    "title",
+                    ExecutionLocus::ClientLocal,
+                    |text| encoded(&Note::Retitle(format!("[{text}]"))),
+                ),
+            ),
+        ];
+        let mut doc = AutoCommit::new();
+        perform(&mut doc, &tree, &retitle(), None).unwrap();
+        assert_eq!(
+            doc.get(&ROOT, "title")
+                .unwrap()
+                .unwrap()
+                .0
+                .into_string()
+                .unwrap(),
+            "[]",
+            "the omitted optional text binds as nothing typed"
+        );
+
+        let mut doc = AutoCommit::new();
+        let err = perform(&mut doc, &open(), &retitle(), None).unwrap_err();
+        assert_eq!(err, DoorError::MissingArgument(retitle()));
     }
 
     /// A text argument on the wire names no parameter; the descriptor says
