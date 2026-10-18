@@ -593,6 +593,7 @@ pub struct InstallerPreview {
     direct: direct::Direct,
     desktop_pending: bool,
     desktop_review_pending: bool,
+    native_full_os_review_pending: bool,
     user_transfer: transfer::Transfer,
     home_promotion: promotion::Promotion,
     account_actions: super::account_transfer::AccountActions,
@@ -661,6 +662,7 @@ impl Default for InstallerPreview {
             direct: direct::Direct::default(),
             desktop_pending: false,
             desktop_review_pending: false,
+            native_full_os_review_pending: false,
             user_transfer: transfer::Transfer::default(),
             home_promotion: promotion::Promotion::default(),
             account_actions: super::account_transfer::AccountActions::default(),
@@ -969,12 +971,22 @@ impl InstallerPreview {
                 | "choose-windows-export"
                 | "export-windows-preparation"
         ) {
-            return self.windows.enabled && self.live;
+            return self.windows.enabled && self.live && !self.direct.active;
         }
         if self.windows.enabled && self.live {
+            if self.direct.active {
+                return matches!(id, "read-preview" | "back-in-preview");
+            }
+            if id == "continue-preview" {
+                return self.journey.page == Page::Destination
+                    && self.journey.destination == Some(Destination::Computer);
+            }
             return matches!(
                 id,
                 "read-preview"
+                    | "choose-preview"
+                    | "continue-preview"
+                    | "back-in-preview"
                     | "find-windows-roots"
                     | "choose-windows-root"
                     | "select-windows-root"
@@ -1070,7 +1082,11 @@ impl InstallerPreview {
         if self.demo && !demo::admits(&effect) {
             return Err("installer-demo-unavailable");
         }
-        if self.windows.enabled && self.live && !recovery::is_recovery_effect(&effect) {
+        if self.windows.enabled
+            && self.live
+            && !self.direct.active
+            && !recovery::is_recovery_effect(&effect)
+        {
             return self.apply_windows(effect);
         }
         if self.live && !self.direct.active {
@@ -3058,6 +3074,11 @@ impl InstallerPreview {
         // Register the child after the current semantic invocation has finished;
         // its published effects must not replace the executing surface's door.
         let desktop_review_changed = std::mem::take(&mut self.desktop_review_pending);
+        let native_full_os_review_changed = std::mem::take(&mut self.native_full_os_review_pending);
+        if native_full_os_review_changed && let Err(error) = self.prepare_native_full_os() {
+            self.error = Some(error);
+            self.dirty = true;
+        }
         if desktop_review_changed && let Err(error) = self.prepare_desktop() {
             self.error = Some(error);
             self.dirty = true;
@@ -3357,7 +3378,8 @@ impl InstallerPreview {
             || existing_changed
             || pairing_changed;
         let commands = std::mem::take(&mut *self.commands.borrow_mut());
-        let changed = desktop_review_changed
+        let changed = native_full_os_review_changed
+            || desktop_review_changed
             || checkpoint_changed
             || restart_changed
             || migration_changed
@@ -3643,7 +3665,13 @@ impl InstallerPreview {
             _ => Icon::Shield,
         };
         let title = t(&format!("installer-preview-{key}-title"));
-        let description = if key == "computer" && !self.direct_route_enabled() {
+        let description = if key == "computer" && self.live && self.windows.enabled {
+            t(if self.direct_route_enabled() {
+                "installer-native-full-os-body"
+            } else {
+                "imager-setup-internal-gated"
+            })
+        } else if key == "computer" && !self.direct_route_enabled() {
             t("installer-preview-computer-usb-body")
         } else if key == "migrate" && self.journey.destination == Some(Destination::Computer) {
             t("installer-preview-migrate-shared-body")
@@ -4941,7 +4969,11 @@ impl InstallerPreview {
 
     fn composition(&self, theme: &Theme) -> Box<dyn Widget> {
         if self.windows.enabled && self.live {
-            return self.windows_view();
+            return if self.journey.destination == Some(Destination::Another) {
+                self.windows_view()
+            } else {
+                self.windows_destination_view()
+            };
         }
         if self.live && self.restart.blocks() {
             return self.restart_view();
@@ -5406,6 +5438,13 @@ impl ResourceSurface<Imager, InstallerPreviewEffect> for InstallerPreview {
             }
         }
         if self.windows.enabled && self.live {
+            if self.direct.active && !self.direct.navigation.get() {
+                statuses.push(EffectStatus::unavailable(
+                    InstallerPreviewEffect::BACK_IN_PREVIEW,
+                    "installation_busy",
+                    t("installer-preview-identity-busy"),
+                ));
+            }
             if self.windows.busy() {
                 for declaration in InstallerPreviewEffect::declarations() {
                     if declaration.id != "read-preview" && self.effect_page_admitted(declaration.id)
@@ -5689,6 +5728,7 @@ impl Widget for InstallerPreview {
     }
     fn needs_animation_frame(&self) -> bool {
         self.dirty
+            || self.native_full_os_review_pending
             || self.windows.busy()
             || self.pending_slide.is_some()
             || self.slide.is_some()
@@ -5809,6 +5849,68 @@ mod tests {
     #[cfg(all(target_os = "linux", feature = "native-current-device-qualification"))]
     mod current_identity {
         include!("current_identity_tests.rs");
+    }
+
+    #[test]
+    fn windows_computer_choice_mounts_native_review_and_keeps_media_separate() {
+        let mut app = fixture();
+        app.with_widget::<InstallerPreview, _>(|preview| {
+            preview.live = true;
+            preview.windows.enabled = true;
+            preview.linux = false;
+            preview.storage = storage::Storage::default();
+            preview.capabilities.prepared_installation = false;
+        })
+        .unwrap();
+        app.effect(&InstallerPreviewEffect::ChoosePreview {
+            choice: "computer".into(),
+        })
+        .unwrap();
+        app.effect(&InstallerPreviewEffect::ContinuePreview)
+            .unwrap();
+        app.with_widget::<InstallerPreview, _>(|preview| {
+            assert!(preview.direct.active);
+            assert_eq!(preview.journey.page, Page::Destination);
+            assert!(preview.personal.prepared_handle().is_none());
+            assert!(!preview.storage.checking());
+            assert!(preview.storage.plan.is_none());
+            assert!(preview.journey.identity.is_none());
+        })
+        .unwrap();
+        let native = app
+            .effect(&super::super::actions::SetupEffect::ReadSetupStatus)
+            .unwrap()
+            .value
+            .unwrap();
+        assert_eq!(native["page"], "review");
+        assert_eq!(native["selection"]["experience"], "full_os");
+        let deadline = tilo_test_env::hang_deadline();
+        while !app
+            .with_widget::<InstallerPreview, _>(|preview| preview.direct.navigation.get())
+            .unwrap()
+        {
+            assert!(
+                ui::time::now() < deadline,
+                "native read-only probe must finish"
+            );
+            app.settle();
+        }
+        app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
+        app.effect(&InstallerPreviewEffect::ChoosePreview {
+            choice: "another".into(),
+        })
+        .unwrap();
+        let view = app.harness().inspection_json().unwrap();
+        assert!(view.contains("windows.find"));
+        assert!(catalog_availability(&mut app, "select-windows-root").is_available());
+        assert!(catalog_availability(&mut app, "export-windows-preparation").is_available());
+        assert!(
+            app.effect(&InstallerPreviewEffect::CreatePreparedIdentity {
+                private_custody: "/must-not-open".into(),
+                avatar_color: "#123456".into()
+            })
+            .is_err()
+        );
     }
 
     fn fixture() -> TestApp<ImagerShell> {

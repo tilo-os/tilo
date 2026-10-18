@@ -28,6 +28,21 @@ impl InstallerPreview {
         self.show_desktop(child)
     }
 
+    pub(super) fn prepare_native_full_os(&mut self) -> Result<(), &'static str> {
+        if !self.live
+            || !self.windows.enabled
+            || self.journey.page != Page::Destination
+            || self.journey.destination != Some(Destination::Computer)
+            || self.direct.context.is_none()
+            || self.windows.busy()
+            || self.personal_busy()
+            || self.migration_busy()
+        {
+            return Err("installer-review-installation-unavailable");
+        }
+        self.show_desktop(crate::setup::view::SetupApp::for_full_os())
+    }
+
     fn show_desktop(&mut self, child: crate::setup::view::SetupApp) -> Result<(), &'static str> {
         let navigation = child.guided_navigation_guard();
         let context = self

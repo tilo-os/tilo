@@ -313,7 +313,7 @@ imager-setup-internal-checking =
         [linux] your Linux system
        *[other] your current system
     } on this computer…
-imager-setup-internal-gated = Full Tilo is not available on this computer yet.
+imager-setup-internal-gated = Direct installation isn’t enabled in this build.
 imager-setup-internal-no-release = There is no Full Tilo release for this computer's processor yet.
 imager-setup-internal-unsupported = Tilo cannot be installed alongside the current system on this computer: { $reasons }
 imager-setup-internal-ready =
@@ -471,7 +471,8 @@ installer-preview-computer-title = On this computer
 
 installer-preview-computer-body = Add Tilo, the system that runs your apps, alongside your current system. You’ll review the disk changes before installing.
 
-installer-preview-computer-usb-body = Make a USB installer, then restart this computer from it to add Tilo alongside your current system. You’ll need a USB drive you can erase.
+installer-preview-computer-usb-body = Direct installation isn’t enabled in this build. You can make a USB installer instead.
+installer-native-full-os-body = Review installation alongside Windows without a USB drive. Availability depends on this computer and this build.
 
 installer-preview-another-title = On another computer
 
@@ -1487,7 +1488,7 @@ installer-original-complete-failed = Your migration could not be completed. Your
 
 installer-identity-route-unavailable = This way of connecting your Tilo identity isn’t available for this installation.
 
-installer-review-usb-fallback = Installation on this computer needs a USB drive. Make the installer, then restart this computer from it.
+installer-review-usb-fallback = Direct installation isn’t enabled in this build. Make a USB installer, then restart this computer from it.
 
 installer-review-usb-choice-required = Choose Make a USB installer to continue on this computer.
 
