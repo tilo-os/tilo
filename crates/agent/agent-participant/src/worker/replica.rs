@@ -1,5 +1,6 @@
 //! A record held in a confined app worker, as the supervisor uses it.
 
+use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use automerge::AutoCommit;
@@ -49,6 +50,11 @@ struct Inner {
     fresh: bool,
     /// An operation ran since the last take; the worker may hold changes.
     dirty: bool,
+    /// The records the app keeps beside this one that are held with it
+    /// (the parts of its chain), each mirrored as this one is.
+    beside: BTreeMap<RecordId, AutoCommit>,
+    /// An operation ran since the last take of the records beside.
+    beside_dirty: bool,
 }
 
 fn worker_error(reason: impl Into<String>) -> AppError {
@@ -121,6 +127,8 @@ impl ConfinedReplica {
                 mirror,
                 fresh,
                 dirty: fresh,
+                beside: BTreeMap::new(),
+                beside_dirty: false,
             }),
         };
         if fresh {
@@ -209,8 +217,25 @@ impl ConfinedReplica {
             .map_err(worker_error)?
         {
             Reply::Opened { record } if record == self.record.as_str() => {
+                // The records held beside it go back to the new worker as
+                // the mirrors hold them.
+                for (record, mirror) in &mut inner.beside {
+                    match process
+                        .call(&Request::ApplyRecord {
+                            record: record.as_str().to_owned(),
+                            snapshot: true,
+                            bytes: mirror.save(),
+                        })
+                        .map_err(worker_error)?
+                    {
+                        Reply::Done => {}
+                        Reply::Failed(reason) => return Err(worker_error(reason)),
+                        _ => return Err(worker_error("the worker answered out of turn")),
+                    }
+                }
                 inner.process = Some(process);
                 inner.dirty = false;
+                inner.beside_dirty = false;
                 Ok(())
             }
             Reply::Failed(reason) => Err(worker_error(reason)),
@@ -322,6 +347,7 @@ impl ConfinedReplica {
         };
         let mut inner = self.lock();
         inner.dirty = true;
+        inner.beside_dirty = true;
         let reply = self.call(&mut inner, &request);
         drop(inner);
         match reply {
@@ -460,6 +486,173 @@ impl ConfinedReplica {
         };
         drop(inner);
         result
+    }
+
+    /// Merge another participant's durable change into `record`: this
+    /// one ([`Self::apply`]), or one its app keeps beside it, a part of its
+    /// chain ([`crate::Replica::apply_record`]), mirrored here as this one
+    /// is. A change to a part not held yet waits for its whole document.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::apply`]; a record that is no part of a chain is refused.
+    pub fn apply_record(
+        &self,
+        record: &RecordId,
+        mutation: &DocumentMutation,
+    ) -> Result<(), AppError> {
+        if record == &self.record {
+            return self.apply(mutation);
+        }
+        if record.chain_part().is_none() {
+            return Err(AppError::Merge(format!(
+                "{} is held on its own, not beside {}",
+                record.as_str(),
+                self.record.as_str()
+            )));
+        }
+        let (snapshot, bytes) = match mutation {
+            DocumentMutation::Snapshot(bytes) => (true, bytes),
+            DocumentMutation::Incremental(bytes) => (false, bytes),
+        };
+        let mut inner = self.lock();
+        // Admitted into a copy of its mirror, kept once the worker took it.
+        let mut candidate = match inner.beside.get(record) {
+            Some(mirror) => mirror.clone(),
+            None if snapshot => AutoCommit::new(),
+            None => return Ok(()),
+        };
+        admit_incoming(&mut candidate, bytes)?;
+        let reply = self.call(
+            &mut inner,
+            &Request::ApplyRecord {
+                record: record.as_str().to_owned(),
+                snapshot,
+                bytes: bytes.clone(),
+            },
+        );
+        let result = match reply {
+            Ok(Reply::Done) => {
+                inner.beside.insert(record.clone(), candidate);
+                Ok(())
+            }
+            Ok(Reply::Failed(reason)) => Err(AppError::Merge(reason)),
+            Ok(_) => {
+                inner.process = None;
+                Err(worker_error("the worker answered out of turn"))
+            }
+            Err(error) => Err(error),
+        };
+        drop(inner);
+        result
+    }
+
+    /// This participant's changes to the records held beside this one since
+    /// the last call, by record, admitted here first:
+    /// [`crate::Replica::take_record_mutations`]. A part the worker started
+    /// comes whole; it must be a part of a chain not held here yet.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::take_mutation`].
+    pub fn take_record_mutations(&self) -> Result<Vec<(RecordId, DocumentMutation)>, AppError> {
+        let mut inner = self.lock();
+        if !std::mem::take(&mut inner.beside_dirty) {
+            return Ok(Vec::new());
+        }
+        let taken = match self.call(&mut inner, &Request::TakeRecordMutations)? {
+            Reply::RecordMutations(taken) => taken,
+            Reply::Failed(reason) => return Err(worker_error(reason)),
+            _ => {
+                inner.process = None;
+                return Err(worker_error("the worker answered out of turn"));
+            }
+        };
+        let mut out = Vec::new();
+        for (record, snapshot, bytes) in taken {
+            match self.admit_beside(&mut inner.beside, &record, snapshot, bytes) {
+                Ok(taken) => out.push(taken),
+                Err(error) => {
+                    // A worker that sends what is not admitted is not asked
+                    // again.
+                    inner.process = None;
+                    return Err(error);
+                }
+            }
+        }
+        drop(inner);
+        Ok(out)
+    }
+
+    /// Admit one change the worker made to a record held beside this one
+    /// to its mirror: a part it started whole, a part held here as changes
+    /// on top of it.
+    fn admit_beside(
+        &self,
+        beside: &mut BTreeMap<RecordId, AutoCommit>,
+        record: &str,
+        snapshot: bool,
+        bytes: Vec<u8>,
+    ) -> Result<(RecordId, DocumentMutation), AppError> {
+        let record = RecordId::parse(record)
+            .filter(|record| record.chain_part().is_some() && record != &self.record)
+            .ok_or_else(|| worker_error("the worker named a record it does not hold beside"))?;
+        match (snapshot, beside.get_mut(&record)) {
+            (true, None) => {
+                let mirror = tilo_automerge_isolate::load(&bytes)
+                    .map_err(|error| AppError::Merge(error.to_string()))?;
+                beside.insert(record.clone(), mirror);
+                Ok((record, DocumentMutation::Snapshot(bytes)))
+            }
+            (false, Some(mirror)) => {
+                match tilo_automerge_isolate::apply(mirror, &bytes, Dependencies::RequireComplete) {
+                    Ok(Applied::Changed(_)) => Ok((record, DocumentMutation::Incremental(bytes))),
+                    Ok(Applied::MissingDependencies) => Err(AppError::Merge(
+                        "the worker's change builds on nothing the part holds".into(),
+                    )),
+                    Err(error) => Err(AppError::Merge(error.to_string())),
+                }
+            }
+            _ => Err(worker_error(
+                "the worker replaced a part it did not start, or changed one it does not hold",
+            )),
+        }
+    }
+
+    /// The records held beside this one ([`Self::apply_record`]), by id.
+    #[must_use]
+    pub fn records_beside(&self) -> Vec<RecordId> {
+        self.lock().beside.keys().cloned().collect()
+    }
+
+    /// Read `record` as the supervisor holds it: this one, or one held
+    /// beside it. `None` for a record not held here.
+    pub fn read_record<R>(
+        &self,
+        record: &RecordId,
+        read: impl FnOnce(&AutoCommit) -> R,
+    ) -> Option<R> {
+        let inner = self.lock();
+        if record == &self.record {
+            return Some(read(&inner.mirror));
+        }
+        inner.beside.get(record).map(read)
+    }
+
+    /// [`Self::read_record`] through the record's history.
+    pub fn read_record_history<R>(
+        &self,
+        record: &RecordId,
+        read: impl FnOnce(&automerge::Automerge) -> R,
+    ) -> Option<R> {
+        let mut inner = self.lock();
+        if record == &self.record {
+            return Some(read(inner.mirror.document()));
+        }
+        inner
+            .beside
+            .get_mut(record)
+            .map(|mirror| read(mirror.document()))
     }
 }
 

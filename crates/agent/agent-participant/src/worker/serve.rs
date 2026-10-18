@@ -183,6 +183,37 @@ impl Worker {
                     Err(error) => Reply::Failed(error.to_string()),
                 }
             }
+            Request::ApplyRecord {
+                record,
+                snapshot,
+                bytes,
+            } => {
+                let Some(record) = parse_record(&record) else {
+                    return Reply::Failed(format!("{record} is not a record id"));
+                };
+                let mutation = if snapshot {
+                    DocumentMutation::Snapshot(bytes)
+                } else {
+                    DocumentMutation::Incremental(bytes)
+                };
+                match replica.apply_record(&record, &mutation) {
+                    Ok(()) => Reply::Done,
+                    Err(error) => Reply::Failed(error.to_string()),
+                }
+            }
+            Request::TakeRecordMutations => Reply::RecordMutations(
+                replica
+                    .take_record_mutations()
+                    .into_iter()
+                    .map(|(record, mutation)| {
+                        let record = record.as_str().to_owned();
+                        match mutation {
+                            DocumentMutation::Snapshot(bytes) => (record, true, bytes),
+                            DocumentMutation::Incremental(bytes) => (record, false, bytes),
+                        }
+                    })
+                    .collect(),
+            ),
             Request::Presence => Reply::Presence(
                 replica
                     .presence()

@@ -20,6 +20,7 @@ modules:
     buildsystem: simple
     build-commands:
       - install -Dm755 tilo-imager-bin /app/bin/tilo-imager
+      - install -Dm755 tilo-enroll /app/bin/tilo-enroll
       - tar -xf tilo-capture-sidecar.tar -C /app
       - install -Dm644 org.tilo.Imager.desktop /app/share/applications/org.tilo.Imager.desktop
       - install -Dm644 org.tilo.Imager.metainfo.xml /app/share/metainfo/org.tilo.Imager.metainfo.xml
@@ -27,6 +28,8 @@ modules:
     sources:
       - type: file
         path: tilo-imager-bin
+      - type: file
+        path: tilo-enroll
       - type: file
         path: tilo-capture-sidecar.tar
       - type: file

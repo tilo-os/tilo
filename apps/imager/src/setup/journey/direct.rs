@@ -58,22 +58,121 @@ impl InstallerPreview {
     }
 
     pub(super) fn direct_available(&self) -> bool {
-        self.live
-            && self.journey.page == Page::Review
-            && self.journey.destination == Some(Destination::Computer)
-            && self.direct.context.is_some()
-            && !self.media_preparation.busy()
-            && !self.migration_busy()
-            && !self.personal_busy()
-            && self.personal.prepared_handle().is_some()
-            && crate::setup::internal_install_flow::live_gate_open()
-            && self
-                .storage
-                .facts
-                .as_ref()
-                .is_some_and(|facts| facts.offers_full_os())
-            && self.storage.admit().is_ok()
-            && self.recovery.evidence().is_ok()
+        self.direct_blocker().is_none()
+    }
+
+    /// The explanation and the action share admission; display never grants permission.
+    pub(super) fn direct_blocker(&self) -> Option<String> {
+        use crate::setup::strings::t;
+        let key = if !self.live
+            || self.journey.page != Page::Review
+            || self.journey.destination != Some(Destination::Computer)
+        {
+            "installer-review-not-ready"
+        } else if self.direct.context.is_none() {
+            "installer-review-context-pending"
+        } else if self.media_preparation.busy() || self.migration_busy() || self.personal_busy() {
+            "installer-review-preparation-pending"
+        } else if self.personal.prepared_handle().is_none() {
+            "installer-review-identity-pending"
+        } else if !crate::setup::internal_install_flow::live_gate_open() {
+            "installer-preview-storage-release-blocked"
+        } else {
+            return self.direct_storage_blocker();
+        };
+        Some(t(key))
+    }
+
+    fn direct_storage_blocker(&self) -> Option<String> {
+        use crate::setup::strings::t;
+        let key = if let Some(facts) = &self.storage.facts {
+            if !facts.offers_full_os() {
+                return Some(
+                    facts
+                        .blockers
+                        .iter()
+                        .find(|blocker| !blocker.has_remedy())
+                        .map_or_else(
+                            || t("installer-review-storage-pending"),
+                            |blocker| {
+                                crate::setup::internal_install_flow::blocker_text(
+                                    *blocker,
+                                    facts.basis.as_ref().map_or(
+                                        crate::setup::model::HostOs::Other,
+                                        |basis| match basis.host_os() {
+                                            staging::plan::HostOs::Linux => {
+                                                crate::setup::model::HostOs::Linux
+                                            }
+                                            staging::plan::HostOs::Windows => {
+                                                crate::setup::model::HostOs::Windows
+                                            }
+                                        },
+                                    ),
+                                )
+                            },
+                        ),
+                );
+            }
+            if let Err(error) = self.storage.admit() {
+                if let staging::plan::PlanError::InsufficientSpace {
+                    needed_bytes,
+                    available_bytes,
+                } = error
+                {
+                    return Some(crate::setup::strings::t_args(
+                        "installer-review-storage-shortfall",
+                        &[
+                            ("needed", ui::format::bytes(needed_bytes).into()),
+                            ("available", ui::format::bytes(available_bytes).into()),
+                        ],
+                    ));
+                }
+                "installer-review-storage-pending"
+            } else if self.recovery.evidence().is_err() {
+                "installer-recovery-copy-required"
+            } else {
+                return None;
+            }
+        } else {
+            "installer-review-storage-pending"
+        };
+        Some(t(key))
+    }
+
+    pub(super) fn review_storage_summary(&self) -> String {
+        use crate::setup::strings::{t, t_args};
+        // Recompute for display from the current facts and selected size, not
+        // the cached approved geometry. This cannot authorize installation.
+        let Some(basis) = self
+            .storage
+            .facts
+            .as_ref()
+            .and_then(|facts| facts.basis.as_ref())
+        else {
+            return t("installer-review-storage-pending");
+        };
+        let Ok(plan) = staging::plan::compute(
+            basis,
+            super::storage::requirements(self.storage.selected() << 30),
+        ) else {
+            return t("installer-review-storage-pending");
+        };
+        let allocation = t_args(
+            "installer-review-allocation",
+            &[("size", self.storage.selected().into())],
+        );
+        let effect = if let Some(shrink) = &plan.shrink {
+            t_args(
+                "installer-review-resize",
+                &[
+                    ("before", ui::format::bytes(shrink.from_bytes).into()),
+                    ("after", ui::format::bytes(shrink.to_bytes).into()),
+                ],
+            )
+        } else {
+            t("installer-review-unallocated")
+        };
+        format!("{allocation} {effect}")
     }
 
     pub(super) fn reviewed_belongings(
@@ -130,7 +229,12 @@ impl InstallerPreview {
         if !self.live
             || !matches!(
                 self.journey.page,
-                Page::Devices | Page::Belongings | Page::Accounts | Page::Review | Page::Storage
+                Page::Devices
+                    | Page::Purpose
+                    | Page::Belongings
+                    | Page::Accounts
+                    | Page::Review
+                    | Page::Storage
             )
             || self.journey.destination != Some(Destination::Computer)
             || self.media_preparation.busy()
@@ -285,6 +389,7 @@ impl InstallerPreview {
         ));
         self.direct.navigation = navigation;
         self.direct.active = true;
+        self.composition_replaced = true;
         self.dirty = false;
         Ok(())
     }
@@ -293,6 +398,157 @@ impl InstallerPreview {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn review_allocation_tracks_selected_space_and_method_without_granting_approval() {
+        use crate::setup::strings::{t, t_args};
+        use ui::theme::Theme;
+        let mut preview = InstallerPreview::default();
+        preview.journey.page = Page::Review;
+        preview.journey.destination = Some(Destination::Computer);
+        assert_eq!(
+            preview.direct_storage_blocker(),
+            Some(t("installer-review-storage-pending"))
+        );
+        assert_eq!(
+            preview.review_storage_summary(),
+            t("installer-review-storage-pending")
+        );
+        preview.storage.stage();
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let source = root.join("source");
+        let destination = root.join("recovery");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::create_dir(&destination).unwrap();
+        let belongings = super::super::belongings::Belongings::from_windows_roots(&[
+            crate::setup::windows_inventory::SelectedRoot {
+                path: source,
+                role: crate::setup::windows_inventory::RootRole::KnownFolder,
+            },
+        ])
+        .unwrap();
+        let inventory = belongings.windows.as_ref().unwrap();
+        preview
+            .recovery
+            .review_directory(inventory, &inventory.roots[0].source_id, &destination)
+            .unwrap();
+        assert_eq!(
+            preview.direct_storage_blocker(),
+            Some(t("installer-recovery-copy-required"))
+        );
+        for size in [80, 120] {
+            preview.storage.set_size(size).unwrap();
+            let body = preview.body(&Theme::default());
+            let row =
+                super::super::visual_tests::control(&body, "installer.review.storage").unwrap();
+            let node = row.accessibility().unwrap();
+            let summary = preview.review_storage_summary();
+            assert!(summary.contains(&t_args(
+                "installer-review-allocation",
+                &[("size", size.into())]
+            )));
+            assert!(summary.contains(&t("installer-review-unallocated")));
+            assert!(format!("{node:?}").contains(&size.to_string()));
+        }
+        let basis = crate::setup::staging::plan::tests::windows_basis(512, 500, 100, false);
+        preview.storage.accept(staging::probe::HostFacts {
+            basis: Some(basis),
+            bitlocker_protected: false,
+            blockers: Vec::new(),
+        });
+        preview.storage.set_size(120).unwrap();
+        let shrink = preview
+            .storage
+            .plan
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .shrink
+            .as_ref()
+            .unwrap();
+        assert!(preview.review_storage_summary().contains(&t_args(
+            "installer-review-resize",
+            &[
+                ("before", ui::format::bytes(shrink.from_bytes).into()),
+                ("after", ui::format::bytes(shrink.to_bytes).into()),
+            ]
+        )));
+        preview
+            .storage
+            .plan
+            .as_mut()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .target_extent
+            .first_lba += 2048;
+        assert!(preview.storage.admit().is_err());
+        assert_eq!(
+            preview.direct_storage_blocker(),
+            Some(t("installer-review-storage-pending"))
+        );
+        assert!(!preview.direct_available());
+        assert_eq!(
+            preview.prepare_direct(),
+            Err("installer-preview-storage-unavailable")
+        );
+        assert!(!preview.direct.active);
+        // The review row is an actual recovery route, with Save returning here.
+        preview.journey.edit("storage").unwrap();
+        assert_eq!(preview.journey.page, Page::Storage);
+        assert!(preview.journey.saving_edit());
+    }
+
+    #[test]
+    fn live_review_blocker_matches_disabled_action_and_belongings_edit_says_save() {
+        use crate::setup::strings::t;
+        use ui::theme::Theme;
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_IMAGER_ALLOW_INTERNAL_INSTALL", "1");
+        let mut preview = InstallerPreview {
+            live: true,
+            ..Default::default()
+        };
+        preview.journey.page = Page::Review;
+        preview.journey.destination = Some(Destination::Computer);
+        let root = preview.composition(&Theme::default());
+        let control = super::super::visual_tests::control;
+        assert!(
+            control(root.as_ref(), "installer.prepare-direct")
+                .unwrap()
+                .accessibility()
+                .unwrap()
+                .state
+                .disabled
+        );
+        assert_eq!(
+            preview.direct_blocker(),
+            Some(t("installer-review-context-pending"))
+        );
+        let blocker = control(root.as_ref(), "installer.review.blocker")
+            .unwrap()
+            .accessibility()
+            .unwrap();
+        assert_eq!(
+            blocker.name.as_deref(),
+            Some(t("installer-review-context-pending").as_str())
+        );
+        assert!(control(root.as_ref(), "installer.review.storage").is_some());
+        preview.journey.migrate = Some(true);
+        preview.journey.edit("belongings-details").unwrap();
+        assert!(preview.journey.saving_edit());
+        let root = preview.composition(&Theme::default());
+        let next = control(root.as_ref(), "installer.next")
+            .unwrap()
+            .accessibility()
+            .unwrap();
+        assert_eq!(
+            next.name.as_deref(),
+            Some(t("installer-preview-save").as_str())
+        );
+    }
+
     #[test]
     fn direct_refuses_missing_review_without_discarding_personal_choices() {
         let mut preview = InstallerPreview {

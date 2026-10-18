@@ -72,13 +72,22 @@ impl Pairing {
         requester_pid: u32,
         requester_start_time: u64,
     ) -> Result<(), &'static str> {
+        self.start_resolving(label, requester_pid, requester_start_time, trusted_helper)
+    }
+    fn start_resolving(
+        &mut self,
+        label: &str,
+        requester_pid: u32,
+        requester_start_time: u64,
+        helper: impl FnOnce() -> Option<PathBuf>,
+    ) -> Result<(), &'static str> {
         if self.busy() || self.ready() {
             return Err("installer-pairing-busy");
         }
         if label.is_empty() || label.len() > 64 || label.chars().any(char::is_control) {
             return Err("installer-preview-device-label-invalid");
         }
-        let helper = trusted_helper().ok_or("installer-pairing-helper-unavailable")?;
+        let helper = helper().ok_or("installer-pairing-component-missing")?;
         let directory = preparation_directory().map_err(|_| "installer-pairing-failed")?;
         let operation = directory.as_path();
         let pin = ensure_private_tree(operation).map_err(|_| "installer-pairing-failed")?;
@@ -214,19 +223,23 @@ fn preparation_directory() -> std::io::Result<PathBuf> {
 fn trusted_helper() -> Option<PathBuf> {
     let current = std::env::current_exe().ok()?.canonicalize().ok()?;
     let sibling = current.parent()?.join("tilo-enroll");
-    [sibling, PathBuf::from("/usr/bin/tilo-enroll")]
-        .into_iter()
-        .find(|path| {
-            std::fs::symlink_metadata(path).is_ok_and(|metadata| {
-                metadata.is_file()
-                    && !metadata.is_symlink()
-                    && metadata.mode() & 0o022 == 0
-                    && metadata.mode() & 0o111 != 0
-                    && (metadata.uid() == 0
-                        || std::fs::metadata(&current)
-                            .is_ok_and(|owner| owner.uid() == metadata.uid()))
-            })
+    trusted_helper_from(&current, [sibling, PathBuf::from("/usr/bin/tilo-enroll")])
+}
+
+fn trusted_helper_from(
+    current: &Path,
+    candidates: impl IntoIterator<Item = PathBuf>,
+) -> Option<PathBuf> {
+    candidates.into_iter().find(|path| {
+        std::fs::symlink_metadata(path).is_ok_and(|metadata| {
+            metadata.is_file()
+                && !metadata.is_symlink()
+                && metadata.mode() & 0o022 == 0
+                && metadata.mode() & 0o111 != 0
+                && (metadata.uid() == 0
+                    || std::fs::metadata(current).is_ok_and(|owner| owner.uid() == metadata.uid()))
         })
+    })
 }
 
 fn read_status(custody: &Custody) -> std::io::Result<serde_json::Value> {
@@ -506,6 +519,54 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
     }
+    #[test]
+    fn missing_or_unsafe_helper_fails_before_creating_custody() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        let temporary = tempfile::tempdir().unwrap();
+        let state = temporary.path().join("state");
+        env.set("XDG_STATE_HOME", state.as_os_str());
+        let current = std::env::current_exe().unwrap().canonicalize().unwrap();
+        let helper = temporary.path().join("tilo-enroll");
+        let mut pairing = Pairing::default();
+        let mut check = || {
+            assert_eq!(
+                pairing.start_resolving("Future computer", 1, 1, || {
+                    trusted_helper_from(&current, [helper.clone()])
+                }),
+                Err("installer-pairing-component-missing")
+            );
+            assert!(!pairing.busy());
+            assert!(!pairing.ready());
+            assert!(pairing.custody.is_none());
+            assert!(pairing.prepared().is_none());
+            assert!(!state.exists());
+        };
+        check();
+        std::fs::write(&helper, b"must never execute").unwrap();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o600)).unwrap();
+        check();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o777)).unwrap();
+        check();
+        std::fs::remove_file(&helper).unwrap();
+        std::os::unix::fs::symlink(&current, &helper).unwrap();
+        check();
+        std::fs::remove_file(&helper).unwrap();
+        std::fs::create_dir(&helper).unwrap();
+        check();
+    }
+
+    #[test]
+    fn trusted_helper_accepts_owned_executable_and_falls_back_after_unsafe_candidate() {
+        let temporary = tempfile::tempdir().unwrap();
+        let current = std::env::current_exe().unwrap().canonicalize().unwrap();
+        let unsafe_candidate = temporary.path().join("tilo-enroll");
+        std::os::unix::fs::symlink(&current, &unsafe_candidate).unwrap();
+        assert_eq!(
+            trusted_helper_from(&current, [unsafe_candidate, current.clone()]),
+            Some(current)
+        );
+    }
+
     #[test]
     fn explicit_pairing_observes_only_public_code_and_cancel_reaps_process_tree() {
         let (temporary, custody) = fixture();

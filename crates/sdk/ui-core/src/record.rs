@@ -2741,6 +2741,20 @@ impl RecordAdmission {
     }
 }
 
+/// The address the chain `chain` (whose parts are [`RecordId::part`]) is
+/// published under, as one resource beside its app's own.
+#[must_use]
+pub fn chain_resource_id(chain: &RecordId) -> String {
+    format!("chain:{}", chain.as_str())
+}
+
+/// The chain a resource published under `id` is ([`chain_resource_id`]),
+/// or `None` when `id` names no chain.
+#[must_use]
+pub fn chain_of_resource_id(id: &str) -> Option<RecordId> {
+    RecordId::parse(id.strip_prefix("chain:")?)
+}
+
 /// The actor [`genesis`] makes record `id` of `workspace` under.
 fn genesis_actor_of(id: &RecordId, kind: &RecordKind, workspace: &str) -> automerge::ActorId {
     use sha2::Digest as _;
@@ -3205,6 +3219,26 @@ impl RecordStore {
     #[must_use]
     pub fn kept_revision(&self) -> u64 {
         self.0.try_borrow().map_or(0, |set| set.kept.get())
+    }
+
+    /// The numbers of the parts of the chain `base` open in this store and
+    /// ready to read, in order: what this process opened, or merged in from
+    /// a peer. Reads no index, so it is cheap enough for every frame.
+    #[must_use]
+    pub fn open_parts(&self, base: &RecordId) -> Vec<u64> {
+        let Ok(set) = self.0.try_borrow() else {
+            return Vec::new();
+        };
+        let mut open: Vec<u64> = set
+            .open
+            .iter()
+            .filter(|(_, parked)| parked.doc.is_some())
+            .filter_map(|(id, _)| id.chain_part())
+            .filter(|(chain, _)| chain == base)
+            .map(|(_, index)| index)
+            .collect();
+        open.sort_unstable();
+        open
     }
 
     /// Every [window default record](RecordId::window_default) of `kind`

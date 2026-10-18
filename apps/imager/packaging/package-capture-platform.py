@@ -24,6 +24,9 @@ def package(output, host, env):
         target.parent.mkdir(parents=True)
         shutil.copyfile(host, target)
         target.chmod(0o755)
+        enrollment = target.with_name('tilo-enroll')
+        shutil.copyfile(host.with_name('tilo-enroll'), enrollment)
+        enrollment.chmod(0o755)
         release.run(['bash', HERE / 'stage-capture-sidecar.sh', host, root / 'usr', target], env)
         # Native tar/AppImage/Flatpak launchers still need the helper installed
         # on the host. Never elevate an executable from their mutable bundle.

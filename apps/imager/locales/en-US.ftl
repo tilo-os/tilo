@@ -313,8 +313,12 @@ imager-setup-internal-checking =
         [linux] your Linux system
        *[other] your current system
     } on this computer…
+imager-setup-check-title = Check this computer
+imager-setup-check-only = Only compatibility checks are available here. Continue to choose what to bring.
+imager-setup-check-not-ready = Resolve the compatibility checks before continuing.
+imager-setup-check-gated = Direct installation isn’t enabled in this build. Go back to prepare a USB drive instead.
 imager-setup-internal-gated = Direct installation isn’t enabled in this build.
-imager-setup-internal-no-release = There is no Full Tilo release for this computer's processor yet.
+imager-setup-internal-no-release = This build has no installer release for this computer’s processor.
 imager-setup-internal-unsupported = Tilo cannot be installed alongside the current system on this computer: { $reasons }
 imager-setup-internal-ready =
     Tilo can be installed alongside { $host ->
@@ -508,19 +512,18 @@ installer-preview-existing-body = Connect this device to your existing Tilo iden
 
 installer-preview-profile-heading = Your profile
 
-installer-preview-profile-intro = This is how you'll appear across Tilo.
+installer-preview-profile-intro = People you collaborate with will see this name and picture.
 
 installer-preview-name-label = Your name
 
-installer-preview-profile-avatar = Keep your initials or choose a picture. You can change it later.
 
-installer-preview-password-heading = Choose a password
+installer-preview-password-heading = Protect your setup
 
-installer-preview-password-intro = You’ll use this to unlock Tilo.
+installer-preview-password-intro = Protects your identity and saved sign-ins during installation. This is separate from your computer’s login password.
 
-installer-preview-password-label = Password
+installer-preview-password-label = Setup password
 
-installer-preview-confirmation-label = Confirm password
+installer-preview-confirmation-label = Confirm setup password
 
 installer-preview-password-hint = Use at least 15 characters, ideally several unrelated words.
 
@@ -541,15 +544,13 @@ installer-preview-purpose-computer-body = For everyday use. Choose when it sleep
 installer-preview-purpose-server-title = Always-available server
 installer-preview-purpose-server-body = Keeps running when idle so your approved devices can sync. Screen blanking, locking, lid and low-battery protection stay on. Use reliable power; this does not grant remote access or enable nearby-device discovery.
 
-installer-preview-devices-heading = Your devices
+installer-preview-devices-heading = Name this computer
 
-installer-preview-devices-intro = Use this identity to manage all your Tilo devices.
+installer-preview-devices-intro = This name identifies this computer on your other Tilo devices.
 
-installer-preview-device-name-label = Name this device
+installer-preview-device-name-label = Computer name
 
 installer-preview-device-default = My computer
-
-installer-preview-more-devices = More devices
 
 installer-preview-existing-avatar = Your existing Tilo identity
 
@@ -668,6 +669,15 @@ installer-preview-storage-checking = Checking this computer’s storage…
 installer-preview-storage-capacity = { $capacity } disk
 
 installer-preview-storage-size-label = Space for Tilo
+installer-review-allocation = { $size } GiB for Tilo.
+installer-review-unallocated = Uses unallocated space; your current system’s partition stays unchanged.
+installer-review-resize = Your current system’s partition will shrink from { $before } to { $after }. Its files stay in place.
+installer-review-not-ready = Finish your setup choices before reviewing installation.
+installer-review-context-pending = Installation is not ready in this window. Reopen setup to continue.
+installer-review-preparation-pending = Wait for preparation to finish before reviewing installation.
+installer-review-identity-pending = Finish setting up your identity before reviewing installation.
+installer-review-storage-pending = Storage is not ready. Edit Space for Tilo and check capacity again.
+installer-review-storage-shortfall = Tilo needs { $needed }; { $available } is available. Edit Space for Tilo to review capacity.
 
 installer-preview-storage-size-range = Tilo needs at least { $min } GiB. Up to { $max } GiB is available.
 
@@ -986,6 +996,7 @@ installer-media-delivery-not-running = No setup delivery is running.
 installer-media-official-required = Choose a Tilo installer image to carry your prepared setup.
 
 installer-media-cancel = Cancel transfer
+installer-media-cancel-preparation = Stop preparation
 
 installer-accounts-icloud = iCloud Drive
 
@@ -1126,6 +1137,7 @@ installer-pairing-failed = We couldn’t connect this device. Try again or use y
 installer-pairing-busy = Pairing is already in progress.
 
 installer-pairing-helper-unavailable = This installer cannot connect to another Tilo device. Use your identity backup or a supported native Linux installer.
+installer-pairing-component-missing = A required component for connecting to another device is missing or unsafe. Download the complete installer again, or use your identity backup.
 
 installer-pairing-label-locked = This device name was approved by your other Tilo device and cannot be changed here.
 
@@ -1332,9 +1344,22 @@ installer-belongings-browser-unchecked = Your browser bookmarks and history coul
 
 installer-belongings-accounts-unchecked = Some saved connections couldn’t be read. Check again, or continue and connect those accounts later.
 
+installer-belongings-connections-found = Found { $count } saved { $provider } { $count ->
+    [one] connection
+   *[other] connections
+}
+installer-belongings-provider-firefox = Firefox
+installer-belongings-provider-chromium = Chromium
+installer-belongings-provider-other = service
+
 imager-setup-home-consumer-unavailable = This Tilo release cannot bring your files and app data over. Choose a newer release before continuing.
 
 installer-service-sessions-title = Website sign-ins
+installer-logins-source-body = Slack and Discord sign-ins only. You may still be asked to sign in again.
+installer-logins-group-count = { $selected } of { $total } selected
+installer-logins-group-selectable-count = { $selected } of { $total } available sign-ins selected
+installer-logins-group-unselectable = No sign-ins can be selected
+installer-logins-select-group = Select all · { $count }
 
 installer-service-sessions-body = Bring your Slack or Discord sign-ins from a browser you use. You may still need to sign in again.
 

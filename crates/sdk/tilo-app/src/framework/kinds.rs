@@ -34,8 +34,15 @@ static HOSTED: Mutex<(Kinds, Vec<(&'static str, Seed)>)> = Mutex::new((Kinds::ne
 
 /// Remember `A`'s kind and seed; its definition is being created.
 pub(crate) fn register<A: ResourceApp>() {
+    // The parts of the chains it keeps beside its record are its kinds too:
+    // a host reads a part (a chat's messages) as the app's window does.
+    let mut declared = super::Records::declaring();
+    A::records(&mut declared);
     let mut hosted = HOSTED.lock_recover();
     hosted.0.insert(resource_kind::<A>());
+    for chain in declared.into_chains() {
+        hosted.0.insert(chain.hosted_by(A::ID, A::TITLE));
+    }
     let kind = <A::Resource as Resource>::KIND;
     hosted.1.retain(|(known, _)| *known != kind);
     hosted.1.push((kind, seed::<A>));
