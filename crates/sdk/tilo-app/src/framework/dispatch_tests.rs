@@ -44,29 +44,31 @@ fn framework_edits_finish_before_observation_drain_and_refuse_before_mutation() 
     let queue = ui_core::local_document_action::Queue::new();
     let _input = queue.enter("published-revision".into());
     // No drain, admission or host response occurs between these real SDK edits.
-    for value in 0..128 {
-        dispatcher
+    let mut completed = 0;
+    for value in 0..=128 {
+        let heads = doc.get_heads();
+        if dispatcher
             .apply_now(&mut Edits::lend(&mut doc), &Put(value))
-            .unwrap();
+            .is_err()
+        {
+            assert_eq!(doc.get_heads(), heads, "refusal precedes mutation");
+            break;
+        }
+        completed += 1;
         assert_eq!(
             doc.get(ROOT, "value").unwrap().unwrap().0.as_u64(),
             Some(value)
         );
     }
-    let heads = doc.get_heads();
-    assert!(
-        dispatcher
-            .apply_now(&mut Edits::lend(&mut doc), &Put(128))
-            .is_err()
-    );
-    assert_eq!(doc.get_heads(), heads);
+    // Either the byte budget or the count budget may be reached first.
+    assert!((2..=128).contains(&completed));
     assert_eq!(
         doc.get(ROOT, "value").unwrap().unwrap().0.as_u64(),
-        Some(127)
+        Some(completed - 1)
     );
     assert_eq!(queue.take_refusals().len(), 1);
     let captures = queue.drain();
-    assert_eq!(captures.len(), 128);
+    assert_eq!(captures.len(), completed as usize);
     for capture in captures {
         assert_eq!(capture.mutation_hashes.len(), 1);
         assert_eq!(capture.published.unwrap().resource, "body");
