@@ -93,7 +93,7 @@ impl RoomActivityPane {
                 }
                 Ok(()) => {
                     self.direction = None;
-                    self.review_notice = Some(t("activity-task-review-saved"));
+                    self.review_notice = Some(t("activity-task-review-waiting"));
                     self.keyboard_focus = self.selected_task.clone().map(ActivityFocus::Task);
                 }
                 Err(error) => {
@@ -240,7 +240,9 @@ impl RoomActivityPane {
         }) {
             Ok(()) => {
                 self.review_pending = Some(invocation);
-                self.review_notice = Some(t("activity-task-review-saving"));
+                // Storing the review is the system's job; what the agent
+                // does with it is the news.
+                self.review_notice = None;
             }
             Err(error) => {
                 self.review_notice = Some(t_args(

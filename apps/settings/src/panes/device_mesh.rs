@@ -106,13 +106,7 @@ fn revoke_shown(id: &str) -> String {
 }
 
 fn mesh_status_shown(status: &str) -> String {
-    if status == "Saved" {
-        t("mesh-status-shown-saved")
-    } else if status == "Saving changes…" {
-        t("mesh-status-shown-saving")
-    } else if status == "Saving latest changes…" {
-        t("mesh-status-shown-saving-latest")
-    } else if status == "Home server paired" {
+    if status == "Home server paired" {
         t("mesh-status-shown-home-paired")
     } else if status == "Personal device added" {
         t("mesh-status-shown-device-added")
@@ -1719,10 +1713,7 @@ impl DeviceMeshModel {
             || self.load_status.starts_with("Could not start pairing")
         {
             continuation_rows.push(row(error_caption(&mesh_status_shown(&self.load_status))));
-        } else if self.load_status.starts_with("Saving")
-            || self.load_status == "Saved"
-            || self.load_status.starts_with("Waiting")
-        {
+        } else if self.load_status.starts_with("Waiting") {
             continuation_rows.push(note(&mesh_status_shown(&self.load_status)));
         }
 
@@ -2183,14 +2174,16 @@ impl DeviceMeshModel {
         if self.config_path == std::path::Path::new(DEFAULT_CONFIG) {
             if self.apply_child.is_some() {
                 self.apply_queued = true;
-                self.load_status = "Saving latest changes…".into();
+                // Applying the change is the system's job; only a failure
+                // is news.
+                self.load_status.clear();
             } else {
                 self.start_apply();
             }
             return;
         }
         self.load_status = match self.config.save(&self.config_path) {
-            Ok(()) => "Saved".to_string(),
+            Ok(()) => String::new(),
             Err(error) => format!("Not saved: {error}"),
         };
     }
@@ -2229,7 +2222,7 @@ impl DeviceMeshModel {
         match self.spawn_apply() {
             Ok(child) => {
                 self.apply_child = Some(child);
-                self.load_status = "Saving changes…".into();
+                self.load_status.clear();
             }
             Err(error) => self.load_status = format!("Not saved: {error}"),
         }
@@ -2454,7 +2447,7 @@ impl DeviceMeshModel {
                         self.apply_queued = false;
                         self.start_apply();
                     } else {
-                        self.load_status = "Saved".into();
+                        self.load_status.clear();
                     }
                 } else {
                     self.apply_queued = false;

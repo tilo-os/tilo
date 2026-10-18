@@ -1042,7 +1042,7 @@ impl SheetsApp {
             // The acknowledgement stays visible with animations suppressed.
             Some("reducedmotion") => {
                 self.set_motion_reduced(true);
-                self.status = "Changes saved".into();
+                self.status = "Pasted into B2:D4".into();
                 self.pin_status_bubble();
             }
             Some("charts" | "comments") => {

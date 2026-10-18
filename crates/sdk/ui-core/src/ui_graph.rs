@@ -2857,7 +2857,8 @@ fn save_button(handle: &UiGraphHandle, shared: &Rc<RefCell<UiGraphEditorState>>)
                 |save| save(&source),
             );
             match result {
-                Ok(()) => status.set("Saved".to_owned()),
+                // A save that landed says nothing; only a failure is news.
+                Ok(()) => status.set(String::new()),
                 Err(error) => status.set(format!("Save failed: {error}")),
             }
         })

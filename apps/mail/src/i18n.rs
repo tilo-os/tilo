@@ -59,7 +59,7 @@ mod tests {
                 "mail-setup-tls",
                 "mail-setup-advanced",
                 "mail-setup-save",
-                "mail-setup-saving",
+                "mail-setup-checking",
                 "mail-setup-sign-in",
                 "mail-setup-signing-in",
                 "mail-setup-cancel",

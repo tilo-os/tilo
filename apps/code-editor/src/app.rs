@@ -2268,10 +2268,10 @@ impl CodeApp {
     }
 
     /// Stage a populated status bar for a screenshot: a live multi-word
-    /// selection and a recent save notice.
+    /// selection and a recent notice.
     pub fn shots_status(&mut self) {
         self.shots_select_words();
-        self.note("Saved main.rs", false);
+        self.note("Reloaded main.rs from disk", false);
         self.refresh_status();
     }
 

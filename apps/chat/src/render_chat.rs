@@ -142,9 +142,10 @@ pub(crate) fn agent_task_status_lines(view: &AgentTaskView) -> AgentTaskStatusLi
         )
     };
     let receipt = match &view.receipt {
-        AgentTaskReceipt::None => None,
-        AgentTaskReceipt::Saving => Some(crate::i18n::t("chat-agent-direction-saving")),
-        AgentTaskReceipt::Saved { .. } => Some(crate::i18n::t("chat-agent-direction-saved")),
+        // Storing the direction is the system's job; only what the agent
+        // does with it is news.
+        AgentTaskReceipt::None | AgentTaskReceipt::Saving => None,
+        AgentTaskReceipt::Saved { .. } => Some(crate::i18n::t("chat-agent-direction-waiting")),
         AgentTaskReceipt::Applied => Some(crate::i18n::t("chat-agent-direction-applied")),
         AgentTaskReceipt::Started => Some(crate::i18n::t("chat-agent-task-started")),
         AgentTaskReceipt::StopRequested => Some(crate::i18n::t("chat-agent-task-stopped")),

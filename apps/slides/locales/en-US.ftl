@@ -137,7 +137,6 @@ slides-toast-import-failed = Could not start presentation import
 slides-toast-export-failed = Could not start presentation export
 slides-toast-chooser-failed = Could not open the file chooser
 slides-toast-export-limit = Presentation exceeds the safe export limit
-slides-saved-file = Saved { $file }
 slides-toast-process-failed = Could not process the presentation
 slides-toast-image-chooser-failed = Could not open the image chooser
 slides-toast-image-import-failed = Could not import image (it may be too large or invalid)

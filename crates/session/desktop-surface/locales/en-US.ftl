@@ -1081,8 +1081,7 @@ activity-task-direction-close = Back to task
 activity-task-direction-label = Instructions for the agent
 activity-task-direction-placeholder = Describe the change you want the agent to make
 activity-task-direction-observation = Tell the agent what to do differently. It follows your instructions from its next step, and everyone in this workspace can see them.
-activity-task-review-saving = Saving…
-activity-task-review-saved = Saved. Waiting for the agent's response.
+activity-task-review-waiting = Waiting for the agent's response.
 activity-task-review-refused = Couldn't save. Your draft is kept. { $detail }
 
 activity-confirm-waiting = Waiting for your confirmation

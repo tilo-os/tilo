@@ -163,7 +163,6 @@ style-menu-duplicate = Duplicate style
 
 ## Transient toasts (confirmation cues)
 toast-toc-empty = Add headings first — a table of contents lists them
-saved-file = Saved { $file }
 toast-save-failed = Could not save the document
 toast-open-failed = Could not open the document. Your current document is unchanged.
 toast-view-only = This document is open to view only.
