@@ -117,3 +117,32 @@ from each app that loads them (`canvas --probe-paint-engine`, `music` and
 `messages --probe-contact-directory-engine`), checking each app loads its
 engine itself. Settings, whose tapp stays as it is, has no probe; the trace of
 its start shows it loads the accounts engine itself.
+
+## What an app start pays for the runtime
+
+Warm, the loader's work before `main` is almost all the runtime's: it copies
+and relocates every page of `.data.rel.ro` (vtables, `&str` tables, panic
+locations: about 5 MB, one copy-on-write fault per 4 KiB page, about 2 µs
+each on the Yoga) and looks up the symbols the runtime, libstd and the app
+bind to each other. Each crate in the runtime costs every app its share of
+that table, whether the app calls it or not, which is why the budget counts
+`relocated_bytes` and `symbol_relocations`.
+
+The runtime and its engines link with `-Bsymbolic`: references to their own
+functions *and data* bind at link time. Rust never interposes a symbol, and
+apps are PIE that reach the runtime's data through the GOT, so nothing else
+can define one; `os/scripts/build-thin-apps.sh` fails an app or engine with a
+copy relocation, the one construct that would split a static in two. Binding
+functions only (`-Bsymbolic-functions`) left about 3.8k lookups of the
+runtime's own vtables, statics and Wayland interface tables in every app
+process.
+
+Cold, the same pages come from disk. `tilo-runtime-resident.service`
+(`tilo-launcher runtime-resident`, `crates/packaging/launcher/src/runtime_resident.rs`)
+maps the runtime library and the libraries of its bundle it needs, for every
+runtime the system registry names, read-only, and locks them once per boot,
+at idle I/O priority. The page cache then holds one copy that every app maps,
+and no app start waits on the disk for it. It runs no app code; engines and
+the media libraries loaded on first use stay out, and a runtime a person
+installed into their own store is not covered. Its memory is the runtime's
+size, which is one more reason the runtime stays small.
