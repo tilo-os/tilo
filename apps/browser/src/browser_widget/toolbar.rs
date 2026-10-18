@@ -187,14 +187,14 @@ impl BrowserWidget {
     pub(super) fn build_toolbar(&self, theme: &Theme) -> Box<dyn Widget> {
         let back = self.bind_button(
             Button::icon_only("browser.back", Icon::ArrowLeft, &t("browser-back"))
-                .tooltip(&t("browser-back-tooltip"))
+                .tooltip(t("browser-back-tooltip"))
                 .with_enabled(self.can_go_back),
             "browser.page",
             "back",
         );
         let forward = self.bind_button(
             Button::icon_only("browser.forward", Icon::ArrowRight, &t("browser-forward"))
-                .tooltip(&t("browser-forward-tooltip"))
+                .tooltip(t("browser-forward-tooltip"))
                 .with_enabled(self.can_go_forward),
             "browser.page",
             "forward",
@@ -214,7 +214,7 @@ impl BrowserWidget {
                     "browser-reload"
                 }),
             )
-            .tooltip(&t(if loading {
+            .tooltip(t(if loading {
                 "browser-stop"
             } else {
                 "browser-reload-tooltip"
@@ -305,7 +305,7 @@ impl BrowserWidget {
                             "browser-library-open"
                         }),
                     )
-                    .tooltip(&t("browser-menu-library")),
+                    .tooltip(t("browser-menu-library")),
                     resource,
                     action,
                 ),
