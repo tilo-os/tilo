@@ -309,7 +309,8 @@ impl Row<'_> {
     }
 
     fn slider_widget(&self, value: &LocalState<f64>) -> Slider {
-        let mut slider = Slider::from_state(value);
+        // Every settings slider says where it is: "72%" beside the track.
+        let mut slider = Slider::from_state(value).shows_value();
         if let Some(id) = &self.id {
             slider = slider.with_id(id);
         }

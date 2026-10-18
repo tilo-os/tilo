@@ -83,8 +83,8 @@ pub struct SettingsApp {
     reveal: Option<&'static settings_store::index::Setting>,
     /// The setting whose control the pane scrolls to after this layout.
     reveal_scroll: Option<&'static settings_store::index::Setting>,
-    /// The setting just shown and when: its row is washed in your
-    /// selection colour for a moment, so the eye finds it.
+    /// The setting just shown and when: its row is marked for a moment, so
+    /// the eye finds it.
     highlight: Option<(&'static settings_store::index::Setting, ui::time::Instant)>,
     /// Each pane's scroll offset. The content scroller is rebuilt whenever the
     /// pane's structure changes (a control applied, a category opened), so the
@@ -141,6 +141,9 @@ pub struct SettingsApp {
     /// The pane shown is the stand-in for one whose area is still being
     /// read ([`Self::pane_reading`]); the sync its read lands in builds it.
     pane_waits: std::cell::Cell<bool>,
+    /// The Keyboard page shown was built while the device's layout list
+    /// was still being read; it is built again once the list is in.
+    keyboard_partial: std::cell::Cell<bool>,
     /// The text scale the shell was built for. A large-text preference widens
     /// the docked sidebar and its breakpoint with the type (the same policy
     /// the Store applies to its card grid), so a change rebuilds the shell.
@@ -205,6 +208,7 @@ impl SettingsApp {
             network: panes::network::NetworkArea::new(&cx),
             area_reads: crate::effects::AreaReads::of(&cx),
             pane_waits: std::cell::Cell::new(false),
+            keyboard_partial: std::cell::Cell::new(false),
             selected: Category::DEFAULT,
             structure_dirty: false,
             cx,
@@ -502,10 +506,6 @@ impl SettingsApp {
                 !(read.finished)(self)
             });
         area_reading
-            || (matches!(
-                self.selected,
-                Category::Keyboard | Category::Pointing | Category::Spelling
-            ) && self.input.catalog_pending())
     }
 
     /// Read on after the first frame, so the published rows fill in an area
@@ -668,6 +668,8 @@ impl SettingsApp {
     fn build_pane_body(&self) -> Box<dyn Widget> {
         let reading = self.pane_reading();
         self.pane_waits.set(reading);
+        self.keyboard_partial
+            .set(self.selected == Category::Keyboard && self.input.catalog_pending());
         if reading {
             return crate::widgets::cards(vec![crate::widgets::untitled(crate::widgets::rows(
                 vec![crate::widgets::note(&crate::i18n::t(
@@ -990,8 +992,12 @@ impl Widget for SettingsApp {
                 self.refresh_shell_children();
             }
         }
-        // The read the pane shown waits for has landed: build the pane.
-        if self.pane_waits.get() && !self.pane_reading() {
+        // The read the pane shown waits for has landed, or the layout list
+        // the Keyboard page showed without: build the pane.
+        if (self.pane_waits.get() && !self.pane_reading())
+            || (self.keyboard_partial.get() && !self.input.catalog_pending())
+        {
+            self.keyboard_partial.set(false);
             self.structure_dirty = true;
             self.refresh_shell_children();
         }
@@ -1111,21 +1117,10 @@ impl Widget for SettingsApp {
         if let Some(shell) = &mut self.shell {
             shell.draw(scene, transform, text_renderer, theme, presence);
         }
-        match self.highlighted_row(theme) {
-            Some((row, strength)) => {
-                use ui::color_compat::ColorCompat as _;
-                let wash = theme
-                    .tokens
-                    .colors
-                    .intent
-                    .selection_tint
-                    .with_alpha_factor(strength);
-                let shape = vello::kurbo::RoundedRect::from_rect(
-                    row.inflate(8.0, 0.0),
-                    f64::from(theme.tokens.radii.control),
-                );
-                scene.fill(vello::peniko::Fill::NonZero, transform, wash, None, &shape);
-            }
+        // The row of a setting just shown is marked as a found match is,
+        // for a moment.
+        match self.highlighted_row() {
+            Some(row) => ui::widget::paint_find_match(scene, transform, row, true, theme),
             None => self.highlight = None,
         }
         self.area_reads.presented();
@@ -1217,7 +1212,7 @@ impl Widget for SettingsApp {
             if let Some((setting, _)) = self.highlight
                 && let Some(row) = row_of(shell, setting)
             {
-                regions.push(row.inflate(8.0, 0.0));
+                regions.push(row.inflate(2.0, 2.0));
             }
         }
     }
@@ -1278,7 +1273,7 @@ impl AppWidget for SettingsApp {
     }
 
     fn app_title(&self) -> &'static str {
-        "Personal Settings"
+        "Settings"
     }
 
     fn app_icon(&self) -> IconDescriptor {
@@ -1346,31 +1341,21 @@ impl SettingsApp {
         self.highlight = Some((setting, ui::time::now()));
     }
 
-    /// The row of the highlighted setting and how strongly it is washed
-    /// now, `None` once the wash has faded.
-    fn highlighted_row(&self, theme: &ui::Theme) -> Option<(vello::kurbo::Rect, f32)> {
+    /// The row of the setting just shown, while it is marked.
+    fn highlighted_row(&self) -> Option<vello::kurbo::Rect> {
         let (setting, since) = self.highlight?;
         let elapsed = ui::time::now()
             .saturating_duration_since(since)
             .as_secs_f32();
-        let strength = if elapsed < HIGHLIGHT_HOLD {
-            1.0
-        } else if theme.reduce_motion {
-            return None;
-        } else {
-            1.0 - (elapsed - HIGHLIGHT_HOLD) / HIGHLIGHT_FADE
-        };
-        if strength <= 0.0 {
+        if elapsed >= HIGHLIGHT_HOLD {
             return None;
         }
-        row_of(self.shell.as_ref()?, setting).map(|row| (row, strength))
+        row_of(self.shell.as_ref()?, setting)
     }
 }
 
-/// How long a shown setting's row stays washed, then how long the wash
-/// takes to fade, in seconds.
-const HIGHLIGHT_HOLD: f32 = 1.2;
-const HIGHLIGHT_FADE: f32 = 0.4;
+/// How long a shown setting's row stays marked, in seconds.
+const HIGHLIGHT_HOLD: f32 = 1.5;
 
 /// The row of `setting`'s control under `root`, within the scroller that
 /// holds it: the narrowest ancestor of the control at least as wide as most

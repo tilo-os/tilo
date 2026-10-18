@@ -956,7 +956,23 @@ impl MouseKeyboardPane {
         } else {
             content.extend(self.source_items(profile));
         }
-        if choices.is_empty() {
+        if self.catalog_pending {
+            // The layouts to add are still being read; everything else on
+            // the page is already right.
+            content.push(setting_row(
+                &t("input-source-add-title"),
+                Box::new(
+                    id_dropdown(
+                        Vec::new(),
+                        "",
+                        "input.source.add_picker",
+                        &t("input-source-add-title"),
+                    )
+                    .with_placeholder(&t("input-sources-loading"))
+                    .with_enabled(false),
+                ),
+            ));
+        } else if choices.is_empty() {
             content.push(note(&t("input-sources-full")));
         } else {
             content.push(setting_row(
