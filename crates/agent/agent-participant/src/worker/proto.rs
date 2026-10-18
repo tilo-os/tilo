@@ -20,7 +20,7 @@ pub(crate) const FRAMING: Framing = Framing::little_endian(64 * 1024 * 1024);
 
 /// Bumped whenever a message changes shape. A supervisor and a worker are the
 /// same executable, so a mismatch means a stale binary on disk.
-pub(crate) const PROTOCOL_VERSION: u32 = 2;
+pub(crate) const PROTOCOL_VERSION: u32 = 3;
 
 /// What a worker is started to do. It decides what the worker prepares
 /// before it confines itself: a reader loads the fonts a component lays its
@@ -90,6 +90,16 @@ pub(crate) enum Request {
     TakeMutation,
     /// Merge another participant's durable change.
     Apply { snapshot: bool, bytes: Vec<u8> },
+    /// Merge another participant's durable change into `record`, one the
+    /// held record's app keeps beside it (a part of its chain).
+    ApplyRecord {
+        record: String,
+        snapshot: bool,
+        bytes: Vec<u8>,
+    },
+    /// The holder's own changes to the records held beside the held one
+    /// since the last call.
+    TakeRecordMutations,
     /// Where the last operation left the participant.
     Presence,
     /// Load an existing document of `app_id` to discover its views
@@ -146,6 +156,9 @@ pub(crate) enum Reply {
     Refused(WireDoorError),
     /// The holder's changes: whether they are a whole document, and the bytes.
     Mutation(Option<(bool, Vec<u8>)>),
+    /// The holder's changes to records held beside the held one: each
+    /// record's id, whether it is a whole document, and the bytes.
+    RecordMutations(Vec<(String, bool, Vec<u8>)>),
     /// JSON `(LiveAnchor, LiveAnchor)`.
     Presence(Option<String>),
     /// The request was carried out.

@@ -1,7 +1,9 @@
 //! A person asks the room's host for the link to a resource in a record the
 //! host runs headless: the link names the resource and its range under the
 //! web entry the host announces.
-use super::resource_support::{admit_person, open_admitted_peer};
+use super::resource_support::{
+    admit_person, on_messages, open_admitted_peer, part_route, published_message,
+};
 use super::{
     ActionAddress, DeviceCapabilities, DocumentRoute, InvokeArgument, Replica, Seed, common, enrol,
     record_provider, request, start_browser,
@@ -9,7 +11,6 @@ use super::{
 use tilo_actions::remote::ReceiptStatus;
 use tilo_peer_state::join::MemberRole;
 
-#[ignore = "needs agents' replicas to carry the chat's message parts"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_host_mints_a_message_link_with_its_range() {
     let (owner, _) = tilo_user_identity::UserIdentity::generate("Host fixture", 1);
@@ -56,12 +57,17 @@ async fn the_host_mints_a_message_link_with_its_range() {
         .into_iter()
         .find(|channel| channel.kind == chat::model::ChannelKind::Text)
         .unwrap();
-    let message = chat::demo::Room::of(doc.clone())
-        .say(&writer, &channel.id, "Hello é, linked")
-        .unwrap();
     source
         .apply(&collab_types::DocumentMutation::Snapshot(doc.save()))
         .unwrap();
+    // The message is kept in the first part of the chat's messages, the
+    // record it is linked in.
+    let message = on_messages(
+        &mut source,
+        "post",
+        &serde_json::json!({"channel": channel.id, "text": "Hello é, linked"}),
+    );
+    let (id, kind) = published_message(&source, &message);
     let route = DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: room.room.clone(),
@@ -71,8 +77,11 @@ async fn the_host_mints_a_message_link_with_its_range() {
         .peer
         .publish(route.clone(), &source.take_mutation().unwrap())
         .unwrap();
+    let route = part_route(&room.room, &chat::parts::part(0));
+    for (_, mutation) in source.take_record_mutations() {
+        publisher.peer.publish(route.clone(), &mutation).unwrap();
+    }
     publisher.peer.barrier().unwrap().recv().unwrap().unwrap();
-    let id = chat::projection::item_id("messages", &message);
     let receipt = publisher
         .invoke(request(
             &record_provider(&route),
@@ -97,7 +106,8 @@ async fn the_host_mints_a_message_link_with_its_range() {
     let link = tilo_reference::link::Link::parse(url, &entries).unwrap();
     let resource = link.target.resource.unwrap();
     assert_eq!(resource.id, id, "{url}");
-    assert_eq!(resource.kind, "chat.workspace.messages");
+    assert_eq!(resource.kind, kind);
+    assert_eq!(kind, "chat.messages.messages");
     assert!(url.ends_with("?chars=6-7"), "{url}");
     publisher.peer.close();
     hosted.agents.shutdown();

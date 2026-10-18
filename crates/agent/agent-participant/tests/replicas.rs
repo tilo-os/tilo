@@ -445,7 +445,6 @@ fn a_bot_without_a_write_grant_is_offered_only_reads() {
     assert!(!body(&bot).contains("Not allowed"));
 }
 
-#[ignore = "needs agents' replicas to carry the chat's message parts"]
 #[test]
 fn a_bot_reads_a_channels_latest_post_made_after_it_opened_the_record() {
     let catalogue = catalogue();
@@ -504,10 +503,29 @@ fn a_bot_reads_a_channels_latest_post_made_after_it_opened_the_record() {
         },
     )
     .unwrap();
-    chat::demo::Room::of(doc.clone())
-        .say("ada", &channel, "hello")
-        .unwrap();
-    bot.apply(&DocumentMutation::Snapshot(doc.save())).unwrap();
+    // Ada's page posts through the chain of the chat's messages, which
+    // starts its first part; the bot holds that part beside the chat
+    // record.
+    let post = serde_json::json!({ "channel": channel, "text": "hello" });
+    page.invoke(
+        &tilo_actions::door::ActionAddress::new(
+            ui::record::chain_resource_id(&chat::parts::chain()),
+            "post",
+        ),
+        post.as_object().unwrap(),
+        false,
+    )
+    .unwrap();
+    let part = chat::parts::part(0);
+    assert!(bot.keeps_beside(&part));
+    let started = page.take_record_mutations();
+    assert!(
+        matches!(&started[..], [(record, DocumentMutation::Snapshot(_))] if *record == part),
+        "the page started the first part"
+    );
+    for (record, mutation) in &started {
+        bot.apply_record(record, mutation).unwrap();
+    }
     let read = bot
         .survey()
         .into_iter()
@@ -531,4 +549,101 @@ fn a_bot_reads_a_channels_latest_post_made_after_it_opened_the_record() {
         Some(&serde_json::json!("hello")),
         "{value:#}"
     );
+}
+
+#[test]
+fn a_bot_granted_posting_is_offered_the_chains_post_and_starts_a_part() {
+    let catalogue = catalogue();
+    let mut page = Replica::open(
+        &catalogue,
+        "so.tilo.chat",
+        ROOM,
+        "ada",
+        tilo_agent_participant::ReplicaActor::Owner,
+        Seed::New,
+    )
+    .unwrap();
+    let mut doc = page.read(Clone::clone).unwrap();
+    chat::demo::apply_as(
+        &mut doc,
+        "ada",
+        chat::Chat::CREATE_WORKSPACE.with(chat::record::chat::CreateWorkspace {
+            name: "Bridged".into(),
+        }),
+    )
+    .unwrap();
+    let channel = chat::projection::read(&doc).channel_rows()[0].id.clone();
+    page.apply(&DocumentMutation::Snapshot(doc.save())).unwrap();
+    // What a program that posts derives: posting on the chat's messages.
+    let standing = {
+        use ui::permissions::policy::{
+            Answer, Grant, KindSet, Level, RoomPolicy, Standing, Subject, TreePath,
+        };
+        let bot = Subject::bot("b1");
+        let post = Grant::new(
+            "bot:b1:0",
+            bot.clone(),
+            TreePath::root()
+                .any(Level::Room)
+                .app("so.tilo.chat".to_owned())
+                .kind("chat.messages".to_owned())
+                .any(Level::Resource)
+                .rest()
+                .action("post".to_owned()),
+            KindSet::READ_UNDOABLE,
+            Answer::Allow,
+            Subject::person("ada"),
+        );
+        Standing::person(RoomPolicy::new(ROOM, "ada"), "ada").bounded_by(bot, vec![post])
+    };
+    let mut bot = Replica::open(
+        &catalogue,
+        page.app_id(),
+        ROOM,
+        "bot:b1",
+        tilo_agent_participant::ReplicaActor::Bot {
+            installation: "b1".into(),
+            installer: "ada".into(),
+            standing,
+        },
+        Seed::Existing {
+            record: page.record_id().clone(),
+            changes: vec![doc.save()],
+        },
+    )
+    .unwrap();
+    let offered = bot.survey();
+    let post = offered
+        .iter()
+        .find(|action| action.address.action == "post" && action.resource_kind == "chat.messages")
+        .unwrap_or_else(|| {
+            panic!(
+                "the chain's post is offered: {:?}",
+                offered
+                    .iter()
+                    .map(|action| (&action.address, &action.resource_kind))
+                    .collect::<Vec<_>>()
+            )
+        })
+        .address
+        .clone();
+    let arguments = serde_json::json!({ "channel": channel, "text": "welcome!" });
+    bot.invoke(&post, arguments.as_object().unwrap(), false)
+        .unwrap();
+    let started = bot.take_record_mutations();
+    assert!(
+        matches!(&started[..], [(record, DocumentMutation::Snapshot(_))] if *record == chat::parts::part(0)),
+        "the bot started the first part"
+    );
+    for (record, mutation) in &started {
+        page.apply_record(record, mutation).unwrap();
+    }
+    let posted: Vec<(String, String)> = page
+        .read_record(&chat::parts::part(0), chat::messages::read_part)
+        .unwrap()
+        .messages
+        .iter()
+        .map(|(_, message)| (message.author.0.clone(), message.text.clone()))
+        .collect();
+    assert_eq!(posted, [("bot:b1".to_owned(), "welcome!".to_owned())]);
 }

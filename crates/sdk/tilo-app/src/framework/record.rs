@@ -314,18 +314,39 @@ pub(crate) mod sealed {
 /// and agents reach it whether or not a view has shown it, and the app's
 /// committed surface lists it.
 pub struct Records<'a> {
-    storage: &'a ViewStorage,
+    /// The window's storage, where they are opened; `None` while the app's
+    /// records are only declared ([`Self::declaring`]).
+    storage: Option<&'a ViewStorage>,
     /// The app's own record, as `Live` of its resource: what the actions of
     /// a chain kept beside it read where they are invoked.
     base: Option<Rc<dyn std::any::Any>>,
+    /// The resource types of the chains declared, while declaring.
+    chains: Vec<tilo_resource::ResourceKind>,
 }
 
 impl<'a> Records<'a> {
     pub(crate) fn new(storage: &'a ViewStorage) -> Self {
         Self {
-            storage,
+            storage: Some(storage),
             base: None,
+            chains: Vec::new(),
         }
+    }
+
+    /// The records an app declares, opening none: what a host without a
+    /// window learns of them (the resource types of its chains' parts, so
+    /// it reads a part as the window does).
+    pub(crate) const fn declaring() -> Self {
+        Self {
+            storage: None,
+            base: None,
+            chains: Vec::new(),
+        }
+    }
+
+    /// The resource types of the chains declared.
+    pub(crate) fn into_chains(self) -> Vec<tilo_resource::ResourceKind> {
+        self.chains
     }
 
     pub(crate) fn with_base<R: Resource>(mut self, live: Live<R>) -> Self {
@@ -337,6 +358,10 @@ impl<'a> Records<'a> {
     /// ([`Chain`](super::Chain)): its head is held and it is published
     /// with the window.
     pub fn chain<P: super::Chained>(&mut self) -> &mut Self {
+        let Some(storage) = self.storage else {
+            self.chains.push(tilo_resource::ResourceKind::of::<P>());
+            return self;
+        };
         let Some(base) = self
             .base
             .clone()
@@ -348,20 +373,26 @@ impl<'a> Records<'a> {
             );
             return self;
         };
-        let _ = self.storage.chain::<P>(move || base.get());
+        let _ = storage.chain::<P>(move || base.get());
         self
     }
 
     /// The person's own record of `P` ([`RecordEnv::person`](super::RecordEnv::person)).
     pub fn person<P: Resource>(&mut self) -> &mut Self {
-        let _ = self.storage.person::<P>();
+        let Some(storage) = self.storage else {
+            return self;
+        };
+        let _ = storage.person::<P>();
         self
     }
 
     /// The person's record `P` another app keeps
     /// ([`RecordEnv::shared_person`](super::RecordEnv::shared_person)).
     pub fn shared_person<P: tilo_resource::SharedRecord>(&mut self) -> &mut Self {
-        let _ = self.storage.shared_person::<P>();
+        let Some(storage) = self.storage else {
+            return self;
+        };
+        let _ = storage.shared_person::<P>();
         self
     }
 
@@ -370,8 +401,11 @@ impl<'a> Records<'a> {
     where
         T: Resource<State = T> + Fields + SettingsSchema,
     {
-        let settings = self.storage.storage().settings::<T>();
-        let _ = self.storage.section(&settings);
+        let Some(storage) = self.storage else {
+            return self;
+        };
+        let settings = storage.storage().settings::<T>();
+        let _ = storage.section(&settings);
         self
     }
 }
