@@ -46,6 +46,7 @@ pub mod model;
 mod outbox;
 pub mod resource;
 pub mod setup;
+pub mod shown;
 mod sidebar;
 mod tasks;
 mod timeline_interaction;

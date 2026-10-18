@@ -102,6 +102,8 @@ pub(super) struct TimelineGeom {
     pub head_h: f64,
     /// All-day strip height beneath the header.
     pub allday_h: f64,
+    /// How many all-day chips the strip stacks.
+    pub allday_rows: usize,
     pub body_top: f64,
     pub body_bottom: f64,
     pub hour_h: f64,
@@ -127,6 +129,8 @@ pub(super) struct TimelineViewport {
     pinned_hour: Option<f64>,
     /// How many day columns the last layout laid out.
     days_len: usize,
+    /// How many all-day chips the strip of the last layout stacks.
+    allday_rows: usize,
     /// The measured type and spacing of the theme of the app's last layout
     /// pass, so header / strip / block heights follow the type they hold.
     tokens: TimelineTokens,
@@ -139,6 +143,7 @@ impl TimelineViewport {
             seeded: false,
             pinned_hour: None,
             days_len: 7,
+            allday_rows: 1,
             tokens: TimelineTokens::default(),
         }
     }
@@ -151,13 +156,9 @@ impl TimelineViewport {
         });
     }
 
-    pub fn tokens(&self) -> TimelineTokens {
-        self.tokens
-    }
-
-    /// The day columns of the last layout.
-    pub fn days_len(&self) -> usize {
-        self.days_len
+    /// The geometry of the last layout over `area`.
+    pub fn current_geometry(&self, area: Rect) -> TimelineGeom {
+        Self::geometry_rows(area, &self.tokens, self.days_len, self.allday_rows)
     }
 
     /// Geometry of a week in the default dark theme, used by tests.
@@ -172,7 +173,20 @@ impl TimelineViewport {
     /// gutter an hour label with `s3` either side. `days_len` columns share
     /// the width, which decides the [`TimelineDensity`]: a narrow grid
     /// gives a half hour two title lines and the all-day strip two.
+    #[cfg(test)]
     pub fn geometry_for(area: Rect, t: &TimelineTokens, days_len: usize) -> TimelineGeom {
+        Self::geometry_rows(area, t, days_len, 1)
+    }
+
+    /// [`Self::geometry_for`] with an all-day strip of `rows` chips: none
+    /// leaves a hairline's room, one wraps its title over the density's
+    /// lines, more stack one line each.
+    pub fn geometry_rows(
+        area: Rect,
+        t: &TimelineTokens,
+        days_len: usize,
+        rows: usize,
+    ) -> TimelineGeom {
         let gutter = (t.hour_w + 2.0 * t.s3).ceil();
         let column = (area.width() - gutter - t.s3) / days_len.max(1) as f64;
         let density = if column < t.narrow_below {
@@ -185,7 +199,15 @@ impl TimelineViewport {
             TimelineDensity::Narrow => t.min_hour_narrow,
         };
         let head_h = (2.0 * t.s2 + t.weekday_h + t.day_h).ceil();
-        let allday_h = (t.strip_h * density.chip_lines() as f64 + 3.0 * t.s1).ceil();
+        let allday_h = match rows {
+            0 => t.s1,
+            1 => t.strip_h * density.chip_lines() as f64 + 3.0 * t.s1,
+            rows => {
+                let rows = rows as f64;
+                rows * (t.strip_h + t.s1) + 2.0 * t.s1
+            }
+        }
+        .ceil();
         let min_block_h = (t.title_h + t.s1).ceil();
         let body_top = area.y0 + head_h + allday_h;
         let body_bottom = (area.y1 - t.s2).max(body_top + min_hour_h);
@@ -202,6 +224,7 @@ impl TimelineViewport {
             gutter,
             head_h,
             allday_h,
+            allday_rows: rows,
             body_top,
             body_bottom,
             hour_h,
@@ -261,9 +284,15 @@ impl TimelineViewport {
         )
     }
 
-    pub fn layout(&mut self, area: Rect, initial_hour: f64, days_len: usize) {
+    pub fn layout(
+        &mut self,
+        area: Rect,
+        initial_hour: f64,
+        (days_len, allday_rows): (usize, usize),
+    ) {
         self.days_len = days_len.max(1);
-        let geom = Self::geometry_for(area, &self.tokens, self.days_len);
+        self.allday_rows = allday_rows;
+        let geom = self.current_geometry(area);
         self.scroll.set_viewport_rect(geom.body(area.x0, area.x1));
         self.scroll
             .set_content_size(area.width() as f32, geom.content_h as f32);
@@ -369,7 +398,7 @@ mod tests {
             let area = Rect::new(0.0, 60.0, 1000.0, 560.0);
             let geom = TimelineViewport::geometry(area);
             let mut viewport = TimelineViewport::new();
-            viewport.layout(area, 7.23, 7);
+            viewport.layout(area, 7.23, (7, 1));
             assert!(viewport.vertical_overflows());
             assert!((f64::from(viewport.offset_y()) - 7.0 * geom.hour_h).abs() < 0.01);
             // The 07:00 rule is at the body top; the label below it is inside.
@@ -394,7 +423,7 @@ mod tests {
             );
             let geom = TimelineViewport::geometry(area);
             let mut viewport = TimelineViewport::new();
-            viewport.layout(area, 22.0, 7);
+            viewport.layout(area, 22.0, (7, 1));
             let offset = f64::from(viewport.offset_y());
             assert!(
                 (offset / geom.hour_h).fract().abs() < 1e-6,
@@ -412,7 +441,7 @@ mod tests {
             let area = Rect::new(0.0, 60.0, 1000.0, 560.0);
             let geom = TimelineViewport::geometry(area);
             let mut viewport = TimelineViewport::new();
-            viewport.layout(area, 7.0, 7);
+            viewport.layout(area, 7.0, (7, 1));
             viewport.set_offset_y((geom.hour_h * 2.0) as f32);
             assert_eq!(viewport.minute_at(geom, geom.body_top), 120);
             let block = viewport.block_rect(area, 7, geom, 2, 120, 180);

@@ -72,6 +72,18 @@ struct CellEvent {
     start: NaiveDateTime,
 }
 
+impl CellEvent {
+    fn of(shown: &crate::shown::Shown<'_>) -> Self {
+        Self {
+            id: shown.event.id,
+            title: shown.event.display_title().to_string(),
+            color: shown.event.color,
+            all_day: shown.event.all_day,
+            start: shown.start,
+        }
+    }
+}
+
 impl CalendarApp {
     pub(super) fn draw_month(&self, ctx: &mut PaintCtx<'_>, area: Rect) -> Vec<(Rect, Action)> {
         let theme = ctx.theme;
@@ -100,7 +112,9 @@ impl CalendarApp {
             );
         }
 
-        for (idx, day) in date::month_grid(self.anchor).into_iter().enumerate() {
+        let grid = date::month_grid(self.anchor);
+        let shown = self.visible_by_day(&grid);
+        for (idx, (day, events)) in grid.into_iter().zip(shown).enumerate() {
             let row = idx / 7;
             let col = idx % 7;
             let cell = Rect::new(
@@ -109,7 +123,8 @@ impl CalendarApp {
                 area.x0 + cell_w * (col as f64 + 1.0),
                 grid_top + cell_h * (row as f64 + 1.0),
             );
-            self.draw_month_cell(ctx, &m, cell, day, &mut hits);
+            let events = events.iter().map(CellEvent::of).collect();
+            self.draw_month_cell(ctx, &m, cell, (day, events), &mut hits);
         }
 
         // Grid rules once, over the cell grounds, derived from the window
@@ -152,7 +167,7 @@ impl CalendarApp {
         ctx: &mut PaintCtx<'_>,
         m: &MonthMetrics,
         cell: Rect,
-        day: NaiveDate,
+        (day, events): (NaiveDate, Vec<CellEvent>),
         hits: &mut Vec<(Rect, Action)>,
     ) {
         let theme = ctx.theme;
@@ -203,32 +218,17 @@ impl CalendarApp {
             text_centered(ctx, &num, &m.day, ink, num_rect);
         }
 
-        self.draw_month_cell_chips(ctx, m, cell, cell_ground, day, hits);
-    }
-
-    fn month_cell_events(&self, day: NaiveDate) -> Vec<CellEvent> {
-        self.visible_events_on(day)
-            .iter()
-            .map(|e| CellEvent {
-                id: e.id,
-                title: e.display_title().to_string(),
-                color: e.color,
-                all_day: e.all_day,
-                start: e.start,
-            })
-            .collect()
+        Self::draw_month_cell_chips(ctx, m, (cell, cell_ground), (day, &events), hits);
     }
 
     /// The event chips inside one day cell, clipped to it. Both kinds are a
     /// wash of the calendar colour over the cell's ground: an all-day chip a
     /// deeper one spanning the day, a timed chip a light one with a dot.
     fn draw_month_cell_chips(
-        &self,
         ctx: &mut PaintCtx<'_>,
         m: &MonthMetrics,
-        cell: Rect,
-        cell_ground: vello::peniko::Color,
-        day: NaiveDate,
+        (cell, cell_ground): (Rect, vello::peniko::Color),
+        (day, events): (NaiveDate, &[CellEvent]),
         hits: &mut Vec<(Rect, Action)>,
     ) {
         let theme = ctx.theme;
@@ -241,7 +241,6 @@ impl CalendarApp {
             ctx.transform,
             &cell,
         );
-        let events = self.month_cell_events(day);
         // Slots that fit below the day number, at most three. When the day
         // has more events than slots, the last slot carries the "+N more"
         // line instead of a chip, but at least one chip is always drawn.
