@@ -444,14 +444,12 @@ fn bootstrap_candidate(
                 generation: descriptor::GenerationExpectation::FirstAccepted {
                     minimum_generation: 1,
                 },
-                allowed_delivery_capabilities: 3,
                 now,
             };
             let ns = tilo_joined_room::testing::ns(now)?;
             descriptor::issue_transport_hint(
                 &descriptor::DescriptorSettings {
                     origin: "https://native.example".into(),
-                    delivery_capabilities: 3,
                     issued_at_ns: ns,
                     expires_at_ns: ns.checked_add(120_000_000_000).unwrap(),
                     generation,
