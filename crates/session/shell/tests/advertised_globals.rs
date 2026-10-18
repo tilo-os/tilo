@@ -165,6 +165,20 @@ fn every_toolkit_interface_and_the_clipboard_global_is_advertised() {
             "xdg_toplevel_icon_manager_v1 is not advertised. Advertised: {globals:?}"
         );
     }
+    // Phase `window_handles_are_exported_but_never_imported`.
+    // A portal request names its window by an exported handle; no client
+    // may parent its surfaces to another client's window.
+    {
+        let globals = advertised_globals();
+        assert!(
+            globals.iter().any(|g| g == "zxdg_exporter_v2"),
+            "zxdg_exporter_v2 is not advertised. Advertised: {globals:?}"
+        );
+        assert!(
+            !globals.iter().any(|g| g == "zxdg_importer_v2"),
+            "zxdg_importer_v2 must not be advertised. Advertised: {globals:?}"
+        );
+    }
     // Phase `the_clipboard_global_is_advertised`.
     // Keep this check separate so its failure identifies the clipboard global.
     {

@@ -255,6 +255,8 @@ mod two_netns_share;
 mod wayland_test;
 #[path = "wheel_scroll_wire.rs"]
 mod wheel_scroll_wire;
+#[path = "window_handles_protocol.rs"]
+mod window_handles_protocol;
 #[path = "window_previews.rs"]
 mod window_previews;
 #[path = "window_switcher.rs"]

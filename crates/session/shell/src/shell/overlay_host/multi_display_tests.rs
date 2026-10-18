@@ -403,6 +403,68 @@ fn the_file_chooser_is_a_sheet_on_the_window_that_asked() {
     assert_eq!(parked.len(), 3, "each request kept its reply open while up");
 }
 
+/// With two windows of one app, the sheet goes on the window the request
+/// names by its exported handle, not on the one in use; a handle the app
+/// did not export for one of its own windows names nothing.
+#[test]
+fn the_file_chooser_sheet_goes_on_the_window_its_handle_names() {
+    use crate::portal::FilePickerSpawner as _;
+    use crate::shell::file_picker_overlay::PickerPlace;
+
+    let folder = tempfile::tempdir().expect("tempdir");
+    let (mut desk, pickers) = Desk::with_queue(app_tree());
+    let _ = desk
+        .fb
+        .host_mut()
+        .focus_window_on_strip(STRIP, ON_MONITOR, tab_of(ON_MONITOR));
+    desk.settle();
+    let panel_window = crate::compositor::window_handles::export_for_tests(tab_of(ON_PANEL));
+    let elsewhere = crate::compositor::window_handles::export_for_tests(0xdead_0000_0001);
+    for (parent_window, display, what) in [
+        (format!("wayland:{panel_window}"), 0, "the named window"),
+        (format!("wayland:{elsewhere}"), 1, "the window in use"),
+        ("x11:4a0000c".to_string(), 1, "the window in use"),
+    ] {
+        let (reply, _answer) = tokio::sync::oneshot::channel();
+        pickers.spawn(crate::portal::FilePickerRequest {
+            caller: crate::portal::PortalCaller::new(WorkspaceId(7), AUDIT),
+            parent_window: Some(parent_window.clone()),
+            title: "Open a document".to_string(),
+            save: false,
+            directory: false,
+            writable_directory: false,
+            multiple: false,
+            accept_label: None,
+            current_name: None,
+            filters: Vec::new(),
+            scope: Some(crate::portal::PickerScope {
+                initial_dir: folder.path().to_path_buf(),
+                roots: vec![folder.path().to_path_buf()],
+                home: None,
+            }),
+            reply,
+        });
+        assert!(desk.fb.host_mut().pump_file_picker());
+        desk.settle();
+        let PickerPlace::Window { content, .. } = desk.fb.host().file_picker_place() else {
+            panic!("{parent_window} asks with a window");
+        };
+        assert!(
+            desk.display(display).contains(content.center()),
+            "{parent_window}: the sheet is on {what}"
+        );
+        desk.fb
+            .host_mut()
+            .file_picker_mut()
+            .expect("the chooser is up")
+            .click_cancel();
+        let _ = desk.fb.host_mut().pump_file_picker();
+        desk.settle();
+    }
+    crate::compositor::window_handles::forget(tab_of(ON_PANEL));
+    crate::compositor::window_handles::forget(0xdead_0000_0001);
+}
+
 /// The sheet closes only its own window to input: the other window takes
 /// a click and the keys that follow, the sheet's name field stays as it
 /// was, and a click back on the waiting window gives the sheet the keys.
