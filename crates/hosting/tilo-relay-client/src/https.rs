@@ -311,8 +311,7 @@ pub async fn legacy_input(
 
 /// Tell the host which video codecs this page decodes
 /// ([`tilo_relay_protocol::legacy_window::CodecsRequest`]), so sessions
-/// stream legacy windows in one of them. `Ok(false)`: the host predates
-/// codec adverts, and this page counts as decoding H.264 only.
+/// stream legacy windows in one of them. `Ok(true)` once the host took it.
 ///
 /// # Errors
 ///
@@ -332,7 +331,6 @@ pub async fn legacy_codecs(
         .map_err(LinkError::Unavailable)?;
     match status {
         204 => Ok(true),
-        404 => Ok(false),
         401 => Err(LinkError::Refused(
             String::from_utf8_lossy(&bytes).into_owned(),
         )),

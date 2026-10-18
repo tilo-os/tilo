@@ -137,11 +137,6 @@ fn invite_arguments(terms: &RelayInvitation<'_>) -> serde_json::Map<String, serd
         arguments.insert("invitee_name".into(), invitee.into());
     }
     arguments.insert("expires_in_seconds".into(), terms.lifetime.into());
-    // A relay that predates seconds reads hours: never shorter than asked.
-    arguments.insert(
-        "expires_in_hours".into(),
-        terms.lifetime.div_ceil(3_600).into(),
-    );
     arguments
 }
 
@@ -1023,7 +1018,6 @@ mod tests {
                 "recipient": hex::encode([7; 32]),
                 "invitee_name": "Grace",
                 "expires_in_seconds": 600,
-                "expires_in_hours": 1,
             })
         );
         let open = invite_arguments(&RelayInvitation {
@@ -1033,7 +1027,7 @@ mod tests {
             lifetime: 3_601,
         });
         assert!(!open.contains_key("recipient") && !open.contains_key("invitee_name"));
-        assert_eq!(open["expires_in_hours"], 2, "never shorter than asked");
+        assert_eq!(open["expires_in_seconds"], 3_601);
     }
 
     #[test]
