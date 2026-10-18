@@ -1,4 +1,5 @@
 use super::*;
+use crate::collab_broker_capnp::InvocationOwner;
 use crate::collab_broker_capnp::invocation_journal::{InvocationJournal, InvocationKey};
 use crate::collab_broker_capnp::{BrokerChannels, FanoutState, PeerPublisher};
 use crate::services::{

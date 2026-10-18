@@ -111,7 +111,7 @@ impl CapnpBrokerState {
 
     // Admission may synchronously cross disk and owner-service barriers. Never
     // reuse the workspace or certificate ceiling sampled before those calls.
-    fn current_framework_authority(
+    pub(super) fn current_framework_authority(
         &self,
         caller: &Caller,
         origin: Option<&InvocationCaller>,
