@@ -118,6 +118,11 @@ struct FollowUp;
 impl tilo_actions::Action for FollowUp {
     fn apply(&self, doc: &mut automerge::AutoCommit) -> Result<(), tilo_actions::ActionError> {
         doc.put(ROOT, "follow-up", true)?;
+        let count = doc
+            .get(ROOT, "follow-up-count")?
+            .and_then(|(value, _)| value.as_u64())
+            .unwrap_or(0);
+        doc.put(ROOT, "follow-up-count", count + 1)?;
         Ok(())
     }
 }
