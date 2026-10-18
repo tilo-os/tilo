@@ -1,17 +1,21 @@
 //! Portal file-chooser overlay.
 //!
-//! This component owns the entire modal lifecycle: queued portal requests,
-//! the active picker and its reply channel, security-scoped mounting,
-//! painting, and exclusive event routing. The shell overlay host only decides
-//! where this modal sits in the global z-order.
+//! This component owns the dialog's lifecycle: queued portal requests, the
+//! active picker and its reply channel, security-scoped mounting, painting,
+//! and event routing. The chooser is a sheet on the window that asked: it
+//! hangs from the top of that window's app area, dims that window and closes
+//! it to input, and leaves every other window and the shell usable. Only a
+//! request no window of the app can answer for is modal for the desktop.
+//! The shell overlay host says where the asking window is this frame
+//! ([`PickerPlace`]) and where this sheet sits in the global z-order.
 
 pub(crate) mod actions;
 
 use crate::shell::state::WorkspaceAuthority as _;
 use taffy::TaffyTree;
 use vello::Scene;
-use vello::kurbo::{Affine, Rect};
-use winit::event::WindowEvent;
+use vello::kurbo::{Affine, Point, Rect};
+use winit::event::{ElementState, WindowEvent};
 
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -26,6 +30,45 @@ pub(crate) struct FilePickerOverlay {
     queue: Option<crate::portal::FilePickerQueue>,
     active: Option<Box<ActiveFilePicker>>,
     actions: actions::PickerActions,
+    /// A press the sheet took is followed to its release, wherever the
+    /// pointer has gone by then.
+    grabbed: bool,
+}
+
+/// Where the chooser sits this frame, as the overlay host sees the window
+/// that asked.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum PickerPlace {
+    /// A sheet on the asking window. `window` is the whole window group,
+    /// dimmed and closed to input; `content` the app area the sheet hangs
+    /// from; `display` the display it must stay on; `focused` while that
+    /// window holds the keyboard.
+    Window {
+        window: Rect,
+        content: Rect,
+        display: Rect,
+        focused: bool,
+    },
+    /// The asking window is out of sight (another workspace, scrolled off
+    /// the strip, behind another tab of its group): the sheet waits with it,
+    /// painting nothing and taking no input.
+    Hidden,
+    /// No window of the app asked: a dialog over the display in use, modal
+    /// for the desktop because there is no window to hold it.
+    Display(Rect),
+}
+
+impl PickerPlace {
+    /// The dialog's own rect, if it is on screen.
+    pub(crate) fn dialog_rect(self) -> Option<Rect> {
+        match self {
+            Self::Window {
+                content, display, ..
+            } => Some(file_picker_sheet_rect(content, display)),
+            Self::Hidden => None,
+            Self::Display(viewport) => Some(file_picker_rect(viewport)),
+        }
+    }
 }
 
 impl FilePickerOverlay {
@@ -45,6 +88,12 @@ impl FilePickerOverlay {
         self.active.as_mut().map(|active| &mut active.widget)
     }
 
+    /// The tab of the window the open chooser is a sheet on; `None` when
+    /// no chooser is up or no window of the app asked.
+    pub(crate) fn asking_tab(&self) -> Option<crate::shell::state::TabId> {
+        self.active.as_ref().and_then(|active| active.asking)
+    }
+
     /// Resolves a completed picker and mounts the next queued request.
     ///
     /// Only one request is allowed on screen. Requests arriving while a
@@ -61,6 +110,19 @@ impl FilePickerOverlay {
         if abandoned {
             self.active = None;
             dirty = true;
+        }
+        // A sheet goes with its window: closing the window that asked
+        // answers the request as cancelled.
+        if let Some(chrome) = chrome
+            && let Some(tab) = self.asking_tab()
+            && crate::shell::app_tabs::anchor_for_tab(&chrome.borrow().tree(), tab).is_none()
+            && let Some(mut active) = self.active.take()
+        {
+            active.answer(None);
+            dirty = true;
+        }
+        if self.active.is_none() {
+            self.grabbed = false;
         }
 
         if let Some(active) = self.active.as_mut()
@@ -91,7 +153,14 @@ impl FilePickerOverlay {
                 .scope
                 .clone()
                 .unwrap_or_else(|| picker_scope_for(chrome, &request.caller));
-            let active = ActiveFilePicker::mount(request, scope);
+            let asking = chrome.and_then(|chrome| {
+                crate::shell::app_tabs::asking_tab(
+                    &chrome.borrow().tree(),
+                    request.caller.workspace_id,
+                    &request.caller.app_id,
+                )
+            });
+            let active = ActiveFilePicker::mount(request, scope, asking);
             tracing::info!(
                 app = %active.app_id,
                 dir = %active.widget.current_dir().display(),
@@ -142,7 +211,7 @@ impl FilePickerOverlay {
 
     pub(crate) fn draw(
         &mut self,
-        viewport: Rect,
+        place: PickerPlace,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -152,28 +221,66 @@ impl FilePickerOverlay {
         let Some(active) = self.active.as_mut() else {
             return;
         };
-        ui::overlay::scrim::modal(scene, transform, viewport, 1.0, theme);
-        active.widget.set_rect(file_picker_rect(viewport));
+        let Some(rect) = place.dialog_rect() else {
+            return;
+        };
+        // The dimming says which window waits on the sheet; every other
+        // window stays as bright as it is usable.
+        let dimmed = match place {
+            PickerPlace::Window { window, .. } => window,
+            PickerPlace::Display(viewport) => viewport,
+            PickerPlace::Hidden => return,
+        };
+        ui::overlay::scrim::modal(scene, transform, dimmed, 1.0, theme);
+        active.widget.set_rect(rect);
         active
             .widget
             .draw(scene, transform, text_renderer, theme, presence);
     }
 
-    /// Routes an event to the active picker and reports whether the modal
-    /// consumed the shell's input. An active picker always consumes input,
-    /// even when its inner widget has no action for a particular event.
+    /// Routes an event to the active picker and reports whether the sheet
+    /// took it. A sheet takes the pointer over its window (the window is
+    /// closed to input while it waits) and the keyboard while that window
+    /// is focused, except the shell's own Super chords, so the person can
+    /// leave for another window; everything else goes on as if no chooser
+    /// were up. A chooser no window asked for takes every event.
     /// The picker is dispatched on a tree of its own; `ctx.node_id` and
     /// `ctx.taffy` are not forwarded.
     pub(crate) fn handle_event(
         &mut self,
-        viewport: Rect,
+        place: PickerPlace,
+        pointer: Option<Point>,
         event: &WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         let Some(active) = self.active.as_mut() else {
             return false;
         };
-        active.widget.set_rect(file_picker_rect(viewport));
+        let Some(rect) = place.dialog_rect() else {
+            return false;
+        };
+        if let PickerPlace::Window {
+            window, focused, ..
+        } = place
+        {
+            let at = match event {
+                WindowEvent::Touch(touch) => Some(ctx.logical(touch.location)),
+                _ => pointer,
+            };
+            let over = at.is_some_and(|at| window.contains(at) || rect.contains(at));
+            let takes = match sheet_input(event) {
+                SheetInput::Pointer => over || self.grabbed,
+                SheetInput::Keys => focused && !ctx.modifiers.state().super_key(),
+                SheetInput::Other => false,
+            };
+            if !takes {
+                return false;
+            }
+            if let WindowEvent::MouseInput { state, .. } = event {
+                self.grabbed = *state == ElementState::Pressed;
+            }
+        }
+        active.widget.set_rect(rect);
         let mut taffy = TaffyTree::<()>::new();
         // This tree exists only to hand `handle_event` a valid node id; a
         // failure here means we can't dispatch at all, so decline the
@@ -191,6 +298,45 @@ impl FilePickerOverlay {
         *ctx.handled = true;
         true
     }
+}
+
+/// Which of the asking window's inputs an event is.
+enum SheetInput {
+    Pointer,
+    Keys,
+    Other,
+}
+
+const fn sheet_input(event: &WindowEvent) -> SheetInput {
+    match event {
+        WindowEvent::CursorMoved { .. }
+        | WindowEvent::MouseInput { .. }
+        | WindowEvent::MouseWheel { .. }
+        | WindowEvent::PinchGesture { .. }
+        | WindowEvent::PanGesture { .. }
+        | WindowEvent::Touch(_) => SheetInput::Pointer,
+        WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_) => SheetInput::Keys,
+        _ => SheetInput::Other,
+    }
+}
+
+/// The chooser as a sheet on the window that asked: centred on the
+/// window's app area and hanging from its top edge, as wide and tall as the
+/// window allows within the toolkit's sheet sizes, and kept wholly on the
+/// display even when the window runs past it.
+pub fn file_picker_sheet_rect(content: Rect, display: Rect) -> Rect {
+    let metrics = ui::tokens::Metrics::BASE;
+    let inset = f64::from(ui::tokens::Spacing::BASE.s6);
+    let sheet = f64::from(metrics.panel_width_sheet);
+    let w = (content.width() - 2.0 * inset)
+        .clamp(sheet, sheet * 1.6)
+        .min(display.width());
+    let h = (content.height() - inset)
+        .clamp(f64::from(metrics.panel_width_list), sheet * 1.15)
+        .min(display.height());
+    let x0 = (content.center().x - w / 2.0).clamp(display.x0, display.x1 - w);
+    let y0 = content.y0.clamp(display.y0, display.y1 - h);
+    Rect::new(x0, y0, x0 + w, y0 + h)
 }
 
 /// Centre the file chooser in `viewport`, clamping its fraction so it stays
@@ -276,12 +422,18 @@ struct ActiveFilePicker {
     workspace: crate::shell::state::WorkspaceId,
     widget: ui::widget::FilePicker,
     app_id: crate::shell::state::AppId,
+    /// The tab of the window this is a sheet on.
+    asking: Option<crate::shell::state::TabId>,
     multiple: bool,
     reply: Option<tokio::sync::oneshot::Sender<Option<Vec<std::path::PathBuf>>>>,
 }
 
 impl ActiveFilePicker {
-    fn mount(request: crate::portal::FilePickerRequest, scope: crate::portal::PickerScope) -> Self {
+    fn mount(
+        request: crate::portal::FilePickerRequest,
+        scope: crate::portal::PickerScope,
+        asking: Option<crate::shell::state::TabId>,
+    ) -> Self {
         use ui::widget::file_picker::FileFilter;
         use ui::widget::{FilePicker, FilePickerMode};
 
@@ -324,6 +476,7 @@ impl ActiveFilePicker {
             id: uuid::Uuid::new_v4(),
             workspace: request.caller.workspace_id,
             app_id: request.caller.app_id.clone(),
+            asking,
             multiple: request.multiple,
             reply: Some(request.reply),
         }
@@ -373,6 +526,7 @@ mod tests {
         let (reply, _received) = oneshot::channel();
         queue.spawn(FilePickerRequest {
             caller: crate::portal::PortalCaller::new(workspace, "so.tilo.store"),
+            parent_window: None,
             title: "Review package".into(),
             save: false,
             directory: false,
@@ -557,6 +711,7 @@ mod tests {
         let (reply, received) = oneshot::channel();
         queue.spawn(FilePickerRequest {
             caller: crate::portal::PortalCaller::new(workspace, "so.tilo.store"),
+            parent_window: None,
             title: "Review".into(),
             save,
             directory,
@@ -827,6 +982,46 @@ mod tests {
     }
 
     #[test]
+    fn a_sheet_hangs_from_its_window_and_stays_on_the_display() {
+        let display = Rect::new(0.0, 0.0, 1920.0, 1080.0);
+        let sheet = f64::from(ui::tokens::Metrics::BASE.panel_width_sheet);
+
+        let content = Rect::new(200.0, 80.0, 1400.0, 1000.0);
+        let rect = file_picker_sheet_rect(content, display);
+        assert_eq!(rect.y0, content.y0, "hangs from the window's top");
+        assert_eq!(rect.center().x, content.center().x, "centred on the window");
+        assert_eq!(rect.width(), sheet * 1.6, "no wider than a sheet");
+
+        let narrow = Rect::new(800.0, 80.0, 1100.0, 1000.0);
+        let rect = file_picker_sheet_rect(narrow, display);
+        assert_eq!(
+            rect.width(),
+            sheet,
+            "a narrow window still gets a usable sheet"
+        );
+        assert_eq!(rect.center().x, narrow.center().x);
+
+        let off_the_edge = Rect::new(1700.0, 80.0, 2600.0, 1000.0);
+        let rect = file_picker_sheet_rect(off_the_edge, display);
+        assert_eq!(
+            rect.x1, display.x1,
+            "kept on the display the window runs off"
+        );
+
+        let place = PickerPlace::Window {
+            window: content,
+            content,
+            display,
+            focused: false,
+        };
+        assert_eq!(
+            place.dialog_rect(),
+            Some(file_picker_sheet_rect(content, display))
+        );
+        assert_eq!(PickerPlace::Hidden.dialog_rect(), None);
+    }
+
+    #[test]
     fn file_picker_is_clamped_and_replies_with_the_requested_kind_and_count() {
         fn picker_rect_is_centered_and_clamped_to_viewport() {
             let viewport = Rect::new(30.0, 40.0, 330.0, 240.0);
@@ -878,6 +1073,7 @@ mod tests {
             let (reply, mut received) = oneshot::channel();
             queue.spawn(FilePickerRequest {
                 caller: crate::portal::PortalCaller::new(workspace, "org.example"),
+                parent_window: None,
                 title: "Choose project".into(),
                 save: false,
                 directory: true,
@@ -923,6 +1119,7 @@ mod tests {
         let (reply, mut received) = oneshot::channel();
         queue.spawn(FilePickerRequest {
             caller: crate::portal::PortalCaller::new(workspace, "org.example"),
+            parent_window: None,
             title: "Open folder".into(),
             save: false,
             directory: true,
@@ -966,7 +1163,8 @@ mod tests {
         for pressed in [true, false] {
             let event = crate::shell::test_control::keyboard_input_event(key, pressed);
             assert!(overlay.handle_event(
-                viewport,
+                PickerPlace::Display(viewport),
+                None,
                 &event,
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
@@ -1003,6 +1201,7 @@ mod tests {
         let (reply, mut received) = oneshot::channel();
         queue.spawn(FilePickerRequest {
             caller: crate::portal::PortalCaller::new(workspace, "so.tilo.canvas"),
+            parent_window: None,
             title: "Export a picture".into(),
             save: true,
             directory: false,
@@ -1079,6 +1278,7 @@ mod tests {
         let (reply, mut received) = oneshot::channel();
         queue.spawn(FilePickerRequest {
             caller: crate::portal::PortalCaller::new(workspace, "so.tilo.canvas"),
+            parent_window: None,
             title: "Export a picture".into(),
             save: true,
             directory: false,
@@ -1131,6 +1331,7 @@ mod tests {
         let (reply, _received) = oneshot::channel();
         queue.spawn(FilePickerRequest {
             caller: crate::portal::PortalCaller::new(workspace, "org.example"),
+            parent_window: None,
             title: "Import".into(),
             save: false,
             directory: false,

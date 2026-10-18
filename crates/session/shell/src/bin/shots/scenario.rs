@@ -1152,6 +1152,34 @@ fn apply_seed_status_and_file_picker(driver: &mut ShellDriver, action: &Action) 
             }
             driver.host_mut().pump_file_picker();
             seed_file_picker_fixture(driver);
+            // The writer's Document tab is the window that asks: in front,
+            // focused, and the window the chooser is a sheet on.
+            let mut document = None;
+            driver.with_chrome(|chrome| {
+                let mut tree = chrome.tree_mut();
+                for strip in tree
+                    .desktop
+                    .workspaces
+                    .iter_mut()
+                    .flat_map(|workspace| &mut workspace.strips)
+                {
+                    for group in &mut strip.window_groups {
+                        if let Some(tab) = group.tabs.iter_mut().find(|tab| tab.title == "Document")
+                        {
+                            tab.tile = shell::shell::state::TileContent::Foreign {
+                                app_id: "so.tilo.word-processor".into(),
+                                surface_id: tab.id,
+                            };
+                            document = Some((strip.id, group.id, tab.id));
+                        }
+                    }
+                }
+            });
+            driver.relayout();
+            if let Some((strip, group, tab)) = document {
+                driver.host_mut().focus_window_on_strip(strip, group, tab);
+            }
+            driver.relayout();
             let queue = FilePickerQueue::new();
             driver.host_mut().set_portal_queues(
                 PromptQueueHandle::new(PromptResolver::Channel),
@@ -1178,12 +1206,17 @@ fn apply_seed_status_and_file_picker(driver: &mut ShellDriver, action: &Action) 
                 PickerFilter::from_pairs("Images", &[(1, "image/png".into())]),
             ])
             .current_name(save.then(|| "Untitled.md".to_string()));
-            // The reply receiver is dropped: a screenshot has nobody to
-            // hand the answer to. The dialog does not care — it is the
-            // portal side that reads a closed channel as "cancelled".
-            let (tx, _rx) = tokio::sync::oneshot::channel();
+            // The scenario waits on the answer the way the asking app does:
+            // a request whose app has gone is closed at the next frame.
+            thread_local! {
+                static WAITING: std::cell::RefCell<Vec<tokio::sync::oneshot::Receiver<Option<Vec<std::path::PathBuf>>>>> =
+                    const { std::cell::RefCell::new(Vec::new()) };
+            }
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            WAITING.with(|waiting| waiting.borrow_mut().push(rx));
             queue.spawn(shell::portal::FilePickerRequest {
                 caller: opts.caller,
+                parent_window: None,
                 title: opts.title,
                 save: opts.save,
                 directory: opts.directory,

@@ -160,6 +160,17 @@ use tilo_desktop::workspace_settings::overlay::{
 };
 use ui::widget::ButtonRole;
 
+/// The window an open file chooser is a sheet on, as laid out this frame.
+struct AskingWindow {
+    strip: StripId,
+    group: GroupId,
+    /// The whole window group, tab decoration included.
+    window: Rect,
+    /// The app area the sheet hangs from.
+    content: Rect,
+    focused: bool,
+}
+
 #[derive(Debug)]
 struct SessionActionResult {
     action: os_actions::SessionAction,
@@ -8583,6 +8594,68 @@ impl ShellOverlayHost {
     /// since the group's active tile rect *is* the surface's rect.
     ///
     /// SAFETY mirrors [`Self::groups_per_strip`].
+    /// Where the open file chooser sits this frame: a sheet on the window
+    /// that asked while that window is in front of its group and laid out,
+    /// waiting out of sight otherwise; over the display in use when no
+    /// window of the app asked.
+    pub(crate) fn file_picker_place(&self) -> crate::shell::file_picker_overlay::PickerPlace {
+        use crate::shell::file_picker_overlay::PickerPlace;
+        let Some(tab) = self.file_picker_overlay.asking_tab() else {
+            return PickerPlace::Display(self.overlay_area());
+        };
+        self.asking_window(tab)
+            .map_or(PickerPlace::Hidden, |asking| PickerPlace::Window {
+                window: asking.window,
+                content: asking.content,
+                display: self.surface_area(Some(asking.content.center())),
+                focused: asking.focused,
+            })
+    }
+
+    /// The laid-out window group showing `tab` in front.
+    fn asking_window(&self, tab: crate::shell::state::TabId) -> Option<AskingWindow> {
+        self.group_row_ptrs.iter().find_map(|(&strip, &ptr)| {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &GroupRow = unsafe { &*ptr };
+            let group = row
+                .groups
+                .iter()
+                .find(|group| group.active_tab_id() == tab)?;
+            let window = group.get_rect();
+            let content = group.active_host().map(ui::Widget::get_rect)?;
+            (window.area() > 0.0 && content.area() > 0.0).then_some(AskingWindow {
+                strip,
+                group: group.id,
+                window,
+                content,
+                focused: group.focused,
+            })
+        })
+    }
+
+    /// A press on the window an open file chooser waits on brings that
+    /// window forward, so the keys that follow reach its sheet.
+    fn focus_asking_window_on_press(&mut self, event: &WindowEvent) {
+        if !matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            }
+        ) {
+            return;
+        }
+        if let Some(tab) = self.file_picker_overlay.asking_tab()
+            && let Some(asking) = self.asking_window(tab)
+            && !asking.focused
+            && self
+                .last_cursor
+                .is_some_and(|at| asking.window.contains(at))
+        {
+            self.focus_window_on_strip(asking.strip, asking.group, tab);
+        }
+    }
+
     pub fn active_tile_rect(&self, group_id: u64) -> Option<Rect> {
         for &ptr in self.group_row_ptrs.values() {
             // SAFETY: see field doc on `group_row_ptrs`.
@@ -13648,20 +13721,23 @@ impl ShellOverlayHost {
     }
 
     /// Modal overlays that absorb an event outright before anything else
-    /// sees it: the file picker (genuinely modal — a D-Bus call is
-    /// parked on the answer), an in-flight peer-sync token prompt, and
+    /// sees it: the file chooser (for the window that asked; a D-Bus call
+    /// is parked on the answer), an in-flight peer-sync token prompt, and
     /// the projection sheet.
     fn route_modal_absorbing_overlays(
         &mut self,
         event: &WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
-        // Runs before everything and absorbs every event: genuinely
-        // modal (a D-Bus method in another process is parked on the
-        // answer), and a typed filename shares characters with chords.
+        // Runs before everything: the sheet takes what is meant for the
+        // window that asked (a D-Bus method in another process is parked on
+        // the answer, and a typed filename shares characters with chords)
+        // and leaves the rest of the desktop alone.
+        self.focus_asking_window_on_press(event);
+        let place = self.file_picker_place();
         if self
             .file_picker_overlay
-            .handle_event(self.overlay_area(), event, ctx)
+            .handle_event(place, self.last_cursor, event, ctx)
         {
             return true;
         }
@@ -24845,20 +24921,14 @@ impl ShellOverlayHost {
             None
         });
 
-        // Above every other overlay, including the strip switcher — it's
-        // genuinely modal (an app in another process is blocked on the
-        // answer, and `handle_event` absorbs every event), and drawn by
-        // the compositor rather than the requesting app so it can't be
-        // drawn over, read, or dismissed by that app.
+        // Above every other overlay, including the strip switcher: the
+        // sheet on the asking window is drawn by the compositor rather than
+        // the requesting app so it can't be drawn over, read, or dismissed
+        // by that app.
+        let place = self.file_picker_place();
         overlay_part(scene, "shell.file-picker", desktop, |scene| {
-            self.file_picker_overlay.draw(
-                self.overlay_area(),
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-            );
+            self.file_picker_overlay
+                .draw(place, scene, transform, text_renderer, theme, presence);
             None
         });
 

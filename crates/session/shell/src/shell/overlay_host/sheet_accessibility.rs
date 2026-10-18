@@ -83,9 +83,21 @@ impl ShellOverlayHost {
     /// belongs inside it rather than on whatever the desktop last focused.
     pub fn modal_sheet_owns_keyboard(&self) -> bool {
         self.portal_dialogs.view().is_some()
-            || self.file_picker_overlay.widget().is_some()
+            || self.file_picker_owns_keyboard()
             || self.peer_sync_overlay.visible()
             || self.wifi_password_prompt_up()
+    }
+
+    /// Whether the file chooser takes the keys: a sheet does while its
+    /// window is focused, a chooser no window asked for always does.
+    fn file_picker_owns_keyboard(&self) -> bool {
+        use crate::shell::file_picker_overlay::PickerPlace;
+        self.file_picker_overlay.widget().is_some()
+            && match self.file_picker_place() {
+                PickerPlace::Window { focused, .. } => focused,
+                PickerPlace::Display(_) => true,
+                PickerPlace::Hidden => false,
+            }
     }
 
     fn wifi_password_prompt_up(&self) -> bool {
@@ -106,16 +118,26 @@ impl ShellOverlayHost {
     /// their nodes but give up their focused marks.
     pub(super) fn append_modal_sheet_accessibility(&self, root: &mut AccessNode) {
         let mut sheets = Vec::new();
+        let mut waiting = None;
         sheets.extend(self.peer_sync_overlay.accessibility());
-        if let Some(mut picker) = self
-            .file_picker_overlay
-            .widget()
-            .and_then(ui::widget::Widget::accessibility)
+        if self.file_picker_place().dialog_rect().is_some()
+            && let Some(mut picker) = self
+                .file_picker_overlay
+                .widget()
+                .and_then(ui::widget::Widget::accessibility)
         {
             route_file_picker(&mut picker, &[]);
-            sheets.push(picker);
+            // A sheet on a window in the background is there to be found,
+            // not where the keys go.
+            if self.file_picker_owns_keyboard() {
+                sheets.push(picker);
+            } else {
+                clear_focus(&mut picker);
+                waiting = Some(picker);
+            }
         }
         sheets.extend(self.portal_dialogs.accessibility(self.rect));
+        root.children.extend(waiting);
         if sheets.is_empty() {
             return;
         }

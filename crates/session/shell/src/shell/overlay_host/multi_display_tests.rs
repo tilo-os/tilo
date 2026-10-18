@@ -92,6 +92,10 @@ struct Desk {
 
 impl Desk {
     fn new(fixture: &str) -> Self {
+        Self::laid_out(fixture, tree())
+    }
+
+    fn laid_out(fixture: &str, tree: WorkspaceTree) -> Self {
         let mut outputs = output_fixture(fixture).expect("fixture");
         for (output, (connector, make, model, serial)) in outputs.iter_mut().zip([PANEL, MONITOR]) {
             output.identity = OutputIdentity {
@@ -102,7 +106,7 @@ impl Desk {
                 physical_mm: (0, 0),
             };
         }
-        let mut fb = FrameBuilder::with_tree(tree(), combined_geometry(&outputs));
+        let mut fb = FrameBuilder::with_tree(tree, combined_geometry(&outputs));
         fb.set_output_geometry(output_geometry(&outputs));
         let mut desk = Self { fb, outputs };
         desk.settle();
@@ -269,48 +273,123 @@ fn search_and_sheets_open_on_the_focused_display() {
     });
 }
 
-/// A file chooser an app asks for opens over the display in use, centred
-/// there rather than on the seam.
-#[test]
-fn the_file_chooser_opens_on_the_focused_display() {
+/// The app with a window on each display, for the chooser cases.
+const AUDIT: &str = "org.tilo.audit";
+
+/// [`tree`], with both windows the audit app's.
+fn app_tree() -> WorkspaceTree {
+    let mut tree = tree();
+    for group in &mut tree.desktop.workspaces[0].strips[0].window_groups {
+        let surface_id = tab_of(group.id);
+        group.tabs[0].tile = TileContent::Foreign {
+            app_id: AUDIT.into(),
+            surface_id,
+        };
+    }
+    tree
+}
+
+/// A file chooser `AUDIT` asks for, scoped to `folder`.
+fn ask(
+    pickers: &crate::portal::FilePickerQueue,
+    folder: &std::path::Path,
+    current_name: Option<&str>,
+) -> tokio::sync::oneshot::Receiver<Option<Vec<std::path::PathBuf>>> {
     use crate::portal::FilePickerSpawner as _;
+    let (reply, answer) = tokio::sync::oneshot::channel();
+    pickers.spawn(crate::portal::FilePickerRequest {
+        caller: crate::portal::PortalCaller::new(WorkspaceId(7), AUDIT),
+        parent_window: Some("wayland:audit".into()),
+        title: "Open a document".to_string(),
+        save: current_name.is_some(),
+        directory: false,
+        writable_directory: false,
+        multiple: false,
+        accept_label: None,
+        current_name: current_name.map(str::to_string),
+        filters: Vec::new(),
+        scope: Some(crate::portal::PickerScope {
+            initial_dir: folder.to_path_buf(),
+            roots: vec![folder.to_path_buf()],
+            home: None,
+        }),
+        reply,
+    });
+    answer
+}
+
+impl Desk {
+    fn with_queue(tree: WorkspaceTree) -> (Self, crate::portal::FilePickerQueue) {
+        let mut desk = Self::laid_out("laptop-beside-1080p", tree);
+        let pickers = crate::portal::FilePickerQueue::new();
+        desk.fb.host_mut().set_portal_queues(
+            crate::portal::PromptQueueHandle::new(crate::portal::PromptResolver::AutoAllow),
+            pickers.clone(),
+        );
+        (desk, pickers)
+    }
+
+    fn sheet(&self) -> Rect {
+        ui::widget::Widget::get_rect(self.fb.host().file_picker().expect("the chooser is up"))
+    }
+
+    fn click(&mut self, at: Point) {
+        self.dispatch(&ui::synthetic_input::cursor_moved(at.x, at.y));
+        self.dispatch(&ui::synthetic_input::mouse_press());
+        self.dispatch(&ui::synthetic_input::mouse_release());
+        self.settle();
+    }
+
+    fn type_text(&mut self, text: &str) {
+        for ch in text.chars() {
+            let key = winit::keyboard::Key::Character(ch.to_string().into());
+            for pressed in [true, false] {
+                self.dispatch(&crate::shell::test_control::keyboard_input_event(
+                    &key, pressed,
+                ));
+            }
+        }
+        self.settle();
+    }
+}
+
+/// A file chooser is a sheet on the window that asked, on whichever
+/// display that window is: hung from the top of the window's app area,
+/// centred on it, and wholly on that display.
+#[test]
+fn the_file_chooser_is_a_sheet_on_the_window_that_asked() {
+    use crate::shell::file_picker_overlay::PickerPlace;
 
     let folder = tempfile::tempdir().expect("tempdir");
-    let mut desk = Desk::new("laptop-beside-1080p");
-    let pickers = crate::portal::FilePickerQueue::new();
-    desk.fb.host_mut().set_portal_queues(
-        crate::portal::PromptQueueHandle::new(crate::portal::PromptResolver::AutoAllow),
-        pickers.clone(),
-    );
+    let (mut desk, pickers) = Desk::with_queue(app_tree());
     let mut parked = Vec::new();
     desk.on_each_display(|desk, display, name| {
-        let (reply, answer) = tokio::sync::oneshot::channel();
-        parked.push(answer);
-        pickers.spawn(crate::portal::FilePickerRequest {
-            caller: crate::portal::PortalCaller::new(WorkspaceId(7), "org.tilo.audit"),
-            title: "Open a document".to_string(),
-            save: false,
-            directory: false,
-            writable_directory: false,
-            multiple: false,
-            accept_label: None,
-            current_name: None,
-            filters: Vec::new(),
-            scope: Some(crate::portal::PickerScope {
-                initial_dir: folder.path().to_path_buf(),
-                roots: vec![folder.path().to_path_buf()],
-                home: None,
-            }),
-            reply,
-        });
+        parked.push(ask(&pickers, folder.path(), None));
         assert!(desk.fb.host_mut().pump_file_picker());
         desk.settle();
-        let picker =
-            ui::widget::Widget::get_rect(desk.fb.host().file_picker().expect("the chooser is up"));
-        assert_on(display, picker, "the file chooser", name);
+        let PickerPlace::Window {
+            window,
+            content,
+            focused,
+            ..
+        } = desk.fb.host().file_picker_place()
+        else {
+            panic!("the chooser on {name} is a sheet on the window that asked");
+        };
+        assert!(focused, "the asking window is the one in use");
         assert!(
-            (picker.center().x - display.center().x).abs() < 1.0,
-            "the chooser {picker:?} centres on {name}"
+            display.contains(content.center()),
+            "the sheet is on {name}'s window"
+        );
+        let sheet = desk.sheet();
+        assert_on(display, sheet, "the file chooser", name);
+        assert!(
+            (sheet.center().x - content.center().x).abs() < 1.0,
+            "the sheet {sheet:?} centres on its window {content:?} on {name}"
+        );
+        assert!(
+            (sheet.y0 - content.y0).abs() < 1.0 && window.contains(sheet.origin()),
+            "the sheet {sheet:?} hangs from the top of its window {content:?} on {name}"
         );
         desk.fb
             .host_mut()
@@ -322,6 +401,91 @@ fn the_file_chooser_opens_on_the_focused_display() {
         assert!(desk.fb.host().file_picker().is_none(), "cancel closes it");
     });
     assert_eq!(parked.len(), 3, "each request kept its reply open while up");
+}
+
+/// The sheet closes only its own window to input: the other window takes
+/// a click and the keys that follow, the sheet's name field stays as it
+/// was, and a click back on the waiting window gives the sheet the keys.
+/// Closing the asking window answers the request as cancelled.
+#[test]
+fn the_file_chooser_sheet_blocks_only_its_own_window() {
+    use crate::shell::file_picker_overlay::PickerPlace;
+
+    let folder = tempfile::tempdir().expect("tempdir");
+    let (mut desk, pickers) = Desk::with_queue(app_tree());
+    let _ = desk
+        .fb
+        .host_mut()
+        .focus_window_on_strip(STRIP, ON_MONITOR, tab_of(ON_MONITOR));
+    desk.settle();
+    let mut answer = ask(&pickers, folder.path(), Some("draft"));
+    assert!(desk.fb.host_mut().pump_file_picker());
+    desk.settle();
+    let filename = |desk: &Desk| {
+        desk.fb
+            .host()
+            .file_picker()
+            .map(|picker| picker.filename().to_string())
+    };
+    desk.type_text("a");
+    assert_eq!(
+        filename(&desk).as_deref(),
+        Some("a"),
+        "the sheet on the focused window takes the keys"
+    );
+
+    let other = desk.display(0).center();
+    desk.click(other);
+    assert_eq!(
+        desk.focused_display(),
+        Some(desk.outputs[0].id.0),
+        "the click reached the other window"
+    );
+    assert!(matches!(
+        desk.fb.host().file_picker_place(),
+        PickerPlace::Window { focused: false, .. }
+    ));
+    desk.type_text("b");
+    assert_eq!(
+        filename(&desk).as_deref(),
+        Some("a"),
+        "keys for the other window never reach the sheet"
+    );
+
+    let PickerPlace::Window { window, .. } = desk.fb.host().file_picker_place() else {
+        panic!("the sheet stays on its window");
+    };
+    let sheet = desk.sheet();
+    let beside_the_sheet = Point::new(window.center().x, f64::midpoint(sheet.y1, window.y1));
+    assert!(
+        window.contains(beside_the_sheet) && !sheet.contains(beside_the_sheet),
+        "the waiting window shows below its sheet"
+    );
+    desk.click(beside_the_sheet);
+    assert!(matches!(
+        desk.fb.host().file_picker_place(),
+        PickerPlace::Window { focused: true, .. }
+    ));
+    desk.type_text("c");
+    assert_eq!(
+        filename(&desk).as_deref(),
+        Some("ac"),
+        "a click on the waiting window gives its sheet the keys again"
+    );
+
+    desk.fb.with_chrome(|chrome| {
+        let mut tree = chrome.tree_mut();
+        tree.desktop.workspaces[0].strips[0]
+            .window_groups
+            .retain(|group| group.id != ON_MONITOR);
+    });
+    desk.fb.host_mut().pump_file_picker();
+    assert!(desk.fb.host().file_picker().is_none());
+    assert_eq!(
+        answer.try_recv().ok(),
+        Some(None),
+        "closing the asking window cancels its chooser"
+    );
 }
 
 /// A finger put down on the other display makes it the display in use, as
