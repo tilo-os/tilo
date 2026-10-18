@@ -18,6 +18,9 @@ pub enum Presence {
 pub struct CookieProfile {
     pub id: String,
     pub label: String,
+    /// Registry-owned product identity, not inferred from private profile paths.
+    pub application: String,
+    pub native_application: bool,
     pub provider: Provider,
     pub material: Material,
     _private: (),
@@ -107,6 +110,8 @@ fn wrap(native: crate::setup::browser_profiles::service_profiles::Discovery) -> 
             Arc::new(CookieProfile {
                 id: source.id.clone(),
                 label: source.label.clone(),
+                application: source.application.clone(),
+                native_application: source.native_application,
                 provider: source.provider,
                 _private: (),
                 material: match source.material {

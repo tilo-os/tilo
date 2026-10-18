@@ -219,6 +219,22 @@ class MediumLayer(unittest.TestCase):
                 run.assert_not_called()
 
 
+class PairingHelperPackaging(unittest.TestCase):
+    def test_linux_packaging_builds_and_places_the_canonical_helper_beside_host(self):
+        build = (HERE / 'build-capture-host.sh').read_text()
+        self.assertIn('if [ "$(uname -s)" = Linux ]; then', build)
+        self.assertIn('build --locked --release -p tilo-relay --bin tilo-enroll', build)
+        host = (HERE / 'package-host.sh').read_text()
+        self.assertIn('install -m755 target/release/tilo-enroll "$bundle/tilo-enroll"', host)
+        self.assertIn('install -m755 target/release/tilo-enroll "$appdir/usr/bin/tilo-enroll"', host)
+        flatpak = (HERE / 'package-flatpak.sh').read_text()
+        self.assertIn('cp "$repo/target/release/tilo-enroll" "$stage/tilo-enroll"', flatpak)
+        self.assertIn('--command=tilo-enroll org.tilo.Imager pair-device --help', flatpak)
+        manifest = (HERE / 'flatpak/org.tilo.Imager.yml').read_text()
+        self.assertIn('install -Dm755 tilo-enroll /app/bin/tilo-enroll', manifest)
+        self.assertIn('path: tilo-enroll', manifest)
+
+
 class NativePlatformArchive(unittest.TestCase):
     def test_qualified_native_helpers_and_sidecar_have_canonical_root_paths(self):
         import tarfile
@@ -234,6 +250,7 @@ class NativePlatformArchive(unittest.TestCase):
                 roles[role] = {'path': str(path), 'sha256': 'a' * 64}
             host = root / 'host'
             host.write_bytes(b'host')
+            (root / 'tilo-enroll').write_bytes(b'canonical enrollment helper')
             qualifier = SimpleNamespace(BINDINGS={
                 'prepared_helper': '/usr/libexec/tilo-prepared-setup',
                 'credential_helper': '/usr/libexec/tilo-account-credential',
@@ -255,6 +272,7 @@ class NativePlatformArchive(unittest.TestCase):
             with tarfile.open(output) as archive:
                 for name, value in (
                     ('usr/bin/tilo-imager', b'host'),
+                    ('usr/bin/tilo-enroll', b'canonical enrollment helper'),
                     ('usr/libexec/tilo-prepared-setup', b'prepared_helper'),
                     ('usr/libexec/tilo-account-credential', b'credential_helper'),
                     ('usr/libexec/tilo-firstboot-home-seeds', b'home_seeds'),
@@ -264,6 +282,7 @@ class NativePlatformArchive(unittest.TestCase):
                     self.assertEqual((member.uid, member.gid), (0, 0))
                     self.assertEqual(archive.extractfile(member).read(), value)
                 self.assertEqual(archive.getmember('usr/libexec/tilo-prepared-setup').mode, 0o755)
+                self.assertEqual(archive.getmember('usr/bin/tilo-enroll').mode, 0o755)
 
 
 class StageGate(unittest.TestCase):

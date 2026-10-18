@@ -33,6 +33,7 @@ stage="$work/manifest"
 mkdir -p "$stage" "$out"
 cp "$repo/apps/imager/packaging/flatpak/org.tilo.Imager.yml" "$stage/"
 cp "$repo/target/release/imager" "$stage/tilo-imager-bin"
+cp "$repo/target/release/tilo-enroll" "$stage/tilo-enroll"
 "$repo/apps/imager/packaging/stage-capture-sidecar.sh" "$repo/target/release/imager" "$stage/capture-prefix" "$stage/tilo-imager-bin"
 if [ -d "$stage/capture-prefix/share/tilo-imager/capture" ]; then
   tar -C "$stage/capture-prefix" -cf "$stage/tilo-capture-sidecar.tar" share/tilo-imager/capture
@@ -71,6 +72,7 @@ chmod 0700 "$isolated_install"
 export FLATPAK_USER_DIR="$isolated_install"
 flatpak install --user --noninteractive --no-deps --bundle "$artifact"
 flatpak info --user org.tilo.Imager >/dev/null
+flatpak run --user --command=tilo-enroll org.tilo.Imager pair-device --help >/dev/null
 flatpak run --user org.tilo.Imager --tilo-package-smoke
 flatpak run --user org.tilo.Imager --tilo-flatpak-probe-smoke
 flatpak run --user --filesystem="$smoke" org.tilo.Imager \

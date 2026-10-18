@@ -425,15 +425,28 @@ impl BotRunner {
             let mut doc = AutoCommit::load(&saved).map_err(|error| error.to_string())?;
             let heads: Vec<String> = doc.get_heads().iter().map(ToString::to_string).collect();
             // A record first seen starts at its heads: a bot answers what
-            // happens after it is installed, not the room's past.
-            let Some(since) = self.progress.records.get(&key).cloned() else {
-                self.progress.records.insert(key, heads);
-                continue;
+            // happens after it is installed, not the room's past. A new
+            // part of a chain of an app the bot already follows (the next
+            // part of a chat's messages) is what happened since: read whole.
+            let part = ui::record::RecordId::parse(&record)
+                .is_some_and(|record| record.chain_part().is_some());
+            let since = match self.progress.records.get(&key).cloned() {
+                Some(since) => since,
+                None if part && self.follows_app(&app) => Vec::new(),
+                None => {
+                    self.progress.records.insert(key, heads);
+                    continue;
+                }
             };
-            let kind = self
-                .catalogue
-                .get(&app)
-                .map(|definition| definition.record_kind.as_str().to_owned())
+            // A part is of its own resource (a chat's messages), as its
+            // record names it.
+            let kind = ui::record::identity(&doc)
+                .map(|checkout| checkout.kind.as_str().to_owned())
+                .or_else(|| {
+                    self.catalogue
+                        .get(&app)
+                        .map(|definition| definition.record_kind.as_str().to_owned())
+                })
                 .unwrap_or_default();
             for (event, _) in tilo_agent_participant::bot::events_since(
                 &self.room,
@@ -472,6 +485,15 @@ impl BotRunner {
         Ok(firings)
     }
 
+    /// Whether the runner already follows records of `app`.
+    fn follows_app(&self, app: &str) -> bool {
+        let prefix = format!("{app}/");
+        self.progress
+            .records
+            .keys()
+            .any(|key| key.starts_with(&prefix))
+    }
+
     /// Whether the program listens to the room's own governance.
     fn follows_governance(&self) -> bool {
         self.shortcut.triggers.iter().any(|trigger| {
@@ -482,8 +504,15 @@ impl BotRunner {
     /// Run `firing` through the bot's door and publish what it changed.
     async fn fire(&self, firing: &Firing) -> Result<Fired, String> {
         // The replicas are brought up to the room's records first, so the
-        // run reads what members did up to now.
-        for (app, record) in self.routes().await? {
+        // run reads what members did up to now: each app's own records,
+        // then the parts of the chains they keep beside them. A record the
+        // bot cannot hold is left out of the run (and said), not every run
+        // with it.
+        let mut routes = self.routes().await?;
+        routes.sort_by_key(|(_, record)| {
+            ui::record::RecordId::parse(record).is_some_and(|record| record.chain_part().is_some())
+        });
+        for (app, record) in routes {
             if let Some(saved) = self.read(&app, &record).await? {
                 let route = DocumentRoute {
                     app_id: app.clone(),
@@ -491,9 +520,14 @@ impl BotRunner {
                     record,
                 };
                 let held = Arc::clone(&self.held);
-                tokio::task::spawn_blocking(move || held.lock_recover().hold(&route, saved))
-                    .await
-                    .map_err(|error| error.to_string())??;
+                let holding = route.clone();
+                let held =
+                    tokio::task::spawn_blocking(move || held.lock_recover().hold(&holding, saved))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                if let Err(error) = held {
+                    tracing::warn!(installation = %self.bot.installation, app = %route.app_id, record = %route.record, %error, "bot run leaves out a record it could not hold");
+                }
             }
         }
         let mut inputs = self.bot.inputs.clone();

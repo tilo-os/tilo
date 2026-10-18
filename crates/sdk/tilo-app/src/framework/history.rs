@@ -34,6 +34,8 @@ use ui_core::history_source::steps::{self, Checkpoint, Scope};
 
 /// The registry type of the history verbs that change the document.
 pub(crate) const EDIT_TYPE: &str = "tilo.app.history-edit";
+/// The type of a history verb on one part of a chain ([`PartEdit`]).
+pub(crate) const PART_EDIT_TYPE: &str = "tilo.app.part-history-edit";
 /// The operation type of the history views.
 pub(crate) const VIEW_TYPE: &str = "tilo.app.history";
 
@@ -282,6 +284,111 @@ pub(crate) fn specs() -> Vec<ActionSpec> {
 }
 
 fn edit_specs() -> Vec<ActionSpec> {
+    edit_specs_with(edit)
+}
+
+/// How a history verb's arguments build its edit.
+type BuildEdit = fn(&ActionArgs) -> Result<HistoryEdit, String>;
+
+/// How a history verb is published: its id, label, description,
+/// parameters, and how they build the edit.
+type MakeEdit =
+    fn(&'static str, &'static str, &'static str, Vec<ActionParam>, BuildEdit) -> ActionSpec;
+
+/// The history verbs that change one part of a chain, each naming the part
+/// (`part`): what a chain publishes beside its parts' own actions, so the
+/// people, agents and the room's moderation take back steps in a part
+/// through the same door as in any record.
+pub(crate) fn part_edit_specs() -> Vec<ActionSpec> {
+    edit_specs_with(part_edit)
+}
+
+/// A history verb on part `part` of a chain.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct PartEdit {
+    pub(crate) part: u64,
+    pub(crate) edit: HistoryEdit,
+}
+
+impl PartEdit {
+    /// The verb it runs, as it is published.
+    pub(crate) const fn verb(&self) -> &'static str {
+        match self.edit {
+            HistoryEdit::Undo { .. } => "undo",
+            HistoryEdit::Redo { .. } => "redo",
+            HistoryEdit::Restore { .. } => "restore",
+            HistoryEdit::RestoreReviewed { .. } => "restore-reviewed",
+            HistoryEdit::Checkpoint { .. } => "checkpoint",
+        }
+    }
+
+    /// The edit as the part's history applies it, decoding recorded
+    /// actions with `R`'s registry.
+    pub(crate) fn action<R: tilo_resource::Resource>(&self) -> ResourceHistoryEdit<R> {
+        ResourceHistoryEdit {
+            edit: self.edit.clone(),
+            resource: std::marker::PhantomData,
+        }
+    }
+
+    /// The edit as the part's history records it.
+    pub(crate) fn encoded(&self) -> Result<EncodedAction, String> {
+        Ok(EncodedAction {
+            type_id: EDIT_TYPE.to_owned(),
+            payload: serde_json::to_vec(&self.edit).map_err(|error| error.to_string())?,
+        })
+    }
+}
+
+fn part_edit(
+    id: &'static str,
+    label: &'static str,
+    description: &'static str,
+    mut params: Vec<ActionParam>,
+    build: BuildEdit,
+) -> ActionSpec {
+    params.push(ActionParam::required(
+        "part",
+        ParamType::Integer,
+        "The number of the part whose history it changes",
+    ));
+    let mut spec = ActionSpec::typed(
+        id,
+        label,
+        label,
+        ExecutionLocus::ClientLocal,
+        params,
+        move |args| {
+            let part = args
+                .integer("part")
+                .and_then(|part| u64::try_from(part).ok())
+                .ok_or_else(|| "part is a part's number".to_owned());
+            match part
+                .and_then(|part| {
+                    Ok(PartEdit {
+                        part,
+                        edit: build(args)?,
+                    })
+                })
+                .and_then(|edit| serde_json::to_vec(&edit).map_err(|error| error.to_string()))
+            {
+                Ok(payload) => EncodedAction {
+                    type_id: PART_EDIT_TYPE.to_owned(),
+                    payload,
+                },
+                Err(reason) => invalid(&reason),
+            }
+        },
+    )
+    .reversible()
+    .with_description(description);
+    spec.contract.result = ResultSpec::Json {
+        schema: json!({"type": "object"}),
+    };
+    spec
+}
+
+fn edit_specs_with(edit: MakeEdit) -> Vec<ActionSpec> {
     let steps = |description: &'static str| {
         ActionParam::optional("steps", ParamType::Integer, description).nullable()
     };

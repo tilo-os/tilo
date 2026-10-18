@@ -38,6 +38,7 @@ pub struct CheckboxInteract {
 pub struct CheckboxFace {
     rect: Rect,
     checked: bool,
+    indeterminate: bool,
     interact: CheckboxInteract,
 }
 
@@ -46,8 +47,16 @@ impl CheckboxFace {
         Self {
             rect,
             checked,
+            indeterminate: false,
             interact: CheckboxInteract::default(),
         }
+    }
+
+    /// Show the standard mixed mark without changing the boolean value.
+    #[must_use]
+    pub fn indeterminate(mut self, indeterminate: bool) -> Self {
+        self.indeterminate = indeterminate;
+        self
     }
 
     #[must_use]
@@ -75,7 +84,13 @@ pub struct Checkbox {
     /// `Text`, this makes the entire rendered row one pointer, keyboard and
     /// accessibility target.
     label: Option<String>,
+    /// Renderer-only group summary; activation still toggles the bound bool.
+    indeterminate: bool,
     label_style: TextStyle,
+    /// Locale and interaction target used for the retained label measurement.
+    /// Hover, focus and checked state change ink, not size; they must not
+    /// invalidate every row in a scrolling form.
+    label_layout_revision: Option<(u64, f32)>,
     /// A labelled box as wide as its content instead of its row.
     intrinsic: bool,
     /// What the last presented frame painted, and what the frame being drawn
@@ -85,8 +100,8 @@ pub struct Checkbox {
 }
 
 /// What a checkbox's paint depends on besides its place and the theme:
-/// checked, hovered, focused, enabled, and the catalogue its label reads.
-type Painted = (bool, bool, bool, bool, u64);
+/// checked, mixed, hovered, focused, enabled, and the catalogue its label reads.
+type Painted = (bool, bool, bool, bool, bool, u64);
 
 impl Checkbox {
     /// Box this widget in the SDK so thin apps reuse its shared implementation.
@@ -114,7 +129,9 @@ impl Checkbox {
         Self {
             control,
             label: None,
+            indeterminate: false,
             label_style: crate::tokens::typography::stock().style(crate::tokens::TextRole::Body),
+            label_layout_revision: None,
             intrinsic: false,
             painted: None,
             drawing: None,
@@ -124,6 +141,7 @@ impl Checkbox {
     fn painted_now(&self) -> Painted {
         (
             self.control.is_checked,
+            self.indeterminate,
             self.control.is_hovered,
             self.control.is_focused,
             self.control.effectively_enabled(),
@@ -132,6 +150,15 @@ impl Checkbox {
     }
 
     bool_control_api!();
+
+    /// Present a partially selected group as mixed, visually and to assistive
+    /// technology. The binding stays boolean: use false for a partial group
+    /// so its next activation selects all. This never invalidates layout.
+    #[must_use]
+    pub fn indeterminate(mut self, indeterminate: bool) -> Self {
+        self.indeterminate = indeterminate;
+        self
+    }
 
     /// A labelled checkbox as wide as its box and label, instead of the row:
     /// it sits beside other controls in a row.
@@ -149,6 +176,7 @@ impl Checkbox {
         let label = label.into();
         self.control.accessible_name = Some(label.clone());
         self.label = Some(label);
+        self.label_layout_revision = None;
         self
     }
 
@@ -173,7 +201,8 @@ impl Checkbox {
         // HIG §9.5: unchecked is the raised control surface with an edge
         // derived from it, and hover is that surface's lift; a declared
         // `border_standard` vanished on a raised dark card.
-        let box_color = if face.checked {
+        let marked = face.checked || face.indeterminate;
+        let box_color = if marked {
             theme.tokens.colors.intent.inverted
         } else if face.interact.hovered {
             theme
@@ -193,20 +222,25 @@ impl Checkbox {
             );
         }
 
-        if face.checked {
+        if marked {
             let mut path = BezPath::new();
-            path.move_to(Point::new(
-                rect.x0 + rect.width() * 0.25,
-                rect.y0 + rect.height() * 0.50,
-            ));
-            path.line_to(Point::new(
-                rect.x0 + rect.width() * 0.42,
-                rect.y0 + rect.height() * 0.67,
-            ));
-            path.line_to(Point::new(
-                rect.x0 + rect.width() * 0.75,
-                rect.y0 + rect.height() * 0.25,
-            ));
+            if face.indeterminate {
+                path.move_to((rect.x0 + rect.width() * 0.25, rect.center().y));
+                path.line_to((rect.x0 + rect.width() * 0.75, rect.center().y));
+            } else {
+                path.move_to(Point::new(
+                    rect.x0 + rect.width() * 0.25,
+                    rect.y0 + rect.height() * 0.50,
+                ));
+                path.line_to(Point::new(
+                    rect.x0 + rect.width() * 0.42,
+                    rect.y0 + rect.height() * 0.67,
+                ));
+                path.line_to(Point::new(
+                    rect.x0 + rect.width() * 0.75,
+                    rect.y0 + rect.height() * 0.25,
+                ));
+            }
             scene.stroke(
                 &Stroke::new((rect.width().min(rect.height()) * 0.105).max(1.5))
                     .with_caps(vello::kurbo::Cap::Round)
@@ -234,7 +268,7 @@ impl Checkbox {
         // ground, so it is held to the 3:1 a control's bounds need there.
         let edge = if face.interact.focused {
             Some((2.0, theme.tokens.colors.intent.you))
-        } else if face.checked {
+        } else if marked {
             None
         } else {
             Some((1.0, unchecked_edge(theme, box_color)))
@@ -275,6 +309,10 @@ impl Widget for Checkbox {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.label_style = theme.tokens.typography.style(crate::tokens::TextRole::Body);
+        self.label_layout_revision = Some((
+            crate::i18n::I18nManager::revision(),
+            self.control.interaction.minimum_target(),
+        ));
         let labelled = self.label.is_some();
         let style = Style {
             size: Size {
@@ -308,6 +346,7 @@ impl Widget for Checkbox {
         text_renderer: &mut TextRenderer,
     ) -> Size<f32> {
         let target = self.control.interaction.minimum_target();
+        self.label_layout_revision = Some((crate::i18n::I18nManager::revision(), target));
         let Some(label) = self.label.as_ref() else {
             return Size {
                 width: known_dimensions.width.unwrap_or(target),
@@ -374,6 +413,7 @@ impl Widget for Checkbox {
             transform,
             theme,
             &CheckboxFace::new(visual, self.control.is_checked)
+                .indeterminate(self.indeterminate)
                 .hovered(self.control.is_hovered)
                 .focused(self.control.is_focused)
                 .disabled(!self.control.effectively_enabled()),
@@ -411,6 +451,15 @@ impl Widget for Checkbox {
         self.painted != Some(self.painted_now())
     }
 
+    fn is_layout_dirty(&self) -> bool {
+        self.label.is_some()
+            && self.label_layout_revision
+                != Some((
+                    crate::i18n::I18nManager::revision(),
+                    self.control.interaction.minimum_target(),
+                ))
+    }
+
     fn mark_drawn(&mut self) {
         if let Some(drawing) = self.drawing.take() {
             self.painted = Some(drawing);
@@ -428,16 +477,16 @@ impl Widget for Checkbox {
             .as_ref()
             .map(|n| crate::i18n!(n))
             .filter(|n| !n.is_empty());
+        let mut state = AccessState::new()
+            .focusable(self.is_focusable())
+            .focused(self.is_focused())
+            .disabled(!self.is_enabled())
+            .checked(self.control.is_checked);
+        state.mixed = self.indeterminate;
         let mut node = AccessNode::new(Role::Checkbox)
             .with_semantic_key(self.test_id().unwrap_or("checkbox"))
             .with_optional_name(name)
-            .with_state(
-                AccessState::new()
-                    .focusable(self.is_focusable())
-                    .focused(self.is_focused())
-                    .disabled(!self.is_enabled())
-                    .checked(self.control.is_checked),
-            );
+            .with_state(state);
         if self.control.action.is_none() && self.control.on_change.is_none() {
             node = node.with_action_target(self.test_id().unwrap_or("checkbox"));
         }
@@ -461,6 +510,129 @@ mod tests {
     use crate::widget::Widget;
     use automerge::{AutoCommit, ReadDoc, transaction::Transactable};
     use winit::event::{ElementState, MouseButton, WindowEvent};
+
+    #[test]
+    fn mixed_checkbox_announces_and_paints_without_remeasuring() {
+        use crate::headless::FrameHarness;
+        let selected = crate::LocalState::new(false);
+        let mut checkbox = Checkbox::from_state(&selected)
+            .with_label("Select group, 1 of 2 selected")
+            .indeterminate(true);
+        let mut tree = TaffyTree::new();
+        let mut nodes = std::collections::HashMap::new();
+        checkbox.build_layout(&mut tree, &Theme::dark(), &mut nodes);
+        let previous = checkbox.painted_now();
+        checkbox.indeterminate = false;
+        assert_ne!(previous, checkbox.painted_now(), "mixed changes paint");
+        assert!(!checkbox.is_layout_dirty(), "mixed never changes geometry");
+        checkbox.indeterminate = true;
+        let node = checkbox.accessibility().unwrap();
+        assert_eq!(node.state.checked, Some(false));
+        assert!(node.state.mixed);
+        let spoken = crate::screen_reader::describe(&node);
+        assert!(spoken.contains("partially checked"), "{spoken}");
+        assert!(spoken.contains("1 of 2 selected"), "{spoken}");
+        let mut host = FrameHarness::new_with_theme(
+            crate::State::new(),
+            Box::new(checkbox),
+            (300, 60),
+            Theme::dark(),
+        );
+        assert!(
+            host.a11y_nodes()
+                .iter()
+                .any(|(_, node)| node.toggled() == Some(accesskit::Toggled::Mixed))
+        );
+        assert!(!host.root_widget().is_layout_dirty());
+        host.click_at(20.0, 20.0);
+        assert!(selected.get(), "partial group's false bool toggles to all");
+        assert!(!host.root_widget().is_layout_dirty());
+
+        use crate::offscreen::OffscreenRenderer;
+        for theme in [Theme::light(), Theme::dark()] {
+            let render = |checked, mixed| {
+                let mut scene = Scene::new();
+                Checkbox::paint(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &theme,
+                    &CheckboxFace::new(Rect::new(8.0, 8.0, 32.0, 32.0), checked)
+                        .indeterminate(mixed),
+                );
+                OffscreenRenderer::new(40, 40).render(&scene, theme.tokens.colors.surfaces.content)
+            };
+            let mixed = render(false, true);
+            assert_ne!(mixed, render(false, false));
+            assert_ne!(mixed, render(true, false));
+            assert_ne!(
+                OffscreenRenderer::sample(&mixed, 40, 20, 20),
+                OffscreenRenderer::sample(&mixed, 40, 20, 14),
+                "mixed mark is a centred horizontal stroke"
+            );
+        }
+    }
+
+    #[test]
+    fn retained_label_remeasures_for_language_or_target_not_ink() {
+        use crate::headless::FrameHarness;
+        use crate::i18n::I18nManager;
+        I18nManager::init("en-US");
+        I18nManager::add_resource("en-US", "scroll-choice = Short".into());
+        I18nManager::add_resource("de-DE", "scroll-choice = Eine lange Beschreibung, die bei schmaler Breite mehrere Zeilen benötigt".into());
+        let checked = crate::LocalState::new(false);
+        let mut host = FrameHarness::new_with_theme(
+            crate::State::new(),
+            Box::new(
+                crate::widget::Scrollable::new_vertical().with_child(Box::new(
+                    Checkbox::from_state(&checked).with_label("scroll-choice"),
+                )),
+            ),
+            (180, 300),
+            Theme::dark(),
+        );
+        let checkbox = |host: &FrameHarness| host.root_widget().children()[0].get_rect();
+        let initial_height = checkbox(&host).height();
+        assert!(
+            host.text_cache_stats().1 > 0,
+            "real label measurement must run"
+        );
+        assert!(!host.root_widget().is_layout_dirty());
+        host.click_at(60.0, initial_height / 2.0);
+        assert!(
+            checked.get(),
+            "the real checkbox event must toggle its binding"
+        );
+        assert!(
+            !host.root_widget().is_layout_dirty(),
+            "focus and toggle only change ink"
+        );
+        I18nManager::set_locale("de-DE");
+        assert!(
+            host.root_widget().is_layout_dirty(),
+            "a translated label can change wrapping"
+        );
+        host.relayout();
+        assert!(host.last_relayout().measured);
+        assert!(checkbox(&host).height() > initial_height);
+        assert!(!host.root_widget().is_layout_dirty());
+        host.profile_frame();
+        assert!(
+            !host.last_relayout().measured,
+            "the next frame retains the solved label"
+        );
+        host.widget_mut::<crate::widget::Scrollable>()
+            .unwrap()
+            .set_interaction_environment(
+                crate::interaction::InteractionEnvironment::default().with_touch_modality(),
+            );
+        assert!(
+            host.root_widget().layout_needs_measure(),
+            "a larger touch target changes label wrapping"
+        );
+        host.relayout();
+        assert!(host.last_relayout().measured);
+        assert!(!host.root_widget().layout_needs_measure());
+    }
 
     #[test]
     fn an_unchecked_box_is_square_in_any_rect() {

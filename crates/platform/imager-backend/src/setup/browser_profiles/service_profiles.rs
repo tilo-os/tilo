@@ -10,6 +10,9 @@ pub enum Material {
 pub struct CookieProfile {
     pub id: String,
     pub label: String,
+    /// Public application metadata from the consented discovery registry.
+    pub application: String,
+    pub native_application: bool,
     pub provider: Provider,
     pub material: Material,
     directory: Arc<PinnedDirectory>,
@@ -308,6 +311,8 @@ fn discover_candidate(
                 output.push(Arc::new(CookieProfile {
                     id: id.clone(),
                     label: format!("{} · {label}", candidate.label),
+                    application: candidate.label.clone(),
+                    native_application: native_slack,
                     provider,
                     material: Material::Cookies,
                     directory: Arc::clone(&profile),
@@ -330,6 +335,8 @@ fn discover_candidate(
                 output.push(Arc::new(CookieProfile {
                     id: format!("{id}-discord-origin"),
                     label: format!("{} · {label}", candidate.label),
+                    application: candidate.label.clone(),
+                    native_application: candidate.provider == AccountProvider::Discord,
                     provider,
                     material: Material::DiscordOrigin,
                     directory: profile,

@@ -99,6 +99,63 @@ impl Belongings {
         }
     }
 
+    /// Discovery is metadata, not proof of a working login or a service grant.
+    /// Keep identifying labels in the account review, not the overview.
+    pub(super) fn accounts_overview_hint(&self) -> String {
+        use super::super::strings::{t, t_args};
+        use account_transfer::Provider;
+
+        let providers = self
+            .accounts
+            .candidates
+            .iter()
+            .filter(|candidate| {
+                candidate.can_import_credentials
+                    || super::accounts::can_connect_candidate(candidate)
+            })
+            .map(|candidate| match candidate.provider {
+                Provider::Google => "installer-accounts-google-drive",
+                Provider::Microsoft => "installer-accounts-onedrive",
+                Provider::Dropbox => "installer-accounts-dropbox",
+                Provider::Nextcloud => "installer-accounts-nextcloud",
+                Provider::WebDav => "installer-accounts-webdav",
+                Provider::Spotify => "installer-accounts-spotify",
+                Provider::Slack => "installer-service-slack-label",
+                Provider::Discord => "installer-service-discord-label",
+                Provider::Firefox => "installer-belongings-provider-firefox",
+                Provider::Chromium => "installer-belongings-provider-chromium",
+            })
+            .chain(self.accounts.tilo_accounts.iter().map(|candidate| {
+                match candidate.type_id.as_str() {
+                    "google-drive" => "installer-accounts-google-drive",
+                    "onedrive" => "installer-accounts-onedrive",
+                    "dropbox" => "installer-accounts-dropbox",
+                    "icloud-drive" => "installer-accounts-icloud",
+                    "nextcloud" => "installer-accounts-nextcloud",
+                    "webdav" => "installer-accounts-webdav",
+                    "spotify" => "installer-accounts-spotify",
+                    _ => "installer-belongings-provider-other",
+                }
+            }));
+        let mut counts = std::collections::BTreeMap::<String, i64>::new();
+        for provider in providers {
+            *counts.entry(t(provider)).or_default() += 1;
+        }
+        if counts.is_empty() {
+            return t("installer-preview-accounts-body");
+        }
+        counts
+            .into_iter()
+            .map(|(provider, count)| {
+                t_args(
+                    "installer-belongings-connections-found",
+                    &[("provider", provider.into()), ("count", count.into())],
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
     pub(super) fn warning_keys(&self) -> Vec<&'static str> {
         let mut warnings = Vec::new();
         if self.home_unavailable {
@@ -147,6 +204,10 @@ fn unresolved_config() -> account_transfer::Inventory {
         ..account_transfer::Inventory::default()
     }
 }
+
+#[cfg(test)]
+#[path = "belongings_overview_tests.rs"]
+mod overview_tests;
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {

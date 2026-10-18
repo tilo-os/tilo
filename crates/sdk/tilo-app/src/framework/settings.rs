@@ -199,6 +199,7 @@ impl ViewStorage {
         &self,
         base: impl Fn() -> Rc<<P::Base as tilo_resource::Resource>::State> + 'static,
     ) -> Option<Rc<super::chain::ChainState<P>>> {
+        super::controls::opened_in_room::<P>();
         self.chains.open::<P>(self.room.as_ref(), base)
     }
 

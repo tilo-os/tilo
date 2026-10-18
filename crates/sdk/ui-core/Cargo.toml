@@ -113,7 +113,7 @@ fnv.workspace = true
 tilo-host = { version = "0.1.0", path = "../tilo-host" }
 # The paint stream: a page as a layered display list the WebView can draw
 # instead of the engine's pixels, natively and in the WASM client alike.
-tilo-paint-stream = { version = "0.1.0", path = "../../browser/paint-stream" }
+tilo-paint-stream = { version = "0.1.0", path = "../../browser/paint-stream", features = ["svg"] }
 # The desktop's light/dark, accent, contrast and motion preferences, which a
 # standalone app outside Tilo OS follows (`host_appearance`).
 tilo-appearance = { version = "0.1.0", path = "../../platform/tilo-appearance", optional = true }

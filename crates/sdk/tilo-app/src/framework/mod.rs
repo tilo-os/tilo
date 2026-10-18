@@ -354,7 +354,7 @@ pub use app::launch_spec;
 pub use app::run;
 pub use app::{FileHistory, ResourceApp, SURFACE_FLAG, SeedCx, definition, run_helper};
 pub use attached::{AttachedView, OpenView};
-pub use chain::{Chain, Chained, chain_resource_id};
+pub use chain::{Chain, Chained};
 pub use controls::{ActionControl, Actions};
 pub use delivery::HostDelivery;
 pub use dispatch::{DispatchGroup, Dispatcher, Landed, Refused, Submit};
@@ -382,6 +382,7 @@ pub use stage::{stage, time_frames};
 pub use surface::{ResourceSelection, ResourceSurface, SurfaceCx};
 pub use text::{EditsText, TextControl};
 pub use tilo_resource::{Effect, NoEffect};
+pub use ui_core::record::{chain_of_resource_id, chain_resource_id};
 pub use view::{Bindable, EffectsHandle, ViewCx};
 
 #[cfg(test)]

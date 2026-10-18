@@ -544,6 +544,42 @@ pub(crate) struct Controller {
     capacity_review: Arc<Mutex<Option<(String, super::super::staging::plan::Plan)>>>,
 }
 impl Controller {
+    /// A gated unprivileged worker exercises the real cancel and join path.
+    #[cfg(test)]
+    pub(super) fn start_cancellation_fixture(
+        &mut self,
+        scratch: std::path::PathBuf,
+    ) -> super::preparation_navigation_tests::WorkerControl {
+        use super::preparation_navigation_tests::WorkerControl;
+        let (probe, probed) = std::sync::mpsc::channel();
+        let (receipt, cancelled) = std::sync::mpsc::channel();
+        let (finish, finishing) = std::sync::mpsc::channel();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let task = TaskProgress::new();
+        task.archive(super::super::portable_transfer::ArchiveProgress {
+            phase: super::super::portable_transfer::ArchivePhase::Archiving,
+            completed: 4096,
+            total: Some(8192),
+        })
+        .unwrap();
+        self.task = Some(task.clone());
+        self.state = "preparing";
+        self.worker = Some(receiver);
+        self.joined = Some(std::thread::spawn(move || {
+            probed.recv().unwrap();
+            let error = super::super::migration::check_cancel(&task.cancel).unwrap_err();
+            receipt.send(error.kind()).unwrap();
+            finishing.recv().unwrap();
+            std::fs::remove_file(scratch).unwrap();
+            assert!(sender.send(Err(error)).is_ok());
+        }));
+        WorkerControl {
+            probe,
+            cancelled,
+            finish,
+        }
+    }
+
     pub(in crate::setup) fn start_with_selections(
         &mut self,
         identity: Arc<PreparedIdentity>,

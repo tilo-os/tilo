@@ -268,10 +268,12 @@ impl UserName {
     /// gives, or `None` without a username.
     #[must_use]
     pub fn of_member(member: &serde_json::Value) -> Option<Self> {
-        let user_name = member["user"]["username"].as_str()?.to_owned();
-        let display_name = member["nick"]
-            .as_str()
-            .or_else(|| member["user"]["global_name"].as_str())
+        let user = member.get("user")?;
+        let user_name = user.get("username")?.as_str()?.to_owned();
+        let display_name = member
+            .get("nick")
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| user.get("global_name").and_then(serde_json::Value::as_str))
             .filter(|name| !name.is_empty() && *name != user_name)
             .map(str::to_owned);
         Some(Self {

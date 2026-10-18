@@ -15,7 +15,10 @@
 //! participant's own changes since the last call (the whole document the
 //! first time, for a record it created) and [`AttachedView::merge`] takes a
 //! peer's, through the record store's replication frontier as a browser
-//! page's mounts do.
+//! page's mounts do. The parts of a chain the app keeps beside the record
+//! ([`Chain`](super::Chain)) sync the same way on routes of their own
+//! ([`AttachedView::take_record_changes`], [`AttachedView::merge_record`]),
+//! and the app's actions reach them through the chain the view publishes.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -54,6 +57,16 @@ impl ActionTransport for Landed {
     }
 }
 
+/// A record the view holds beside its own, as its sync stands.
+#[derive(Default)]
+struct Beside {
+    /// Everything taken or merged so far: what lies past it is this
+    /// participant's own.
+    frontier: DocumentFrontier,
+    /// This participant's changes set aside, untaken, while a peer's merged.
+    unsent: Vec<Vec<u8>>,
+}
+
 /// One record held in its app's view, attached and never drawn. See the
 /// [module docs](self).
 pub struct AttachedView {
@@ -78,9 +91,9 @@ pub struct AttachedView {
     fresh: bool,
     /// This participant's changes set aside, untaken, while a peer's merged.
     unsent: Vec<Vec<u8>>,
-    /// What was taken or merged so far of each record the view holds
-    /// beside its own (the parts of a chain), by id.
-    beside: std::collections::HashMap<ui_core::record::RecordId, DocumentFrontier>,
+    /// Each record the view holds beside its own (the parts of a chain), by
+    /// id: what was taken or merged of it so far.
+    beside: std::collections::HashMap<ui_core::record::RecordId, Beside>,
     /// Where the view keeps its records, and the room: what a record
     /// beside its own that a peer started is kept in before it opens.
     cache: PortableStorage,
@@ -609,50 +622,109 @@ impl AttachedView {
         Ok(changed)
     }
 
-    /// The records the view holds beside its own: the parts of a chain the
-    /// app keeps ([`Chain`](super::Chain)), as they sync on routes of their
-    /// own.
+    /// The chains of records the app keeps beside its own
+    /// ([`Chain`](super::Chain)), as the view publishes them: each chain's
+    /// id and the kind of its parts.
     #[must_use]
-    pub fn records_beside(&self) -> Vec<RecordCheckout> {
-        self.records
-            .open_records()
-            .into_iter()
-            .filter(|checkout| checkout.id != self.checkout.id)
+    pub fn chains(&self) -> Vec<RecordCheckout> {
+        // Published beside the app's resource, among its children.
+        self.frame
+            .resources()
+            .iter()
+            .flat_map(|resource| std::iter::once(resource).chain(&resource.children))
+            .filter_map(|resource| {
+                let chain = super::chain_of_resource_id(resource.id.as_str())?;
+                Some(RecordCheckout::new(
+                    chain,
+                    ui_core::record::RecordKind::new(resource.kind.clone()),
+                ))
+            })
             .collect()
     }
 
+    /// `record` as the view holds it beside its own: a part of one of the
+    /// app's chains ([`Self::chains`]), of that chain's kind. `None` for
+    /// any other record.
+    #[must_use]
+    pub fn beside(&self, record: &ui_core::record::RecordId) -> Option<RecordCheckout> {
+        let (chain, _) = record.chain_part()?;
+        self.chains()
+            .into_iter()
+            .find(|held| held.id == chain)
+            .map(|held| RecordCheckout::new(record.clone(), held.kind))
+    }
+
+    /// The records the view holds beside its own: the parts of the app's
+    /// chains ([`Self::chains`]) open here, as they sync on routes of their
+    /// own.
+    #[must_use]
+    pub fn records_beside(&self) -> Vec<RecordCheckout> {
+        let chains = self.chains();
+        self.records
+            .open_records()
+            .into_iter()
+            .filter(|checkout| {
+                checkout
+                    .id
+                    .chain_part()
+                    .is_some_and(|(chain, _)| chains.iter().any(|held| held.id == chain))
+            })
+            .collect()
+    }
+
+    /// Read `record`, one the view holds beside its own.
+    pub fn read_record<R>(
+        &self,
+        record: &ui_core::record::RecordId,
+        read: impl FnOnce(&ui_core::automerge::AutoCommit) -> R,
+    ) -> Option<R> {
+        self.beside(record)?;
+        self.records.read(record, read)
+    }
+
     /// The participant's changes to `record`, one the view holds beside
-    /// its own ([`Self::records_beside`]), since the last call or merge:
-    /// the whole record the first time.
+    /// its own ([`Self::records_beside`]), since the last call: the whole
+    /// record the first time, for one the participant started.
     pub fn take_record_changes(
         &mut self,
         record: &ui_core::record::RecordId,
     ) -> Option<DocumentMutation> {
-        if let Some(frontier) = self.beside.get_mut(record) {
-            let (delta, heads) = self.records.replication_delta(record, frontier).ok()?;
-            frontier.advance(heads);
-            (!delta.is_empty()).then_some(DocumentMutation::Incremental(delta))
+        if self.beside.contains_key(record) {
+            self.set_aside_beside(record);
+            let held = self.beside.get_mut(record)?;
+            let own: Vec<u8> = std::mem::take(&mut held.unsent).concat();
+            (!own.is_empty()).then_some(DocumentMutation::Incremental(own))
         } else {
             let (bytes, heads) = self.records.replication_snapshot(record).ok()?;
-            let mut frontier = DocumentFrontier::default();
-            frontier.advance(heads);
-            self.beside.insert(record.clone(), frontier);
+            let mut held = Beside::default();
+            held.frontier.advance(heads);
+            self.beside.insert(record.clone(), held);
             Some(DocumentMutation::Snapshot(bytes))
         }
     }
 
-    /// Merge a peer's change into `record`, one of the records the app
-    /// keeps beside its own, opening it first when the view holds it not
-    /// yet (a chain's part another device started). Whether it changed.
+    /// Merge a peer's change into `record`, a part of one of the app's
+    /// chains ([`Self::beside`]), opening it first when the view holds it
+    /// not yet (a part another device started). Changes that build on
+    /// nothing the part holds are left alone: `Ok(false)`. Whether it
+    /// changed.
     ///
     /// # Errors
-    /// Returns why the record store refused the peer's document.
+    /// Returns why the record is not one the view holds beside its own, or
+    /// why the record store refused the peer's document.
     pub fn merge_record(
         &mut self,
-        record: &RecordCheckout,
+        record: &ui_core::record::RecordId,
         mutation: &DocumentMutation,
     ) -> Result<bool, String> {
-        if !self.records.is_ready(&record.id) && self.records.try_open_record(record).is_err() {
+        let checkout = self.beside(record).ok_or_else(|| {
+            format!(
+                "{} is not a part of a chain {} keeps",
+                record.as_str(),
+                self.definition.app_id
+            )
+        })?;
+        if !self.records.is_ready(record) && self.records.try_open_record(&checkout).is_err() {
             // Kept as the peer sent it, then opened as the view's own are.
             let DocumentMutation::Snapshot(bytes) = mutation else {
                 return Ok(false);
@@ -661,22 +733,60 @@ impl AttachedView {
                 StorageKey::Record {
                     package: self.definition.app_id.into(),
                     workspace: self.room.clone(),
-                    record: record.id.as_str().into(),
+                    record: record.as_str().into(),
                 },
                 bytes.clone(),
                 Some(self.me.as_bytes().to_vec()),
             )?;
             self.records
-                .try_open_record(record)
+                .try_open_record(&checkout)
                 .map_err(|error| error.to_string())?;
         }
-        let (changed, observed) = self.records.merge_replica(record, mutation.clone())?;
+        if let DocumentMutation::Incremental(bytes) = mutation
+            && !self.builds_on(record, bytes)
+        {
+            return Ok(false);
+        }
+        // What this participant did and has not taken stays its own.
+        self.set_aside_beside(record);
+        let (changed, observed) = self.records.merge_replica(&checkout, mutation.clone())?;
         self.beside
-            .entry(record.id.clone())
+            .entry(record.clone())
             .or_default()
+            .frontier
             .observe(observed);
         self.frame.relayout();
         Ok(changed)
+    }
+
+    /// Whether the changes `bytes` build only on what `record` holds.
+    fn builds_on(&self, record: &ui_core::record::RecordId, bytes: &[u8]) -> bool {
+        let mut incoming = ui_core::automerge::AutoCommit::new();
+        if tilo_automerge::ApplyIncoming::load_incoming(&mut incoming, bytes).is_err() {
+            return false;
+        }
+        let missing = incoming.get_missing_deps(&[]);
+        self.records
+            .with(record, |doc| {
+                missing
+                    .iter()
+                    .all(|hash| doc.get_change_by_hash(hash).is_some())
+            })
+            .unwrap_or(false)
+    }
+
+    /// Move this participant's changes to `record`, held beside the view's
+    /// own, past its frontier into its `unsent`.
+    fn set_aside_beside(&mut self, record: &ui_core::record::RecordId) {
+        let Some(held) = self.beside.get_mut(record) else {
+            return;
+        };
+        if let Ok((delta, heads)) = self.records.replication_delta(record, &mut held.frontier) {
+            held.frontier.advance(heads);
+            if !delta.is_empty() {
+                held.unsent.push(delta);
+            }
+        }
     }
 
     /// Move this participant's changes past the frontier into `unsent`.

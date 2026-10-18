@@ -2055,8 +2055,9 @@ fn split_command_line(
 
 /// What `A` publishes and how its view binds to it, as `tilo-app surface`
 /// commits it and `tilo-app check` compares it: the resource's
-/// [`Surface`](tilo_resource::Surface) and those of the person's records its
-/// views open, every control its view, built headless on an empty record,
+/// [`Surface`](tilo_resource::Surface) and those of the records it opens beside
+/// its own (the parts of its chains, the person's records its views
+/// open), every control its view, built headless on an empty record,
 /// binds to something the resource does not publish, the ids of its effects
 /// and named views, and the ids the framework keeps for its own actions
 /// ([`reserved_action_ids`](super::reserved_action_ids)).
