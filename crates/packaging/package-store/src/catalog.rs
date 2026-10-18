@@ -657,19 +657,19 @@ mod tests {
         };
         manifest(system.path(), 1);
         manifest(user.path(), 2);
-        let on_os = |versions: &[u32]| {
+        let on_os = |served: u32| {
             Catalog::at(
                 user.path(),
                 Some(SystemStore {
                     data_dir: system.path().to_path_buf(),
                     payload_dir: system.path().join("lib"),
-                    interfaces: Some(ProvidedInterfaces::new([("system", versions)])),
+                    interfaces: Some(ProvidedInterfaces::new([("system", served)], [])),
                 }),
             )
         };
 
         // An OS serving the update's contract runs the update.
-        let newer_os = on_os(&[1, 2]);
+        let newer_os = on_os(2);
         let row = newer_os.find("so.tilo.settings").unwrap().unwrap();
         assert_eq!((row.version.as_str(), row.system), ("0.2.0", false));
         assert!(
@@ -680,9 +680,9 @@ mod tests {
                 .is_empty()
         );
 
-        // On an OS that serves only system@1 the image's copy runs instead,
+        // On an OS that serves system@1 the image's copy runs instead,
         // and the reason is there to show.
-        let older_os = on_os(&[1]);
+        let older_os = on_os(1);
         let row = older_os.find("so.tilo.settings").unwrap().unwrap();
         assert_eq!((row.version.as_str(), row.system), ("0.1.10", true));
         let layers = older_os.layers("so.tilo.settings").unwrap();
@@ -703,7 +703,7 @@ mod tests {
 
         // Removing the update leaves the image's copy, on either OS.
         std::fs::write(user.path().join("registry.toml"), "").unwrap();
-        for os in [on_os(&[1]), on_os(&[1, 2])] {
+        for os in [on_os(1), on_os(2)] {
             let row = os.find("so.tilo.settings").unwrap().unwrap();
             assert_eq!((row.version.as_str(), row.system), ("0.1.10", true));
         }

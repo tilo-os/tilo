@@ -55,6 +55,28 @@ pub enum Wait {
     Installing { package_id: String, app: String },
 }
 
+/// The lines a download under way shows, installing or updating.
+struct DownloadCopy {
+    under_way: &'static str,
+    slow: &'static str,
+    of: &'static str,
+    received: &'static str,
+}
+
+const INSTALLING: DownloadCopy = DownloadCopy {
+    under_way: "peer-window-installing",
+    slow: "shell-window-installing-slow",
+    of: "shell-window-installing-of",
+    received: "shell-window-installing-received",
+};
+
+const UPDATING: DownloadCopy = DownloadCopy {
+    under_way: "shell-window-updating",
+    slow: "shell-window-updating-slow",
+    of: "shell-window-updating-of",
+    received: "shell-window-updating-received",
+};
+
 pub struct OpeningCard {
     /// The tab holding the place, whose window is configured to the card's
     /// size the moment it appears (`ForeignFrameStore::bind_opening_tab`).
@@ -74,6 +96,10 @@ pub struct OpeningCard {
     crossfade: Duration,
     /// The dots' and the bar's opacity as last drawn.
     drawn_indicator: (f32, f32),
+    /// The package whose window this is, when it is known: while that
+    /// package is updated before it starts (`crate::shell::app_versions`),
+    /// the card says so, whatever it waited for before.
+    package: Option<String>,
 }
 
 impl OpeningCard {
@@ -90,7 +116,22 @@ impl OpeningCard {
             bar_since: None,
             crossfade: Duration::ZERO,
             drawn_indicator: (0.0, 0.0),
+            package: None,
         }
+    }
+
+    /// The card of `package`'s window.
+    #[must_use]
+    pub fn for_package(mut self, package: &str) -> Self {
+        self.package = Some(package.to_owned());
+        self
+    }
+
+    /// The package being updated before its window opens here, if any.
+    fn updating(&self) -> Option<&str> {
+        self.package
+            .as_deref()
+            .filter(|package| crate::shell::app_versions::updating(package))
     }
 
     /// The card of `tab`, publishing where it is laid out for the window
@@ -105,6 +146,9 @@ impl OpeningCard {
     /// indicator's place.
     pub(crate) fn status_at(&self, now: Instant) -> (String, Indicator) {
         let slow = now.saturating_duration_since(self.since) >= SLOW_AFTER;
+        if let Some(package) = self.updating() {
+            return self.download_status(package, &self.title, &UPDATING, slow);
+        }
         match &self.wait {
             Wait::Opening if slow => (
                 t_args(
@@ -116,50 +160,58 @@ impl OpeningCard {
             Wait::Opening => (String::new(), Indicator::Dots),
             Wait::Restoring => (t("shell-window-restoring"), Indicator::Dots),
             Wait::Installing { package_id, app } => {
-                let app = || ("app", app.clone().into());
-                match catalogue::install_progress(package_id) {
-                    Some(InstallProgress::Downloading {
-                        received,
-                        total: Some(total),
-                    }) if total > 0 => {
-                        #[expect(
-                            clippy::cast_precision_loss,
-                            reason = "a bar's fraction, drawn a few hundred pixels wide"
-                        )]
-                        let done = received.min(total) as f32 / total as f32;
-                        (
-                            t_args(
-                                "shell-window-installing-of",
-                                &[
-                                    app(),
-                                    ("received", ui::format::bytes_si(received).into()),
-                                    ("total", ui::format::bytes_si(total).into()),
-                                ],
-                            ),
-                            Indicator::Bar(Some(done)),
-                        )
-                    }
-                    Some(InstallProgress::Downloading { received, .. }) => (
-                        t_args(
-                            "shell-window-installing-received",
-                            &[app(), ("received", ui::format::bytes_si(received).into())],
-                        ),
-                        Indicator::Bar(None),
+                self.download_status(package_id, app, &INSTALLING, slow)
+            }
+        }
+    }
+
+    /// What a download under way for `package_id` shows: how much has
+    /// arrived, in `copy`'s words.
+    fn download_status(
+        &self,
+        package_id: &str,
+        app: &str,
+        copy: &DownloadCopy,
+        slow: bool,
+    ) -> (String, Indicator) {
+        let app = || ("app", app.to_owned().into());
+        match catalogue::install_progress(package_id) {
+            Some(InstallProgress::Downloading {
+                received,
+                total: Some(total),
+            }) if total > 0 => {
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "a bar's fraction, drawn a few hundred pixels wide"
+                )]
+                let done = received.min(total) as f32 / total as f32;
+                (
+                    t_args(
+                        copy.of,
+                        &[
+                            app(),
+                            ("received", ui::format::bytes_si(received).into()),
+                            ("total", ui::format::bytes_si(total).into()),
+                        ],
                     ),
-                    // Once a bar has stood here it stays, full, while the
-                    // download is verified and the app starts.
-                    _ if self.bar_since.is_some() => (
-                        t_args("peer-window-installing", &[app()]),
-                        Indicator::Bar(Some(1.0)),
-                    ),
-                    None if slow => (
-                        t_args("shell-window-installing-slow", &[app()]),
-                        Indicator::Dots,
-                    ),
-                    Some(InstallProgress::Installing) | None => {
-                        (t_args("peer-window-installing", &[app()]), Indicator::Dots)
-                    }
-                }
+                    Indicator::Bar(Some(done)),
+                )
+            }
+            Some(InstallProgress::Downloading { received, .. }) => (
+                t_args(
+                    copy.received,
+                    &[app(), ("received", ui::format::bytes_si(received).into())],
+                ),
+                Indicator::Bar(None),
+            ),
+            // Once a bar has stood here it stays, full, while the
+            // download is verified and the app starts.
+            _ if self.bar_since.is_some() => {
+                (t_args(copy.under_way, &[app()]), Indicator::Bar(Some(1.0)))
+            }
+            None if slow => (t_args(copy.slow, &[app()]), Indicator::Dots),
+            Some(InstallProgress::Installing) | None => {
+                (t_args(copy.under_way, &[app()]), Indicator::Dots)
             }
         }
     }
@@ -339,7 +391,7 @@ impl Widget for OpeningCard {
         }
         let now = ui::time::now();
         let slow_line = self.since.checked_add(SLOW_AFTER).filter(|due| *due > now);
-        let progress = matches!(self.wait, Wait::Installing { .. })
+        let progress = (matches!(self.wait, Wait::Installing { .. }) || self.updating().is_some())
             .then(|| now.checked_add(PROGRESS_WAKE))
             .flatten();
         slow_line.into_iter().chain(progress).min()
@@ -373,6 +425,31 @@ mod tests {
             package_id: package_id.to_owned(),
             app: "Slides".to_owned(),
         }
+    }
+
+    // USER REQUIREMENT (2026-10-18): "it's fine if we break compat with old versions every few days, people just need to update"
+    #[test]
+    fn an_app_behind_says_it_is_updating_where_it_will_open() {
+        let package = "so.tilo.test.opening-card-update";
+        let card = OpeningCard::new("Mail", Wait::Restoring).for_package(package);
+        assert_eq!(
+            card.status_at(ui::time::now()).0,
+            t("shell-window-restoring")
+        );
+        crate::shell::app_versions::mark_updating_for_test(package, true);
+        assert_eq!(
+            card.status_at(ui::time::now()),
+            (
+                t_args("shell-window-updating", &[("app", "Mail".into())]),
+                Indicator::Dots
+            )
+        );
+        assert_eq!(
+            card.status_at(ui::time::now()).0,
+            "Updating Mail…",
+            "the person reads which app is updating"
+        );
+        crate::shell::app_versions::mark_updating_for_test(package, false);
     }
 
     #[test]

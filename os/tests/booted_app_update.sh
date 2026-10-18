@@ -90,9 +90,9 @@ as_root() {
   fi
 }
 
-# Stand in for an OS that serves `versions` of the system interface.
+# Stand in for an OS that serves `version` of the system interface.
 serve_system() {
-  on "mkdir -p $SCRATCH && sed 's/^system *=.*/system = [$1]/' $INTERFACES > $SCRATCH/interfaces.toml" \
+  on "mkdir -p $SCRATCH && sed 's/^system *=.*/system = $1/' $INTERFACES > $SCRATCH/interfaces.toml" \
     || die "cannot write a replacement interface declaration"
   as_root "mountpoint -q $INTERFACES || true; umount $INTERFACES 2>/dev/null; mount --bind $SCRATCH/interfaces.toml $INTERFACES" \
     || die "cannot bind a replacement interface declaration over $INTERFACES"
@@ -210,7 +210,7 @@ owner="$(jq -r .owner_key <<<"$announce")"
 unserved_needs="$(jq -r --arg v "$UNSERVED" '.interfaces[$v] | join(",")' <<<"$announce")"
 [[ $unserved_needs == *system@* ]] || die "the test registry's $UNSERVED requires no system interface: '$unserved_needs'"
 ok "test registry at $url offers $NEWER, $PREVIOUS and $UNSERVED (needs $unserved_needs)"
-on "grep -q '^system *= *\\[' $INTERFACES" || die "the image does not declare the system interface in $INTERFACES"
+on "grep -q '^system *= *[0-9]' $INTERFACES" || die "the image does not declare the system interface in $INTERFACES"
 ok "the image serves $(on "grep '^system' $INTERFACES" | tr -d '\r')"
 app repo add test "$url" --owner-key "$owner" >/dev/null || die "app repo add test failed"
 app repo disable "'Tilo main'" >/dev/null || die "could not disable the main repository for this check"
@@ -239,7 +239,7 @@ expect_installed "$image_version image"
 
 unserved_system="${unserved_needs##*system@}"
 unserved_system="${unserved_system%%,*}"
-serve_system "1, $unserved_system"
+serve_system "$unserved_system"
 out="$(app update "$APP" 2>&1)" || die "app update $APP on an OS serving system@$unserved_system failed: $out"
 expect_installed "$UNSERVED user"
 unserved_package="$(running_package)"

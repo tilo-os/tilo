@@ -14,11 +14,13 @@ negotiation and no code for an older number.
 from what the code declares, or when the version the file records is not the
 one the code and the image's ``system-interfaces.toml`` carry.
 
-``against BASE`` (the ``changes`` check, against main) fails when a schema
-changed incompatibly since BASE without a higher version. An added optional
-field of a JSON or TOML message, an added Cap'n Proto struct field and a new
-type are compatible; everything else that changes what one side sends or
-reads is not.
+``against BASE`` (the ``changes`` check, against main) fails when the schema
+the code declares changed incompatibly since BASE's code without a higher
+version; both are read by this extractor, so a change to how a schema is
+written is never taken for a change to the interface. An added optional field
+of a JSON or TOML message, an added Cap'n Proto struct field and a new type
+are compatible; everything else that changes what one side sends or reads,
+a new Cap'n Proto union member included, is not.
 
 ``write`` rewrites every ``interface.toml`` from the code, keeping the
 authored header (where the version lives, the sources, the roots, the opaque
@@ -400,7 +402,10 @@ def read_items(tokens: list[Token], path: str, items: list[Item], start: int = 0
                 read_items(tokens, path, items, i + 3, close)
             i = close + 1
             continue
-        # Anything else: to its `;` or the end of its block.
+        # Anything else: to its `;` or the end of its block. A `const fn`
+        # is a function, whose body ends it.
+        if word == "const" and i + 1 < end and tokens[i + 1].text in ("fn", "unsafe", "async", "extern"):
+            word = "fn"
         while i < end:
             t = tokens[i]
             if t.kind == "punct" and t.text in OPEN:
@@ -772,14 +777,18 @@ def capnp_schema(path: str, root: Path = ROOT) -> dict[str, str]:
                 i = j + 1
                 continue
             text = re.sub(r"\s*([:(),\[\]<>=])\s*", r"\1", " ".join(body))
-            schema[key] = f"{ordinal} {text}".strip() if kind != "enum" else ordinal
+            in_union = bool(scopes) and scopes[-1][1] == "union"
+            value = f"{ordinal} {text}".strip() if kind != "enum" else ordinal
+            # An older reader cannot tell what a union member it does not know
+            # means, so a new one is not compatible the way a new field is.
+            schema[key] = f"{value} union" if in_union else value
             i = j + 1
             continue
         if scopes and i + 2 < len(tokens) and tokens[i + 1] == ":" and tokens[i + 2] in ("group", "union"):
             name = t
             j = i + 3
             schema[f"{scope_name()}.{name}"] = tokens[i + 2]
-            scopes.append((name, "struct"))
+            scopes.append((name, "union" if tokens[i + 2] == "union" else "struct"))
             i = j + 1
             continue
         i += 1
@@ -830,7 +839,7 @@ def incompatible(before: dict[str, str], now: dict[str, str], encoding: str) -> 
             continue  # a new type: judged where it is used
         if key.startswith("capnp:"):
             parent = key.rsplit(".", 1)[0]
-            if before.get(parent) in ("struct", "union", "group"):
+            if before.get(parent) in ("struct", "union", "group") and not value.endswith(" union"):
                 continue
             reasons.append(f"`{key}` is new ({value})")
             continue
@@ -942,21 +951,59 @@ def at_revision(root: Path, revision: str, rel: str) -> str | None:
     return shown.stdout.decode() if shown.returncode == 0 else None
 
 
+def schema_at(revision: str, rel: str, root: Path = ROOT) -> tuple[dict, int, dict[str, str]] | None:
+    """The interface `rel` names as `revision` has it: its file, its version
+    and its schema, read from that revision's sources by this extractor, so
+    a change to how the schema is written is never mistaken for a change to
+    the interface. `None` when the revision has no such file."""
+    text = at_revision(root, revision, rel)
+    if text is None:
+        return None
+    data = tomllib.loads(text)
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as scratch:
+        scratch_root = Path(scratch)
+        target = scratch_root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text)
+        try:
+            spec, committed = load_spec(target)
+            wanted = {*spec.sources, *spec.capnp, spec.version_const.partition(":")[0]}
+            for source in wanted:
+                content = at_revision(root, revision, source)
+                if content is None:
+                    raise InterfaceError(f"{revision} has no {source}")
+                path = scratch_root / source
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content)
+            return data, code_version(spec, scratch_root), schema_of(spec, scratch_root)
+        except (InterfaceError, KeyError, OSError):
+            # What that revision committed, when its sources no longer read.
+            return data, int(data.get("version", 0)), dict(committed)
+
+
 def against(base: str, root: Path = ROOT) -> list[str]:
     problems = []
     for path in interface_files(root):
         rel = path.relative_to(root).as_posix()
-        old_text = at_revision(root, base, rel)
-        if old_text is None:
+        old = schema_at(base, rel, root)
+        if old is None:
             continue
-        old = tomllib.loads(old_text)
-        new = tomllib.loads(path.read_text())
-        reasons = incompatible(old.get("schema", {}), new.get("schema", {}), new.get("encoding", "json"))
-        if reasons and int(new["version"]) <= int(old["version"]):
+        _, old_version, old_schema = old
+        try:
+            spec, _ = load_spec(path)
+            version = code_version(spec, root)
+            schema = schema_of(spec, root)
+        except (InterfaceError, KeyError, OSError) as error:
+            problems.append(f"{rel}: {error}")
+            continue
+        reasons = incompatible(old_schema, schema, spec.encoding)
+        if reasons and version <= old_version:
             shown = "; ".join(reasons[:8]) + ("; ..." if len(reasons) > 8 else "")
             problems.append(
-                f"{rel}: the {new['name']} interface changed incompatibly ({shown}) without a new "
-                f"version; bump {new['version_const']} past {old['version']}, run "
+                f"{rel}: the {spec.name} interface changed incompatibly ({shown}) without a new "
+                f"version; bump {spec.version_const} past {old_version}, run "
                 "`python3 tools/policy/check_interfaces.py write`, and update the other side"
             )
     return problems

@@ -144,8 +144,9 @@ type = "gui"
 [sandbox.net]
 mode = "{mode}"
 [sandbox.services]
-shell-ui = "required@1"
-"#
+shell-ui = "required@{shell_ui}"
+"#,
+            shell_ui = ui::floating_surface::FLOATING_SURFACE_PROTOCOL_VERSION,
         ),
     )
     .unwrap();

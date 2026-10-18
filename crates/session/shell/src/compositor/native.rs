@@ -2383,6 +2383,9 @@ fn pump_floating_surface_service(
                         &ui::floating_surface::FloatingSurfaceHostMessage::Closed { id },
                     );
                 }
+                // Read by the service before the connection is admitted; a
+                // second one says nothing new.
+                ui::floating_surface::FloatingSurfaceClientMessage::Hello { .. } => {}
                 ui::floating_surface::FloatingSurfaceClientMessage::SelectionCapable => {
                     frame_builder
                         .host_mut()
@@ -2431,6 +2434,12 @@ fn pump_floating_surface_service(
                     }
                 }
             },
+            FloatingServiceEvent::VersionMismatch {
+                app_id,
+                app_version,
+            } => {
+                crate::shell::app_versions::spoke_another_shell_version(&app_id, app_version);
+            }
             FloatingServiceEvent::Disconnected { connection, app_id } => {
                 frame_builder
                     .host_mut()

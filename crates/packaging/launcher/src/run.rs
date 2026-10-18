@@ -462,7 +462,9 @@ fn validate_open_uri(manifest: &ManifestView, opts: &RunOptions) -> Result<(), R
     Ok(())
 }
 
-/// The system interfaces `manifest` requires that `provided` does not serve.
+/// The interface versions `manifest` speaks that `provided` does not serve:
+/// every service it names, required or optional, since where an optional
+/// one is present the app speaks only its own version of it.
 fn interfaces_unmet(
     manifest: &ManifestView,
     provided: Option<&tilo_app_package::interfaces::ProvidedInterfaces>,
@@ -470,11 +472,10 @@ fn interfaces_unmet(
     let Some(provided) = provided else {
         return Vec::new();
     };
-    let required: Vec<_> = manifest
+    let spoken: Vec<_> = manifest
         .sandbox
         .services
         .iter()
-        .filter(|(_, req)| req.is_required())
         .map(
             |(name, req)| tilo_app_package::interfaces::InterfaceRequirement {
                 name: name.clone(),
@@ -482,12 +483,15 @@ fn interfaces_unmet(
             },
         )
         .collect();
-    provided.unmet(&required)
+    provided.unmet(&spoken)
 }
 
-/// Refuse a package built against system interface versions this OS does
-/// not serve. The catalog already runs the image's copy instead of such an
-/// update; this is the same rule for every other way into a launch.
+/// Refuse a package built against interface versions this OS does not
+/// serve: the launcher sets up the app's connections, and it sets up none at
+/// a version the other side does not speak. The catalog already runs the
+/// image's copy instead of such an update, and the shell updates the package
+/// first (docs/architecture/compatibility.md); this is the same rule for
+/// every other way into a launch.
 fn validate_interfaces(manifest: &ManifestView) -> Result<(), RunError> {
     let provided = package_store::interfaces::system_interfaces();
     let unmet = interfaces_unmet(manifest, provided.as_ref());
@@ -658,18 +662,24 @@ mod interface_tests {
     use tilo_app_package::interfaces::ProvidedInterfaces;
 
     #[test]
-    fn a_build_needing_an_interface_the_os_lacks_is_refused() {
+    fn a_build_speaking_another_interface_version_is_refused() {
         let settings: ManifestView = crate::manifest::test_manifest(
             "id = \"so.tilo.settings\"\nversion = \"2\"\nkind = \"app\"",
             "[entrypoint]\nbin = \"bin/settings\"\n\
              [sandbox.services]\nsystem = \"required@2\"\ncollab = \"optional@3\"\n",
         );
-        let old_os = ProvidedInterfaces::new([("system", &[1][..]), ("collab", &[1][..])]);
-        let new_os = ProvidedInterfaces::new([("system", &[1, 2][..])]);
-        let unmet = interfaces_unmet(&settings, Some(&old_os));
-        assert_eq!(unmet.len(), 1, "an optional service is never a requirement");
+        let os = |system: u32, runtime: u32| {
+            ProvidedInterfaces::new([("system", system), ("runtime", runtime)], ["collab"])
+        };
+        let unmet = interfaces_unmet(&settings, Some(&os(1, 3)));
+        assert_eq!(unmet.len(), 1);
         assert_eq!(unmet[0].requirement, "system@2");
-        assert!(interfaces_unmet(&settings, Some(&new_os)).is_empty());
+        let optional = interfaces_unmet(&settings, Some(&os(2, 4)));
+        assert_eq!(
+            optional[0].requirement, "collab@3",
+            "an optional service is spoken at its own version where it is there"
+        );
+        assert!(interfaces_unmet(&settings, Some(&os(2, 3))).is_empty());
         assert!(interfaces_unmet(&settings, None).is_empty());
 
         let message = RunError::InterfacesUnmet {

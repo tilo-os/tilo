@@ -1331,6 +1331,24 @@ impl Manifest {
             .collect()
     }
 
+    /// Every interface version this package speaks: each service it names,
+    /// required or optional, sorted by name. An optional service may be
+    /// absent where the package runs, but where it is present the package
+    /// speaks only this version of it, so a device runs the package only
+    /// when it serves every one of these exactly
+    /// (docs/architecture/compatibility.md).
+    #[must_use]
+    pub fn interface_versions(&self) -> Vec<registry_types::InterfaceRequirement> {
+        self.sandbox
+            .services
+            .iter()
+            .map(|(name, req)| registry_types::InterfaceRequirement {
+                name: name.clone(),
+                version: req.version,
+            })
+            .collect()
+    }
+
     /// [`Manifest::required_interfaces`] in the registry's wire form,
     /// `<name>@<version>`.
     #[must_use]

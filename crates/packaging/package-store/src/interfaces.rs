@@ -1,8 +1,8 @@
 //! Which system interfaces this OS serves, and whether a package fits it.
 //!
-//! The image declares every version it serves of each system interface in
-//! [`SYSTEM_INTERFACES_FILE`]; a package requires interfaces through the
-//! `required@N` services of its manifest (see
+//! The image declares the one version it serves of each system interface in
+//! [`SYSTEM_INTERFACES_FILE`]; a package names the version it speaks of each
+//! through the services of its manifest (see
 //! [`tilo_app_package::interfaces`]). A host without the declaration (a
 //! development machine, another distribution) judges nothing: every package
 //! fits it, and a missing service still fails at launch as it always did.
@@ -66,17 +66,31 @@ pub fn read_interfaces(path: &Path) -> Result<Option<ProvidedInterfaces>, Interf
 ///
 /// # Errors
 ///
-/// Returns the reason when `raw` is not a declaration or names a malformed
-/// interface or version.
+/// Returns the reason when `raw` is not a declaration, names a malformed
+/// interface, service or version, lists a runtime service under a name that
+/// is an interface of its own, or lists runtime services without serving
+/// the runtime interface.
 pub fn parse_interfaces(raw: &str) -> Result<ProvidedInterfaces, String> {
     let provided: ProvidedInterfaces = toml::from_str(raw).map_err(|error| error.to_string())?;
-    for (name, versions) in &provided.interfaces {
-        if versions.is_empty() {
-            return Err(format!("interface {name} lists no version"));
+    for (name, version) in &provided.interfaces {
+        InterfaceRequirement::new(name, *version).map_err(|error| error.to_string())?;
+    }
+    for service in &provided.runtime.services {
+        if !tilo_app_package::interfaces::valid_interface_name(service) {
+            return Err(format!("runtime service {service:?} is not a service name"));
         }
-        for version in versions {
-            InterfaceRequirement::new(name, *version).map_err(|error| error.to_string())?;
+        if provided.interfaces.contains_key(service) {
+            return Err(format!(
+                "{service} is an interface of its own and a runtime service"
+            ));
         }
+    }
+    if !provided.runtime.services.is_empty()
+        && !provided
+            .interfaces
+            .contains_key(tilo_app_package::interfaces::RUNTIME_INTERFACE)
+    {
+        return Err("runtime services are listed but the runtime interface is not".into());
     }
     Ok(provided)
 }
@@ -100,11 +114,12 @@ pub fn system_interfaces() -> Option<ProvidedInterfaces> {
     }
 }
 
-/// What `manifest` requires that `provided` does not serve. Empty when it
-/// fits, or when there is no declaration to judge by.
+/// The interface versions `manifest` speaks that `provided` does not serve
+/// ([`Manifest::interface_versions`]). Empty when it fits, or when there is
+/// no declaration to judge by.
 pub fn unmet(provided: Option<&ProvidedInterfaces>, manifest: &Manifest) -> Vec<Unmet> {
     provided.map_or_else(Vec::new, |provided| {
-        provided.unmet(&manifest.required_interfaces())
+        provided.unmet(&manifest.interface_versions())
     })
 }
 
@@ -148,19 +163,32 @@ system = "required@2"
 "#;
 
     #[test]
-    fn a_package_fits_the_versions_the_image_declares() {
+    fn a_package_fits_only_the_versions_the_image_serves() {
         let manifest = Manifest::from_toml_str(SETTINGS).unwrap();
-        let old_os = parse_interfaces("[interfaces]\nsystem = [1]\ncollab = [1]\n").unwrap();
-        let new_os = parse_interfaces("[interfaces]\nsystem = [1, 2]\n").unwrap();
+        let os = |system: u32, runtime: u32| {
+            parse_interfaces(&format!(
+                "[interfaces]\nsystem = {system}\nruntime = {runtime}\n\n\
+                 [runtime]\nservices = [\"collab\"]\n"
+            ))
+            .unwrap()
+        };
 
-        let refused = unmet(Some(&old_os), &manifest);
-        assert_eq!(refused.len(), 1);
+        let older = unmet(Some(&os(1, 1)), &manifest);
+        assert_eq!(older.len(), 1);
         assert_eq!(
-            refused[0].to_string(),
+            older[0].to_string(),
             "system@2 (this system provides system@1)"
         );
-        // An optional service is not a requirement: collab is absent here.
-        assert!(unmet(Some(&new_os), &manifest).is_empty());
+        assert!(unmet(Some(&os(2, 1)), &manifest).is_empty());
+        // An optional service is spoken at its version where it is there.
+        let runtime_moved = unmet(Some(&os(2, 2)), &manifest);
+        assert_eq!(
+            runtime_moved[0].to_string(),
+            "collab@1 (this system provides collab@2)"
+        );
+        assert!(tilo_app_package::interfaces::package_is_behind(
+            &runtime_moved
+        ));
         // A host that declares nothing judges nothing.
         assert!(unmet(None, &manifest).is_empty());
     }
@@ -171,16 +199,19 @@ system = "required@2"
         let path = dir.path().join("system-interfaces.toml");
         assert!(read_interfaces(&path).unwrap().is_none());
 
-        std::fs::write(&path, "[interfaces]\nsystem = [1]\n").unwrap();
+        std::fs::write(&path, "[interfaces]\nsystem = 1\n").unwrap();
         let provided = read_interfaces(&path).unwrap().unwrap();
-        assert_eq!(provided.versions("system"), vec![1]);
+        assert_eq!(provided.version("system"), Some(1));
 
         for bad in [
-            "system = [1]\n",
-            "[interfaces]\nsystem = []\n",
-            "[interfaces]\nsystem = [0]\n",
-            "[interfaces]\n\"Sys tem\" = [1]\n",
+            "system = 1\n",
+            "[interfaces]\nsystem = [1]\n",
+            "[interfaces]\nsystem = [1, 2]\n",
+            "[interfaces]\nsystem = 0\n",
+            "[interfaces]\n\"Sys tem\" = 1\n",
             "[interfaces]\nsystem = \"1\"\n",
+            "[interfaces]\nsystem = 1\n[runtime]\nservices = [\"collab\"]\n",
+            "[interfaces]\nruntime = 1\nsystem = 1\n[runtime]\nservices = [\"system\"]\n",
         ] {
             std::fs::write(&path, bad).unwrap();
             assert!(read_interfaces(&path).is_err(), "{bad:?} parsed");
@@ -192,8 +223,8 @@ system = "required@2"
         let dir = tempfile::tempdir().unwrap();
         let manifest = dir.path().join("manifest.toml");
         std::fs::write(&manifest, SETTINGS).unwrap();
-        let old_os = parse_interfaces("[interfaces]\nsystem = [1]\n").unwrap();
-        assert_eq!(unmet_at(Some(&old_os), &manifest).len(), 1);
+        let old_os = parse_interfaces("[interfaces]\nsystem = 1\n").unwrap();
+        assert_eq!(unmet_at(Some(&old_os), &manifest).len(), 2);
         assert!(unmet_at(Some(&old_os), &dir.path().join("missing.toml")).is_empty());
     }
 }

@@ -322,7 +322,7 @@ sys.exit(0 if re.search(pattern, source) else 1)
       authority="$REPO/crates/packaging/launcher/src/system_authority.rs"
       if grep -Fq 'pub const SYSTEM_SERVICE: &str = "system";' "$services" \
           && grep -Fq 'services.contains_key(crate::services::SYSTEM_SERVICE)' "$authority" \
-          && grep -Eq '^system *= *\[' "$REPO/os/usr/share/tilo/system-interfaces.toml" \
+          && grep -Eq '^system *= *[0-9]+' "$REPO/os/usr/share/tilo/system-interfaces.toml" \
           && grep -Eq '^COPY .*os/usr/share/tilo/system-interfaces\.toml .*/usr/share/tilo/' "$CONTAINERFILE"; then
         ok "apps [$users] require 'system': the launcher grants it and the image declares serving it"
       else

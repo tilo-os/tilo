@@ -1001,11 +1001,10 @@ pub fn to_service_binds(resolved: &[ResolvedService]) -> Vec<crate::sandbox::Ser
 mod image_interface_tests {
     use super::*;
 
-    /// The image's preinstalled copy of an app is the fallback for an update
-    /// the OS cannot serve, so it must always fit the image it ships in:
-    /// every app in the repository requires only interfaces the image's
-    /// declaration serves, and the declaration names every service a
-    /// manifest can be handed.
+    /// The image's preinstalled copy of an app is built with the image, so
+    /// it must speak exactly the interface versions the image serves: every
+    /// service every app in the repository names, at the image's version,
+    /// and the declaration serves every service a manifest can be handed.
     #[test]
     fn every_shipped_app_fits_the_interfaces_the_image_declares() {
         let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1032,8 +1031,8 @@ mod image_interface_tests {
             "tilo-fs",
         ] {
             assert!(
-                !provided.versions(service).is_empty(),
-                "the image does not declare the {service} interface"
+                provided.version(service).is_some(),
+                "the image does not serve the {service} interface"
             );
         }
 
@@ -1045,7 +1044,7 @@ mod image_interface_tests {
             };
             let manifest = tilo_app_package::Manifest::from_toml_str(&raw)
                 .unwrap_or_else(|e| panic!("{} does not parse: {e}", path.display()));
-            let unmet = provided.unmet(&manifest.required_interfaces());
+            let unmet = provided.unmet(&manifest.interface_versions());
             assert!(
                 unmet.is_empty(),
                 "{} requires {}",

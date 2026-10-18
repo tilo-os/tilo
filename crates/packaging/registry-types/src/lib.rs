@@ -98,7 +98,8 @@ pub use entry::{
 };
 pub use handshake::{PROTOCOL_VERSION, RegistryHandshake};
 pub use interfaces::{
-    InterfaceError, InterfaceRequirement, ProvidedInterfaces, SYSTEM_INTERFACE, Unmet,
+    Behind, InterfaceError, InterfaceRequirement, ProvidedInterfaces, RUNTIME_INTERFACE,
+    RuntimeServices, SYSTEM_INTERFACE, Unmet,
     describe_unmet, valid_interface_name,
 };
 pub use moderation::{
