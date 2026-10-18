@@ -19859,14 +19859,40 @@ pub mod tests {
 
         const FULL_ID: u128 = 0xa5a5_a5a5_a5a5_a5a5_0000_0000_0000_002b;
 
+        struct DurableFixture {
+            directory: LocalDirectoryFixture,
+            _identity_env: tilo_test_env::ScopedEnv,
+        }
+
+        impl std::ops::Deref for DurableFixture {
+            type Target = LocalDirectoryFixture;
+
+            fn deref(&self) -> &Self::Target {
+                &self.directory
+            }
+        }
+
+        impl std::ops::DerefMut for DurableFixture {
+            fn deref_mut(&mut self) -> &mut Self::Target {
+                &mut self.directory
+            }
+        }
+
         fn durable_fixture(
             root: &std::path::Path,
             membership: Option<WorkspaceTreeHandle>,
-        ) -> (
-            LocalDirectoryFixture,
-            VerifiedActionCaller,
-            CallerInvocation,
-        ) {
+        ) -> (DurableFixture, VerifiedActionCaller, CallerInvocation) {
+            let mut identity_env = tilo_test_env::ScopedEnv::new();
+            identity_env
+                .set("XDG_CONFIG_HOME", root.join("config"))
+                .set("TILO_IDENTITY_ROOT", root.join("identity"))
+                .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
+            tilo_identity_host::provisioning::ensure_collaboration_identity(
+                &root.join("config/tilo/identity"),
+                &tilo_user_identity::IdentityPaths::under(root.join("identity")),
+                tilo_identity_host::provisioning::IdentityStorage::Files,
+            )
+            .expect("provision the host admission and terminal receipt signer");
             let root_key = SigningKey::from_bytes(&[51; 32]);
             let device = SigningKey::from_bytes(&[52; 32]);
             let membership = membership.unwrap_or_else(|| {
@@ -19935,7 +19961,14 @@ pub mod tests {
                 action: "open".into(),
                 argument: None,
             };
-            (fixture, caller, request)
+            (
+                DurableFixture {
+                    directory: fixture,
+                    _identity_env: identity_env,
+                },
+                caller,
+                request,
+            )
         }
 
         fn effect(root: &std::path::Path) {
