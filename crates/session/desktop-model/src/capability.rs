@@ -82,6 +82,10 @@ pub enum Capability {
     /// The command lines of those programs, which can name files, hosts or
     /// tokens: asked for apart from the list.
     ProcessCommands { scope: GrantScope },
+    /// The kernel's `io_uring` interface, which the app sandbox's syscall
+    /// filter otherwise refuses. Applied when the app is launched: the
+    /// launcher leaves the three `io_uring` calls out of its filter.
+    IoUring { scope: GrantScope },
 }
 
 impl Capability {
@@ -127,6 +131,7 @@ impl Capability {
             Capability::ProcessCommands { .. } => {
                 vec![(Scope::Device("process-commands".into()), Access::Read)]
             }
+            Capability::IoUring { .. } => vec![(Scope::Device("io-uring".into()), Access::Read)],
             Capability::Network { hosts, .. } => match hosts {
                 // An allowlist means exactly those hosts; `None` is the
                 // only thing that produces a wildcard scope — behaving
@@ -153,6 +158,7 @@ impl Capability {
             | Capability::SystemInfo { scope }
             | Capability::Processes { scope }
             | Capability::ProcessCommands { scope }
+            | Capability::IoUring { scope }
             | Capability::Network { scope, .. } => *scope,
         }
     }
@@ -186,6 +192,7 @@ impl Capability {
             Scope::Device(d) if d == "process-commands" => {
                 Some(Capability::ProcessCommands { scope })
             }
+            Scope::Device(d) if d == "io-uring" => Some(Capability::IoUring { scope }),
             Scope::NetHost(h) => Some(Capability::Network {
                 hosts: if h == "*" {
                     None

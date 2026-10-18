@@ -36,6 +36,7 @@ roots = ["Manifest", "Header"]
 "AtspiAcceptance.root" = "String"
 "Capabilities" = "struct"
 "Capabilities.optional" = "Vec<String> optional"
+"Capabilities.reasons" = "BTreeMap<String, String> optional"
 "Capabilities.required" = "Vec<String> optional"
 "Cli" = "struct"
 "Cli.commands" = "Vec<String> optional"

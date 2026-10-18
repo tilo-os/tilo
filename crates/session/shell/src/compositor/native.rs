@@ -10130,6 +10130,18 @@ pub fn run() {
     // Held for the session: apps' system readings, the desk widget's too.
     let _system_stats_service =
         start_system_stats_service(portal_backend.as_ref(), Arc::clone(&session_wake));
+    // Asked on the launch workers, before the launcher writes the filter.
+    if let Some(portal) = portal_backend.as_ref() {
+        let permissions = crate::compositor::launch_permissions::LaunchPermissions {
+            grants: portal.media_grants.clone(),
+            prompts: portal.media_prompts.clone(),
+            wake: Arc::clone(&session_wake),
+            compositor: std::thread::current().id(),
+        };
+        crate::shell::launcher::set_launch_permissions(Box::new(move |app, room, launch| {
+            permissions.ask(app, room, launch)
+        }));
+    }
     // An `app.<id>/close` action, from the broker's thread.
     let app_closes = crate::shell::app_close::install(Arc::clone(&session_wake));
     let mut network_start: Option<

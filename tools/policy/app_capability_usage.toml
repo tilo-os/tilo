@@ -94,6 +94,10 @@ paths = ["ui::location", "tilo_location"]
 crates = ["tilo-process", "portable-pty", "bounded-command", "tilo-system-stats"]
 paths = ["process::Command", "tilo_process"]
 
+[uses."io-uring"]
+crates = ["io-uring", "tokio-uring", "rio", "glommio", "monoio", "compio"]
+features = ["tokio/io-uring"]
+
 [uses."system-info"]
 crates = ["sysinfo", "tilo-system-stats"]
 

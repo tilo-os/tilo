@@ -147,6 +147,7 @@ capabilities! {
     Processes = "processes": "Start and manage other programs.",
     SystemInfo = "system-info": "Read hardware and operating-system details.",
     WebView = "webview": "Embed web content.",
+    IoUring = "io-uring": "Use the kernel's fast asynchronous I/O interface.",
 }
 
 /// Where a capability's row comes from.
@@ -162,6 +163,7 @@ const WEB_SOCKETS: &str = "Browsers cannot open raw TCP or UDP sockets.";
 const WEB_PROCESSES: &str = "A browser page cannot start programs.";
 const WEB_WEBVIEW: &str = "A browser page cannot embed another browser.";
 const WEB_WAKE: &str = "A closed browser page cannot be woken reliably.";
+const LINUX_ONLY_IO_URING: &str = "io_uring is an interface of the Linux kernel.";
 
 impl Capability {
     /// Parse a manifest spelling.
@@ -238,6 +240,14 @@ impl Capability {
             Self::Location => [Prompt, Prompt, Prompt],
             Self::Camera | Self::Microphone | Self::ScreenCapture => [Prompt, Planned, Planned],
             Self::WebView => [Available, Available, Unsupported(WEB_WEBVIEW)],
+            // The app sandbox refuses io_uring unless the person grants it
+            // (an app the image ships is granted what it declares); runtimes
+            // fall back to epoll without it, so declare it optional.
+            Self::IoUring => [
+                Prompt,
+                Unsupported(LINUX_ONLY_IO_URING),
+                Unsupported(LINUX_ONLY_IO_URING),
+            ],
         };
         row.get(target.column()).copied().unwrap_or(Planned)
     }

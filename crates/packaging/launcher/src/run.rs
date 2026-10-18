@@ -20,7 +20,7 @@ use crate::capabilities::{CapabilityPlan, load_capability_file};
 use crate::dbus_proxy::{self, DBusProxyGuard};
 use crate::manifest::{ManifestView, PortalPolicy, read_manifest};
 use crate::sandbox::{DBusBindPlan, build_bwrap_argv};
-use crate::seccomp::compile_baseline;
+use crate::seccomp::compile_app_baseline;
 use crate::services::{
     ACCOUNT_CHILD_FD, BASELINE_SECCOMP_CHILD_FD, CLONE3_COMPAT_SECCOMP_CHILD_FD,
     EXIT_REQUIRED_SERVICE_MISSING, ServiceError, ServiceLaunchContext, resolve_blob_bind,
@@ -3073,7 +3073,10 @@ fn spawn_and_wait(
 /// image decides whether this package may have it. An unrecognised name is a
 /// packaging mistake; a recognised-but-unentitled one is an app trying to
 /// lift a protection off itself — logged distinctly.
-fn stage_seccomp(manifest: &ManifestView) -> Result<SeccompFds, RunError> {
+fn stage_seccomp(
+    manifest: &ManifestView,
+    grants: crate::seccomp::SyscallGrants,
+) -> Result<SeccompFds, RunError> {
     let decision = crate::seccomp::resolve_profile(&manifest.sandbox.seccomp, &manifest.package_id);
     let profile = decision.applied;
     if decision.refused {
@@ -3096,7 +3099,7 @@ fn stage_seccomp(manifest: &ManifestView) -> Result<SeccompFds, RunError> {
     }
     Ok(SeccompFds {
         clone3_compat: stage_seccomp_blob(&crate::seccomp::compile_clone3_compat()?)?,
-        baseline: stage_seccomp_blob(&compile_baseline(profile)?)?,
+        baseline: stage_seccomp_blob(&compile_app_baseline(profile, grants)?)?,
     })
 }
 
@@ -3493,9 +3496,21 @@ pub(crate) fn run_with_context(
     // meanwhile leaves them alone (`crate::lease`).
     let _leases = crate::lease::LaunchLeases::take(manifest, payload_root, opts)?;
 
+    // The user's capability decision. Empty unless the compositor wrote a
+    // file — an app launched without one is confined to its manifest alone.
+    // Resolved before the seccomp baseline, which a grant can narrow.
+    let mut capabilities = resolve_capabilities(manifest, opts);
+
     // Host preflight precedes connected service custody.
     // Seccomp baseline → tmpfile → fd.
-    let seccomp_fds = stage_seccomp(manifest)?;
+    let seccomp_fds = stage_seccomp(
+        manifest,
+        crate::seccomp::syscall_grants(
+            manifest,
+            &capabilities,
+            crate::system_stats::image_shipped(payload_root),
+        ),
+    )?;
     tilo_startup_metrics::handoff_mark("seccomp-staged");
 
     // D-Bus proxy decision. Failure leaves the bus unavailable; there is
@@ -3542,9 +3557,6 @@ pub(crate) fn run_with_context(
         .as_ref()
         .map(|(p, v)| (p.as_path(), v.as_str()));
 
-    // The user's capability decision. Empty unless the compositor wrote a
-    // file — an app launched without one is confined to its manifest alone.
-    let mut capabilities = resolve_capabilities(manifest, opts);
     if let Some(owner) = native_owner
         && let Some(hosts) = owner.reviewed_network_hosts()?
     {
@@ -4297,13 +4309,15 @@ fn run_with_capture_spawn<T>(
 
     // Seccomp baseline resolved identically to `run_with` — two paths
     // reaching different conclusions would make capture a way around the filter.
-    let seccomp_fds = SeccompFds {
-        clone3_compat: stage_seccomp_blob(&crate::seccomp::compile_clone3_compat()?)?,
-        baseline: stage_seccomp_blob(&compile_baseline(crate::seccomp::manifest_profile(
-            &manifest.sandbox,
-            &manifest.package_id,
-        ))?)?,
-    };
+    let capabilities = resolve_capabilities(manifest, opts);
+    let seccomp_fds = stage_seccomp(
+        manifest,
+        crate::seccomp::syscall_grants(
+            manifest,
+            &capabilities,
+            crate::system_stats::image_shipped(payload_root),
+        ),
+    )?;
 
     // As in `run_with_context`: held from before the lookup until the
     // sandbox has exited.
@@ -4317,7 +4331,6 @@ fn run_with_capture_spawn<T>(
     // D-Bus plan (same decision path as `run_with`).
     let (dbus_plan, _dbus_guards) =
         resolve_dbus_bind(&manifest.sandbox.portals, opts.wayland_socket.is_some());
-    let capabilities = resolve_capabilities(manifest, opts);
     // As in `run_with_context`, cold runtime checks precede service handoff.
     // Capture must not start the executing-task deadline during verification.
     let egress = crate::sandbox::egress_decision(manifest, &capabilities);
