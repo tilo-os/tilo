@@ -124,6 +124,8 @@ on:
       - "vendor/genawaiter-proc-macro/**"
       - "vendor/netwatch/**"
       - "vendor/wayland-backend/**"
+      - "vendor/wgpu/**"
+      - "vendor/wgpu-hal/**"
   pull_request:
     branches: ["main"]
     paths:
@@ -241,6 +243,8 @@ on:
       - "vendor/genawaiter-proc-macro/**"
       - "vendor/netwatch/**"
       - "vendor/wayland-backend/**"
+      - "vendor/wgpu/**"
+      - "vendor/wgpu-hal/**"
   workflow_dispatch:
     inputs:
       require_compiler_cache:
