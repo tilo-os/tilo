@@ -245,7 +245,7 @@ mod tests {
         invalid.push(extra.to_string());
         let mut nested = serde_json::to_value(&operation).unwrap();
         nested["unexpected"] = true.into();
-        let mut value = valid.clone();
+        let mut value = valid;
         value["operation"] = nested.to_string().into();
         invalid.push(value.to_string());
         invalid.push(format!(

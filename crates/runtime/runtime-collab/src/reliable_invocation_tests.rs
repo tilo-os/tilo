@@ -689,8 +689,8 @@ fn reliable_invocation_evidence_preserves_existing_outcome_budget_and_redacts_de
         out.set_found(true);
         out.set_id(1);
         out.set_update_json(&outcome);
-        out.set_admission_json(&"n".repeat(32 * 1024));
-        out.set_terminal_json(&"t".repeat(32 * 1024));
+        out.set_admission_json("n".repeat(32 * 1024));
+        out.set_terminal_json("t".repeat(32 * 1024));
     }
     let observation =
         reliable_decode_observation(message.get_root_as_reader().unwrap(), &HOST, &ID).unwrap();
@@ -702,7 +702,7 @@ fn reliable_invocation_evidence_preserves_existing_outcome_budget_and_redacts_de
     message
         .get_root::<collab_capnp::published_invocation_observation::Builder<'_>>()
         .unwrap()
-        .set_admission_json(&"n".repeat(32 * 1024 + 1));
+        .set_admission_json("n".repeat(32 * 1024 + 1));
     assert!(
         reliable_decode_observation(message.get_root_as_reader().unwrap(), &HOST, &ID).is_err()
     );
