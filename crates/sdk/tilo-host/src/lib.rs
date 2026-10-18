@@ -48,6 +48,7 @@ pub mod native;
 pub mod secrets {
     pub use tilo_secrets::*;
 }
+pub mod jpeg;
 pub mod png;
 /// File choosers and URI opening: `tilo_dialogs::portal` under the
 /// toolkit's module path.

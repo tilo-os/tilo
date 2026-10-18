@@ -15,7 +15,6 @@
 //! offline screenshot drives the exact same decode+cache+paint path as a real
 //! stored image, without shipping binary fixtures or touching the network.
 
-use std::io::Cursor;
 use std::sync::Arc;
 
 use tilo_content::ContentStore;
@@ -83,12 +82,7 @@ fn synth_demo_png(id: &str) -> Option<Vec<u8>> {
 }
 
 fn encode_png(w: u32, h: u32, rgba: Vec<u8>) -> Option<Vec<u8>> {
-    let img = image::RgbaImage::from_raw(w, h, rgba)?;
-    let mut out = Cursor::new(Vec::new());
-    image::DynamicImage::ImageRgba8(img)
-        .write_to(&mut out, image::ImageFormat::Png)
-        .ok()?;
-    Some(out.into_inner())
+    ui::png::encode_rgba8(w, h, &rgba).ok()
 }
 
 /// A tidy 2×2 call grid mockup: dark canvas, four participant tiles, the

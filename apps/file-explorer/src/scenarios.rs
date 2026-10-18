@@ -371,11 +371,16 @@ fn write_host_previews(workspace: &Path) -> std::io::Result<PathBuf> {
     Ok(workspace.to_path_buf())
 }
 
+/// `image` as a PNG, or as a JPEG (at the `image` crate's default quality)
+/// when `format` asks for one, through the runtime's encoders.
 fn encode_image(image: image::RgbaImage, format: image::ImageFormat) -> Vec<u8> {
-    let mut out = Vec::new();
-    let _ = image::DynamicImage::ImageRgba8(image)
-        .write_to(&mut std::io::Cursor::new(&mut out), format);
-    out
+    let (width, height) = image.dimensions();
+    let encoded = if format == image::ImageFormat::Jpeg {
+        ui::jpeg::encode_rgba8_opaque(width, height, image.as_raw(), 75)
+    } else {
+        ui::png::encode_rgba8(width, height, image.as_raw())
+    };
+    encoded.unwrap_or_default()
 }
 
 /// A distinct gradient or pattern per `kind`, so previews read as varied

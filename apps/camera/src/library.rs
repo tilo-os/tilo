@@ -65,22 +65,14 @@ pub fn encode_photo(frame: &FrameBuf, format: PhotoFormat) -> std::io::Result<(S
 }
 
 fn encode_png(frame: &FrameBuf) -> std::io::Result<Vec<u8>> {
-    use image::{ExtendedColorType, ImageEncoder};
-    let mut out = Vec::new();
-    image::codecs::png::PngEncoder::new(&mut out)
-        .write_image(&frame.rgba, frame.w, frame.h, ExtendedColorType::Rgba8)
-        .map_err(|e| std::io::Error::other(e.to_string()))?;
-    Ok(out)
+    ui::png::encode_rgba8(frame.w, frame.h, &frame.rgba)
+        .map_err(|e| std::io::Error::other(e.to_string()))
 }
 
 fn encode_jpeg(frame: &FrameBuf) -> std::io::Result<Vec<u8>> {
-    use image::{ExtendedColorType, ImageEncoder};
     let rgb = frame::rgba_to_rgb(&frame.rgba);
-    let mut out = Vec::new();
-    let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 90);
-    enc.write_image(&rgb, frame.w, frame.h, ExtendedColorType::Rgb8)
-        .map_err(|e| std::io::Error::other(e.to_string()))?;
-    Ok(out)
+    ui::jpeg::encode_rgb8(frame.w, frame.h, &rgb, 90)
+        .map_err(|e| std::io::Error::other(e.to_string()))
 }
 
 /// Decode image bytes to a greyscale (luma) buffer, downscaled so its longest

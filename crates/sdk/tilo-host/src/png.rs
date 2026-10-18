@@ -23,6 +23,23 @@ pub fn encode_rgba8(width: u32, height: u32, rgba: &[u8]) -> ImageResult<Vec<u8>
     Ok(bytes)
 }
 
+/// Encode `image` as a PNG in its own colour type (grey, RGB, with or
+/// without alpha, 8 or 16 bits).
+///
+/// Apps encode through this rather than `DynamicImage::write_to`: that is
+/// generic over the writer and dispatches over every format the `image`
+/// crate was built with, so each app calling it compiled every encoder into
+/// its own binary. This one is compiled once, in the shared runtime.
+///
+/// # Errors
+///
+/// Fails when the encoder refuses the image.
+pub fn encode_image(image: &DynamicImage) -> ImageResult<Vec<u8>> {
+    let mut bytes = Vec::new();
+    image.write_with_encoder(PngEncoder::new(&mut bytes))?;
+    Ok(bytes)
+}
+
 /// Encode `rgba` as a PNG file at `path`, replacing any existing file.
 ///
 /// # Errors
@@ -50,10 +67,15 @@ pub fn write_rgba8(
 /// panics; callers pass buffers from renderers and the clipboard, so report
 /// it as an error instead.
 fn check_rgba8_len(width: u32, height: u32, rgba: &[u8]) -> ImageResult<()> {
+    check_len(width, height, 4, rgba)
+}
+
+/// That `pixels` holds exactly `width * height` pixels of `channels` bytes.
+pub(crate) fn check_len(width: u32, height: u32, channels: u64, pixels: &[u8]) -> ImageResult<()> {
     let expected = u64::from(width)
         .saturating_mul(u64::from(height))
-        .saturating_mul(4);
-    if u64::try_from(rgba.len()).ok() == Some(expected) {
+        .saturating_mul(channels);
+    if u64::try_from(pixels.len()).ok() == Some(expected) {
         Ok(())
     } else {
         Err(image::ImageError::Parameter(
@@ -142,6 +164,21 @@ mod tests {
             assert!(decode_rgba8_within(&png, 3).is_err());
             assert!(decode_rgba8_within(&png, 4).is_ok());
             assert!(decode_rgba8(b"not a png").is_err());
+        }
+
+        // Case `an_image_keeps_its_own_colour_type`.
+        {
+            let grey = DynamicImage::ImageLuma8(
+                image::GrayImage::from_raw(2, 1, vec![7, 200]).expect("2x1 grey pixels"),
+            );
+            let png = encode_image(&grey).expect("valid grey image");
+            let decoded = image::load_from_memory(&png).expect("complete PNG");
+            assert_eq!(decoded.color(), image::ColorType::L8);
+            assert_eq!(decoded.to_luma8().into_raw(), [7, 200]);
+            assert_eq!(
+                decode_rgba8(&png).expect("complete PNG").rgba,
+                [7, 7, 7, 255, 200, 200, 200, 255]
+            );
         }
 
         // Case `rgb_sources_gain_opaque_alpha`.
