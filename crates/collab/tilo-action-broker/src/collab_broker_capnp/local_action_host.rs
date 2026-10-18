@@ -65,6 +65,41 @@ impl CapnpBrokerState {
         self.mint_private_draft(certificate, origin, draft)
     }
 
+    /// Resolve a native seat's projected Person through protected host custody.
+    /// `None` means this broker has no native seat (and grants no certificate
+    /// custody); a configured service's refusal is never a compatibility fallback.
+    ///
+    /// # Errors
+    /// Refuses retired executions, non-native callers and stale native custody.
+    pub fn native_local_person_certificate(
+        &self,
+        caller: &Caller,
+    ) -> Result<Option<tilo_user_identity::DeviceCert>, String> {
+        let Some(service) = self.services.local_person.as_ref() else {
+            return Ok(None);
+        };
+        if !self.is_accepting()
+            || (caller.execution_id().is_some() && !caller.execution_is_live())
+            || caller.is_foreign_device()
+            || caller.acting_for_person().is_some()
+            || caller.shortcut().is_some()
+            || caller.user_public_key().is_some()
+            || caller.device_public_key().is_some()
+        {
+            return Err("native person execution unavailable".into());
+        }
+        let CallerPrincipal::Person(person) = caller.principal() else {
+            return Err("native person required".into());
+        };
+        let room = caller.room().ok_or("native person room required")?;
+        let certificate = service.certificate(room, person)?;
+        if super::principal_id_for_root(certificate.user_public_key) != *person {
+            return Err("native person certificate mismatch".into());
+        }
+        self.current_native_person(room, &certificate)?;
+        Ok(Some(certificate))
+    }
+
     /// Invoke through the native seat's existing palette/control provider.
     /// This process-owned door is never used by network, MCP or app transports.
     pub fn action_invoke_local_person(
@@ -131,6 +166,11 @@ impl CapnpBrokerState {
         })();
         match origin {
             Ok(origin) => {
+                match self.host_action_replay(caller, &origin, request) {
+                    Ok(Some(receipt)) => return Pending::ready(Ok(receipt)),
+                    Err(error) => return Pending::ready(Err(error)),
+                    Ok(None) => {}
+                }
                 if let InvocationCaller::NativePerson {
                     room, certificate, ..
                 } = &origin
@@ -465,13 +505,15 @@ impl ActionHost for CertifiedLocalActionHost {
         if let Err(error) = self.check(caller) {
             return Pending::ready(Err(error));
         }
-        // Numeric peer and application/retained-launch aliases preserve original
-        // custody to the actual numeric dispatch. Other doors remain separate.
-        if query
-            .provider
-            .as_ref()
-            .is_some_and(|provider| !certified_provider(provider))
-        {
+        // Allow only doors that retain original custody through application
+        // dispatch or the host-side admission barrier.
+        if query.provider.as_ref().is_some_and(|provider| {
+            !certified_provider(provider)
+                || query
+                    .target
+                    .as_ref()
+                    .is_some_and(|address| !certified_target(provider, address))
+        }) {
             return Pending::ready(Err(ActionHostError::UnknownAction));
         }
         let mut answer = self.state.action_query(&self.effective, &query);
@@ -527,13 +569,25 @@ impl ActionHost for CertifiedLocalActionHost {
                 Err(error) => return Pending::ready(Err(error)),
             }
         };
-        if !certified_provider(&request.target.provider) {
+        if !certified_target(&request.target.provider, &request.target.address) {
             return Pending::ready(Err(ActionHostError::UnknownAction));
         }
         if request.target.address.resource.as_str() == super::workspace_checkpoints::RESOURCE
             && admitted.agent_id.is_some()
         {
             return Pending::ready(Err(ActionHostError::NotPermitted));
+        }
+        match self.state.host_action_replay(
+            &self.effective,
+            &InvocationCaller::Certified {
+                caller: Box::new(self.admission.clone()),
+                foreign_restriction: self.effective.is_foreign_device(),
+            },
+            &request,
+        ) {
+            Ok(Some(receipt)) => return Pending::ready(Ok(receipt)),
+            Err(error) => return Pending::ready(Err(error)),
+            Ok(None) => {}
         }
         let person_certificate = admitted
             .certificate
@@ -579,6 +633,20 @@ impl ActionHost for CertifiedLocalActionHost {
         }
     }
 
+    fn confirm(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Pending<Result<tilo_actions::remote::Confirmation, ActionHostError>> {
+        if let Err(error) = self.check(caller) {
+            return Pending::ready(Err(error));
+        }
+        if !certified_target(&request.target.provider, &request.target.address) {
+            return Pending::ready(Err(ActionHostError::UnknownAction));
+        }
+        self.state.request_witness(&self.effective, None, request)
+    }
+
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
         let admitted = self.check(caller).ok()?;
         let job = self.state.remote_job(&self.effective, id)?;
@@ -619,20 +687,181 @@ impl ActionHost for CertifiedLocalActionHost {
 
 /// `page` without rows or providers outside this door.
 fn certified_page(mut page: CataloguePage) -> CataloguePage {
-    page.rows.retain(|row| certified_provider(&row.provider));
+    page.rows.retain(|row| {
+        certified_provider(&row.provider)
+            && if tilo_actions::remote::workspace_provider_room(&row.provider).is_some() {
+                row.action
+                    .as_ref()
+                    .is_some_and(|action| certified_target(&row.provider, &action.address))
+            } else {
+                true
+            }
+    });
     page.providers
         .retain(|provider| certified_provider(&provider.provider));
     page
 }
 
-// Only existing provider forms with preserved original SDK-delivery custody.
+// A workspace provider mixes signed host actions with branches that do not
+// retain original custody. Classify its exact dispatch target, not just its token.
+fn certified_target(provider: &str, address: &tilo_actions::ActionAddress) -> bool {
+    use tilo_actions::remote::{
+        APPLICATION_CLOSE_ACTION, APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX,
+        workspace_provider_room,
+    };
+    if workspace_provider_room(provider).is_some() {
+        return (address.resource.starts_with(APPLICATION_RESOURCE_PREFIX)
+            && matches!(
+                address.action.as_str(),
+                APPLICATION_OPEN_ACTION | APPLICATION_CLOSE_ACTION
+            ))
+            || crate::automation::run_target(address).is_some();
+    }
+    certified_provider(provider)
+}
+
+// Only provider forms with preserved original dispatch/admission custody.
+// Workspace tokens are browsable, but their rows and requests need target checks.
 fn certified_provider(provider: &str) -> bool {
     // This is only door classification. The action host independently looks
     // up the opaque token and revalidates its live registration/custody.
     if provider.starts_with(super::canonical_route::PROVIDER_PREFIX) {
         return true;
     }
-    provider.parse::<u64>().is_ok()
+    matches!(
+        provider,
+        tilo_actions::remote::device_pairing::PROVIDER
+            | tilo_actions::remote::identity_admin::PROVIDER
+            | tilo_actions::remote::own_device::PROVIDER
+    ) || provider.parse::<u64>().is_ok()
         || tilo_actions::remote::application_provider(provider).is_some()
         || super::launchable::is_launchable_provider(provider)
+        || tilo_actions::remote::workspace_provider_room(provider).is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_actions::remote::{CatalogueProvider, CatalogueRow, workspace_provider};
+    use tilo_actions::{ActionAddress, ActionDescriptor};
+
+    fn workspace_targets() -> (Vec<ActionAddress>, Vec<ActionAddress>) {
+        (
+            vec![
+                ActionAddress::new("app.so.tilo.notes", "open"),
+                ActionAddress::new("app.so.tilo.notes", "close"),
+                ActionAddress::new(
+                    tilo_automation::shortcut_resource_id("test-shortcut"),
+                    tilo_automation::SHORTCUT_RUN_ACTION,
+                ),
+            ],
+            vec![
+                ActionAddress::new("workspace", "rename"),
+                ActionAddress::new(crate::automation::LIBRARY_RESOURCE, "create"),
+                ActionAddress::new(crate::automation::LIBRARY_RESOURCE, "list"),
+                ActionAddress::new("keyboard-shortcuts", "update"),
+                ActionAddress::new("workspace", "open"),
+                ActionAddress::new("keyboard-shortcuts", "close"),
+                ActionAddress::new("app.so.tilo.notes", "delete"),
+                ActionAddress::new(
+                    tilo_automation::shortcut_resource_id("test-shortcut"),
+                    "update",
+                ),
+                ActionAddress::new(crate::automation::LIBRARY_RESOURCE, "run"),
+            ],
+        )
+    }
+
+    #[test]
+    fn workspace_requests_only_allow_admission_wired_targets() {
+        let provider = workspace_provider("room");
+        assert!(certified_provider(&provider));
+        let (allowed, blocked) = workspace_targets();
+        for address in allowed {
+            // Both invocation and confirmation use this exact target gate.
+            assert!(certified_target(&provider, &address), "{address:?}");
+        }
+        for address in blocked {
+            assert!(!certified_target(&provider, &address), "{address:?}");
+        }
+        assert!(!certified_provider("untrusted"));
+        assert!(!certified_target(
+            "untrusted",
+            &ActionAddress::new("app.so.tilo.notes", "open")
+        ));
+        assert!(certified_target("42", &ActionAddress::new("note", "edit")));
+    }
+
+    fn row(provider: &str, address: ActionAddress) -> CatalogueRow {
+        CatalogueRow::for_action(
+            provider,
+            "test-app",
+            ActionDescriptor {
+                semantic_identity: None,
+                address,
+                resource_kind: "test-resource".into(),
+                resource_label: "Test resource".into(),
+                action_label: "Test action".into(),
+                description: None,
+                locus: tilo_actions::ExecutionLocus::default(),
+                kind: tilo_actions::OperationKind::Effect,
+                contract: tilo_actions::ActionContract::view(),
+                input: tilo_actions::InputSpec::None,
+                params: Vec::new(),
+                view: None,
+            },
+        )
+    }
+
+    #[test]
+    fn workspace_page_keeps_safe_actions_and_provider_without_unsigned_rows() {
+        let provider = workspace_provider("room");
+        let (allowed, blocked) = workspace_targets();
+        let mut rows: Vec<_> = allowed
+            .iter()
+            .chain(&blocked)
+            .cloned()
+            .map(|address| row(&provider, address))
+            .collect();
+        let mut resource_only = row(&provider, ActionAddress::new("shortcuts", "list"));
+        resource_only.action = None;
+        rows.push(resource_only);
+        rows.push(row("42", ActionAddress::new("note", "edit")));
+        rows.push(row("untrusted", ActionAddress::new("note", "edit")));
+        let providers = [provider.as_str(), "42", "untrusted"]
+            .into_iter()
+            .map(|provider| CatalogueProvider {
+                provider: provider.into(),
+                app_id: "test-app".into(),
+                room: "room".into(),
+                record_id: String::new(),
+                browsable: true,
+            })
+            .collect();
+        let page = certified_page(CataloguePage {
+            revision: "revision".into(),
+            rows,
+            providers,
+            next_cursor: vec![1],
+            ..CataloguePage::default()
+        });
+        assert_eq!(page.rows.len(), allowed.len() + 1);
+        assert_eq!(
+            page.rows[..allowed.len()]
+                .iter()
+                .map(|row| row.action.as_ref().unwrap().address.clone())
+                .collect::<Vec<_>>(),
+            allowed
+        );
+        assert_eq!(page.rows.last().unwrap().provider, "42");
+        assert_eq!(
+            page.providers
+                .iter()
+                .map(|p| p.provider.as_str())
+                .collect::<Vec<_>>(),
+            [provider.as_str(), "42"]
+        );
+        assert_eq!(page.revision, "revision");
+        assert_eq!(page.next_cursor, [1]);
+    }
 }

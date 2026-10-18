@@ -2211,6 +2211,7 @@ impl PendingInvocation {
 mod action_host;
 mod admission_memo;
 mod app_consent;
+mod host_action_admission;
 mod host_steps;
 mod launchable;
 mod local_action_host;
@@ -3720,6 +3721,12 @@ impl CapnpBrokerState {
                 }
             };
         }
+        // Host-service callbacks can outlive the LocalSet. Serialize their
+        // journal transitions with retirement before releasing the writer.
+        let _admission = match self.admission_lock.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
         self.execution_activity.close();
         clear!(self.host_workers);
         clear!(self.channels);
