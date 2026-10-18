@@ -512,22 +512,41 @@ actions that queued an outside consequence undo through their inverse action.
   structured history entries.
 - `tilo-app check` runs the surface, binding, Fluent and lint checks.
 
-## 8. Leaving the old APIs
+## 8. The old APIs are gone
 
-Apps and examples still hold code written against the APIs this model
-replaced: hand-written `impl Resource for`, `ActionDecl::new`,
-`ActionAddress::new`, untyped argument parsing (`args.text(..)`,
-`args.get(..)`), `ActionSpec::` descriptors and direct Automerge writes
-(`put`, `put_object`, `insert_object`, `splice_text`, `update_text`,
-`increment`). `tools/policy/check_app_resource_action_contract.py` counts each
-per source file, comments and literals excluded, tests included, and holds
-every count at its audited ceiling in
-`tools/policy/app_resource_action_baseline/<app>.toml` (`example-<name>.toml`
-for `examples/apps/<name>`), under `[ratchets.<rule>]`. A file with no entry
-allows none.
+Apps and examples once held code written against the APIs this model
+replaced: hand-written `impl Resource for`, `ActionDecl::new`, `ActionAddress::new`,
+untyped argument parsing (`args.text(..)`, `args.get(..)`), `ActionSpec::`
+descriptors, direct Automerge writes (`put`, `put_object`, `insert_object`,
+`splice_text`, `update_text`, `increment`) and `Json<T>` fields. None is left,
+and `tools/policy/check_app_resource_action_contract.py` refuses each one in
+every source file of an app crate (`src`, `tests`, `examples`, `benches`) and
+of an example: there is no ceiling to raise. What to write instead:
 
-A count that rises fails the check, naming the file and the first use past the
-ceiling: write it with the model instead. A count that falls fails too, as a
-stale ceiling: lower the number the message gives in the same commit, delete
-the entry once it reaches zero, and delete the file once it holds no entries.
-Raising a ceiling is an exception that needs review.
+- **A resource** is a `#[derive(Model)]` record with `#[resource]`; a layout
+  the storage table does not cover is a `Model` written by hand in the SDK
+  (`RichText`, `Grid`), never an app's `impl Resource`.
+- **An action an app addresses** is named through its typed reference:
+  `R::VERB.on(resource)`, `effect.address_on(resource)`, `invoke.address()`.
+  One a caller holds a published resource or tree for comes from it:
+  `resource.action_address(id)`, `door::published(&tree, resource, id)`. A test
+  invokes through the door the way an agent does (`call_on`).
+- **Arguments** are a verb's typed params, an effect's fields, or a serde
+  struct the bound arguments are read into; a registered read publishes a
+  typed `JsonSchema` parameter struct (`semantic_document_read::read_action`).
+- **A stored value** is a model type chosen for its merge (§1): a struct, an
+  enum (a data enum is a map naming its variant), `Collection`, `Map`, `Set`,
+  `RichText`. A value that is genuinely opaque — written whole, never merged,
+  such as a retained import tree compared whole on retry — implements `Model`
+  through `json_model!` with a comment saying why.
+- **A document change** is a field edit or a verb. A migration
+  (`#[resource(version, migrate)]`) and a test's fixture of an older shape
+  write through the model's storage helpers: `write_key`, `Slot`,
+  `evolution::retype_json` (an old JSON-string field rewritten as its model
+  type), `evolution::collection_items` and `evolution::fixture`.
+
+Three apps act on other apps' published actions as data rather than through a
+resource of their own: the agent (it plans and invokes what the broker's
+catalogue offers), Shortcuts (its steps name other apps' actions) and the web
+search service (it publishes its actions straight to the broker). They build
+action addresses; every other rule holds for them as for any app.

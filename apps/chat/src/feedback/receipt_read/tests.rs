@@ -253,10 +253,12 @@ fn mounted_triage_observes_live_write_permission_and_keeps_attributed_task_refer
     let investigating = serde_json::json!({"status": "investigating"});
     maintainer_role(&fixture, ui::permissions::Role::Commenter);
     assert!(
-        fixture
-            .frame
-            .triage(&fixture.submission.id, investigating.clone())
-            .is_err()
+        triage(
+            &mut fixture.frame,
+            &fixture.submission.id,
+            investigating.clone()
+        )
+        .is_err()
     );
     let record = fixture.frame.component_record().unwrap().id.clone();
     assert!(
@@ -273,22 +275,20 @@ fn mounted_triage_observes_live_write_permission_and_keeps_attributed_task_refer
     );
     maintainer_role(&fixture, ui::permissions::Role::Editor);
     assert!(
-        fixture
-            .frame
-            .triage(&fixture.submission.id, investigating.clone())
-            .unwrap()
-            .completed()
-            .is_some()
+        triage(
+            &mut fixture.frame,
+            &fixture.submission.id,
+            investigating.clone()
+        )
+        .unwrap()
+        .is_some()
     );
     let reference =
         tilo_reference::ResourceRef::whole("tasks.task", "fixture-task", "Fixture task");
     let task = serde_json::json!({"status": "task", "reference": reference});
     assert!(
-        fixture
-            .frame
-            .triage(&fixture.submission.id, task.clone())
+        triage(&mut fixture.frame, &fixture.submission.id, task.clone())
             .unwrap()
-            .completed()
             .is_some()
     );
     fixture.frame.flush_component_records().unwrap();
@@ -314,7 +314,7 @@ fn mounted_triage_observes_live_write_permission_and_keeps_attributed_task_refer
         crate::feedback::TriageUpdate::Task { reference }
     );
     maintainer_role(&fixture, ui::permissions::Role::Commenter);
-    assert!(fixture.frame.triage(&fixture.submission.id, task).is_err());
+    assert!(triage(&mut fixture.frame, &fixture.submission.id, task).is_err());
     assert_eq!(
         fixture
             .records
@@ -332,15 +332,13 @@ fn mounted_triage_observes_live_write_permission_and_keeps_attributed_task_refer
 fn mounted_feedback_status_reads_attributed_triage_with_view_permission() {
     let mut fixture = mounted_fixture("maintainer");
     for status in ["investigating", "resolved"] {
-        fixture
-            .frame
-            .triage(
-                &fixture.submission.id,
-                serde_json::json!({"status": status}),
-            )
-            .unwrap()
-            .completed()
-            .unwrap();
+        triage(
+            &mut fixture.frame,
+            &fixture.submission.id,
+            serde_json::json!({"status": status}),
+        )
+        .unwrap()
+        .unwrap();
     }
     let reference = tilo_reference::ResourceRef::ranged(
         "tasks.task",
@@ -348,15 +346,13 @@ fn mounted_feedback_status_reads_attributed_triage_with_view_permission() {
         "Fixture task",
         tilo_reference::Span::chars(1, 4),
     );
-    fixture
-        .frame
-        .triage(
-            &fixture.submission.id,
-            serde_json::json!({"status": "task", "reference": reference}),
-        )
-        .unwrap()
-        .completed()
-        .unwrap();
+    triage(
+        &mut fixture.frame,
+        &fixture.submission.id,
+        serde_json::json!({"status": "task", "reference": reference}),
+    )
+    .unwrap()
+    .unwrap();
     fixture.frame.flush_component_records().unwrap();
     maintainer_role(&fixture, ui::permissions::Role::Viewer);
     let output = fixture
@@ -413,25 +409,18 @@ fn canonical_read_requires_the_exact_attributed_reporter_when_requested() {
     );
 }
 
-/// Triaging a report through the public door, as a maintainer's agent does.
-trait Triages {
-    fn triage(
-        &mut self,
-        submission: &str,
-        update: serde_json::Value,
-    ) -> Result<ui::widget::ResourceOperationStart, tilo_actions::DoorError>;
-}
-
-impl Triages for ui::headless::FrameHarness {
-    fn triage(
-        &mut self,
-        submission: &str,
-        update: serde_json::Value,
-    ) -> Result<ui::widget::ResourceOperationStart, tilo_actions::DoorError> {
-        self.call_on(
+/// Triage the report of `submission` through the public door, as a
+/// maintainer's agent does: what it answered.
+fn triage(
+    frame: &mut ui::headless::FrameHarness,
+    submission: &str,
+    update: serde_json::Value,
+) -> Result<Option<tilo_actions::ActionOutput>, tilo_actions::DoorError> {
+    frame
+        .call_on(
             &crate::testing::item("feedback", submission),
             crate::resource::Chat::TRIAGE.id,
             serde_json::json!({ "update": update }),
         )
-    }
+        .map(|started| started.completed())
 }
