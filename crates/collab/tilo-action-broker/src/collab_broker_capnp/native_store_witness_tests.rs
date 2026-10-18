@@ -291,12 +291,15 @@ async fn cold_store_edited_task_draft_launches_then_discloses_without_a_second_d
 
             let call = invoke(&agent, &run, action, 1);
             tokio::pin!(call);
-            tokio::time::timeout(Duration::from_secs(2), async {
+            // Other tests deliberately occupy the process-wide launch pool.
+            // Wait for the actual host launch, not a two-second scheduling
+            // budget; a completed invocation before that event is still wrong.
+            tilo_test_env::within("confirmed Store draft to reach the host launcher", async {
                 tokio::select! {
                     result = &mut call => panic!("confirmed draft failed before launch: {result:?}"),
                     app = launches.recv() => assert_eq!(app.unwrap(), STORE),
                 }
-            }).await.unwrap();
+            }).await;
             assert!(tokio::time::timeout(Duration::from_millis(30), &mut call).await.is_err());
             assert!(sheets.try_recv().is_err(), "launch alone cannot authorize disclosure");
             let custody = crate::collab_broker_capnp::invocation_journal::durable_snapshot(&f.directory.path().join("journal"));
@@ -316,12 +319,12 @@ async fn cold_store_edited_task_draft_launches_then_discloses_without_a_second_d
                 "host launch custody binds the edit without retaining disclosure text");
 
             let (_target, stream) = target(&f, action).await;
-            let (question, answer) = tokio::time::timeout(Duration::from_secs(2), async {
+            let (question, answer) = tilo_test_env::within("live Store publication to request disclosure", async {
                 tokio::select! {
                     result = &mut call => panic!("edited retained action asked again or bypassed disclosure: {result:?}"),
                     sheet = sheets.recv() => sheet.unwrap(),
                 }
-            }).await.unwrap();
+            }).await;
             assert_eq!(question.target_app, STORE);
             assert_eq!(question.person, principal_id_for_root(f.native.certificate.user_public_key));
             let preview = question.moderation.expect("typed host disclosure");
@@ -332,9 +335,9 @@ async fn cold_store_edited_task_draft_launches_then_discloses_without_a_second_d
             assert!(!confirmed.is_waiting());
             assert!(confirmation::nothing_delivered(&stream).await);
             answer.send(AppActionConsent::Once).unwrap();
-            tokio::time::timeout(Duration::from_secs(2), &mut call).await.unwrap().unwrap();
-            let delivered = tokio::time::timeout(Duration::from_secs(2), stream.read_request().send().promise)
-                .await.unwrap().unwrap();
+            tilo_test_env::within("confirmed Store invocation to be admitted", &mut call).await.unwrap();
+            let delivered = tilo_test_env::within("Store stream to receive the confirmed invocation", stream.read_request().send().promise)
+                .await.unwrap();
             let wire = delivered.get().unwrap();
             assert_eq!(wire.get_action().unwrap().to_str().unwrap(), action);
             let arguments: serde_json::Value = serde_json::from_str(wire.get_argument().unwrap().to_str().unwrap()).unwrap();
