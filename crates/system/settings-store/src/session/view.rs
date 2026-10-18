@@ -88,7 +88,7 @@ impl HostView {
 impl SettingsSource for HostView {
     fn with_committed(
         &self,
-        use_document: &mut dyn FnMut(&Map<String, Value>) -> Result<(), String>,
+        use_document: &mut crate::CommittedDocumentUse<'_>,
     ) -> Result<(), String> {
         use_document(&self.session.committed.lock_recover().document)
     }

@@ -123,14 +123,17 @@ impl ChangeOrigin {
 /// merge into it. Called once, with the section as stored at that moment.
 pub type SectionChange<'a> = dyn FnMut(&Map<String, Value>) -> Map<String, Value> + 'a;
 
+/// Synchronous authority decision made while a committed document stays pinned.
+pub type CommittedDocumentUse<'a> = dyn FnMut(&Map<String, Value>) -> Result<(), String> + 'a;
+
 /// Where the settings document lives when it is not the local file.
 pub trait SettingsSource: Send + Sync {
     /// Hold the committed document's publication gate through a synchronous
     /// authority decision and enqueue. No storage, refresh or deferred work.
-    fn with_committed(
-        &self,
-        _use_document: &mut dyn FnMut(&Map<String, Value>) -> Result<(), String>,
-    ) -> Result<(), String> {
+    ///
+    /// # Errors
+    /// Refuses unavailable committed custody, or propagates the callback's refusal.
+    fn with_committed(&self, _use_document: &mut CommittedDocumentUse<'_>) -> Result<(), String> {
         Err("Settings committed custody unavailable".into())
     }
 
@@ -408,9 +411,11 @@ pub fn installed_source() -> Option<Arc<dyn SettingsSource>> {
 
 /// Pin both the installed source identity and its current committed document.
 /// The callback must not reenter Settings or perform asynchronous work.
-pub fn with_installed_committed(
-    use_document: &mut dyn FnMut(&Map<String, Value>) -> Result<(), String>,
-) -> Result<(), String> {
+///
+/// # Errors
+/// Refuses an absent source or unavailable committed custody, or propagates the
+/// callback's refusal.
+pub fn with_installed_committed(use_document: &mut CommittedDocumentUse<'_>) -> Result<(), String> {
     let source = SOURCE.read_recover();
     source
         .as_ref()
@@ -465,7 +470,7 @@ impl HostDocument {
 impl SettingsSource for HostDocument {
     fn with_committed(
         &self,
-        use_document: &mut dyn FnMut(&Map<String, Value>) -> Result<(), String>,
+        use_document: &mut crate::CommittedDocumentUse<'_>,
     ) -> Result<(), String> {
         use_document(&self.doc.lock_recover())
     }

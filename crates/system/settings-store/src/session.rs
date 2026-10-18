@@ -817,7 +817,7 @@ impl SessionSettings {
 impl SettingsSource for SessionSettings {
     fn with_committed(
         &self,
-        use_document: &mut dyn FnMut(&Map<String, Value>) -> Result<(), String>,
+        use_document: &mut crate::CommittedDocumentUse<'_>,
     ) -> Result<(), String> {
         use_document(&self.committed.lock_recover().document)
     }
