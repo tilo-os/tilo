@@ -116,7 +116,10 @@ pub mod wire {
         version == 0
     }
     pub const PRESENTATION_VERSION: u16 = 1;
-    /// The signed manifest identity service version that understands presentation.
+    /// The identity service version that understands presentation: the
+    /// runtime interface's (`runtime_portal::RUNTIME_INTERFACE_VERSION`),
+    /// every session service speaking the runtime's one version
+    /// (docs/architecture/compatibility.md).
     pub const PRESENTATION_SERVICE_VERSION: u32 = 2;
 
     #[derive(Debug, Serialize, Deserialize)]

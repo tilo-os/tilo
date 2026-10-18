@@ -1005,6 +1005,8 @@ inputs = [
   "crates/browser/tilo-browser-compute/", "apps/calculator/tilo-app.toml",
   # Workspace certification tells a windowless service from a window by its manifest.
   "apps/agent/tilo-app.toml", "apps/thumbnails/tilo-app.toml", "apps/web-search/tilo-app.toml", "apps/osk/tilo-app.toml",
+  # A new app's services speak the runtime interface version the image serves.
+  "os/usr/share/tilo/system-interfaces.toml",
   # The production resource regression reads Music and its whole normal local
   # dependency closure. SDK/platform/vendor roots above already cover theirs;
   # keep the remaining source roots explicit when the Music graph changes.

@@ -11,6 +11,10 @@ import re
 import tomllib
 
 
+# The identity service is part of the runtime interface and speaks its one
+# version, the one os/usr/share/tilo/system-interfaces.toml serves
+# (docs/architecture/compatibility.md; tools/tests/test_stage_sdk_services.py
+# holds the two equal).
 IDENTITY_REQUIREMENT = "optional@2"
 
 

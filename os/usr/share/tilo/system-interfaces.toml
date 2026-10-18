@@ -25,7 +25,7 @@ shell-ui = 6
 
 # App ↔ runtime: every service under [runtime] below
 # (crates/runtime/runtime-portal/interface.toml).
-runtime = 1
+runtime = 2
 
 [runtime]
 # Session services handed to apps as connected sockets; each speaks the
