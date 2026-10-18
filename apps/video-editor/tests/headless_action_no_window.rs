@@ -114,7 +114,13 @@ fn an_action_invoked_with_no_window_reaches_the_app() {
     // A negative control in the same run: the door must refuse an address
     // the tree does not carry. Without this, the assertions above would pass
     // equally against a door that accepted anything.
-    let bogus = ActionAddress::new(Project::KIND, "nonexistent-verb");
+    // As a caller sends it over the wire: an address it made up.
+    let bogus = ActionAddress::parse(&format!(
+        "{}{}nonexistent-verb",
+        Project::KIND,
+        tilo_actions::KEY_SEP
+    ))
+    .expect("a well-formed address");
     assert!(
         matches!(
             agent.invoke(&bogus, &arguments, false),

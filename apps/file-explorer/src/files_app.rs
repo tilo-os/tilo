@@ -10893,8 +10893,9 @@ pub(crate) mod published {
         action: &str,
         args: &serde_json::Value,
     ) -> Result<Option<Started>, String> {
-        let address = ui::tilo_actions::ActionAddress::new(resource, action);
         let tree = tree(files, doc);
+        let address = ui::tilo_actions::door::published(&tree, resource, action)
+            .ok_or_else(|| format!("{resource} offers no {action}"))?;
         let spec = ui::tilo_actions::door::resolve(&tree, &address)
             .ok_or_else(|| format!("{resource} offers no {action}"))?;
         let kind = spec.kind;

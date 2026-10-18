@@ -681,11 +681,10 @@ pub fn export_copy(doc: &AutoCommit) -> Result<tilo_doc::Document, String> {
 /// # Errors
 /// Returns the document's write error.
 pub fn init(doc: &mut AutoCommit) -> Result<tilo_doc::Containers, String> {
-    use automerge::transaction::Transactable;
     let body = match body(doc) {
         Some(body) => body,
-        None => doc
-            .put_object(ROOT, BODY, ObjType::Map)
+        None => ui::tilo_resource::Slot::Key(&ROOT, BODY)
+            .object(doc, ObjType::Map)
             .map_err(|error| error.to_string())?,
     };
     Ok(tilo_doc::model::init(doc, &body))

@@ -442,7 +442,7 @@ fn remote_fetch_keeps_app_responsive_and_reports_completion() {
     let instance_id = app.harness().component_instance_id().unwrap();
     let address = ui::bound_dispatch::BoundActionAddress {
         instance_id,
-        address: tilo_actions::ActionAddress::new(remote_row("origin"), "fetch"),
+        address: git_client::actions::GitClientEffect::FETCH.on(remote_row("origin")),
     };
     let (invocation, started) = app
         .harness()

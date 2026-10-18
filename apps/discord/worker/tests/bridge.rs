@@ -179,10 +179,7 @@ impl Room {
             }
             let before = ids(&page);
             page.invoke(
-                &ui::tilo_actions::door::ActionAddress::new(
-                    ui::framework::chain_resource_id(&chat::parts::chain()),
-                    invoke.id,
-                ),
+                &invoke.address_on(ui::framework::chain_resource_id(&chat::parts::chain())),
                 &invoke.arguments,
                 true,
             )

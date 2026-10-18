@@ -480,9 +480,7 @@ fn a_stale_review_and_a_viewer_cannot_restore() {
     select_version(&mut app, &v1);
     app.harness().click_named("history-restore").unwrap();
     app.merge_peer_edit(|doc| {
-        use automerge::transaction::Transactable;
-        doc.put(automerge::ROOT, "peer_note", "arrived during review")
-            .unwrap();
+        peer_note(doc, "arrived during review");
     });
     let moved = heads(&app);
     confirm_restore(&mut app);
@@ -496,13 +494,11 @@ fn a_stale_review_and_a_viewer_cannot_restore() {
     ui::i18n::I18nManager::init("en-US");
     let mut viewer = TestApp::<WordProcessorApp>::with_role(Role::Viewer).unwrap();
     viewer.merge_peer_edit(|doc| {
-        use automerge::transaction::Transactable;
-        doc.put(automerge::ROOT, "peer_note", "first").unwrap();
+        peer_note(doc, "first");
     });
     let first = heads(&viewer);
     viewer.merge_peer_edit(|doc| {
-        use automerge::transaction::Transactable;
-        doc.put(automerge::ROOT, "peer_note", "second").unwrap();
+        peer_note(doc, "second");
     });
     let latest = heads(&viewer);
     select_version(&mut viewer, &first);
@@ -556,7 +552,8 @@ fn open_with_a_path_imports_the_file_under_a_configured_collaboration_service() 
     arguments.insert("path".into(), path.to_string_lossy().into_owned().into());
     app.harness()
         .invoke_action(
-            &tilo_actions::ActionAddress::new("word-processor.document", "open-document"),
+            &word_processor::effects::WordProcessorEffect::OPEN_DOCUMENT
+                .on("word-processor.document"),
             &arguments,
             true,
             None,
@@ -726,7 +723,7 @@ fn an_edit_bound_to_the_caret_is_invoked_on_the_document() {
     arguments.insert("text".into(), " world".into());
     app.harness()
         .invoke_action(
-            &tilo_actions::ActionAddress::new("word-processor.document", "type-text"),
+            &word_processor::effects::WordProcessorEffect::TYPE_TEXT.on("word-processor.document"),
             &arguments,
             true,
             None,
@@ -953,4 +950,15 @@ fn history_entries_render_as_the_apps_sentences() {
         (ActorKind::Agent, Some("ada")),
         "the entry names the agent and the person it acted for"
     );
+}
+
+/// A collaborator's change to the document: a note field written.
+fn peer_note(doc: &mut ui::tilo_resource::Doc, note: &str) {
+    ui::tilo_resource::write_key(
+        doc,
+        &automerge::ROOT,
+        "peer_note",
+        &ui::tilo_resource::Atom(note.into()),
+    )
+    .unwrap();
 }

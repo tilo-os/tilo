@@ -1185,7 +1185,13 @@ mod tests {
                     )
                     .unwrap();
                 let (mut wp, mut state) = bound();
-                state.put(ROOT, "host-marker", "preserve me").unwrap();
+                ui::tilo_resource::write_key(
+                    &mut state,
+                    &ROOT,
+                    "host-marker",
+                    &ui::tilo_resource::Atom("preserve me".into()),
+                )
+                .unwrap();
                 wp.insert_str(&mut Edits::lend(&mut state), "Previous document");
                 let heads = state.get_heads();
                 let actor = state.get_actor().clone();
@@ -1240,7 +1246,13 @@ mod tests {
                 .unwrap()
                 .unwrap();
             let mut remote = state.fork();
-            remote.splice_text(&text, 0, 6, "é🦀").unwrap();
+            ui::tilo_resource::TextEdit::Splice {
+                at: 0,
+                delete: 6,
+                insert: "é🦀".into(),
+            }
+            .apply_under(&mut remote, &text)
+            .unwrap();
             state.merge_incoming(&mut remote).unwrap();
             let before = tilo_doc::model::ordered_keys_scan_count();
             wp.bind(&state, &ROOT);
@@ -1264,12 +1276,8 @@ mod tests {
             let c = wp.containers.as_ref().unwrap().clone();
             let id = wp.caret.block.clone();
             let (_, block) = state.get(&c.blocks, &id).unwrap().unwrap();
-            state
-                .put(
-                    &block,
-                    tilo_doc::schema::BLOCK_ORDER,
-                    automerge::ScalarValue::Bytes(vec![]),
-                )
+            ui::tilo_resource::Slot::Key(&block, tilo_doc::schema::BLOCK_ORDER)
+                .put_scalar(&mut state, automerge::ScalarValue::Bytes(vec![]))
                 .unwrap();
             state.delete(&block, tilo_doc::schema::BLOCK_TEXT).unwrap();
             assert_eq!(
@@ -1312,10 +1320,15 @@ mod tests {
                 let (_, block) = state.get(&c.blocks, &target).unwrap().unwrap();
                 match damage {
                     "deleted" => state.delete(&c.blocks, &target).unwrap(),
-                    "scalar_block" => state.put(&c.blocks, &target, "not a block").unwrap(),
+                    "scalar_block" => ui::tilo_resource::Slot::Key(&c.blocks, &target)
+                        .put_scalar(
+                            &mut state,
+                            automerge::ScalarValue::Str("not a block".into()),
+                        )
+                        .unwrap(),
                     "missing_order" => state.delete(&block, tilo_doc::schema::BLOCK_ORDER).unwrap(),
-                    _ => state
-                        .put(&block, tilo_doc::schema::BLOCK_ORDER, 42_i64)
+                    _ => ui::tilo_resource::Slot::Key(&block, tilo_doc::schema::BLOCK_ORDER)
+                        .put_scalar(&mut state, automerge::ScalarValue::Int(42))
                         .unwrap(),
                 }
                 let canonical = tilo_doc::model::blocks_in_order(&state, &c);

@@ -207,6 +207,7 @@ mod tests {
     use tilo_actions::LocalTransport;
     use tilo_actions::{ActionError, EncodedAction};
     use tilo_automerge::ApplyIncoming;
+    use ui::tilo_resource::{Slot, write_key};
 
     /// A body edit as the document's action on the wire.
     fn encode(op: &RichTextAction) -> EncodedAction {
@@ -382,9 +383,8 @@ mod tests {
             let (mut state, ids) =
                 seeded(&format!("{}\n", "x".repeat(MAX_RESOURCE_SEARCH_HITS + 16)));
             for index in 0..MAX_RESOURCE_REVISIONS + 8 {
-                state
-                    .doc
-                    .put(automerge::ROOT, "revision-fixture", index as u64)
+                Slot::Key(&automerge::ROOT, "revision-fixture")
+                    .put_scalar(&mut state.doc, automerge::ScalarValue::Uint(index as u64))
                     .unwrap();
                 state.doc.commit_with(
                     automerge::transaction::CommitOptions::default()
@@ -392,18 +392,18 @@ mod tests {
                 );
             }
             let mut remote = state.doc.fork();
-            remote.put(automerge::ROOT, "remote-fixture", true).unwrap();
+            write_key(&mut remote, &automerge::ROOT, "remote-fixture", &true).unwrap();
             remote.commit();
-            state
-                .doc
-                .put(automerge::ROOT, "local-fixture", true)
-                .unwrap();
+            write_key(&mut state.doc, &automerge::ROOT, "local-fixture", &true).unwrap();
             state.doc.commit();
             state.doc.merge_incoming(&mut remote).unwrap();
-            state
-                .doc
-                .put(automerge::ROOT, "unfinished-fixture", true)
-                .unwrap();
+            write_key(
+                &mut state.doc,
+                &automerge::ROOT,
+                "unfinished-fixture",
+                &true,
+            )
+            .unwrap();
             let pending = (state.doc.base_heads(), state.doc.pending_ops());
             let block = ids[0].clone();
             let resources = published_for(&overflowing_resource_ctx(&block), &state.doc);
@@ -516,7 +516,8 @@ mod tests {
         tilo_actions::door::invoke_json_confirmed(
             doc,
             resources,
-            &tilo_actions::door::ActionAddress::new(resource, action),
+            &tilo_actions::door::published(resources, resource, action)
+                .unwrap_or_else(|| panic!("{resource} publishes no {action}")),
             arguments,
             tilo_actions::door::InvocationProvenance::caller(b"agent"),
             &registry(),
@@ -828,13 +829,11 @@ mod tests {
                 assert!(!action_is_valid(&action, &state.doc, &c), "absent region");
             }
             // Keep c from before lazy header/footer creation to exercise fallback lookup.
-            let header = state
-                .doc
-                .put_object(&c.root, KEY_HEADER, ObjType::Map)
+            let header = Slot::Key(&c.root, KEY_HEADER)
+                .object(&mut state.doc, ObjType::Map)
                 .unwrap();
-            let footer = state
-                .doc
-                .put_object(&c.root, KEY_FOOTER, ObjType::Map)
+            let footer = Slot::Key(&c.root, KEY_FOOTER)
+                .object(&mut state.doc, ObjType::Map)
                 .unwrap();
             for container in [&c.blocks, &header, &footer] {
                 for id in [
@@ -845,42 +844,40 @@ mod tests {
                     "missing_order",
                     "bad_order",
                 ] {
-                    let obj = state.doc.put_object(container, id, ObjType::Map).unwrap();
+                    let obj = Slot::Key(container, id)
+                        .object(&mut state.doc, ObjType::Map)
+                        .unwrap();
                     if id != "missing_order" {
-                        if id == "bad_order" {
-                            state.doc.put(&obj, BLOCK_ORDER, "invalid").unwrap();
+                        let order = if id == "bad_order" {
+                            ScalarValue::Str("invalid".into())
                         } else {
-                            state
-                                .doc
-                                .put(&obj, BLOCK_ORDER, ScalarValue::Bytes(vec![]))
-                                .unwrap();
-                        }
+                            ScalarValue::Bytes(vec![])
+                        };
+                        Slot::Key(&obj, BLOCK_ORDER)
+                            .put_scalar(&mut state.doc, order)
+                            .unwrap();
                     }
                     if id == "scalar_text" {
-                        state
-                            .doc
-                            .put(&obj, BLOCK_TEXT, "not a text object")
+                        Slot::Key(&obj, BLOCK_TEXT)
+                            .put_scalar(
+                                &mut state.doc,
+                                ScalarValue::Str("not a text object".into()),
+                            )
                             .unwrap();
                     } else if id == "object_text" {
-                        state
-                            .doc
-                            .put_object(&obj, BLOCK_TEXT, ObjType::Map)
+                        Slot::Key(&obj, BLOCK_TEXT)
+                            .object(&mut state.doc, ObjType::Map)
                             .unwrap();
                     } else if id != "missing_text" {
-                        let text = state
-                            .doc
-                            .put_object(&obj, BLOCK_TEXT, ObjType::Text)
+                        write_key(&mut state.doc, &obj, BLOCK_TEXT, &"Aé🦀e\u{301}".to_owned())
                             .unwrap();
-                        state.doc.splice_text(&text, 0, 0, "Aé🦀e\u{301}").unwrap();
                     }
                 }
-                state
-                    .doc
-                    .put(container, "scalar_block", "not a block")
+                Slot::Key(container, "scalar_block")
+                    .put_scalar(&mut state.doc, ScalarValue::Str("not a block".into()))
                     .unwrap();
-                state
-                    .doc
-                    .put_object(container, "deleted", ObjType::Map)
+                Slot::Key(container, "deleted")
+                    .object(&mut state.doc, ObjType::Map)
                     .unwrap();
                 state.doc.delete(container, "deleted").unwrap();
             }
@@ -1810,7 +1807,7 @@ mod tests {
             tilo_actions::door::invoke_json(
                 &mut state.doc,
                 std::slice::from_ref(&root),
-                &tilo_actions::door::ActionAddress::new(DOCUMENT, "append-paragraph"),
+                &crate::model::Document::APPEND_PARAGRAPH.on(DOCUMENT),
                 &arguments,
                 tilo_actions::door::InvocationProvenance::caller(b"agent"),
                 &registry(),

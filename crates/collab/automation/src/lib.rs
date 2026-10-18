@@ -94,6 +94,13 @@ pub fn shortcut_resource_id(id: &str) -> String {
     format!("{SHORTCUT_RESOURCE_KIND}:{id}")
 }
 
+/// The action that runs shortcut `id`, as the Shortcuts app publishes it on
+/// the shortcut's resource.
+#[must_use]
+pub fn shortcut_run_address(id: &str) -> tilo_actions::ActionAddress {
+    tilo_actions::ActionAddress::new(shortcut_resource_id(id), SHORTCUT_RUN_ACTION)
+}
+
 /// The shortcut id a resource id names, when it names one.
 #[must_use]
 pub fn shortcut_id_of(resource_id: &str) -> Option<&str> {

@@ -105,11 +105,8 @@ fn a_note_holding_among(app: &mut App, damage: &mut SurfaceDamage, text: &str, n
         );
         let invoke = ui::tilo_resource::Invoke::<notes::Notebook>::apply(&action)
             .expect("creating a note is a notebook action");
-        app.invoke_local_resource_action(
-            &tilo_actions::ActionAddress::new("notes.notebook", invoke.id),
-            &invoke.arguments,
-        )
-        .expect("the notebook takes the note");
+        app.invoke_local_resource_action(&invoke.address(), &invoke.arguments)
+            .expect("the notebook takes the note");
         frame(app, damage);
     }
     let new_note = app

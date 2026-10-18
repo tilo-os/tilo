@@ -150,17 +150,10 @@ pub fn invoke(
     resource: impl Into<String>,
     action: impl Into<String>,
 ) {
-    let arguments = serde_json::Map::new();
+    let (resource, action): (String, String) = (resource.into(), action.into());
     driver
-        .invoke_bound_action(
-            &ui::bound_dispatch::BoundActionAddress {
-                instance_id: instance,
-                address: tilo_actions::ActionAddress::new(resource, action),
-            },
-            &arguments,
-        )
+        .call_on_instance(instance, &resource, &action, serde_json::json!({}))
         .unwrap();
-    driver.relayout();
 }
 /// Invoke `action` of `resource` with `arguments`, as an agent does.
 pub fn invoke_with(
@@ -170,19 +163,11 @@ pub fn invoke_with(
     action: impl Into<String>,
     arguments: serde_json::Value,
 ) {
-    let serde_json::Value::Object(arguments) = arguments else {
-        panic!("arguments are an object");
-    };
+    assert!(arguments.is_object(), "arguments are an object");
+    let (resource, action): (String, String) = (resource.into(), action.into());
     driver
-        .invoke_bound_action(
-            &ui::bound_dispatch::BoundActionAddress {
-                instance_id: instance,
-                address: tilo_actions::ActionAddress::new(resource, action),
-            },
-            &arguments,
-        )
+        .call_on_instance(instance, &resource, &action, arguments)
         .unwrap();
-    driver.relayout();
 }
 
 /// Make a top-level note titled `title`.
@@ -553,14 +538,9 @@ pub fn invoke_confirmed(
     resource: String,
     action: &str,
 ) {
-    let address = ui::bound_dispatch::BoundActionAddress {
-        instance_id: instance,
-        address: tilo_actions::ActionAddress::new(resource, action),
-    };
     driver
-        .invoke_bound_action_confirmed(&address, &serde_json::Map::new())
+        .call_on_instance_confirmed(instance, &resource, action, serde_json::json!({}))
         .unwrap();
-    driver.relayout();
 }
 
 pub fn move_pointer(driver: &mut ui::headless::FrameHarness, point: vello::kurbo::Point) {

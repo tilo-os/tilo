@@ -727,7 +727,9 @@ fn open_hosted_toolbar_overflow(framed: &mut Framed<WordProcessorWidget>) {
         .into_iter()
         .find(|resource| resource.kind == "tilo.control" && resource.label == "More")
         .expect("the retained More control publishes its actual native View");
-    let address = tilo_actions::ActionAddress::new(resource.id.as_str(), "invoke");
+    let address = resource
+        .action_address("invoke")
+        .expect("a control publishes invoke");
     driver
         .invoke_action(&address, &serde_json::Map::new(), false, None)
         .expect("the actual More View is admitted and settled by its host");
@@ -817,7 +819,9 @@ fn retained_toolbar_admits_edit_effects_and_transient_views() {
         );
         driver
             .invoke_action(
-                &tilo_actions::ActionAddress::new(resource.id.as_str(), "invoke"),
+                &resource
+                    .action_address("invoke")
+                    .expect("a control publishes invoke"),
                 &serde_json::Map::new(),
                 false,
                 None,
@@ -845,7 +849,9 @@ fn retained_toolbar_admits_edit_effects_and_transient_views() {
         );
         driver
             .invoke_action(
-                &tilo_actions::ActionAddress::new(resource.id.as_str(), "invoke"),
+                &resource
+                    .action_address("invoke")
+                    .expect("a control publishes invoke"),
                 &serde_json::Map::new(),
                 false,
                 None,
@@ -1052,10 +1058,7 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
         wp.apply_tool(&mut edits(&mut state.doc), ToolAction::Hyperlink);
         assert_eq!(
             Widget::take_action_palette_request(&mut wp),
-            Some(tilo_actions::ActionAddress::new(
-                "word-processor.caret",
-                "set-hyperlink"
-            ))
+            Some(crate::effects::WordProcessorEffect::SET_HYPERLINK.on("word-processor.caret"))
         );
         assert!(
             Widget::take_action_palette_request(&mut wp).is_none(),

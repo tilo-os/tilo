@@ -6556,14 +6556,54 @@ impl FrameHarness {
         arguments: serde_json::Value,
         confirmed: bool,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        let instance = self.component_instance_id().ok_or_else(|| {
+            tilo_actions::DoorError::Failed("no application component is hosted".into())
+        })?;
+        self.call_on_instance_as(instance, resource, action, arguments, confirmed)
+    }
+
+    /// [`Self::call_on`] on the hosted component instance `instance`, such
+    /// as one window of several.
+    ///
+    /// # Errors
+    /// As [`Self::call_on`].
+    pub fn call_on_instance(
+        &mut self,
+        instance: crate::application::InstanceId,
+        resource: &str,
+        action: &str,
+        arguments: serde_json::Value,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        self.call_on_instance_as(instance, resource, action, arguments, false)
+    }
+
+    /// [`Self::call_on_instance`] after the caller confirmed this invocation.
+    ///
+    /// # Errors
+    /// As [`Self::call_on`], except that no confirmation is required.
+    pub fn call_on_instance_confirmed(
+        &mut self,
+        instance: crate::application::InstanceId,
+        resource: &str,
+        action: &str,
+        arguments: serde_json::Value,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        self.call_on_instance_as(instance, resource, action, arguments, true)
+    }
+
+    fn call_on_instance_as(
+        &mut self,
+        instance_id: crate::application::InstanceId,
+        resource: &str,
+        action: &str,
+        arguments: serde_json::Value,
+        confirmed: bool,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
         let serde_json::Value::Object(arguments) = arguments else {
             return Err(tilo_actions::DoorError::InvalidArguments(
                 "arguments are an object".into(),
             ));
         };
-        let instance_id = self.component_instance_id().ok_or_else(|| {
-            tilo_actions::DoorError::Failed("no application component is hosted".into())
-        })?;
         let address = crate::bound_dispatch::BoundActionAddress {
             instance_id,
             address: tilo_actions::ActionAddress::new(resource, action),

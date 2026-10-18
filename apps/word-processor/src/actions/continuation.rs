@@ -76,12 +76,12 @@ mod tests {
             "Document",
         )
         .with_action(read);
-        let encoded = tilo_actions::door::encode_json(
-            &[resource],
-            &tilo_actions::door::ActionAddress::new("word-processor.document", "read-text"),
-            request.as_object().unwrap(),
-        )
-        .unwrap();
+        let address = resource
+            .action_address("read-text")
+            .expect("the document publishes its read");
+        let encoded =
+            tilo_actions::door::encode_json(&[resource], &address, request.as_object().unwrap())
+                .unwrap();
         assert_eq!(
             encoded.type_id,
             crate::semantic_read::action::OPERATION_TYPE
