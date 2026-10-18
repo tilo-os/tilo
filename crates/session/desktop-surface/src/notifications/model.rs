@@ -170,6 +170,10 @@ pub enum Addressed {
 /// freedesktop notification id on the native desktop) used to answer the
 /// originating app.
 #[derive(Clone, Debug)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent delivery rule a sender or the system sets on its own"
+)]
 pub struct Notification {
     pub id: u64,
     pub title: String,
