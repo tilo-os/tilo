@@ -340,10 +340,31 @@ impl<P: Chained> ChainState<P> {
     }
 
     fn follow(&self, index: u64) -> Result<(), String> {
+        let part = P::chain().part(index);
+        // An older part is brought up to the part's storage version before
+        // it is read, as the app's record is when it opens: once, as the
+        // same housekeeping change on every device.
+        let stored = self
+            .room
+            .store
+            .read(&part, tilo_resource::evolution::stored_version)
+            .ok_or("the part is not open here")?;
+        if stored < <P as Resource>::VERSION {
+            // Not while a frame reads the store: the part is held at the
+            // next refresh, as a part this device asked for is.
+            if !self.room.store.takes_writes() {
+                return Err("the part is migrated once the store takes writes".into());
+            }
+            self.room
+                .store
+                .with(&part, tilo_resource::evolution::migrate::<P>)
+                .ok_or("the part is not open here")?
+                .map_err(|error| error.to_string())?;
+        }
         let reader = self
             .room
             .store
-            .read(&P::chain().part(index), Reader::<P>::read)
+            .read(&part, Reader::<P>::read)
             .ok_or("the part is not open here")?
             .map_err(|error| error.to_string())?;
         self.parts.borrow_mut().insert(index, Live::new(reader));
