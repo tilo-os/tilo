@@ -549,34 +549,40 @@ async fn propagated_custody_does_not_bypass_the_shortcut_grant() {
 async fn an_unscoped_broker_door_does_not_invent_native_custody() {
     let fixture = Fixture::new();
     let door = BrokerDoor::new(fixture.state.clone());
-    tilo_actions::remote::ActionHost::invoke(&door, &fixture.caller, fixture.request.clone())
-        .await
-        .unwrap()
-        .unwrap();
-    fixture.finish().await;
+    assert!(
+        tilo_actions::remote::ActionHost::invoke(&door, &fixture.caller, fixture.request.clone())
+            .await
+            .unwrap()
+            .is_err(),
+        "an identity-bearing host requires original custody"
+    );
+    assert!(!fixture.state.has_finished_shortcut_runs());
+    assert!(
+        fixture
+            .state
+            .completed_invocations
+            .lock()
+            .unwrap()
+            .is_empty()
+    );
     let mut key = fixture.key.clone();
     key.owner = InvocationOwner::Local {
         actor: BrokerActor::for_caller(&fixture.caller).id,
     };
-    let record = fixture
-        .state
-        .journal
-        .lock()
-        .unwrap()
-        .as_ref()
-        .unwrap()
-        .as_ref()
-        .unwrap()
-        .lookup(&key)
-        .unwrap()
-        .unwrap();
     assert!(
-        record.admission.is_none(),
-        "actor text is never signed as native custody"
-    );
-    assert!(
-        record.terminal.is_none(),
-        "an unsigned admission has no signed terminal"
+        fixture
+            .state
+            .journal
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .lookup(&key)
+            .unwrap()
+            .is_none(),
+        "actor text never establishes host admission"
     );
 }
 

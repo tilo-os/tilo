@@ -10,6 +10,33 @@ use tilo_desktop_model::Workspace;
 #[path = "remaining_workspace_actions_tests.rs"]
 mod tests;
 
+// Legacy governance validates resource names and confirmation at the service.
+// Still bind the exact requested address into durable host admission, without
+// turning a catalogue resource or its confirmation into a new admission floor.
+fn governance_descriptor(
+    service: &dyn crate::services::WorkspaceGovernanceServices,
+    workspace: &Workspace,
+    address: &tilo_actions::ActionAddress,
+) -> Option<ActionDescriptor> {
+    let owner_action = service.requires_descriptor_admission(&address.action);
+    let descriptors = service.descriptors(workspace);
+    let mut descriptor = descriptors
+        .iter()
+        .find(|descriptor| descriptor.address == *address)
+        .or_else(|| {
+            if owner_action {
+                None
+            } else {
+                descriptors
+                    .iter()
+                    .find(|descriptor| descriptor.address.action == address.action)
+            }
+        })?
+        .clone();
+    descriptor.address = address.clone();
+    Some(descriptor)
+}
+
 impl CapnpBrokerState {
     /// Resolve the remaining registered framework services before their legacy
     /// dispatcher. `None` means this is not one of these services, not a retry
@@ -432,13 +459,11 @@ impl CapnpBrokerState {
             .workspace_governance
             .as_ref()
             .ok_or(ActionHostError::UnknownAction)?;
-        let descriptor = service
-            .descriptors(authority.0)
-            .into_iter()
-            .find(|descriptor| descriptor.address == request.target.address)
-            .ok_or(ActionHostError::UnknownAction)?;
+        let owner_action = service.requires_descriptor_admission(&request.target.address.action);
+        let descriptor =
+            governance_descriptor(service.as_ref(), authority.0, &request.target.address)
+                .ok_or(ActionHostError::UnknownAction)?;
         // Owner actions retain their explicit direct-person confirmation floor.
-        let owner_action = service.requires_descriptor_admission(&descriptor.address.action);
         if owner_action && !authority.1.direct() {
             return Err(ActionHostError::NotPermitted);
         }
@@ -464,13 +489,15 @@ impl CapnpBrokerState {
             witnessed,
             false,
         )?;
-        if !Self::confirmed_as_asked(
-            authority.1,
-            &descriptor,
-            argument,
-            checked.confirmation.as_ref(),
-            witnessed,
-        ) {
+        if owner_action
+            && !Self::confirmed_as_asked(
+                authority.1,
+                &descriptor,
+                argument,
+                checked.confirmation.as_ref(),
+                witnessed,
+            )
+        {
             return Err(ActionHostError::ConfirmationRequired);
         }
         let admitted = self.admit_host_action(
@@ -495,10 +522,7 @@ impl CapnpBrokerState {
         let room = authority.0.room.to_string();
         let actor = self.framework_effect_ready(&admitted, || {
             let (workspace, _, _) = self.current_framework_authority(caller, origin, &room)?;
-            let fresh = service
-                .descriptors(&workspace)
-                .into_iter()
-                .find(|fresh| fresh.address == descriptor.address)
+            let fresh = governance_descriptor(service.as_ref(), &workspace, &descriptor.address)
                 .ok_or(ActionHostError::UnknownAction)?;
             let (current_workspace, actor, now) =
                 self.current_framework_authority(caller, origin, &room)?;

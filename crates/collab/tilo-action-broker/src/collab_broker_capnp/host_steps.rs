@@ -612,7 +612,8 @@ pub(super) mod signed_test_support {
             fixture.caller =
                 Caller::authenticated(certificate.user_public_key, certificate.device_public_key)
                     .in_room(&fixture.room)
-                    .from_foreign_device(foreign);
+                    .from_foreign_device(foreign)
+                    .in_new_execution();
             fixture.certified_host = Some(
                 fixture
                     .state
@@ -665,6 +666,26 @@ pub(super) mod signed_test_support {
                 .ok()
                 .flatten()
                 .expect("host admission answers immediately")
+        }
+
+        pub fn query(&self, provider: &str) -> tilo_actions::remote::CataloguePage {
+            let query = tilo_actions::remote::CatalogueQuery {
+                provider: Some(provider.into()),
+                ..Default::default()
+            };
+            let pending = match &self.certified_host {
+                Some(host) => host.query(&self.caller, query),
+                None => {
+                    self.state
+                        .action_query_with_origin(&self.caller, Some(&self.origin), &query)
+                }
+            };
+            pending
+                .wait_timeout(std::time::Duration::from_secs(5))
+                .ok()
+                .flatten()
+                .expect("catalogue answers immediately")
+                .expect("the certified caller may query")
         }
 
         pub fn admission_check(&self, request: &InvokeRequest) -> Box<dyn Fn() + Send> {
@@ -940,6 +961,21 @@ mod identity_admin_tests {
                     );
                 }
                 let service = if pairing { &host.0 } else { identity.as_ref() };
+                assert_eq!(
+                    f.query(&asked.target.provider).rows.is_empty(),
+                    foreign,
+                    "only the retained local door offers host steps"
+                );
+                assert!(
+                    f.state
+                        .eager_catalogue(
+                            &f.caller,
+                            super::super::action_host::RowScope::Provider(&asked.target.provider),
+                        )
+                        .0
+                        .is_empty(),
+                    "transport keys alone do not offer local host steps"
+                );
                 if foreign {
                     assert!(f.invoke(&asked).is_err());
                     assert!(service.started.lock().unwrap().is_empty());
