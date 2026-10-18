@@ -36,7 +36,7 @@ A launch is refused unless the complete Landlock policy is enforced, with one ex
 
 What a sandboxed app is actually presented with. It names none of this; the launcher decides all of it, and the read side is identical for every package:
 
-- Read-only: the system read profile (`launcher::profile`) — loader and C library, fonts, GPU loader manifests, `/sys`, CA bundle, timezone data — plus the package payload at `/var/tilo-apps/<pkg-id>` and its runtime bundle. `/etc/resolv.conf` and `/etc/hosts` only when the launch shares the host network.
+- Read-only: the system read profile (`launcher::profile`) — loader and C library, fonts, GPU loader manifests, `/sys` (with `/sys/fs/cgroup` covered by an empty read-only directory), CA bundle, timezone data — plus the package payload at `/var/tilo-apps/<pkg-id>` and its runtime bundle. `/etc/resolv.conf` and `/etc/hosts` only when the launch shares the host network.
 - Read-write: exactly one directory, `<data home>/tilo-rooms/<room>/<pkg-id>` → `/run/tilo/app`, with `HOME` and every `XDG_*` pointed inside it. Two rooms are two directories, so an app opened in one room cannot read what it wrote in another. Plus the compositor's public Wayland socket → `/run/user/1000/wayland-0`.
 - `env`: `WAYLAND_DISPLAY=wayland-0`, `XDG_RUNTIME_DIR=/run/user/1000`, and `TILO_APP_DIR`, `HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME` all under `/run/tilo/app`.
 - Private DBus session bus per workspace.
@@ -45,6 +45,28 @@ What a sandboxed app is actually presented with. It names none of this; the laun
 Anything outside that set is a capability the user grants at runtime, which becomes a bind on the app's next launch (`launcher::capabilities`).
 
 `/proc` inside the sandbox is the app's own process namespace: no other process, command line or environment is visible. Machine readings and the person's process list reach an app only as typed snapshots from the session's system information service, behind the `system-info` and `processes` grants (`launcher::system_stats`, docs/architecture/system-settings-services.md, "System information").
+
+### App cgroups
+
+Every launch runs in a cgroup of its own: per-app memory and CPU accounting, the focus tiers (`launcher::priority`), and one `cgroup.kill` that ends the whole app. The compositor stays in logind's `session-N.scope` (logind and polkit find a session by cgroup, and that scope also holds the display manager's root session worker), so the apps' tree is a delegated scope of the user manager instead, one per compositor run:
+
+```text
+user@UID.service/app.slice/tilo-apps-<n>.scope/   Delegate=yes, OOMPolicy=continue, PartOf the session target
+  spawner/                                        the compositor's app spawner
+  app-<escaped app id>-<k>/                       launcher, D-Bus proxies, bwrap, the app
+```
+
+The spawner (`launcher::spawner`), a child of the compositor, asks the user manager for that scope once, then starts each launcher with `clone3(CLONE_INTO_CGROUP | CLONE_PARENT)`: born in the app's cgroup, with no round trip, and still the compositor's child. It writes the foreground tier, and removes the cgroup once `cgroup.events` reports it empty; the compositor writes the tier files when focus moves and `cgroup.kill` to end an app. A launcher started any other way (a root helper, a terminal, before the spawner answered) asks for its own `app-tilo-<id>-<pid>.scope` as before.
+
+Who can write the tree: it belongs to the person's uid, like everything of their user manager. That is no new authority for unsandboxed processes, which could already write every cgroup of the user manager, scopes included; unconfined host applications stay outside the boundary by design. A sandboxed app cannot reach it, by three independent means:
+
+- **No cgroupfs.** `/sys/fs/cgroup` is an empty read-only tmpfs in the sandbox (`launcher::profile::HIDDEN_PATHS`), so the app sees neither the tree nor other apps' names and counters. It has no capability to mount, and seccomp refuses `mount`, `fsopen`, `fsmount`, `move_mount` and `open_by_handle_at` in every profile. The launcher hands it no cgroupfs descriptor (the spawner's are close-on-exec).
+- **Its own cgroup namespace.** bwrap unshares the cgroup namespace at the app's cgroup, and the hierarchy is mounted with `nsdelegate`: even with a writable cgroupfs, the kernel refuses to move a process to any cgroup outside that namespace (`ENOENT`) and refuses writes to its own cgroup's limits (`EPERM`). An app's own cgroup's files are the only ones `nsdelegate` guards; the other apps' files are guarded by the first point.
+- **Ownership.** Every file in the tree is the person's; nothing in it is writable by another uid.
+
+Tests, in the launcher's `it` target: `room_confinement::an_app_can_neither_see_nor_reach_the_cgroup_hierarchy` (in a real sandbox: `/proc/self/cgroup` is `0::/`, `/sys/fs/cgroup` is empty, writes and `mkdir` fail with `EROFS`, mounting cgroup2 fails with `EPERM`) and `app_spawner::a_process_in_an_app_cgroup_cannot_move_or_retune_itself` (a process in an app cgroup and its own cgroup namespace cannot move to another app, the spawner or the tree root, and cannot change its own limits), beside the spawner's behaviour (`app_spawner::*`: born in its cgroup as the caller's child, `cgroup.kill` ends a `setsid` daemon, empty cgroups are removed).
+
+Parity with the per-app scopes it replaces: the same tier values in the same files systemd wrote (`cpu.weight`, `io.weight`, `io.bfq.weight`, `memory.low`); `memory.oom.group` stays 0, as `OOMPolicy=continue` had it (one OOM victim, not the whole app; see `launcher::scope`); no systemd-oomd policy, since `app.slice` is not an oomd target and the tree is in it; logout and a compositor crash stop the tree's scope with every app in it. In the journal an app's own entries carry `_SYSTEMD_USER_UNIT=tilo-apps-<n>.scope` and `_SYSTEMD_CGROUP=…/tilo-apps-<n>.scope/app-<id>-<k>`; what the compositor relays (`[app <id> stderr]`, `app-spawn:`, `app-exit:`) is unchanged. `systemctl --user` lists the tree, not each app; `tilo-launcher apps` lists the running apps with their processes, memory, CPU time, tier, OOM kills and cgroup.
 
 ### Application audio output
 
