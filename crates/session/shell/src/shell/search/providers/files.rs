@@ -63,8 +63,10 @@ const SKIP_DIRS: &[&str] = &[
 const MAX_DEPTH: usize = 8;
 const MAX_ENTRIES: usize = 50_000;
 const MAX_RESULTS: usize = 40;
-/// Folders a person actually writes into. Watched recursively after the
-/// first walk so a new file is searchable without waiting for `rescan`.
+/// Folders a person actually writes into, by their usual names, where the
+/// XDG user-dirs configuration names none ([`user_folders`]). Walked first
+/// and watched recursively after the first walk so a new file is searchable
+/// without waiting for `rescan`.
 const WATCH_TREES: &[&str] = &[
     "Documents",
     "Dokumente",
@@ -1192,11 +1194,8 @@ fn start_name_watch(
 
 fn arm_name_watches(watcher: &mut RecommendedWatcher, home: &Path) {
     let _ = watcher.watch(home, RecursiveMode::NonRecursive);
-    for name in WATCH_TREES {
-        let dir = home.join(name);
-        if dir.is_dir() {
-            let _ = watcher.watch(&dir, RecursiveMode::Recursive);
-        }
+    for dir in user_folders(home) {
+        let _ = watcher.watch(&dir, RecursiveMode::Recursive);
     }
 }
 
@@ -1375,12 +1374,71 @@ fn walk_home(home: &Path, index: &RwLock<NameIndex>) {
     drop(previous);
 }
 
+/// The folders a person keeps their files in, below `home`: the ones the
+/// XDG user-dirs configuration names (Documents, Downloads, Pictures… in the
+/// person's language), and the conventional names where none is configured.
+fn user_folders(home: &Path) -> Vec<PathBuf> {
+    use tilo_paths::UserDir;
+    let mut folders: Vec<PathBuf> = Vec::new();
+    let configured = [
+        UserDir::Desktop,
+        UserDir::Documents,
+        UserDir::Download,
+        UserDir::Music,
+        UserDir::Pictures,
+        UserDir::Videos,
+        UserDir::Templates,
+        UserDir::PublicShare,
+    ]
+    .into_iter()
+    .filter_map(|dir| dir.resolve_for_home(home));
+    let conventional = WATCH_TREES.iter().map(|name| home.join(name));
+    for folder in configured.chain(conventional) {
+        if folder != home
+            && folder.starts_with(home)
+            && folder.is_dir()
+            && !folders.contains(&folder)
+        {
+            folders.push(folder);
+        }
+    }
+    folders
+}
+
+/// Whether `dir` is a version-controlled working tree: source code, which a
+/// person finds in their editor, not by name from the launcher. The folder
+/// is listed; what is in it is not.
+fn is_source_tree(dir: &Path) -> bool {
+    [".git", ".hg", ".svn", ".jj"]
+        .iter()
+        .any(|marker| dir.join(marker).exists())
+}
+
 /// [`walk_home`]'s walk, with the budget as a parameter so a test can
 /// exercise the exhaustion behaviour on a tree it can afford to build.
+///
+/// The user folders are walked first, so the budget goes to the files a
+/// person keeps; the rest of the home follows, breadth first, without
+/// descending into source trees ([`is_source_tree`]).
 fn walk_breadth_first(home: &Path, budget: usize) -> Vec<NameEntry> {
     let mut entries: Vec<NameEntry> = Vec::new();
     let mut frontier: std::collections::VecDeque<(PathBuf, usize)> =
         std::collections::VecDeque::new();
+    let folders = user_folders(home);
+    for folder in &folders {
+        let display = display_path(home, folder);
+        let modified = folder.metadata().ok().and_then(|m| m.modified().ok());
+        entries.push(NameEntry {
+            facts: NameFacts::new(&display, modified),
+            path: folder.clone(),
+            display,
+            is_dir: true,
+        });
+        let depth = folder
+            .strip_prefix(home)
+            .map_or(1, |rel| rel.components().count());
+        frontier.push_back((folder.clone(), depth));
+    }
     frontier.push_back((home.to_owned(), 0));
 
     'walk: while let Some((dir, depth)) = frontier.pop_front() {
@@ -1398,9 +1456,13 @@ fn walk_breadth_first(home: &Path, budget: usize) -> Vec<NameEntry> {
             // `file_type` is free on Linux (from readdir's `d_type`);
             // `metadata` is the one stat, taken here off the UI thread.
             let is_dir = child.file_type().is_ok_and(|t| t.is_dir());
+            // A user folder was walked (and listed) first.
+            if folders.contains(&path) {
+                continue;
+            }
             let modified = child.metadata().ok().and_then(|m| m.modified().ok());
             let next_depth = depth.saturating_add(1);
-            if is_dir && next_depth < MAX_DEPTH {
+            if is_dir && next_depth < MAX_DEPTH && !is_source_tree(&path) {
                 frontier.push_back((path.clone(), next_depth));
             }
             let display = display_path(home, &path);
@@ -2416,6 +2478,42 @@ mod tests {
                 RECENCY_MAX,
                 "a today mtime carried in the index must contribute the full \
                  recency band"
+            );
+        }
+    }
+
+    #[test]
+    fn user_folders_come_first_and_source_trees_stay_folders() {
+        {
+            let home = tempfile::tempdir().expect("tempdir");
+            let root = home.path();
+            std::fs::create_dir_all(root.join("Documents/reports")).unwrap();
+            std::fs::write(root.join("Documents/reports/q3.pdf"), b"x").unwrap();
+            std::fs::write(root.join("notes.md"), b"x").unwrap();
+            std::fs::create_dir_all(root.join("src/tilo/.git")).unwrap();
+            std::fs::create_dir_all(root.join("src/tilo/crates")).unwrap();
+            std::fs::write(root.join("src/tilo/crates/lib.rs"), b"x").unwrap();
+            std::fs::create_dir_all(root.join("Projects/plan")).unwrap();
+            std::fs::write(root.join("Projects/plan/plan.odt"), b"x").unwrap();
+            let entries = walk_breadth_first(root, 1_000);
+            let shown: Vec<&str> = entries.iter().map(|e| e.display.as_str()).collect();
+            assert_eq!(shown.first().copied(), Some("~/Documents"), "{shown:?}");
+            for found in [
+                "~/Documents/reports/q3.pdf",
+                "~/notes.md",
+                "~/src/tilo",
+                "~/Projects/plan/plan.odt",
+            ] {
+                assert!(shown.contains(&found), "{found} missing: {shown:?}");
+            }
+            assert!(
+                !shown.contains(&"~/src/tilo/crates/lib.rs"),
+                "a source tree is a folder, not a thousand file names: {shown:?}"
+            );
+            assert_eq!(
+                shown.iter().filter(|e| **e == "~/Documents").count(),
+                1,
+                "a user folder is listed once"
             );
         }
     }
