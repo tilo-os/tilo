@@ -1466,6 +1466,7 @@ settings-region-date-iso = ISO (2023-03-15)
 settings-region-date-us = US (03/15/2023)
 settings-region-date-eu = Europäisch (15/03/2023)
 settings-region-date-long = Lang (15. März 2023)
+settings-region-time-language = Wie die Sprache
 settings-region-time-24 = 24-Stunden (14:05)
 settings-region-time-12 = 12-Stunden (2:05 PM)
 settings-region-measure-metric = Metrisch (°C, km, kg)

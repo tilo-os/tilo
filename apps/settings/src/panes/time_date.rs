@@ -1101,7 +1101,7 @@ impl TimeDatePane {
         let locale = cx.follow::<Locale>();
         area.reading.refresh();
         let mut pane = Self {
-            h24: matches!(locale.get().time_format, TimeStyle::H24),
+            h24: locale.get().time_format.is_24_hour(),
             cx,
             clock: Arc::clone(&area.clock),
             locale,
@@ -1275,7 +1275,7 @@ impl Widget for TimeDatePane {
             self.composed.invalidate();
         }
         if self.locale.refresh() {
-            self.h24 = matches!(self.locale.get().time_format, TimeStyle::H24);
+            self.h24 = self.locale.get().time_format.is_24_hour();
             self.composed.invalidate();
         }
         self.composed.sync(state, root);

@@ -6,7 +6,7 @@
 //! "locale": {
 //!   "currency": "USD",
 //!   "date_format": "Language",
-//!   "time_format": "H24",
+//!   "time_format": "Language",
 //!   "measurement": "Metric"
 //! }
 //! ```
@@ -172,7 +172,7 @@ impl Default for Locale {
         Self {
             currency: Currency::USD,
             date_format: DateStyle::Language,
-            time_format: TimeStyle::H24,
+            time_format: TimeStyle::Language,
             measurement: Measurement::Metric,
             number_style: NumberStyle::DecimalPoint,
             first_day_of_week: FirstDayOfWeek::Monday,
@@ -206,7 +206,15 @@ mod tests {
             serde_json::to_value(locale).unwrap()["date_format"],
             "Language"
         );
-        assert_eq!(locale.time_format, TimeStyle::H24);
+        assert_eq!(
+            locale.time_format,
+            TimeStyle::Language,
+            "the clock follows the desktop's language until one is chosen"
+        );
+        assert_eq!(
+            serde_json::to_value(locale).unwrap()["time_format"],
+            "Language"
+        );
         assert_eq!(locale.measurement, Measurement::Metric);
 
         let locale = Locale {
