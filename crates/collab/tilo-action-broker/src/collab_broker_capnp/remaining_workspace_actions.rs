@@ -1,9 +1,10 @@
 //! Registered workspace services share original-custody host admission.
 use super::host_action_admission::{AdmittedHostAction, HostActionAdmission};
-use super::{BrokerActor, CapnpBrokerState, InvocationCaller, Workspace};
+use super::{BrokerActor, CapnpBrokerState, InvocationCaller};
 use std::sync::Arc;
 use tilo_actions::remote::{ActionHostError, Caller, Confirmation, InvokeRequest};
 use tilo_actions::{ActionDescriptor, ActionFailure, InvocationUpdate};
+use tilo_desktop_model::Workspace;
 
 #[cfg(test)]
 #[path = "remaining_workspace_actions_tests.rs"]
@@ -128,7 +129,7 @@ impl CapnpBrokerState {
             }) => {
                 self.checked_policy_time(original.policy_time.as_ref())
                     .map_err(unavailable)?;
-                let current = self.current_action_caller(original).map_err(unavailable)?;
+                let current = self.live_action_caller(original).map_err(unavailable)?;
                 let certificate = current
                     .certificate
                     .as_ref()
@@ -152,6 +153,18 @@ impl CapnpBrokerState {
             Some(InvocationCaller::Local { route, admitted }) => {
                 if route.cluster_id != room {
                     return Err(ActionHostError::NotPermitted);
+                }
+                if let Some(registration) = &admitted.worker_registration {
+                    let workers = self
+                        .host_workers
+                        .lock()
+                        .map_err(|_| unavailable("worker registry unavailable".into()))?;
+                    if !workers
+                        .values()
+                        .any(|worker| worker.worker_registration.as_ref() == Some(registration))
+                    {
+                        return Err(ActionHostError::NotPermitted);
+                    }
                 }
                 Some(
                     self.revalidate_admission(route, admitted)

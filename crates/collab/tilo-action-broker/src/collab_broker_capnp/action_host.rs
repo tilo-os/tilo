@@ -25,7 +25,7 @@ use super::launchable::{is_launchable_provider, launchable_provider};
 use super::{
     ActionDirectoryBridgeError, ActionDirectoryBridgeReply, ActionDirectoryBridgeResponse,
     ActionDirectoryRoot, BrokerActor, CapnpBrokerState, DIRECTORY_MAX_PARAMS_BYTES,
-    InvocationInputs, InvocationOwner, LaunchScope, PublishedAction, PublishedSurface, app_node,
+    InvocationInputs, LaunchScope, PublishedAction, PublishedSurface, app_node,
     confirmation_satisfied, published_directory_action, validate_directory_target_input,
 };
 use crate::automation;
@@ -480,17 +480,6 @@ fn refusal(reason: String) -> ActionHostError {
         ActionHostError::UnknownAction
     } else {
         ActionHostError::Refused { reason }
-    }
-}
-
-/// The legacy JSON evidence the workspace profile path reads.
-fn confirmation_evidence(confirmation: Option<&Confirmation>) -> serde_json::Value {
-    match confirmation {
-        // Governing a room is a person's own act: an answer given for
-        // someone acting for them confirms nothing here.
-        None | Some(Confirmation::Witnessed(_)) => serde_json::json!({}),
-        Some(Confirmation::Confirmed) => serde_json::json!({"confirm": true}),
-        Some(Confirmation::Phrase(phrase)) => serde_json::json!({"confirmation_phrase": phrase}),
     }
 }
 
@@ -2020,6 +2009,17 @@ impl CapnpBrokerState {
                 if current.owner() != original.owner() {
                     return Err(ActionHostError::NotPermitted);
                 }
+                if caller.device_public_key().is_none() {
+                    self.current_native_person(
+                        room,
+                        current
+                            .admitted
+                            .certificate
+                            .as_ref()
+                            .ok_or(ActionHostError::NotPermitted)?,
+                    )
+                    .map_err(refusal)?;
+                }
                 Some(current.admitted.delegated_to(original.delegated.as_deref()))
             }
             Some(super::published_invocation::InvocationCaller::Local { route, admitted }) => {
@@ -2049,8 +2049,10 @@ impl CapnpBrokerState {
             Some(super::published_invocation::InvocationCaller::NativePerson {
                 room: original_room,
                 certificate,
+                time,
                 ..
             }) => {
+                self.checked_policy_time(Some(time)).map_err(refusal)?;
                 if original_room != room
                     || caller.principal()
                         != &tilo_actions::remote::CallerPrincipal::Person(
@@ -2502,7 +2504,6 @@ impl CapnpBrokerState {
         if let Some(room) = workspace_provider_room(provider) {
             return self.start_workspace_action(
                 caller,
-                &self.caller_actor(caller, room),
                 room,
                 launch,
                 origin,
@@ -2586,7 +2587,6 @@ impl CapnpBrokerState {
     fn start_workspace_action(
         self: &Arc<Self>,
         caller: &Caller,
-        actor: &BrokerActor,
         room: &str,
         launch: Option<&LaunchScope>,
         origin: Option<&super::InvocationCaller>,
@@ -2604,6 +2604,15 @@ impl CapnpBrokerState {
         else {
             return Err(ActionHostError::UnknownAction);
         };
+        if let Some(result) = self.start_remaining_workspace_action(
+            caller,
+            origin,
+            (&workspace, &policy, now),
+            request,
+            argument,
+        ) {
+            return result;
+        }
         if let Some(app_id) = address.resource.strip_prefix(APPLICATION_RESOURCE_PREFIX)
             && address.action == APPLICATION_OPEN_ACTION
         {
@@ -2705,99 +2714,7 @@ impl CapnpBrokerState {
             )?;
             return self.close_application((caller, origin, room), admitted, app_id);
         }
-        if address.resource == automation::LIBRARY_RESOURCE
-            && self.services.shortcut_library.is_some()
-        {
-            return self.start_shortcut_library(
-                caller,
-                actor,
-                (&workspace, &policy, now),
-                &address.action,
-                (argument, request.confirmation.as_ref()),
-                &self.witness_binding(actor.id(), room, request),
-            );
-        }
-        if let Some(service) = self.services.keyboard_shortcuts.as_ref()
-            && service.is_resource(&address.resource)
-            && caller.device_public_key().is_none()
-        {
-            return self.start_keyboard_shortcut_action(
-                service.as_ref(),
-                actor,
-                (&workspace, &policy, now),
-                address,
-                (argument, request.confirmation.as_ref()),
-                &self.witness_binding(actor.id(), room, request),
-            );
-        }
-        if let Some(governance) = self.services.workspace_governance.as_ref()
-            && governance.handles(&address.action)
-        {
-            let admitted = self.admit_workspace_governance(
-                governance.as_ref(),
-                (&workspace, &policy, now),
-                request,
-                argument,
-            )?;
-            return self
-                .invoke_workspace_governance_action(
-                    room,
-                    (actor, caller),
-                    request,
-                    (argument, admitted),
-                )
-                .map_err(refusal);
-        }
         Err(ActionHostError::UnknownAction)
-    }
-
-    /// Admit opt-in governance actions against their current descriptor and policy.
-    fn admit_workspace_governance(
-        &self,
-        governance: &dyn crate::services::WorkspaceGovernanceServices,
-        (workspace, policy, now): (&Workspace, &BrokerActor, u64),
-        request: &InvokeRequest,
-        argument: Option<&str>,
-    ) -> Result<bool, ActionHostError> {
-        let address = &request.target.address;
-        if !governance.requires_descriptor_admission(&address.action) {
-            return Ok(false);
-        }
-        let descriptor = governance
-            .descriptors(workspace)
-            .into_iter()
-            .find(|descriptor| descriptor.address == *address)
-            .ok_or(ActionHostError::UnknownAction)?;
-        // A witness answers confirmation, never owner custody. The host
-        // still checks the current owner, enrollment and execution lease.
-        if !policy.direct() {
-            return Err(ActionHostError::NotPermitted);
-        }
-        let confirmed = match request.confirmation.as_ref() {
-            Some(Confirmation::Confirmed) => true,
-            Some(Confirmation::Witnessed(token)) => self.take_witness(
-                token,
-                &self.witness_binding(policy.id(), &workspace.room.to_string(), request),
-            ),
-            _ => false,
-        };
-        if !confirmed {
-            return Err(ActionHostError::ConfirmationRequired);
-        }
-        self.admit_answer(
-            (workspace, policy, now),
-            governance.app_id(),
-            &descriptor,
-            (argument, Some(&Confirmation::Confirmed)),
-            false,
-        )?;
-        if !confirmation_satisfied(
-            &descriptor.contract.confirmation_for_argument(argument),
-            Some(&Confirmation::Confirmed),
-        ) {
-            return Err(ActionHostError::ConfirmationRequired);
-        }
-        Ok(true)
     }
 
     /// Admit `descriptor`, published by `app`, for `policy` in `workspace`
@@ -2840,136 +2757,6 @@ impl CapnpBrokerState {
         Ok(())
     }
 
-    /// Apply one shortcut library action for `caller` in `workspace`. A
-    /// saved shortcut is checked against exactly what `caller` is offered now.
-    fn start_shortcut_library(
-        &self,
-        caller: &Caller,
-        actor: &BrokerActor,
-        (workspace, policy, now): (&Workspace, &BrokerActor, u64),
-        action: &str,
-        (argument, confirmation): (Option<&str>, Option<&Confirmation>),
-        binding: &super::WitnessBinding,
-    ) -> Result<u64, ActionHostError> {
-        let library = self
-            .services
-            .shortcut_library
-            .as_ref()
-            .ok_or(ActionHostError::UnknownAction)?;
-        let descriptor =
-            automation::library_descriptor(action).ok_or(ActionHostError::UnknownAction)?;
-        self.admit_answer(
-            (workspace, policy, now),
-            SHORTCUTS_APP_ID,
-            &descriptor,
-            (argument, confirmation),
-            self.consume_answer(confirmation, binding),
-        )?;
-        let operation = automation::decode_library(action, argument)
-            .map_err(|reason| ActionHostError::InvalidRequest { reason })?;
-        let catalog =
-            tilo_automation::ActionCatalog::new(self.eager_catalogue(caller, RowScope::All).0);
-        let keymap = library.keymap();
-        let room = workspace.room.to_string();
-        let plan = automation::plan_library(
-            workspace,
-            operation,
-            &automation::SaveContext {
-                catalog: &catalog,
-                saver: &actor.id,
-                keymap: &keymap,
-                fixed_label: &|fixed| library.fixed_shortcut_label(fixed),
-            },
-        )
-        .map_err(|reason| ActionHostError::Refused { reason })?;
-        let id = self
-            .invocation_id
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
-        let output = match plan {
-            automation::LibraryPlan::Answer(output) => output,
-            automation::LibraryPlan::Change { change, output } => {
-                library
-                    .store(&crate::services::ShortcutLibraryRequest {
-                        room: &room,
-                        actor,
-                        change: &change,
-                        context: automation::library_context(&descriptor),
-                        invocation,
-                    })
-                    .map_err(|reason| ActionHostError::Refused { reason })?;
-                output
-            }
-        };
-        self.record_completion(
-            id,
-            InvocationOwner::Local {
-                actor: actor.id.clone(),
-            },
-            tilo_actions::InvocationUpdate::Succeeded { invocation, output },
-        );
-        Ok(id)
-    }
-
-    /// List or change the desktop's keyboard shortcuts for `actor` in
-    /// `workspace`. Changing one takes the same Settings grant as changing
-    /// any other setting; a clash fails naming what holds the chord.
-    fn start_keyboard_shortcut_action(
-        &self,
-        service: &dyn crate::services::KeyboardShortcutServices,
-        actor: &BrokerActor,
-        (workspace, policy, now): (&Workspace, &BrokerActor, u64),
-        address: &ActionAddress,
-        (argument, confirmation): (Option<&str>, Option<&Confirmation>),
-        binding: &super::WitnessBinding,
-    ) -> Result<u64, ActionHostError> {
-        let mut keymap = settings_store::hardware::ShortcutConfig::load();
-        let descriptor = service
-            .descriptor(&keymap, address)
-            .ok_or(ActionHostError::UnknownAction)?;
-        self.admit_answer(
-            (workspace, policy, now),
-            service.app_id(),
-            &descriptor,
-            (argument, confirmation),
-            self.consume_answer(confirmation, binding),
-        )?;
-        let id = self
-            .invocation_id
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
-        let outcome =
-            service
-                .apply(&mut keymap, address, argument)
-                .and_then(|(output, changed)| {
-                    if changed {
-                        keymap.save().map_err(|error| {
-                            Box::new(tilo_actions::ActionFailure {
-                                code: "save_failed".into(),
-                                message: error.to_string(),
-                                details: None,
-                                retryable: true,
-                            })
-                        })?;
-                    }
-                    Ok(output)
-                });
-        self.record_completion(
-            id,
-            InvocationOwner::Local {
-                actor: actor.id.clone(),
-            },
-            match outcome {
-                Ok(output) => tilo_actions::InvocationUpdate::Succeeded { invocation, output },
-                Err(error) => tilo_actions::InvocationUpdate::Failed {
-                    invocation,
-                    error: *error,
-                },
-            },
-        );
-        Ok(id)
-    }
-
     /// Whether `confirmation` answers `descriptor`'s own confirmation
     /// policy for `actor` with `argument`: the person's own word when they
     /// act themselves, else the answer they gave on their device.
@@ -2988,47 +2775,6 @@ impl CapnpBrokerState {
         witnessed || confirmation_satisfied(&policy, own)
     }
 
-    fn follow_host_step_at(
-        self: &Arc<Self>,
-        actor: &BrokerActor,
-        started: Pending<crate::services::DevicePairingOutcome>,
-        id: u64,
-    ) {
-        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
-        let owner = InvocationOwner::Local {
-            actor: actor.id().to_owned(),
-        };
-        // Accepted first: a step that already answered records its outcome
-        // over it below, never the other way round.
-        self.record_completion(
-            id,
-            owner.clone(),
-            tilo_actions::InvocationUpdate::Accepted { invocation },
-        );
-        let state = Arc::clone(self);
-        started.then(move |outcome| {
-            let update = match outcome {
-                Some(Ok(output)) => {
-                    tilo_actions::InvocationUpdate::Succeeded { invocation, output }
-                }
-                Some(Err(error)) => tilo_actions::InvocationUpdate::Failed {
-                    invocation,
-                    error: *error,
-                },
-                None => tilo_actions::InvocationUpdate::Failed {
-                    invocation,
-                    error: tilo_actions::ActionFailure {
-                        code: "host_step_stopped".into(),
-                        message: "the host step stopped without an answer".into(),
-                        details: None,
-                        retryable: true,
-                    },
-                },
-            };
-            state.record_completion(id, owner, update);
-        });
-    }
-
     /// Agent runs of workspace tasks that ended since the last call, oldest
     /// first.
     pub fn take_ended_task_runs(&self) -> Vec<crate::task_runs::EndedTaskRun> {
@@ -3038,51 +2784,6 @@ impl CapnpBrokerState {
     /// Whether an ended task run is waiting to be taken.
     pub fn has_ended_task_runs(&self) -> bool {
         self.ended_runs.tasks.has_ended()
-    }
-
-    /// Execute a host-owned workspace governance action (permission
-    /// profiles). There is no application to forward to: the host's
-    /// governance service validates, applies and records it under its own
-    /// capability authority, and the broker reports one terminal update.
-    fn invoke_workspace_governance_action(
-        self: &Arc<Self>,
-        room: &str,
-        (actor, caller): (&BrokerActor, &Caller),
-        request: &InvokeRequest,
-        (argument, admitted): (Option<&str>, bool),
-    ) -> Result<u64, String> {
-        let governance = self
-            .services
-            .workspace_governance
-            .as_ref()
-            .ok_or_else(|| "workspace governance is unavailable on this host".to_string())?;
-        let id = self
-            .invocation_id
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let invocation = request.invocation;
-        let confirmation = if admitted {
-            // Only evidence checked against this descriptor, actor and exact
-            // arguments crosses into the host's legacy confirmation format.
-            serde_json::json!({"confirm": true})
-        } else {
-            confirmation_evidence(request.confirmation.as_ref())
-        };
-        let started = governance.start(&crate::services::WorkspaceGovernanceRequest {
-            local_device: caller.device_public_key().is_none()
-                && caller.shortcut().is_none()
-                && caller.acting_for_person().is_none()
-                && request.on_behalf_of.is_none(),
-            execution_lease: caller.execution_lease(),
-            room,
-            actor,
-            resource: &request.target.address.resource,
-            action: &request.target.address.action,
-            argument,
-            confirmation: &confirmation,
-            invocation,
-        })?;
-        self.follow_host_step_at(actor, started, id);
-        Ok(id)
     }
 
     /// Launch `app_id` into `workspace`, optionally opening content-addressed

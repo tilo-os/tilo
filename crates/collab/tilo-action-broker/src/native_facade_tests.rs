@@ -7,7 +7,8 @@ impl NativeFacadeHostSteps {
             .borrow()
             .row()
             .descriptor
-            .unwrap();
+            .unwrap()
+            .descriptor(tilo_actions::ExecutionLocus::default());
         descriptor.address = tilo_actions::ActionAddress::new(resource, action);
         descriptor.resource_kind = resource.into();
         descriptor.contract = tilo_actions::ActionContract::view();
