@@ -385,6 +385,105 @@ fn revoked_original_after_admission_never_launches_or_closes() {
     }
 }
 
+/// A valid certificate cannot keep a retired private connection alive across
+/// the durable barrier, even when another worker replaces it on the same route.
+#[test]
+fn retired_worker_after_admission_never_launches_or_closes() {
+    for close in [false, true] {
+        for replacement in [false, true] {
+            let launcher = Arc::new(Launcher {
+                calls: AtomicUsize::new(0),
+                fail: false,
+            });
+            let mut fixture = Fixture::new(HostServices {
+                launcher: Some(launcher.clone()),
+                ..Default::default()
+            });
+            let InvocationCaller::Local { route, admitted } = &mut fixture.origin else {
+                panic!("local fixture")
+            };
+            let registration = crate::collab_broker_capnp::PrivateWorkerRegistration {
+                identity: uuid::Uuid::new_v4(),
+                route: route.clone(),
+                certificate: admitted.certificate.clone().unwrap(),
+            };
+            admitted.worker_registration = Some(registration);
+            fixture
+                .state
+                .host_workers
+                .lock()
+                .unwrap()
+                .insert(7, *admitted.clone());
+            fixture
+                .state
+                .check_launch_origin(&fixture.caller, Some(&fixture.origin), &fixture.room)
+                .unwrap();
+            let descriptor = if close {
+                app_close_descriptor(&app().package_id, "Notes")
+            } else {
+                app_open_descriptor(&app())
+            };
+            let request = child_request(
+                InvocationId::new(),
+                &fixture.room,
+                &descriptor,
+                &app().package_id,
+            );
+            let admitted = fixture
+                .state
+                .admit_host_action(
+                    &fixture.caller,
+                    Some(&fixture.origin),
+                    HostActionAdmission {
+                        room: &fixture.room,
+                        app_id: &app().package_id,
+                        descriptor: &descriptor,
+                        request: &request,
+                    },
+                )
+                .unwrap();
+            fixture.assert_signed(&request, false);
+            {
+                let mut workers = fixture.state.host_workers.lock().unwrap();
+                let mut retired = workers.remove(&7).unwrap();
+                if replacement {
+                    retired.worker_registration.as_mut().unwrap().identity = uuid::Uuid::new_v4();
+                    workers.insert(7, retired);
+                }
+            }
+            let custody = (
+                &fixture.caller,
+                Some(&fixture.origin),
+                fixture.room.as_str(),
+            );
+            let result = if close {
+                fixture
+                    .state
+                    .close_application(custody, admitted, &app().package_id)
+            } else {
+                fixture.state.launch_application(
+                    custody,
+                    admitted,
+                    &app().package_id,
+                    crate::services::LaunchContent {
+                        hash: "",
+                        caller: None,
+                        author: None,
+                    },
+                    &LaunchPlace::Focus,
+                )
+            };
+            assert!(result.is_err());
+            assert_eq!(launcher.calls.load(Ordering::SeqCst), 0);
+            let record = fixture.assert_signed(&request, true);
+            assert!(
+                matches!(record.update, InvocationUpdate::Failed { ref error, .. }
+                if error.code == "launch_authority_changed")
+            );
+        }
+    }
+}
+
 #[test]
 fn child_identity_is_stable_and_framed() {
     let parent = InvocationId::new();

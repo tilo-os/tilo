@@ -2026,6 +2026,21 @@ impl CapnpBrokerState {
                 if route.cluster_id != room {
                     return Err(ActionHostError::NotPermitted);
                 }
+                // Revalidation checks current certificate and room policy, but
+                // carries the registration forward without checking its liveness.
+                // Local custody must still name the exact private connection.
+                if let Some(registration) = &admitted.worker_registration {
+                    let workers = self
+                        .host_workers
+                        .lock()
+                        .map_err(|_| refusal("worker registry unavailable".into()))?;
+                    if !workers
+                        .values()
+                        .any(|worker| worker.worker_registration.as_ref() == Some(registration))
+                    {
+                        return Err(ActionHostError::NotPermitted);
+                    }
+                }
                 Some(
                     self.revalidate_admission(route, admitted)
                         .map_err(|error| refusal(error.to_string()))?,
