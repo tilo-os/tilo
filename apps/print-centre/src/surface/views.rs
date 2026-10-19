@@ -574,7 +574,9 @@ pub(super) fn history_view(snapshot: &Snapshot, tx: &Door) -> El {
     if let Some(issue) = unavailable_notice(&failed_areas(snapshot, false, true, false), tx) {
         items.push(issue);
     }
-    if terminal.is_empty() {
+    // With the jobs unread, "No completed documents yet" would claim what
+    // nobody knows: the notice above says they couldn't be checked.
+    if terminal.is_empty() && snapshot.jobs.is_ok() {
         items.push(copy(
             "No completed documents yet. After a document finishes or is canceled, it will appear here.",
         ));
@@ -812,7 +814,7 @@ pub(super) fn queue_view(
                 .with_message("It will be removed from the printer. This cannot be undone."),
         ));
     }
-    if jobs.is_empty() {
+    if jobs.is_empty() && snapshot.jobs.is_ok() {
         items.push(copy(
             "Nothing waiting. New documents appear here as soon as an app sends them.",
         ));
