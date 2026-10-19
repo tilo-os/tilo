@@ -105,7 +105,7 @@ COPY os/usr/lib/systemd/system/tilo-relay-firstboot.service /usr/lib/systemd/sys
 COPY os/usr/libexec/tilo-relay-firstboot /usr/libexec/tilo-relay-firstboot
 COPY os/usr/libexec/tilo-relay-state-migrate /usr/libexec/tilo-relay-state-migrate
 COPY os/usr/lib/systemd/system/tilo-relay-state-migrate.service /usr/lib/systemd/system/tilo-relay-state-migrate.service
-COPY os/usr/lib/tmpfiles.d/tilo-host.conf /usr/lib/tmpfiles.d/tilo-host.conf
+COPY os/usr/lib/tmpfiles.d/tilo-host.conf os/usr/lib/tmpfiles.d/tilo-relay.conf /usr/lib/tmpfiles.d/
 # The device-trust group owns the identity directory, so it has to exist
 # before tmpfiles-setup runs. There is no session user on a host image; only
 # the static relay account joins this narrow device-identity boundary.
