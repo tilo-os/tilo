@@ -28,6 +28,7 @@ chrono = { workspace = true, features = ["clock", "std"] }
 clap.workspace = true
 hex.workspace = true
 libc.workspace = true
+rustix = { workspace = true, features = ["process"] }
 serde.workspace = true
 # The display settings contract the Settings app uses, for --outputs layouts.
 settings-store = { path = "../../system/settings-store" }

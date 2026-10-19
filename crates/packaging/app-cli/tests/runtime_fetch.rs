@@ -920,7 +920,7 @@ fn pinned_engine_is_automatic_and_failures_preserve_the_working_app() {
             assert_working();
             engine_ready_before_replacement = true;
         }
-        progress.push(event)
+        progress.push(event);
     })
     .unwrap();
     assert!(engine_ready_before_replacement);
