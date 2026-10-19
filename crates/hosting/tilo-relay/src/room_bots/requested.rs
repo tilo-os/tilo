@@ -73,9 +73,13 @@ pub fn plan(
 
 /// What the host keeps to follow a room's requests.
 pub struct Follower {
+    /// The rooms this host governs.
     pub rooms: Rooms,
+    /// The room whose requests it follows.
     pub room: String,
+    /// The host's device in the room, which governs the bots it installs.
     pub host: DeviceCert,
+    /// The room root the host signs its bots' devices and delegations with.
     pub root: SigningKey,
     /// The host's state directory; each requested bot keeps its
     /// installation under `requested-bots/<entry>`.

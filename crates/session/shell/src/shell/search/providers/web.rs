@@ -54,11 +54,6 @@ const QUERY: &str = "{query}";
 /// exact name's, so an app named the same way still leads.
 const SERVICE_SCORE: i32 = 60;
 
-/// What a query naming a service adds to its search row at the merge: what
-/// an exact visible title is worth (`lexical_strength`), since the query
-/// named the service as plainly as a title would.
-const NAMED_SERVICE_STRENGTH: f32 = 4.0;
-
 /// What a service row gives way at the merge when an app serves the same
 /// service (Tube for YouTube, Spotify on Flathub): enough that the app's row,
 /// installed or installable, leads the service named alone.
@@ -494,7 +489,14 @@ impl SearchProvider for WebProvider {
             return 0.0;
         };
         match row {
-            QUERY_ID => NAMED_SERVICE_STRENGTH,
+            // A query naming a service is worth what the row's title typed
+            // whole is: the query named the service as plainly as a title.
+            QUERY_ID => ui::search::system::lexical_strength(
+                &result.title,
+                &result.kind,
+                &result.title,
+                None,
+            ),
             SERVICE_ID if Service::by_id(rest).is_some_and(|service| service.app.is_some()) => {
                 SERVED_SERVICE_YIELD
             }
