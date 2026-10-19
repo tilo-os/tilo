@@ -20,7 +20,11 @@ path = "src/main.rs"
 web-features = []
 
 [features]
+default = ["video"]
 thin = ["dep:runtime-dylib"]
+# A call's pictures are decoded in Chat, hardware first, through the shared
+# media stack's real-time decoder.
+video = ["ui/realtime-video"]
 
 [dependencies]
 fnv.workspace = true

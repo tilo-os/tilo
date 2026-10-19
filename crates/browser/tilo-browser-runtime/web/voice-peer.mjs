@@ -25,6 +25,7 @@ export function createPeerVoice({peer, room, createCall = createVoiceCall, rando
   const signalling = {
     join: call => peer().voiceJoin(room, call),
     leave: () => { try { peer().voiceLeave(room); } catch {} },
+    show: (camera, screen) => { try { peer().voiceShow(room, camera, screen); } catch {} },
     onEvent(listener) { listeners.add(listener); return () => listeners.delete(listener); },
   };
   const call = createCall({signalling, ...options});

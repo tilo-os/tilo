@@ -152,10 +152,12 @@ fn rosters_name_people_once_per_channel() {
         Roster {
             channel_id: "lounge".into(),
             people: vec![person(1), person(2)],
+            ..Default::default()
         },
         Roster {
             channel_id: "voice".into(),
             people: (3..=120).map(person).collect(),
+            ..Default::default()
         },
     ];
     let bytes = snapshot.encode().unwrap();
@@ -206,4 +208,180 @@ fn a_watch_is_a_query_and_speaking_names_people_once_each() {
         invalid.speaking = speaking;
         assert!(invalid.encode().is_err());
     }
+}
+
+fn person(n: u8) -> String {
+    format!("{n:02x}").repeat(32)
+}
+
+#[test]
+fn video_commands_round_trip_and_shown_pictures_are_bounded_sorted_and_layered() {
+    let shown = |p: u8, source, layer| Shown {
+        person: person(p),
+        source,
+        layer,
+    };
+    for command in [
+        Command::SetCamera { on: true },
+        Command::SetScreen { on: false },
+        Command::Pictures { after: 7 },
+        Command::Show {
+            pictures: vec![
+                shown(1, PictureSource::Camera, PictureLayer::Mid),
+                shown(1, PictureSource::Screen, PictureLayer::High),
+                shown(2, PictureSource::Camera, PictureLayer::Low),
+            ],
+        },
+    ] {
+        let request = Request::new(command);
+        assert_eq!(
+            Request::decode(&request.encode().unwrap()).unwrap(),
+            request
+        );
+    }
+    // A screen has no middle layer.
+    assert!(
+        !Request::new(Command::Show {
+            pictures: vec![shown(1, PictureSource::Screen, PictureLayer::Mid)],
+        })
+        .valid()
+    );
+    // One entry per person and source, in order.
+    assert!(
+        !Request::new(Command::Show {
+            pictures: vec![
+                shown(2, PictureSource::Camera, PictureLayer::Low),
+                shown(1, PictureSource::Camera, PictureLayer::Low),
+            ],
+        })
+        .valid()
+    );
+    assert!(
+        !Request::new(Command::Show {
+            pictures: vec![
+                shown(1, PictureSource::Camera, PictureLayer::Low),
+                shown(1, PictureSource::Camera, PictureLayer::High),
+            ],
+        })
+        .valid()
+    );
+    assert!(
+        !Request::new(Command::Show {
+            pictures: (0..=MAX_SHOWN)
+                .map(|n| shown(
+                    u8::try_from(n).unwrap(),
+                    PictureSource::Camera,
+                    PictureLayer::Low
+                ))
+                .collect(),
+        })
+        .valid()
+    );
+    // Collecting and showing pictures carry no intent; turning a camera on
+    // does.
+    for command in [
+        Command::Pictures { after: 0 },
+        Command::Show {
+            pictures: Vec::new(),
+        },
+    ] {
+        let mut request = Request::new(command);
+        assert!(!request.carries_intent() && request.dispatch_valid());
+        request.intent = 1;
+        assert!(!request.dispatch_valid());
+    }
+    let mut camera = Request::new(Command::SetCamera { on: true });
+    assert!(camera.carries_intent() && !camera.dispatch_valid());
+    camera.intent = 1;
+    assert!(camera.dispatch_valid());
+}
+
+#[test]
+fn a_pictures_answer_carries_whole_objects_in_base64_and_nothing_shows_outside_a_call() {
+    let mut snapshot = Snapshot::unavailable();
+    snapshot.state = State::Live;
+    snapshot.camera = true;
+    snapshot.pictures = vec![Picture {
+        person: person(3),
+        stream: "a".repeat(129),
+        source: PictureSource::Camera,
+        object: vec![1, 0, 1, 1, 0xff, 0x80],
+    }];
+    snapshot.pictures_cursor = 4;
+    let bytes = snapshot.encode().unwrap();
+    assert!(
+        std::str::from_utf8(&bytes)
+            .unwrap()
+            .contains("\"AQABAf+A\""),
+        "the object travels as base64"
+    );
+    assert_eq!(Snapshot::decode(&bytes).unwrap(), snapshot);
+
+    // The largest picture fits one answer.
+    snapshot.pictures[0].object = vec![7; MAX_PICTURE_BYTES];
+    assert!(snapshot.encode().is_ok());
+    snapshot.pictures[0].object = vec![7; MAX_PICTURE_BYTES + 1];
+    assert!(snapshot.encode().is_err());
+    snapshot.pictures[0].object = Vec::new();
+    assert!(snapshot.encode().is_err());
+    snapshot.pictures.clear();
+
+    snapshot.state = State::Idle;
+    assert!(snapshot.encode().is_err(), "a camera is on only in a call");
+    snapshot.camera = false;
+    assert!(snapshot.encode().is_ok());
+}
+
+#[test]
+fn a_roster_names_cameras_and_screens_only_of_its_people() {
+    let mut roster = Roster {
+        channel_id: "voice".into(),
+        people: vec![person(1), person(2)],
+        cameras: vec![person(2)],
+        screens: vec![person(1)],
+    };
+    assert!(roster.valid());
+    roster.cameras = vec![person(3)];
+    assert!(!roster.valid(), "someone not in the call shows no camera");
+    roster.cameras = vec![person(2), person(1)];
+    assert!(!roster.valid(), "sorted");
+}
+
+#[test]
+fn a_picture_names_its_coded_unit_and_refuses_one_that_does_not_hold_together() {
+    let mut object = vec![1, 1, 1, 2];
+    object.extend_from_slice(&7_u64.to_le_bytes());
+    object.extend_from_slice(&1_000_u64.to_le_bytes());
+    object.extend_from_slice(&640_u16.to_le_bytes());
+    object.extend_from_slice(&360_u16.to_le_bytes());
+    object.extend_from_slice(&3_u32.to_le_bytes());
+    object.extend_from_slice(&[0; 4]);
+    object.extend_from_slice(&[0, 0, 1]);
+    let mut picture = Picture {
+        person: person(1),
+        stream: "s".into(),
+        source: PictureSource::Camera,
+        object,
+    };
+    assert_eq!(
+        picture.unit(),
+        Some(PictureUnit {
+            keyframe: true,
+            codec: PictureCodec::H264,
+            width: 640,
+            height: 360,
+            payload: &[0, 0, 1],
+        })
+    );
+    let unit = picture.unit().unwrap();
+    assert_eq!(
+        unit.to_object(PictureLayer::High, 7, 1_000),
+        picture.object,
+        "a unit frames back into the same object"
+    );
+    picture.object.push(9);
+    assert_eq!(picture.unit(), None, "the length names the payload");
+    picture.object.pop();
+    picture.object[0] = 2;
+    assert_eq!(picture.unit(), None, "another version");
 }

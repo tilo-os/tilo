@@ -14,6 +14,10 @@ mod audio_tests;
 mod registry;
 #[cfg(test)]
 mod tests;
+mod video;
+pub(crate) use video::screen_share;
+#[cfg(test)]
+mod video_tests;
 
 use crate::shell::{native_media::CallTarget, native_workspace_owner::NativeWorkspaceOwner};
 use parking_lot::Mutex;
@@ -50,6 +54,11 @@ enum Operation {
     },
     End {
         ticket: Arc<Ticket>,
+    },
+    /// Tell the call what this device shows besides its voice.
+    Show {
+        ticket: Arc<Ticket>,
+        showing: tilo_relay_protocol::voice::Showing,
     },
     /// Who is in the calls of `target`'s record, as last heard from the
     /// room (its `channel` is unused).

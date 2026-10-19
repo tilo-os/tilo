@@ -65,12 +65,16 @@ type OverlayButton = (String, bool, bool, bool, Hit, Rect);
 /// Catalogue keys of every label the controls bar can show, both halves of
 /// each toggle pair included, so the measurement covers a label before the
 /// toggle that reveals it.
-const CALL_CONTROL_KEYS: [&str; 7] = [
+const CALL_CONTROL_KEYS: [&str; 11] = [
     "chat-call-mute",
     "chat-call-unmute",
     "chat-call-deafen",
     "chat-call-undeafen",
     "chat-call-audio-only",
+    "chat-call-camera-on",
+    "chat-call-camera-off",
+    "chat-call-share-screen",
+    "chat-call-stop-sharing",
     "chat-call-collapse",
     "chat-call-leave",
 ];
@@ -179,6 +183,8 @@ fn control_icon(hit: &Hit, muted: bool) -> Icon {
     match hit {
         Hit::CallMute if muted => Icon::MicOff,
         Hit::CallMute => Icon::Mic,
+        Hit::CallCamera => Icon::Video,
+        Hit::CallScreen => Icon::ScreenShare,
         Hit::CallExpand => Icon::Minimize2,
         Hit::CallLeave => Icon::PhoneOff,
         _ => Icon::MoreHorizontal,
@@ -409,12 +415,43 @@ impl ChatApp {
             return; // a real capture is feeding the surface
         }
         let rect = self.call_video_rect();
+        let me = self.me.id.clone();
+        if !self.call.audio_only {
+            // This person's own camera, from this device.
+            self.note_picture_tile(&me, ui::native_media::PictureSource::Camera, tf, rect);
+            if let Some(img) = self.remote_frames.get(&me) {
+                let radius = self.tile_radius(theme);
+                ui::image_store::paint_image_cover(scene, tf, rect, img, radius);
+                return;
+            }
+        }
         self.paint_viewfinder(
             PaintCtx::new(scene, tf, tr, theme),
             rect,
-            &self.me.id.clone(),
-            "Camera off",
+            &me,
+            if self.call.audio_only {
+                "Camera off"
+            } else {
+                "Your camera is starting"
+            },
         );
+    }
+
+    /// Note that this frame shows `person`'s `source` in `rect`: the call is
+    /// asked for that picture at the layer that fits the tile.
+    fn note_picture_tile(
+        &self,
+        person: &str,
+        source: ui::native_media::PictureSource,
+        tf: Affine,
+        rect: Rect,
+    ) {
+        let device = tf.transform_rect_bbox(rect);
+        self.picture_tiles.borrow_mut().push((
+            person.to_owned(),
+            source,
+            (device.width(), device.height()),
+        ));
     }
 
     /// An empty viewfinder: the letterbox, the person's avatar and what the
@@ -744,6 +781,16 @@ impl ChatApp {
                 Hit::CallMute,
             ),
             (
+                if self.call.audio_only {
+                    "Camera"
+                } else {
+                    "Stop camera"
+                },
+                Icon::Video,
+                ButtonRole::Secondary,
+                Hit::CallCamera,
+            ),
+            (
                 "Expand",
                 Icon::Maximize2,
                 ButtonRole::Secondary,
@@ -760,10 +807,15 @@ impl ChatApp {
             let n = n as f64;
             ((panel.width() - 2.0 * pad - (n - 1.0) * gap) / n).max(0.0)
         };
-        // Too cramped for even three icons: trim Expand (the header's call
-        // button also opens the call).
-        if share(ctrls.len()) < bh {
-            ctrls.remove(1);
+        // Too cramped for every icon: trim the camera, then Expand (the
+        // header's call button also opens the call; the expanded call has
+        // the camera).
+        for trimmed in [Hit::CallCamera, Hit::CallExpand] {
+            if share(ctrls.len()) < bh {
+                ctrls.retain(|(.., hit)| {
+                    std::mem::discriminant(hit) != std::mem::discriminant(&trimmed)
+                });
+            }
         }
         let cw = share(ctrls.len());
         let fits = ctrls.iter().all(|(label, icon, ..)| {
@@ -877,9 +929,10 @@ impl ChatApp {
             None,
             &RoundedRect::from_rect(rect, radius),
         );
-        // A real decoded screen frame from the sharer takes over the tile.
-        // This slot only ever holds a genuinely decoded frame (the native
-        // voice path carries no video today, so it stays empty).
+        // The sharer's decoded screen takes over the tile once it arrives.
+        if !is_me {
+            self.note_picture_tile(sharer, ui::native_media::PictureSource::Screen, tf, rect);
+        }
         if let Some(img) = self.remote_screens.get(sharer) {
             // All of a shared screen shows, letterboxed: nothing is cut off.
             ui::image_store::paint_image_contain(scene, tf, rect, img, radius);
@@ -1085,8 +1138,9 @@ impl ChatApp {
     /// (which sizes buttons from these labels) and the pre-paint measurement
     /// (which measures exactly these labels), so a toggled label — Mute →
     /// Unmute — is measured the frame it appears.
-    fn overlay_control_specs(&self) -> [(String, bool, bool, bool, Hit); 3] {
+    fn overlay_control_specs(&self) -> [(String, bool, bool, bool, Hit); 5] {
         let t = crate::i18n::t;
+        let speak = self.call_allows(crate::call::CallAction::Speak);
         [
             (
                 t(if self.call.muted {
@@ -1096,8 +1150,30 @@ impl ChatApp {
                 }),
                 self.call.muted,
                 false,
-                self.call_allows(crate::call::CallAction::Speak),
+                speak,
                 Hit::CallMute,
+            ),
+            (
+                t(if self.call.audio_only {
+                    "chat-call-camera-on"
+                } else {
+                    "chat-call-camera-off"
+                }),
+                !self.call.audio_only,
+                false,
+                speak,
+                Hit::CallCamera,
+            ),
+            (
+                t(if self.call.sharing {
+                    "chat-call-stop-sharing"
+                } else {
+                    "chat-call-share-screen"
+                }),
+                self.call.sharing,
+                false,
+                speak,
+                Hit::CallScreen,
             ),
             (t("chat-call-collapse"), false, false, true, Hit::CallExpand),
             (t("chat-call-leave"), false, true, true, Hit::CallLeave),
@@ -1179,9 +1255,11 @@ impl ChatApp {
             .publishers
             .iter()
             .any(|namespace| namespace == &p.user);
-        // A real decoded camera/screen frame from this peer takes over the
-        // tile. This only ever holds a genuinely decoded frame — never a
-        // fabricated picture (the native voice path carries no video today).
+        // Their decoded camera picture takes over the tile once it arrives;
+        // until then the tile shows them.
+        if !is_stream && !p.audio_only {
+            self.note_picture_tile(&p.user, ui::native_media::PictureSource::Camera, tf, rect);
+        }
         if !is_stream && let Some(img) = self.remote_frames.get(&p.user) {
             let radius = self.tile_radius(theme);
             ui::image_store::paint_image_cover(scene, tf, rect, img, radius);

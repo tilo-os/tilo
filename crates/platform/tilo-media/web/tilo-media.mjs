@@ -210,3 +210,84 @@ export function objectUrl(bytes, mime) {
 export function mediaElementsAvailable() {
   return typeof document === 'object' && typeof document.createElement === 'function';
 }
+
+// Real-time decode for tilo-media's RealtimeDecoder in a page: WebCodecs,
+// hardware where the browser has it. One coded picture in at a time; the
+// decoded pictures come out on WebCodecs' own schedule and are read back as
+// RGBA through a 2D canvas, the same contract as the native decoder.
+const WEB_CODECS = {h264: 'avc1.64002A', vp9: 'vp09.00.41.08', av1: 'av01.0.08M.08'};
+
+export function webCodecsAvailable() {
+  return typeof VideoDecoder === 'function' && typeof EncodedVideoChunk === 'function';
+}
+
+export class TiloVideoDecoder {
+  constructor(codec) {
+    const config = WEB_CODECS[codec];
+    if (!config || !webCodecsAvailable()) throw new Error('this browser cannot decode pictures');
+    this.latest = null;
+    this.failed = false;
+    this.inFlight = 0;
+    this.timestamp = 0;
+    this.canvas = null;
+    this.context = null;
+    this.takenWidth = 0;
+    this.takenHeight = 0;
+    this.decoder = new VideoDecoder({
+      output: frame => this.picture(frame),
+      error: () => { this.failed = true; },
+    });
+    this.decoder.configure({codec: config, optimizeForLatency: true});
+  }
+
+  picture(frame) {
+    try {
+      const [width, height] = fitWithin(frame.displayWidth, frame.displayHeight);
+      if (!this.canvas || this.canvas.width !== width || this.canvas.height !== height) {
+        this.canvas = newCanvas(width, height);
+        this.context = this.canvas.getContext('2d', {willReadFrequently: true});
+      }
+      this.context.drawImage(frame, 0, 0, width, height);
+      this.latest = {width, height, rgba: new Uint8Array(this.context.getImageData(0, 0, width, height).data.buffer)};
+    } catch {
+      this.failed = true;
+    } finally {
+      frame.close();
+      this.inFlight = Math.max(0, this.inFlight - 1);
+    }
+  }
+
+  decode(bytes, keyframe) {
+    if (this.failed || this.decoder.state !== 'configured') return false;
+    try {
+      this.decoder.decode(new EncodedVideoChunk({type: keyframe ? 'key' : 'delta', timestamp: this.timestamp, data: bytes}));
+    } catch {
+      this.failed = true;
+      return false;
+    }
+    this.timestamp += 33333;
+    this.inFlight += 1;
+    return true;
+  }
+
+  pending() { return this.inFlight > 0; }
+
+  hasFailed() { return this.failed; }
+
+  take() {
+    const latest = this.latest;
+    this.latest = null;
+    if (!latest) return undefined;
+    this.takenWidth = latest.width;
+    this.takenHeight = latest.height;
+    return latest.rgba;
+  }
+
+  takenWidthPx() { return this.takenWidth; }
+
+  takenHeightPx() { return this.takenHeight; }
+
+  close() {
+    try { this.decoder.close(); } catch {}
+  }
+}

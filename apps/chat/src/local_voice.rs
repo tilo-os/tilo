@@ -1,9 +1,10 @@
 //! Ephemeral client of the shell's governed voice service. Nothing here is
 //! serialized into the Chat document or treated as microphone consent.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use ui::native_media::{PictureLayer, PictureSource};
 use ui::{
     collaboration::CollabRequest,
-    native_media::{Command, Request, Snapshot, State},
+    native_media::{Command, PICTURES_HOLD, Picture, Request, Shown, Snapshot, State},
     time::{Duration, Instant},
 };
 
@@ -23,7 +24,34 @@ pub(crate) struct LocalVoice {
     watch_after: Option<Instant>,
     pending_since: Option<Instant>,
     unmute_requested: bool,
+    /// The call's pictures.
+    pub(crate) video: CallVideo,
 }
+
+/// Which pictures of the call this window shows, and their collection: the
+/// service is told what the tiles show whenever that changes, and one
+/// collection is outstanding while the call is live and anything shows.
+#[derive(Default)]
+pub(crate) struct CallVideo {
+    /// What the tiles show now: by person and source, sorted.
+    pub(crate) wanted: Vec<Shown>,
+    /// What the service was last told.
+    told: Vec<Shown>,
+    /// The `Show` in flight.
+    showing: Option<u64>,
+    /// The collection in flight, and when it was sent.
+    collecting: Option<(u64, Instant)>,
+    /// Where the next collection continues.
+    cursor: u64,
+    /// No collection before this: the service just refused one.
+    retry_after: Option<Instant>,
+    /// Pictures collected and not yet handed to the decoder.
+    pub(crate) arrived: Vec<Picture>,
+}
+
+/// A collection unanswered this long was lost: the service holds one at
+/// most [`PICTURES_HOLD`].
+const PICTURES_LOST: Duration = PICTURES_HOLD.saturating_add(Duration::from_secs(5));
 
 /// How long a service that refused is left alone before it is watched again.
 const WATCH_RETRY: Duration = Duration::from_secs(2);
@@ -46,6 +74,7 @@ impl Default for LocalVoice {
             watch_after: None,
             pending_since: None,
             unmute_requested: false,
+            video: CallVideo::default(),
         }
     }
 }
@@ -117,7 +146,13 @@ impl LocalVoice {
                     self.snapshot.capture_active = false;
                 }
             }
-            Command::SelectInput { .. } | Command::Status | Command::Watch { .. } => {}
+            Command::SelectInput { .. }
+            | Command::Status
+            | Command::Watch { .. }
+            | Command::SetCamera { .. }
+            | Command::SetScreen { .. }
+            | Command::Show { .. }
+            | Command::Pictures { .. } => {}
         }
         self.pending.insert(id, command);
         self.queued.push(CollabRequest::NativeMediaCommand {
@@ -160,7 +195,87 @@ impl LocalVoice {
                 }),
             });
         }
+        self.video_requests(now);
         std::mem::take(&mut self.queued)
+    }
+
+    /// Tell the service what the tiles show when that changed, and keep one
+    /// collection of their pictures outstanding while the call is live.
+    fn video_requests(&mut self, now: Instant) {
+        let live = self.channel.is_some() && self.snapshot.state == State::Live;
+        if !live {
+            // A call starts showing nothing; every stream starts over.
+            self.video.told.clear();
+            self.video.showing = None;
+            self.video.collecting = None;
+            self.video.cursor = 0;
+            return;
+        }
+        if self
+            .video
+            .collecting
+            .is_some_and(|(_, sent)| now.saturating_duration_since(sent) >= PICTURES_LOST)
+        {
+            self.video.collecting = None;
+        }
+        if self.video.showing.is_none()
+            && self.video.wanted != self.video.told
+            && let Some(id) = self.next_request.checked_add(1)
+        {
+            self.next_request = id;
+            self.video.showing = Some(id);
+            self.video.told.clone_from(&self.video.wanted);
+            self.queued.push(CollabRequest::NativeMediaCommand {
+                request_id: id,
+                command: Request::new(Command::Show {
+                    pictures: self.video.wanted.clone(),
+                }),
+            });
+        }
+        if self.video.collecting.is_none()
+            && !self.video.told.is_empty()
+            && self.video.retry_after.is_none_or(|after| now >= after)
+            && let Some(id) = self.next_request.checked_add(1)
+        {
+            self.next_request = id;
+            self.video.collecting = Some((id, now));
+            self.queued.push(CollabRequest::NativeMediaCommand {
+                request_id: id,
+                command: Request::new(Command::Pictures {
+                    after: self.video.cursor,
+                }),
+            });
+        }
+    }
+
+    /// The answer to a `Show` or a collection, if `request_id` was one.
+    fn complete_video(&mut self, request_id: u64, result: &Result<Snapshot, String>) -> bool {
+        if self.video.showing == Some(request_id) {
+            self.video.showing = None;
+            if result.is_err() {
+                // Told again with the next request round.
+                self.video.told.clear();
+            }
+            return true;
+        }
+        if self
+            .video
+            .collecting
+            .is_some_and(|(collecting, _)| collecting == request_id)
+        {
+            self.video.collecting = None;
+            match result {
+                Ok(snapshot) if snapshot.valid() => {
+                    self.video.cursor = self.video.cursor.max(snapshot.pictures_cursor);
+                    self.video.arrived.extend(snapshot.pictures.iter().cloned());
+                }
+                Ok(_) | Err(_) => {
+                    self.video.retry_after = Some(ui::time::now() + WATCH_RETRY);
+                }
+            }
+            return true;
+        }
+        false
     }
 
     /// The service's answer to the watch `request_id`: everything when no
@@ -201,6 +316,9 @@ impl LocalVoice {
     }
 
     pub(crate) fn complete(&mut self, request_id: u64, result: &Result<Snapshot, String>) -> bool {
+        if self.complete_video(request_id, result) {
+            return false;
+        }
         if self.watch.is_some_and(|(watch, _)| watch == request_id) {
             self.watch = None;
             return self.complete_watch(request_id, result);
@@ -310,11 +428,18 @@ impl crate::app::ChatApp {
                 }
                 CallAction::Join
             }
-            Command::SetMuted { muted: false } => CallAction::Speak,
-            Command::SetMuted { muted: true } | Command::Leave => CallAction::Leave,
-            Command::SelectInput { .. } | Command::Status | Command::Watch { .. } => {
-                CallAction::Join
-            }
+            Command::SetMuted { muted: false }
+            | Command::SetCamera { on: true }
+            | Command::SetScreen { on: true } => CallAction::Speak,
+            Command::SetMuted { muted: true }
+            | Command::SetCamera { on: false }
+            | Command::SetScreen { on: false }
+            | Command::Leave => CallAction::Leave,
+            Command::SelectInput { .. }
+            | Command::Status
+            | Command::Watch { .. }
+            | Command::Show { .. }
+            | Command::Pictures { .. } => CallAction::Join,
         };
         if !self.call_allows(action) {
             return Err("Call action is not permitted".into());
@@ -348,8 +473,8 @@ impl crate::app::ChatApp {
                     self.call.join(channel);
                 }
                 self.call.muted = snapshot.muted;
-                self.call.audio_only = true;
-                self.call.sharing = false;
+                self.call.audio_only = !snapshot.camera;
+                self.call.sharing = snapshot.screen;
             }
         } else {
             self.call.leave();
@@ -364,9 +489,24 @@ impl crate::app::ChatApp {
                 ui::native_media::Issue::TransportFailed => "chat-call-issue-transport-failed",
                 ui::native_media::Issue::SessionEnded => "chat-call-issue-session-ended",
                 ui::native_media::Issue::Stale => "chat-call-issue-stale",
+                ui::native_media::Issue::CameraDenied => "chat-call-issue-camera-denied",
+                ui::native_media::Issue::CameraLost => "chat-call-issue-camera-lost",
+                ui::native_media::Issue::ScreenDenied => "chat-call-issue-screen-denied",
+                ui::native_media::Issue::ScreenLost => "chat-call-issue-screen-lost",
             })
         });
         self.refresh_native_streams();
+        // A video call turns the camera on once it is live.
+        if self.camera_on_live
+            && self.native_voice.snapshot.state == State::Live
+            && let Some(channel) = self.native_voice.channel.clone()
+        {
+            self.camera_on_live = false;
+            if let Err(error) = self.native_voice_command(&channel, Command::SetCamera { on: true })
+            {
+                self.media_error = Some(error);
+            }
+        }
         // Who talks changes several times a second in a call: it repaints
         // the rings, and lays nothing out again.
         if self.call_layout_inputs() == laid_out {
@@ -400,26 +540,157 @@ impl crate::app::ChatApp {
         )
     }
 
+    /// Whose camera and screen the call this person is in shows now, as the
+    /// room says, this person's own camera among them while it is on.
+    fn showing_pictures(&self) -> BTreeSet<(String, PictureSource)> {
+        let mut showing = BTreeSet::new();
+        if !self.call.active {
+            return showing;
+        }
+        for roster in &self.native_voice.snapshot.rosters {
+            if roster.channel_id != self.call.channel {
+                continue;
+            }
+            showing.extend(
+                roster
+                    .cameras
+                    .iter()
+                    .map(|person| (person.clone(), PictureSource::Camera)),
+            );
+            showing.extend(
+                roster
+                    .screens
+                    .iter()
+                    .map(|person| (person.clone(), PictureSource::Screen)),
+            );
+        }
+        if !self.call.audio_only {
+            showing.insert((self.me.id.clone(), PictureSource::Camera));
+        }
+        showing
+    }
+
+    /// The pictures the tiles of the last frame show, each at the layer
+    /// that fits its tile: only of people who show them, and none while this
+    /// window is not on screen.
+    pub(crate) fn wanted_pictures(&self) -> Vec<Shown> {
+        if !self.presented {
+            return Vec::new();
+        }
+        let showing = self.showing_pictures();
+        let mut wanted: BTreeMap<(String, PictureSource), PictureLayer> = BTreeMap::new();
+        for (person, source, (width, height)) in self.picture_tiles.borrow().iter() {
+            if !showing.contains(&(person.clone(), *source)) {
+                continue;
+            }
+            let layer = layer_for(*width, *height, *source);
+            let entry = wanted.entry((person.clone(), *source)).or_insert(layer);
+            *entry = (*entry).max(layer);
+        }
+        wanted
+            .into_iter()
+            .map(|((person, source), layer)| Shown {
+                person,
+                source,
+                layer,
+            })
+            .collect()
+    }
+
+    /// Show the pictures decoded since the last frame, and stop showing
+    /// those of people who turned their camera off, stopped sharing or left.
+    pub(crate) fn sync_call_pictures(&mut self) {
+        if !self.call.active {
+            if !self.remote_frames.is_empty() || !self.remote_screens.is_empty() {
+                self.remote_frames.clear();
+                self.remote_screens.clear();
+                self.canonical_dirty = true;
+            }
+            self.call_pictures.clear();
+            return;
+        }
+        self.call_pictures.poll();
+        let showing = self.showing_pictures();
+        let me = self.me.id.clone();
+        let own = |person: &str, me: &str, former: &[String]| {
+            person == me || former.iter().any(|id| id == person)
+        };
+        let former = self.former_ids.clone();
+        // This person's own picture comes under the id the call knows them
+        // by; their tile knows them by this window's.
+        let shown = |person: &str, source: PictureSource| {
+            let person = if own(person, &me, &former) {
+                me.as_str()
+            } else {
+                person
+            };
+            showing.contains(&(person.to_owned(), source))
+        };
+        self.call_pictures.retain(shown);
+        let before = (self.remote_frames.len(), self.remote_screens.len());
+        self.remote_frames
+            .retain(|person, _| showing.contains(&(person.clone(), PictureSource::Camera)));
+        self.remote_screens
+            .retain(|person, _| showing.contains(&(person.clone(), PictureSource::Screen)));
+        let mut changed = before != (self.remote_frames.len(), self.remote_screens.len());
+        if self.call_pictures.take_changed() {
+            for (person, source, image) in self.call_pictures.pictures() {
+                let person = if own(&person, &me, &former) {
+                    me.clone()
+                } else {
+                    person
+                };
+                match source {
+                    PictureSource::Camera => self.remote_frames.insert(person, image),
+                    PictureSource::Screen => self.remote_screens.insert(person, image),
+                };
+            }
+            changed = true;
+        }
+        if changed {
+            self.canonical_dirty = true;
+        }
+    }
+
+    /// Turn this person's camera or screen on or off in the call they are in.
+    pub(crate) fn toggle_call_picture(&mut self, source: PictureSource) {
+        let channel = self
+            .native_voice
+            .channel
+            .clone()
+            .unwrap_or_else(|| self.call.channel.clone());
+        let command = match source {
+            PictureSource::Camera => Command::SetCamera {
+                on: self.call.audio_only,
+            },
+            PictureSource::Screen => Command::SetScreen {
+                on: !self.call.sharing,
+            },
+        };
+        if let Err(error) = self.native_voice_command(&channel, command) {
+            self.media_error = Some(error);
+        }
+    }
+
     /// Who is in each voice channel, joined or not: the rosters the service
     /// last heard from the room, by person (this person among them once the
     /// room counts them in).
     pub(crate) fn refresh_native_streams(&mut self) {
         self.voice_members.clear();
         let snapshot = &self.native_voice.snapshot;
-        let screens = &self.remote_screens;
-        let cameras = &self.remote_frames;
-        let member = |user: &str, muted: bool| crate::model::VoiceMember {
-            user: user.to_owned(),
-            talking: snapshot.speaking.iter().any(|person| person == user),
-            muted,
-            deafened: false,
-            // Whoever's pictures arrive shows them.
-            audio_only: !cameras.contains_key(user),
-            sharing: screens.contains_key(user),
-            ticket: None,
-            video: None,
-        };
         for roster in &snapshot.rosters {
+            // What the room says each person shows: their tile reserves a
+            // picture from that moment, before the first one arrives.
+            let member = |user: &str, muted: bool| crate::model::VoiceMember {
+                user: user.to_owned(),
+                talking: snapshot.speaking.iter().any(|person| person == user),
+                muted,
+                deafened: false,
+                audio_only: !roster.cameras.iter().any(|person| person == user),
+                sharing: roster.screens.iter().any(|person| person == user),
+                ticket: None,
+                video: None,
+            };
             let voice = self.channels.iter().any(|channel| {
                 channel.id == roster.channel_id && channel.kind == crate::model::ChannelKind::Voice
             });
@@ -435,6 +706,19 @@ impl crate::app::ChatApp {
                     .insert(roster.channel_id.clone(), members);
             }
         }
+    }
+}
+
+/// The smallest layer whose pictures cover a tile `width` × `height`
+/// device pixels (`tilo_moq::video::Layer::for_tile`): a screen has no
+/// middle layer.
+pub(crate) fn layer_for(width: f64, height: f64, source: PictureSource) -> PictureLayer {
+    if width <= 320.0 && height <= 180.0 {
+        PictureLayer::Low
+    } else if source == PictureSource::Camera && width <= 640.0 && height <= 360.0 {
+        PictureLayer::Mid
+    } else {
+        PictureLayer::High
     }
 }
 
@@ -676,6 +960,7 @@ mod tests {
         joined.rosters = vec![ui::native_media::Roster {
             channel_id: "voice".into(),
             people: vec!["a".repeat(64)],
+            ..Default::default()
         }];
         joined.speaking = vec!["a".repeat(64)];
         joined.revision = 9;
@@ -949,5 +1234,143 @@ mod tests {
         assert!(app.call.muted);
         assert!(!app.native_voice.snapshot.capture_active);
         assert!(app.native_voice.snapshot.publishers.is_empty());
+    }
+
+    fn person(n: u8) -> String {
+        format!("{n:02x}").repeat(32)
+    }
+
+    #[test]
+    fn a_tile_asks_for_the_smallest_layer_that_covers_it() {
+        use ui::native_media::{PictureLayer, PictureSource};
+        assert_eq!(
+            layer_for(200.0, 112.0, PictureSource::Camera),
+            PictureLayer::Low
+        );
+        assert_eq!(
+            layer_for(480.0, 270.0, PictureSource::Camera),
+            PictureLayer::Mid
+        );
+        assert_eq!(
+            layer_for(1100.0, 620.0, PictureSource::Camera),
+            PictureLayer::High
+        );
+        // A screen has no middle layer: past its preview it is the screen.
+        assert_eq!(
+            layer_for(480.0, 270.0, PictureSource::Screen),
+            PictureLayer::High
+        );
+    }
+
+    #[test]
+    fn the_call_is_asked_for_exactly_the_pictures_its_tiles_show_of_people_who_show_them() {
+        use ui::native_media::{PictureLayer, PictureSource, Roster, Shown};
+        let mut doc = automerge::AutoCommit::new();
+        crate::demo::seed(&mut doc).unwrap();
+        let mut app = crate::app::ChatApp::new_ephemeral();
+        app.reload(&doc);
+        app.presented = true;
+        app.call.join("c_standup");
+        app.native_voice.snapshot.rosters = vec![Roster {
+            channel_id: "c_standup".into(),
+            people: vec![person(1), person(2), person(3)],
+            cameras: vec![person(1), person(3)],
+            screens: vec![person(3)],
+        }];
+        {
+            let mut tiles = app.picture_tiles.borrow_mut();
+            tiles.push((person(1), PictureSource::Camera, (500.0, 280.0)));
+            // Their camera is off: nothing is asked for, whatever the tile.
+            tiles.push((person(2), PictureSource::Camera, (500.0, 280.0)));
+            tiles.push((person(3), PictureSource::Camera, (200.0, 110.0)));
+            tiles.push((person(3), PictureSource::Screen, (1600.0, 900.0)));
+        }
+        assert_eq!(
+            app.wanted_pictures(),
+            vec![
+                Shown {
+                    person: person(1),
+                    source: PictureSource::Camera,
+                    layer: PictureLayer::Mid,
+                },
+                Shown {
+                    person: person(3),
+                    source: PictureSource::Camera,
+                    layer: PictureLayer::Low,
+                },
+                Shown {
+                    person: person(3),
+                    source: PictureSource::Screen,
+                    layer: PictureLayer::High,
+                },
+            ]
+        );
+        // A window nobody sees asks for nothing.
+        app.presented = false;
+        assert!(app.wanted_pictures().is_empty());
+    }
+
+    #[test]
+    fn a_live_call_tells_the_service_what_shows_and_keeps_one_collection_outstanding() {
+        use ui::native_media::{Picture, PictureLayer, PictureSource, Shown};
+        let now = ui::time::now();
+        let mut voice = LocalVoice::default();
+        voice
+            .submit(Command::Join {
+                channel_id: "voice".into(),
+            })
+            .unwrap();
+        let join = voice.take_requests(now);
+        voice.complete(request_id(&join[0]), &Ok(live()));
+        let shown = vec![Shown {
+            person: person(1),
+            source: PictureSource::Camera,
+            layer: PictureLayer::Low,
+        }];
+        voice.video.wanted = shown.clone();
+        let requests = voice.take_requests(now);
+        let command = |request: &CollabRequest| match request {
+            CollabRequest::NativeMediaCommand { command, .. } => command.command.clone(),
+            _ => panic!("only native media requests"),
+        };
+        let show = requests
+            .iter()
+            .find(|request| matches!(command(request), Command::Show { .. }))
+            .expect("the service hears what shows");
+        assert_eq!(command(show), Command::Show { pictures: shown });
+        let collect = requests
+            .iter()
+            .find(|request| matches!(command(request), Command::Pictures { after: 0 }))
+            .expect("and its pictures are collected");
+        // Nothing more while both are in flight.
+        assert!(voice.take_requests(now).iter().all(|request| !matches!(
+            command(request),
+            Command::Show { .. } | Command::Pictures { .. }
+        )));
+        voice.complete(request_id(show), &Ok(live()));
+        let mut answer = live();
+        answer.pictures = vec![Picture {
+            person: person(1),
+            stream: "s".into(),
+            source: PictureSource::Camera,
+            object: vec![1; 40],
+        }];
+        answer.pictures_cursor = 5;
+        assert!(!voice.complete(request_id(collect), &Ok(answer)));
+        assert_eq!(voice.video.arrived.len(), 1, "for the decoder");
+        let next = voice.take_requests(now);
+        assert!(
+            next.iter()
+                .any(|request| command(request) == Command::Pictures { after: 5 }),
+            "the next collection continues where the last ended"
+        );
+        // Out of the call, nothing is collected.
+        voice.submit(Command::Leave).unwrap();
+        assert!(
+            voice
+                .take_requests(now)
+                .iter()
+                .all(|request| !matches!(command(request), Command::Pictures { .. }))
+        );
     }
 }

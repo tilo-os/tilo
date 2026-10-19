@@ -51,6 +51,10 @@ impl Registry {
                     })
                     .map(|()| Reply::Sent)
                     .inspect_err(|_| ticket.stop()),
+                Operation::Show { ticket, showing } => self
+                    .known(&ticket)
+                    .and_then(|()| ticket.show(sessions(ticket.workspace()).as_deref(), showing))
+                    .map(|()| Reply::Sent),
                 Operation::End { ticket } => self.known_pointer(&ticket).map(|()| {
                     ticket.leave(sessions(ticket.workspace()).as_deref());
                     Reply::Left
@@ -224,28 +228,40 @@ fn check_identity(view: &NativeCommittedView, identity: &HostIdentity) -> Result
 }
 
 /// Who is in the active calls of record `record` of app `app`, one roster
-/// per voice channel with anyone in it, sorted by channel; each person once.
+/// per voice channel with anyone in it, sorted by channel; each person once,
+/// with whose camera is on and who shares a screen (on any of their devices).
 pub(super) fn rosters_of(calls: &[CallSummary], app: &str, record: &str) -> Vec<Roster> {
-    let mut by_channel: std::collections::BTreeMap<&str, std::collections::BTreeSet<String>> =
-        std::collections::BTreeMap::new();
+    use std::collections::{BTreeMap, BTreeSet};
+    #[derive(Default)]
+    struct Channel {
+        people: BTreeSet<String>,
+        cameras: BTreeSet<String>,
+        screens: BTreeSet<String>,
+    }
+    let mut by_channel: BTreeMap<&str, Channel> = BTreeMap::new();
     for call in calls
         .iter()
         .filter(|call| call.state.active && call.app_id == app && call.record_id == record)
     {
-        by_channel
-            .entry(call.channel_id.as_str())
-            .or_default()
-            .extend(
-                call.participants
-                    .iter()
-                    .map(|participant| hex::encode(participant.user_public_key)),
-            );
+        let channel = by_channel.entry(call.channel_id.as_str()).or_default();
+        for participant in &call.participants {
+            let person = hex::encode(participant.user_public_key);
+            if participant.showing.camera {
+                channel.cameras.insert(person.clone());
+            }
+            if participant.showing.screen {
+                channel.screens.insert(person.clone());
+            }
+            channel.people.insert(person);
+        }
     }
     by_channel
         .into_iter()
         .map(|(channel, people)| Roster {
             channel_id: channel.to_owned(),
-            people: people.into_iter().collect(),
+            people: people.people.into_iter().collect(),
+            cameras: people.cameras.into_iter().collect(),
+            screens: people.screens.into_iter().collect(),
         })
         .filter(|roster| !roster.people.is_empty() && roster.valid())
         .collect()

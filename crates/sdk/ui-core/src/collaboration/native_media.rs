@@ -1,6 +1,6 @@
 //! Bounded control lane on the same admitted channel, independent of document RPCs.
 use super::{CollabEvent, InboundBridge};
-use runtime_collab::native_media::{Command, Request, Snapshot, WATCH_HOLD};
+use runtime_collab::native_media::{Command, PICTURES_HOLD, Request, Snapshot, WATCH_HOLD};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
@@ -13,6 +13,8 @@ const MAX_ROUTES: usize = 16;
 const DEADLINE: Duration = Duration::from_secs(2);
 /// A watch is held by the service up to [`WATCH_HOLD`]; past this it is lost.
 const WATCH_DEADLINE: Duration = WATCH_HOLD.saturating_add(DEADLINE);
+/// A pictures collection is held up to [`PICTURES_HOLD`]; past this it is lost.
+const PICTURES_DEADLINE: Duration = PICTURES_HOLD.saturating_add(DEADLINE);
 #[derive(Default)]
 struct RouteFloor {
     intent: u64,
@@ -83,7 +85,7 @@ impl Sender {
             request.command,
             Command::Leave | Command::SetMuted { muted: true }
         );
-        let effect = !matches!(request.command, Command::Status | Command::Watch { .. });
+        let effect = request.carries_intent();
         let Ok(mut queue) = self.0.queue.lock() else {
             return false;
         };
@@ -372,20 +374,33 @@ pub(super) fn start(receiver: Receiver, routes: Routes) -> Worker {
                     );
                     continue;
                 }
-                // A held watch has its own lane: a status read or an effect
-                // never cancels it, and a newer watch replaces it.
+                // A held watch has its own lane, and so has collecting
+                // pictures: a status read or an effect never cancels either,
+                // and a newer one of the same kind replaces it.
                 let watch = matches!(job.request.command, Command::Watch { .. });
+                let pictures = matches!(job.request.command, Command::Pictures { .. });
+                let shows = matches!(job.request.command, Command::Show { .. });
                 let task_key = (
                     job.route.clone(),
                     if job.priority {
                         2
                     } else if watch {
                         3
+                    } else if pictures {
+                        4
+                    } else if shows {
+                        5
                     } else {
                         u8::from(job.request.intent != 0)
                     },
                 );
-                let deadline = if watch { WATCH_DEADLINE } else { DEADLINE };
+                let deadline = if watch {
+                    WATCH_DEADLINE
+                } else if pictures {
+                    PICTURES_DEADLINE
+                } else {
+                    DEADLINE
+                };
                 if job.priority
                     && let Some(old) = tasks.0.remove(&(job.route.clone(), 1))
                 {

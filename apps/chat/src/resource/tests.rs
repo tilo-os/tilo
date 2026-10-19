@@ -502,24 +502,20 @@ fn root_action(app: &mut TestApp<ChatShell>, id: &str) -> ui::tilo_actions::Acti
 }
 
 #[test]
-fn the_root_offers_call_starts_and_refuses_video() {
+fn the_root_offers_call_starts_with_and_without_the_camera() {
     let mut app = TestApp::<ChatShell>::new().unwrap();
-    let start = root_action(&mut app, "start-call");
-    assert_eq!(start.label, "Start a call");
-    assert_eq!(start.kind, ui::tilo_actions::OperationKind::Effect);
-    assert_eq!(
-        start.contract.retry,
-        ui::tilo_actions::RetryPolicy::Idempotent
-    );
-    assert_eq!(
-        root_action(&mut app, "start-video-call")
-            .contract
-            .availability,
-        ui::tilo_actions::Availability::Unavailable {
-            code: crate::effects::VIDEO_CALL_UNAVAILABLE.into(),
-            reason: crate::effects::video_call_unavailable_reason(),
-        }
-    );
+    for (id, label) in [
+        ("start-call", "Start a call"),
+        ("start-video-call", "Start a video call"),
+    ] {
+        let start = root_action(&mut app, id);
+        assert_eq!(start.label, label);
+        assert_eq!(start.kind, ui::tilo_actions::OperationKind::Effect);
+        assert_eq!(
+            start.contract.retry,
+            ui::tilo_actions::RetryPolicy::Idempotent
+        );
+    }
 }
 
 /// What the package manifest offers while Chat is closed is what the running
@@ -575,8 +571,6 @@ fn start_call_through_the_door_makes_a_voice_channel_and_joins_it() {
             .any(|channel| channel.kind == crate::model::ChannelKind::Voice),
         "the starter's voice channel stands"
     );
-    let refused = app.call("start-video-call", serde_json::json!({}));
-    assert!(refused.is_err(), "{refused:?}");
 }
 
 #[test]

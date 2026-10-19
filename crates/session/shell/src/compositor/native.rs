@@ -14287,6 +14287,23 @@ pub fn run() {
                     }
                 }
             }
+            // A call sharing this screen gets the composed desktop at its own
+            // pace, never the lock screen.
+            {
+                let share = crate::network::native_media::screen_share();
+                if session.is_locked() {
+                    share.withhold();
+                } else if share.wants_frame(std::time::Instant::now()) {
+                    match capture_executor
+                        .render_portal_screencast_frame(&mut frame_builder, &frame_paint.scene)
+                    {
+                        Ok((width, height, rgba)) => share.publish_rgba(width, height, rgba),
+                        Err(error) => {
+                            tracing::warn!(%error, "call screen-share frame render failed");
+                        }
+                    }
+                }
+            }
             // Neither capture path transmits the lock screen: receiver
             // sessions may remain connected, but no fresh frame reveals
             // password entry, notification counts, or unlock timing.
