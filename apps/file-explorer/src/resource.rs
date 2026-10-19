@@ -1594,7 +1594,11 @@ mod tests {
         })
         .unwrap();
         app.effect(&FilesEffect::Paste { conflict: None }).unwrap();
-        app.settle();
+        settle_until(&mut app, "the paste", || {
+            ["a.txt", "c.txt"]
+                .iter()
+                .all(|name| destination.join(name).exists())
+        });
         for name in ["a.txt", "c.txt"] {
             assert_eq!(
                 std::fs::read(destination.join(name)).unwrap(),
@@ -1603,7 +1607,11 @@ mod tests {
         }
         assert!(!destination.join("b.txt").exists());
         assert!(app.undo());
-        app.settle();
+        settle_until(&mut app, "the undo", || {
+            ["a.txt", "c.txt"]
+                .iter()
+                .all(|name| !destination.join(name).exists())
+        });
         for name in ["a.txt", "c.txt"] {
             assert!(!destination.join(name).exists());
             assert_eq!(
@@ -1710,10 +1718,13 @@ mod tests {
         })
         .unwrap();
         app.effect(&FilesEffect::Paste { conflict: None }).unwrap();
-        app.settle();
-        assert!(folder.path().join("Projects/notes.txt").exists());
+        settle_until(&mut app, "the paste", || {
+            folder.path().join("Projects/notes.txt").exists()
+        });
         assert!(app.undo());
-        app.settle();
+        settle_until(&mut app, "the undo", || {
+            !folder.path().join("Projects/notes.txt").exists()
+        });
         assert!(
             !folder.path().join("Projects/notes.txt").exists(),
             "the copy goes"
@@ -1739,10 +1750,13 @@ mod tests {
         })
         .unwrap();
         app.effect(&FilesEffect::Paste { conflict: None }).unwrap();
-        app.settle();
-        assert!(folder.path().join("Projects/plan.txt").exists());
+        settle_until(&mut app, "the paste", || {
+            folder.path().join("Projects/plan.txt").exists()
+        });
         assert!(app.undo());
-        app.settle();
+        settle_until(&mut app, "the undo", || {
+            folder.path().join("plan.txt").exists()
+        });
         assert!(
             folder.path().join("plan.txt").exists(),
             "cut and paste moves back"
@@ -1783,6 +1797,23 @@ mod tests {
                 folder.path().join("notes.txt").exists(),
                 "undo restores it from Trash"
             );
+        }
+    }
+
+    /// Run frames until `done`: a paste or its undo only queues the change
+    /// in the Files document, and the device carries it out in a later
+    /// frame, after the effect itself has answered. A loaded test machine
+    /// can take many frames to get there.
+    fn settle_until(app: &mut TestApp<FileExplorerShell>, what: &str, done: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        app.settle();
+        while !done() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{what} never reached the disk"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            app.settle();
         }
     }
 
@@ -1903,7 +1934,9 @@ mod tests {
         })
         .unwrap();
         app.effect(&FilesEffect::Paste { conflict: None }).unwrap();
-        assert!(folder.path().join("Projects/notes.txt").exists());
+        settle_until(&mut app, "the paste", || {
+            folder.path().join("Projects/notes.txt").exists()
+        });
         assert!(
             app.effect(&FilesEffect::EmptyTrash).is_err(),
             "Trash is emptied from the Trash folder only"

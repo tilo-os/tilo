@@ -1572,7 +1572,7 @@ mod command_path_tests {
             serde_json::json!({"folder": destination}),
         )
         .unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         while !destination.join("Folder/document.txt").exists()
             || app.state().ops.pending().next().is_some()
         {
