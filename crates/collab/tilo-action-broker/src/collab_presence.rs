@@ -35,13 +35,6 @@ pub fn to_peer(key: &PresenceKey, payload: &PresencePayload) -> Option<PeerPrese
             text: text.clone(),
             automatic: *automatic,
         },
-        PresencePayload::Availability { state, call } => PeerPresencePayload::Availability {
-            state: state.id().to_owned(),
-            call: call.clone(),
-        },
-        PresencePayload::Wave { target } => PeerPresencePayload::Wave {
-            target: target.clone(),
-        },
     };
     Some(PeerPresence { key, payload })
 }
@@ -70,11 +63,6 @@ pub fn from_peer(presence: PeerPresence) -> Option<(PresenceKey, PresencePayload
         PeerPresencePayload::Status { text, automatic } => {
             PresencePayload::Status { text, automatic }
         }
-        PeerPresencePayload::Availability { state, call } => PresencePayload::Availability {
-            state: ui::Availability::from_id(&state)?,
-            call,
-        },
-        PeerPresencePayload::Wave { target } => PresencePayload::Wave { target },
     };
     Some((key, payload))
 }
@@ -125,13 +113,6 @@ mod tests {
             PresencePayload::Status {
                 text: "Reviewing Q2 assumptions".into(),
                 automatic: true,
-            },
-            PresencePayload::Availability {
-                state: ui::Availability::Focusing,
-                call: Some("voice".into()),
-            },
-            PresencePayload::Wave {
-                target: "peer@7".into(),
             },
         ];
         for payload in variants {

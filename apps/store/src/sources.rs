@@ -740,21 +740,7 @@ pub(crate) mod tests {
         assert_eq!(item.action_kind(true), crate::model::ActionKind::AddBot);
         assert!(
             item.unavailable_action(crate::model::ActionKind::AddBot)
-                .is_none(),
-            "the button prepares the workspace's Add a bot"
-        );
-        let invocation = crate::bindings::add_bot(&item)
-            .expect("a bot's page prepares the workspace's Add a bot")
-            .invoke(())
-            .unwrap();
-        let offer = ui::search::SearchRequest::from_arguments(&invocation.arguments)
-            .offer
-            .expect("the system search opens on Add a bot");
-        assert_eq!(offer.action, "bot.add");
-        assert_eq!(offer.arguments["entry"], "so.tilo.bots.bridge");
-        assert!(
-            !offer.arguments.contains_key("confirm"),
-            "the person confirms it, never the Store"
+                .is_some()
         );
     }
 

@@ -307,32 +307,6 @@ impl ShellOverlayHost {
                 .into_iter()
                 .map(NativeProfileAction::profile_action)
                 .collect(),
-            offers_presence: true,
-            sharing: Some(self.status_sharing),
-            availability: self.self_presence.chosen,
-            status: self
-                .local_status
-                .clone()
-                .filter(|_| matches!(self.local_status_origin, ui::StatusOrigin::Manual))
-                .unwrap_or_default(),
-            colour_id: ui::tokens::PresenceHue::chosen_in(&serde_json::Value::Object(
-                settings_store::load(),
-            ))
-            .map(|hue| hue.id().to_owned()),
-            sight: self.chrome.as_ref().and_then(|chrome| {
-                let state = chrome.borrow();
-                let workspace = state
-                    .tree()
-                    .desktop
-                    .active_workspace()
-                    .map(|workspace| (workspace.room, workspace.name.clone()));
-                drop(state);
-                let (room, name) = workspace?;
-                Some(tilo_desktop::profile_card::WorkspaceSight {
-                    workspace: name,
-                    visibility: self.presence_visibility(room),
-                })
-            }),
         }
     }
 
@@ -369,16 +343,11 @@ impl ShellOverlayHost {
                 }
             }
             WorkspaceMenuChoice::Overview => {
-                {
-                    let mut state = chrome.borrow_mut();
-                    if !state.overlays.overview {
-                        state.overlays.overview = true;
-                        state.bump();
-                    }
+                let mut state = chrome.borrow_mut();
+                if !state.overlays.overview {
+                    state.overlays.overview = true;
+                    state.bump();
                 }
-                // A click on it is a whole-view change the windows fly
-                // through; a key that chose it keeps the flight short.
-                self.latch_overview_transition();
             }
             WorkspaceMenuChoice::NewDesk => {
                 if let Some(bar) = self
@@ -437,45 +406,10 @@ impl ShellOverlayHost {
         state.bump();
     }
 
-    pub(super) fn apply_profile_choice(&mut self, choice: &ProfileChoice) {
-        let id = match choice {
-            ProfileChoice::Action(id) => id,
-            ProfileChoice::Availability(chosen) => {
-                self.set_chosen_availability(*chosen);
-                return;
-            }
-            ProfileChoice::Status(text) => {
-                self.set_manual_status(Some(text.clone()));
-                return;
-            }
-            ProfileChoice::Sharing(mode) => {
-                self.set_status_sharing(*mode);
-                return;
-            }
-            ProfileChoice::Colour(id) => {
-                let mut values = serde_json::Map::new();
-                values.insert("colour".into(), id.clone().into());
-                if let Err(error) = settings_store::update_section("identity", values) {
-                    tracing::warn!(%error, "could not keep the chosen colour");
-                }
-                crate::shell::state::read_local_presence_hue();
-                return;
-            }
-            ProfileChoice::Visibility(choice) => {
-                let room = self.chrome.as_ref().and_then(|chrome| {
-                    let state = chrome.borrow();
-                    let room = state.tree().desktop.active_workspace().map(|w| w.room);
-                    room
-                });
-                if let Some(room) = room {
-                    self.set_presence_visibility(room, *choice);
-                }
-                return;
-            }
+    fn apply_profile_choice(&mut self, choice: &ProfileChoice) {
+        let ProfileChoice::Action(id) = choice else {
             // The card offers no name field here.
-            ProfileChoice::Rename(_) | ProfileChoice::Link(_) | ProfileChoice::Unlink(_) => {
-                return;
-            }
+            return;
         };
         let Some(action) = NativeProfileAction::from_id(id) else {
             return;

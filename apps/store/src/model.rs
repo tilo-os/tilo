@@ -189,7 +189,7 @@ impl ActionKind {
             ActionKind::Unmark => "Allow cleanup",
             ActionKind::FlatpakInstall | ActionKind::RuntimeInstall => "Install",
             ActionKind::NeedsFlatpakHost => "Install flatpak first",
-            ActionKind::AddBot => "Add to this workspace…",
+            ActionKind::AddBot => "Add to a room…",
         }
     }
 
@@ -499,7 +499,11 @@ impl StoreItem {
 
     /// The same availability contract for controls, rows and direct invocation.
     pub fn unavailable_action(&self, action: ActionKind) -> Option<(&'static str, String)> {
-        if self.managed_by_device(action) {
+        if action == ActionKind::AddBot {
+            // Adding runs a room's governance action, which needs a room that
+            // offers it to this person; until one does, say where bots go.
+            Some(("bot_needs_room", ui::i18n!("store-bot-add-unavailable")))
+        } else if self.managed_by_device(action) {
             Some((
                 "device_managed_repository",
                 ui::i18n!("store-remote-managed"),

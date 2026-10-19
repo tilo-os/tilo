@@ -89,24 +89,6 @@ profile-section-linked = Linked accounts
 profile-link = Link { $service } account
 profile-unlink = Unlink
 profile-copy = Copy
-profile-sharing = Share what you're doing
-profile-sharing-auto = Automatically
-profile-sharing-manual = My words
-profile-sharing-off = Not at all
-profile-section-status = Status
-profile-available = Available
-profile-focusing = Focusing
-profile-away = Away
-profile-status = What you're doing
-profile-status-placeholder = What you're doing
-profile-section-colour = Your colour
-profile-section-visibility = What people in { $workspace } see
-profile-visibility-where = Where I am
-profile-visibility-here = That I'm here
-profile-visibility-nothing = Nothing
-profile-visibility-where-detail = Your face, the window you're in and your pointer
-profile-visibility-here-detail = Your face, never which window or your pointer
-profile-visibility-nothing-detail = You don't appear, and you don't see others' pointers
 
 # Workspace activity
 a11y-shell-workspace-activity = Workspace activity
@@ -771,15 +753,6 @@ workspace-settings-agents-help = Agents are visibly non-human collaborators. Adm
 workspace-settings-add-agent = Add agent
 workspace-settings-agents-empty-title = No agents have access
 workspace-settings-agents-empty-detail = Start with a safe profile, then review each exact surface.
-workspace-settings-bots-header = Bots
-workspace-settings-add-bot = Add a bot
-workspace-settings-bots-empty = No bots run in this workspace
-workspace-settings-bot-tag = Bot
-workspace-settings-bot-starting = Starting
-workspace-settings-bot-paused = Paused
-workspace-settings-bot-running = Running
-workspace-settings-bot-version = Version { $version }
-workspace-settings-remove-bot = Remove
 workspace-settings-agents-header = Agents
 workspace-settings-service-member = { $access ->
     [admin] Administers
@@ -919,15 +892,39 @@ workspace-settings-stat-app-rules = { $count ->
 
 # People popover
 a11y-shell-people = People
-a11y-shell-people-description = Who is here, where they are and what they are doing
+a11y-shell-people-description = Live workspace presence, current activity, intent, and status privacy controls
+a11y-shell-people-screen-visible = Screen visible now: { $exposure }
 a11y-shell-people-here-now = People here now
 a11y-shell-people-agent = Agent
+a11y-shell-people-invited = Invited, not currently present
+a11y-shell-people-present = Present now
 a11y-shell-people-now = Now: { $activity }
+a11y-shell-people-intent = Intent: { $status }
+a11y-shell-people-intent-inferred = Intent, inferred: { $status }
+a11y-shell-people-recent = Recently: { $summary }
+a11y-shell-people-recent-inferred = Recently, summarized: { $summary }
 a11y-shell-people-recent-toggle = What { $name } did recently
-a11y-shell-people-recent-toggle-description = Show or hide what they changed recently
+a11y-shell-people-recent-toggle-description = Show or hide a short summary of the last few minutes
+a11y-shell-people-watching = { $count } { $count ->
+        [one] person
+       *[other] people
+    } watching without joining
+a11y-shell-status-name = Your collaboration status
+a11y-shell-status-inferred = Inferred on this device from recent semantic actions
+a11y-shell-status-set = Set what you are trying to accomplish
+people-panel-sharing-line-auto = Sharing what you're doing
+people-panel-sharing-line-manual = Sharing only what you write
+people-panel-sharing-line-off = Not sharing what you're doing
+people-panel-sharing-change = Change
+people-panel-sharing-choice-auto = Share automatically
+people-panel-sharing-choice-manual = Write my own
+people-panel-sharing-choice-off = Don't share
 a11y-shell-rename = Change your name, { $name }
 a11y-shell-rename-description = Choose the name others here see
 a11y-shell-sharing-change = Change what you share
+a11y-shell-status-automatic-description = Infer a short status locally from recent workspace actions
+a11y-shell-status-manual-description = Share only text you enter yourself
+a11y-shell-status-off-description = Publish no status to this workspace
 a11y-shell-follow-collaborator = Follow collaborator
 a11y-shell-follow = Follow { $name }
 a11y-shell-follow-description = Mirror this participant's live workspace view
@@ -960,31 +957,22 @@ launchpad-keyboard-hint = Arrow keys move, Enter opens, Super+N shows every app
 # Peers arriving in and leaving a workspace, batched into one toast
 
 # Moved from the shell catalogue with the code that uses them
-people-panel-agent-tag = Agent
-people-panel-bot-tag = Bot
+people-panel-here-now = { $count } here now
+people-panel-watching = +{ $count } watching
+people-panel-screen-visible = Screen visible now
+people-panel-only-you = Only you are here
+people-panel-status-typing = Type a status, then press Enter
+people-panel-status-empty = Set what you're working toward…
+people-panel-own-status = You · { $status }
+people-panel-agent-tag = agent
+people-panel-invited-tag = invited
+people-panel-following = Following
+people-panel-following-activity = Following · { $activity }
 people-panel-viewing = Viewing { $title }
-people-panel-here-count = { $count ->
-    [one] 1 here
-   *[other] { $count } here
-}
-people-panel-here-watching = { $count } here, { $watching } watching
-people-panel-section-people = People
-people-panel-section-agents = Agents
-people-panel-wave = Wave
-people-panel-in-call = In { $channel }
-people-panel-focusing = Focusing
-people-panel-away = Away
-people-panel-idle = Idle
-people-panel-empty = Nobody else is here right now
-people-panel-changes = See their changes
-people-panel-invite-people = Invite people
-a11y-shell-wave = Wave at { $name }
-a11y-shell-wave-description = Their face shows you waved
-a11y-shell-people-changes = What { $name } changed
-a11y-shell-people-changes-description = Open History at their changes
-a11y-shell-people-change-description = Open History at this change
 people-panel-follow = Follow
 people-panel-stop-following = Stop
+people-panel-invite = Invite
+people-panel-join = Join
 launchpad-subtitle = Choose how to begin. Workspace content syncs; your layout and controls stay local.
 
 # The emoji picker (Super+. by default)

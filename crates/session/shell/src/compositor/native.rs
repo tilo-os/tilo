@@ -8443,23 +8443,6 @@ fn attach_peer_presence(
                 follow_network.publish_app_presence("tilo-shell".into(), room.to_string(), frame);
             }
         }));
-    let desktop_network = Arc::clone(net);
-    frame_builder
-        .host_mut()
-        .set_desktop_presence_bridge(std::rc::Rc::new(move |room, payload| {
-            let key = ui::presence::PresenceKey::Workspace {
-                id: room.to_string(),
-            };
-            if let Some(frame) = crate::shell::collab_presence::to_peer(&key, &payload) {
-                desktop_network.publish_app_presence("tilo-shell".into(), room.to_string(), frame);
-            }
-        }));
-    let visibility_network = Arc::clone(net);
-    frame_builder
-        .host_mut()
-        .set_presence_visibility_bridge(std::rc::Rc::new(move |room, visibility| {
-            visibility_network.set_presence_visibility(&room.to_string(), visibility);
-        }));
     let status_network = Arc::clone(net);
     frame_builder
         .host_mut()
@@ -13325,11 +13308,6 @@ pub fn run() {
         // The pointer as the input state knows it — "nowhere", not the origin, for
         // a session that never moved one; being level-triggered, `cursor()` would paint a cursor for nobody.
         frame_builder.note_local_pointer(state.client_input.pointer_position());
-        // Idle after five quiet minutes, away while locked: what the people
-        // in the workspace see on this person's face.
-        frame_builder
-            .host_mut()
-            .note_local_activity(session.is_locked(), session.idle_for(Instant::now()));
         let peers_moved = if let Some(relay) = frame_builder.peer_presence() {
             // Clone the tree handle and drop the `ChromeState` borrow before
             // the relay locks the tree — nothing here needs the RefCell guard.
@@ -20664,9 +20642,7 @@ fn apply_shell_gesture(
                     st.bump();
                 }
             });
-            frame_builder
-                .host_mut()
-                .latch_overview_transition_from(ui::tokens::MotionSource::Gesture);
+            frame_builder.host_mut().latch_overview_transition();
         }
         GestureAction::HideOverview => {
             frame_builder.with_chrome(|st| {
@@ -20675,9 +20651,7 @@ fn apply_shell_gesture(
                     st.bump();
                 }
             });
-            frame_builder
-                .host_mut()
-                .latch_overview_transition_from(ui::tokens::MotionSource::Gesture);
+            frame_builder.host_mut().latch_overview_transition();
         }
         // Handled (and returned on) above; a panic here would take down the
         // whole session for a gesture that already did its job.

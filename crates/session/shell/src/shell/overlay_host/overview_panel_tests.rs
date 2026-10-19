@@ -741,41 +741,14 @@ fn overview_selection_and_row_content_follow_the_room_and_its_capabilities() {
 /// sampling a desktop or changing preview disclosure policy.
 fn overview_controls_host_with_preview() -> ShellOverlayHost {
     let mut h = host();
-    // Two windows on the strip: the demo window's last tab split into a
-    // window of its own, as dragging it out of the group does.
-    {
-        let chrome = h.chrome.as_ref().expect("fixture chrome").clone();
-        let mut state = chrome.borrow_mut();
-        {
-            let mut tree = state.tree_mut();
-            let strip = tree
-                .desktop
-                .active_workspace_mut()
-                .and_then(|workspace| workspace.strips.first_mut())
-                .expect("the demo strip");
-            let group = strip.window_groups.first_mut().expect("the demo window");
-            let tab = group.tabs.pop().expect("a tab to split");
-            if group.active_tab == tab.id {
-                group.active_tab = group.tabs.first().map_or(0, |t| t.id);
-            }
-            let split = crate::shell::state::WindowGroup {
-                id: 0x0E_5001,
-                active_tab: tab.id,
-                tabs: vec![tab],
-                width: group.width,
-                maximized: false,
-                focus_history: Vec::new(),
-            };
-            strip.window_groups.push(split);
-        }
-        state.bump();
-    }
-    let tab = h
-        .overview_row_windows()
-        .first()
-        .expect("demo window")
-        .address
-        .tab;
+    let tab = {
+        let chrome = h.chrome.as_ref().expect("fixture chrome").borrow();
+        h.overview_windows(&chrome.tree())
+            .first()
+            .expect("demo window")
+            .address
+            .tab
+    };
     h.window_previews
         .store(tab, std::sync::Arc::from([80, 90, 100, 255]), 1, 1, None);
     assert!(!h.overview_row_windows().is_empty());
@@ -882,7 +855,7 @@ fn overview_controls_tab_create_cancel_reopen_and_repeat_use_the_native_keyboard
     ));
     assert_eq!(ws_count(&h), 2);
     assert!(!h.overlay_flags().overview);
-    assert!(!h.overview_zoom.is_open());
+    assert_eq!(h.overview_t, 0.0);
     assert!(!h.handle_overview_keyboard_nav(&Key::Named(NamedKey::Enter), false, &mut handled));
     assert_eq!(ws_count(&h), 2, "closed overview cannot create again");
 }
@@ -938,13 +911,7 @@ fn overview_controls_production_capture_matrix_is_written() {
             let target_rect = host
                 .synthetic_accessibility_rect(&path)
                 .expect("focused target bounds");
-            // A window is pictured beside the panel on a wide display, in it
-            // on a compact one: visible means where the picture can be seen.
-            let viewport = if target == "window" {
-                host.overview_grid_clip()
-            } else {
-                host.overview_content_rect()
-            };
+            let viewport = host.overview_content_rect();
             assert!(
                 target_rect.y0 >= viewport.y0 && target_rect.y1 <= viewport.y1,
                 "focused target must be visible at {name}: {target_rect:?} in {viewport:?}"
@@ -986,15 +953,8 @@ fn overview_controls_compact_page_keeps_creation_visible_after_focus_and_resize(
     );
     assert!(h.focus_synthetic_accessibility(&[0, count.saturating_add(1)]));
     assert!(h.overview_scroll_y > 0.0);
-    // The picture scrolled up out of the page with the rest of the block.
-    let tile = h.overview_window_tile_rect(0);
-    let content = h.overview_content_rect();
-    assert!(tile.y0 < content.y0, "{tile:?} in {content:?}");
-    let hidden_preview = Point::new(
-        tile.center().x,
-        f64::midpoint(tile.y0, tile.y1.min(content.y0)),
-    );
-    assert!(!content.contains(hidden_preview));
+    let hidden_preview = h.overview_window_tile_rect(0).center();
+    assert!(!h.overview_content_rect().contains(hidden_preview));
     assert_eq!(
         h.hit_test_overview_window(hidden_preview),
         None,
@@ -1350,124 +1310,4 @@ fn the_workspace_overview_offers_join_a_workspace_beside_new_workspace_and_opens
         !h.peer_sync_overlay.visible(),
         "no paste field until the person asks for one"
     );
-}
-
-/// The overview is this workspace: every strip, top to bottom, under the
-/// name the strip switcher shows for it, with every window in it; renaming
-/// and moving a strip there changes the strip the switcher lists.
-#[test]
-fn the_overview_pictures_every_strip_of_this_workspace_and_renames_and_moves_them() {
-    use winit::event::Modifiers;
-    use winit::keyboard::ModifiersState;
-    let mut h = host();
-    let chrome = h.chrome.as_ref().expect("chrome").clone();
-    let second = chrome
-        .borrow_mut()
-        .create_strip("Research")
-        .expect("a strip");
-    chrome.borrow_mut().focus_strip_index(0);
-    let strips = |chrome: &crate::shell::chrome_state::Chrome| {
-        chrome
-            .borrow()
-            .tree()
-            .desktop
-            .active_workspace()
-            .map(|workspace| {
-                workspace
-                    .strips
-                    .iter()
-                    .map(|strip| (strip.id, strip.name.clone()))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default()
-    };
-    let picture = h.overview_picture();
-    assert_eq!(
-        picture
-            .strips
-            .iter()
-            .map(|strip| (strip.id, strip.name.clone()))
-            .collect::<Vec<_>>(),
-        strips(&chrome),
-        "one row per strip, in the workspace's order, under its own name"
-    );
-    let windows: usize = chrome
-        .borrow()
-        .tree()
-        .desktop
-        .active_workspace()
-        .map_or(0, |workspace| {
-            workspace
-                .strips
-                .iter()
-                .flat_map(|strip| &strip.window_groups)
-                .map(|group| group.tabs.len())
-                .sum()
-        });
-    assert_eq!(
-        h.overview_row_windows().len(),
-        windows,
-        "every window is pictured"
-    );
-    let empty = picture
-        .strips
-        .iter()
-        .position(|strip| strip.id == second)
-        .and_then(|index| picture.places.get(index))
-        .expect("the new strip's row");
-    assert!(empty.empty.is_some(), "an empty strip keeps its row");
-    for pair in picture.places.windows(2) {
-        assert!(pair[0].bounds().y1 <= pair[1].label.y0, "top to bottom");
-    }
-
-    // F2 names the strip the keyboard is in; Enter keeps the name.
-    let doc = AutoCommit::new();
-    let mut handled = false;
-    h.select_overview_window(0);
-    assert!(h.handle_shell_keyboard_event(
-        &Key::Named(NamedKey::F2),
-        Modifiers::default(),
-        false,
-        &doc,
-        &automerge::ROOT,
-        &mut handled,
-    ));
-    assert!(h.overview_naming.is_some());
-    for c in ["S", "t", "u", "d", "i", "o"] {
-        h.handle_shell_keyboard_event(
-            &Key::Character(c.into()),
-            Modifiers::default(),
-            false,
-            &doc,
-            &automerge::ROOT,
-            &mut handled,
-        );
-    }
-    h.handle_shell_keyboard_event(
-        &Key::Named(NamedKey::Enter),
-        Modifiers::default(),
-        false,
-        &doc,
-        &automerge::ROOT,
-        &mut handled,
-    );
-    assert!(h.overview_naming.is_none());
-    assert_eq!(
-        strips(&chrome).first().map(|(_, n)| n.as_str()),
-        Some("Studio")
-    );
-
-    // Alt+Down moves it below the next strip, for the switcher too.
-    let first = strips(&chrome).first().map(|(id, _)| *id).expect("a strip");
-    assert!(h.handle_shell_keyboard_event(
-        &Key::Named(NamedKey::ArrowDown),
-        Modifiers::from(ModifiersState::ALT),
-        false,
-        &doc,
-        &automerge::ROOT,
-        &mut handled,
-    ));
-    let moved = strips(&chrome);
-    assert_eq!(moved.get(1).map(|(id, _)| *id), Some(first), "{moved:?}");
-    assert!(chrome.borrow().overlays.overview, "the overview stays up");
 }

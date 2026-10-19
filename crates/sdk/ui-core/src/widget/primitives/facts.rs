@@ -207,7 +207,7 @@ impl<'a> FactsFace<'a> {
 
 /// A retained [`FactsFace`].
 pub struct Facts {
-    items: Vec<Fact>,
+    facts: Vec<Fact>,
     rect: Rect,
     dirty: bool,
     layout_theme: Theme,
@@ -217,7 +217,7 @@ impl Facts {
     #[must_use]
     pub fn new(facts: Vec<Fact>) -> Self {
         Self {
-            items: facts,
+            facts,
             rect: Rect::ZERO,
             dirty: true,
             layout_theme: Theme::dark(),
@@ -226,8 +226,8 @@ impl Facts {
 
     /// Replace the facts.
     pub fn set_facts(&mut self, facts: Vec<Fact>) {
-        if self.items != facts {
-            self.items = facts;
+        if self.facts != facts {
+            self.facts = facts;
             self.dirty = true;
         }
     }
@@ -262,7 +262,7 @@ impl Widget for Facts {
         available: Size<taffy::AvailableSpace>,
         text: &mut TextRenderer,
     ) -> Size<f32> {
-        let face = FactsFace::new(&self.items);
+        let face = FactsFace::new(&self.facts);
         let theme = &self.layout_theme;
         let natural = crate::num::f32_of_f64(face.natural_width(text, theme));
         let width = match available.width {
@@ -289,7 +289,7 @@ impl Widget for Facts {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        FactsFace::new(&self.items).paint(
+        FactsFace::new(&self.facts).paint(
             &mut PaintCtx::new(scene, transform, text_renderer, theme),
             self.rect,
         );
@@ -308,7 +308,7 @@ impl Widget for Facts {
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
         let children = self
-            .items
+            .facts
             .iter()
             .map(|f| AccessNode::new(Role::StaticText).with_name(f.text.clone()))
             .collect();

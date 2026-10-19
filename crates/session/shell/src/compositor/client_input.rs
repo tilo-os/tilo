@@ -1962,28 +1962,10 @@ fn route_keyboard_input(
     {
         fb.host_mut().release_banner_keyboard();
     }
-    // Any key takes the arrival or wave line away.
-    if pressed {
-        fb.host_mut().dismiss_presence_notice();
-    }
-    // `/` over a shared window starts cursor chat, unless the focused
-    // window takes text (it has an active text input): then the `/` is
-    // typing.
-    let opens_chat = pressed
-        && !captured
-        && !shell_chord
-        && !state.text_input_active()
-        && fb
-            .host()
-            .cursor_chat_claims(&key.logical_key, modifiers.state());
-    if opens_chat {
-        fb.host_mut().arm_cursor_chat();
-    }
     let shell_owns = captured
         || shell_chord
         || granted
         || banner_owns
-        || opens_chat
         || fb.host().dictation_owns_key(&key.logical_key);
     let forward = track_forwarded_key(
         &mut state.client_input.forwarded_keys,

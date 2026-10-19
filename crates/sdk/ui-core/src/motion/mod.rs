@@ -17,8 +17,6 @@
 //! | [`Ambient`] | chrome that comes back on its own (desk widgets) |
 //! | [`Transient`] | a readout or acknowledgement that goes on its own |
 //! | [`Follow`] | a peer's pointer gliding between the samples it is heard at |
-//! | [`Float`] | a reaction rising from the pointer it was sent from |
-//! | [`Breathe`] | a live state's soft ring (someone in a call) |
 //! | [`Feedback`] | press and hover tints |
 //! | [`Attention`] | a refusal's shake, a single pulse |
 //!
@@ -58,9 +56,8 @@ mod tests;
 pub use appearing::Appearing;
 pub use clock::{frames_until, frames_wanted, testing, want_frames_until};
 pub use named::{
-    Ambient, Appear, Attention, Breathe, CROSS_FADE, CrossFade, Disclose, Drill, DrillDepth,
-    Extent, Feedback, Float, Follow, ListChange, PanelSlide, Reveal, Snap, Speaking, Transient,
-    WindowMotion,
+    Ambient, Appear, Attention, CROSS_FADE, CrossFade, Disclose, Drill, DrillDepth, Extent,
+    Feedback, Follow, ListChange, PanelSlide, Reveal, Snap, Speaking, Transient, WindowMotion,
     Zoom, held_by_aim, stage, unit_opacity,
 };
 pub use pose::Pose;

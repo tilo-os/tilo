@@ -422,9 +422,6 @@ impl StoreEffect {
     }
 }
 
-/// The Store's bots: the link a workspace's Add a bot opens.
-const BOTS_LINK: &str = "tilo-store:bots";
-
 /// Decode the one Store link shape, `tilo-store:app/<id>`. The launcher
 /// already checked the scheme; this keeps a malformed or argument-like value
 /// from becoming a catalogue identity inside the app.
@@ -560,11 +557,6 @@ impl ResourceApp for StoreShell {
         } else if let Some(argument) = input.argument() {
             if argument == "tilo-store:catalogue" {
                 StoreEffect::ShowCatalogue
-            } else if argument == BOTS_LINK {
-                // A workspace's Add a bot opens the bots, whose pages add one.
-                StoreEffect::ShowView {
-                    view: "bots".to_owned(),
-                }
             } else if argument.starts_with("tilo-store:runtime/") {
                 match crate::runtime_recovery::RuntimeTarget::from_uri(argument) {
                     Ok(target) => StoreEffect::ReviewRuntime {
@@ -2394,27 +2386,6 @@ mod tests {
         assert!(
             app.effect_progress().is_empty(),
             "opening the catalogue admits no package job"
-        );
-    }
-
-    /// A workspace's Add a bot opens the Store on its bots.
-    #[test]
-    fn the_bots_link_opens_the_bots_and_nothing_else() {
-        let _offline = offline();
-        let mut app = TestApp::<StoreShell>::launched(&[BOTS_LINK]).unwrap();
-        let observed = app
-            .effect(&StoreEffect::InspectCatalogue { app: None })
-            .unwrap()
-            .value
-            .unwrap();
-        assert_eq!(
-            observed.get("view").and_then(serde_json::Value::as_str),
-            Some("bots"),
-            "{observed}"
-        );
-        assert!(
-            app.effect_progress().is_empty(),
-            "opening the bots admits no package job"
         );
     }
 

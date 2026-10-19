@@ -3,19 +3,12 @@ use crate::time::{Duration, Instant, SystemTime};
 use std::collections::HashMap;
 
 pub mod capability;
-mod chat;
-mod faces;
 mod geom;
 mod interaction;
 mod key;
 mod labels;
 mod layer;
 mod render;
-pub use chat::{
-    CURSOR_CHAT_LINGER, CURSOR_CHAT_MAX_CHARS, ChatBubble, CursorChats, POINTER_NAME_LINGER,
-    ReactionFloat, single_emoji,
-};
-pub use faces::{Face, FaceStack};
 pub use geom::{EdgeMist, MistEdge, edge_mist_for};
 pub use interaction::{
     ACTIVE_INTERACTION_EXPIRY, AgentActionMarker, InteractionCardPlacement,
@@ -32,8 +25,7 @@ pub use layer::{PresenceLayer, WidgetPresence};
 pub(crate) use render::label_magnification;
 pub use render::{
     PeerCursor, PillPlacement, PillRequest, contrast_ink, draw_peer_cursors, draw_peer_presence,
-    draw_remote_cursors, draw_remote_presence, layout_peer_pills, paint_own_chat_bubble,
-    paint_reaction,
+    draw_remote_cursors, draw_remote_presence, layout_peer_pills,
 };
 
 /// How long a "just typed" highlight lingers before fading out.
@@ -558,21 +550,6 @@ pub struct PresenceCtx {
     /// [`Self::pointer_position_at`]. Absent for a pointer seen at only one
     /// position, which is shown where it is.
     pointer_glides: HashMap<(PresenceKey, UserId), PointerGlide>,
-    /// When each pointer was last heard somewhere new (its first sight
-    /// included): how long it has stood still, which decides whether its
-    /// name is still shown ([`Self::pointer_name_opacity`]).
-    pointer_moved: HashMap<(PresenceKey, UserId), Instant>,
-    /// What people are saying beside their pointers, and their reactions.
-    pub chats: CursorChats,
-    /// How available each person says they are, and the voice channel
-    /// they are in.
-    availability: HashMap<UserId, (crate::Availability, Option<String>)>,
-    /// Faces that bounce because this person waved at them.
-    bounces: HashMap<UserId, crate::motion::Attention>,
-    /// Waves heard, oldest first: who waved, at whom (a roster id), when.
-    /// The shell takes them ([`Self::take_waves`]) and shows the ones at
-    /// this person.
-    waves: Vec<(UserId, String, Instant)>,
     pub selections: HashMap<PresenceKey, Vec<(UserId, SelectionRange)>>,
     pub carets: HashMap<PresenceKey, Vec<(UserId, usize)>>,
     /// Ephemeral visual relationships, keyed by `(room, follower)`. They
@@ -878,13 +855,8 @@ impl PresenceCtx {
         self.pointer_seen.retain(|(k, u), _| k == key || u != &user);
         self.pointer_glides
             .retain(|(k, u), _| k == key || u != &user);
-        self.pointer_moved
-            .retain(|(k, u), _| k == key || u != &user);
 
         let stored = self.pointer_for(key, &user);
-        if stored != Some(pos) {
-            self.pointer_moved.insert((key.clone(), user.clone()), now);
-        }
         let heard = self.pointer_seen.get(&(key.clone(), user.clone())).copied();
         self.glide_pointer(key, &user, stored.zip(heard), pos, now);
         let list = self.pointers.entry(key.clone()).or_default();
@@ -1005,7 +977,6 @@ impl PresenceCtx {
         }
         seen.retain(|_, t| now.saturating_duration_since(*t) < horizon);
         self.pointer_glides.retain(|id, _| seen.contains_key(id));
-        self.pointer_moved.retain(|id, _| seen.contains_key(id));
         for user in retired {
             // A person has one pointer; once it is gone from every scope the
             // cursor record of it goes too.
@@ -1037,98 +1008,6 @@ impl PresenceCtx {
         };
         let left = horizon.saturating_sub(now.saturating_duration_since(*seen));
         crate::motion::Follow::fading(left, fade)
-    }
-
-    /// How opaque to paint the name beside `user`'s pointer at `key`: whole
-    /// while it moves and while they are talking ([`CursorChats::talking`]),
-    /// then fading over the last `fade` of [`POINTER_NAME_LINGER`] once it
-    /// stands still. A zero `fade` (reduced motion) keeps it whole until the
-    /// linger is up.
-    pub fn pointer_name_opacity(
-        &self,
-        key: &PresenceKey,
-        user: &UserId,
-        now: Instant,
-        fade: Duration,
-    ) -> f32 {
-        if self.chats.talking(user, now) {
-            return 1.0;
-        }
-        let Some(moved) = self.pointer_moved.get(&(key.clone(), user.clone())) else {
-            return 1.0;
-        };
-        let left = POINTER_NAME_LINGER.saturating_sub(now.saturating_duration_since(*moved));
-        if fade.is_zero() {
-            return if left.is_zero() { 0.0 } else { 1.0 };
-        }
-        crate::motion::Follow::fading(left, fade)
-    }
-
-    /// Whether any pointer's name is fading at `now` (see
-    /// [`Self::pointer_name_opacity`]), or will step aside at the end of its
-    /// linger: a reason to paint the next frame too.
-    pub fn pointer_names_fading(&self, now: Instant, fade: Duration) -> bool {
-        self.pointer_moved.values().any(|moved| {
-            let still = now.saturating_duration_since(*moved);
-            still < POINTER_NAME_LINGER
-                && POINTER_NAME_LINGER.saturating_sub(still) <= fade.max(Duration::from_millis(1))
-        })
-    }
-
-    /// When the next pointer's name starts to step aside, for a host that
-    /// sleeps between frames.
-    pub fn next_pointer_name_fade(&self, now: Instant, fade: Duration) -> Option<Instant> {
-        self.pointer_moved
-            .values()
-            .map(|moved| *moved + POINTER_NAME_LINGER.saturating_sub(fade))
-            .filter(|at| *at > now)
-            .min()
-    }
-
-    /// How available `user` says they are; available until they said.
-    pub fn availability_of(&self, user: &UserId) -> crate::Availability {
-        self.availability
-            .get(user)
-            .map_or(crate::Availability::Available, |(state, _)| *state)
-    }
-
-    /// Whether `user` has said how available they are.
-    #[must_use]
-    pub fn has_availability(&self, user: &UserId) -> bool {
-        self.availability.contains_key(user)
-    }
-
-    /// The voice channel `user` is in, if any.
-    pub fn call_of(&self, user: &UserId) -> Option<&str> {
-        self.availability
-            .get(user)
-            .and_then(|(_, call)| call.as_deref())
-    }
-
-    /// Bounce `user`'s face once: this person just waved at them.
-    pub fn bounce(&mut self, user: UserId, motion: crate::tokens::EffectiveMotion, now: Instant) {
-        let bounce = self.bounces.entry(user).or_default();
-        bounce.pulse(motion, now);
-        if let Some(settles) = bounce.settles_at() {
-            crate::motion::want_frames_until(settles);
-        }
-    }
-
-    /// The scale of `user`'s face at `now` (1 at rest).
-    pub fn face_scale(&self, user: &UserId, now: Instant) -> f64 {
-        self.bounces
-            .get(user)
-            .map_or(1.0, |bounce| bounce.scale(now))
-    }
-
-    /// Whether a face is bouncing at `now`.
-    pub fn faces_moving(&self, now: Instant) -> bool {
-        self.bounces.values().any(|bounce| bounce.is_moving(now))
-    }
-
-    /// Waves heard since the last call: who waved, at whom, when.
-    pub fn take_waves(&mut self) -> Vec<(UserId, String, Instant)> {
-        std::mem::take(&mut self.waves)
     }
 
     /// Whether any pointer is fading out at `now` (see
@@ -1814,8 +1693,7 @@ impl PresenceCtx {
         now: Instant,
     ) -> RemotePresenceEffect {
         use crate::collaboration::PresencePayload::{
-            Arrived, Availability, Caret, Following, Interaction, Left, Pointer, Selection, Status,
-            Typing, Wave,
+            Arrived, Caret, Following, Interaction, Left, Pointer, Selection, Status, Typing,
         };
 
         // A frame this session published, handed back: another app the same
@@ -1950,18 +1828,6 @@ impl PresenceCtx {
                     }
                 }
             }
-            Availability { state, call } => {
-                // Room presence, like a status.
-                if matches!(key, PresenceKey::Workspace { .. }) {
-                    let call = call.filter(|call| !call.trim().is_empty());
-                    self.availability.insert(UserId(user_id), (state, call));
-                }
-            }
-            Wave { target } => {
-                if matches!(key, PresenceKey::Workspace { .. }) && !target.trim().is_empty() {
-                    self.waves.push((UserId(user_id), target, now));
-                }
-            }
             Following { target } => {
                 // A follow relationship is only meaningful within a room.
                 // Reject narrower scopes rather than letting a document or
@@ -2019,7 +1885,6 @@ impl PresenceCtx {
         self.pointers.retain(|_, list| !list.is_empty());
         self.pointer_seen.retain(|(_, u), _| u != &uid);
         self.pointer_glides.retain(|(_, u), _| u != &uid);
-        self.pointer_moved.retain(|(_, u), _| u != &uid);
         let cursors = self.remote_cursors.len();
         self.remove_remote_cursor(user_id);
         before != self.pointers.values().map(Vec::len).sum::<usize>()
@@ -2028,7 +1893,6 @@ impl PresenceCtx {
 
     pub fn unregister_peer(&mut self, user_id: &str) {
         let uid = UserId(user_id.to_owned());
-        self.availability.remove(&uid);
         self.participant_kinds.remove(&uid);
         self.acting_for.remove(&uid);
         for list in self.here.values_mut() {
@@ -2039,8 +1903,6 @@ impl PresenceCtx {
         }
         self.pointer_seen.retain(|(_, u), _| u != &uid);
         self.pointer_glides.retain(|(_, u), _| u != &uid);
-        self.pointer_moved.retain(|(_, u), _| u != &uid);
-        self.chats.forget(&uid);
         for list in self.carets.values_mut() {
             list.retain(|(u, _)| u != &uid);
         }

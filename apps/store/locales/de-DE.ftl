@@ -99,12 +99,12 @@ store-reports-reports = Eine Meldung bearbeitet
 
 store-source-partial = Einige Quellen sind nicht erreichbar. Andere Apps bleiben verfügbar.
 
-store-bot-label = Bot
+store-bot-label = BOT
 store-bot-kind = Bot
 store-bot-what-it-does = Was er tut
-store-bot-appearance = Darf unter anderen Namen und Bildern posten. Immer als Bot gekennzeichnet.
-store-bot-add-to-room = Zu diesem Arbeitsbereich hinzufügen…
-store-bot-add-elsewhere = Ein Arbeitsbereich fügt einen Bot mit seiner Aktion „Bot hinzufügen“ hinzu
+store-bot-appearance = Darf unter anderen Namen und Bildern posten. Immer als BOT gekennzeichnet.
+store-bot-add-to-room = Zu einem Raum hinzufügen…
+store-bot-add-unavailable = Bots laufen in Räumen. Die Raumadministration fügt sie in den Einstellungen des Raums hinzu.
 store-bot-trigger-connector = Wenn sein Connector ein Ereignis meldet
 store-bot-trigger-record-changed = Wenn sich ein Eintrag ändert
 store-bot-trigger-schedule = Nach Zeitplan

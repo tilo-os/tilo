@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {CHAT_FADE_MS, CHAT_LINGER_MS, REACTION_MS, chatOpacity, createLiveCursors, placePointer, publishedPointer, SETTLE_MS} from './live-cursors.mjs';
+import {createLiveCursors, placePointer, publishedPointer, SETTLE_MS} from './live-cursors.mjs';
 
 function element() {
   const listeners = new Map();
@@ -165,66 +165,4 @@ test('a focused pointer is drawn as a marker inside its window', () => {
   assert.deepEqual(cursors.shown(), ['agent']);
   assert.equal(surface.children[0].children[0].style.transform, 'translate(430px,60px)');
   cursors.close();
-});
-
-test("a member's cursor chat shows beside its pointer while typed and fades after it is sent", () => {
-  const surface = element();
-  const layer = fakeLayer();
-  const f = frames();
-  let clock = 0;
-  const cursors = createLiveCursors({layer, surface, document: {createElement: element}, now: () => clock, requestFrame: f.request, cancelFrame: f.cancel});
-  const ada = 'aaaaaaaaaaaa';
-  const remote = (chat, chatSentAt = null) => ({publisher: ada, pointer: [40, 50], stale: false, participant: {kind: 'person', label: 'Ada', color: '#2a7de1'}, chat, chatSentAt});
-
-  layer.remotes = [remote({text: 'hello th', sent: false})];
-  layer.emit('presence', {});
-  f.run();
-  assert.deepEqual(cursors.chats(), [[ada, 'hello th']], 'shown live while typed');
-  const typed = surface.children[0].children.find(node => node.className === 'tilo-live-chat');
-  assert.equal(typed.style.opacity, '1');
-  assert.match(typed.style.cssText, /#2a7de1/, 'in the member’s colour');
-
-  layer.remotes = [remote({text: 'hello there', sent: true}, 0)];
-  clock = CHAT_LINGER_MS - CHAT_FADE_MS / 2;
-  layer.emit('presence', {});
-  f.run();
-  assert.deepEqual(cursors.chats(), [[ada, 'hello there']], 'kept after it is sent');
-  assert.ok(Number(typed.style.opacity) < 1 && Number(typed.style.opacity) > 0, 'and fading at the end');
-  assert.ok(f.pending > 0, 'frames continue while it fades');
-
-  clock = CHAT_LINGER_MS;
-  f.run();
-  assert.deepEqual(cursors.chats(), [], 'gone once it has lingered');
-  cursors.close();
-});
-
-test('a reaction floats up from the pointer once and is gone after its life', () => {
-  const surface = element();
-  const layer = fakeLayer();
-  const f = frames();
-  let clock = 1000;
-  const cursors = createLiveCursors({layer, surface, document: {createElement: element}, now: () => clock, requestFrame: f.request, cancelFrame: f.cancel});
-  layer.remotes = [{publisher: 'bbbbbbbbbbbb', pointer: [40, 50], stale: false, reaction: {seq: 1, emoji: '\u{1f389}', at: 1000}}];
-  layer.emit('presence', {});
-  f.run();
-  const shown = () => surface.children[0].children.filter(node => node.className === 'tilo-live-reaction');
-  assert.equal(shown().length, 1);
-  assert.equal(shown()[0].textContent, '\u{1f389}');
-  const start = shown()[0].style.transform;
-  clock = 1000 + REACTION_MS / 2;
-  f.run();
-  assert.notEqual(shown()[0].style.transform, start, 'it rises');
-  clock = 1000 + REACTION_MS;
-  f.run();
-  assert.equal(shown().length, 0);
-  assert.equal(f.pending, 0, 'and the room is idle again');
-  cursors.close();
-});
-
-test('chat opacity: typed shows, empty does not, sent lingers then fades', () => {
-  assert.equal(chatOpacity(null, null, 0), 0);
-  assert.equal(chatOpacity({text: '', sent: false}, null, 0), 0);
-  assert.equal(chatOpacity({text: 'hi', sent: false}, null, 99999), 1);
-  assert.equal(chatOpacity({text: 'hi', sent: true}, 100, 100), 1);
-  assert.equal(chatOpacity({text: 'hi', sent: true}, 100, 100 + CHAT_LINGER_MS), 0);
 });

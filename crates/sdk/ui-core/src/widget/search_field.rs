@@ -378,14 +378,8 @@ impl SearchField {
         let Some(scope) = self.escalation.clone() else {
             return false;
         };
-        self.opener.open(
-            SearchRequest {
-                scope,
-                query: None,
-                offer: None,
-            }
-            .with_query(self.input.value()),
-        );
+        self.opener
+            .open(SearchRequest { scope, query: None }.with_query(self.input.value()));
         true
     }
 

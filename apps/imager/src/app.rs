@@ -5183,7 +5183,7 @@ mod tests {
         }
     }
 
-    #[cfg(all(target_os = "linux", feature = "installation"))]
+    #[cfg(target_os = "linux")]
     fn paint_original_preparation_refusal(
         host: &mut ui::framework::testing::TestApp<HeldWriterJobsApp>,
     ) {

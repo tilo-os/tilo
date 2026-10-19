@@ -72,8 +72,6 @@ fn record() -> LiveRecord {
 fn cleartext_presence(seq: u64) -> Vec<u8> {
     LiveFrame::Presence(PresenceFrame {
         place: None,
-        chat: None,
-        reaction: None,
         seq,
         sent_at_ms: 1,
         focus: Some(record()),

@@ -99,12 +99,12 @@ store-reports-reports = Edited a report
 
 store-source-partial = Some repositories are unavailable. Other apps remain available.
 
-store-bot-label = Bot
+store-bot-label = BOT
 store-bot-kind = Bot
 store-bot-what-it-does = What it does
-store-bot-appearance = May post under other names and avatars. Always tagged as a bot.
-store-bot-add-to-room = Add to this workspace…
-store-bot-add-elsewhere = A workspace adds a bot with its Add a bot action
+store-bot-appearance = May post under other names and avatars. Always labelled BOT.
+store-bot-add-to-room = Add to a room…
+store-bot-add-unavailable = Bots run in rooms. Room admins add them from the room's settings.
 store-bot-trigger-connector = When its connector reports an event
 store-bot-trigger-record-changed = When a record changes
 store-bot-trigger-schedule = On a schedule

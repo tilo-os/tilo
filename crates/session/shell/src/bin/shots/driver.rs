@@ -1270,48 +1270,6 @@ impl ShellDriver {
         }
     }
 
-    /// The room's bots as its governance would list them: Standup, which a
-    /// member asked the room's host for and which is here now, and a
-    /// bridge the room's operator runs.
-    fn seed_room_bots_for_shots(&self) {
-        use shell::shell::state::Collaborator;
-        let standup_device = "5d".repeat(32);
-        let handle = self.chrome_handle();
-        let owner = handle.borrow().local_user_id.clone();
-        let st = handle.borrow();
-        let mut tree = st.tree_mut();
-        if let Some(workspace) = tree.desktop.active_workspace_mut() {
-            workspace.bots = vec![
-                tilo_desktop_model::RoomBot {
-                    name: "Standup".into(),
-                    installation: Some("1b7e3c2a-58d4-4f0e-9a61-2c8d0b5e7f13".into()),
-                    device: Some(standup_device.clone()),
-                    entry: Some("so.tilo.bots.standup".into()),
-                    version: Some("1.2.0".into()),
-                    added_by: owner,
-                    requested: true,
-                    paused: false,
-                },
-                tilo_desktop_model::RoomBot {
-                    name: "Discord bridge".into(),
-                    installation: Some("6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6".into()),
-                    device: Some("6e".repeat(32)),
-                    entry: None,
-                    version: None,
-                    added_by: "operator".into(),
-                    requested: false,
-                    paused: true,
-                },
-            ];
-            workspace
-                .collaborators
-                .retain(|row| row.id != standup_device);
-            workspace
-                .collaborators
-                .push(Collaborator::new(standup_device, "Standup").with_session(11));
-        }
-    }
-
     pub fn seed_inferred_status_for_shots(&mut self, text: &str) {
         self.host_mut().seed_inferred_status_for_shots(text);
         let actor = {
@@ -1433,166 +1391,6 @@ impl ShellDriver {
                 );
             }
         }
-    }
-
-    /// Three people and an agent here, as the live shell folds them: Ada
-    /// and the agent pointing over windows, Ben idle with his pointer
-    /// resting, Chioma in the voice channel.
-    pub fn seed_presence_room_for_shots(&mut self) {
-        use shell::shell::state::Collaborator;
-        let handle = self.chrome_handle();
-        let people = [
-            ("ada", "Ada Okafor"),
-            ("ben", "Ben Carter"),
-            ("chioma", "Chioma Eze"),
-            ("scribe", "Release Notes Agent"),
-        ];
-        let room = {
-            let st = handle.borrow();
-            let mut tree = st.tree_mut();
-            let tab_ids = tree
-                .desktop
-                .active_workspace()
-                .into_iter()
-                .flat_map(|workspace| &workspace.strips)
-                .flat_map(|strip| &strip.window_groups)
-                .flat_map(|group| &group.tabs)
-                .map(|tab| tab.id)
-                .collect::<Vec<_>>();
-            if let Some(active) = tree.desktop.active_workspace_mut() {
-                // The agent is a member as an agent, admitted by whoever
-                // owns the workspace, so the roster lists it under Agents.
-                let owner = active
-                    .owner()
-                    .cloned()
-                    .unwrap_or_else(shell::shell::state::local_user_id);
-                let _ = tilo_desktop::workspace_settings::admit_agent(
-                    active,
-                    &owner,
-                    "scribe",
-                    tilo_desktop::workspace_settings::AgentPreset::Operator,
-                );
-                for (index, (id, name)) in people.into_iter().enumerate() {
-                    if !active.collaborators.iter().any(|person| person.id == id) {
-                        let mut person = Collaborator::new(id, name);
-                        person.active_tab = index
-                            .checked_rem(tab_ids.len().max(1))
-                            .and_then(|slot| tab_ids.get(slot))
-                            .copied();
-                        active.collaborators.push(person);
-                    }
-                }
-            }
-            tree.desktop
-                .active_workspace()
-                .map(|workspace| workspace.room.to_string())
-        };
-        st_bump(&handle);
-        let Some(room) = room else {
-            return;
-        };
-        let tiles = self.host().tab_tiles();
-        let at = |index: usize, dx: f64, dy: f64| {
-            tiles
-                .get(index.checked_rem(tiles.len().max(1)).unwrap_or(0))
-                .map_or((400.0 + dx, 300.0 + dy), |(_, rect)| {
-                    (rect.x0 + dx, rect.y0 + dy)
-                })
-        };
-        // Something Ada changed a few minutes ago, as History has it, for
-        // her row to open to.
-        {
-            use ui::widget::history::{HistoryAuthor, HistoryEntry, HistoryEntryId};
-            self.fb
-                .host_mut()
-                .room_activity_mut()
-                .open_external_entry(HistoryEntry {
-                    id: HistoryEntryId([0xad; 16]),
-                    author: HistoryAuthor::new("Ada Okafor", 160.0, "ada"),
-                    entry_kind: ui::widget::EntryKind::Text,
-                    artifact_kind: collab_types::ArtifactKind::File,
-                    timestamp: std::time::SystemTime::now()
-                        - std::time::Duration::from_secs(4 * 60),
-                    summary: "Rewrote the launch notes intro".into(),
-                    text_delta: Some((214, 96)),
-                    diff_payload: None,
-                    redaction: None,
-                    context: None,
-                });
-        }
-        let presence = self.fb.presence_mut_for_shots();
-        for (id, name) in people {
-            presence.set_display_name(ui::permissions::UserId(id.into()), name);
-        }
-        presence.set_participant_kind(
-            ui::permissions::UserId("scribe".into()),
-            ui::presence::ParticipantKind::Agent,
-        );
-        let key = ui::presence::PresenceKey::Workspace { id: room.clone() };
-        for (id, (x, y)) in [
-            ("ada", at(0, 240.0, 210.0)),
-            ("ben", at(0, 520.0, 380.0)),
-            ("scribe", at(1, 160.0, 260.0)),
-        ] {
-            self.fb.apply_remote_presence_for_shots(
-                id.into(),
-                key.clone(),
-                ui::collaboration::PresencePayload::Pointer {
-                    x: ui::num::f32_of_f64(x),
-                    y: ui::num::f32_of_f64(y),
-                },
-            );
-        }
-        for (id, state, call) in [
-            ("ben", ui::Availability::Idle, None),
-            ("chioma", ui::Availability::Available, Some("voice")),
-            ("ada", ui::Availability::Available, None),
-        ] {
-            self.fb.apply_remote_presence_for_shots(
-                id.into(),
-                key.clone(),
-                ui::collaboration::PresencePayload::Availability {
-                    state,
-                    call: call.map(str::to_owned),
-                },
-            );
-        }
-    }
-
-    /// Nobody else in the active workspace.
-    pub fn only_you_for_shots(&mut self) {
-        let handle = self.chrome_handle();
-        {
-            let st = handle.borrow();
-            let mut tree = st.tree_mut();
-            if let Some(active) = tree.desktop.active_workspace_mut() {
-                active.collaborators.clear();
-            }
-        }
-        // A workspace this person may invite to: the roster offers it.
-        handle.borrow_mut().peer_sync_enabled = true;
-        st_bump(&handle);
-    }
-
-    /// `who` says `text` beside their pointer.
-    pub fn remote_cursor_chat_for_shots(&mut self, who: &str, text: &str, sent: bool) {
-        let now = Instant::now();
-        self.fb.presence_mut_for_shots().chats.say(
-            &ui::permissions::UserId(who.into()),
-            Some((text, sent)),
-            now,
-        );
-    }
-
-    /// `who` reacts with `emoji`.
-    pub fn remote_reaction_for_shots(&mut self, who: &str, emoji: &str) {
-        let now = Instant::now();
-        self.fb.presence_mut_for_shots().chats.react(
-            &ui::permissions::UserId(who.into()),
-            1,
-            emoji,
-            now,
-        );
     }
 
     /// A key reached the focused window just now.
@@ -2806,7 +2604,6 @@ impl ShellDriver {
     fn scene_ws_settings_agents(&mut self) {
         self.seed_workspace_permissions();
         self.seed_agent_member_for_shots();
-        self.seed_room_bots_for_shots();
         self.with_chrome(|st| {
             st.overlays.ws_settings = true;
             st.ws_settings_tab = WsTab::Agents;
@@ -2860,7 +2657,6 @@ impl ShellDriver {
     fn scene_collaborators(&mut self) {
         self.seed_shared_room();
         self.seed_agent_member_for_shots();
-        self.seed_room_bots_for_shots();
         self.with_chrome(|st| {
             {
                 let mut tree = st.tree_mut();
@@ -2939,7 +2735,7 @@ impl ShellDriver {
     fn scene_peer_sync(&mut self) {
         self.scene_collaborators();
         let _ = self.paint_settled();
-        let invite = self.host().collaborators_invite_rect_for_tests();
+        let (invite, _) = self.host().collaborators_action_rects_for_tests();
         // A missing Invite button (peer sync off, or the local user may not
         // invite) fails the scene instead of quietly capturing the roster
         // under the name `peer-sync`.
@@ -4325,9 +4121,4 @@ fn lounge_site(room: shell::shell::state::RoomId) -> shell::shell::network::Site
         community: true,
         public: false,
     }
-}
-
-/// Tell the chrome its tree changed, so the next frame reads it.
-fn st_bump(handle: &shell::shell::chrome_state::Chrome) {
-    handle.borrow_mut().bump();
 }

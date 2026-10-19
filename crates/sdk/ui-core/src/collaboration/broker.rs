@@ -7028,13 +7028,10 @@ async fn dispatch_sdk_request(
                 PresencePayload::Left => {
                     let _ = presence.publish_left(&key_bytes).await;
                 }
-                // Shell chrome originates these directly on the peer-presence
-                // route: following is an authenticated visual cue apps cannot
-                // turn into a viewport command, and availability and waves
-                // are the desktop's own presence, which no app speaks for.
-                PresencePayload::Following { .. }
-                | PresencePayload::Availability { .. }
-                | PresencePayload::Wave { .. } => {}
+                // Shell chrome originates this authenticated visual cue
+                // directly on the peer-presence route. Apps cannot turn it
+                // into a viewport command through this generic SDK bridge.
+                PresencePayload::Following { .. } => {}
                 PresencePayload::Interaction(update) => {
                     if let Ok(json) = serde_json::to_string(&update) {
                         let _ = presence.publish_interaction(&key_bytes, &json).await;

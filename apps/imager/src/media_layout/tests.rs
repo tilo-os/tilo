@@ -167,7 +167,6 @@ fn retained_approved_plan_repairs_only_its_durable_backup_transaction() {
     assert!(other_plan.commit(&other, &|| false).is_err());
 }
 
-#[cfg(feature = "installation")]
 #[test]
 fn pending_plan_recomputes_geometry_and_capacity_before_any_mutation() {
     let (_root, _path, target) = disk();

@@ -481,69 +481,6 @@ pub struct PeerCursor {
     /// `1.0` normally; falls towards `0.0` as a quiet peer's pointer fades
     /// out (see [`super::PresenceCtx::pointer_opacity`]).
     pub opacity: f32,
-    /// How opaque the name beside the pointer is: whole while it moves,
-    /// stepping aside once it stands still
-    /// ([`super::PresenceCtx::pointer_name_opacity`]).
-    pub name_opacity: f32,
-    /// What they are saying beside their pointer (cursor chat). Shown in the
-    /// name's place, under the name, whatever `name_opacity` is.
-    pub chat: Option<super::ChatBubble>,
-    /// A reaction floating up from the pointer.
-    pub reaction: Option<super::ReactionFloat>,
-}
-
-impl PeerCursor {
-    /// A pointer with its name shown and nothing said.
-    #[must_use]
-    pub fn new(pos: (f64, f64), label: impl Into<String>, color: Color) -> Self {
-        Self {
-            pos,
-            label: label.into(),
-            color,
-            is_agent: false,
-            opacity: 1.0,
-            name_opacity: 1.0,
-            chat: None,
-            reaction: None,
-        }
-    }
-}
-
-/// Widest a cursor-chat bubble grows before its message wraps.
-const CHAT_MAX_W: f64 = 240.0;
-/// Inner padding of a cursor-chat bubble.
-const CHAT_PAD_X: f64 = 10.0;
-const CHAT_PAD_Y: f64 = 6.0;
-/// Gap between the name and the message inside a bubble.
-const CHAT_NAME_GAP: f64 = 1.0;
-/// Room after a message for the caret being typed at its end.
-const CARET_ROOM: f32 = 12.0;
-
-/// The size of the name tag of `peer`, or of the bubble carrying its message
-/// under its name while it talks.
-fn peer_tag_size(text_renderer: &mut TextRenderer, theme: &Theme, peer: &PeerCursor) -> (f64, f64) {
-    let Some(chat) = &peer.chat else {
-        return peer_pill_size_for(text_renderer, theme, &peer.label, peer.is_agent);
-    };
-    let name = pill_label_style(theme);
-    let body = chat_text_style(theme);
-    let (nw, nh) = text_renderer.measure_style(&peer.label, None, &name);
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "a bubble a few hundred logical pixels wide"
-    )]
-    let wrap = (CHAT_MAX_W - CHAT_PAD_X * 2.0) as f32;
-    let (bw, bh) = text_renderer.measure_style(&chat.text, Some(wrap), &body);
-    (
-        f64::from(nw.max(bw)) + CHAT_PAD_X * 2.0,
-        f64::from(nh) + CHAT_NAME_GAP + f64::from(bh) + CHAT_PAD_Y * 2.0,
-    )
-}
-
-/// Message type in a cursor-chat bubble: the body role, so it reads as
-/// someone talking, not as a label.
-fn chat_text_style(theme: &Theme) -> crate::text_render::TextStyle {
-    theme.text(TextRole::Body)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -703,31 +640,25 @@ pub fn draw_peer_cursors(
     if peers.is_empty() {
         return painted;
     }
-    // Only a shown name or a message takes room beside a pointer; a still
-    // pointer whose name stepped aside leaves the place to others.
-    let tagged: Vec<&PeerCursor> = peers
-        .iter()
-        .filter(|p| p.chat.is_some() || p.name_opacity > 0.0)
-        .collect();
-    let requests: Vec<PillRequest> = tagged
+    let requests: Vec<PillRequest> = peers
         .iter()
         .map(|p| PillRequest {
             at: p.pos,
-            size: peer_tag_size(text_renderer, theme, p),
+            size: peer_pill_size_for(text_renderer, theme, &p.label, p.is_agent),
         })
         .collect();
     let placements = layout_peer_pills(viewport, &requests);
 
     for p in peers {
-        let bounds = pointer_bounds(p.pos);
+        let bounds = Rect::from_center_size(p.pos, (FADE_DOT_BOUNDS, FADE_DOT_BOUNDS));
         painted.push(transform.transform_rect_bbox(bounds));
         faded(scene, transform, p.opacity, bounds, |scene| {
-            draw_peer_pointer(scene, transform, theme, p.pos, p.color, p.is_agent);
+            draw_peer_dot(scene, transform, theme, p.pos, p.color, p.is_agent);
         });
     }
 
     // Tethers — under the pills so a line never crosses a name.
-    for (p, place) in tagged.iter().zip(&placements) {
+    for (p, place) in peers.iter().zip(&placements) {
         if !place.tethered {
             continue;
         }
@@ -749,241 +680,30 @@ pub fn draw_peer_cursors(
         });
     }
 
-    for (p, place) in tagged.iter().zip(&placements) {
+    for (p, place) in peers.iter().zip(&placements) {
         let bounds = place.rect.inflate(FADE_EDGE, FADE_EDGE);
         painted.push(transform.transform_rect_bbox(bounds));
-        if let Some(chat) = &p.chat {
-            faded(
-                scene,
-                transform,
-                p.opacity * chat.opacity,
-                bounds,
-                |scene| {
-                    draw_chat_bubble(scene, transform, text_renderer, theme, place.rect, p, chat);
-                },
-            );
-            continue;
-        }
-        faded(
-            scene,
-            transform,
-            p.opacity * p.name_opacity,
-            bounds,
-            |scene| {
-                draw_peer_pill_kind(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    place.rect,
-                    &p.label,
-                    p.color,
-                    p.is_agent,
-                );
-            },
-        );
-    }
-
-    // Reactions over everything: they are the moment's content.
-    for p in peers {
-        if let Some(reaction) = &p.reaction {
-            painted.push(paint_reaction(
+        faded(scene, transform, p.opacity, bounds, |scene| {
+            draw_peer_pill_kind(
                 scene,
                 transform,
                 text_renderer,
                 theme,
-                Point::new(p.pos.0, p.pos.1),
-                reaction,
-            ));
-        }
+                place.rect,
+                &p.label,
+                p.color,
+                p.is_agent,
+            );
+        });
     }
     painted
 }
 
-/// How far above the pointer's tip a reaction starts.
-const REACTION_LIFT: f64 = 6.0;
-
-/// A reaction's type: the emoji at a display size, from the emoji font.
-fn reaction_style(theme: &Theme) -> crate::text_render::TextStyle {
-    theme.text(TextRole::Display)
-}
-
-/// A cursor-chat bubble in the talker's colour: their name, then what they
-/// say, wrapped. Contrast ink like the name pill; the name a step quieter.
-fn draw_chat_bubble(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    rect: Rect,
-    peer: &PeerCursor,
-    chat: &super::ChatBubble,
-) {
-    let text = paint_chat_bubble_frame(
-        scene,
-        transform,
-        text_renderer,
-        theme,
-        rect,
-        (&peer.label, peer.color),
-    );
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "a bubble a few hundred logical pixels wide"
-    )]
-    let wrap = text.width().max(1.0) as f32;
-    text_renderer.draw_style(
-        scene,
-        &chat.text,
-        contrast_ink(peer.color),
-        transform * Affine::translate((text.x0, text.y0)),
-        Some(wrap),
-        &chat_text_style(theme),
-    );
-}
-
-/// Paint a bubble's shape and the talker's name in it; returns where its
-/// message goes.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "kurbo Affine composition is f64 matrix math; it cannot panic or overflow"
-)]
-fn paint_chat_bubble_frame(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    rect: Rect,
-    (label, color): (&str, Color),
-) -> Rect {
-    // Rounded except where it hangs from the pointer, like the name pill
-    // grown into a speech bubble.
-    let radius = f64::from(theme.tokens.radii.control) + 4.0;
-    let shadow = RoundedRect::from_rect(rect + vello::kurbo::Vec2::new(0.0, 1.0), radius);
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        Color::BLACK.with_alpha_factor(0.22),
-        None,
-        &shadow,
-    );
-    let shape = RoundedRect::from_rect(rect, (2.0, radius, radius, radius));
-    scene.fill(Fill::NonZero, transform, color, None, &shape);
-    let name = pill_label_style(theme);
-    let (_, nh) = text_renderer.measure_style(label, None, &name);
-    text_renderer.draw_style(
-        scene,
-        label,
-        contrast_ink(color).with_alpha_factor(0.78),
-        transform * Affine::translate((rect.x0 + CHAT_PAD_X, rect.y0 + CHAT_PAD_Y)),
-        None,
-        &name,
-    );
-    let top = rect.y0 + CHAT_PAD_Y + f64::from(nh) + CHAT_NAME_GAP;
-    Rect::new(
-        rect.x0 + CHAT_PAD_X,
-        top,
-        rect.x1 - CHAT_PAD_X,
-        rect.y1 - CHAT_PAD_Y,
-    )
-}
-
-/// This person's own cursor-chat bubble while they type, beside their
-/// pointer at `at`: the same bubble everyone else sees, in their colour and
-/// under their name, sized for `message` and at least `min_text_w` wide,
-/// kept inside `bounds` (left of or above the pointer near an edge).
-/// Paints its shape and name and returns the bubble and the one-line rect
-/// the caller puts its text field in.
-pub fn paint_own_chat_bubble(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    (at, label, color): (Point, &str, Color),
-    (message, min_text_w, bounds): (&str, f64, Rect),
-) -> (Rect, Rect) {
-    let name = pill_label_style(theme);
-    let body = chat_text_style(theme);
-    let (nw, nh) = text_renderer.measure_style(label, None, &name);
-    let (tw, _) = text_renderer.measure_style(message, None, &body);
-    let line = f64::from(body.line_height_px());
-    let text_w = f64::from(nw.max(tw + CARET_ROOM))
-        .max(min_text_w)
-        .min(CHAT_MAX_W - CHAT_PAD_X * 2.0);
-    let width = text_w + CHAT_PAD_X * 2.0;
-    let height = f64::from(nh) + CHAT_NAME_GAP + line + CHAT_PAD_Y * 2.0;
-    let gap = RING_R + PILL_GAP;
-    let x0 = if at.x + gap + width > bounds.x1 {
-        at.x - gap - width
-    } else {
-        at.x + gap
-    };
-    let y0 = if at.y + gap + height > bounds.y1 {
-        at.y - gap - height
-    } else {
-        at.y + gap
-    };
-    let rect = Rect::new(x0, y0, x0 + width, y0 + height);
-    let text =
-        paint_chat_bubble_frame(scene, transform, text_renderer, theme, rect, (label, color));
-    (rect, text)
-}
-
-/// A reaction rising from a pointer at `at`; returns where it painted.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "kurbo Affine composition is f64 matrix math; it cannot panic or overflow"
-)]
-pub fn paint_reaction(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    at: Point,
-    reaction: &super::ReactionFloat,
-) -> Rect {
-    let style = reaction_style(theme);
-    let (w, h) = text_renderer.measure_style(&reaction.emoji, None, &style);
-    let (w, h) = (f64::from(w), f64::from(h));
-    let rect = Rect::new(
-        at.x - w / 2.0,
-        at.y - h - REACTION_LIFT - reaction.rise,
-        at.x + w / 2.0,
-        at.y - REACTION_LIFT - reaction.rise,
-    );
-    let bounds = rect.inflate(FADE_EDGE, FADE_EDGE);
-    faded(scene, transform, reaction.opacity, bounds, |scene| {
-        text_renderer.draw_style(
-            scene,
-            &reaction.emoji,
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((rect.x0, rect.y0)),
-            None,
-            &style,
-        );
-    });
-    transform.transform_rect_bbox(bounds)
-}
-
-/// Where a pointer's mark paints, its outline and shadow included, with two
-/// pixels for antialiasing: where it repaints when it moves, or when a
-/// scroll copies beneath it. The arrow hangs down and right of its tip; an
-/// agent's mark is centred on it.
-fn pointer_bounds(pos: (f64, f64)) -> Rect {
-    let arrow = Rect::new(
-        -ARROW_EDGE,
-        -ARROW_EDGE,
-        ARROW_W + ARROW_EDGE,
-        ARROW_H + ARROW_EDGE,
-    );
-    let agent = Rect::from_center_size(Point::ORIGIN, (2.0 * RING_R + 6.0, 2.0 * RING_R + 6.0));
-    arrow.union(agent).inflate(2.0, 2.0) + vello::kurbo::Vec2::new(pos.0, pos.1)
-}
-
-/// The arrow's extent from its tip, and the room its outline and shadow take.
-const ARROW_W: f64 = 12.0;
-const ARROW_H: f64 = 18.6;
-const ARROW_EDGE: f64 = 2.5;
+/// Room around a pointer's centre that covers its halo (the widest of what
+/// [`draw_peer_dot`] paints, `RING_R + 3`), shadow and ring, with two
+/// pixels for antialiasing: where the mark repaints when it moves, or when
+/// a scroll copies beneath it.
+const FADE_DOT_BOUNDS: f64 = 2.0 * (RING_R + 3.0 + 2.0);
 /// Room around a pill or tether for its stroke and shadow.
 const FADE_EDGE: f64 = 8.0;
 
@@ -1015,57 +735,8 @@ fn faded(
     scene.pop_layer();
 }
 
-/// The outline of a person's pointer: an arrow with its tip at the origin,
-/// the shape everyone reads as "someone is pointing here".
-fn arrow_path() -> vello::kurbo::BezPath {
-    let mut path = vello::kurbo::BezPath::new();
-    path.move_to((0.0, 0.0));
-    path.line_to((0.0, 16.0));
-    path.line_to((4.2, 12.2));
-    path.line_to((7.0, ARROW_H));
-    path.line_to((9.6, 17.5));
-    path.line_to((6.9, 11.3));
-    path.line_to((ARROW_W, 11.3));
-    path.close_path();
-    path
-}
-
-/// A peer's pointer: a person's is an arrow in their colour with a white
-/// outline and a soft shadow, which together separate it from dark and
-/// light ground alike; an agent's is the shared agent mark, so software is
-/// never drawn as a person.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "kurbo::Affine multiplication is f64 matrix composition; it cannot panic or overflow"
-)]
-fn draw_peer_pointer(
-    scene: &mut Scene,
-    transform: Affine,
-    theme: &Theme,
-    pos: (f64, f64),
-    peer: Color,
-    is_agent: bool,
-) {
-    if is_agent {
-        draw_agent_pointer(scene, transform, theme, pos, peer);
-        return;
-    }
-    let t = transform * Affine::translate((pos.0, pos.1));
-    let arrow = arrow_path();
-    scene.fill(
-        Fill::NonZero,
-        t * Affine::translate((0.0, 1.0)),
-        Color::BLACK.with_alpha_factor(0.28),
-        None,
-        &arrow,
-    );
-    let outline = Stroke::new(2.5).with_join(vello::kurbo::Join::Round);
-    scene.stroke(&outline, t, Color::WHITE, None, &arrow);
-    scene.fill(Fill::NonZero, t, peer, None, &arrow);
-}
-
-/// An agent's pointer: halo, shadow edge and the agent mark. Shadow and ring
-/// together work on both light and dark backgrounds — ring separates
+/// A peer's pointer: halo, shadow edge, solid dot, white ring. Shadow and
+/// ring together work on both light and dark backgrounds — ring separates
 /// dark-on-dark, shadow separates light-on-light; whichever isn't needed
 /// stays invisible.
 /// `kurbo::Affine` composition below is plain f64 matrix math with no
@@ -1075,12 +746,13 @@ fn draw_peer_pointer(
     clippy::arithmetic_side_effects,
     reason = "kurbo::Affine multiplication is f64 matrix composition; it cannot panic or overflow"
 )]
-fn draw_agent_pointer(
+fn draw_peer_dot(
     scene: &mut Scene,
     transform: Affine,
     theme: &Theme,
     pos: (f64, f64),
     peer: Color,
+    is_agent: bool,
 ) {
     let t = transform * Affine::translate((pos.0, pos.1));
     scene.fill(
@@ -1097,15 +769,21 @@ fn draw_agent_pointer(
         None,
         &Circle::new(Point::ORIGIN, RING_R - 0.5),
     );
-    let radius = DOT_R + 1.0;
-    draw_agent_identity_mark(
-        scene,
-        t,
-        Rect::new(-radius, -radius, radius, radius),
-        peer,
-        theme,
-        AgentIdentityStyle::Solid,
-    );
+    if is_agent {
+        let radius = DOT_R + 1.0;
+        draw_agent_identity_mark(
+            scene,
+            t,
+            Rect::new(-radius, -radius, radius, radius),
+            peer,
+            theme,
+            AgentIdentityStyle::Solid,
+        );
+    } else {
+        let dot = Circle::new(Point::ORIGIN, DOT_R);
+        scene.fill(Fill::NonZero, t, peer, None, &dot);
+        scene.stroke(&Stroke::new(2.0), t, Color::WHITE, None, &dot);
+    }
 }
 
 #[allow(
@@ -1230,9 +908,6 @@ fn peer_of(ctx: &PresenceCtx, cursor: &super::RemoteCursor) -> PeerCursor {
         ),
         is_agent: ctx.is_agent(&UserId(cursor.user_id.clone())),
         opacity: 1.0,
-        name_opacity: 1.0,
-        chat: None,
-        reaction: None,
     }
 }
 
@@ -1730,8 +1405,7 @@ mod tests {
                 );
                 let mut r = OffscreenRenderer::new(120, 120);
                 let rgba = r.render(&scene, Color::BLACK);
-                // Inside the arrow, just under its tip.
-                OffscreenRenderer::sample(&rgba, 120, at[0] as u32 + 3, at[1] as u32 + 8)
+                OffscreenRenderer::sample(&rgba, 120, at[0] as u32, at[1] as u32)
             };
 
             // Owned here: alice's pinned pink lands on the screen.
@@ -2298,9 +1972,6 @@ mod tests {
                 color: Color::from_rgb8(236, 72, 153),
                 is_agent: false,
                 opacity: 1.0,
-                name_opacity: 1.0,
-                chat: None,
-                reaction: None,
             }];
             let mut scene = Scene::new();
             draw_peer_presence(
@@ -2460,16 +2131,13 @@ mod tests {
                     color: peer,
                     is_agent: false,
                     opacity: 1.0,
-                    name_opacity: 1.0,
-                    chat: None,
-                    reaction: None,
                 }],
             );
             let mut r = OffscreenRenderer::new(200, 200);
             let rgba = r.render(&scene, Color::WHITE);
 
-            // The arrow itself, just under its tip.
-            let (dr, dg, db, _) = OffscreenRenderer::sample(&rgba, 200, 63, 68);
+            // The dot itself.
+            let (dr, dg, db, _) = OffscreenRenderer::sample(&rgba, 200, 60, 60);
             assert!(
                 dr > 180 && dg > 80 && dg < 160 && db < 90,
                 "expected bob's orange at the pointer, got ({dr},{dg},{db})"
@@ -2507,9 +2175,6 @@ mod tests {
                         color: peer,
                         is_agent: false,
                         opacity: 1.0,
-                        name_opacity: 1.0,
-                        chat: None,
-                        reaction: None,
                     }],
                 );
                 let mut r = OffscreenRenderer::new(120, 120);
@@ -2996,63 +2661,5 @@ mod tests {
                 "label ink rows {top}..={bottom} leave the pill {rect:?} at 2x"
             );
         }
-    }
-
-    /// A still pointer's name steps aside while the arrow stays; someone
-    /// talking gets a bubble in their colour, with their message, beside
-    /// the pointer instead.
-    #[test]
-    fn a_still_pointer_drops_its_name_and_a_talking_one_shows_its_message() {
-        let theme = Theme::default();
-        let mut tr = TextRenderer::new();
-        let ada = Color::from_rgb8(0x25, 0x63, 0xeb);
-        let mut render = |peer: PeerCursor| {
-            let mut scene = Scene::new();
-            let painted = draw_peer_cursors(
-                &mut scene,
-                Affine::IDENTITY,
-                Rect::new(0.0, 0.0, 400.0, 200.0),
-                &mut tr,
-                &theme,
-                &[peer],
-            );
-            (
-                OffscreenRenderer::new(400, 200).render(&scene, Color::WHITE),
-                painted,
-            )
-        };
-        let blue = |rgba: &[u8], x: u32, y: u32| {
-            let (r, g, b, _) = OffscreenRenderer::sample(rgba, 400, x, y);
-            b > 180 && r < 120 && g < 150
-        };
-        let mut moving = PeerCursor::new((60.0, 60.0), "Ada", ada);
-        let (shown, _) = render(moving.clone());
-        assert!(blue(&shown, 63, 68), "the arrow is in her colour");
-        assert!(
-            blue(&shown, 76, 76),
-            "her name is beside it while she moves"
-        );
-
-        moving.name_opacity = 0.0;
-        let (still, painted) = render(moving.clone());
-        assert!(blue(&still, 63, 68), "the arrow stays while she is still");
-        assert!(!blue(&still, 76, 76), "her name steps aside");
-        assert!(
-            painted.iter().all(|rect| rect.x1 < 90.0 && rect.y1 < 90.0),
-            "a still pointer damages only the arrow: {painted:?}"
-        );
-
-        moving.chat = Some(super::super::ChatBubble {
-            text: "over here, the second paragraph".into(),
-            typing: false,
-            opacity: 1.0,
-        });
-        let (talking, painted) = render(moving);
-        assert!(
-            blue(&talking, 76, 76),
-            "a bubble in her colour, whatever the name did"
-        );
-        let bubble = painted.iter().copied().reduce(|a, b| a.union(b)).unwrap();
-        assert!(bubble.width() > 150.0, "the message is in it: {bubble:?}");
     }
 }

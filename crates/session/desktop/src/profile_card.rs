@@ -24,8 +24,8 @@ use ui::icons::Icon;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
-    Avatar, AvatarSize, Button, ButtonRole, ColorSwatch, ColorSwatchPicker, Column, Container,
-    Divider, Popover, PopoverSide, Row, Segment, Text, TextInput, ToggleGroup, Widget,
+    Avatar, AvatarSize, Button, ButtonRole, Column, Container, Divider, Popover, PopoverSide, Row,
+    Text, TextInput, Widget,
 };
 use ui::{LocalState, TextRole};
 use vello::kurbo::{Point, Rect};
@@ -34,42 +34,6 @@ use winit::event::WindowEvent;
 
 use crate::i18n::{t, t_args};
 pub use tilo_app::linked_accounts::{LinkState, LinkedAccount};
-
-/// The words for a status preset.
-/// The words for one way of sharing what you are doing.
-fn sharing_key(mode: ui::StatusSharing) -> &'static str {
-    match mode {
-        ui::StatusSharing::Automatic => "profile-sharing-auto",
-        ui::StatusSharing::ManualOnly => "profile-sharing-manual",
-        ui::StatusSharing::Off => "profile-sharing-off",
-    }
-}
-
-fn availability_key(availability: ui::Availability) -> &'static str {
-    match availability {
-        ui::Availability::Available | ui::Availability::Idle => "profile-available",
-        ui::Availability::Focusing => "profile-focusing",
-        ui::Availability::Away => "profile-away",
-    }
-}
-
-/// The words for what people see.
-fn visibility_key(visibility: ui::PresenceVisibility) -> &'static str {
-    match visibility {
-        ui::PresenceVisibility::WhereIAm => "profile-visibility-where",
-        ui::PresenceVisibility::ThatImHere => "profile-visibility-here",
-        ui::PresenceVisibility::Nothing => "profile-visibility-nothing",
-    }
-}
-
-/// What a choice of what people see means, in a line.
-fn visibility_detail_key(visibility: ui::PresenceVisibility) -> &'static str {
-    match visibility {
-        ui::PresenceVisibility::WhereIAm => "profile-visibility-where-detail",
-        ui::PresenceVisibility::ThatImHere => "profile-visibility-here-detail",
-        ui::PresenceVisibility::Nothing => "profile-visibility-nothing-detail",
-    }
-}
 
 /// What a profile action is about, so the card can group them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -106,30 +70,6 @@ pub struct ProfileModel {
     /// The services the room is connected to, with the person's account
     /// at each; none hides the section.
     pub linked: Vec<LinkedAccount>,
-    /// How available the person says they are.
-    pub availability: ui::Availability,
-    /// The short status they wrote, if any.
-    pub status: String,
-    /// Whether what they are doing is shared on its own, only in their
-    /// words, or not at all; `None` where the host keeps no such choice.
-    pub sharing: Option<ui::StatusSharing>,
-    /// The colour they chose, by its id; `None` while their identity's own
-    /// colour is worn.
-    pub colour_id: Option<String>,
-    /// What the people in the workspace on screen see of them; `None`
-    /// outside any shared workspace.
-    pub sight: Option<WorkspaceSight>,
-    /// The host keeps the person's status, colour and what people see:
-    /// the card offers them.
-    pub offers_presence: bool,
-}
-
-/// What the people in one workspace see of the person.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WorkspaceSight {
-    /// The workspace's name.
-    pub workspace: String,
-    pub visibility: ui::PresenceVisibility,
 }
 
 /// What the person did in the card.
@@ -144,16 +84,6 @@ pub enum ProfileChoice {
     Link(String),
     /// Unlink the person's account with this connector's service.
     Unlink(String),
-    /// Say this availability from now on.
-    Availability(ui::Availability),
-    /// Say this short status (empty clears it).
-    Status(String),
-    /// Share what you are doing this way from now on.
-    Sharing(ui::StatusSharing),
-    /// Wear this colour, by its id.
-    Colour(String),
-    /// Let the people in the workspace on screen see this much.
-    Visibility(ui::PresenceVisibility),
 }
 
 impl ProfileChoice {
@@ -161,7 +91,6 @@ impl ProfileChoice {
     /// open to show what came of it.
     fn closes(&self) -> bool {
         matches!(self, Self::Rename(_) | Self::Action(_))
-        // The rest are settings the card goes on showing.
     }
 }
 
@@ -170,8 +99,6 @@ pub struct ProfileCard {
     popover: Popover<Container>,
     /// The name being typed.
     draft: LocalState<String>,
-    /// The status being typed.
-    status_draft: LocalState<String>,
     /// The name the card opened with.
     shown: String,
     chosen: Rc<RefCell<Option<ProfileChoice>>>,
@@ -187,7 +114,6 @@ impl Default for ProfileCard {
         Self {
             popover: Popover::with_content(Container::new()),
             draft: LocalState::new(String::new()),
-            status_draft: LocalState::new(String::new()),
             shown: String::new(),
             chosen: Rc::default(),
             focus_reset: false,
@@ -222,13 +148,7 @@ impl ProfileCard {
                     }),
             )
         } else {
-            // A name with no spaces (a key, before one is chosen) still
-            // wraps inside the card.
-            Box::new(
-                Text::new(&model.name)
-                    .with_role(TextRole::Subheading)
-                    .with_wrap_mode(ui::text_render::TextWrapMode::WordOrGlyph),
-            )
+            Box::new(Text::new(&model.name).with_role(TextRole::Subheading))
         };
         let who = Column::new()
             .with_no_padding()
@@ -248,11 +168,6 @@ impl ProfileCard {
             .with_rhythm(ui::tokens::Rhythm::Related)
             .with_padding_rhythm(ui::tokens::Rhythm::Related, ui::tokens::Rhythm::Related)
             .push(Box::new(header));
-        if model.offers_presence {
-            body = self.presence_sections(body, model);
-        } else if model.sharing.is_some() {
-            body = self.push_sharing(body.push(Box::new(Divider::horizontal())), model);
-        }
         for (group, heading) in [
             (ProfileGroup::Identity, "profile-section-identity"),
             (ProfileGroup::Devices, "profile-section-devices"),
@@ -290,166 +205,6 @@ impl ProfileCard {
             for account in &model.linked {
                 body = body.push(self.linked_row(account));
             }
-        }
-        body
-    }
-
-    /// Status, colour and what people see: how the person shows to others.
-    /// How what they are doing is shared, when the host keeps that choice.
-    fn push_sharing(&self, body: Column, model: &ProfileModel) -> Column {
-        let Some(current) = model.sharing else {
-            return body;
-        };
-        let modes = [
-            ui::StatusSharing::Automatic,
-            ui::StatusSharing::ManualOnly,
-            ui::StatusSharing::Off,
-        ];
-        let chosen = Rc::clone(&self.chosen);
-        let toggle = Box::new(
-            ToggleGroup::new(
-                modes
-                    .iter()
-                    .map(|mode| Segment::new(t(sharing_key(*mode))))
-                    .collect(),
-                modes
-                    .iter()
-                    .position(|mode| *mode == current)
-                    .unwrap_or(0),
-            )
-            .with_id("profile-sharing")
-            .with_accessible_name(t("a11y-shell-sharing-change"))
-            .on_change(move |index| {
-                if let Some(mode) = modes.get(index) {
-                    *chosen.borrow_mut() = Some(ProfileChoice::Sharing(*mode));
-                }
-            }),
-        );
-        body.push(Box::new(
-            Text::new(&t("profile-sharing"))
-                .with_role(TextRole::Caption)
-                .dimmed(),
-        ))
-        .push(toggle)
-    }
-
-    fn presence_sections(&self, mut body: Column, model: &ProfileModel) -> Column {
-        let heading =
-            |key: &str| Box::new(Text::new(&t(key)).with_role(TextRole::Caption).dimmed());
-        // Status: a preset, then what they are doing in their own words.
-        let presets = [
-            ui::Availability::Available,
-            ui::Availability::Focusing,
-            ui::Availability::Away,
-        ];
-        let chosen = Rc::clone(&self.chosen);
-        let selected = presets
-            .iter()
-            .position(|preset| *preset == model.availability)
-            .unwrap_or(0);
-        let availability = ToggleGroup::new(
-            presets
-                .iter()
-                .map(|preset| Segment::new(t(availability_key(*preset))))
-                .collect(),
-            selected,
-        )
-        .with_id("profile-availability")
-        .with_accessible_name(t("profile-section-status"))
-        .on_change(move |index| {
-            if let Some(preset) = presets.get(index) {
-                *chosen.borrow_mut() = Some(ProfileChoice::Availability(*preset));
-            }
-        });
-        let chosen = Rc::clone(&self.chosen);
-        let status = TextInput::from_state(&self.status_draft)
-            .with_id("profile-status")
-            .with_placeholder(t("profile-status-placeholder"))
-            .with_accessible_name(t("profile-status"))
-            .on_submit(move |typed| {
-                *chosen.borrow_mut() = Some(ProfileChoice::Status(typed.trim().to_owned()));
-            });
-        body = body
-            .push(Box::new(Divider::horizontal()))
-            .push(heading("profile-section-status"))
-            .push(Box::new(availability))
-            .push(Box::new(status));
-        body = self.push_sharing(body, model);
-
-        // Colour: the twelve people colours.
-        let chosen = Rc::clone(&self.chosen);
-        let hues = ui::tokens::PresenceHue::ALL;
-        let mut colours = ColorSwatchPicker::new(
-            hues.iter().map(|hue| {
-                let (r, g, b) = ui::presence::identity_rgb(*hue);
-                ColorSwatch::named(Color::from_rgb8(r, g, b), hue.label())
-            }),
-            // Two rows of six: the card's width, never past it.
-            hues.len() / 2,
-        )
-        .on_change(move |index| {
-            if let Some(hue) = hues.get(index) {
-                *chosen.borrow_mut() = Some(ProfileChoice::Colour(hue.id().to_owned()));
-            }
-        });
-        if let Some(index) = model
-            .colour_id
-            .as_deref()
-            .and_then(ui::tokens::PresenceHue::from_id)
-            .map(ui::tokens::PresenceHue::slot)
-        {
-            colours = colours.with_selected(index);
-        }
-        body = body
-            .push(Box::new(Divider::horizontal()))
-            .push(heading("profile-section-colour"))
-            .push(Box::new(colours));
-
-        // What the people in this workspace see.
-        if let Some(sight) = &model.sight {
-            let choices = [
-                ui::PresenceVisibility::WhereIAm,
-                ui::PresenceVisibility::ThatImHere,
-                ui::PresenceVisibility::Nothing,
-            ];
-            let chosen = Rc::clone(&self.chosen);
-            let selected = choices
-                .iter()
-                .position(|choice| *choice == sight.visibility)
-                .unwrap_or(0);
-            let what = ToggleGroup::new(
-                choices
-                    .iter()
-                    .map(|choice| Segment::new(t(visibility_key(*choice))))
-                    .collect(),
-                selected,
-            )
-            .with_id("profile-visibility")
-            .with_accessible_name(t_args(
-                "profile-section-visibility",
-                &[("workspace", sight.workspace.clone().into())],
-            ))
-            .on_change(move |index| {
-                if let Some(choice) = choices.get(index) {
-                    *chosen.borrow_mut() = Some(ProfileChoice::Visibility(*choice));
-                }
-            });
-            body = body
-                .push(Box::new(Divider::horizontal()))
-                .push(Box::new(
-                    Text::new(&t_args(
-                        "profile-section-visibility",
-                        &[("workspace", sight.workspace.clone().into())],
-                    ))
-                    .with_role(TextRole::Caption)
-                    .dimmed(),
-                ))
-                .push(Box::new(what))
-                .push(Box::new(
-                    Text::new(&t(visibility_detail_key(sight.visibility)))
-                        .with_role(TextRole::Caption)
-                        .dimmed(),
-                ));
         }
         body
     }
@@ -564,7 +319,6 @@ impl ProfileCard {
         }
         self.shown.clone_from(&model.name);
         self.draft.set(model.name.clone());
-        self.status_draft.set(model.status.clone());
         self.chosen.borrow_mut().take();
         self.placed = (anchor, viewport);
         self.present(model);
@@ -749,7 +503,6 @@ mod tests {
                 },
             ],
             linked: Vec::new(),
-            ..ProfileModel::default()
         }
     }
 

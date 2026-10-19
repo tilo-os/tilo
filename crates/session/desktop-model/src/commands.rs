@@ -121,12 +121,6 @@ pub enum DesktopCommand {
     RemoveStrip {
         strip: u64,
     },
-    /// Move `strip` to just before the strip `before` in the workspace's
-    /// stack, or to the bottom when `before` is `None`.
-    MoveStrip {
-        strip: u64,
-        before: Option<u64>,
-    },
     RenameWorkspace {
         name: String,
     },
@@ -883,7 +877,6 @@ pub fn apply_command(
             rename_strip(workspace, *strip, label)?;
         }
         DesktopCommand::RemoveStrip { strip } => remove_strip(workspace, *strip)?,
-        DesktopCommand::MoveStrip { strip, before } => move_strip(workspace, *strip, *before)?,
         DesktopCommand::RenameWorkspace { name: label } => workspace.name = name(label)?,
         DesktopCommand::ClaimNamespace { .. } => {
             return Err("a namespace claim changes the room's registry, not a workspace".into());
@@ -896,23 +889,6 @@ pub fn apply_command(
 fn rename_strip(workspace: &mut Workspace, strip: u64, label: &str) -> Result<(), String> {
     let strip = strip_index(workspace, strip)?;
     strip_at_mut(workspace, strip)?.name = name(label)?;
-    Ok(())
-}
-
-/// Move `strip` to just before `before`, or to the bottom.
-fn move_strip(workspace: &mut Workspace, strip: u64, before: Option<u64>) -> Result<(), String> {
-    if before == Some(strip) {
-        return Err("strip cannot be its own destination".into());
-    }
-    let at = strip_index(workspace, strip)?;
-    if let Some(before) = before {
-        strip_index(workspace, before)?;
-    }
-    let moved = workspace.strips.remove(at);
-    let destination = before
-        .and_then(|id| workspace.strips.iter().position(|s| s.id.0 == id))
-        .unwrap_or(workspace.strips.len());
-    workspace.strips.insert(destination, moved);
     Ok(())
 }
 

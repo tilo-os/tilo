@@ -188,8 +188,6 @@ impl LiveState {
     ) -> Result<Vec<u8>, LiveWireError> {
         let mut presence = self.local_presence.clone().unwrap_or(PresenceFrame {
             place: None,
-            chat: None,
-            reaction: None,
             seq: 0,
             sent_at_ms: 0,
             focus: None,

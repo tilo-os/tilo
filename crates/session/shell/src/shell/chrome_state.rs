@@ -601,12 +601,6 @@ pub enum PresenceRequest {
     StopFollowing,
     SetManualStatus(Option<String>),
     SetStatusSharing(ui::StatusSharing),
-    /// How available this person says they are.
-    SetAvailability(ui::Availability),
-    /// What the people in the workspace of `room` see of this person.
-    SetVisibility(crate::shell::state::RoomId, ui::PresenceVisibility),
-    /// Wave at the collaborator with this roster id.
-    Wave(String),
 }
 
 impl Default for QuickSettingsState {
@@ -1384,12 +1378,6 @@ impl ChromeState {
         else {
             return;
         };
-        self.ask_publication(room);
-    }
-
-    /// Ask the host of `room` whether its workspace is public, unless that
-    /// is being asked already.
-    pub fn ask_publication(&mut self, room: crate::shell::state::RoomId) {
         if matches!(self.publications.get(&room), Some(PublicationState::Asking)) {
             return;
         }
@@ -1418,25 +1406,6 @@ impl ChromeState {
             room,
             listing,
         });
-    }
-
-    /// Ask the active workspace for a bot, or take the request back. The
-    /// room's governance decides whether this person may; its change brings
-    /// the bot list along.
-    pub fn ask_active_workspace_for_bot(&mut self, ask: crate::shell::network::BotAsk) -> bool {
-        let Some(room) = self
-            .tree()
-            .desktop
-            .active_workspace()
-            .map(|workspace| workspace.room)
-        else {
-            return false;
-        };
-        self.push_peer_sync_request(crate::shell::overlay_host::PeerSyncAction::AskForBot {
-            room,
-            ask,
-        });
-        true
     }
 
     pub(crate) fn complete_peer_sync_request(
@@ -3003,27 +2972,6 @@ impl ChromeState {
         let command = tilo_desktop_model::commands::DesktopCommand::RenameStrip {
             strip: strip.raw(),
             name: name.to_owned(),
-        };
-        self.tree_mut().commit_strip_command(&command)?;
-        self.bump();
-        Ok(())
-    }
-
-    /// Move `strip` of the active workspace to just before `before`, or to
-    /// the bottom of the stack when `before` is `None`.
-    ///
-    /// # Errors
-    ///
-    /// The model's refusal: either strip is gone, or `strip` is another
-    /// device's.
-    pub fn move_strip(
-        &mut self,
-        strip: crate::shell::state::StripId,
-        before: Option<crate::shell::state::StripId>,
-    ) -> Result<(), String> {
-        let command = tilo_desktop_model::commands::DesktopCommand::MoveStrip {
-            strip: strip.raw(),
-            before: before.map(|id| id.raw()),
         };
         self.tree_mut().commit_strip_command(&command)?;
         self.bump();

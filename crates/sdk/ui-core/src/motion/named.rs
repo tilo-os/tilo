@@ -590,26 +590,6 @@ impl Zoom {
         shortcut: Shortcut::Lands,
     };
 
-    /// The workspace overview: every window flying from its place on its
-    /// strip into the overview's picture of the workspace, and back. Where
-    /// the windows went is the whole point of the motion, so a shortcut
-    /// (Super+Tab) keeps it as spatial context, at `fast`: the overview is
-    /// on screen from the first frame and settles a few frames later.
-    pub const OVERVIEW: MotionSpec = MotionSpec {
-        enter: Pace::Slow,
-        exit: Pace::Base,
-        reduced: Reduced::Fades,
-        shortcut: Shortcut::Context,
-    };
-
-    /// A corner radius between `from` (0) and `to` (1) at `progress`, for
-    /// a shape whose rect is [`Self::rect_at`].
-    #[must_use]
-    pub fn radius_at(from: f64, to: f64, progress: f64) -> f64 {
-        let p = progress.clamp(0.0, 1.0);
-        from + (to - from) * p
-    }
-
     /// The transform that draws content laid out in `rest` into `drawn`.
     #[must_use]
     pub fn fit(rest: Rect, drawn: Rect) -> Affine {
@@ -917,68 +897,6 @@ impl Follow {
             return 1.0;
         }
         unit_opacity(left.as_secs_f64() / fade.as_secs_f64())
-    }
-}
-
-/// A reaction floating up from the pointer it was sent from: it rises,
-/// slowing as it goes, and fades over the second half of its life. Its life
-/// is fixed rather than a token pace, because the reaction is the content of
-/// that moment and has to be readable before it goes. Under reduced motion it
-/// does not rise; it only fades. Never loops, never bounces.
-pub struct Float;
-
-impl Float {
-    /// How long a reaction is shown.
-    pub const LIFE: crate::time::Duration = crate::time::Duration::from_millis(1200);
-    /// How far it rises over its life, in logical pixels.
-    pub const RISE_PX: f64 = 48.0;
-
-    /// How far above where it started it is drawn, and how opaque, at `age`;
-    /// `None` once it is gone.
-    #[must_use]
-    pub fn at(age: crate::time::Duration, motion: EffectiveMotion) -> Option<(f64, f32)> {
-        if age >= Self::LIFE {
-            return None;
-        }
-        let t = (age.as_secs_f64() / Self::LIFE.as_secs_f64()).clamp(0.0, 1.0);
-        let rise = if motion.reduced() {
-            0.0
-        } else {
-            Self::RISE_PX * (1.0 - (1.0 - t) * (1.0 - t))
-        };
-        let opacity = if t < 0.5 { 1.0 } else { (1.0 - t) * 2.0 };
-        Some((rise, unit_opacity(opacity)))
-    }
-}
-
-/// A state that is live for as long as it lasts: the soft ring on the face
-/// of someone in a call. It breathes slowly between a quiet and a full
-/// level, the only motion that loops, so it is reserved for something that
-/// is happening right now. Where motion may not loop it holds at full.
-pub struct Breathe;
-
-impl Breathe {
-    /// One breath, in and out.
-    pub const PERIOD: crate::time::Duration = crate::time::Duration::from_millis(1800);
-
-    /// How strong it is `since` it began, `0.35..=1`.
-    #[must_use]
-    pub fn level(since: crate::time::Duration, motion: EffectiveMotion) -> f32 {
-        if !motion.loops() {
-            return 1.0;
-        }
-        let phase = (since.as_secs_f64() / Self::PERIOD.as_secs_f64()).fract();
-        let wave = 0.5 - 0.5 * (phase * std::f64::consts::TAU).cos();
-        unit_opacity(0.35 + 0.65 * wave)
-    }
-
-    /// When to paint it next: a breath is drawn at a gentle frame rate, not
-    /// the display's, as it changes slowly.
-    #[must_use]
-    pub fn next_frame(now: Instant, motion: EffectiveMotion) -> Option<Instant> {
-        motion
-            .loops()
-            .then(|| now + crate::time::Duration::from_millis(66))
     }
 }
 

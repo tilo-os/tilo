@@ -160,16 +160,12 @@ impl Widget for Stage {
     ) {
         self.bar.draw(scene, transform, text, theme, presence);
         if self.people_open {
-            let (rows, _) = tilo_desktop::collaborators::collaborator_roster_rows_named(
+            let (rows, own) = tilo_desktop::collaborators::collaborator_roster_rows_named(
                 &self.tree,
                 ME,
                 Some(MY_NAME),
             );
-            let workspace = self
-                .tree
-                .active_workspace()
-                .map(|workspace| workspace.name.clone())
-                .unwrap_or_default();
+            let own = own.unwrap_or_default();
             self.people.draw(
                 scene,
                 transform,
@@ -177,13 +173,23 @@ impl Widget for Stage {
                 theme,
                 &CollaboratorsModel {
                     host: self.rect,
-                    workspace: &workspace,
                     rows: &rows,
+                    own_label: &own,
+                    own_color: theme.tokens.colors.presence.of_rgb((214, 140, 96)),
+                    own_rename: true,
                     unavailable: None,
-                    exposure: None,
                     may_invite: true,
                     followed_id: None,
                     following_pairs: &[],
+                    own_status: None,
+                    own_activity: None,
+                    own_activity_generated: false,
+                    own_status_automatic: false,
+                    status_sharing: ui::StatusSharing::Automatic,
+                    status_editing: false,
+                    status_editable: false,
+                    status_selection: ui::text_selection::Selection::default(),
+                    screen_exposure: None,
                     expanded_id: None,
                     watching: 0,
                 },
@@ -302,7 +308,6 @@ fn profile_model(linked: Vec<LinkedAccount>) -> ProfileModel {
                 icon: ui::icons::Icon::MonitorSmartphone,
             },
         ],
-        ..ProfileModel::default()
     }
 }
 
