@@ -5,7 +5,7 @@ use ui::tilo_resource::Effect as _;
 use crate::resource::CATALOG;
 
 impl BrowserWidget {
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     pub(crate) fn continuity_grant_for_test(
         &mut self,
         root: std::fs::File,
