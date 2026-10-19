@@ -161,10 +161,11 @@ mod tests {
     }
 
     /// Four AES blocks decrypt before the padding check reads the last one.
-    /// Changing the byte before the final block changes only that block's
-    /// plaintext last byte (CBC), from a valid `0x05` to invalid zero, so the
-    /// error comes from a decode that already produced three blocks of
-    /// plaintext — the path the wiped in-place buffer exists for.
+    /// Byte 47 is the final ciphertext byte before the last block; changing it
+    /// flips that byte in the previous block's plaintext and the final padding
+    /// byte (CBC), from a valid `0x05` to invalid zero. The error therefore
+    /// comes from a decode that already produced three blocks of plaintext —
+    /// the path the wiped in-place buffer exists for.
     #[test]
     fn a_multiblock_ciphertext_with_invalid_padding_is_refused() {
         let key = chromium_oscrypt_key(b"synthetic-owner-password");
