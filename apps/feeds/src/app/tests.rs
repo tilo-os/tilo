@@ -34,8 +34,21 @@ fn settle(app: &mut Framed<FeedsApp>) {
     }
 }
 
-fn synced(app: &mut FeedsApp) -> AutoCommit {
+/// A new library's document: stamped with the storage version it is
+/// written at, as the framework creates one.
+fn new_library() -> AutoCommit {
     let mut doc = AutoCommit::new();
+    ui::tilo_resource::evolution::write_version(&mut doc, Library::VERSION).unwrap();
+    doc.commit();
+    doc
+}
+
+fn synced(app: &mut FeedsApp) -> AutoCommit {
+    sync_over(app, new_library())
+}
+
+/// Sync `app` over `doc`, writing what a component fixture writes.
+fn sync_over(app: &mut FeedsApp, mut doc: AutoCommit) -> AutoCommit {
     app.attach_framework(ui::framework::Dispatcher::detached(
         "so.tilo.feeds",
         "component-test-author",
@@ -154,14 +167,17 @@ fn startup_is_empty_live_and_populated_only_in_demo() {
     // Syncing the live app over a fresh document writes nothing: the default
     // reading settings stand unwritten.
     let mut live = FeedsApp::new();
-    let mut doc = synced(&mut live);
+    let mut fresh = new_library();
+    let created = fresh.get_heads();
+    let mut doc = sync_over(&mut live, fresh);
     assert!(live.core().store.feeds.is_empty());
     assert!(
         doc.get(automerge::ROOT, "settings").unwrap().is_none(),
         "opening writes nothing: the default reading settings stand unwritten"
     );
-    assert!(
-        doc.get_heads().is_empty(),
+    assert_eq!(
+        doc.get_heads(),
+        created,
         "the untouched live record has no app writes"
     );
 
@@ -597,15 +613,19 @@ fn the_window_shell_adapts_to_its_width() {
     assert!(geometry.side_by_side);
     assert!(geometry.stack.is_empty());
 
-    // 800 wide: the sidebar becomes a drawer; the list and article stay.
+    // 800 wide: the sidebar no longer docks beside the list and a reading
+    // column, so it becomes a screen of its own; the list and article stay
+    // side by side. Feeds reads, it is not a document: no floating drawer.
     let mut mounted = framed_at(app(), (800, 600));
     settle(&mut mounted);
-    assert_eq!(mounted.shell().geometry().sidebar, SidebarPlacement::Drawer);
-    assert!(!mounted.shell().is_sidebar_open(), "it opens closed");
+    let geometry = mounted.shell().geometry().clone();
+    assert_eq!(geometry.sidebar, SidebarPlacement::Screen);
+    assert!(geometry.side_by_side);
+    assert_eq!(geometry.stack, vec![NavPane::Sidebar, NavPane::Content]);
     mounted.stage("sidebar-open");
     settle(&mut mounted);
     assert!(mounted.shell().is_sidebar_open());
-    // Choosing a place closes the drawer.
+    // Choosing a place moves on to its articles.
     {
         let (a, st) = Framed::split(&mut mounted);
         a.requests.borrow_mut().push(Request::Show(Filter::Unread));
@@ -613,12 +633,13 @@ fn the_window_shell_adapts_to_its_width() {
     }
     assert!(!mounted.shell().is_sidebar_open());
 
-    // Narrow: list and article are push screens; choosing an article shows it.
+    // Narrow: sidebar, list and article are push screens; choosing an
+    // article shows it.
     let mut mounted = framed_at(app(), (520, 820));
     settle(&mut mounted);
     assert_eq!(
         mounted.shell().geometry().stack,
-        vec![NavPane::Overview, NavPane::Content]
+        vec![NavPane::Sidebar, NavPane::Overview, NavPane::Content]
     );
     {
         let (a, st) = Framed::split(&mut mounted);
