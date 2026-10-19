@@ -12,7 +12,7 @@ use crate::continuity::{ImportBatch, ImportBundle, MAX_BUNDLE_ENTRIES, MAX_IMPOR
 use crate::continuity_library::{Bookmark, Bookmarks};
 use crate::imported_folders::{ImportedNode, ImportedTree, NodeKind};
 use ui::tilo_resource::Effect as _;
-use ui::tilo_resource::{ActionCx, Atom, Map, Model, ModelError, Refusal, Set, resource};
+use ui::tilo_resource::{self, ActionCx, Atom, Map, Model, ModelError, Refusal, Set, resource};
 
 pub const SCOPE: &str = "browser.bookmarks/personal";
 

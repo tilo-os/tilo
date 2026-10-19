@@ -7,6 +7,8 @@ use ui::semantic_document_read::{
     ReadPage, RegisteredSemanticReader, SemanticReadError, decode_cursor, decode_request,
     encode_cursor,
 };
+#[allow(unused_imports, reason = "the `JsonSchema` derive names the crate")]
+use ui::tilo_resource;
 
 pub const OPERATION_TYPE: &str = "word-processor.read";
 pub static READERS: [RegisteredSemanticReader; 1] = [RegisteredSemanticReader::new(

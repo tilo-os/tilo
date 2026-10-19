@@ -4,6 +4,9 @@ use automerge::{ReadDoc, transaction::Transactable};
 use serde::Serialize;
 use tilo_actions::{ActionSpec, Doc};
 
+#[allow(unused_imports, reason = "the `JsonSchema` derive names the crate")]
+use ui::tilo_resource;
+
 use crate::doc::EditorDoc;
 use crate::project::text_digest;
 

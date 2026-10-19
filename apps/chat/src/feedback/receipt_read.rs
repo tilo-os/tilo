@@ -9,6 +9,8 @@ use tilo_actions::{ActionSpec, Resource};
 use ui::semantic_document_read::{
     ReadPage, RegisteredSemanticReader, SemanticReadError, decode_request,
 };
+#[allow(unused_imports, reason = "the `JsonSchema` derive names the crate")]
+use ui::tilo_resource;
 
 const OPERATION: &str = "chat.feedback.read";
 pub(crate) const READER: RegisteredSemanticReader =
