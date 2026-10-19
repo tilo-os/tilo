@@ -1,0 +1,31 @@
+[package]
+name = "app-catalogue"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The one catalogue of installable apps the Store and desktop search share: Tilo packages from the registries, Flathub from cached AppStream metadata, and the block list."
+
+[lib]
+name = "app_catalogue"
+path = "src/lib.rs"
+
+# No GUI, no HTTP: both the Store app and the desktop shell link this, and
+# the shell reads it on a worker thread. Network refreshes stay where they
+# already happen (`app list`, the hourly `tilo-app-update` run, Flatpak's
+# own AppStream update); this crate only reads what they leave on disk.
+[dependencies]
+# `CatalogueApp`, the `app list --json` row a Tilo entry is made from.
+registry-types = { path = "../registry-types" }
+tilo-paths.workspace = true
+flate2.workspace = true
+quick-xml.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
