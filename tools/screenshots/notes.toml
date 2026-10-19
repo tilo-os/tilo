@@ -1,0 +1,53 @@
+# Notes: a notebook in use. Situations are reached only through the
+# notebook's actions (tools/screenshots/run.py).
+
+[[situation]]
+name = "notebook-with-an-open-note"
+title = "A notebook with several notes and a trip plan open"
+
+[[situation.steps]]
+invoke = { resource = "notes.notebook", action = "create-page", args = { title = "Groceries", markdown = "- Oat milk\n- Sourdough loaf\n- Two lemons\n- Parmesan\n- Coffee beans, the Ethiopian ones" } }
+
+[[situation.steps]]
+invoke = { resource = "notes.notebook", action = "create-page", args = { title = "Reading list", markdown = "1. *The Dispossessed*, Ursula K. Le Guin\n2. *Piranesi*, Susanna Clarke\n3. *The Overstory*, Richard Powers" } }
+
+[[situation.steps]]
+invoke = { resource = "notes.notebook", action = "create-page", args = { title = "Weekend in Lisbon", markdown = "# Weekend in Lisbon\n\nFlights land Friday at 18:40; the apartment is in Alfama, a ten-minute walk from the tram 28 stop.\n\n## Saturday\n\n- Breakfast at the bakery on Rua da Regueira\n- LX Factory in the afternoon\n- Sunset at the Miradouro da Senhora do Monte\n\n## Sunday\n\n- Belém: the monastery opens at 10:00, buy tickets online\n- Pastéis de nata before the train back\n\n> Pack a light jacket: evenings by the river get cold." }, bind = "trip" }
+
+[[situation.steps]]
+invoke = { resource = "notes.notebook", action = "open-note", args = { page = "{{trip.value.page}}" } }
+
+[[situation]]
+name = "meeting-notes-with-tags"
+title = "Tagged meeting notes, one open"
+
+[[situation.steps]]
+invoke = { resource = "notes.notebook", action = "new-tag", args = { name = "work" } }
+
+[[situation.steps]]
+invoke = { resource = "notes.notebook", action = "create-page", args = { title = "Design review, Monday", markdown = "# Design review\n\nAttendees: Amira, Jonas, Priya, Wen\n\n## Decisions\n\n- The onboarding keeps three steps; the account step moves last.\n- Dark theme ships with the next release.\n\n## Follow-ups\n\n- [ ] Jonas: new empty-state illustrations\n- [ ] Priya: measure the first launch on the older laptops\n- [x] Wen: send the notes round" }, bind = "review" }
+
+[[situation.steps]]
+invoke = { resource = "notes.notebook", action = "tag", args = { page = "{{review.value.page}}", name = "work" } }
+
+[[situation.steps]]
+invoke = { resource = "notes.notebook", action = "create-page", args = { title = "Quarterly planning", markdown = "Themes for the quarter: speed, sharing, and fewer settings." } }
+
+[[situation.steps]]
+invoke = { resource = "notes.notebook", action = "open-note", args = { page = "{{review.value.page}}" } }
+
+[[situation]]
+name = "nested-pages"
+title = "A project note with pages inside it"
+
+[[situation.steps]]
+invoke = { resource = "notes.notebook", action = "create-page", args = { title = "Garden", markdown = "Plans for the allotment this year." }, bind = "garden" }
+
+[[situation.steps]]
+invoke = { resource = "notes.notebook", action = "new-child", args = { page = "{{garden.value.page}}", title = "Sowing calendar" } }
+
+[[situation.steps]]
+invoke = { resource = "notes.notebook", action = "new-child", args = { page = "{{garden.value.page}}", title = "Seeds to order" } }
+
+[[situation.steps]]
+invoke = { resource = "notes.notebook", action = "open-note", args = { page = "{{garden.value.page}}" } }

@@ -50,7 +50,7 @@ use crate::widget::{EventCtx, TaffyTreeExt, Widget};
 /// default `--shots` viewport so a driven frame and a screenshot agree.
 pub const DEFAULT_VIEWPORT: (u32, u32) = (1280, 800);
 
-pub use tilo_headless_schema::{Action, Invocation, SemanticExpectation, Spec};
+pub use tilo_headless_schema::{Action, Capture, Invocation, SemanticExpectation, Spec};
 
 fn action_description(action: &Action) -> String {
     match action {
@@ -8702,6 +8702,16 @@ impl FrameHarness {
     }
 
     fn perform_invocation(&mut self, invocation: &Invocation) -> Result<(), String> {
+        self.perform_invocation_answer(invocation).map(drop)
+    }
+
+    /// [`Self::perform_invocation`], answering what a completed action
+    /// returned (`None` when it was admitted to finish later or refused as
+    /// expected).
+    fn perform_invocation_answer(
+        &mut self,
+        invocation: &Invocation,
+    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
         let address = tilo_actions::ActionAddress::new(&invocation.resource, &invocation.action);
         let result = self.invoke_action(
             &address,
@@ -8711,13 +8721,55 @@ impl FrameHarness {
         );
         self.retain_invocation_outcome(&address, &result)?;
         match (result, invocation.expect_error.as_deref()) {
-            (Ok(_), None) => Ok(()),
+            (Ok(start), None) => Ok(start.completed()),
             (Ok(_), Some(code)) => Err(format!(
                 "expected the door to refuse with {code}, but the action ran"
             )),
-            (Err(error), Some(code)) if error.code() == code => Ok(()),
+            (Err(error), Some(code)) if error.code() == code => Ok(None),
             (Err(error), _) => Err(format!("{}: {error}", error.code())),
         }
+    }
+
+    /// Run one scenario step with the answers earlier steps bound: an
+    /// invocation's resource and arguments get their `{{name.path}}`
+    /// placeholders filled, and one that names `bind` keeps its answer
+    /// (`{"value": ..., "resources": [...]}`) for the steps after it.
+    fn perform_bound(
+        &mut self,
+        action: &Action,
+        bindings: &mut std::collections::BTreeMap<String, serde_json::Value>,
+    ) -> Result<(), String> {
+        let Action::Invoke(invocation) = action else {
+            return self.perform(action);
+        };
+        let mut invocation = invocation.clone();
+        if let serde_json::Value::String(resource) = tilo_headless_schema::substitute(
+            &serde_json::Value::String(invocation.resource.clone()),
+            bindings,
+        )? {
+            invocation.resource = resource;
+        } else {
+            return Err("a resource placeholder must name a string".into());
+        }
+        let serde_json::Value::Object(args) = tilo_headless_schema::substitute(
+            &serde_json::Value::Object(invocation.args.clone()),
+            bindings,
+        )?
+        else {
+            return Err("invocation arguments must stay an object".into());
+        };
+        invocation.args = args;
+        let answer = self.perform_invocation_answer(&invocation)?;
+        if let Some(name) = &invocation.bind {
+            let answer = answer.ok_or_else(|| {
+                format!("{name}: the action answered nothing to bind (it was refused or runs on)")
+            })?;
+            bindings.insert(
+                name.clone(),
+                serde_json::json!({ "value": answer.value, "resources": answer.resources }),
+            );
+        }
+        Ok(())
     }
 
     /// Invoke one published action by address, the way an agent, a script
@@ -9572,8 +9624,9 @@ fn drive_spec_actions(
         return Some(format!("startup control invocation failed: {error}"));
     }
     persist(driver);
+    let mut bindings = std::collections::BTreeMap::new();
     for (index, action) in spec.actions.iter().enumerate() {
-        if let Err(error) = driver.perform(action) {
+        if let Err(error) = driver.perform_bound(action, &mut bindings) {
             tilo_startup_metrics::mark("headless-action-failed");
             tilo_startup_metrics::mark("headless-actions-done");
             return Some(format!(
@@ -9648,6 +9701,74 @@ fn write_spec_outputs(spec: &Spec, driver: &mut FrameHarness) -> Result<(), Stri
         write_headless_output(path, json)
             .map_err(|error| format!("writing inspection to {path}: {error}"))?;
     }
+    if let Some(path) = &spec.resources {
+        let tree: Vec<serde_json::Value> = driver.resources().iter().map(resource_json).collect();
+        let json = serde_json::to_string_pretty(&tree)
+            .map_err(|error| format!("serializing resources: {error}"))?;
+        write_headless_output(path, json)
+            .map_err(|error| format!("writing resources to {path}: {error}"))?;
+    }
+    for capture in &spec.captures {
+        write_capture(capture, driver)?;
+    }
+    Ok(())
+}
+
+/// One published resource, its actions (address, kind, availability and
+/// parameters) and its children, as the `resources` output lists them.
+fn resource_json(resource: &tilo_actions::Resource) -> serde_json::Value {
+    let actions: Vec<serde_json::Value> = resource
+        .actions
+        .iter()
+        .map(|action| {
+            let unavailable = match &action.contract.availability {
+                tilo_actions::Availability::Unavailable { reason, .. } => Some(reason.clone()),
+                tilo_actions::Availability::Available => None,
+            };
+            serde_json::json!({
+                "action": action.id,
+                "label": action.label,
+                "params": action.params(),
+                "unavailable": unavailable,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "resource": resource.id.0,
+        "kind": resource.kind,
+        "label": resource.label,
+        "actions": actions,
+        "children": resource.children.iter().map(resource_json).collect::<Vec<_>>(),
+    })
+}
+
+/// How long a capture waits for the window to settle (entrances finished,
+/// requested images loaded) before it draws what is there.
+const CAPTURE_SETTLE_BOUND: crate::time::Duration = crate::time::Duration::from_secs(3);
+
+/// Take one [`Capture`]: switch theme and size when it names them, let the
+/// window settle as a person would see it, and write the frame as a PNG.
+fn write_capture(capture: &Capture, driver: &mut FrameHarness) -> Result<(), String> {
+    if let Some(name) = &capture.theme {
+        let theme = Theme::named(name)
+            .ok_or_else(|| format!("capture {}: unknown theme {name:?}", capture.path))?;
+        driver.set_theme(theme.with_reduce_motion(true));
+    }
+    if let Some(viewport) = capture.viewport {
+        driver
+            .resize(viewport)
+            .map_err(|error| format!("capture {}: layout failed: {error}", capture.path))?;
+    }
+    driver.settle_for_capture(CAPTURE_SETTLE_BOUND);
+    let path = std::path::Path::new(&capture.path);
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("capture {}: {error}", capture.path))?;
+    }
+    driver.render_png(path);
     Ok(())
 }
 

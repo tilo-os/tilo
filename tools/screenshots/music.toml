@@ -1,0 +1,38 @@
+# Music: library views and playlists through the library's actions.
+
+[[situation]]
+name = "home"
+title = "Home"
+
+[[situation.steps]]
+invoke = { resource = "music.view:home", action = "open" }
+
+[[situation]]
+name = "playlists"
+title = "Playlists"
+
+[[situation.steps]]
+invoke = { resource = "music.library", action = "create-playlist", args = { name = "Sunday morning" } }
+
+[[situation.steps]]
+invoke = { resource = "music.library", action = "create-playlist", args = { name = "Running, 160 bpm" } }
+
+[[situation.steps]]
+invoke = { resource = "music.library", action = "create-playlist", args = { name = "Focus" } }
+
+[[situation.steps]]
+invoke = { resource = "music.view:playlists", action = "open" }
+
+[[situation]]
+name = "albums"
+title = "Albums"
+
+[[situation.steps]]
+invoke = { resource = "music.view:albums", action = "open" }
+
+[[situation]]
+name = "sources"
+title = "Where music comes from"
+
+[[situation.steps]]
+invoke = { resource = "music.library", action = "sources" }

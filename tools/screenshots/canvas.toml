@@ -1,0 +1,28 @@
+# Canvas: an artwork drawn through the artwork's actions.
+
+[[situation]]
+name = "landscape"
+title = "A layered evening landscape"
+
+[[situation.steps]]
+invoke = { resource = "canvas.artwork", action = "new-artwork", args = { title = "Evening, Lake Constance", width = 1600, height = 1000 } }
+
+[[situation.steps]]
+invoke = { resource = "canvas.artwork", action = "draw", args = { marks = [{ id = "sky", shape = { kind = "rect", x = 0, y = 0, width = 1600, height = 720 }, fill = "#f6c79a" }, { id = "sun", shape = { kind = "ellipse", cx = 1120, cy = 430, rx = 120, ry = 120 }, fill = "#f28c4b" }, { id = "far-hills", shape = { kind = "path", d = "M 0 620 C 260 500, 520 560, 760 520 C 1000 480, 1260 560, 1600 500 L 1600 1000 L 0 1000 Z" }, fill = "#9b7fa6" }, { id = "near-hills", shape = { kind = "path", d = "M 0 760 C 300 660, 640 740, 900 700 C 1160 660, 1380 720, 1600 680 L 1600 1000 L 0 1000 Z" }, fill = "#5b4a73" }, { id = "lake", shape = { kind = "ellipse", cx = 560, cy = 880, rx = 380, ry = 60 }, fill = "#e9a77a", opacity = 0.8 }, { id = "caption", shape = { kind = "text", x = 80, y = 120, text = "Evening, Lake Constance", size = 64, font = "serif" }, fill = "#3b2b45" }] } }
+
+[[situation]]
+name = "shapes-and-layers"
+title = "Shapes on two layers"
+
+[[situation.steps]]
+invoke = { resource = "canvas.artwork", action = "new-artwork", args = { title = "Poster sketch", width = 1200, height = 1600 } }
+
+[[situation.steps]]
+invoke = { resource = "canvas.artwork", action = "add-layer", args = { name = "Lettering" } }
+
+[[situation.steps]]
+invoke = { resource = "canvas.artwork", action = "draw", args = { marks = [{ id = "ground", shape = { kind = "rect", x = 0, y = 0, width = 1200, height = 1600 }, fill = "#1f3b4d" }, { id = "circle", shape = { kind = "ellipse", cx = 600, cy = 640, rx = 360, ry = 360 }, fill = "#e4b363" }, { id = "title", shape = { kind = "text", x = 140, y = 1300, text = "Open Studio Night", size = 110, font = "sans", weight = 700 }, fill = "#f4efe6" }, { id = "date", shape = { kind = "text", x = 140, y = 1430, text = "Friday, 7 November, from 18:00", size = 54, font = "sans" }, fill = "#f4efe6" }] } }
+
+[[situation]]
+name = "welcome"
+title = "The welcome screen"

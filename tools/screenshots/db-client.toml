@@ -1,0 +1,35 @@
+# Database client: saved connections and queries, through the workspace's
+# actions. Nothing here connects to a server.
+
+[[situation]]
+name = "connections"
+title = "Saved connections to three databases"
+
+[[situation.steps]]
+invoke = { resource = "db-client.workspace", action = "add-connection", args = { name = "Shop (production)", engine = "postgres", location = "db.shop.internal", database = "shop", user = "readonly" } }
+
+[[situation.steps]]
+invoke = { resource = "db-client.workspace", action = "add-connection", args = { name = "Analytics warehouse", engine = "postgres", location = "warehouse.internal", database = "events", user = "analyst" } }
+
+[[situation.steps]]
+invoke = { resource = "db-client.workspace", action = "add-connection", args = { name = "Field recordings", engine = "sqlite", location = "~/Documents/recordings.sqlite" } }
+
+[[situation]]
+name = "saved-queries"
+title = "A connection with saved queries"
+
+[[situation.steps]]
+invoke = { resource = "db-client.workspace", action = "add-connection", args = { name = "Shop (staging)", engine = "mysql", location = "staging-db.internal", database = "shop", user = "dev" } }
+
+[[situation.steps]]
+invoke = { resource = "db-client.workspace", action = "save-query", args = { name = "Orders this week", sql = "SELECT id, customer_id, total, created_at\nFROM orders\nWHERE created_at >= date_trunc('week', now())\nORDER BY created_at DESC;" } }
+
+[[situation.steps]]
+invoke = { resource = "db-client.workspace", action = "save-query", args = { name = "Top customers", sql = "SELECT customer_id, sum(total) AS spent\nFROM orders\nGROUP BY customer_id\nORDER BY spent DESC\nLIMIT 20;" } }
+
+[[situation.steps]]
+invoke = { resource = "db-client.workspace", action = "save-query", args = { name = "Low stock", sql = "SELECT sku, name, stock FROM products WHERE stock < 5;" } }
+
+[[situation]]
+name = "empty"
+title = "The workspace before the first connection"

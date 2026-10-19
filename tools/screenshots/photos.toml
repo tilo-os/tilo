@@ -1,0 +1,29 @@
+# Photos: library views through the library's actions.
+
+[[situation]]
+name = "library"
+title = "The library"
+
+[[situation.steps]]
+invoke = { resource = "photos.library", action = "view-library" }
+
+[[situation]]
+name = "albums"
+title = "Albums"
+
+[[situation.steps]]
+invoke = { resource = "photos.library/derived/albums", action = "view-albums" }
+
+[[situation]]
+name = "places"
+title = "Places"
+
+[[situation.steps]]
+invoke = { resource = "photos.library/derived/places", action = "view-places" }
+
+[[situation]]
+name = "people"
+title = "People"
+
+[[situation.steps]]
+invoke = { resource = "photos.library/derived/people", action = "view-people" }

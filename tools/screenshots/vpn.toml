@@ -1,0 +1,5 @@
+# VPN: the vault before a configuration is imported.
+
+[[situation]]
+name = "empty"
+title = "No connections yet"

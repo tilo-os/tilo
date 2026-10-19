@@ -1,0 +1,29 @@
+# Speed test: past results recorded through the results' actions (a run
+# needs the network).
+
+[[situation]]
+name = "results"
+title = "A week of results on two devices"
+
+[[situation.steps]]
+invoke = { resource = "speed-test.results", action = "record", args = { ping = 11.8, jitter = 1.9, download = 246.3, upload = 38.7, server = "Berlin, DE-CIX", device = "Laptop" } }
+
+[[situation.steps]]
+invoke = { resource = "speed-test.results", action = "record", args = { ping = 14.2, jitter = 3.1, download = 198.6, upload = 36.2, server = "Berlin, DE-CIX", device = "Laptop" } }
+
+[[situation.steps]]
+invoke = { resource = "speed-test.results", action = "record", args = { ping = 23.5, jitter = 6.4, download = 61.9, upload = 12.4, server = "Frankfurt", device = "Phone" } }
+
+[[situation.steps]]
+invoke = { resource = "speed-test.results", action = "record", args = { ping = 12.6, jitter = 2.2, download = 251.0, upload = 39.1, server = "Berlin, DE-CIX", device = "Laptop" } }
+
+[[situation]]
+name = "one-result"
+title = "The latest result"
+
+[[situation.steps]]
+invoke = { resource = "speed-test.results", action = "record", args = { ping = 9.4, jitter = 1.1, download = 512.8, upload = 94.3, server = "Leipzig", device = "Desktop" } }
+
+[[situation]]
+name = "empty"
+title = "Before the first test"

@@ -1,0 +1,6 @@
+# Firewall: the configuration view (no firewall service in a screenshot
+# run).
+
+[[situation]]
+name = "status"
+title = "Firewall status"

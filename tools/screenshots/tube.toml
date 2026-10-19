@@ -1,0 +1,29 @@
+# Tube: screens through the library's actions (videos need the network).
+
+[[situation]]
+name = "home"
+title = "Home"
+
+[[situation.steps]]
+invoke = { resource = "tube.library", action = "show-screen", args = { screen = "home" } }
+
+[[situation]]
+name = "subscriptions"
+title = "Subscriptions"
+
+[[situation.steps]]
+invoke = { resource = "tube.library", action = "show-screen", args = { screen = "subscriptions" } }
+
+[[situation]]
+name = "history"
+title = "Watch history"
+
+[[situation.steps]]
+invoke = { resource = "tube.library", action = "show-screen", args = { screen = "history" } }
+
+[[situation]]
+name = "settings"
+title = "Playback settings"
+
+[[situation.steps]]
+invoke = { resource = "tube.library", action = "show-screen", args = { screen = "settings" } }

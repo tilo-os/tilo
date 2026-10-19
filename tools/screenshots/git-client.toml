@@ -1,0 +1,23 @@
+# Git client: its views through the repository's actions (no repository is
+# open in a fresh profile).
+
+[[situation]]
+name = "changes"
+title = "Changes"
+
+[[situation.steps]]
+invoke = { resource = "git_client.repo", action = "show-changes" }
+
+[[situation]]
+name = "history"
+title = "History"
+
+[[situation.steps]]
+invoke = { resource = "git_client.repo", action = "show-history" }
+
+[[situation]]
+name = "branches"
+title = "Branches"
+
+[[situation.steps]]
+invoke = { resource = "git_client.repo", action = "show-branches" }

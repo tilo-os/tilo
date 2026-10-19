@@ -1,0 +1,23 @@
+# Print centre: its views through the defaults' actions (no printers in a
+# screenshot run).
+
+[[situation]]
+name = "dashboard"
+title = "The dashboard"
+
+[[situation.steps]]
+invoke = { resource = "print-centre.defaults", action = "open-dashboard" }
+
+[[situation]]
+name = "queue"
+title = "The print queue"
+
+[[situation.steps]]
+invoke = { resource = "print-centre.defaults", action = "open-queue" }
+
+[[situation]]
+name = "history"
+title = "Print history"
+
+[[situation.steps]]
+invoke = { resource = "print-centre.defaults", action = "open-history" }

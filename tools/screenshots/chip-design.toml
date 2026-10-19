@@ -1,0 +1,34 @@
+# Chip design: an operator graph built through the project's actions.
+
+[[situation]]
+name = "rms-norm"
+title = "An RMS-norm block wired up"
+
+[[situation.steps]]
+invoke = { resource = "chip_design.project", action = "add-node", args = { node = "x", kind = "input", shape = [1, 4096], x = 40, y = 120 } }
+
+[[situation.steps]]
+invoke = { resource = "chip_design.project", action = "add-node", args = { node = "w", kind = "norm_weight_input", shape = [4096], x = 40, y = 320 } }
+
+[[situation.steps]]
+invoke = { resource = "chip_design.project", action = "add-node", args = { node = "norm", kind = "rms_norm", shape = [1, 4096], x = 340, y = 120 } }
+
+[[situation.steps]]
+invoke = { resource = "chip_design.project", action = "add-node", args = { node = "scale", kind = "apply_norm_weight", shape = [1, 4096], x = 640, y = 200 } }
+
+[[situation]]
+name = "operator-graph"
+title = "The operator graph view"
+
+[[situation.steps]]
+invoke = { resource = "chip_design.project", action = "add-node", args = { node = "x", kind = "input", shape = [1, 4096], x = 40, y = 120 } }
+
+[[situation.steps]]
+invoke = { resource = "chip_design.project", action = "add-node", args = { node = "norm", kind = "rms_norm", shape = [1, 4096], x = 340, y = 120 } }
+
+[[situation.steps]]
+invoke = { resource = "chip_design.project", action = "operator-graph" }
+
+[[situation]]
+name = "empty"
+title = "A new project"

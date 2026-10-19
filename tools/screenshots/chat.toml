@@ -1,0 +1,59 @@
+# Chat: a team workspace with channels and a conversation, through the
+# workspace's actions.
+
+[[situation]]
+name = "team-conversation"
+title = "A team channel with a conversation"
+
+[[situation.steps]]
+invoke = { resource = "chat.workspace", action = "begin-chat", args = { name = "Lena Hoffmann", initials = "LH", color = 2 } }
+
+[[situation.steps]]
+invoke = { resource = "chat.workspace", action = "create-channel", args = { name = "design", topic = "Reviews, sketches and the release plan" } }
+
+[[situation.steps]]
+invoke = { resource = "chat.workspace", action = "create-channel", args = { name = "random", topic = "Lunch, links and cat pictures" } }
+
+[[situation.steps]]
+invoke = { resource = "chain:derived:messages@derived:default@tab:0000000000000000", action = "post", args = { channel = "c_chat", text = "Morning! The new onboarding build is on the test machines." } }
+
+[[situation.steps]]
+invoke = { resource = "chain:derived:messages@derived:default@tab:0000000000000000", action = "post", args = { channel = "c_chat", text = "I tried it on the old ThinkPad: first launch is down to a second and a half." } }
+
+[[situation.steps]]
+invoke = { resource = "chain:derived:messages@derived:default@tab:0000000000000000", action = "post", args = { channel = "c_chat", text = "Can we move the account step to the end? People hesitate there before they have seen anything." } }
+
+[[situation.steps]]
+invoke = { resource = "chain:derived:messages@derived:default@tab:0000000000000000", action = "post", args = { channel = "c_chat", text = "Agreed. I'll update the flow and share it in #design this afternoon." } }
+
+[[situation.steps]]
+invoke = { resource = "chat.workspace/channels/c_chat", action = "open-channel" }
+
+[[situation]]
+name = "channels-and-categories"
+title = "Channels sorted into categories"
+
+[[situation.steps]]
+invoke = { resource = "chat.workspace", action = "begin-chat", args = { name = "Lena Hoffmann", initials = "LH", color = 2 } }
+
+[[situation.steps]]
+invoke = { resource = "chat.workspace", action = "create-category", args = { name = "Projects" }, bind = "projects" }
+
+[[situation.steps]]
+invoke = { resource = "chat.workspace", action = "create-category", args = { name = "Social" }, bind = "social" }
+
+[[situation.steps]]
+invoke = { resource = "chat.workspace", action = "create-channel", args = { name = "garden-app", category = "{{projects.resources.0|last}}", topic = "The allotment planner" } }
+
+[[situation.steps]]
+invoke = { resource = "chat.workspace", action = "create-channel", args = { name = "library-site", category = "{{projects.resources.0|last}}", topic = "Website for the neighbourhood library" } }
+
+[[situation.steps]]
+invoke = { resource = "chat.workspace", action = "create-channel", args = { name = "book-club", category = "{{social.resources.0|last}}", topic = "This month: Piranesi" } }
+
+[[situation.steps]]
+invoke = { resource = "chat.workspace", action = "create-channel", args = { name = "standup", category = "{{projects.resources.0|last}}", kind = "voice" } }
+
+[[situation]]
+name = "first-start"
+title = "Chat before you have introduced yourself"

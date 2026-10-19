@@ -1,0 +1,41 @@
+# API tester: collections, requests and history, through the workspace's
+# actions. Nothing is sent.
+
+[[situation]]
+name = "collections"
+title = "Collections of saved requests"
+
+[[situation.steps]]
+invoke = { resource = "api-tester.workspace", action = "new-collection", args = { name = "Weather service" }, bind = "weather" }
+
+[[situation.steps]]
+invoke = { resource = "api-tester.workspace", action = "new-collection", args = { name = "Payments sandbox" } }
+
+[[situation.steps]]
+invoke = { resource = "api-tester.workspace", action = "new-collection", args = { name = "Internal admin" } }
+
+[[situation]]
+name = "history"
+title = "Requests sent earlier, in the history"
+
+[[situation.steps]]
+invoke = { resource = "api-tester.workspace", action = "record-sent", args = { method = "GET", url = "https://api.open-meteo.com/v1/forecast?latitude=52.52&longitude=13.41&hourly=temperature_2m", status = 200, duration_ms = 184 } }
+
+[[situation.steps]]
+invoke = { resource = "api-tester.workspace", action = "record-sent", args = { method = "POST", url = "https://sandbox.payments.example/v2/charges", status = 201, duration_ms = 412 } }
+
+[[situation.steps]]
+invoke = { resource = "api-tester.workspace", action = "record-sent", args = { method = "GET", url = "https://sandbox.payments.example/v2/charges/ch_3PqL9", status = 404, duration_ms = 96 } }
+
+[[situation.steps]]
+invoke = { resource = "api-tester.workspace", action = "record-sent", args = { method = "DELETE", url = "https://admin.internal/api/sessions/7f3e", status = 204, duration_ms = 58 } }
+
+[[situation]]
+name = "environments"
+title = "Environments with variables"
+
+[[situation.steps]]
+invoke = { resource = "api-tester.workspace", action = "new-environment", args = { name = "Staging" }, bind = "staging" }
+
+[[situation.steps]]
+invoke = { resource = "api-tester.workspace", action = "new-environment", args = { name = "Production" } }

@@ -92,6 +92,11 @@ pub struct Invocation {
     /// (`unknown_action`, `invalid_arguments`, `action_unavailable`,
     /// `action_confirmation_required`, `action_failed`) instead of running.
     pub expect_error: Option<String>,
+    /// Keep what the action answered under this name: later steps write
+    /// `{{name.value.id}}` (or `{{name.resources.0}}`) in a resource or an
+    /// argument to use it, as a caller chains a created item's id into the
+    /// next call.
+    pub bind: Option<String>,
 }
 
 impl std::fmt::Debug for Invocation {
@@ -105,6 +110,7 @@ impl std::fmt::Debug for Invocation {
             .field("confirm", &self.confirm)
             .field("confirmation_phrase", &self.confirmation_phrase.is_some())
             .field("expect_error", &self.expect_error)
+            .field("bind", &self.bind)
             .finish()
     }
 }
@@ -228,16 +234,36 @@ impl SemanticExpectation {
     }
 }
 
+/// One offscreen picture of the window, taken once the actions ran and the
+/// window settled: `{"path": "...", "theme": "light", "viewport": [w, h]}`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Capture {
+    /// Where the PNG is written; missing directories are created.
+    pub path: String,
+    /// A shipped theme by name (`dark`, `light`, ...); the current one
+    /// when absent.
+    pub theme: Option<String>,
+    /// The window size in logical pixels; the current one when absent.
+    pub viewport: Option<(u32, u32)>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Spec {
     pub viewport: Option<(u32, u32)>,
     pub actions: Vec<Action>,
+    /// Pictures taken after the actions, in order (`capture`: one object or
+    /// an array of them).
+    pub captures: Vec<Capture>,
     pub audit: bool,
     pub audit_report: Option<String>,
     pub dump: Option<String>,
     pub targets: Option<String>,
     pub inspect: Option<String>,
     pub results: Option<String>,
+    /// Where to write the published resource tree, with every action's
+    /// address and parameters, once the actions ran: what a scenario can
+    /// `invoke`.
+    pub resources: Option<String>,
 }
 
 /// Parse and strictly validate one complete headless-driver payload.
@@ -263,9 +289,11 @@ pub fn parse_spec(raw: &str) -> Result<Spec, String> {
                 | "targets"
                 | "inspect"
                 | "results"
+                | "capture"
+                | "resources"
         ) {
             return Err(format!(
-                "unknown field {key:?}; expected viewport, actions, audit, audit_report, dump, targets, inspect, or results"
+                "unknown field {key:?}; expected viewport, actions, capture, audit, audit_report, dump, targets, inspect, results, or resources"
             ));
         }
     }
@@ -275,9 +303,18 @@ pub fn parse_spec(raw: &str) -> Result<Spec, String> {
         .map(parse_actions_value)
         .transpose()?
         .unwrap_or_default();
+    let captures = match object.get("capture") {
+        None => Vec::new(),
+        Some(serde_json::Value::Array(captures)) => captures
+            .iter()
+            .map(parse_capture)
+            .collect::<Result<_, _>>()?,
+        Some(capture) => vec![parse_capture(capture)?],
+    };
     Ok(Spec {
         viewport,
         actions,
+        captures,
         audit: object
             .get("audit")
             .map(|value| value.as_bool().ok_or("audit must be true or false"))
@@ -288,6 +325,7 @@ pub fn parse_spec(raw: &str) -> Result<Spec, String> {
         targets: optional_string(object, "targets")?,
         inspect: optional_string(object, "inspect")?,
         results: optional_string(object, "results")?,
+        resources: optional_string(object, "resources")?,
     })
 }
 
@@ -316,6 +354,42 @@ fn optional_string(
                 .ok_or_else(|| format!("{key} must be a string"))
         })
         .transpose()
+}
+
+fn parse_capture(value: &serde_json::Value) -> Result<Capture, String> {
+    let object = value
+        .as_object()
+        .ok_or("capture takes an object with a path, or an array of them")?;
+    if let Some(unknown) = object
+        .keys()
+        .find(|key| !matches!(key.as_str(), "path" | "theme" | "viewport"))
+    {
+        return Err(format!(
+            "unknown field {unknown:?} for capture; expected path, theme, or viewport"
+        ));
+    }
+    let path = object
+        .get("path")
+        .and_then(serde_json::Value::as_str)
+        .filter(|path| !path.is_empty())
+        .ok_or("capture.path must be a non-empty string")?
+        .to_owned();
+    let theme = object
+        .get("theme")
+        .map(|theme| {
+            theme
+                .as_str()
+                .filter(|theme| !theme.is_empty())
+                .map(str::to_owned)
+                .ok_or("capture.theme must be a non-empty string")
+        })
+        .transpose()?;
+    let viewport = object.get("viewport").map(parse_viewport).transpose()?;
+    Ok(Capture {
+        path,
+        theme,
+        viewport,
+    })
 }
 
 fn parse_viewport(value: &serde_json::Value) -> Result<(u32, u32), String> {
@@ -410,6 +484,7 @@ fn parse_invocation(value: &serde_json::Value) -> Result<Invocation, String> {
         "confirm",
         "confirmation_phrase",
         "expect_error",
+        "bind",
     ];
     let object = value
         .as_object()
@@ -464,6 +539,21 @@ fn parse_invocation(value: &serde_json::Value) -> Result<Invocation, String> {
                 })
         })
         .transpose()?;
+    let bind = object
+        .get("bind")
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|name| {
+                    !name.is_empty()
+                        && name
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+                })
+                .map(str::to_owned)
+                .ok_or("invoke.bind must be a name of letters, digits, '_' and '-'")
+        })
+        .transpose()?;
     Ok(Invocation {
         resource: non_empty("resource")?,
         action: non_empty("action")?,
@@ -471,7 +561,118 @@ fn parse_invocation(value: &serde_json::Value) -> Result<Invocation, String> {
         confirm,
         confirmation_phrase,
         expect_error,
+        bind,
     })
+}
+
+/// Replace every `{{name.path}}` in `text` with what `bindings` holds there:
+/// a string that is one placeholder becomes the bound JSON value itself
+/// (a number stays a number), and a placeholder inside longer text becomes
+/// the value's text. A path walks object keys and array indexes.
+///
+/// # Errors
+///
+/// An unknown name, a path the bound value does not have, or an unclosed
+/// placeholder.
+pub fn substitute(
+    value: &serde_json::Value,
+    bindings: &std::collections::BTreeMap<String, serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    Ok(match value {
+        serde_json::Value::String(text) => substitute_text(text, bindings)?,
+        serde_json::Value::Array(items) => serde_json::Value::Array(
+            items
+                .iter()
+                .map(|item| substitute(item, bindings))
+                .collect::<Result<_, _>>()?,
+        ),
+        serde_json::Value::Object(fields) => serde_json::Value::Object(
+            fields
+                .iter()
+                .map(|(key, item)| Ok((key.clone(), substitute(item, bindings)?)))
+                .collect::<Result<_, String>>()?,
+        ),
+        other => other.clone(),
+    })
+}
+
+fn substitute_text(
+    text: &str,
+    bindings: &std::collections::BTreeMap<String, serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    if !text.contains("{{") {
+        return Ok(serde_json::Value::String(text.to_owned()));
+    }
+    let whole = text
+        .strip_prefix("{{")
+        .and_then(|rest| rest.strip_suffix("}}"))
+        .filter(|inner| !inner.contains("{{") && !inner.contains("}}"));
+    if let Some(path) = whole {
+        return lookup(path, bindings);
+    }
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("{{") {
+        out.push_str(rest.get(..start).unwrap_or_default());
+        let after = rest.get(start.saturating_add(2)..).unwrap_or_default();
+        let end = after
+            .find("}}")
+            .ok_or_else(|| format!("unclosed placeholder in {text:?}"))?;
+        let path = after.get(..end).unwrap_or_default();
+        match lookup(path, bindings)? {
+            serde_json::Value::String(value) => out.push_str(&value),
+            value => out.push_str(&value.to_string()),
+        }
+        rest = after.get(end.saturating_add(2)..).unwrap_or_default();
+    }
+    out.push_str(rest);
+    Ok(serde_json::Value::String(out))
+}
+
+/// The value at `path` (`name.key.0`), or with a trailing `|last` the part
+/// of that string after its last `/`: the id at the end of a resource
+/// address an action answered (`{{folder.resources.0|last}}`).
+fn lookup(
+    path: &str,
+    bindings: &std::collections::BTreeMap<String, serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    let (path, last) = match path.trim().strip_suffix("|last") {
+        Some(path) => (path, true),
+        None => (path.trim(), false),
+    };
+    let value = walk(path, bindings)?;
+    if !last {
+        return Ok(value.clone());
+    }
+    let text = value
+        .as_str()
+        .ok_or_else(|| format!("{{{{{path}|last}}}}: the value is not text"))?;
+    Ok(serde_json::Value::String(
+        text.rsplit('/').next().unwrap_or(text).to_owned(),
+    ))
+}
+
+fn walk<'a>(
+    path: &str,
+    bindings: &'a std::collections::BTreeMap<String, serde_json::Value>,
+) -> Result<&'a serde_json::Value, String> {
+    let mut segments = path.split('.');
+    let name = segments.next().unwrap_or_default();
+    let mut value = bindings
+        .get(name)
+        .ok_or_else(|| format!("no step bound {name:?} before {{{{{path}}}}}"))?;
+    for segment in segments {
+        value = match value {
+            serde_json::Value::Object(fields) => fields.get(segment),
+            serde_json::Value::Array(items) => segment
+                .parse::<usize>()
+                .ok()
+                .and_then(|index| items.get(index)),
+            _ => None,
+        }
+        .ok_or_else(|| format!("{{{{{path}}}}}: {name} has no {segment:?} there"))?;
+    }
+    Ok(value)
 }
 
 fn parse_expectation(value: &serde_json::Value) -> Result<SemanticExpectation, String> {
@@ -786,6 +987,81 @@ mod tests {
             assert_eq!(complete.results.as_deref(), Some("results.json"));
             assert!(parse_spec(r#"{"results":3}"#).is_err());
             assert_eq!(complete.audit_report.as_deref(), Some("audit.json"));
+        }
+
+        // Phase: bound_answers_fill_later_resources_and_arguments.
+        {
+            let actions = parse_actions(
+                r#"[{"invoke":{"resource":"notes","action":"new-note","args":{"title":"Trip"},"bind":"trip"}}]"#,
+            )
+            .unwrap();
+            let Action::Invoke(created) = &actions[0] else {
+                panic!("not an invocation");
+            };
+            assert_eq!(created.bind.as_deref(), Some("trip"));
+            assert!(
+                parse_actions(r#"[{"invoke":{"resource":"r","action":"a","bind":"a b"}}]"#)
+                    .is_err()
+            );
+            let mut bindings = std::collections::BTreeMap::new();
+            bindings.insert(
+                "trip".to_owned(),
+                serde_json::json!({"value": {"item": "p-7", "count": 3}, "resources": ["notes/p-7"]}),
+            );
+            let filled = substitute(
+                &serde_json::json!({"page": "{{trip.value.item}}", "n": "{{trip.value.count}}",
+                                     "label": "Page {{trip.value.item}} of {{trip.value.count}}",
+                                     "at": ["{{trip.resources.0}}"], "plain": "a {b}"}),
+                &bindings,
+            )
+            .unwrap();
+            assert_eq!(
+                filled,
+                serde_json::json!({"page": "p-7", "n": 3, "label": "Page p-7 of 3",
+                                    "at": ["notes/p-7"], "plain": "a {b}"})
+            );
+            assert_eq!(
+                substitute(&serde_json::json!("{{trip.resources.0|last}}"), &bindings).unwrap(),
+                serde_json::json!("p-7")
+            );
+            assert!(
+                substitute(&serde_json::json!("{{trip.value.count|last}}"), &bindings).is_err()
+            );
+            assert!(substitute(&serde_json::json!("{{other.value}}"), &bindings).is_err());
+            assert!(substitute(&serde_json::json!("{{trip.value.missing}}"), &bindings).is_err());
+            assert!(substitute(&serde_json::json!("x {{trip.value"), &bindings).is_err());
+        }
+
+        // Phase: captures_name_a_path_and_optionally_a_theme_and_viewport.
+        {
+            let one = parse_spec(r#"{"capture":{"path":"a.png"}}"#).unwrap();
+            assert_eq!(
+                one.captures,
+                vec![Capture {
+                    path: "a.png".into(),
+                    theme: None,
+                    viewport: None
+                }]
+            );
+            let many = parse_spec(
+                r#"{"capture":[{"path":"wide.png","theme":"light","viewport":[1280,800]},{"path":"compact.png","viewport":[420,800]}]}"#,
+            )
+            .unwrap();
+            assert_eq!(many.captures.len(), 2);
+            assert_eq!(many.captures[0].theme.as_deref(), Some("light"));
+            assert_eq!(many.captures[1].viewport, Some((420, 800)));
+            assert!(parse_spec(r#"{"capture":{"theme":"dark"}}"#).is_err());
+            assert!(parse_spec(r#"{"capture":{"path":"a.png","size":3}}"#).is_err());
+            assert!(parse_spec(r#"{"capture":{"path":"a.png","viewport":[0,1]}}"#).is_err());
+            assert!(parse_spec(r#"{"capture":"a.png"}"#).is_err());
+            assert!(parse_spec(r#"{"actions":[]}"#).unwrap().captures.is_empty());
+            assert_eq!(
+                parse_spec(r#"{"resources":"r.json"}"#)
+                    .unwrap()
+                    .resources
+                    .as_deref(),
+                Some("r.json")
+            );
         }
 
         // Phase: invocations_address_actions_and_parse_strictly.

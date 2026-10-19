@@ -1,0 +1,66 @@
+# Clocks: world clocks, alarms and timers set up through the collection's
+# actions.
+
+[[situation]]
+name = "world-clocks"
+title = "World clocks for a distributed team"
+
+[[situation.steps]]
+invoke = { resource = "clocks.collection", action = "add-world-clock", args = { city = "New York", timezone = "America/New_York" } }
+
+[[situation.steps]]
+invoke = { resource = "clocks.collection", action = "add-world-clock", args = { city = "London", timezone = "Europe/London" } }
+
+[[situation.steps]]
+invoke = { resource = "clocks.collection", action = "add-world-clock", args = { city = "Bengaluru", timezone = "Asia/Kolkata" } }
+
+[[situation.steps]]
+invoke = { resource = "clocks.collection", action = "add-world-clock", args = { city = "Tokyo", timezone = "Asia/Tokyo" } }
+
+[[situation.steps]]
+invoke = { resource = "clocks.collection", action = "add-world-clock", args = { city = "Sydney", timezone = "Australia/Sydney" } }
+
+[[situation]]
+name = "alarms"
+title = "Weekday and weekend alarms"
+
+[[situation.steps]]
+invoke = { resource = "clocks.collection", action = "add-alarm", args = { label = "Wake up", hour = 6, minute = 45, weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri"] } }
+
+[[situation.steps]]
+invoke = { resource = "clocks.collection", action = "add-alarm", args = { label = "Swimming", hour = 7, minute = 30, weekdays = ["Sat"] } }
+
+[[situation.steps]]
+invoke = { resource = "clocks.collection", action = "add-alarm", args = { label = "Take out the recycling", hour = 20, minute = 0, weekdays = ["Wed"] } }
+
+[[situation.steps]]
+invoke = { resource = "clocks.collection", action = "add-alarm", args = { label = "Pick up the dry cleaning", hour = 17, minute = 15, weekdays = [] } }
+
+[[situation]]
+name = "timers"
+title = "Kitchen timers running"
+
+[[situation.steps]]
+invoke = { resource = "clocks.collection", action = "add-timer", args = { label = "Pasta", seconds = 540 } }
+
+[[situation.steps]]
+invoke = { resource = "clocks.collection", action = "add-timer", args = { label = "Bread proving", seconds = 3600 } }
+
+[[situation.steps]]
+invoke = { resource = "clocks.collection", action = "add-timer", args = { label = "Tea", seconds = 240 } }
+
+[[situation]]
+name = "stopwatch"
+title = "A stopwatch with laps"
+
+[[situation.steps]]
+invoke = { resource = "clocks.collection", action = "start-stopwatch" }
+
+[[situation.steps]]
+invoke = { resource = "clocks.collection", action = "lap" }
+
+[[situation.steps]]
+invoke = { resource = "clocks.collection", action = "lap" }
+
+[[situation.steps]]
+invoke = { resource = "clocks.collection", action = "pause-stopwatch" }

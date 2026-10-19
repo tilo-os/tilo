@@ -1,0 +1,30 @@
+# Weather: saved places, through the locations' actions. Forecasts need the
+# network, which a screenshot run does not have; the pictures show the places
+# and what the app says while it cannot fetch.
+
+[[situation]]
+name = "saved-places"
+title = "Saved places around Europe"
+
+[[situation.steps]]
+invoke = { resource = "weather.locations", action = "save-location", args = { place = { name = "Berlin", country = "Germany", latitude = 52.52, longitude = 13.405, timezone = "Europe/Berlin", country_code = "DE" }, make_default = true } }
+
+[[situation.steps]]
+invoke = { resource = "weather.locations", action = "save-location", args = { place = { name = "Lisbon", country = "Portugal", latitude = 38.7223, longitude = -9.1393, timezone = "Europe/Lisbon", country_code = "PT" } } }
+
+[[situation.steps]]
+invoke = { resource = "weather.locations", action = "save-location", args = { place = { name = "Innsbruck", country = "Austria", latitude = 47.2692, longitude = 11.4041, timezone = "Europe/Vienna", country_code = "AT" } } }
+
+[[situation.steps]]
+invoke = { resource = "weather.locations", action = "save-location", args = { place = { name = "Edinburgh", country = "United Kingdom", latitude = 55.9533, longitude = -3.1883, timezone = "Europe/London", country_code = "GB" } } }
+
+[[situation]]
+name = "one-place"
+title = "A single home place"
+
+[[situation.steps]]
+invoke = { resource = "weather.locations", action = "save-location", args = { place = { name = "Leipzig", country = "Germany", latitude = 51.3397, longitude = 12.3731, timezone = "Europe/Berlin", country_code = "DE" }, make_default = true } }
+
+[[situation]]
+name = "empty"
+title = "No places saved yet"

@@ -1,0 +1,43 @@
+# Video editor: a project set up through the project's actions.
+
+[[situation]]
+name = "project"
+title = "A project with tracks, a title and markers"
+
+[[situation.steps]]
+invoke = { resource = "video-editor.project", action = "set-frame-size", args = { width = 1920, height = 1080 } }
+
+[[situation.steps]]
+invoke = { resource = "video-editor.project", action = "set-frame-rate", args = { fps = 25 } }
+
+[[situation.steps]]
+invoke = { resource = "video-editor.project", action = "add-track", args = { kind = "Video" } }
+
+[[situation.steps]]
+invoke = { resource = "video-editor.project", action = "add-track", args = { kind = "Audio" } }
+
+[[situation.steps]]
+invoke = { resource = "video-editor.project", action = "add-title", args = { text = "Kastanienallee Garden, one year on" } }
+
+[[situation.steps]]
+invoke = { resource = "video-editor.project", action = "add-marker", args = { at = 4.0, name = "Spring" } }
+
+[[situation.steps]]
+invoke = { resource = "video-editor.project", action = "add-marker", args = { at = 18.5, name = "First harvest" } }
+
+[[situation.steps]]
+invoke = { resource = "video-editor.project", action = "add-marker", args = { at = 41.0, name = "Autumn" } }
+
+[[situation]]
+name = "vertical"
+title = "A vertical project for phones"
+
+[[situation.steps]]
+invoke = { resource = "video-editor.project", action = "set-frame-size", args = { width = 1080, height = 1920 } }
+
+[[situation.steps]]
+invoke = { resource = "video-editor.project", action = "add-title", args = { text = "Three knots every sailor knows" } }
+
+[[situation]]
+name = "empty"
+title = "A new project"

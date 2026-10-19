@@ -1,0 +1,31 @@
+# Remote connections, saved through the list's actions. Nothing connects.
+
+[[situation]]
+name = "connections"
+title = "Saved SSH and desktop connections"
+
+[[situation.steps]]
+invoke = { resource = "remote.connection-list", action = "add-connection", args = { name = "Home server", host = "nas.home.arpa", kind = "ssh", port = 22, user = "lena" } }
+
+[[situation.steps]]
+invoke = { resource = "remote.connection-list", action = "add-connection", args = { name = "Build machine", host = "build-01.lab.internal", kind = "ssh", user = "ci" } }
+
+[[situation.steps]]
+invoke = { resource = "remote.connection-list", action = "add-connection", args = { name = "Studio iMac", host = "studio-imac.local", kind = "vnc", port = 5900 } }
+
+[[situation.steps]]
+invoke = { resource = "remote.connection-list", action = "add-connection", args = { name = "Office workstation", host = "ws-14.office.internal", kind = "vnc", port = 5901 } }
+
+[[situation]]
+name = "new-connection"
+title = "Adding a new connection"
+
+[[situation.steps]]
+invoke = { resource = "remote.connection-list", action = "add-connection", args = { name = "Raspberry Pi in the garden", host = "garden-pi.home.arpa", kind = "ssh", user = "pi" } }
+
+[[situation.steps]]
+invoke = { resource = "remote.connection-list", action = "new" }
+
+[[situation]]
+name = "empty"
+title = "No connections yet"

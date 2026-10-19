@@ -1,0 +1,36 @@
+# Settings: panes opened through the root's actions.
+
+[[situation]]
+name = "appearance"
+title = "Appearance"
+
+[[situation.steps]]
+invoke = { resource = "settings.root", action = "open-pane", args = { pane = "appearance" } }
+
+[[situation]]
+name = "keyboard"
+title = "Keyboard"
+
+[[situation.steps]]
+invoke = { resource = "settings.root", action = "open-pane", args = { pane = "keyboard" } }
+
+[[situation]]
+name = "accessibility"
+title = "Accessibility"
+
+[[situation.steps]]
+invoke = { resource = "settings.root", action = "open-pane", args = { pane = "accessibility" } }
+
+[[situation]]
+name = "time-and-date"
+title = "Time and date"
+
+[[situation.steps]]
+invoke = { resource = "settings.root", action = "open-pane", args = { pane = "time_date" } }
+
+[[situation]]
+name = "about"
+title = "About this computer"
+
+[[situation.steps]]
+invoke = { resource = "settings.root", action = "open-pane", args = { pane = "about" } }

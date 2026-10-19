@@ -1,0 +1,23 @@
+# Maps: saved places, through the workspace's actions. Map tiles and
+# routing need the network; places are given to the app as a search would.
+
+[[situation]]
+name = "saved-places"
+title = "Saved places for a weekend in Lisbon"
+
+[[situation.steps]]
+invoke = { resource = "maps.workspace", action = "accept-places", args = { places = [{ id = "pt-1", name = "Mosteiro dos Jerónimos", category = "landmark", address = "Praça do Império 1400-206, Lisboa", pos = { lat = 38.6979, lon = -9.2068 }, saved = true }, { id = "pt-2", name = "Pastéis de Belém", category = "cafe", address = "Rua de Belém 84-92, 1300-085 Lisboa", pos = { lat = 38.6975, lon = -9.2032 }, saved = true }, { id = "pt-3", name = "LX Factory", category = "shop", address = "Rua Rodrigues de Faria 103, 1300-501 Lisboa", pos = { lat = 38.7033, lon = -9.1789 }, saved = true }, { id = "pt-4", name = "Miradouro da Senhora do Monte", category = "park", address = "Largo Monte, 1170-107 Lisboa", pos = { lat = 38.7191, lon = -9.1327 }, saved = true }, { id = "pt-5", name = "Museu Nacional do Azulejo", category = "museum", address = "Rua da Madre de Deus 4, 1900-312 Lisboa", pos = { lat = 38.7247, lon = -9.1137 }, saved = true }] } }
+
+[[situation]]
+name = "place-card"
+title = "One place opened"
+
+[[situation.steps]]
+invoke = { resource = "maps.workspace", action = "accept-places", args = { places = [{ id = "pt-1", name = "Mosteiro dos Jerónimos", category = "landmark", address = "Praça do Império 1400-206, Lisboa", pos = { lat = 38.6979, lon = -9.2068 }, saved = true }, { id = "pt-2", name = "Pastéis de Belém", category = "cafe", address = "Rua de Belém 84-92, 1300-085 Lisboa", pos = { lat = 38.6975, lon = -9.2032 }, saved = true }, { id = "pt-3", name = "LX Factory", category = "shop", address = "Rua Rodrigues de Faria 103, 1300-501 Lisboa", pos = { lat = 38.7033, lon = -9.1789 }, saved = true }, { id = "pt-4", name = "Miradouro da Senhora do Monte", category = "park", address = "Largo Monte, 1170-107 Lisboa", pos = { lat = 38.7191, lon = -9.1327 }, saved = true }, { id = "pt-5", name = "Museu Nacional do Azulejo", category = "museum", address = "Rua da Madre de Deus 4, 1900-312 Lisboa", pos = { lat = 38.7247, lon = -9.1137 }, saved = true }] } }
+
+[[situation.steps]]
+invoke = { resource = "maps.workspace", action = "open-place", args = { place = "pt-1" } }
+
+[[situation]]
+name = "empty"
+title = "The map before any search"

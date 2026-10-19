@@ -1,0 +1,25 @@
+# Shortcuts: drafts through the workbench's actions.
+
+[[situation]]
+name = "drafts"
+title = "Drafts of everyday shortcuts"
+
+[[situation.steps]]
+invoke = { resource = "shortcuts.workbench", action = "new-draft", args = { name = "Morning briefing" } }
+
+[[situation.steps]]
+invoke = { resource = "shortcuts.workbench", action = "new-draft", args = { name = "File receipts from Downloads" } }
+
+[[situation.steps]]
+invoke = { resource = "shortcuts.workbench", action = "new-draft", args = { name = "Send arrival time to Wen" } }
+
+[[situation]]
+name = "scheduled"
+title = "A draft that runs every weekday"
+
+[[situation.steps]]
+invoke = { resource = "shortcuts.workbench", action = "new-draft", args = { name = "Daily backup reminder" }, bind = "draft" }
+
+[[situation]]
+name = "empty"
+title = "No shortcuts yet"
