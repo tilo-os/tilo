@@ -32,7 +32,7 @@ pub(super) struct RowContext {
     import_mounts: Vec<PathBuf>,
     /// The host's Trash, when its native Trash is in use.
     native_trash: Option<PathBuf>,
-    /// Whether AirDrop can send.
+    /// Whether `AirDrop` can send.
     airdrop: bool,
     /// The devices nearby that are online.
     nearby: Vec<NearbyTransferTarget>,
@@ -47,7 +47,7 @@ pub(super) struct EntryRowFacts {
     converted: Option<String>,
     /// What its open-with actions are made from.
     open_with: Option<OpenWithFacts>,
-    /// AirDrop can send it: a file, with AirDrop available.
+    /// `AirDrop` can send it: a file, with `AirDrop` available.
     airdrop_file: bool,
 }
 

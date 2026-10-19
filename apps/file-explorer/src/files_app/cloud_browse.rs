@@ -8,6 +8,10 @@ mod job_window_tests;
 #[cfg(test)]
 #[path = "cloud_browse_tests.rs"]
 mod tests;
+#[allow(
+    clippy::wildcard_imports,
+    reason = "this file continues the parent module's widget impl; it and the tests under it use the parent's items as the parent does, under every cfg"
+)]
 use super::*;
 use crate::effects::FilesEffect;
 use std::collections::HashSet;

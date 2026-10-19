@@ -613,110 +613,106 @@ impl WorkspaceRecordIndexPager {
                     truncated,
                 };
             }
-            match self.v2_manifest(&root) {
-                Some(manifest) => {
-                    let (offset, prior_record_id) = match &self.cursor {
-                        Some(cursor) if cursor.revision == manifest.revision => {
-                            (cursor.offset, cursor.last_record_id)
-                        }
-                        Some(_) => {
-                            // The mount invalidated the cursor. Do not keep old
-                            // rows under the new authority generation.
-                            self.root_index = 0;
-                            self.cursor = None;
-                            reset = true;
-                            continue;
-                        }
-                        None => {
-                            self.cursor = Some(RecordIndexCursor {
-                                revision: manifest.revision.clone(),
-                                offset: 0,
-                                last_record_id: None,
-                            });
-                            (0, None)
-                        }
-                    };
-                    if manifest.records == 0 {
-                        self.root_index += 1;
-                        self.cursor = None;
-                        continue;
-                    }
-                    let Some(page) = self.v2_page(&root, &manifest, offset) else {
-                        self.root_index += 1;
-                        self.cursor = None;
-                        return WorkspaceRecordIndexPage {
-                            records: Vec::new(),
-                            reset,
-                            complete: false,
-                            truncated: true,
-                        };
-                    };
-                    let next = page.next_offset;
-                    if prior_record_id.is_some_and(|prior| {
-                        page.records
-                            .first()
-                            .is_some_and(|record| record.record_id <= prior)
-                    }) {
-                        self.root_index += 1;
-                        self.cursor = None;
-                        return WorkspaceRecordIndexPage {
-                            records: Vec::new(),
-                            reset,
-                            complete: false,
-                            truncated: true,
-                        };
-                    }
-                    let last_record_id = page.records.last().map(|record| record.record_id);
-                    // A page's continuation advances over the namespace-owned
-                    // source window, not merely returned rows: an ACL can
-                    // deny every row in a bounded window. Empty pages are
-                    // therefore valid and never trigger an unbounded hunt for
-                    // the next visible record.
-                    let terminal = next.is_none();
-                    let valid_next = terminal && offset < manifest.records
-                        || matches!(next, Some(next) if next > offset && next <= manifest.records && next % manifest.page_entries == 0);
-                    if !valid_next {
-                        self.root_index += 1;
-                        self.cursor = None;
-                        return WorkspaceRecordIndexPage {
-                            records: Vec::new(),
-                            reset,
-                            complete: false,
-                            truncated: true,
-                        };
-                    }
-                    let (records, malformed) = project_record_entries(&root, page.records);
-                    truncated |= malformed;
-                    if let Some(next) = next {
-                        self.cursor = Some(RecordIndexCursor {
-                            revision: manifest.revision,
-                            offset: next,
-                            last_record_id,
-                        });
-                    } else {
-                        self.root_index += 1;
-                        self.cursor = None;
-                    }
-                    return WorkspaceRecordIndexPage {
-                        records,
-                        reset,
-                        complete: self.root_index == self.roots.len(),
-                        truncated,
-                    };
+            let Some(manifest) = self.v2_manifest(&root) else {
+                // The mount no longer serves its index: nothing of this
+                // root is listed.
+                self.root_index += 1;
+                self.cursor = None;
+                return WorkspaceRecordIndexPage {
+                    records: Vec::new(),
+                    reset,
+                    complete: false,
+                    truncated: true,
+                };
+            };
+            let (offset, prior_record_id) = match &self.cursor {
+                Some(cursor) if cursor.revision == manifest.revision => {
+                    (cursor.offset, cursor.last_record_id)
+                }
+                Some(_) => {
+                    // The mount invalidated the cursor. Do not keep old
+                    // rows under the new authority generation.
+                    self.root_index = 0;
+                    self.cursor = None;
+                    reset = true;
+                    continue;
                 }
                 None => {
-                    // The mount no longer serves its index: nothing of this
-                    // root is listed.
-                    self.root_index += 1;
-                    self.cursor = None;
-                    return WorkspaceRecordIndexPage {
-                        records: Vec::new(),
-                        reset,
-                        complete: false,
-                        truncated: true,
-                    };
+                    self.cursor = Some(RecordIndexCursor {
+                        revision: manifest.revision.clone(),
+                        offset: 0,
+                        last_record_id: None,
+                    });
+                    (0, None)
                 }
+            };
+            if manifest.records == 0 {
+                self.root_index += 1;
+                self.cursor = None;
+                continue;
             }
+            let Some(page) = self.v2_page(&root, &manifest, offset) else {
+                self.root_index += 1;
+                self.cursor = None;
+                return WorkspaceRecordIndexPage {
+                    records: Vec::new(),
+                    reset,
+                    complete: false,
+                    truncated: true,
+                };
+            };
+            let next = page.next_offset;
+            if prior_record_id.is_some_and(|prior| {
+                page.records
+                    .first()
+                    .is_some_and(|record| record.record_id <= prior)
+            }) {
+                self.root_index += 1;
+                self.cursor = None;
+                return WorkspaceRecordIndexPage {
+                    records: Vec::new(),
+                    reset,
+                    complete: false,
+                    truncated: true,
+                };
+            }
+            let last_record_id = page.records.last().map(|record| record.record_id);
+            // A page's continuation advances over the namespace-owned
+            // source window, not merely returned rows: an ACL can
+            // deny every row in a bounded window. Empty pages are
+            // therefore valid and never trigger an unbounded hunt for
+            // the next visible record.
+            let terminal = next.is_none();
+            let valid_next = terminal && offset < manifest.records
+                || matches!(next, Some(next) if next > offset && next <= manifest.records && next % manifest.page_entries == 0);
+            if !valid_next {
+                self.root_index += 1;
+                self.cursor = None;
+                return WorkspaceRecordIndexPage {
+                    records: Vec::new(),
+                    reset,
+                    complete: false,
+                    truncated: true,
+                };
+            }
+            let (records, malformed) = project_record_entries(&root, page.records);
+            truncated |= malformed;
+            if let Some(next) = next {
+                self.cursor = Some(RecordIndexCursor {
+                    revision: manifest.revision,
+                    offset: next,
+                    last_record_id,
+                });
+            } else {
+                self.root_index += 1;
+                self.cursor = None;
+            }
+            return WorkspaceRecordIndexPage {
+                records,
+                reset,
+                complete: self.root_index == self.roots.len(),
+                truncated,
+            };
         }
     }
 }

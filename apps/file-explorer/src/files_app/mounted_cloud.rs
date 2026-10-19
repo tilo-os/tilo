@@ -2,6 +2,10 @@
 #[cfg(test)]
 #[path = "mounted_cloud_tests.rs"]
 mod tests;
+#[allow(
+    clippy::wildcard_imports,
+    reason = "this file continues the parent module's widget impl; it and the tests under it use the parent's items as the parent does, under every cfg"
+)]
 use super::*;
 use std::sync::mpsc::{Receiver, channel};
 use tilo_cloud_files::cloud::{CloudClient, FileDescription, FileReply, FileRequest};

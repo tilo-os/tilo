@@ -11,6 +11,10 @@
 #[path = "drives_tests.rs"]
 mod tests;
 
+#[allow(
+    clippy::wildcard_imports,
+    reason = "this file continues the parent module's widget impl; it and the tests under it use the parent's items as the parent does, under every cfg"
+)]
 use super::*;
 use runtime_portal::tools::DriveEntry;
 use std::sync::Mutex;
