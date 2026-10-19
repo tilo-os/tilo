@@ -42,7 +42,7 @@ use crate::widgets::visible_version;
 /// How wide a page's content may grow, in lines of body text, so it widens
 /// with the text scale like every other text-sized measure.
 #[derive(Clone, Copy)]
-enum Measure {
+pub(super) enum Measure {
     /// Grids of cards and lists use the canvas.
     Catalogue,
     /// Prose, facts and forms stay at a readable measure.
@@ -50,9 +50,13 @@ enum Measure {
 }
 
 impl Measure {
+    /// The page column's width in lines of body text: the shell lines the
+    /// title, its actions and the search field up with it.
+    pub(super) const CATALOGUE_LINES: f32 = 55.0;
+
     fn width(self, theme: &Theme) -> f32 {
         let lines = match self {
-            Self::Catalogue => 55.0,
+            Self::Catalogue => Self::CATALOGUE_LINES,
             Self::Reading => 32.0,
         };
         (theme.text(TextRole::Body).line_height_px() * lines).round()

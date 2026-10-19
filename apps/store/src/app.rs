@@ -1404,6 +1404,7 @@ impl Widget for StoreApp {
             Box::new(
                 ui::widget::NavShell::new()
                     .content_kind(ui::widget::ContentKind::Grid)
+                    .with_page_column(view::Measure::CATALOGUE_LINES)
                     .with_id("store.shell")
                     .with_filter(filter)
                     .on_back(move || can.get(), move || requested.set(true)),

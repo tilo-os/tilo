@@ -359,6 +359,12 @@ struct Metrics {
     filter: f64,
     resize_grip: f64,
     scale: f64,
+    /// One line of body text: the unit of a page column's width.
+    body_line: f64,
+    /// What a page scroller keeps free for its bar on its trailing edge.
+    scroll_gutter: f64,
+    /// A page column's inset: a `Column`'s own padding (`s6`).
+    page_pad: f64,
 }
 
 impl Metrics {
@@ -393,6 +399,9 @@ impl Metrics {
             ),
             resize_grip: f64::from(s.s1),
             scale: theme.responsive_scale(),
+            body_line: f64::from(theme.text(crate::TextRole::Body).line_height_px()),
+            scroll_gutter: f64::from(m.scrollbar_gutter),
+            page_pad: f64::from(s.s6),
         }
     }
 }
@@ -429,6 +438,9 @@ struct ColumnFit {
 struct Inputs {
     mode: NavMode,
     kind: ContentKind,
+    /// The content is one centred page column this many lines of body text
+    /// wide ([`NavShell::with_page_column`]).
+    page_lines: Option<f64>,
     metrics: Metrics,
     has_sidebar: bool,
     has_overview: bool,
@@ -514,6 +526,7 @@ impl Default for Inputs {
         Self {
             mode: NavMode::Push,
             kind: ContentKind::default(),
+            page_lines: None,
             metrics: Metrics::default(),
             has_sidebar: false,
             has_overview: false,
@@ -635,6 +648,9 @@ pub struct NavGeometry {
     inspector_toggle_column: Option<Column>,
     history_column: Option<Column>,
     pub resize_handle: Rect,
+    /// The content edges of a centred page column (its leading and trailing
+    /// text edge), where the content is one ([`NavShell::with_page_column`]).
+    page_edges: Option<(f64, f64)>,
 }
 
 impl NavGeometry {
@@ -680,6 +696,7 @@ impl NavGeometry {
             window_controls: t(self.window_controls),
             window_row: t(self.window_row),
             resize_handle: t(self.resize_handle),
+            page_edges: self.page_edges.map(|(x0, x1)| (x0 + by.x, x1 + by.x)),
             ..self.clone()
         }
     }
@@ -837,6 +854,22 @@ impl NavGeometry {
         }
         Rect::new(header.x0, header.y0, x1, header.y1)
     }
+}
+
+/// The content edges of a page column `lines` lines of body text wide,
+/// centred in `column` as a page scroller lays it out: the scroller keeps
+/// its bar's gutter on the trailing edge, the column is centred in the rest
+/// (`Container::with_centered_max_width`), and its text starts the page's
+/// `Column` padding in from each side.
+fn page_edges(column: Rect, lines: f64, m: &Metrics) -> Option<(f64, f64)> {
+    if column.width() <= 0.0 {
+        return None;
+    }
+    let room = (column.width() - m.scroll_gutter).max(0.0);
+    let width = (m.body_line * lines).round().min(room);
+    let x0 = column.x0 + (room - width) / 2.0 + m.page_pad;
+    let x1 = (x0 + width - 2.0 * m.page_pad).max(x0);
+    Some((x0, x1))
 }
 
 /// Compute the geometry for a shell of size `w × h`.
@@ -1140,21 +1173,25 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     if g.rail.width() > 0.0 {
         g.rail = Rect::new(g.rail.x0, bt, g.rail.x1, g.rail.y1);
     }
+    g.page_edges = inputs
+        .page_lines
+        .and_then(|lines| page_edges(g.content_column, lines, &m));
 
     // 8. The filter field and the overview's controls sit under their
-    //    column's header, one control band each.
+    //    column's header, one control band each, a gap clear of the
+    //    header's hairline as of what follows. In a page column the band
+    //    spans the column's content edges, like the page under it.
     let take_band = |g: &mut NavGeometry, column: Column| -> Rect {
         let body = g.body(column);
         if g.column(column).width() <= 0.0 || body.height() <= 0.0 {
             return Rect::ZERO;
         }
-        let top = body.y0;
-        let band = Rect::new(
-            body.x0 + m.inset,
-            top,
-            (body.x1 - m.inset).max(body.x0 + m.inset),
-            top + m.filter,
-        );
+        let top = (body.y0 + m.gap).min(body.y1);
+        let (x0, x1) = match (column, g.page_edges) {
+            (Column::Content, Some(edges)) => edges,
+            _ => (body.x0 + m.inset, body.x1 - m.inset),
+        };
+        let band = Rect::new(x0, top, x1.max(x0), top + m.filter);
         if let Some(slot) = g.bodies.get_mut(column.index()) {
             slot.y0 = (top + m.filter + m.gap).min(slot.y1);
         }
@@ -1776,6 +1813,19 @@ impl NavShell {
     pub fn with_filter(mut self, filter: SearchField) -> Self {
         self.filter = Some(filter);
         self.slots_changed();
+        self
+    }
+
+    /// The content is one page column, `lines` lines of body text wide,
+    /// centred in a vertical scroller that keeps its bar's gutter
+    /// (`Scrollable::with_stable_vertical_gutter` around
+    /// `Container::with_centered_max_width` around a padded `Column`). The
+    /// content's filter field stands on that column's content edges, so it
+    /// lines up with the page under it instead of spanning the window. The
+    /// header stays the window's: its title and actions keep their places.
+    #[must_use]
+    pub fn with_page_column(self, lines: f32) -> Self {
+        self.inputs.borrow_mut().page_lines = Some(f64::from(lines));
         self
     }
 
