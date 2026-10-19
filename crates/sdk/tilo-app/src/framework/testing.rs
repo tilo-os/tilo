@@ -1924,6 +1924,37 @@ struct Opened {
     permissions: Rc<RefCell<PermissionContext>>,
 }
 
+/// The application host `profile` opens in, and the instance its window
+/// takes.
+fn profile_host(
+    profile: &Profile,
+    author: UserId,
+    permissions: &Rc<RefCell<PermissionContext>>,
+) -> Result<(ApplicationHost, u64), LaunchError> {
+    Ok(match profile {
+        Profile::Temporary(directory, room, device)
+        | Profile::Window(directory, room, device, _) => (
+            ApplicationHost::new_with_profile_lifetime(
+                directory.path().join("state"),
+                device.clone(),
+                room,
+                author,
+                Rc::clone(permissions),
+                tilo_actions::ActionContext::default(),
+                directory.clone(),
+            )?,
+            match profile {
+                Profile::Window(_, _, _, window) => *window,
+                _ => INSTANCE,
+            },
+        ),
+        Profile::DataDir(directory) => (
+            data_dir_host(directory, &author, Rc::clone(permissions))?,
+            DATA_DIR_INSTANCE,
+        ),
+    })
+}
+
 /// Open the app `opening` describes as `launch` says, `configure` given its
 /// host context before it is instantiated.
 fn open_app(
@@ -1941,28 +1972,7 @@ fn open_app(
     let author = UserId(person.clone());
     let permissions = role_permissions(&person, launch.role);
     let host_phase = tilo_resource::profiling::Phase::start("start.host");
-    let (mut host, instance) = match &profile {
-        Profile::Temporary(directory, room, device)
-        | Profile::Window(directory, room, device, _) => (
-            ApplicationHost::new_with_profile_lifetime(
-                directory.path().join("state"),
-                device.clone(),
-                room,
-                author,
-                Rc::clone(&permissions),
-                tilo_actions::ActionContext::default(),
-                directory.clone(),
-            )?,
-            match &profile {
-                Profile::Window(_, _, _, window) => *window,
-                _ => INSTANCE,
-            },
-        ),
-        Profile::DataDir(directory) => (
-            data_dir_host(directory, &author, Rc::clone(&permissions))?,
-            DATA_DIR_INSTANCE,
-        ),
-    };
+    let (mut host, instance) = profile_host(&profile, author, &permissions)?;
     drop(host_phase);
     let definition = opening.definition;
     let prepare_phase = tilo_resource::profiling::Phase::start("start.prepare");

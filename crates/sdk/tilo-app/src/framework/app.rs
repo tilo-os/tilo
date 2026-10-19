@@ -846,7 +846,7 @@ fn hosted(context: &HostContext) -> super::settings::Hosted {
 }
 
 /// The window of a record that does not read as the app's resource.
-fn unopened(app: &AppHooks, context: HostContext, reason: String) -> AppComponent {
+fn unopened(app: &AppHooks, context: HostContext, reason: &str) -> AppComponent {
     let unopened = super::root::Unopened::new(
         app.title,
         icon(app),
@@ -930,7 +930,7 @@ fn create_component(
     };
     let root = match (app.open)(&mut context, editing, capture, created)? {
         Ok(root) => root,
-        Err(reason) => return Ok(unopened(app, context, reason)),
+        Err(reason) => return Ok(unopened(app, context, &reason)),
     };
     let mut component = AppComponent::new(context, root, (app.action_registry)());
     component.set_behaviour(app.behaviour);

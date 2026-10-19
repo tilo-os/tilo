@@ -3417,17 +3417,17 @@ impl Unopened {
         icon: IconDescriptor,
         (kind, label): (&'static str, &'static str),
         declarations: &[tilo_resource::Declaration],
-        reason: String,
+        reason: &str,
     ) -> Self {
         let mut resource = tilo_actions::Resource::new(kind, kind, label);
         for decl in declarations {
             resource = resource.with_action(tilo_resource::declaration_spec(decl));
         }
-        withhold_document_actions(&mut resource, &reason);
+        withhold_document_actions(&mut resource, reason);
         Self {
             title,
             icon,
-            shown: unreadable_state(&reason),
+            shown: unreadable_state(reason),
             resource,
         }
     }

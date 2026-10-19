@@ -99,6 +99,7 @@ impl ModerationConsentPreview {
         argument: &tilo_actions::remote::InvokeArgument,
         signing_root: &[u8; 32],
     ) -> Option<Self> {
+        use registry_types::ModerationMutation;
         let slot = argument.to_slot()?;
         let json = slot
             .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
@@ -107,7 +108,6 @@ impl ModerationConsentPreview {
         let operation: registry_types::ExternalModerationOperation =
             serde_json::from_str(arguments.get("operation")?.as_str()?).ok()?;
         runtime_collab::external_moderation::validate_action(action, json, &operation).ok()?;
-        use registry_types::ModerationMutation;
         let (purpose, target, category, content, evidence_digest) = match operation.mutation {
             ModerationMutation::FileReport {
                 package_id,
