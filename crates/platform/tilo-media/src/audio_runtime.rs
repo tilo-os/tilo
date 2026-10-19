@@ -92,6 +92,25 @@ pub trait AudioRuntimeControl: Send + Sync {
         duration: Duration,
     ) -> Result<Box<dyn MicrophoneMeterSession>, String>;
 
+    /// Meter what `sink_name` plays, for as long as the session is held:
+    /// `on_level` gets the peak of each 32 ms of sound, on the capture's own
+    /// thread, read from the sink's monitor. Nothing is played or linked,
+    /// and the capture never keeps an idle sink awake: while nothing plays,
+    /// no level comes. Dropping the session ends the capture.
+    ///
+    /// # Errors
+    ///
+    /// Returns a diagnostic message if the capture process cannot be spawned
+    /// or its captured samples cannot be read.
+    fn start_output_meter(
+        &self,
+        sink_name: &str,
+        on_level: Box<dyn Fn(f32) + Send>,
+    ) -> Result<Box<dyn BoundedSession>, String> {
+        let _ = (sink_name, on_level);
+        Err("Output metering is not supported by the active audio service".into())
+    }
+
     /// Create the echo-cancelled microphone ([`ECHO_CANCEL_SOURCE_NAME`]).
     /// It lives until the returned session is stopped or dropped.
     ///
@@ -481,50 +500,101 @@ impl AudioRuntimeControl for RealAudioRuntime {
         duration: Duration,
     ) -> Result<Box<dyn MicrophoneMeterSession>, String> {
         let duration = duration.clamp(Duration::from_secs(1), Duration::from_secs(15));
-        let mut child = Command::new("pw-record")
-            .args([
+        let deadline = Instant::now()
+            .checked_add(duration)
+            .unwrap_or_else(Instant::now);
+        start_meter(&["--target", source_name], Some(deadline))
+    }
+
+    fn start_output_meter(
+        &self,
+        sink_name: &str,
+        on_level: Box<dyn Fn(f32) + Send>,
+    ) -> Result<Box<dyn BoundedSession>, String> {
+        // Capturing a sink records its monitor: what it plays, nothing more.
+        // A passive stream never wakes a suspended sink.
+        let (child, reader) = spawn_meter(
+            &[
                 "--target",
-                source_name,
-                "--rate",
-                "16000",
-                "--channels",
-                "1",
-                "--channel-map",
-                "mono",
-                "--format",
-                "s16",
-                "-",
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .process_group(0)
-            .spawn()
-            .map_err(|e| format!("pw-record is unavailable: {e}"))?;
-        let Some(mut output) = child.stdout.take() else {
-            bounded_command::terminate_tree(&mut child, std::time::Duration::ZERO);
-            return Err("pw-record did not expose captured samples".into());
-        };
-        let (tx, rx) = mpsc::channel();
-        let reader = std::thread::spawn(move || {
-            let mut bytes = [0_u8; 2048];
-            while let Ok(n) = output.read(&mut bytes) {
-                if n == 0 {
-                    break;
-                }
-                let _ = tx.send(pcm_peak(bytes.get(..n).unwrap_or(&[])));
-            }
-        });
+                sink_name,
+                "-P",
+                "{ stream.capture.sink = true node.passive = true }",
+            ],
+            on_level,
+        )?;
         Ok(Box::new(MicSession {
             child: Some(child),
             reader: Some(reader),
-            levels: rx,
+            levels: mpsc::channel().1,
             latest: 0.0,
-            deadline: Instant::now()
-                .checked_add(duration)
-                .unwrap_or_else(Instant::now),
+            deadline: None,
         }))
     }
+}
+
+/// Record `target` as 16 kHz mono and publish each chunk's peak, until
+/// `deadline` or until the session is dropped.
+#[cfg(unix)]
+fn start_meter(
+    target: &[&str],
+    deadline: Option<Instant>,
+) -> Result<Box<dyn MicrophoneMeterSession>, String> {
+    let (tx, rx) = mpsc::channel();
+    let (child, reader) = spawn_meter(
+        target,
+        Box::new(move |peak| {
+            let _ = tx.send(peak);
+        }),
+    )?;
+    Ok(Box::new(MicSession {
+        child: Some(child),
+        reader: Some(reader),
+        levels: rx,
+        latest: 0.0,
+        deadline,
+    }))
+}
+
+/// `pw-record` capturing `target` as 16 kHz mono, and the thread that hands
+/// `on_level` the peak of each 512 samples (32 ms) it reads.
+#[cfg(unix)]
+fn spawn_meter(
+    target: &[&str],
+    on_level: Box<dyn Fn(f32) + Send>,
+) -> Result<(Child, JoinHandle<()>), String> {
+    let mut child = Command::new("pw-record")
+        .args(target)
+        .args([
+            "--rate",
+            "16000",
+            "--channels",
+            "1",
+            "--channel-map",
+            "mono",
+            "--format",
+            "s16",
+            "-",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .map_err(|e| format!("pw-record is unavailable: {e}"))?;
+    let Some(mut output) = child.stdout.take() else {
+        bounded_command::terminate_tree(&mut child, std::time::Duration::ZERO);
+        return Err("pw-record did not expose captured samples".into());
+    };
+    let reader = std::thread::spawn(move || {
+        let mut bytes = [0_u8; 1024];
+        while let Ok(n) = output.read(&mut bytes) {
+            if n == 0 {
+                break;
+            }
+            on_level(pcm_peak(bytes.get(..n).unwrap_or(&[])));
+        }
+    });
+    Ok((child, reader))
 }
 
 // PipeWire process control and session teardown require Unix process groups.
@@ -723,12 +793,16 @@ struct MicSession {
     reader: Option<JoinHandle<()>>,
     levels: Receiver<f32>,
     latest: f32,
-    deadline: Instant,
+    /// `None` for a meter that runs until its owner drops it.
+    deadline: Option<Instant>,
 }
 #[cfg(unix)]
 impl BoundedSession for MicSession {
     fn running(&mut self) -> bool {
-        if Instant::now() >= self.deadline {
+        if self
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
             self.stop();
             return false;
         }
@@ -754,7 +828,9 @@ impl MicrophoneMeterSession for MicSession {
         self.latest
     }
     fn remaining(&self) -> Duration {
-        self.deadline.saturating_duration_since(Instant::now())
+        self.deadline.map_or(Duration::MAX, |deadline| {
+            deadline.saturating_duration_since(Instant::now())
+        })
     }
 }
 #[cfg(unix)]
