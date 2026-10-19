@@ -208,26 +208,32 @@ impl ProfileCard {
         Self::default()
     }
 
+    /// A field for the person's name: submitting a non-empty one renames them.
+    fn name_field(&self, id: &str, placeholder: String, accessible: String) -> TextInput {
+        let chosen = Rc::clone(&self.chosen);
+        TextInput::from_state(&self.draft)
+            .with_id(id)
+            .with_placeholder(placeholder)
+            .with_accessible_name(accessible)
+            .on_submit(move |typed| {
+                let typed = typed.trim();
+                if !typed.is_empty() {
+                    *chosen.borrow_mut() = Some(ProfileChoice::Rename(typed.to_owned()));
+                }
+            })
+    }
+
     fn body(&self, model: &ProfileModel) -> Column {
         let mut avatar = Avatar::person(&model.name, &model.identity).size(AvatarSize::Large);
         if let Some(colour) = model.colour {
             avatar = avatar.with_presence(colour);
         }
-        let chosen = Rc::clone(&self.chosen);
-        let asked = Rc::clone(&self.chosen);
         let name: Box<dyn Widget> = if model.can_rename {
-            Box::new(
-                TextInput::from_state(&self.draft)
-                    .with_id("profile-name")
-                    .with_placeholder(t("profile-name-placeholder"))
-                    .with_accessible_name(t("profile-name"))
-                    .on_submit(move |typed| {
-                        let typed = typed.trim();
-                        if !typed.is_empty() {
-                            *chosen.borrow_mut() = Some(ProfileChoice::Rename(typed.to_owned()));
-                        }
-                    }),
-            )
+            Box::new(self.name_field(
+                "profile-name",
+                t("profile-name-placeholder"),
+                t("profile-name"),
+            ))
         } else {
             // A name with no spaces (a key, before one is chosen) still
             // wraps inside the card.
@@ -240,18 +246,11 @@ impl ProfileCard {
         // Not named yet: in place of the hint, a field asking for the name
         // people here should see. Gone once they give one.
         let below: Box<dyn Widget> = if model.ask_name && !model.can_rename {
-            Box::new(
-                TextInput::from_state(&self.draft)
-                    .with_id("profile-add-name")
-                    .with_placeholder(t("profile-add-your-name"))
-                    .with_accessible_name(t("profile-add-your-name"))
-                    .on_submit(move |typed| {
-                        let typed = typed.trim();
-                        if !typed.is_empty() {
-                            *asked.borrow_mut() = Some(ProfileChoice::Rename(typed.to_owned()));
-                        }
-                    }),
-            )
+            Box::new(self.name_field(
+                "profile-add-name",
+                t("profile-add-your-name"),
+                t("profile-add-your-name"),
+            ))
         } else {
             Box::new(
                 Text::new(&t("profile-name-hint"))
