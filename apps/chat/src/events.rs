@@ -4979,7 +4979,11 @@ mod tests {
         let (mut app, _) = app_with_doc();
         let people = app.users.len();
         service_streams(&mut app, "c_huddle", 3);
-        assert_eq!(app.roster_rows().len(), people, "the roster lists the room's people");
+        assert_eq!(
+            app.roster_rows().len(),
+            people,
+            "the roster lists the room's people"
+        );
         let in_call = app.voice_people("c_huddle");
         for index in 1..=3 {
             let person = format!("{index:064x}");

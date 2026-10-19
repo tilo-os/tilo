@@ -479,7 +479,13 @@ mod tests {
             .find(|tile| tile.name.as_ref().unwrap().contains("Desk computer"))
             .unwrap();
         assert!(peer.description.as_ref().unwrap().contains("Offline"));
-        assert!(!peer.description.as_ref().unwrap().contains("not in the layout"));
+        assert!(
+            !peer
+                .description
+                .as_ref()
+                .unwrap()
+                .contains("not in the layout")
+        );
         let identity = peer.semantic_key.clone();
         let position = peer
             .description

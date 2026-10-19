@@ -4819,7 +4819,10 @@ mod tests {
             let mut app = seeded_app();
             app.set_query("te".into());
             let visible = app.visible_items();
-            assert_eq!(visible.first().map(|item| item.name.as_str()), Some("Terminal"));
+            assert_eq!(
+                visible.first().map(|item| item.name.as_str()),
+                Some("Terminal")
+            );
             assert!(
                 visible.iter().all(|item| item.name != "Notes"),
                 "a letter pair inside a word is no match"
