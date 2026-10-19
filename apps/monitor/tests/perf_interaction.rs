@@ -15,3 +15,12 @@ fn interaction_costs() {
     ui::framework::testing::perf::profile::<monitor::MonitorShell>(None)
         .expect("monitor opens its capture");
 }
+
+/// What opening monitor costs on the UI thread, warm (its record already on the
+/// profile): from the host preparing the launch to the first frame drawn.
+#[test]
+fn start_cost() {
+    ui::framework::testing::perf::start::<monitor::MonitorShell>(8)
+        .expect("monitor opens")
+        .print();
+}

@@ -15,3 +15,12 @@ fn interaction_costs() {
     ui::framework::testing::perf::profile::<calendar::CalendarShell>(None)
         .expect("calendar opens its capture");
 }
+
+/// What opening calendar costs on the UI thread, warm (its record already on the
+/// profile): from the host preparing the launch to the first frame drawn.
+#[test]
+fn start_cost() {
+    ui::framework::testing::perf::start::<calendar::CalendarShell>(8)
+        .expect("calendar opens")
+        .print();
+}

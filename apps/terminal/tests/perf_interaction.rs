@@ -15,3 +15,12 @@ fn interaction_costs() {
     ui::framework::testing::perf::profile::<terminal::TerminalShell>(None)
         .expect("terminal opens its capture");
 }
+
+/// What opening terminal costs on the UI thread, warm (its record already on the
+/// profile): from the host preparing the launch to the first frame drawn.
+#[test]
+fn start_cost() {
+    ui::framework::testing::perf::start::<terminal::TerminalShell>(8)
+        .expect("terminal opens")
+        .print();
+}

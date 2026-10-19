@@ -14,3 +14,12 @@
 fn interaction_costs() {
     ui::framework::testing::perf::profile::<mail::MailShell>(None).expect("mail opens its capture");
 }
+
+/// What opening mail costs on the UI thread, warm (its record already on the
+/// profile): from the host preparing the launch to the first frame drawn.
+#[test]
+fn start_cost() {
+    ui::framework::testing::perf::start::<mail::MailShell>(8)
+        .expect("mail opens")
+        .print();
+}

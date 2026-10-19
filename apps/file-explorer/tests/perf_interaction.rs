@@ -15,3 +15,12 @@ fn interaction_costs() {
     ui::framework::testing::perf::profile::<file_explorer::FileExplorerShell>(None)
         .expect("file-explorer opens its capture");
 }
+
+/// What opening file-explorer costs on the UI thread, warm (its record already on the
+/// profile): from the host preparing the launch to the first frame drawn.
+#[test]
+fn start_cost() {
+    ui::framework::testing::perf::start::<file_explorer::FileExplorerShell>(8)
+        .expect("file-explorer opens")
+        .print();
+}

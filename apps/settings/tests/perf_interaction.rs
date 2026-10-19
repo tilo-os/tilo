@@ -15,3 +15,12 @@ fn interaction_costs() {
     ui::framework::testing::perf::profile::<settings::SettingsShell>(None)
         .expect("settings opens its capture");
 }
+
+/// What opening settings costs on the UI thread, warm (its record already on the
+/// profile): from the host preparing the launch to the first frame drawn.
+#[test]
+fn start_cost() {
+    ui::framework::testing::perf::start::<settings::SettingsShell>(8)
+        .expect("settings opens")
+        .print();
+}
