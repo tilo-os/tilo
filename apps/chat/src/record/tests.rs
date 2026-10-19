@@ -1272,7 +1272,7 @@ fn the_migration_opens_the_users_chat_with_everything_in_it() {
             evolution::migrate::<Chat>(&mut doc).unwrap(),
             "migrated once"
         );
-        assert_eq!(evolution::stored_version(&doc), 4);
+        assert_eq!(evolution::stored_version(&doc), <Chat as Resource>::VERSION);
         let chat = evolution::read_checked::<Chat>(&doc).expect("the user's chat opens");
         assert!(chat.categories.quarantined().is_empty());
         assert!(chat.channels.quarantined().is_empty());
