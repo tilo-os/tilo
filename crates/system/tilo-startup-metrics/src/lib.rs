@@ -84,10 +84,16 @@ pub const LAUNCH_LATENCY_TARGET: &str = "tilo::launch_latency";
 /// up. A handful of lines per X11 app session.
 pub const XWAYLAND_TARGET: &str = "tilo::xwayland";
 
+/// The `tracing` target of one-time repairs of a person's saved state: what
+/// each decided at session start and why, a few lines per session. A repair
+/// that changes nothing must still say why, in the log a device keeps.
+pub const REPAIR_TARGET: &str = "tilo::repair";
+
 /// Targets the session log keeps at `info` whatever the base filter: rare
-/// lines that time an app's open, and the only record of the compositor's and
-/// launcher's share of it before the app's own clock starts.
-const ALWAYS_LOGGED: [&str; 2] = [LAUNCH_LATENCY_TARGET, XWAYLAND_TARGET];
+/// lines that time an app's open, the only record of the compositor's and
+/// launcher's share of it before the app's own clock starts, and what the
+/// session's repairs of saved state decided.
+const ALWAYS_LOGGED: [&str; 3] = [LAUNCH_LATENCY_TARGET, XWAYLAND_TARGET, REPAIR_TARGET];
 
 /// The compositor's log filter directives for a `RUST_LOG` of `rust_log`: that
 /// filter (errors only when unset, as `tracing_subscriber::fmt::init` has it),
@@ -1039,23 +1045,23 @@ mod tests {
     fn launch_latency_lines_survive_the_default_session_filter() {
         assert_eq!(
             log_directives(None),
-            "error,tilo::launch_latency=info,tilo::xwayland=info"
+            "error,tilo::launch_latency=info,tilo::xwayland=info,tilo::repair=info"
         );
         assert_eq!(
             log_directives(Some("  ")),
-            "error,tilo::launch_latency=info,tilo::xwayland=info"
+            "error,tilo::launch_latency=info,tilo::xwayland=info,tilo::repair=info"
         );
         assert_eq!(
             log_directives(Some("warn")),
-            "warn,tilo::launch_latency=info,tilo::xwayland=info"
+            "warn,tilo::launch_latency=info,tilo::xwayland=info,tilo::repair=info"
         );
         assert_eq!(
             log_directives(Some("info,tilo::launch_latency=off")),
-            "info,tilo::launch_latency=off,tilo::xwayland=info"
+            "info,tilo::launch_latency=off,tilo::xwayland=info,tilo::repair=info"
         );
         assert_eq!(
             log_directives(Some("tilo::xwayland=debug")),
-            "tilo::xwayland=debug,tilo::launch_latency=info"
+            "tilo::xwayland=debug,tilo::launch_latency=info,tilo::repair=info"
         );
     }
 
