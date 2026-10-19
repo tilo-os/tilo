@@ -34,9 +34,9 @@ mod surface;
 mod text_stack;
 
 pub use bar_control::{BarControlFace, IconButton};
-pub use disclosure_row::{DisclosureGroup, DisclosureRow};
+pub use disclosure_row::{DisclosureGroup, DisclosureRow, DisclosureState};
 pub use facts::{Fact, Facts, FactsFace};
 pub use floating_panel::{FloatingPanel, FloatingPanelFace, FloatingPanelLayout};
-pub use key_hint::{KeyHint, KeyHintsFace};
+pub use key_hint::{KeyHint, KeyHints, KeyHintsFace};
 pub use surface::{DensityRegion, Surface, SurfaceLevel, paint_surface};
 pub use text_stack::{StackSize, TextStack, TextStackFace};

@@ -318,6 +318,11 @@ impl Widget for TextStack {
 
     crate::redraw_flag!();
 
+    // Its size changes only with its lines or the theme, which mark it.
+    fn is_layout_dirty(&self) -> bool {
+        self.dirty
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }

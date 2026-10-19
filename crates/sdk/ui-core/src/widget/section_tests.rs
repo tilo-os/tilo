@@ -42,17 +42,17 @@ fn items_sit_a_sibling_step_apart_and_the_header_closer() {
     assert!((rect(&items[0]).y0 - rect(header).y1 - f64::from(rhythm.related)).abs() < 0.5);
     assert!((rect(&items[1]).y0 - rect(&items[0]).y1 - f64::from(rhythm.sibling)).abs() < 0.5);
     // Title on the content edge, count, then the action whose label ends on
-    // the trailing edge: the button's inset bleeds past it.
+    // the trailing edge: a labelled plain button is laid out as its label,
+    // and its lift bleeds past it.
     assert_eq!(header.children.len(), 3);
     let title = rect(&header.children[0]);
     let count = rect(&header.children[1]);
     let action = rect(&header.children[2]);
     assert!(title.x0.abs() < 0.5, "title on the edge: {title:?}");
     assert!(count.x0 > title.x1);
-    let bleed = crate::chrome::row_bleed(&theme);
     assert!(
-        (action.x1 - (500.0 + bleed)).abs() < 1.0,
-        "the label, not the button, ends on the edge: {action:?}"
+        (action.x1 - 500.0).abs() < 1.0,
+        "the label, not its lift, ends on the edge: {action:?}"
     );
     assert!(
         (count.center().y - title.center().y).abs() < 1.0,

@@ -3272,11 +3272,13 @@ pub mod context_menu;
 pub mod floating_surface;
 pub mod primitives;
 pub use context_menu::{ContextMenu, MenuButton, MenuItem};
+mod row_menu;
 pub use primitives::{
-    BarControlFace, DensityRegion, DisclosureGroup, DisclosureRow, Fact, Facts, FactsFace,
-    FloatingPanel, FloatingPanelFace, FloatingPanelLayout, IconButton, KeyHint, KeyHintsFace,
-    Surface, SurfaceLevel, TextStack, TextStackFace, paint_surface,
+    BarControlFace, DensityRegion, DisclosureGroup, DisclosureRow, DisclosureState, Fact, Facts,
+    FactsFace, FloatingPanel, FloatingPanelFace, FloatingPanelLayout, IconButton, KeyHint,
+    KeyHints, KeyHintsFace, Surface, SurfaceLevel, TextStack, TextStackFace, paint_surface,
 };
+pub use row_menu::RowMenu;
 pub mod context_menu_area;
 pub use context_menu_area::{ContextMenuArea, MenuEntry, ask_agent_entry};
 pub(crate) mod block_editor_table;

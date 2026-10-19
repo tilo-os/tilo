@@ -426,6 +426,14 @@ impl<'a> ListRowFace<'a> {
         self
     }
 
+    /// Let the secondary text take up to `lines` lines (one to four): a
+    /// thing whose facts each stand on a line of their own.
+    #[must_use]
+    pub fn secondary_lines(mut self, lines: u8) -> Self {
+        self.secondary_lines = lines.clamp(1, 4);
+        self
+    }
+
     /// A timestamp, size or count, right-aligned in tabular figures on the
     /// title's line. It narrows only the title's line.
     #[must_use]
@@ -1637,6 +1645,11 @@ const MIN_TEXT_LINES: u8 = 8;
 
 /// The persistent control a retained row holds at its trailing edge.
 struct Trailing {
+    /// Stands for the text band among the row's children: the row's node
+    /// holds the band's node, then the control's, and every walk that pairs
+    /// a widget's children with its layout nodes (focus order, the
+    /// accessibility tree) must meet the control at the control's node.
+    band_slot: crate::widget::Absent,
     element: Element,
     /// The text band's node, then the control's.
     band: Option<NodeId>,
@@ -1674,6 +1687,8 @@ impl RowPart {
 /// activates it (pointer, Enter/Space, or assistive technology).
 pub struct ListRow {
     title: String,
+    /// Whether a layout pass has built the row.
+    laid_out: bool,
     /// Whether the last paint cut the title short; the tooltip then shows it
     /// in full.
     title_elided: bool,
@@ -1681,7 +1696,8 @@ pub struct ListRow {
     title_family: Option<FontChoice>,
     subtitle: Option<String>,
     secondary: Option<String>,
-    two_line: bool,
+    /// How many lines the secondary text may take.
+    secondary_line_count: u8,
     meta: Option<String>,
     meta_spans: Vec<(String, Tone)>,
     value: Option<(String, RowValue)>,
@@ -1735,12 +1751,13 @@ impl ListRow {
     pub fn new(id: impl Into<String>, title: impl Into<String>) -> Self {
         Self {
             title: title.into(),
+            laid_out: false,
             title_elided: false,
             two_line_title: false,
             title_family: None,
             subtitle: None,
             secondary: None,
-            two_line: false,
+            secondary_line_count: 1,
             meta: None,
             meta_spans: Vec::new(),
             value: None,
@@ -1809,7 +1826,14 @@ impl ListRow {
     /// See [`ListRowFace::two_line_secondary`].
     #[must_use]
     pub fn two_line_secondary(mut self) -> Self {
-        self.two_line = true;
+        self.secondary_line_count = 2;
+        self
+    }
+
+    /// See [`ListRowFace::secondary_lines`].
+    #[must_use]
+    pub fn secondary_lines(mut self, lines: u8) -> Self {
+        self.secondary_line_count = lines.clamp(1, 4);
         self
     }
 
@@ -2109,6 +2133,7 @@ impl ListRow {
     #[must_use]
     pub fn trailing(mut self, control: Element) -> Self {
         self.trailing = Some(Trailing {
+            band_slot: crate::widget::Absent::new(),
             element: control,
             band: None,
             node: None,
@@ -2116,6 +2141,12 @@ impl ListRow {
             wrapped: false,
         });
         self
+    }
+
+    /// The row's marks after its title (a status, a role), in order.
+    #[must_use]
+    pub fn tag_labels(&self) -> Vec<&str> {
+        self.tags.iter().map(|(label, _)| label.as_str()).collect()
     }
 
     /// Whether the trailing control sits under the text (the row is narrow).
@@ -2317,7 +2348,10 @@ impl ListRow {
             .map(|(text, tone)| (text.as_str(), *tone))
             .collect();
         let mut interaction = self.activation.state;
-        interaction.hovered &= self.environment.supports_hover();
+        // A row that does nothing when pressed (a setting's label beside its
+        // switch, a reading) does not lift under the pointer: only what
+        // acts answers hover.
+        interaction.hovered &= self.environment.supports_hover() && self.answers_pointer();
         let mut face = ListRowFace::new(&self.title)
             .emphasized(self.emphasized)
             .selected(self.selected)
@@ -2338,10 +2372,9 @@ impl ListRow {
             face = face.subtitle(subtitle);
         }
         if let Some(secondary) = &self.secondary {
-            face = face.secondary(secondary);
-            if self.two_line {
-                face = face.two_line_secondary();
-            }
+            face = face
+                .secondary(secondary)
+                .secondary_lines(self.secondary_line_count);
         }
         if let Some(meta) = &self.meta {
             face = face.meta(meta);
@@ -2436,6 +2469,14 @@ impl ListRow {
             );
         }
         f(&face)
+    }
+
+    /// Whether the row itself acts: it activates, offers hover actions or
+    /// carries a selection checkbox.
+    fn answers_pointer(&self) -> bool {
+        self.activation.is_bound()
+            || !self.actions.is_empty()
+            || matches!(self.leading, Some(Leading::Checkbox { .. }))
     }
 
     /// The indices into `self.actions` of the actions shown, in order.
@@ -2636,6 +2677,7 @@ impl Widget for ListRow {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.laid_out = true;
         let metrics = RowMetrics::new(theme);
         let column_gap = metrics.column_gap;
         let pad_y = metrics.pad_y;
@@ -2694,6 +2736,14 @@ impl Widget for ListRow {
         let child = trailing.element.build_layout(taffy, theme, node_map);
         if let Ok(style) = taffy.style(child) {
             let mut style = style.clone();
+            // A row of controls (a slider and its mute button) is as wide as
+            // what it holds, not the whole row: it trails the text.
+            if style.size.width == percent(1.0_f32) {
+                style.size.width = auto();
+            }
+            // Never wider than the row: under the text it takes the row's
+            // width at most, and a row of controls wraps inside it.
+            style.max_size.width = percent(1.0_f32);
             style.flex_shrink = 0.0;
             style.align_self = Some(taffy::AlignSelf::Center);
             style.margin.left = length(crate::num::f32_of_f64(column_gap));
@@ -2788,15 +2838,21 @@ impl Widget for ListRow {
         if wrapped {
             // Under the text, on the text's edge rather than the row's.
             let theme = self.theme.clone();
+            // The line's gap before a control beside the text does not
+            // apply under it: the control starts on the text's edge and
+            // keeps inside the row.
             let shift = theme.map_or(0.0, |theme| {
                 let band_rect = self.text_band();
                 let m = RowMetrics::new(&theme);
                 crate::text_render::with_layout_renderer(theme.text_scale, |text| {
                     self.with_face(|face| face.text_x(band_rect, &m, text, &theme))
                 }) - self.rect.x0
-                    - f64::from(child_layout.margin.left)
+                    - f64::from(child_layout.location.x)
             });
-            child_origin.x += shift.max(0.0);
+            let room = rect.width()
+                - f64::from(child_layout.location.x)
+                - f64::from(child_layout.size.width);
+            child_origin.x += shift.min(room);
         }
         if let Some(trailing) = &mut self.trailing {
             trailing.element.apply_layout(taffy, child, child_origin);
@@ -2970,10 +3026,7 @@ impl Widget for ListRow {
     }
 
     fn is_focusable(&self) -> bool {
-        (self.activation.is_bound()
-            || !self.actions.is_empty()
-            || matches!(self.leading, Some(Leading::Checkbox { .. })))
-            && !self.activation.state.disabled
+        self.answers_pointer() && !self.activation.state.disabled
     }
 
     fn set_focus(&mut self, focused: bool) {
@@ -3063,25 +3116,31 @@ impl Widget for ListRow {
     }
 
     fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
+        // Never laid out yet; a row inside a collapsed section keeps an
+        // empty box without asking to be measured again on every frame.
+        !self.laid_out
             || self
                 .trailing
                 .as_ref()
                 .is_some_and(|t| t.element.is_layout_dirty())
     }
 
+    // In the order of the row's layout nodes: the text band's stand-in,
+    // then the control.
     fn children(&self) -> Vec<&dyn Widget> {
         self.trailing
             .iter()
-            .map(|t| t.element.as_ref() as &dyn Widget)
+            .flat_map(|t| [&t.band_slot as &dyn Widget, t.element.as_ref()])
             .collect()
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.trailing
-            .iter_mut()
-            .map(|t| t.element.as_mut() as &mut (dyn Widget + '_))
-            .collect()
+        let mut children: Vec<&mut (dyn Widget + '_)> = Vec::with_capacity(2);
+        if let Some(t) = &mut self.trailing {
+            children.push(&mut t.band_slot);
+            children.push(t.element.as_mut());
+        }
+        children
     }
 
     fn wants_pointer_capture(&self) -> bool {

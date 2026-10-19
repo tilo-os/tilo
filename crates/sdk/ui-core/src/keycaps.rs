@@ -256,22 +256,31 @@ impl Keycaps {
     /// together, as Apple does (`⌘⇧S`). Modifiers are always listed in the
     /// same order, Super first, whatever order they were given in.
     pub fn chord<'a>(self, modifiers: impl IntoIterator<Item = &'a str>, key: &str) -> String {
+        let separator = if self.family == KeyboardFamily::Apple {
+            ""
+        } else {
+            "+"
+        };
+        self.chord_keys(modifiers, key).join(separator)
+    }
+
+    /// The keys of a chord as this keyboard spells them, modifiers first in
+    /// the order the platform names them: what drawn keycaps show.
+    pub fn chord_keys<'a>(
+        self,
+        modifiers: impl IntoIterator<Item = &'a str>,
+        key: &str,
+    ) -> Vec<String> {
         let mut held: Vec<KeyboardModifier> = modifiers
             .into_iter()
             .filter_map(canonical_modifier)
             .collect();
         held.sort_by_key(|modifier| display_rank(*modifier));
         held.dedup();
-        let parts = held
-            .into_iter()
+        held.into_iter()
             .map(|modifier| self.modifier(modifier).to_owned())
-            .chain(std::iter::once(self.key(key)));
-        let separator = if self.family == KeyboardFamily::Apple {
-            ""
-        } else {
-            "+"
-        };
-        parts.collect::<Vec<_>>().join(separator)
+            .chain(std::iter::once(self.key(key)))
+            .collect()
     }
 
     /// One token of a free-text chord (`Super`, `Ctrl`, `pageup`, `K`) as the
