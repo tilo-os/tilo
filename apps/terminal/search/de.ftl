@@ -4,3 +4,7 @@
 # whatever the desktop speaks. Comma separated, one phrase each. The packer
 # writes them into the signed manifest; tilo-app.toml carries no copy.
 search-keywords = konsole, kommandozeile, eingabeaufforderung, befehlszeile, terminalfenster, befehle, shell öffnen
+# What the app does, in one plain phrase (German): the tag line under its
+# name in the Store and in search. No marketing; the packer signs it into the
+# manifest.
+app-tagline = Ein Terminal für deine Shell und Kommandozeilenwerkzeuge

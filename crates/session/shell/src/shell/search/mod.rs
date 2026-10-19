@@ -524,6 +524,20 @@ pub trait SearchProvider {
         None
     }
 
+    /// The artwork for one of this provider's rows that the palette cannot
+    /// find by the row's kind and id: an app this device does not have yet
+    /// wears its catalogue icon. `None` keeps the icon.
+    fn row_image(&self, _result: &SearchResult) -> Option<ui::icons::AppImage> {
+        None
+    }
+
+    /// The other things to do with `result`, listed when it is opened with
+    /// "More actions" (an app to install: show it in the App Store). Empty
+    /// for a row with none.
+    fn secondary_actions(&self, _result: &SearchResult) -> Vec<SearchResult> {
+        Vec::new()
+    }
+
     /// Resource hierarchy for one result already admitted to the caller's
     /// catalog. Providers derive identity from their authoritative source,
     /// never presentation labels. This does not resolve or invoke an action.
@@ -1226,6 +1240,25 @@ impl SearchRegistry {
             .iter()
             .find(|provider| provider.id() == result.provider_id)?
             .row_icon(result)
+    }
+
+    /// The artwork the provider that returned `result` gives it, if any
+    /// ([`SearchProvider::row_image`]).
+    pub fn row_image(&self, result: &SearchResult) -> Option<ui::icons::AppImage> {
+        self.providers
+            .iter()
+            .find(|provider| provider.id() == result.provider_id)?
+            .row_image(result)
+    }
+
+    /// The other actions the provider that returned `result` offers for it
+    /// ([`SearchProvider::secondary_actions`]).
+    pub fn secondary_actions(&self, result: &SearchResult) -> Vec<SearchResult> {
+        self.providers
+            .iter()
+            .find(|provider| provider.id() == result.provider_id)
+            .map(|provider| provider.secondary_actions(result))
+            .unwrap_or_default()
     }
 
     pub fn registered_kinds(&self) -> Vec<ResourceKind> {

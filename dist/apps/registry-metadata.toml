@@ -1,190 +1,129 @@
 # Product copy for the independently downloadable Tilo app fleet. Every entry
-# is rendered as localized English metadata today; app UI language support is
+# is rendered as localized English metadata today (tag lines are each app's
+# `app-tagline` in apps/<app>/search/<tag>.ftl); app UI language support is
 # detected from each app's checked-in locale resources.
 
 [apps.agent]
 description = "A collaborative assistant that works through your apps' own actions."
-tagline = "A helpful participant, not a black box"
 [apps.api-tester]
 description = "Build, send, and inspect HTTP requests without leaving Tilo."
-tagline = "Explore APIs with confidence"
 [apps.backups]
 description = "Protect important work with clear, restorable backups."
-tagline = "Your work, safely recoverable"
 [apps.browser]
 description = "Browse the web with built-in ad blocking, private windows, and Chrome extensions."
-tagline = "The web, without the clutter"
 [apps.calculator]
 description = "A fast calculator for everyday arithmetic, formulas, and graphs."
-tagline = "Work it out"
 [apps.calendar]
 description = "Plan time, events, and shared schedules in one calm calendar."
-tagline = "Make time visible"
 [apps.camera]
 description = "Capture photos and video from your connected cameras."
-tagline = "Ready when the moment is"
 [apps.canvas]
 description = "Draw and paint with vector marks and real wet media that stay editable as objects."
-tagline = "Art agents can see and revise"
 [apps.chat]
 description = "A focused space for conversations, calls, and shared work."
-tagline = "Talk together, naturally"
 [apps.chip-design]
 description = "Review chip verification reports, design evidence, and implementation readiness together."
-tagline = "Trace a design from evidence to readiness"
 [apps.clocks]
 description = "Keep an eye on time zones, timers, and alarms."
-tagline = "Time, at a glance"
 [apps.code-editor]
 description = "A native editor for writing, reading, and changing code."
-tagline = "A clear place to make software"
 [apps.contacts]
 description = "Keep the people you work with close and organized."
-tagline = "People, within reach"
 [apps.containers]
 description = "See and manage local containers, images, volumes, and distroboxes."
-tagline = "Containers without the clutter"
 [apps.db-client]
 description = "Connect to databases and explore data with a native client."
-tagline = "See the shape of your data"
 [apps.diffmerge]
 description = "Compare files and resolve changes with a side-by-side view."
-tagline = "Understand every change"
 [apps.discord]
 description = "Bridge a Discord server and a Tilo room: channels, messages, reactions and moderation, both ways."
-tagline = "One community, two homes"
 [apps.disk-usage]
 description = "Find what uses space and reclaim it with confidence."
-tagline = "Know where your storage went"
 [apps.disks]
 description = "Inspect, format, and manage disks and removable storage."
-tagline = "Storage, under control"
 [apps.ebook]
 description = "Read books comfortably with typography that respects the text."
-tagline = "A quiet place to read"
 [apps.feeds]
 description = "Follow the sites and people you care about in one reader."
-tagline = "Your reading, gathered"
 [apps.file-explorer]
 description = "Browse, organize, and share files across your workspaces."
-tagline = "Everything in its place"
 [apps.firewall]
 description = "Understand and control which connections your system accepts."
-tagline = "A clearer boundary"
 [apps.git-client]
 description = "Browse history, review changes, and work with Git visually."
-tagline = "Version control you can see"
 [apps.hex-editor]
 description = "Inspect and edit binary files with precision."
-tagline = "See every byte"
 [apps.imager]
 description = "Write verified Tilo and disk images to removable media."
-tagline = "Prepare media with confidence"
 [apps.logs]
 description = "Search and understand system logs without a wall of noise."
-tagline = "Make sense of what happened"
 [apps.messages]
 description = "Keep direct conversations together with a clear choice of contact and messaging account."
-tagline = "Your conversations, clearly connected"
 [apps.mail]
 description = "Read, write, and organize mail in a calm native client."
-tagline = "Mail that keeps its place"
 [apps.maps]
 description = "Find places, plan routes, and orient yourself visually."
-tagline = "See where you are going"
 [apps.model-providers]
 description = "Add AI model providers, keep their keys on this device, and choose the models your agents use."
-tagline = "Choose who answers"
 [apps.monitor]
 description = "Watch processes, memory, storage, and system resources."
-tagline = "Know what your system is doing"
 [apps.music]
 description = "Listen to your library with playback that feels at home in Tilo."
-tagline = "Your music, uninterrupted"
 [apps.notes]
 description = "Write durable notes that stay useful alone or together."
-tagline = "A place for thoughts to grow"
 [apps.osk]
 description = "An on-screen keyboard built for touch and accessibility."
-tagline = "Type wherever you are"
 [apps.passwords]
 description = "Keep credentials organized and available when you need them."
-tagline = "Your keys, kept close"
 [apps.pdf-viewer]
 description = "Read and navigate PDF documents with a focused viewer."
-tagline = "Documents, clearly read"
 [apps.photos]
 description = "Browse, organize, and enjoy the photos that matter to you."
-tagline = "Your memories, in view"
 [apps.print-centre]
 description = "Set up printers and keep print jobs moving."
-tagline = "Printing, made straightforward"
 [apps.publisher]
 description = "Create the key that signs your Tilo apps and prove the namespaces they publish under."
-tagline = "Ship your apps under your own name"
 [apps.remote]
 description = "Connect to another desktop when you need to be there."
-tagline = "Close the distance"
 [apps.scratchpad]
 description = "Keep a small, immediate space for temporary thoughts and text."
-tagline = "Jot it down"
 [apps.settings]
 description = "Shape Tilo around your devices, preferences, and daily work."
-tagline = "Make Tilo feel like yours"
 [apps.sheets]
 description = "Build and explore spreadsheets in a collaborative native workspace."
-tagline = "Numbers, connected"
 [apps.slides]
 description = "Create presentations that stay easy to revise and share."
-tagline = "Tell the story clearly"
 [apps.shortcuts]
 description = "Chain the actions your apps offer into shortcuts you can run anywhere."
-tagline = "Do more in one step"
 [apps.snippets]
 description = "Collect useful pieces of text and code for reuse."
-tagline = "Keep the good bits handy"
 [apps.speed-test]
 description = "Measure connection speed and understand your network at a glance."
-tagline = "See how your connection feels"
 [apps.store]
 description = "Discover and open native Tilo apps from the signed Tilo app registry."
-tagline = "Find your next app"
 [apps.terminal]
 description = "A capable terminal that belongs naturally in your Tilo workspace."
-tagline = "A direct line to your system"
 [apps.themes]
 description = "Explore and shape the colors and appearance of your desktop."
-tagline = "Set the tone"
 [apps.thumbnails]
 description = "Lets your other devices make photo thumbnails for this one when it is the better place to do it."
-tagline = "Thumbnails made where it is fastest"
 [apps.totp]
 description = "Generate time-based verification codes without losing your flow."
-tagline = "Codes when you need them"
 [apps.tube]
 description = "Browse and watch video in a native, focused experience."
-tagline = "Video without the noise"
 [apps.typst-editor]
 description = "Write polished Typst documents with a native editing workspace."
-tagline = "Typeset with momentum"
 [apps.video-editor]
 description = "Arrange clips, sound, and stories in a native video editor."
-tagline = "Make the cut"
 [apps.video-player]
 description = "Watch local video with simple, dependable playback."
-tagline = "Press play"
 [apps.vpn]
 description = "Connect and manage private network access from one place."
-tagline = "A safer way through"
 [apps.weather]
 description = "Check current conditions and forecasts without the clutter."
-tagline = "Look ahead"
 [apps.web-search]
 description = "Search the web and read pages from your device, for your agents and shortcuts. No account or API key."
-tagline = "Find it, read it"
 [apps.windows]
 description = "Run supported Windows applications in a contained Tilo experience."
-tagline = "A bridge for the apps you still need"
 [apps.word-processor]
 description = "Write rich documents that are ready for focused or shared work."
-tagline = "Write together, beautifully"

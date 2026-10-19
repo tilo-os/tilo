@@ -7,11 +7,11 @@ use app_host::client::{FlatpakStatus, ListedPackage, PackageAbout, PendingRead};
 use package_store::InstalledPackage;
 
 use super::{
-    Done, Duration, LocaleContext, RegistriesFile, RegistryConfig, Remote, State, StoreItem,
-    StoreSource, flathub_record_to_item, installed_flatpak_to_item, installed_flatpaks,
-    installed_tilo_to_store_item, merge, refresh_flatpak, sync_authoritative_catalogue,
-    tilo_to_store_item_on_channel,
+    Done, Duration, LocaleContext, RegistryConfig, Remote, State, StoreItem, StoreSource,
+    installed_flatpak_to_item, installed_flatpaks, installed_tilo_to_store_item, merge,
+    refresh_flatpak, sync_authoritative_catalogue, tilo_to_store_item_on_channel,
 };
+use crate::catalogue::flathub::FlathubFeed;
 
 const MAX_ACTIVE_READS: usize = 4;
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
@@ -32,7 +32,7 @@ enum Read {
     LastVerified(RegistryConfig, PendingRead<String>),
     Native(RegistryConfig, PendingRead<String>),
     Flatpak(Remote, PendingRead<String>),
-    Popular(PendingRead<Vec<crate::flathub_client::AppStreamRecord>>),
+    Flathub(PendingRead<FlathubFeed>),
 }
 
 enum Response {
@@ -42,7 +42,7 @@ enum Response {
     LastVerified(RegistryConfig, Result<String, String>),
     Native(RegistryConfig, Result<String, String>),
     Flatpak(Remote, Result<String, String>),
-    Popular(Result<Vec<crate::flathub_client::AppStreamRecord>, String>),
+    Flathub(Result<FlathubFeed, String>),
 }
 
 impl Read {
@@ -60,7 +60,7 @@ impl Read {
             Self::Flatpak(remote, read) => read
                 .poll(host)
                 .map(|result| Response::Flatpak(remote.clone(), result)),
-            Self::Popular(read) => read.poll(host).map(Response::Popular),
+            Self::Flathub(read) => read.poll(host).map(Response::Flathub),
         }
     }
 
@@ -73,7 +73,7 @@ impl Read {
             Self::LastVerified(registry, _) => Response::LastVerified(registry.clone(), Err(error)),
             Self::Native(registry, _) => Response::Native(registry.clone(), Err(error)),
             Self::Flatpak(remote, _) => Response::Flatpak(remote.clone(), Err(error)),
-            Self::Popular(_) => Response::Popular(Err(error)),
+            Self::Flathub(_) => Response::Flathub(Err(error)),
         }
     }
 }
@@ -95,7 +95,9 @@ pub(super) struct Refresh {
     /// last verified one and is never replaced by it.
     answered: HashSet<String>,
     flatpak: HashMap<String, Vec<StoreItem>>,
-    popular: Option<Vec<crate::flathub_client::AppStreamRecord>>,
+    /// Flathub's catalogue: the one the last refresh read until this one's
+    /// read answers.
+    feed: Option<FlathubFeed>,
     cached: Vec<StoreItem>,
     errors: Vec<(u8, String)>,
     deadline: Instant,
@@ -106,14 +108,16 @@ pub(super) struct Refresh {
 
 impl Refresh {
     pub(super) fn start(state: &State, done: Option<Done>) -> Self {
-        Self::start_with_popular(state, done, None, None)
+        Self::start_with_feed(state, done, None, None)
     }
 
-    fn start_with_popular(
+    /// A refresh generation. `feed_read` is a Flathub read already under way
+    /// (a restarted generation keeps it); `feed` one already answered.
+    fn start_with_feed(
         state: &State,
         done: Option<Done>,
-        popular: Option<ActiveRead>,
-        records: Option<Vec<crate::flathub_client::AppStreamRecord>>,
+        feed_read: Option<ActiveRead>,
+        feed: Option<FlathubFeed>,
     ) -> Self {
         let mut active = state.host.as_ref().map_or_else(Vec::new, |host| {
             vec![
@@ -128,14 +132,18 @@ impl Refresh {
             })
             .collect()
         });
-        if let Some(read) = popular {
+        let answered = feed.is_some();
+        if let Some(read) = feed_read {
             active.push(read);
-        } else if records.is_none()
-            && let Some(host) = state.host.as_ref()
-        {
+        } else if !answered && let Some(host) = state.host.as_ref() {
+            // The kept catalogue answers at once while it is fresh; reading
+            // Flathub's whole catalogue again runs in the background and
+            // never blocks the other sources.
+            let locale = crate::catalogue::desktop_locale();
+            let force = state.force_refresh;
             active.push(ActiveRead {
-                read: Read::Popular(host.background_read(|| {
-                    crate::flathub_client::fetch_popular(200).map_err(|error| error.to_string())
+                read: Read::Flathub(host.background_read(move || {
+                    crate::catalogue::flathub::load_or_fetch(&locale, force)
                 })),
                 started: ui::time::now(),
             });
@@ -149,7 +157,7 @@ impl Refresh {
             native: HashMap::new(),
             answered: HashSet::new(),
             flatpak: HashMap::new(),
-            popular: records,
+            feed: feed.or_else(|| state.flathub.clone()),
             cached: state.base_items.clone(),
             errors: if state.host.is_none() {
                 vec![(0, "App service unavailable.".into())]
@@ -179,12 +187,12 @@ impl Refresh {
     pub(super) fn restart(self, state: &State) -> Self {
         let deadline = self.deadline;
         self.locale.apply();
-        let popular = self
+        let feed_read = self
             .active
             .into_iter()
-            .find(|active| matches!(active.read, Read::Popular(_)));
-        let records = self.popular.or_else(|| popular.is_none().then(Vec::new));
-        let mut refreshed = Self::start_with_popular(state, self.done, popular, records);
+            .find(|active| matches!(active.read, Read::Flathub(_)));
+        let feed = if feed_read.is_some() { None } else { self.feed };
+        let mut refreshed = Self::start_with_feed(state, self.done, feed_read, feed);
         refreshed.deadline = deadline;
         refreshed
     }
@@ -217,8 +225,9 @@ impl Refresh {
             // The public feed is independent of installed/remote authority.
             // Reuse its one bounded task, never respawn it on each mutation.
             for response in responses {
-                if let Response::Popular(Ok(records)) = response {
-                    self.popular = Some(records);
+                if let Response::Flathub(Ok(feed)) = response {
+                    state.flathub = Some(feed.clone());
+                    self.feed = Some(feed);
                 }
             }
             return (false, self.active.is_empty());
@@ -293,7 +302,7 @@ impl Refresh {
                 state.flatpak_error =
                     Some(format!("Could not read Flatpak on this device: {error}"));
             }
-            Response::Repositories(result) => self.repositories(result),
+            Response::Repositories(result) => self.repositories(state, result),
             Response::Installed(Ok(listed)) => {
                 self.about = listed
                     .iter()
@@ -324,20 +333,26 @@ impl Refresh {
                     );
                 }
             }
-            Response::Popular(Ok(records)) => self.popular = Some(records),
-            Response::Popular(Err(error)) => self
+            Response::Flathub(Ok(feed)) => {
+                state.flathub = Some(feed.clone());
+                self.feed = Some(feed);
+            }
+            Response::Flathub(Err(error)) => self
                 .errors
                 .push((1, format!("Could not load Flathub: {error}"))),
         }
     }
 
-    fn repositories(&mut self, result: Result<String, String>) {
+    fn repositories(&mut self, state: &mut State, result: Result<String, String>) {
         let parsed = result.and_then(|json| {
-            serde_json::from_str::<RegistriesFile>(&json)
+            serde_json::from_str::<crate::config::RegistriesFile>(&json)
                 .map_err(|error| format!("unreadable repository list: {error}"))
         });
         match parsed {
             Ok(file) => {
+                // The directory publishes from the list kept here instead of
+                // asking the host again.
+                state.registries.clone_from(&file.registries);
                 // The stored catalogues are local reads: ask for them first,
                 // so a slow repository is already described while it answers.
                 let enabled = || file.registries.iter().filter(|registry| registry.enabled);
@@ -415,6 +430,16 @@ impl Refresh {
         }
         if self.installed.is_some() {
             for item in &mut items {
+                // What the signed manifest of the installed copy declares is
+                // what the app may do here; a registry entry does not say.
+                if let Some(about) = self.about.get(&item.id) {
+                    item.listing.capabilities.clone_from(&about.capabilities);
+                    if item.tagline.trim().is_empty() {
+                        item.tagline = about
+                            .tagline_for(&crate::sources::preferred_locale())
+                            .to_owned();
+                    }
+                }
                 item.installed = installed.iter().find(|entry| entry.id == item.id).map_or(
                     crate::InstalledState::Not,
                     |entry| crate::InstalledState::Installed {
@@ -441,12 +466,10 @@ impl Refresh {
     }
 
     fn flatpak_items(&self, state: &State) -> Vec<StoreItem> {
-        let mut items = self.popular.as_ref().map_or_else(Vec::new, |records| {
-            records
-                .iter()
-                .map(|record| flathub_record_to_item(record, &state.installed))
-                .collect()
-        });
+        let mut items = self
+            .feed
+            .as_ref()
+            .map_or_else(Vec::new, |feed| feed.items.clone());
         for remote in state.remotes.iter().filter(|remote| !remote.disabled) {
             if let Some(rows) = self.flatpak.get(&remote.resource_id()) {
                 for item in rows {
@@ -456,11 +479,13 @@ impl Refresh {
                 }
             }
         }
-        for item in self
-            .cached
-            .iter()
-            .filter(|item| !matches!(item.source, StoreSource::Tilo { .. }))
-        {
+        for item in self.cached.iter().filter(|item| match item.source {
+            StoreSource::Tilo { .. } => false,
+            // Once Flathub's catalogue is read, it alone says which of its
+            // apps exist; the kept rows only stand in until then.
+            StoreSource::Flathub => self.feed.is_none(),
+            StoreSource::FlatpakRemote { .. } => true,
+        }) {
             if let StoreSource::FlatpakRemote {
                 name, user_managed, ..
             } = &item.source
@@ -516,6 +541,11 @@ impl Refresh {
 
     fn rebuild(&self, state: &mut State) {
         state.base_items = merge(self.native_items(), self.flatpak_items(state));
+        // Who blocked which app: read again with each rebuild, so a block set
+        // elsewhere shows here too. Blocked apps stay in the catalogue, so a
+        // link still opens their page, which says who blocked them; the
+        // screens and search list them nowhere.
+        state.blocks = app_catalogue::BlockList::load();
         // Pending or failed alike: what these list is not current yet.
         state.unanswered_repositories = self
             .registries
@@ -536,7 +566,6 @@ impl Refresh {
                 .collect::<Vec<_>>()
                 .join("\n")
         });
-        state.searches.clear();
         state.details.clear();
         sync_authoritative_catalogue(state);
     }
@@ -575,6 +604,7 @@ mod tests {
                 name: "Mail".into(),
                 names: std::collections::BTreeMap::new(),
                 category: Some("Office".into()),
+                ..PackageAbout::default()
             },
         }
     }
@@ -648,7 +678,16 @@ mod tests {
             "currentReleaseVersion": "1.0"
         }))
         .unwrap();
-        refresh.apply(&mut state, Response::Popular(Ok(vec![record])));
+        refresh.apply(
+            &mut state,
+            Response::Flathub(Ok(FlathubFeed::from_records(
+                "en-US",
+                &[record],
+                &[],
+                true,
+                0,
+            ))),
+        );
         refresh.rebuild(&mut state);
         let item = state
             .base_items
@@ -873,8 +912,8 @@ mod tests {
             query: String::new(),
         })
         .unwrap();
-        app.admit(crate::StoreEffect::SetSource {
-            source: "On device".into(),
+        app.admit(crate::StoreEffect::ShowView {
+            view: "installed".into(),
         })
         .unwrap();
         assert!(

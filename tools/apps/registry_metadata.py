@@ -33,6 +33,10 @@ def die(message: str) -> None:
     raise ValueError(message)
 
 
+TAGLINE_MESSAGE = "app-tagline"
+MAX_TAGLINE_CHARS = 80
+
+
 def load_catalog(path: Path) -> dict[str, dict[str, str]]:
     raw = tomllib.loads(path.read_text(encoding="utf-8"))
     apps = raw.get("apps")
@@ -42,13 +46,34 @@ def load_catalog(path: Path) -> dict[str, dict[str, str]]:
     for app, item in apps.items():
         if not isinstance(item, dict):
             die(f"{path}: apps.{app} must be a table")
-        description, tagline = item.get("description"), item.get("tagline")
+        if "tagline" in item:
+            die(f"{path}: apps.{app}.tagline moved to apps/{app}/search/<tag>.ftl ({TAGLINE_MESSAGE})")
+        description = item.get("description")
         if not isinstance(description, str) or not description.strip():
             die(f"{path}: apps.{app}.description must be non-empty")
-        if not isinstance(tagline, str) or not tagline.strip():
-            die(f"{path}: apps.{app}.tagline must be non-empty")
-        parsed[app] = {"description": description.strip(), "tagline": tagline.strip()}
+        parsed[app] = {"description": description.strip()}
     return parsed
+
+
+def taglines(root: Path, app: str) -> dict[str, str]:
+    """The app's tag line per language, from `search/<tag>.ftl`'s `app-tagline`:
+    the same message the packer signs into `[package.taglines]`."""
+    search = root / "apps" / app / "search"
+    found: dict[str, str] = {}
+    if search.is_dir():
+        for source in sorted(search.glob("*.ftl")):
+            for line in source.read_text(encoding="utf-8").splitlines():
+                if line[:1].isspace() or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                if key.strip() == TAGLINE_MESSAGE and value.strip():
+                    found[source.stem.split("-")[0].lower()] = value.strip()
+    if "en" not in found:
+        die(f"{app}: apps/{app}/search/en.ftl needs an {TAGLINE_MESSAGE} message")
+    for tag, value in found.items():
+        if len(value) > MAX_TAGLINE_CHARS or "\n" in value:
+            die(f"{app}: the {tag} tag line must be one line of at most {MAX_TAGLINE_CHARS} characters")
+    return found
 
 
 def manifest(root: Path, app: str) -> dict:
@@ -104,11 +129,18 @@ def svg_icon(name: str, category: str) -> str:
 
 
 def screenshots(root: Path, app: str) -> list[Path]:
-    shots = root / "apps" / app / "shots"
-    if not shots.is_dir():
-        return []
-    return sorted(path for path in shots.iterdir()
-                  if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"})[:4]
+    """The app's screenshots: the package's own `screenshots/` (the files its
+    signed manifest lists) first, else the older `shots/` directory."""
+    images = {".png", ".jpg", ".jpeg", ".webp"}
+    for directory in ("screenshots", "shots"):
+        shots = root / "apps" / app / directory
+        if not shots.is_dir():
+            continue
+        found = sorted(path for path in shots.iterdir()
+                       if path.is_file() and path.suffix.lower() in images)
+        if found:
+            return found[:4]
+    return []
 
 
 def archived_screenshots(root: Path, app: str) -> list[dict]:
@@ -168,7 +200,7 @@ def build_one(root: Path, app: str, copy: dict[str, str], media_base: str,
     entry = {
         "name": {"en": name},
         "description": {"en": copy["description"]},
-        "tagline": {"en": copy["tagline"]},
+        "tagline": taglines(root, app),
         "images": {"en": images},
         "supported_languages": languages(root, app),
         "source_url": SOURCE_URL,
@@ -193,6 +225,7 @@ def validate(root: Path, catalog: Path) -> tuple[dict[str, dict[str, str]], list
         die("registry metadata coverage mismatch: " + "; ".join(detail))
     for app in apps:
         manifest(root, app)
+        taglines(root, app)
         if not languages(root, app):
             die(f"{app}: no supported language")
     return copy, apps

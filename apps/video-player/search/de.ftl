@@ -4,3 +4,7 @@
 # whatever the desktop speaks. Comma separated, one phrase each. The packer
 # writes them into the signed manifest; tilo-app.toml carries no copy.
 search-keywords = film, filme, abspielen, medienwiedergabe, mediaplayer, wiedergabe, video abspielen, untertitel
+# What the app does, in one plain phrase (German): the tag line under its
+# name in the Store and in search. No marketing; the packer signs it into the
+# manifest.
+app-tagline = Spielt lokale Videodateien mit Untertiteln ab

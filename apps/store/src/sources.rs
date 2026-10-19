@@ -74,6 +74,11 @@ pub fn tilo_to_store_item_on_channel(
     StoreItem {
         bot: None,
         awaiting_developer: app_cli::awaiting_developer(entry, channel),
+        listing: crate::model::Listing {
+            developer: tilo_developer(&entry.package_id),
+            updated_at_unix: entry.updated_at_unix,
+            ..crate::model::Listing::default()
+        },
         id: entry.package_id.clone(),
         name: entry
             .name
@@ -144,6 +149,7 @@ pub fn tilo_bot_to_store_item(bot: &app_cli::bots::CatalogueBot) -> StoreItem {
         publisher_pubkey_hex: Some(bot.publisher_pubkey_hex.clone()),
         installed: InstalledState::Not,
         awaiting_developer: false,
+        listing: crate::model::Listing::default(),
         bot: Some(BotListing {
             version: bot.version.clone(),
             triggers: requires.triggers.clone(),
@@ -155,7 +161,17 @@ pub fn tilo_bot_to_store_item(bot: &app_cli::bots::CatalogueBot) -> StoreItem {
     }
 }
 
-fn preferred_locale() -> String {
+/// Who makes a Tilo app, when its id says so: the registry verifies the
+/// namespace a publisher signs under, and `so.tilo.` is Tilo's own.
+fn tilo_developer(package_id: &str) -> String {
+    if package_id.starts_with("so.tilo.") {
+        "Tilo".to_owned()
+    } else {
+        String::new()
+    }
+}
+
+pub(crate) fn preferred_locale() -> String {
     ["LC_ALL", "LC_MESSAGES", "LANG"]
         .into_iter()
         .find_map(|name| std::env::var(name).ok())
@@ -188,6 +204,13 @@ pub fn installed_tilo_to_store_item(
     StoreItem {
         bot: None,
         awaiting_developer: false,
+        listing: crate::model::Listing {
+            developer: tilo_developer(&entry.id),
+            capabilities: about
+                .map(|about| about.capabilities.clone())
+                .unwrap_or_default(),
+            ..crate::model::Listing::default()
+        },
         id: entry.id.clone(),
         name: about.map_or_else(
             || package_store::display_name_for_package_id(&entry.id),
@@ -196,7 +219,7 @@ pub fn installed_tilo_to_store_item(
         // The manifest has no description. Saying so on every row is noise;
         // the details page names the repository that has not answered.
         description: String::new(),
-        tagline: String::new(),
+        tagline: about.map_or_else(String::new, |about| about.tagline_for(&locale).to_owned()),
         supported_languages: Vec::new(),
         categories: about
             .and_then(|about| about.category.clone())
@@ -255,6 +278,7 @@ pub fn installed_flatpak_to_item(app_id: &str, version: &str) -> StoreItem {
     StoreItem {
         bot: None,
         awaiting_developer: false,
+        listing: crate::model::Listing::default(),
         id: app_id.to_string(),
         name: app_id.to_string(),
         description: "Installed Flatpak. Catalogue details are unavailable.".into(),
@@ -393,6 +417,12 @@ pub fn flathub_record_to_item(
     StoreItem {
         bot: None,
         awaiting_developer: false,
+        listing: crate::model::Listing {
+            developer: r.developer.clone(),
+            license: r.license.clone(),
+            updated_at_unix: r.updated_at_unix,
+            ..crate::model::Listing::default()
+        },
         id: r.app_id.clone(),
         name: if r.name.is_empty() {
             r.app_id.clone()
@@ -825,6 +855,7 @@ pub(crate) mod tests {
                 homepage: None,
                 urls: None,
                 screenshots: Vec::new(),
+                ..AppStreamRecord::default()
             };
             flathub_record_to_item(&record, &[])
         };
@@ -875,6 +906,7 @@ pub(crate) mod tests {
                 homepage: None,
                 urls: None,
                 screenshots: Vec::new(),
+                ..AppStreamRecord::default()
             };
             assert_eq!(
                 flathub_record_to_item(&record, &[]).description,

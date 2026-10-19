@@ -517,6 +517,52 @@ fn add_search_keywords(manifest: &mut Manifest, manifest_path: &Path) -> Result<
     if !keywords.is_empty() {
         manifest.package.keywords = keywords;
     }
+    let taglines =
+        tilo_app_package::search_keywords::read_taglines(app_dir).map_err(|e| anyhow!(e))?;
+    if !taglines.is_empty() && !manifest.package.taglines.is_empty() {
+        bail!(
+            "{} declares [package.taglines] and has app-tagline in search/*.ftl; keep the tag line in search/*.ftl only",
+            manifest_path.display()
+        );
+    }
+    if !taglines.is_empty() {
+        manifest.package.taglines = taglines;
+    }
+    Ok(())
+}
+
+/// List the payload's `screenshots/` images in `[package].screenshots`, by
+/// name, when the manifest lists none: the files the Store shows in the app's
+/// gallery are the ones the signed package carries.
+fn add_screenshots(manifest: &mut Manifest, payload_dir: &Path) -> Result<()> {
+    if !manifest.package.screenshots.is_empty() {
+        return Ok(());
+    }
+    let Ok(entries) = std::fs::read_dir(payload_dir.join("screenshots")) else {
+        return Ok(());
+    };
+    let mut shots = Vec::new();
+    for entry in entries {
+        let entry = entry.context("read the payload's screenshots/")?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        let image = std::path::Path::new(&name)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| {
+                matches!(
+                    ext.to_ascii_lowercase().as_str(),
+                    "png" | "jpg" | "jpeg" | "webp"
+                )
+            });
+        if image && entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            shots.push(format!("screenshots/{name}"));
+        }
+    }
+    shots.sort();
+    shots.truncate(tilo_app_package::validate::MAX_SCREENSHOTS);
+    manifest.package.screenshots = shots;
     Ok(())
 }
 
@@ -531,6 +577,7 @@ fn cmd_pack(
         .with_context(|| format!("read manifest {}", manifest_path.display()))?;
     let mut manifest = Manifest::from_toml_str(&manifest_src).context("decode manifest TOML")?;
     add_search_keywords(&mut manifest, manifest_path)?;
+    add_screenshots(&mut manifest, payload_dir)?;
 
     let identity = match identity_path {
         Some(p) => load_identity(p)?,

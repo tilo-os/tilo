@@ -4,3 +4,7 @@
 # whatever the desktop speaks. Comma separated, one phrase each. The packer
 # writes them into the signed manifest; tilo-app.toml carries no copy.
 search-keywords = app-store, apps, appstore, apps installieren, software installieren, anwendungen, softwarecenter, programme, herunterladen, laden, programme installieren
+# What the app does, in one plain phrase (German): the tag line under its
+# name in the Store and in search. No marketing; the packer signs it into the
+# manifest.
+app-tagline = Öffnet Tilo-Apps und installiert Apps von Flathub
