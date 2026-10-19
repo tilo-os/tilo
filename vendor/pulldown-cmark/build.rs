@@ -1,4 +1,8 @@
 fn main() {
+    // Tilo: the crate is a path dependency outside the workspace, so its
+    // `[lints]` table is not applied; declare the cfg rustc's own build sets
+    // here, or `cfg_attr(rustbuild, ...)` is an error under -D warnings.
+    println!("cargo:rustc-check-cfg=cfg(rustbuild)");
     generate_tests_from_spec()
 }
 
