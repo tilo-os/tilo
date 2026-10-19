@@ -1708,14 +1708,29 @@ fn a_dialog_arrives_from_its_centre_and_a_rebuilt_one_does_not_replay_it() {
         assert!(d.needs_animation_frame(), "it arrives");
         assert!(d.appear.progress() < 0.05);
     });
+    // Each later frame lays out first when the dialog asks, as a host does:
+    // the first presentation places its content on the next layout pass.
     with_monotonic_time(at(80), || {
+        if d.is_layout_dirty() {
+            lay_out(&mut d, WINDOW, &theme);
+        }
         let _ = present(&mut d, WINDOW, &theme);
         let p = d.appear.progress();
         assert!(p > 0.0 && p < 1.0, "mid-arrival: {p}");
     });
     with_monotonic_time(at(400), || {
+        if d.is_layout_dirty() {
+            lay_out(&mut d, WINDOW, &theme);
+        }
         let _ = present(&mut d, WINDOW, &theme);
-        assert!(!d.needs_animation_frame(), "it rests");
+        assert!(
+            !d.needs_animation_frame(),
+            "it rests: appear moving {} (progress {}), stale {}, content wants frames {}",
+            d.appear.is_moving(),
+            d.appear.progress(),
+            d.stale,
+            d.content.needs_animation_frame()
+        );
         // Closed by a click: it leaves, drawn but deaf.
         d.set_open(false);
         assert!(!d.is_open());

@@ -2990,7 +2990,13 @@ mod prepared_launch_tests {
                 .capture_scenario(|driver, args| {
                     edit_capture(driver, args)?;
                     let root = PathBuf::from(args.value("--fixture-root").unwrap());
-                    std::fs::write(root.join("instance-views"), b"intentional collision").unwrap();
+                    // A file where the view namespace goes makes the close's
+                    // view save fail; the edit may already have made it.
+                    let views = root.join("instance-views");
+                    if views.is_dir() {
+                        std::fs::remove_dir_all(&views).unwrap();
+                    }
+                    std::fs::write(views, b"intentional collision").unwrap();
                     Err(LaunchError::Operation(
                         "scenario failed after editing".into(),
                     ))

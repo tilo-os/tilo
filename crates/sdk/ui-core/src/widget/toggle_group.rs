@@ -3197,12 +3197,10 @@ mod tests {
         );
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = g.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy.parent_node(Style::default(), &[node]);
-        taffy
-            .compute_layout(root, taffy::Size::MAX_CONTENT)
-            .unwrap();
-        g.apply_layout(&taffy, node, Point::ZERO);
+        let _ = g.build_layout(&mut taffy, &theme, &mut node_map);
+        // The strip fits its labels through `measure`, which a plain taffy
+        // pass never calls: give it a row's width directly.
+        g.set_rect_and_partition(Rect::new(0.0, 0.0, 300.0, g.strip_height()));
         let mut tr = TextRenderer::new();
         let presence = PresenceCtx::default();
         let mut paint = |g: &mut ToggleGroup| {
@@ -3218,7 +3216,18 @@ mod tests {
             crate::motion::note_source(MotionSource::Pointer);
             g.set_selected(2);
             paint(&mut g);
-            assert!(g.needs_animation_frame(), "the thumb slides");
+            assert!(
+                g.needs_animation_frame(),
+                "the thumb slides: segments {:?}, thumb target {:?}, thumb for {}, selected {}, chosen {:?}, settles {:?}, source {:?}, reduced {}",
+                g.segment_rects,
+                g.thumb.target(),
+                g.thumb_for,
+                g.selected,
+                g.chosen,
+                g.thumb.settles_at(),
+                crate::motion::input_source(),
+                theme.motion().reduced()
+            );
         });
         with_monotonic_time(at(60), || {
             paint(&mut g);

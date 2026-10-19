@@ -497,7 +497,13 @@ fn the_shell_follows_the_window_and_the_text_scale() {
                 assert!((g.sidebar_column.width() - m.sidebar.min(w - pair)).abs() < 0.5);
                 assert_eq!(g.sidebar_column.x0, 0.0);
             } else {
-                assert_eq!(g.sidebar_column.width(), w, "the list is a whole screen");
+                assert_eq!(
+                    g.sidebar_column.width(),
+                    w,
+                    "the list is a whole screen: {scale}x {width}, column {:?}, side by side {}",
+                    g.sidebar_column,
+                    g.side_by_side
+                );
             }
             // Every shown body sits under the one header row.
             for id in ["sidebar", "overview", "content"] {
