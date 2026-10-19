@@ -460,6 +460,32 @@ fn rail_caption_width(theme: &Theme, width: f64) -> f64 {
     (width - 2.0 * f64::from(theme.tokens.spacing.s1)).max(0.0)
 }
 
+/// How wide a rail of these destination `labels` is: its stock width, grown
+/// with the text so its longest single word fits whole, but never past the
+/// stock width times the text's growth nor `metrics.rail_max_width`. A
+/// fragment such as "Cha…" names nothing, so the rail widens before any word
+/// is shortened; only past that cap does a word elide.
+#[must_use]
+pub fn rail_width_fitting<'a>(
+    theme: &Theme,
+    text_renderer: &mut TextRenderer,
+    labels: impl IntoIterator<Item = &'a str>,
+) -> f64 {
+    let metrics = &theme.tokens.metrics;
+    let floor = f64::from(metrics.rail_width);
+    let cap = (floor * f64::from(theme.text_growth()))
+        .min(f64::from(metrics.rail_max_width))
+        .max(floor);
+    let style = label_measure_style(theme, NavRowStyle::Rail);
+    let pad = floor - rail_caption_width(theme, floor);
+    let longest = labels
+        .into_iter()
+        .flat_map(str::split_whitespace)
+        .map(|word| f64::from(text_renderer.measure_style(word, None, &style).0))
+        .fold(0.0, f64::max);
+    (longest + pad).ceil().clamp(floor, cap)
+}
+
 /// A rail caption broken into at most two lines of `max_w`, only at
 /// spaces: a single word never breaks inside, it elides when it is longer
 /// than the line, and so does the second line.
@@ -1378,32 +1404,53 @@ mod tests {
         assert!(nav_section_height(&theme, false) > nav_section_height(&theme, true));
     }
 
-    // From the coordinator (2026-10-19): shared rails never hyphenate a
-    // single word; a caption wraps only at spaces and a word too long for
-    // the rail elides. This test once pinned the hyphenated break
-    // ("Chan-nels") that rule replaced; at high contrast and double text
-    // it now pins that the word stays whole on one line.
+    // From the coordinator (2026-10-19): at high contrast and double text a
+    // fragment such as "Cha…" is worse than both alternatives, so the shared
+    // rail grows with the text, up to a cap, to fit its longest single word;
+    // only past that cap is a word shortened. A word is never hyphenated.
     #[test]
-    fn hc200_rail_never_breaks_a_short_destination_inside_the_word() {
+    fn hc200_rail_grows_to_keep_a_short_destination_whole() {
         let theme = Theme::high_contrast().with_text_scale(2.0);
         let mut text = TextRenderer::new();
         text.set_text_scale(theme.text_scale);
+        let floor = f64::from(theme.tokens.metrics.rail_width);
+        let cap = (floor * f64::from(theme.text_growth()))
+            .min(f64::from(theme.tokens.metrics.rail_max_width));
+        let width = rail_width_fitting(&theme, &mut text, ["Chat", "Channels", "People"]);
+        assert!(
+            width > floor && width <= cap,
+            "the rail grows past {floor} to fit \"Channels\", up to {cap}: {width}"
+        );
         let lines = rail_caption_lines(
             &theme,
             &mut text,
             "Channels",
-            rail_caption_width(&theme, 76.0),
+            rail_caption_width(&theme, width),
         );
-        assert_eq!(lines.len(), 1, "one word is one line: {lines:?}");
+        assert_eq!(lines, ["Channels"], "a short destination stays whole");
         assert!(
-            lines.iter().all(|line| !line.ends_with('-')),
-            "the word is never cut with a hyphen: {lines:?}"
-        );
-        assert!(
-            nav_rail_item_height(&theme, &mut text, "Channels", 76.0)
+            nav_rail_item_height(&theme, &mut text, "Channels", width)
                 >= nav_rail_row_height(&theme),
             "the shared measured height reserves the caption"
         );
+        // Past the cap, and only there, a single word is shortened, never cut
+        // with a hyphen.
+        let long = "Internationalisation";
+        let width = rail_width_fitting(&theme, &mut text, [long]);
+        assert!(
+            (width - cap).abs() < 1.0,
+            "a word wider than the cap stops the rail at it: {width}"
+        );
+        let lines = rail_caption_lines(&theme, &mut text, long, rail_caption_width(&theme, width));
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].ends_with('\u{2026}') && !lines[0].contains('-'),
+            "{lines:?}"
+        );
+        // At stock text the rail keeps its width.
+        let stock = Theme::high_contrast();
+        let mut text = TextRenderer::new();
+        assert!((rail_width_fitting(&stock, &mut text, ["Channels"]) - floor).abs() < 1e-9);
     }
 
     /// A selected row is a visible lift, tinted only by the accent's faint

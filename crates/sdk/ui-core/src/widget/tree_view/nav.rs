@@ -217,6 +217,11 @@ impl<T, M: TreeModel> TreeView<T, M> {
     /// headers with their leading space, rows with a secondary line or a
     /// usage bar taller, rail tiles whose caption wraps a line taller.
     /// Called after any change of the visible order.
+    /// Whether this tree paints a rail's tiles (icon over caption).
+    pub(crate) fn is_rail(&self) -> bool {
+        self.nav.as_ref().is_some_and(|nav| nav.rail)
+    }
+
     pub(super) fn refresh_nav_heights(&mut self) {
         let Some(nav) = self.nav.as_ref() else {
             return;

@@ -75,6 +75,9 @@ pub struct Metrics {
     pub header_height: f32,
     /// A compact icon-over-label navigation rail (`NavList::rail`).
     pub rail_width: f32,
+    /// The widest a rail grows as the text grows, to fit its longest single
+    /// word ([`crate::chrome::rail_width_fitting`]); past it a word elides.
+    pub rail_max_width: f32,
     /// The inspector column at the trailing edge of a window.
     pub inspector_width: f32,
     /// Narrowest a person can drag a docked sidebar; dragging it below this
@@ -214,6 +217,7 @@ impl Metrics {
         nav_row_height: 32.0,
         header_height: 56.0,
         rail_width: 76.0,
+        rail_max_width: 160.0,
         inspector_width: 300.0,
         sidebar_min_width: 200.0,
         sidebar_max_width: 420.0,
@@ -332,6 +336,7 @@ impl Metrics {
             nav_row_height: self.nav_row_height * factor,
             header_height: self.header_height * factor,
             rail_width: self.rail_width * factor,
+            rail_max_width: self.rail_max_width * factor,
             inspector_width: self.inspector_width * factor,
             sidebar_min_width: self.sidebar_min_width * factor,
             sidebar_max_width: self.sidebar_max_width * factor,

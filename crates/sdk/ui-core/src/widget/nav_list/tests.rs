@@ -812,8 +812,9 @@ fn a_staged_drag_lifts_the_row_over_its_drop_line() {
 }
 
 // From the coordinator (2026-10-19): shared rails never hyphenate a
-// single word ("Connec-tions"); a caption wraps only at spaces and a word
-// too long for the rail elides.
+// single word ("Connec-tions"); a caption wraps only at spaces. The rail
+// grows with the text, up to a cap, to fit its longest single word, and only
+// past that cap does a word elide; at stock text the cap is the stock width.
 #[test]
 fn rail_captions_wrap_at_spaces_and_never_break_a_word() {
     let list = NavList::new(vec![NavSection::untitled(
@@ -855,6 +856,38 @@ fn rail_captions_wrap_at_spaces_and_never_break_a_word() {
     }
     let lines = crate::chrome::rail_caption_lines(&theme, &mut text, "Liked songs", 40.0);
     assert_eq!(lines, ["Liked", "songs"], "two words wrap at the space");
+
+    // At double text the list asks for a rail wide enough for its longest
+    // word, so "Channels" shows whole rather than as a fragment.
+    use super::RailExtent as _;
+    let big = Theme::dark().with_text_scale(2.0);
+    let list = NavList::new(vec![NavSection::untitled(
+        "places",
+        vec![
+            NavItem::new("home", "Home").icon(Icon::Home),
+            NavItem::new("channels", "Channels").icon(Icon::Rss),
+        ],
+    )])
+    .rail();
+    let width = list.fitted_rail_width(&big).expect("a rail");
+    assert!(width > f64::from(big.tokens.metrics.rail_width), "{width}");
+    assert!(
+        width <= f64::from(big.tokens.metrics.rail_max_width),
+        "{width}"
+    );
+    let mut text = crate::text_render::TextRenderer::new();
+    text.set_text_scale(big.text_scale);
+    let caption = width - 2.0 * f64::from(big.tokens.spacing.s1);
+    assert_eq!(
+        crate::chrome::rail_caption_lines(&big, &mut text, "Channels", caption),
+        ["Channels"]
+    );
+    // A list that is no rail asks for nothing.
+    let plain = NavList::new(vec![NavSection::untitled(
+        "p",
+        vec![NavItem::new("a", "A")],
+    )]);
+    assert_eq!(plain.fitted_rail_width(&big), None);
 }
 
 /// Sections handed over before the first layout stand at the navigation
