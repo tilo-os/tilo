@@ -982,7 +982,7 @@ pub fn setup(state: &Setup<'_>, intents: &Intents) -> Element {
     let state = match state {
         Setup::Start => EmptyState::new("Protect your important files")
             .with_icon(Icon::Archive)
-            .with_message("Choose a folder, and every file in it is backed up with a checksum.")
+            .with_message("Choose a folder to keep a copy of every file in it, checked so you know it is intact.")
             .with_action("Choose folder…"),
         Setup::ChooseDestination => EmptyState::new("Choose where to keep backups")
             .with_icon(Icon::HardDrive)
@@ -993,8 +993,9 @@ pub fn setup(state: &Setup<'_>, intents: &Intents) -> Element {
             .with_message(*status),
         Setup::Unavailable(error) => EmptyState::error(
             "Backup location unavailable",
-            format!("{error} Backups are paused until it is back or you choose another location."),
+            "Backups are paused until it is back or you choose another location.",
         )
+        .with_details(*error)
         .with_icon(Icon::HardDrive)
         .with_action("Choose another location…"),
     };
