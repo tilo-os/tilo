@@ -494,7 +494,6 @@ mod image_worker_impl {
         pointer: Option<WlPointer>,
         touch: Option<WlTouch>,
         data_device: Option<DataDevice>,
-        has_focus: bool,
         keyboard_focus: bool,
         rich_offer_seen: bool,
         latest_serial: u32,
@@ -832,7 +831,7 @@ mod image_worker_impl {
             self.latest_seat
                 .as_ref()
                 .and_then(|seat| self.seats.get(seat))
-                .is_some_and(|seat| seat.has_focus && seat.data_device.is_some())
+                .is_some_and(|seat| seat.keyboard_focus && seat.data_device.is_some())
         }
 
         fn store_text(&mut self, text: Vec<u8>, secret: bool) {
@@ -860,7 +859,7 @@ mod image_worker_impl {
             let Some(seat_data) = self.seats.get(&seat) else {
                 return false;
             };
-            if !seat_data.has_focus {
+            if !seat_data.keyboard_focus {
                 return false;
             }
             if seat_data.data_device.is_none() {
@@ -1708,15 +1707,10 @@ mod image_worker_impl {
             let Some(data) = self.seats.get_mut(seat) else {
                 return;
             };
+            // Pointer focus is not copy permission: the compositor accepts a
+            // selection only from the keyboard-focused client, and the pointer
+            // may leave a window that keeps keyboard focus.
             for event in events {
-                match event.kind {
-                    PointerEventKind::Enter { serial } => {
-                        data.latest_serial = serial;
-                        data.has_focus = true;
-                    }
-                    PointerEventKind::Leave { .. } => data.has_focus = false,
-                    _ => {}
-                }
                 if let PointerEventKind::Press { serial, .. }
                 | PointerEventKind::Release { serial, .. } = event.kind
                 {
@@ -1724,7 +1718,6 @@ mod image_worker_impl {
                     self.latest_seat = Some(seat.clone());
                 }
             }
-            self.publish_current();
         }
     }
 
@@ -1748,9 +1741,7 @@ mod image_worker_impl {
                 return;
             };
             data.latest_serial = serial;
-            data.has_focus = true;
             self.latest_seat = Some(seat);
-            self.publish_current();
         }
 
         fn up(
@@ -1796,14 +1787,7 @@ mod image_worker_impl {
         ) {
         }
 
-        fn cancel(&mut self, _: &Connection, _: &QueueHandle<Self>, touch: &WlTouch) {
-            let Some(touch_data) = touch.data::<TouchData>() else {
-                return;
-            };
-            if let Some(data) = self.seats.get_mut(touch_data.seat()) {
-                data.has_focus = false;
-            }
-        }
+        fn cancel(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlTouch) {}
     }
 
     impl Dispatch<WlKeyboard, WlSeat, State> for State {
@@ -1836,7 +1820,6 @@ mod image_worker_impl {
                 }
                 Event::Enter { serial, .. } => {
                     data.latest_serial = serial;
-                    data.has_focus = true;
                     data.keyboard_focus = true;
                     state.latest_seat = Some(seat.clone());
                     state.activate_rich_seat(seat);
@@ -1854,13 +1837,11 @@ mod image_worker_impl {
                 }
                 Event::Leave { .. } => {
                     data.latest_serial = 0;
-                    data.has_focus = false;
                     data.keyboard_focus = false;
                     state.deactivate_rich_seat(seat);
                 }
                 _ => {}
             }
-            state.publish_current();
         }
     }
 
