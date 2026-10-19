@@ -325,6 +325,15 @@ pub(crate) fn relay_state(dir: &Path) -> PathBuf {
     dir.join("relay")
 }
 
+/// The relay's log filter: the service's own `TILO_RELAY_LOG` when set,
+/// else warnings.
+pub(crate) fn relay_log() -> String {
+    std::env::var("TILO_RELAY_LOG")
+        .ok()
+        .filter(|filter| !filter.trim().is_empty())
+        .unwrap_or_else(|| "warn".into())
+}
+
 /// The child's command line.
 fn child_command(config: &Config, dir: &Path) -> Result<Command> {
     let persistent = config
@@ -333,7 +342,8 @@ fn child_command(config: &Config, dir: &Path) -> Result<Command> {
         .context("not a persistent room")?;
     let mut command = Command::new(&config.relay_binary);
     command
-        .env("TILO_RELAY_LOG", "warn")
+        // Warnings unless the operator asked the service for more.
+        .env("TILO_RELAY_LOG", relay_log())
         .arg("room")
         .arg("--state")
         .arg(relay_state(dir));
