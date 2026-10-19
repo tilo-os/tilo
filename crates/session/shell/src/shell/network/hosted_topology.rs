@@ -27,6 +27,9 @@ struct Room {
     claimed_at: Option<Instant>,
     sent_at: Option<Instant>,
     settled: Option<Settled>,
+    /// The changes this session published that the governor has not
+    /// admitted yet, oldest first ([`plan`]).
+    pending: Vec<Vec<u8>>,
 }
 
 /// What a look at a room last found nothing to do for. The outcome is a
@@ -157,12 +160,16 @@ impl ShellNetwork {
         if salt == 0 {
             return;
         }
-        let mut settled = self
+        let (mut settled, mut pending) = self
             .hosted_topology
             .rooms
             .lock()
             .ok()
-            .and_then(|mut rooms| rooms.get_mut(&room)?.settled.take());
+            .and_then(|mut rooms| {
+                let state = rooms.get_mut(&room)?;
+                Some((state.settled.take(), std::mem::take(&mut state.pending)))
+            })
+            .unwrap_or_default();
         let planned = owner.with_current(room, |view| {
             let admitted = view
                 .peer()
@@ -170,14 +177,19 @@ impl ShellNetwork {
                 .ok_or("room governance missing")?;
             plan(
                 admitted,
-                view.device().device_public_key,
-                &windows,
-                salt,
+                Look {
+                    device: view.device().device_public_key,
+                    windows: &windows,
+                    salt,
+                },
                 &mut settled,
+                &mut pending,
             )
         });
         if let Ok(mut rooms) = self.hosted_topology.rooms.lock() {
-            rooms.entry(room).or_default().settled = settled;
+            let state = rooms.entry(room).or_default();
+            state.settled = settled;
+            state.pending = pending;
         }
         match planned {
             Ok(Some(Plan::Claim)) => self.claim_namespace(room, salt, now),
@@ -272,30 +284,47 @@ thread_local! {
     static PROJECTIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// What keeping `admitted` showing `windows`, this session's own legacy
-/// tabs with ids minted in `salt`, takes from `device`: claiming the
-/// namespace, publishing changes, or nothing. `settled` is what the last
-/// look found nothing to do for; while `admitted`, `windows`, `device` and
-/// `salt` are still that, nothing is done again without copying `admitted`,
-/// and a look that finds nothing to do records itself there.
+/// What one look at a room is about: `device`'s own legacy tabs `windows`,
+/// with ids minted in `salt`.
+struct Look<'a> {
+    device: [u8; 32],
+    windows: &'a [Strip],
+    salt: u16,
+}
+
+/// What keeping `admitted` showing `look.windows` takes from `look.device`:
+/// claiming the namespace, publishing changes, or nothing. `settled` is what
+/// the last look found nothing to do for; while `admitted`, the windows, the
+/// device and the salt are still that, nothing is done again without copying
+/// `admitted`, and a look that finds nothing to do records itself there.
 ///
 /// The changes are the projection onto a copy of `admitted` as `device`,
 /// byte for byte what the governor admits; only how often it runs changes.
+/// `pending` holds what was published before and is not admitted yet: the
+/// projection builds on it, and it is published again with whatever the
+/// projection adds. Projecting onto `admitted` alone would number a new
+/// change as the unadmitted one before it, and two different changes with
+/// one actor and sequence number poison the room document for everyone who
+/// receives both ("duplicate seq 1 found for actor").
 fn plan(
     admitted: &automerge::AutoCommit,
-    device: [u8; 32],
-    windows: &[Strip],
-    salt: u16,
+    look: Look<'_>,
     settled: &mut Option<Settled>,
+    pending: &mut Vec<Vec<u8>>,
 ) -> Result<Option<Plan>, String> {
     use automerge::transaction::Transactable as _;
+    let Look {
+        device,
+        windows,
+        salt,
+    } = look;
     let looked_at = Settled {
         heads: admitted.base_heads(),
         device,
         salt,
         windows: serde_json::to_vec(windows).map_err(|error| error.to_string())?,
     };
-    if settled.as_ref() == Some(&looked_at) {
+    if pending.is_empty() && settled.as_ref() == Some(&looked_at) {
         return Ok(None);
     }
     *settled = None;
@@ -303,9 +332,10 @@ fn plan(
     match registered.get(&salt) {
         Some(key) if key == &hex::encode(device) => {}
         Some(_) => {
+            pending.clear();
             return Err("this session's topology namespace belongs to another device".into());
         }
-        None if windows.is_empty() => {
+        None if windows.is_empty() && pending.is_empty() => {
             *settled = Some(looked_at);
             return Ok(None);
         }
@@ -314,6 +344,18 @@ fn plan(
     #[cfg(test)]
     PROJECTIONS.with(|count| count.set(count.get().saturating_add(1)));
     let mut doc = admitted.clone();
+    // What the governor admitted since is done; the rest still stands, in
+    // the order it was made.
+    let mut unadmitted = Vec::with_capacity(pending.len());
+    for bytes in pending.drain(..) {
+        let change = automerge::Change::from_bytes(bytes.clone()).map_err(|e| e.to_string())?;
+        if doc.get_change_by_hash(&change.hash()).is_none() {
+            unadmitted.push((bytes, change));
+        }
+    }
+    doc.apply_changes(unadmitted.iter().map(|(_, change)| change.clone()))
+        .map_err(|error| error.to_string())?;
+    pending.extend(unadmitted.into_iter().map(|(bytes, _)| bytes));
     let heads = doc.get_heads();
     doc.set_actor(automerge::ActorId::from(device.to_vec()));
     tilo_desktop_model::projection::project_owned_contents(
@@ -325,18 +367,19 @@ fn plan(
     )
     .map_err(|error| error.to_string())?;
     doc.commit();
-    let changes = doc
-        .get_changes(&heads)
-        .iter()
-        .map(|change| change.raw_bytes().to_vec())
-        .collect::<Vec<_>>();
-    if changes.is_empty() {
-        // The room already shows these windows. Changes not yet admitted
-        // are planned again on every look, which is how they are resent.
+    pending.extend(
+        doc.get_changes(&heads)
+            .iter()
+            .map(|change| change.raw_bytes().to_vec()),
+    );
+    if pending.is_empty() {
+        // The room already shows these windows.
         *settled = Some(looked_at);
         return Ok(None);
     }
-    Ok(Some(Plan::Publish(changes)))
+    // Not admitted yet: planned again on every look, which is how it is
+    // resent.
+    Ok(Some(Plan::Publish(pending.clone())))
 }
 
 #[cfg(test)]
@@ -577,16 +620,34 @@ mod tests {
             .expect("an owner");
         room.commit();
         let mut settled = None;
+        let mut pending = Vec::new();
 
         // Phase `windows_the_room_lacks_are_published_on_every_look`.
         let first = windows(7);
-        let Ok(Some(Plan::Publish(changes))) = plan(&room, device, &first, salt, &mut settled)
-        else {
+        let Ok(Some(Plan::Publish(changes))) = plan(
+            &room,
+            Look {
+                device,
+                windows: &first,
+                salt,
+            },
+            &mut settled,
+            &mut pending,
+        ) else {
             panic!("a window the room does not show yet is published");
         };
         assert!(
             matches!(
-                plan(&room, device, &first, salt, &mut settled),
+                plan(
+                    &room,
+                    Look {
+                        device,
+                        windows: &first,
+                        salt
+                    },
+                    &mut settled,
+                    &mut pending
+                ),
                 Ok(Some(Plan::Publish(_)))
             ),
             "until the governor admits it, it is planned again so it is resent",
@@ -601,13 +662,31 @@ mod tests {
                 .expect("the governor admits them");
         }
         assert!(matches!(
-            plan(&room, device, &first, salt, &mut settled),
+            plan(
+                &room,
+                Look {
+                    device,
+                    windows: &first,
+                    salt
+                },
+                &mut settled,
+                &mut pending
+            ),
             Ok(None)
         ));
         assert_eq!(projections(), 3);
         for _ in 0..100 {
             assert!(matches!(
-                plan(&room, device, &windows(7), salt, &mut settled),
+                plan(
+                    &room,
+                    Look {
+                        device,
+                        windows: &windows(7),
+                        salt
+                    },
+                    &mut settled,
+                    &mut pending
+                ),
                 Ok(None)
             ));
         }
@@ -615,23 +694,70 @@ mod tests {
 
         // Phase `a_window_or_room_change_is_looked_at_again`.
         assert!(matches!(
-            plan(&room, device, &windows(8), salt, &mut settled),
+            plan(
+                &room,
+                Look {
+                    device,
+                    windows: &windows(8),
+                    salt
+                },
+                &mut settled,
+                &mut pending
+            ),
             Ok(Some(Plan::Publish(_)))
         ));
         assert_eq!(projections(), 4, "a changed window is projected");
+        // Changed back before the governor took the change: the change
+        // already sent stands, so changing back is a change after it, and
+        // the room ends up showing the window as it is now.
+        let Ok(Some(Plan::Publish(back))) = plan(
+            &room,
+            Look {
+                device,
+                windows: &first,
+                salt,
+            },
+            &mut settled,
+            &mut pending,
+        ) else {
+            panic!("changing back after an unadmitted change is a change of its own");
+        };
+        assert_eq!(projections(), 5);
+        for change in &back {
+            tilo_automerge::ApplyIncoming::load_incoming(&mut room, change)
+                .expect("the governor admits them in order");
+        }
         assert!(matches!(
-            plan(&room, device, &first, salt, &mut settled),
+            plan(
+                &room,
+                Look {
+                    device,
+                    windows: &first,
+                    salt
+                },
+                &mut settled,
+                &mut pending
+            ),
             Ok(None)
         ));
-        assert_eq!(projections(), 5);
+        assert_eq!(projections(), 6);
         room.put(automerge::ROOT, "unrelated", 1_u64)
             .expect("another write");
         room.commit();
         assert!(matches!(
-            plan(&room, device, &first, salt, &mut settled),
+            plan(
+                &room,
+                Look {
+                    device,
+                    windows: &first,
+                    salt
+                },
+                &mut settled,
+                &mut pending
+            ),
             Ok(None)
         ));
-        assert_eq!(projections(), 6, "a moved room document is looked at again");
+        assert_eq!(projections(), 7, "a moved room document is looked at again");
     }
 
     /// A room in use carries thousands of edits of history, and copying it
@@ -690,8 +816,17 @@ mod tests {
             salt,
         );
         let mut settled = None;
-        let Ok(Some(Plan::Publish(changes))) = plan(&room, device, &windows, salt, &mut settled)
-        else {
+        let mut pending = Vec::new();
+        let Ok(Some(Plan::Publish(changes))) = plan(
+            &room,
+            Look {
+                device,
+                windows: &windows,
+                salt,
+            },
+            &mut settled,
+            &mut pending,
+        ) else {
             panic!("the window is published once");
         };
         for change in &changes {
@@ -708,7 +843,16 @@ mod tests {
         for _ in 0..LOOKS {
             let mut fresh = None;
             assert!(matches!(
-                plan(&room, device, &windows, salt, &mut fresh),
+                plan(
+                    &room,
+                    Look {
+                        device,
+                        windows: &windows,
+                        salt
+                    },
+                    &mut fresh,
+                    &mut pending
+                ),
                 Ok(None)
             ));
         }
@@ -721,16 +865,169 @@ mod tests {
         // One look records that the admitted room needs nothing; no look
         // after it copies the room while neither side moved.
         assert!(matches!(
-            plan(&room, device, &windows, salt, &mut settled),
+            plan(
+                &room,
+                Look {
+                    device,
+                    windows: &windows,
+                    salt
+                },
+                &mut settled,
+                &mut pending
+            ),
             Ok(None)
         ));
         let before = copies();
         for _ in 0..LOOKS {
             assert!(matches!(
-                plan(&room, device, &windows, salt, &mut settled),
+                plan(
+                    &room,
+                    Look {
+                        device,
+                        windows: &windows,
+                        salt
+                    },
+                    &mut settled,
+                    &mut pending
+                ),
                 Ok(None)
             ));
         }
         assert_eq!(copies(), before, "a settled room is not copied");
+    }
+
+    /// A window opened while the last one is still waiting for the
+    /// governor builds on it: the resend is the same change, the new window
+    /// is the next one by the same device, and the governor (and every
+    /// member after it) takes both. Projecting onto the admitted room alone
+    /// numbered both as the device's first change, which nobody can take
+    /// once they hold one of them.
+    #[test]
+    fn a_window_opened_before_the_last_is_admitted_builds_on_it() {
+        use automerge::transaction::Transactable as _;
+        let salt = 0x0042;
+        let device = [0x5a; 32];
+        let own = |counter: u64| (u64::from(salt) << 48) | counter;
+        let group = |id: u64, tab_id: u64, surface: u64| WindowGroup {
+            id: own(id),
+            tabs: vec![tab(
+                own(tab_id),
+                TileContent::Foreign {
+                    app_id: "so.tilo.chat".into(),
+                    surface_id: surface,
+                },
+            )],
+            active_tab: own(tab_id),
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        };
+        let strip = |groups: Vec<WindowGroup>| {
+            own_legacy_windows(
+                &[Strip {
+                    id: crate::shell::state::StripId(own(1)),
+                    name: "Main".into(),
+                    window_groups: groups,
+                }],
+                salt,
+            )
+        };
+        let mut room = automerge::AutoCommit::new();
+        let owners = room
+            .put_object(
+                automerge::ROOT,
+                tilo_desktop_model::projection::ROOM_CONTENTS_OWNERS_KEY,
+                automerge::ObjType::Map,
+            )
+            .expect("a map");
+        room.put(&owners, format!("{salt:x}"), hex::encode(device))
+            .expect("an owner");
+        room.commit();
+        let (mut settled, mut pending) = (None, Vec::new());
+
+        let one = strip(vec![group(2, 3, 7)]);
+        let Ok(Some(Plan::Publish(first))) = plan(
+            &room,
+            Look {
+                device,
+                windows: &one,
+                salt,
+            },
+            &mut settled,
+            &mut pending,
+        ) else {
+            panic!("the first window is published");
+        };
+        let Ok(Some(Plan::Publish(again))) = plan(
+            &room,
+            Look {
+                device,
+                windows: &one,
+                salt,
+            },
+            &mut settled,
+            &mut pending,
+        ) else {
+            panic!("an unadmitted window is published again");
+        };
+        assert_eq!(again, first, "the resend is the very same change");
+
+        let two = strip(vec![group(2, 3, 7), group(4, 5, 8)]);
+        let Ok(Some(Plan::Publish(both))) = plan(
+            &room,
+            Look {
+                device,
+                windows: &two,
+                salt,
+            },
+            &mut settled,
+            &mut pending,
+        ) else {
+            panic!("the second window is published");
+        };
+        assert_eq!(
+            both[..first.len()],
+            first[..],
+            "the first change still leads"
+        );
+        assert!(
+            both.len() > first.len(),
+            "the second window is a change of its own"
+        );
+        let seqs: Vec<u64> = both
+            .iter()
+            .map(|bytes| {
+                automerge::Change::from_bytes(bytes.clone())
+                    .expect("a change")
+                    .seq()
+            })
+            .collect();
+        let mut expected = seqs.clone();
+        expected.sort_unstable();
+        expected.dedup();
+        assert_eq!(
+            seqs, expected,
+            "each change has a sequence number of its own: {seqs:?}"
+        );
+
+        // The governor takes them all, and the room then needs nothing.
+        for change in &both {
+            tilo_automerge::ApplyIncoming::load_incoming(&mut room, change)
+                .expect("the governor admits every change");
+        }
+        assert!(matches!(
+            plan(
+                &room,
+                Look {
+                    device,
+                    windows: &two,
+                    salt,
+                },
+                &mut settled,
+                &mut pending,
+            ),
+            Ok(None)
+        ));
+        assert!(pending.is_empty(), "nothing is waiting once admitted");
     }
 }
