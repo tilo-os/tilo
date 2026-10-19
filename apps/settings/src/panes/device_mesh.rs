@@ -24,7 +24,7 @@ use crate::panes::model::{PaneModel, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    SettingsSection, StatusTone, card, card_with_action, cards, error_caption, note, row, rows,
+    SettingsSection, StatusTone, error_caption, note, page, row, rows, section, section_with,
     semantic_status_pill, setting_row_described, value_row,
 };
 use settings_store::roaming_provenance::{Origin, RoamingProvenance};
@@ -1847,17 +1847,17 @@ impl DeviceMeshModel {
         let synced_title = t("mesh-synced-title");
         let home_nas = t("mesh-home-nas");
         let mut sections: Vec<SettingsSection> = vec![
-            card(&continue_title, rows(continuation_rows)),
-            card(&privacy_title, rows(privacy_rows)),
-            card(&route_title, rows(provenance_rows)),
-            card(&roaming_title, rows(roaming_rows)),
-            card(&activity_title, rows(audit_rows)),
-            card_with_action(&add_personal, approve_personal, rows(personal_rows)),
-            card(&trusted_title, rows(enrolled_device_rows)),
-            card(&availability_title, rows(availability_rows)),
-            card(&synced_title, workspace_rows),
+            section(&continue_title, rows(continuation_rows)),
+            section(&privacy_title, rows(privacy_rows)),
+            section(&route_title, rows(provenance_rows)),
+            section(&roaming_title, rows(roaming_rows)),
+            section(&activity_title, rows(audit_rows)),
+            section_with(&add_personal, approve_personal, rows(personal_rows)),
+            section(&trusted_title, rows(enrolled_device_rows)),
+            section(&availability_title, rows(availability_rows)),
+            section(&synced_title, workspace_rows),
         ];
-        sections.push(card_with_action(&home_nas, approve, rows(home_server_rows)));
+        sections.push(section_with(&home_nas, approve, rows(home_server_rows)));
         for peer in &self.home_peers {
             let device = &peer.device_node_id;
             let rename_key = peer_key("name", device);
@@ -1920,10 +1920,10 @@ impl DeviceMeshModel {
                 ),
             ];
             peer_rows.push(note(&t("mesh-files-stay-desc")));
-            sections.push(card_with_action(&peer.label, remove, rows(peer_rows)));
+            sections.push(section_with(&peer.label, remove, rows(peer_rows)));
         }
         if shows_advanced_services(self.config.device_role) {
-            sections.push(card(
+            sections.push(section(
                 &t("mesh-services-title"),
                 rows(vec![
                     self.service_row(
@@ -1958,7 +1958,7 @@ impl DeviceMeshModel {
             ));
         }
 
-        cards(sections)
+        page(sections)
     }
 
     /// The row switching the mesh service `service` of this device.

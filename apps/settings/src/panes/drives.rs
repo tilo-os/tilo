@@ -19,9 +19,11 @@ use std::time::Duration;
 
 use ntfs_mount::protocol::{self, Mode, Placement, RememberedDrive, Request, Response};
 use ui::LocalState;
+use ui::framework::ActionControl as _;
 use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected, LiveRow};
+use ui::icons::Icon;
 use ui::tilo_resource::{self, Effect};
-use ui::widget::{Button, Widget};
+use ui::widget::{ChipStyle, RowMenu, Toggle, Widget};
 
 use crate::channel;
 use crate::effects::{SettingsEffect, effect};
@@ -31,7 +33,8 @@ use crate::panes::model::{PaneModel, Replies, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    Item, SettingsSection, StatusTone, card, error_caption, item_row, note, row, rows, status_pill,
+    Item, SettingsSection, StatusTone, block, error_caption, note, row, rows, section,
+    setting_row_described, thing_row,
 };
 
 /// How long the service may take to answer; forgetting an open drive waits
@@ -233,34 +236,34 @@ impl DrivesArea {
             return Vec::new();
         };
         let model = model.borrow();
-        model
-            .shown()
-            .iter()
-            .map(|drive| {
-                let mut row = LiveRow::new(
-                    format!("settings.drive:{}", drive.grant),
-                    "settings.drive",
-                    drive_name(drive),
-                )
-                .operation(
-                    SettingsEffect::from(DrivesEffect::ForgetDrive {
-                        grant: drive.grant.clone(),
-                    })
-                    .bound(),
-                );
-                if drive.placement == Placement::Internal {
-                    row = row.operation(
-                        SettingsEffect::from(DrivesEffect::SetDriveOpensSafely {
-                            grant: drive.grant.clone(),
-                            safely: drive.mode != Mode::OpenSafely,
-                        })
-                        .bound(),
-                    );
-                }
-                row
-            })
-            .collect()
+        model.shown().iter().map(drive_live_row).collect()
     }
+}
+
+/// A remembered drive as a row of the published surface, offering what can
+/// be done to it now; the pane's controls for it bind to it.
+fn drive_live_row(drive: &RememberedDrive) -> LiveRow {
+    let mut row = LiveRow::new(
+        format!("settings.drive:{}", drive.grant),
+        "settings.drive",
+        drive_name(drive),
+    )
+    .operation(
+        SettingsEffect::from(DrivesEffect::ForgetDrive {
+            grant: drive.grant.clone(),
+        })
+        .bound(),
+    );
+    if drive.placement == Placement::Internal {
+        row = row.operation(
+            SettingsEffect::from(DrivesEffect::SetDriveOpensSafely {
+                grant: drive.grant.clone(),
+                safely: drive.mode != Mode::OpenSafely,
+            })
+            .bound(),
+        );
+    }
+    row
 }
 
 fn drive_name(drive: &RememberedDrive) -> String {
@@ -412,7 +415,7 @@ impl DrivesModel {
         // A machine that never remembered a drive, or has no mount service,
         // has nothing to say about drives.
         if self.shown().is_empty() && self.outcome.is_none() {
-            return crate::widgets::cards(Vec::new());
+            return crate::widgets::page(Vec::new());
         }
         let busy = self.change_rx.is_some();
         let mut body: Vec<Item> = vec![note(&t("settings-drives-intro"))];
@@ -424,63 +427,73 @@ impl DrivesModel {
         }
         match &self.outcome {
             Some(Ok(message)) => body.push(note(message)),
-            Some(Err(message)) => body.push(row(error_caption(&t_args(
+            Some(Err(message)) => body.push(block(error_caption(&t_args(
                 "settings-drives-change-error",
                 &[("error", message.as_str().into())],
             )))),
             None => {}
         }
-        let sections: Vec<SettingsSection> = vec![card(&t("settings-drives-title"), rows(body))];
-        crate::widgets::cards(sections)
+        let sections: Vec<SettingsSection> = vec![section(&t("settings-drives-title"), rows(body))];
+        crate::widgets::page(sections)
     }
 
     fn drive_rows(&self, drive: &RememberedDrive, busy: bool) -> Vec<Item> {
         let name = drive_name(drive);
-        let mut marks = vec![status_pill(
-            &t(match drive.placement {
-                Placement::Internal => "settings-drives-internal",
-                Placement::External => "settings-drives-external",
-            }),
-            StatusTone::Neutral,
-        )];
+        let live = drive_live_row(drive).into_resource();
+        let placement = t(match drive.placement {
+            Placement::Internal => "settings-drives-internal",
+            Placement::External => "settings-drives-external",
+        });
+        let open_now = t("settings-drives-open-now");
+        let mut tags = vec![(placement.as_str(), ChipStyle::Tinted(StatusTone::Neutral))];
         if drive.mounted.is_some() {
-            marks.push(status_pill(
-                &t("settings-drives-open-now"),
-                StatusTone::Info,
-            ));
+            tags.push((open_now.as_str(), ChipStyle::Tinted(StatusTone::Info)));
         }
         let detail = t(match (drive.placement, drive.mode) {
             (Placement::External, _) => "settings-drives-external-detail",
             (Placement::Internal, Mode::OpenSafely) => "settings-drives-internal-safely-detail",
             (Placement::Internal, Mode::Open) => "settings-drives-internal-fast-detail",
         });
-        let forget = self.cx.bind_invocation(
-            Button::new(
-                &format!("settings.drives.forget.{}", drive.grant),
-                &t("settings-drives-forget"),
+        let forget = (!busy).then(|| {
+            self.cx.row_invocation(
+                &live,
+                DrivesEffect::ForgetDrive {
+                    grant: drive.grant.clone(),
+                },
             )
-            .with_enabled(!busy),
-            DrivesEffect::ForgetDrive {
-                grant: drive.grant.clone(),
-            },
-        );
-        let mut items = vec![item_row(&name, marks, &[detail], vec![forget])];
+        });
+        let menu = RowMenu::new(
+            format!("settings.drives.more.{}", drive.grant),
+            &t_args("settings-row-more", &[("name", name.clone().into())]),
+        )
+        .destructive(t("settings-drives-forget"), forget.flatten());
+        let mut items = vec![row(Box::new(
+            thing_row(
+                &format!("settings.drives.drive.{}", drive.grant),
+                &name,
+                &[detail],
+                Some(Box::new(menu)),
+            )
+            .icon(Icon::HardDrive)
+            .tags(&tags),
+        ))];
         if drive.placement == Placement::Internal {
             let grant = drive.grant.clone();
-            items.push(
-                self.cx
-                    .row(t_args(
-                        "settings-drives-open-safely",
-                        &[("drive", name.into())],
-                    ))
-                    .described(t("settings-drives-open-safely-desc"))
-                    .id(format!("settings.drives.safely.{}", drive.grant))
-                    .toggle_effect(
-                        &LocalState::new(drive.mode == Mode::OpenSafely),
-                        effect(DrivesEffect::SET_DRIVE_OPENS_SAFELY)
-                            .map(move |safely: bool| (grant.clone(), safely)),
-                    ),
-            );
+            let toggle = Toggle::from_state(&LocalState::new(drive.mode == Mode::OpenSafely))
+                .with_id(&format!("settings.drives.safely.{}", drive.grant));
+            let toggle = match self.cx.row_binding(
+                &live,
+                effect(DrivesEffect::SET_DRIVE_OPENS_SAFELY)
+                    .map(move |safely: bool| (grant.clone(), safely)),
+            ) {
+                Some(binding) => toggle.bind_action(binding),
+                None => toggle.unavailable(),
+            };
+            items.push(setting_row_described(
+                &t_args("settings-drives-open-safely", &[("drive", name.into())]),
+                &t("settings-drives-open-safely-desc"),
+                Box::new(toggle),
+            ));
         }
         items
     }

@@ -37,8 +37,8 @@ use crate::panes::model::{PaneModel, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    Item, SettingsSection, StatusTone, card, card_with_action, note, row, rows,
-    semantic_status_pill, value_row,
+    Item, SettingsSection, StatusTone, note, row, rows, section, section_with,
+    semantic_status_pill, thing_row, value_row,
 };
 use ui::lock::MutexRecover as _;
 
@@ -1311,7 +1311,7 @@ impl AgentModelsModel {
                 (t("agent-status-attention"), StatusTone::Warning)
             }
         };
-        Some(card_with_action(
+        Some(section_with(
             &t("agent-accel-title"),
             semantic_status_pill(&status, tone),
             rows(body),
@@ -1381,11 +1381,10 @@ impl AgentModelsModel {
         let hardware = &self.snapshot.hardware;
         let fit_label = fit_label(hardware.fit);
         let mem = gib(i64::from(hardware.memory_gib));
-        let hw_fit = t("agent-hw-fit");
         let hw_mem = t("agent-hw-memory");
         let hw_accel = t("agent-hw-accel");
+        // How well this device fits is the group's badge, not a row too.
         let mut body = vec![
-            value_row(&hw_fit, &fit_label),
             value_row(&hw_mem, &mem),
             value_row(&hw_accel, &hardware.accelerator),
         ];
@@ -1409,39 +1408,45 @@ impl AgentModelsModel {
             body.push(row(Box::new(Row::new().push(Box::new(
                 Button::new("agent-models-setup-unavailable", &unavailable).with_enabled(false),
             )))));
-            return card_with_action(
+            return section_with(
                 &t("agent-rec-title"),
                 semantic_status_pill(&t("agent-service-unavailable"), StatusTone::Warning),
                 rows(body),
             );
         };
-        let rec_model = t("agent-rec-model");
-        body.extend([
-            value_row(&rec_model, &package.name),
-            note(&package.description),
-        ]);
         if self.reviewing.with(|reviewing| *reviewing) {
+            body.extend([
+                value_row(&t("agent-rec-model"), &package.name),
+                note(&package.description),
+            ]);
             self.push_recommendation_confirm(&mut body, package);
         } else {
+            // The model this device is suited for, and setting it up, on one
+            // row.
             let setup = t("agent-setup-device");
-            body.push(row(Box::new(
-                Row::new().push(Box::new(
+            body.push(row(Box::new(thing_row(
+                "agent-models.recommended",
+                &package.name,
+                std::slice::from_ref(&package.description),
+                Some(Box::new(
                     self.cx.bind_invocation(
-                        Button::new("agent-models-setup-local", &setup).with_enabled(
-                            self.manager_available
-                                && hardware.fit != HardwareFit::Unsupported
-                                && self
-                                    .snapshot
-                                    .accelerator_setup
-                                    .as_ref()
-                                    .is_none_or(|setup| !setup.status.blocks_model_setup()),
-                        ),
+                        Button::new("agent-models-setup-local", &setup)
+                            .role(ui::widget::ButtonRole::Primary)
+                            .with_enabled(
+                                self.manager_available
+                                    && hardware.fit != HardwareFit::Unsupported
+                                    && self
+                                        .snapshot
+                                        .accelerator_setup
+                                        .as_ref()
+                                        .is_none_or(|setup| !setup.status.blocks_model_setup()),
+                            ),
                         AgentModelsEffect::ReviewModelDownload { show: true },
                     ),
                 )),
-            )));
+            ))));
         }
-        card_with_action(
+        section_with(
             &t("agent-rec-title"),
             semantic_status_pill(&fit_label, fit_tone(hardware.fit)),
             rows(body),
@@ -1567,7 +1572,7 @@ impl AgentModelsModel {
             Some(LocalModelPhase::Ready { .. }) => (t("agent-status-ready"), StatusTone::Success),
             Some(phase) => (phase_status(phase), phase_tone(phase)),
         };
-        card_with_action(
+        section_with(
             &capability_title(package),
             semantic_status_pill(&status, tone),
             rows(body),
@@ -1646,7 +1651,7 @@ impl AgentModelsModel {
             }
             body.push(row(Box::new(buttons)));
         }
-        card_with_action(
+        section_with(
             &model.package.name,
             semantic_status_pill(&status, phase_tone(&model.phase)),
             rows(body),
@@ -1767,7 +1772,7 @@ impl AgentModelsModel {
     /// providers and their request limits.
     fn push_provider_cards(&self, cards: &mut Vec<SettingsSection>) {
         if let Some(setup) = self.vertex.as_ref().filter(|setup| !setup.existing) {
-            cards.push(setup.card(&self.cx));
+            cards.push(setup.section(&self.cx));
         }
         cards.extend(self.panel.sections_without_sign_in());
         let config = self.panel.provider_config();
@@ -1782,7 +1787,7 @@ impl AgentModelsModel {
         {
             self.push_sign_in_profile(&mut body, profile, config.default_profile.as_deref());
         }
-        cards.push(card(&t("agent-vertex-title"), rows(body)));
+        cards.push(section(&t("agent-vertex-title"), rows(body)));
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
@@ -1791,7 +1796,7 @@ impl AgentModelsModel {
         let local_gw = t("agent-local-gateway");
         let downloads = t("agent-downloads");
         let downloads_v = t("agent-downloads-value");
-        let mut cards = vec![card(
+        let mut cards = vec![section(
             &private_title,
             rows(vec![
                 note(&t("agent-private-caption")),
@@ -1800,12 +1805,12 @@ impl AgentModelsModel {
             ]),
         )];
         if !self.manager_available {
-            cards.push(card(
+            cards.push(section(
                 &t("agent-service-down-title"),
                 rows(vec![note(&t("agent-service-down-body"))]),
             ));
             self.push_provider_cards(&mut cards);
-            return crate::widgets::cards(cards);
+            return crate::widgets::page(cards);
         }
         if let Some(accelerator) = self.accelerator_card() {
             cards.push(accelerator);
@@ -1826,7 +1831,7 @@ impl AgentModelsModel {
             }
         }
         if self.snapshot.models.is_empty() {
-            cards.push(card(
+            cards.push(section(
                 &t("agent-models-empty-title"),
                 rows(vec![note(&t("agent-models-empty"))]),
             ));
@@ -1836,7 +1841,7 @@ impl AgentModelsModel {
             }
         }
         self.push_provider_cards(&mut cards);
-        crate::widgets::cards(cards)
+        crate::widgets::page(cards)
     }
 }
 

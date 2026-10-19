@@ -38,8 +38,8 @@ use crate::prefs::DisplayPrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    Item, SettingsSection, block, card, error_row, note, rows, setting_row, setting_row_described,
-    slider_row, value_row,
+    Item, SettingsSection, block, error_row, note, rows, section, setting_row,
+    setting_row_described, slider_row, value_row,
 };
 use settings_store::hardware::{
     DisplayConfig, DisplayHardwareSnapshot, DisplaySet, DisplayTransaction,
@@ -2083,7 +2083,7 @@ impl DisplayModel {
         let mut cards: Vec<SettingsSection> = self.build_safety_card().into_iter().collect();
         cards.push(arrangement);
         if let Some(notice) = &self.notice {
-            cards.push(card(&t("display-card-title"), rows(vec![note(notice)])));
+            cards.push(section(&t("display-card-title"), rows(vec![note(notice)])));
         }
         cards.push(brightness);
         for (index, output) in connected.iter().enumerate() {
@@ -2098,7 +2098,7 @@ impl DisplayModel {
         if let Some(tools) = self.build_trusted_tools_card() {
             cards.push(tools);
         }
-        crate::widgets::cards(cards)
+        crate::widgets::page(cards)
     }
 
     /// Certified peer connectors at their observed shared logical positions.
@@ -2186,7 +2186,7 @@ impl DisplayModel {
                     .map(|binding| (key, binding))
             })
             .collect();
-        Some(card(
+        Some(section(
             &t("display-devices-title"),
             rows(vec![
                 block(Box::new(DisplayArrangement::new(
@@ -2205,7 +2205,7 @@ impl DisplayModel {
     /// aren't enumerated.
     fn build_arrangement_card(&self, connected: &[&DisplayOutput]) -> SettingsSection {
         if connected.is_empty() {
-            return card(
+            return section(
                 &t("display-card-title"),
                 rows(vec![note(&t(if self.outputs_read {
                     "display-none"
@@ -2252,7 +2252,7 @@ impl DisplayModel {
         } else {
             t("display-caption-port")
         }));
-        card(&t("display-card-title"), rows(out_rows))
+        section(&t("display-card-title"), rows(out_rows))
     }
 
     /// The connected outputs as the arrangement canvas draws them: staged
@@ -2342,7 +2342,7 @@ impl DisplayModel {
         } else {
             value_row(&t("display-auto-brightness"), &t("display-no-ambient"))
         };
-        card(
+        section(
             &t("display-brightness"),
             rows(vec![
                 match &self.brightness_error {
@@ -2441,7 +2441,7 @@ impl DisplayModel {
         output_rows.extend(self.build_output_primary_rows(output, connected, &config));
         output_rows.extend(self.build_output_mode_and_rotation_rows(output, &config));
         output_rows.extend(self.build_output_capability_rows(output, &config));
-        card(&output_title(output), rows(output_rows))
+        section(&output_title(output), rows(output_rows))
     }
 
     /// Enable/primary toggles + scale/position/mirroring dropdowns.
@@ -2603,12 +2603,12 @@ impl DisplayModel {
             out_rows.push(setting_row_described(
                 &crate::i18n::t("display-hdr-sdr-brightness"),
                 &crate::i18n::t("display-hdr-sdr-brightness-description"),
-                Box::new(self.slider(
+                crate::widgets::trailing_slider(Box::new(self.slider(
                     &output.connector,
                     "sdr_brightness",
                     sdr_brightness_fraction(config.sdr_brightness_nits),
                     effect(DisplayEffect::SET_SDR_BRIGHTNESS),
-                )),
+                ))),
             ));
         } else {
             out_rows.push(value_row(
@@ -2698,7 +2698,7 @@ impl DisplayModel {
                         .role(ui::widget::ButtonRole::Primary),
                     DisplayEffect::KeepDisplayChanges,
                 );
-                Some(card(
+                Some(section(
                     &t("display-keep-title"),
                     rows(vec![crate::widgets::item_row(
                         &t_args("display-keep-caption", &[("seconds", seconds.into())]),
@@ -2717,7 +2717,7 @@ impl DisplayModel {
                     .as_ref()
                     .and_then(|transaction| transaction.message.as_deref())
                     .map_or_else(|| t("display-applying-caption"), str::to_string);
-                Some(card(
+                Some(section(
                     &t("display-applying-title"),
                     rows(vec![note(&applying)]),
                 ))
@@ -2736,11 +2736,11 @@ impl DisplayModel {
                         DisplayEffect::ApplyDisplayChanges,
                     ));
                 }
-                Some(card(&t("display-rejected-title"), rows(content)))
+                Some(section(&t("display-rejected-title"), rows(content)))
             }
             _ if self.pending_candidate.is_some() => {
                 let apply = t("display-apply");
-                Some(card(
+                Some(section(
                     &t("display-apply-title"),
                     rows(vec![
                         self.cx
@@ -2779,7 +2779,10 @@ impl DisplayModel {
                 },
             ));
         }
-        Some(card(&crate::i18n::t("display-tools-title"), rows(content)))
+        Some(section(
+            &crate::i18n::t("display-tools-title"),
+            rows(content),
+        ))
     }
 }
 
@@ -4332,7 +4335,7 @@ mod tests {
             .build_device_arrangement_card()
             .expect("discovered peer has a real canvas");
         let mut names = Vec::new();
-        let arrangement = crate::widgets::cards(vec![card]);
+        let arrangement = crate::widgets::page(vec![card]);
         accessible_names(arrangement.as_ref(), &mut names);
         assert!(
             names

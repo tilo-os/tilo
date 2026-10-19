@@ -1,5 +1,5 @@
 //! A resource-rooted standalone host for the same administration panel.
-use super::{PanelBindings, ProviderEffect, ProviderPanel, widgets};
+use super::{PanelBindings, ProviderEffect, ProviderPanel};
 use agent_provider_config::ProviderConfig;
 use std::{collections::HashMap, rc::Rc};
 use ui::framework::{
@@ -106,7 +106,12 @@ impl Widget for ProviderSurface {
     ) -> taffy::NodeId {
         let composition = self.composed.take().unwrap_or_else(|| {
             Box::new(
-                ui::widget::FormPage::untitled(widgets::form(self.panel.sections()))
+                self.panel
+                    .sections()
+                    .into_iter()
+                    .fold(ui::widget::Page::new(), |page, section| {
+                        page.section(Box::new(section.into_section()))
+                    })
                     .with_semantic_key("model-provider-administration")
                     .with_persisted_offset(Rc::clone(&self.offset)),
             )

@@ -28,8 +28,8 @@ use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
 use crate::prefs::UpdatePrefs;
 use crate::widgets::{
-    Body, Item, SettingsSection, card, error_caption, error_row, note, row, rows,
-    setting_row_described, value_row,
+    Body, El, Item, SettingsSection, block, error_caption, error_row, note, row, rows, section,
+    setting_row_described, thing_row, value_row,
 };
 
 const UPDATE_SCHEDULES: &[&str] = &["System schedule", "Daily", "Weekly"];
@@ -1258,12 +1258,36 @@ impl UpdatesModel {
     }
 
     fn codecs_card(&self) -> SettingsSection {
+        // The pack's state, with what can be done about it on its trailing
+        // edge; how far an install got under it.
+        let mut buttons = Row::new()
+            .no_wrap()
+            .with_rhythm(ui::tokens::Rhythm::Related)
+            .with_align_items(ui::taffy::AlignItems::Center);
+        let offered = self.codec_buttons();
+        let any = !offered.is_empty();
+        for (label, control_id, effect) in offered {
+            let primary = matches!(&effect, UpdatesEffect::InstallCodecs);
+            let button = self
+                .button(control_id, &label, effect)
+                .control_size(ui::widget::ControlSize::Small);
+            buttons = buttons.push(Box::new(if primary {
+                button.role(ui::widget::ButtonRole::Primary)
+            } else {
+                button
+            }));
+        }
         let mut body = vec![
             note(&codecs_explanation()),
-            value_row(&t("upd-status"), &self.codec_status_line()),
+            row(Box::new(thing_row(
+                "settings.updates.codecs.status",
+                &t("upd-status"),
+                &[self.codec_status_line()],
+                any.then(|| Box::new(buttons) as El),
+            ))),
         ];
         if let Some(fraction) = self.codec_progress() {
-            body.push(row(Box::new(
+            body.push(block(Box::new(
                 ProgressBar::new(fraction).with_label(t("upd-installing-codecs")),
             )));
         }
@@ -1273,22 +1297,7 @@ impl UpdatesModel {
         if let Some(applies) = self.codec_applies_shown() {
             body.push(note(&applies));
         }
-        let buttons = self.codec_buttons();
-        if !buttons.is_empty() {
-            let mut line = Row::new();
-            for (label, control_id, effect) in buttons {
-                let primary = matches!(&effect, UpdatesEffect::InstallCodecs);
-                let button = self.button(control_id, &label, effect);
-                let button = if primary {
-                    button.role(ui::widget::ButtonRole::Primary)
-                } else {
-                    button
-                };
-                line = line.push(Box::new(button));
-            }
-            body.push(row(Box::new(line)));
-        }
-        card(&codecs_card_title(), rows(body))
+        section(&codecs_card_title(), rows(body))
     }
 
     fn change_codecs(&mut self, action: CodecAction) {
@@ -1430,7 +1439,7 @@ impl UpdatesModel {
         if self.first_read.is_some() {
             // Nothing read yet: say so rather than show placeholders a
             // person could take for the device's state.
-            return crate::widgets::cards(vec![card(
+            return crate::widgets::page(vec![section(
                 &t("upd-software"),
                 rows(vec![note(&t("upd-reading"))]),
             )]);
@@ -1457,7 +1466,7 @@ impl UpdatesModel {
             // journal is a switch that failed silently.
             all.insert(
                 0,
-                card(
+                section(
                     &t("upd-notice-title"),
                     rows(vec![row(Box::new(
                         Text::new(msg).with_role(ui::TextRole::Body),
@@ -1465,15 +1474,15 @@ impl UpdatesModel {
                 ),
             );
         }
-        crate::widgets::cards(all)
+        crate::widgets::page(all)
     }
 
     /// Status card — current + staged + the primary action.
     fn status_card(&self) -> SettingsSection {
         if let Some(error) = &self.status.staged_error {
-            return card(
+            return section(
                 &t("upd-software"),
-                rows(vec![row(error_caption(&t_args(
+                rows(vec![block(error_caption(&t_args(
                     "upd-status-error",
                     &[("error", error.as_str().into())],
                 )))]),
@@ -1483,17 +1492,23 @@ impl UpdatesModel {
             Some(staged) => setting_row_described(
                 &t_args("upd-ready", &[("version", staged.as_str().into())]),
                 &t("upd-restart-apply"),
-                Box::new(self.button(
-                    "settings.updates.restart",
-                    &t("upd-restart-update"),
-                    UpdatesEffect::RestartToUpdate,
-                )),
+                Box::new(
+                    self.button(
+                        "settings.updates.restart",
+                        &t("upd-restart-update"),
+                        UpdatesEffect::RestartToUpdate,
+                    )
+                    .role(ui::widget::ButtonRole::Primary),
+                ),
             ),
-            None => row(Box::new(
-                Text::new(&t("upd-up-to-date")).with_role(ui::TextRole::Body),
-            )),
+            None => row(Box::new(thing_row(
+                "settings.updates.software.status",
+                &t("upd-up-to-date"),
+                &[],
+                None,
+            ))),
         };
-        card(&t("upd-software"), rows(vec![body]))
+        section(&t("upd-software"), rows(vec![body]))
     }
 
     /// A line holding one button, at the leading edge of its section.
@@ -1501,6 +1516,25 @@ impl UpdatesModel {
         row(Box::new(
             Row::new().push(Box::new(self.button(control_id, label, effect))),
         ))
+    }
+
+    /// A state with the one button that acts on it on its trailing edge.
+    fn status_row(
+        &self,
+        status: &str,
+        control_id: &str,
+        label: &str,
+        effect: UpdatesEffect,
+    ) -> Item {
+        row(Box::new(thing_row(
+            &format!("{control_id}.status"),
+            status,
+            &[],
+            Some(Box::new(
+                self.button(control_id, label, effect)
+                    .control_size(ui::widget::ControlSize::Small),
+            )),
+        )))
     }
 
     fn overview_card(&self) -> SettingsSection {
@@ -1522,7 +1556,7 @@ impl UpdatesModel {
             };
             overview.push(value_row(&t("upd-firmware"), &fw_value));
         }
-        card(&t("upd-overview"), rows(overview))
+        section(&t("upd-overview"), rows(overview))
     }
 
     fn detail_card(&self) -> SettingsSection {
@@ -1535,7 +1569,7 @@ impl UpdatesModel {
             t("upd-check")
         };
         let schedule_placeholder = self.schedule.as_deref().map(schedule_shown);
-        card(
+        section(
             &t("upd-details"),
             rows(vec![
                 value_row(&t("upd-current-version"), &self.status.current_version),
@@ -1599,7 +1633,7 @@ impl UpdatesModel {
         } else {
             lifecycle_rows.extend(self.details.history.iter().map(|line| note(line)));
         }
-        card(&t("upd-lifecycle"), rows(lifecycle_rows))
+        section(&t("upd-lifecycle"), rows(lifecycle_rows))
     }
 
     fn firmware_card(&self) -> SettingsSection {
@@ -1608,7 +1642,7 @@ impl UpdatesModel {
             Ok(updates) if updates.is_empty() => self.firmware_card_up_to_date(),
             Ok(updates) => self.firmware_card_available(updates),
         };
-        card(&t("upd-firmware"), body)
+        section(&t("upd-firmware"), body)
     }
 
     fn firmware_card_error(&self, error: &str) -> Body {
@@ -1618,8 +1652,8 @@ impl UpdatesModel {
             t("upd-try-again")
         };
         rows(vec![
-            value_row(&t("upd-fw-status"), &t("upd-fw-query-failed")),
-            self.button_row(
+            self.status_row(
+                &t("upd-fw-query-failed"),
                 "settings.updates.firmware.refresh",
                 &refresh_label,
                 UpdatesEffect::RefreshFirmware,
@@ -1629,30 +1663,31 @@ impl UpdatesModel {
     }
 
     fn firmware_card_up_to_date(&self) -> Body {
-        let mut body = vec![value_row(&t("upd-fw-status"), &t("upd-fw-current-status"))];
         if matches!(
             self.firmware_state,
             FirmwareUiState::Complete { needs_reboot: true }
         ) {
-            body.push(value_row(&t("upd-activation"), &t("upd-restart-required")));
-            body.push(self.button_row(
-                "settings.updates.firmware.restart",
-                &t("upd-restart-now"),
-                UpdatesEffect::RestartToUpdate,
-            ));
-        } else {
-            let check_fw = if self.firmware_refresh_pending {
-                t("upd-checking-firmware")
-            } else {
-                t("upd-check-firmware")
-            };
-            body.push(self.button_row(
-                "settings.updates.firmware.refresh",
-                &check_fw,
-                UpdatesEffect::RefreshFirmware,
-            ));
+            return rows(vec![
+                value_row(&t("upd-fw-status"), &t("upd-fw-current-status")),
+                self.status_row(
+                    &t("upd-restart-required"),
+                    "settings.updates.firmware.restart",
+                    &t("upd-restart-now"),
+                    UpdatesEffect::RestartToUpdate,
+                ),
+            ]);
         }
-        rows(body)
+        let check_fw = if self.firmware_refresh_pending {
+            t("upd-checking-firmware")
+        } else {
+            t("upd-check-firmware")
+        };
+        rows(vec![self.status_row(
+            &t("upd-fw-current-status"),
+            "settings.updates.firmware.refresh",
+            &check_fw,
+            UpdatesEffect::RefreshFirmware,
+        )])
     }
 
     fn firmware_card_available(&self, updates: &[os_actions::FirmwareUpdate]) -> Body {
@@ -1718,7 +1753,7 @@ impl UpdatesModel {
 
     fn firmware_history_card(&self) -> SettingsSection {
         match &self.firmware_history {
-            Ok(history) if history.is_empty() => card(
+            Ok(history) if history.is_empty() => section(
                 &t("upd-fw-history"),
                 rows(vec![note(&t("upd-fw-history-empty"))]),
             ),
@@ -1739,9 +1774,9 @@ impl UpdatesModel {
                         None => value_row(&item.device, &versions),
                     });
                 }
-                card(&t("upd-fw-history"), rows(entries))
+                section(&t("upd-fw-history"), rows(entries))
             }
-            Err(error) => card(
+            Err(error) => section(
                 &t("upd-fw-history"),
                 rows(vec![
                     value_row(&t("upd-fw-status"), &t("upd-history-query-failed")),
@@ -1799,11 +1834,11 @@ impl UpdatesModel {
             // sooner than panic if that invariant is ever broken.
             _ => Vec::new(),
         };
-        card(&rollback_card_title(), rows(rollback_body))
+        section(&rollback_card_title(), rows(rollback_body))
     }
 
     fn help_card(&self) -> SettingsSection {
-        card(
+        section(
             &t("upd-help-title"),
             rows(self.help_lines().iter().map(|l| note(l)).collect()),
         )

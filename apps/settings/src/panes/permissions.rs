@@ -21,8 +21,8 @@ use ui::tokens::Rhythm;
 
 use crate::i18n::{t, t_args};
 use crate::widgets::{
-    El, Item, SettingsSection, StatusTone, card, cards, error_row, note, row, rows,
-    semantic_status_pill, untitled, value_row,
+    El, Item, SettingsSection, StatusTone, block, error_row, note, page, row, rows, section,
+    thing_row, untitled, value_row,
 };
 use collab_types::caps::{Access, CapOverride, Effect, Expiry, Principal, Scope, Subject};
 use serde::Deserialize;
@@ -32,7 +32,7 @@ use std::time::Duration;
 use ui::framework::{EffectAnswer, EffectCx, Effected};
 use ui::tilo_actions::policy::{Grant, Level, Lifetime};
 use ui::tilo_resource;
-use ui::widget::{AppModel, Button, Column, ModelPath, Row, Spacer, Text, Widget};
+use ui::widget::{AppModel, Button, Column, ModelPath, Row, Toggle, Widget};
 
 use crate::device_read::Reading;
 use crate::host::PaneCx;
@@ -345,8 +345,7 @@ fn secrets_card(cx: &PaneCx, apps: &Result<Vec<SecretApp>, String>) -> SettingsS
         Ok(apps) => {
             for app in apps {
                 let allowed = app.access == "allowed";
-                body.push(row(Box::new(Text::new(&app.name))));
-                body.push(note(&t_args(
+                let detail = t_args(
                     "perm-secrets-detail",
                     &[
                         ("id", ui::i18n::ArgValue::Text(app.id.clone())),
@@ -358,32 +357,44 @@ fn secrets_card(cx: &PaneCx, apps: &Result<Vec<SecretApp>, String>) -> SettingsS
                             )),
                         ),
                     ],
-                )));
-                let toggle = if allowed {
-                    t("perm-secrets-revoke")
-                } else {
-                    t("perm-secrets-allow")
-                };
-                body.push(row(Box::new(cx.bind_invocation(
-                    Button::new(&format!("secrets-access:{}", app.id), &toggle),
-                    PermissionsEffect::SetSecretsAccess {
+                );
+                // Whether the app may read its secrets is the row's switch;
+                // forgetting them is in its menu.
+                let id = app.id.clone();
+                let access = cx.bind(
+                    Toggle::from_state(&ui::LocalState::new(allowed))
+                        .with_id(&format!("secrets-access:{}", app.id))
+                        .with_accessible_name(&t("perm-secrets-access")),
+                    crate::effects::effect(PermissionsEffect::SET_SECRETS_ACCESS)
+                        .map(move |allowed: bool| (id.clone(), allowed)),
+                );
+                let menu = ui::widget::RowMenu::new(
+                    format!("secrets-more:{}", app.id),
+                    &t_args("settings-row-more", &[("name", app.name.clone().into())]),
+                )
+                .destructive(
+                    t("perm-secrets-forget"),
+                    cx.invocation_binding(PermissionsEffect::ForgetSecrets {
                         app: app.id.clone(),
-                        allowed: !allowed,
-                    },
-                ))));
-                body.push(row(Box::new(cx.bind_invocation(
-                    Button::new(
-                        &format!("secrets-forget:{}", app.id),
-                        &t("perm-secrets-forget"),
-                    ),
-                    PermissionsEffect::ForgetSecrets {
-                        app: app.id.clone(),
-                    },
+                    }),
+                );
+                body.push(row(Box::new(thing_row(
+                    &format!("secrets:{}", app.id),
+                    &app.name,
+                    &[detail],
+                    Some(Box::new(
+                        Row::new()
+                            .no_wrap()
+                            .with_rhythm(Rhythm::Related)
+                            .with_align_items(ui::taffy::AlignItems::Center)
+                            .push(Box::new(access))
+                            .push(Box::new(menu)),
+                    )),
                 ))));
             }
         }
     }
-    card(&title, rows(body))
+    section(&title, rows(body))
 }
 
 /// The compositor's persisted workspace tree, beside `settings.json`.
@@ -549,6 +560,19 @@ enum Tint {
 }
 
 impl Tint {
+    fn icon(self) -> ui::icons::Icon {
+        use ui::icons::Icon;
+        match self {
+            Tint::Files => Icon::Folder,
+            Tint::Camera => Icon::Camera,
+            Tint::Microphone => Icon::Mic,
+            Tint::Screen => Icon::ScreenShare,
+            Tint::Remote => Icon::MousePointer2,
+            Tint::Network => Icon::Globe,
+            Tint::AppAction => Icon::AppWindow,
+        }
+    }
+
     fn tone(self) -> StatusTone {
         match self {
             Tint::Files | Tint::Screen | Tint::AppAction => StatusTone::Info,
@@ -747,32 +771,29 @@ fn grant_count(all: &[WsGrants]) -> usize {
         .sum()
 }
 
-/// One capability line: a tinted kind pill, the detail, and a trailing
-/// lifetime chip. Read-only — no controls.
-fn cap_row(view: &CapView) -> Item {
-    let kind = kind_shown(view.kind);
-    let expiry = expiry_shown(view.expiry);
-    // why: kind pill + detail + lifetime chip is not a label/control pair.
-    row(Box::new(
-        Row::new()
-            .push(semantic_status_pill(&kind, view.tint.tone()))
-            .push(Box::new(
-                Text::new(&view.detail)
-                    .with_role(ui::TextRole::Caption)
-                    .dimmed(),
-            ))
-            .push(Box::new(Spacer::new()))
-            .push(semantic_status_pill(&expiry, StatusTone::Neutral)),
-    ))
-}
-
-/// One app's block within a workspace card: the app id, then its grants.
+/// One app's grants within a workspace: the app as a group, and a row for
+/// each thing it may use, with how long it may. Read only.
 fn app_block(grants: &AppGrants) -> Vec<Item> {
-    let mut items = vec![row(Box::new(
-        Text::new(&grants.app).with_role(ui::TextRole::Body),
-    ))];
-    items.extend(grants.caps.iter().map(cap_row));
-    items
+    let rows: Vec<El> = grants
+        .caps
+        .iter()
+        .enumerate()
+        .map(|(index, view)| {
+            let kind = kind_shown(view.kind);
+            Box::new(
+                ui::widget::ListRow::new(format!("grants:{}:{index}", grants.app), &view.detail)
+                    .icon(view.tint.icon())
+                    .tags(&[(
+                        kind.as_str(),
+                        ui::widget::ChipStyle::Tinted(view.tint.tone()),
+                    )])
+                    .value(expiry_shown(view.expiry)),
+            ) as El
+        })
+        .collect();
+    vec![block(Box::new(
+        ui::widget::Section::new(rows).with_header(ui::widget::SectionHeader::group(&grants.app)),
+    ))]
 }
 
 /// Include the hosted disk-unlock model beside the device security summary.
@@ -856,7 +877,7 @@ fn privacy_hardware_card(privacy: &os_actions::PrivacyStatus) -> SettingsSection
         Some(false) => t("perm-listening"),
         None => t("perm-unavailable"),
     };
-    card(
+    section(
         &t("perm-privacy-hardware"),
         rows(vec![
             value_row(
@@ -888,11 +909,11 @@ fn active_privacy_use_card(privacy: &os_actions::PrivacyStatus) -> SettingsSecti
             })
             .collect()
     };
-    card(&t("perm-active-use"), rows(usage_rows))
+    section(&t("perm-active-use"), rows(usage_rows))
 }
 
 fn device_security_card(security: &DeviceSecurity) -> SettingsSection {
-    card(
+    section(
         &t("perm-device-security"),
         rows(vec![
             value_row(&t("perm-disk"), &t(security.disk_encryption)),
@@ -915,7 +936,7 @@ fn device_security_card(security: &DeviceSecurity) -> SettingsSection {
 /// them. Keeping the distinction in the first visible card prevents this
 /// cross-workspace overview from looking like an editor for every workspace.
 fn scope_card() -> SettingsSection {
-    card(
+    section(
         &t("perm-this-device"),
         rows(vec![note(&t("perm-this-device-body"))]),
     )
@@ -924,7 +945,7 @@ fn scope_card() -> SettingsSection {
 /// Intro card: what these grants are and where they come from.
 fn workspace_grants_intro_card(cx: &PaneCx) -> SettingsSection {
     let open = t("perm-open-workspace");
-    card(
+    section(
         &t("perm-workspace-intro-title"),
         rows(vec![
             note(&t("perm-workspace-intro-body")),
@@ -939,7 +960,7 @@ fn workspace_grants_intro_card(cx: &PaneCx) -> SettingsSection {
 /// Empty state — a successfully loaded workspace record contains no
 /// app grants.
 fn no_workspace_grants_card() -> SettingsSection {
-    card(
+    section(
         &t("perm-no-grants-title"),
         rows(vec![
             note(&t("perm-no-grants-body")),
@@ -952,7 +973,7 @@ fn no_workspace_grants_card() -> SettingsSection {
 /// that has no app grants. A privacy surface must never turn an I/O or parse
 /// failure into a claim that access is absent.
 fn workspace_grants_unavailable_card() -> SettingsSection {
-    card(
+    section(
         &t("perm-unavailable-title"),
         rows(vec![
             note(&t("perm-unavailable-body")),
@@ -981,13 +1002,13 @@ fn push_workspace_grant_cards(panel: &mut Vec<SettingsSection>, all: &[WsGrants]
         } else {
             ws.name.clone()
         };
-        panel.push(card(&title, rows(body)));
+        panel.push(section(&title, rows(body)));
     }
 }
 
 /// Where the compositor enforces the grants.
 fn enforcement_card() -> SettingsSection {
-    card(
+    section(
         &t("perm-enforcement-title"),
         rows(vec![note(&t("perm-enforcement-caption"))]),
     )
@@ -1008,7 +1029,7 @@ fn build_view(cx: &PaneCx, state_json: Option<&str>) -> Box<dyn Widget> {
 
 /// A device card whose reading has not landed yet.
 fn reading_card(title: &str) -> SettingsSection {
-    card(&t(title), rows(vec![note(&t("perm-reading"))]))
+    section(&t(title), rows(vec![note(&t("perm-reading"))]))
 }
 
 /// Every card of the pane, from the workspace grants and what the device
@@ -1043,7 +1064,7 @@ fn panel(
 
     panel.push(enforcement_card());
 
-    cards(panel)
+    page(panel)
 }
 
 #[cfg(test)]
@@ -1087,21 +1108,24 @@ mod tests {
                 items: 0,
             },
         ];
-        let mut card = cards(vec![secrets_card(&cx(), &Ok(apps))]);
+        let mut card = page(vec![secrets_card(&cx(), &Ok(apps))]);
         build_layout_of(&mut card);
+        // Each app's access is its row's switch, on while it may read its
+        // secrets; forgetting them is in its menu.
         let mut labels = Vec::new();
         button_labels(card.as_ref(), &mut labels);
         assert_eq!(
             labels,
             vec![
-                t("perm-secrets-revoke"),
-                t("perm-secrets-forget"),
-                t("perm-secrets-allow"),
-                t("perm-secrets-forget")
+                t_args("settings-row-more", &[("name", "chromium".into())]),
+                t_args("settings-row-more", &[("name", "so.tilo.notes".into())]),
             ]
         );
+        let mut switches = Vec::new();
+        toggles_of(card.as_ref(), &mut switches);
+        assert_eq!(switches, vec![true, false]);
         // A store that cannot be reached is said so, never shown as empty.
-        let mut unreachable = cards(vec![secrets_card(&cx(), &Err("no bus".into()))]);
+        let mut unreachable = page(vec![secrets_card(&cx(), &Err("no bus".into()))]);
         build_layout_of(&mut unreachable);
         let mut said = Vec::new();
         text_labels(unreachable.as_ref(), &mut said);
@@ -1242,13 +1266,44 @@ mod tests {
     }
 
     fn button_labels(w: &dyn Widget, labels: &mut Vec<String>) {
-        if w.name() == "Button"
+        let menu = w
+            .as_any()
+            .is_some_and(|any| any.is::<ui::widget::RowMenu>());
+        if (w.name() == "Button" || menu)
             && let Some(label) = w.accessibility().and_then(|node| node.name)
         {
             labels.push(label);
         }
         for c in w.children() {
             button_labels(c, labels);
+        }
+    }
+
+    /// The rows of the workspace grants: list rows whose value says how
+    /// long the grant lasts.
+    fn count_grant_rows(w: &dyn Widget, rows: &mut usize) {
+        if w.name() == "ListRow"
+            && w.accessibility().is_some_and(|node| {
+                node.semantic_key
+                    .as_deref()
+                    .is_some_and(|key| key.starts_with("grants:"))
+            })
+        {
+            *rows += 1;
+        }
+        for c in w.children() {
+            count_grant_rows(c, rows);
+        }
+    }
+
+    fn toggles_of(w: &dyn Widget, on: &mut Vec<bool>) {
+        if w.name() == "Toggle"
+            && let Some(checked) = w.accessibility().and_then(|node| node.state.checked)
+        {
+            on.push(checked);
+        }
+        for c in w.children() {
+            toggles_of(c, on);
         }
     }
 
@@ -1362,19 +1417,18 @@ mod tests {
             );
         }
 
-        // Case `populated_pane_renders_a_pill_per_grant`.
+        // Case `populated_pane_renders_a_row_per_grant`.
         {
-            // Two grants → the workspace card carries a kind pill + a lifetime chip
-            // for each (4 badges), built from the real projection.
+            // Two grants → the workspace's group carries a row for each, its
+            // kind marked and how long it lasts as its value, built from the
+            // real projection.
             let mut pane = build_view(&cx(), Some(&sample_state()));
             build_layout_of(&mut pane);
-            assert_eq!(
-                count_named(pane.as_ref(), "Badge"),
-                4,
-                "two pills per grant"
-            );
-            // Intro + one workspace + enforcement cards are all present.
-            assert!(count_named(pane.as_ref(), "FormSection") >= 3);
+            let mut rows = 0;
+            count_grant_rows(pane.as_ref(), &mut rows);
+            assert_eq!(rows, 2, "one row per grant");
+            // Intro + one workspace + enforcement groups are all present.
+            assert!(count_named(pane.as_ref(), "Section") >= 3);
         }
     }
 

@@ -10,7 +10,7 @@ use ui::tilo_resource;
 use super::AppearancePane;
 use crate::i18n::t;
 use crate::prefs::DeskWidgetsPrefs;
-use crate::widgets::{Item, SettingsSection, card, note, rows};
+use crate::widgets::{Item, SettingsSection, note, rows, section};
 
 fn show_label(mode: ShowMode) -> String {
     t(match mode {
@@ -81,7 +81,7 @@ impl AppearancePane {
             body.extend(self.widget_rows(id, widget, (enabled, show, edge)));
         }
         body.push(note(&t("settings-desk-note")));
-        card(&t("settings-desk-card"), rows(body))
+        section(&t("settings-desk-card"), rows(body))
     }
 
     fn widget_rows(

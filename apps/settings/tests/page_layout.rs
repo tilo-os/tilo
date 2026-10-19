@@ -16,12 +16,20 @@ use vello::kurbo::Rect;
 const SIZES: [(u32, u32); 4] = [(1472, 920), (640, 400), (440, 820), (400, 600)];
 
 /// Containers that lay their parts out side by side or one above the other
-/// (flex rows and columns, a form's sections, its rows and their bodies):
-/// what they hold stays inside them and never lies on a sibling.
+/// (flex rows and columns, a page's sections, their headers and rows, a
+/// form's sections, its rows and their bodies): what they hold stays inside
+/// them and never lies on a sibling.
 fn is_flex(name: &str) -> bool {
     matches!(
         name,
-        "Row" | "Column" | "FormSection" | "Field" | "FieldBody"
+        "Row"
+            | "Column"
+            | "Section"
+            | "SectionHeader"
+            | "ListRow"
+            | "FormSection"
+            | "Field"
+            | "FieldBody"
     )
 }
 

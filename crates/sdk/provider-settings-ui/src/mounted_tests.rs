@@ -202,12 +202,12 @@ fn mounted_google_sign_in_never_offers_api_key_custody() {
     with_panel(&mut app, |panel| {
         let profile = &panel.provider_config().profiles[0];
         assert!(!panel.needs_key(profile));
-        let all = widgets::announced_text(widgets::cards(panel.sections()).as_ref()).join(" ");
+        let all = widgets::announced_text(widgets::page(panel.sections()).as_ref()).join(" ");
         assert!(all.contains(&crate::i18n::t("agent-sign-in-custody")));
         assert!(!all.contains(&crate::i18n::t("agent-key-needed")));
         assert!(!all.contains(&crate::i18n::t("agent-key-none")));
         let native =
-            widgets::announced_text(widgets::cards(panel.sections_without_sign_in()).as_ref())
+            widgets::announced_text(widgets::page(panel.sections_without_sign_in()).as_ref())
                 .join(" ");
         assert!(!native.contains(&crate::i18n::t("agent-sign-in-custody")));
         assert!(native.contains(profile.models[0].display_label()));

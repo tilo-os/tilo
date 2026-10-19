@@ -139,7 +139,7 @@ impl UnlockAuthority for DetachedAuthority {
 
 use crate::i18n::{t, t_args};
 use crate::widgets::{
-    Item, SettingsSection, StatusTone, card, card_with_action, error_caption, note, row, rows,
+    Item, SettingsSection, StatusTone, error_caption, note, row, rows, section,
     semantic_status_pill, setting_row, setting_row_described, value_row,
 };
 
@@ -579,13 +579,8 @@ impl DiskUnlockModel {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        let refresh = Box::new(self.cx.bind_invocation(
-            Button::new(
-                "settings.disk-unlock.refresh",
-                &t("settings-disk-unlock-refresh"),
-            ),
-            DiskUnlockEffect::RefreshDiskUnlock,
-        ));
+        // The volumes are read again each time the page is shown and after
+        // every change: no refresh.
         let mut body: Vec<Item> = vec![note(&t("settings-disk-unlock-intro"))];
         match &self.volumes {
             None => body.push(note(&t("settings-disk-unlock-loading"))),
@@ -609,15 +604,12 @@ impl DiskUnlockModel {
             )))),
             None => {}
         }
-        let mut items: Vec<SettingsSection> = vec![card_with_action(
-            &t("settings-disk-unlock-title"),
-            refresh,
-            rows(body),
-        )];
+        let mut items: Vec<SettingsSection> =
+            vec![section(&t("settings-disk-unlock-title"), rows(body))];
         for volume in self.shown_volumes() {
             items.extend(self.volume_cards(volume));
         }
-        crate::widgets::cards(items)
+        crate::widgets::page(items)
     }
 
     /// One volume: how its secrets are kept, then the networks it may unlock over.
@@ -668,8 +660,8 @@ impl DiskUnlockModel {
             body.push(self.network_row(volume, &network, busy));
         }
         [
-            card(&volume.short_name(), rows(secrets)),
-            card(&t("settings-disk-unlock-networks"), rows(body)),
+            section(&volume.short_name(), rows(secrets)),
+            section(&t("settings-disk-unlock-networks"), rows(body)),
         ]
     }
 
@@ -727,6 +719,13 @@ impl PaneModel for DiskUnlockModel {
     }
     fn busy(&self) -> bool {
         self.read_rx.is_some() || self.change_rx.is_some()
+    }
+
+    /// Shown again: read the volumes again, so the page says what the
+    /// device holds now.
+    fn follow(&mut self) -> Option<std::rc::Rc<dyn std::any::Any>> {
+        self.request_read();
+        None
     }
 }
 

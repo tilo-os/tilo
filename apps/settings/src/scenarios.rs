@@ -536,9 +536,14 @@ mod tests {
                     labels.contains(&"Status"),
                     "{scenario}: the status field is rendered"
                 );
+                // The status is the value of its row.
+                let values: Vec<_> = nodes.iter().filter_map(|(_, node)| node.value()).collect();
                 assert!(
-                    labels.iter().any(|label| label.contains(status)),
-                    "{scenario}: {labels:?}"
+                    labels
+                        .iter()
+                        .chain(values.iter())
+                        .any(|said| said.contains(status)),
+                    "{scenario}: {labels:?} {values:?}"
                 );
                 // Captures intentionally have no effect runner. Assert
                 // activation and admission on the live framework host with

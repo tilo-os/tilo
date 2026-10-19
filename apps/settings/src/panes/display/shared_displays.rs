@@ -2,7 +2,7 @@
 
 use super::{
     DisplayEffect, DisplayModel, Dropdown, LiveRow, LocalState, SettingsEffect, SettingsSection,
-    Toggle, card, effect, note, rows, setting_row, setting_row_described, t, t_args,
+    Toggle, effect, note, rows, section, setting_row, setting_row_described, t, t_args,
 };
 use settings_store::person_displays::{Arrangement, Layout, ResolvedDisplay};
 use ui::tilo_resource::{self, Effect};
@@ -379,7 +379,7 @@ impl DisplayModel {
                 content.push(setting_row(&t("display-shared-order"), Box::new(choice)));
             }
         }
-        Some(card(&t("display-shared-title"), rows(content)))
+        Some(section(&t("display-shared-title"), rows(content)))
     }
 }
 
@@ -470,7 +470,7 @@ mod tests {
             .collect();
         let mut before = Vec::new();
         tiles(
-            crate::widgets::cards(vec![model.build_device_arrangement_card().unwrap()]).as_ref(),
+            crate::widgets::page(vec![model.build_device_arrangement_card().unwrap()]).as_ref(),
             &mut before,
         );
         assert_eq!(before.len(), 2);
@@ -505,7 +505,7 @@ mod tests {
             .unwrap();
         let mut after = Vec::new();
         tiles(
-            crate::widgets::cards(vec![model.build_device_arrangement_card().unwrap()]).as_ref(),
+            crate::widgets::page(vec![model.build_device_arrangement_card().unwrap()]).as_ref(),
             &mut after,
         );
         assert_eq!(
@@ -572,7 +572,7 @@ mod tests {
                 order: 1,
             })
             .unwrap();
-        let card = crate::widgets::cards(vec![model.build_device_arrangement_card().unwrap()]);
+        let card = crate::widgets::page(vec![model.build_device_arrangement_card().unwrap()]);
         let mut before = Vec::new();
         names(card.as_ref(), &mut before);
         assert!(
@@ -602,7 +602,7 @@ mod tests {
             .unwrap();
         let mut after = Vec::new();
         names(
-            crate::widgets::cards(vec![model.build_device_arrangement_card().unwrap()]).as_ref(),
+            crate::widgets::page(vec![model.build_device_arrangement_card().unwrap()]).as_ref(),
             &mut after,
         );
         assert!(

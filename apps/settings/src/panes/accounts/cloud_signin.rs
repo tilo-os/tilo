@@ -22,7 +22,7 @@ use ui::widget::{Button, Checkbox, Dropdown, Row, Spacer, TextInput, TextInputKi
 use crate::accounts::AccountKind;
 use crate::channel::{self, Receiver, TryRecvError};
 use crate::i18n::t;
-use crate::widgets::{Item, SettingsSection, card, field_row, note, row, rows};
+use crate::widgets::{Item, SettingsSection, field_row, note, row, rows, section};
 
 /// Opens a URL in the person's browser.
 pub trait BrowserOpener: Send + Sync {
@@ -1161,7 +1161,10 @@ impl SignInFlow {
 
     /// The flow's card.
     /// The sign-in card; `bind` gives each button its effect.
-    pub fn card(&self, bind: &dyn Fn(Button, super::AccountsEffect) -> Button) -> SettingsSection {
+    pub fn section(
+        &self,
+        bind: &dyn Fn(Button, super::AccountsEffect) -> Button,
+    ) -> SettingsSection {
         let title = format!(
             "{} {}",
             if self.existing_id.is_some() {
@@ -1241,7 +1244,7 @@ impl SignInFlow {
             )))
             .push(Box::new(Spacer::new()));
         fields.push(row(Box::new(buttons)));
-        card(&title, rows(fields))
+        section(&title, rows(fields))
     }
 
     fn form_fields(&self, fields: &mut Vec<Item>) {

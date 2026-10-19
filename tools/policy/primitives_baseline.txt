@@ -9,7 +9,6 @@ glyph-icon 1 apps/diffmerge/src/doc.rs
 glyph-icon 3 apps/file-explorer/src/files_app.rs
 glyph-icon 1 apps/imager/src/app.rs
 glyph-icon 3 apps/logs/src/journal.rs
-glyph-icon 1 apps/settings/src/panes/printers.rs
 glyph-icon 2 apps/settings/src/panes/updates.rs
 glyph-icon 1 apps/terminal/src/target_ui.rs
 glyph-icon 1 apps/video-editor/src/app.rs
@@ -73,7 +72,6 @@ glyph-join 2 apps/pdf-viewer/src/scenarios.rs
 glyph-join 1 apps/pdf-viewer/src/search.rs
 glyph-join 1 apps/photos/src/app/accessibility.rs
 glyph-join 4 apps/settings/src/input_sources.rs
-glyph-join 1 apps/settings/src/panes/personal_apps.rs
 glyph-join 3 apps/slides/src/model.rs
 glyph-join 2 apps/store/src/app.rs
 glyph-join 1 apps/store/src/app/runtime.rs

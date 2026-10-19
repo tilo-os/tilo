@@ -36,7 +36,7 @@ use crate::panes::keyboard_shortcuts::DesktopControls;
 use crate::prefs::AppearancePrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{Item, SettingsSection, block, card, note, rows, value_row};
+use crate::widgets::{Item, SettingsSection, block, note, rows, section, value_row};
 
 mod theme_tiles;
 use theme_tiles::ThemeTiles;
@@ -503,7 +503,7 @@ impl AppearancePane {
     /// The theme, the interface scale and the text size.
     fn theme_card(&self) -> SettingsSection {
         let cx = &self.cx;
-        card(
+        section(
             &t("settings-appearance-theme-card"),
             rows(vec![
                 // Each theme drawn in its own colours, the chosen one ringed.
@@ -553,7 +553,7 @@ impl AppearancePane {
 
     fn build_composition(&self) -> Box<dyn Widget> {
         let theme_card = self.theme_card();
-        let access_card = card(
+        let access_card = section(
             &t("settings-appearance-access-card"),
             rows(vec![
                 self.cx
@@ -575,7 +575,7 @@ impl AppearancePane {
             ]),
         );
 
-        let desktop_card = card(
+        let desktop_card = section(
             &t("settings-appearance-desktop-card"),
             rows(vec![
                 self.cx
@@ -589,7 +589,7 @@ impl AppearancePane {
             ]),
         );
 
-        crate::widgets::cards(vec![
+        crate::widgets::page(vec![
             theme_card,
             self.wallpaper_card(),
             self.schedule_card(),
@@ -633,7 +633,7 @@ impl AppearancePane {
         if let Some(status) = &self.status_shown {
             body.push(note(status));
         }
-        card(&t("settings-appearance-wallpaper-card"), rows(body))
+        section(&t("settings-appearance-wallpaper-card"), rows(body))
     }
 
     /// The shipped pictures this system has installed, each choosing itself
@@ -754,7 +754,7 @@ impl AppearancePane {
                 "settings-appearance-schedule-follow"
             },
         )));
-        card(&t("settings-appearance-day-night-card"), rows(body))
+        section(&t("settings-appearance-day-night-card"), rows(body))
     }
 }
 

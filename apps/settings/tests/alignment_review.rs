@@ -67,24 +67,25 @@ fn first_named(root: &dyn Widget, label: &str) -> Rect {
         .unwrap_or_else(|| panic!("no widget named {label:?}"))
 }
 
-/// A typed field announces its label through its control. Geometry still
-/// reads the actual retained visual label, rather than the named control.
-fn field_label_by_control(root: &dyn Widget, id: &str) -> Rect {
+/// The settings row that holds the control `id`: its box, and whether its
+/// control sits under its text (the row is too narrow for both side by
+/// side). A row paints its label itself, from the box's leading edge.
+fn row_of_control(root: &dyn Widget, id: &str) -> (Rect, bool) {
     let mut out = None;
     walk(root, &mut |widget| {
-        if widget.name() != "Field" {
+        let Some(row) = widget
+            .as_any()
+            .and_then(|any| any.downcast_ref::<ui::widget::ListRow>())
+        else {
             return;
-        }
+        };
         let mut contains = false;
         walk(widget, &mut |child| contains |= child.test_id() == Some(id));
         if contains {
-            out = widget
-                .children()
-                .first()
-                .and_then(|label| label.children().first().map(|text| text.get_rect()));
+            out = Some((widget.get_rect(), row.trailing_wrapped()));
         }
     });
-    out.unwrap_or_else(|| panic!("no retained field label for {id:?}"))
+    out.unwrap_or_else(|| panic!("no settings row holds {id:?}"))
 }
 
 fn by_test_id(root: &dyn Widget, id: &str) -> Rect {
@@ -187,40 +188,52 @@ fn sidebar_rows_share_an_edge_and_the_toolkit_row_height() {
 /// Row captions hug their label and the hero title sits beside its icon.
 #[test]
 fn row_captions_and_hero_follow_the_spacing_steps() {
-    // Case `described_row_caption_hugs_its_label_not_the_next_row`.
+    // Case `described_row_keeps_its_explanation_and_centres_its_control`.
     {
         let config = crate::support::ScratchConfig::new();
         let app = config.app().with_category(Category::Accessibility);
         let app = lay_out(app, WIDE);
-        let label = first_named(&*app, "High contrast");
-        let caption = first_named(&*app, "Maximise contrast for low-vision comfort");
-        let next_label = first_named(&*app, "Reduce motion");
+        // The row speaks its label and the line explaining it together, so
+        // the explanation belongs to its row, not to the next one.
+        let mut described = None;
+        let mut next = None;
+        walk(&*app, &mut |w| {
+            if w.name() != "ListRow" {
+                return;
+            }
+            let node = w.accessibility();
+            let name = node
+                .as_ref()
+                .and_then(|n| n.name.clone())
+                .unwrap_or_default();
+            let said = format!("{name} {}", node.and_then(|n| n.value).unwrap_or_default());
+            if name.starts_with("High contrast") {
+                described = Some((w.get_rect(), said));
+            } else if name.starts_with("Reduce motion") && next.is_none() {
+                next = Some(w.get_rect());
+            }
+        });
+        let (row, name) = described.expect("the High contrast row");
+        assert!(
+            name.contains("Maximise contrast for low-vision comfort"),
+            "the explanation is part of its row: {name}"
+        );
+        let next = next.expect("the Reduce motion row");
+        assert!(
+            next.y0 >= row.y1 - 0.5,
+            "the next row starts below the explanation: {row:?} then {next:?}"
+        );
         let toggles = by_widget_name(&*app, "Toggle");
-        let block_centre = f64::midpoint(label.y0, caption.y1);
         let row_toggle = toggles
             .iter()
-            .find(|t| t.y0 <= block_centre && block_centre <= t.y1)
+            .find(|t| t.y0 >= row.y0 && t.y1 <= row.y1)
             .copied()
             .expect("the High contrast row carries a toggle");
-        // The caption is part of its label's block, not a line of its own.
-        assert!(
-            caption.y0 - label.y1 < f64::from(spacing().s1) + 1.0,
-            "the caption hugs its label: {label:?} then {caption:?}"
-        );
-        // The next row starts a full row gap below the caption.
-        assert!(
-            next_label.y0 - caption.y1 >= f64::from(spacing().rhythm.sibling) - 0.5,
-            "the next row is a row gap below the caption"
-        );
-        assert!(
-            next_label.y0 - caption.y1 > caption.y0 - label.y1,
-            "the caption must belong to its label, not float towards the next row"
-        );
-        // The toggle is centred on the label and its caption together.
+        // The toggle is centred on the label and its explanation together.
         same_centre_line(
-            block_centre,
+            row.center().y,
             row_toggle.center().y,
-            "label block vs toggle centre",
+            "row vs toggle centre",
         );
     }
 
@@ -257,35 +270,21 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
         let config = crate::support::ScratchConfig::new();
         let app = config.app().with_category(Category::RegionFormats);
         let app = lay_out(app, WIDE);
-        let label = field_label_by_control(&*app, "region.currency");
+        let (row, wrapped) = row_of_control(&*app, "region.currency");
         let control = by_test_id(&*app, "region.currency");
-        // Automatic fields stack when the label and chooser cannot fit the
-        // readable form measure; both arrangements keep a deliberate alignment.
-        if control.y0 >= label.y1 {
-            close(control.x0, label.x0, "stacked chooser starts at its label");
-            let gap = control.y0 - label.y1;
-            assert!(
-                gap >= 0.0 && gap <= f64::from(spacing().s2) + 1.0,
-                "stacked chooser hugs its label by the shared field gap: {gap}"
-            );
-        } else {
-            same_centre_line(
-                label.center().y,
-                control.center().y,
-                "inline label vs dropdown centre",
-            );
-        }
-        // …inside the toolkit's readable form measure (720) rather than the full
-        // detail width, so the pair no longer drifts ~600 px apart.
-        let card_inner = control.x1 - label.x0;
+        // A wide page keeps the chooser beside its label, centred on the row.
+        assert!(!wrapped, "wide: the currency chooser sits beside its label");
+        same_centre_line(
+            row.center().y,
+            control.center().y,
+            "inline row vs dropdown centre",
+        );
+        // …inside the toolkit's readable measure (720) rather than the full
+        // detail width, so the pair never drifts ~600 px apart.
+        let card_inner = control.x1 - row.x0;
         assert!(
             card_inner <= 720.0 + 0.5,
-            "label→control span {card_inner} exceeds the readable measure"
-        );
-        assert!(
-            control.x0 - label.x1 < 560.0,
-            "label/control gap {} is still the full-width drift (the form is bounded by the 720 readable measure)",
-            control.x0 - label.x1
+            "label to control span {card_inner} exceeds the readable measure"
         );
         // Every chooser in the card shares the same trailing edge.
         for id in [
@@ -302,16 +301,18 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
             );
         }
 
-        // A narrow window is a maximum, not a fixed width: the card still fills it.
+        // A narrow window is a maximum, not a fixed width: the chooser stays
+        // inside its row and the window.
         let narrow = config
             .app()
             .with_category(Category::RegionFormats)
             .with_width_hint(NARROW.0);
         let narrow = lay_out(narrow, NARROW);
         let control = by_test_id(&*narrow, "region.currency");
+        let (row, _) = row_of_control(&*narrow, "region.currency");
         assert!(
-            control.x1 > f64::from(NARROW.0) - 60.0,
-            "narrow chooser {control:?} must reach the card's trailing edge"
+            control.x1 <= row.x1 + 0.5 && control.x1 <= f64::from(NARROW.0),
+            "narrow chooser {control:?} stays inside its row {row:?}"
         );
     }
 
@@ -337,28 +338,16 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
             .with_category(Category::RegionFormats)
             .with_width_hint(phone.0);
         let app = lay_out(app, phone);
-        let sp = spacing();
         for (id, _label) in rows {
             let control = by_test_id(&*app, id);
-            let label = field_label_by_control(&*app, id);
+            let (row, wrapped) = row_of_control(&*app, id);
             assert!(
-                control.y0 >= label.y1,
-                "phone: {id} {control:?} sits beneath its label {label:?}"
+                wrapped,
+                "phone: {id} {control:?} sits beneath its label in {row:?}"
             );
-            close(
-                control.x0,
-                label.x0,
-                &format!("phone: {id} starts on its label's left edge"),
-            );
-            // The chooser hugs its label by a stacked field's step, not the
-            // row gap. Taffy rounds each sibling's position to whole pixels on
-            // its own, so the gap between two adjacent edges can land one pixel
-            // either side of the token; anything past that is a real gap defect.
-            let gap = control.y0 - label.y1;
             assert!(
-                gap >= 0.0 && gap <= f64::from(sp.s2) + 1.0,
-                "phone: {id} gap {gap} must be the s2 step ({}) within one rounding pixel",
-                sp.s2
+                control.x0 >= row.x0 - 0.5 && control.x1 <= row.x1 + 0.5,
+                "phone: {id} {control:?} stays inside its row {row:?}"
             );
         }
 
@@ -372,15 +361,15 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
         let app = lay_out(app, medium);
         for (id, _label) in rows {
             let control = by_test_id(&*app, id);
-            let label = field_label_by_control(&*app, id);
+            let (row, wrapped) = row_of_control(&*app, id);
             assert!(
-                control.x0 > label.x1,
-                "medium: {id} {control:?} sits beside its label {label:?}"
+                !wrapped,
+                "medium: {id} {control:?} sits beside its label in {row:?}"
             );
             same_centre_line(
                 control.center().y,
-                label.center().y,
-                &format!("medium: {id} shares its label's centre line"),
+                row.center().y,
+                &format!("medium: {id} shares its row's centre line"),
             );
         }
     }
@@ -439,7 +428,7 @@ fn pane_sections_stack_on_the_s6_step_and_never_touch() {
         let app = lay_out(app, viewport);
         // Top-level sections only: a section nested inside another is that
         // section's own content, not a sibling.
-        let mut sections: Vec<Rect> = by_widget_name(&*app, "FormSection")
+        let mut sections: Vec<Rect> = by_widget_name(&*app, "Section")
             .into_iter()
             .filter(|r| r.width() > 0.0 && r.height() > 0.0)
             .collect();

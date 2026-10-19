@@ -41,8 +41,8 @@ use crate::speaker_setup::{
     member_status_text, playback_text, role_answer, role_text,
 };
 use crate::widgets::{
-    Item, SettingsSection, StatusTone, block, card, cards, item_row, note, row, rows,
-    semantic_status_pill, setting_row, setting_row_described, slider_row, value_row,
+    Item, SettingsSection, StatusTone, block, note, page, row, rows, section, semantic_status_pill,
+    setting_row, setting_row_described, slider_row, thing_row, value_row,
 };
 
 /// How often a shown pane asks for the speaker sets again while something
@@ -959,8 +959,8 @@ impl SpeakersModel {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        let mut status = vec![semantic_status_pill(
-            &t_args(
+        let mut tags = vec![(
+            t_args(
                 "speakers-ready-count",
                 &[
                     ("ready", ready.to_string().into()),
@@ -974,8 +974,8 @@ impl SpeakersModel {
             },
         )];
         if let Some(playback) = &group.playback {
-            status.push(semantic_status_pill(
-                &playback_text(playback),
+            tags.push((
+                playback_text(playback),
                 match playback {
                     ui::collaboration::SpeakerPlaybackInfo::Playing => StatusTone::Success,
                     ui::collaboration::SpeakerPlaybackInfo::Connecting => StatusTone::Neutral,
@@ -986,30 +986,40 @@ impl SpeakersModel {
                 },
             ));
         }
-        let mut actions = Vec::new();
-        if group.led_here {
-            actions.push(self.cx.bind_invocation(
-                Button::new(
-                    &format!("speakers.group.{}.calibrate", group.id),
-                    &t("speakers-calibrate-button"),
-                ),
-                SpeakerFlow::OpenCalibration {
-                    group: group.id.clone(),
-                },
-            ));
-            actions.push(
-                self.cx.bind_invocation(
-                    Button::new(
-                        &format!("speakers.group.{}.delete", group.id),
-                        &t("speakers-delete"),
-                    )
-                    .role(ui::widget::ButtonRole::Destructive),
-                    SpeakerEffect::DeleteSpeakerSet {
-                        group: group.id.clone(),
-                    },
-                ),
-            );
-        }
+        // A set led here is calibrated from its row; deleting it is in its
+        // menu.
+        let trailing: Option<Box<dyn Widget>> = group.led_here.then(|| {
+            Box::new(
+                ui::widget::Row::new()
+                    .no_wrap()
+                    .with_rhythm(ui::tokens::Rhythm::Related)
+                    .with_align_items(ui::taffy::AlignItems::Center)
+                    .push(Box::new(
+                        self.cx.bind_invocation(
+                            Button::new(
+                                &format!("speakers.group.{}.calibrate", group.id),
+                                &t("speakers-calibrate-button"),
+                            )
+                            .control_size(ui::widget::ControlSize::Small),
+                            SpeakerFlow::OpenCalibration {
+                                group: group.id.clone(),
+                            },
+                        ),
+                    ))
+                    .push(Box::new(
+                        ui::widget::RowMenu::new(
+                            format!("speakers.group.{}.more", group.id),
+                            &t_args("settings-row-more", &[("name", group.name.clone().into())]),
+                        )
+                        .destructive(
+                            t("speakers-delete"),
+                            self.cx.invocation_binding(SpeakerEffect::DeleteSpeakerSet {
+                                group: group.id.clone(),
+                            }),
+                        ),
+                    )),
+            ) as Box<dyn Widget>
+        });
         let mut description = if group.led_here {
             summary
         } else {
@@ -1032,11 +1042,20 @@ impl SpeakersModel {
                 ],
             );
         }
-        // A saved set is an entry of a list, laid out like every other
-        // (printers, users): its marks beside the name, the members below,
-        // its actions under the text, so nothing floats beside a wrapped
-        // description in a narrow window.
-        item_row(&group.name, status, &[description], actions)
+        let tags: Vec<(&str, ui::widget::ChipStyle)> = tags
+            .iter()
+            .map(|(text, tone)| (text.as_str(), ui::widget::ChipStyle::Tinted(*tone)))
+            .collect();
+        row(Box::new(
+            thing_row(
+                &format!("speakers.group.{}", group.id),
+                &group.name,
+                &[description],
+                trailing,
+            )
+            .icon(ui::icons::Icon::Speaker)
+            .tags(&tags),
+        ))
     }
 
     fn build_overview(&self) -> Vec<SettingsSection> {
@@ -1059,7 +1078,7 @@ impl SpeakersModel {
                 SpeakerFlow::BeginSpeakerSetup,
             ),
         )));
-        sections.push(card(&t("speakers-overview-title"), rows(body)));
+        sections.push(section(&t("speakers-overview-title"), rows(body)));
         sections
     }
 
@@ -1115,7 +1134,7 @@ impl SpeakersModel {
                 self.setup.outputs_problem().is_none(),
             )),
         ));
-        vec![card(&t("speakers-choose-title"), rows(body))]
+        vec![section(&t("speakers-choose-title"), rows(body))]
     }
 
     fn build_identify(&self, index: usize, played: bool) -> Vec<SettingsSection> {
@@ -1180,7 +1199,7 @@ impl SpeakersModel {
             body.extend(self.message_rows());
             body.push(self.nav_buttons(true, None));
         }
-        vec![card(&t("speakers-identify-title"), rows(body))]
+        vec![section(&t("speakers-identify-title"), rows(body))]
     }
 
     fn build_layout(&self) -> Vec<SettingsSection> {
@@ -1245,7 +1264,7 @@ impl SpeakersModel {
                 self.setup.layout_problem().is_none(),
             )),
         ));
-        vec![card(&t("speakers-layout-title"), rows(body))]
+        vec![section(&t("speakers-layout-title"), rows(body))]
     }
 
     fn build_name(&self) -> Vec<SettingsSection> {
@@ -1270,7 +1289,7 @@ impl SpeakersModel {
             true,
             Some(("speakers.save", &t("speakers-save"), self.in_flight == 0)),
         ));
-        vec![card(&t("speakers-name-title"), rows(body))]
+        vec![section(&t("speakers-name-title"), rows(body))]
     }
 
     #[expect(
@@ -1289,7 +1308,7 @@ impl SpeakersModel {
                         SpeakerFlow::CloseSpeakerSetup,
                     ))),
             )));
-            return vec![card(&t("speakers-saved-title"), rows(body))];
+            return vec![section(&t("speakers-saved-title"), rows(body))];
         };
         let mut body = Vec::new();
         for member in &known.members {
@@ -1440,7 +1459,7 @@ impl SpeakersModel {
             }
         }
         body.push(row(Box::new(actions)));
-        vec![card(
+        vec![section(
             &t_args(
                 "speakers-calibrate-title",
                 &[("name", known.name.as_str().into())],
@@ -1451,12 +1470,12 @@ impl SpeakersModel {
 
     fn build_composition(&self) -> Box<dyn Widget> {
         if !self.setup.snapshot().media_enabled && !self.refreshing {
-            return cards(vec![card(
+            return page(vec![section(
                 &t("speakers-overview-title"),
                 rows(vec![note(&t("speakers-media-off"))]),
             )]);
         }
-        cards(match self.setup.step().clone() {
+        page(match self.setup.step().clone() {
             Step::Overview => self.build_overview(),
             Step::ChooseOutputs => self.build_choose(),
             Step::Identify { index, played } => self.build_identify(index, played),

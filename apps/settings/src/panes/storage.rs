@@ -32,7 +32,7 @@ use crate::i18n::{t, t_args};
 use crate::panes::model::{PaneModel, Replies, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{SettingsSection, card, card_with_action, note, rows, value_row};
+use crate::widgets::{SettingsSection, note, rows, section, section_with, value_row};
 
 fn category_label(category: StorageCategory) -> String {
     t(match category {
@@ -864,7 +864,7 @@ impl StorageModel {
 
     fn build_composition(&self) -> Box<dyn Widget> {
         let mut sections = vec![self.overview_card()];
-        sections.extend(residency::cards(
+        sections.extend(residency::page(
             &self.cx,
             &self.fleet,
             self.residency_job.is_some(),
@@ -876,13 +876,13 @@ impl StorageModel {
             self.cleanup_card(),
             self.tools_card(),
         ]);
-        crate::widgets::cards(sections)
+        crate::widgets::page(sections)
     }
 
     fn overview_card(&self) -> SettingsSection {
         let snapshot = self.scan.as_ref().map(|scan| &scan.snapshot);
         let totals = snapshot.map(StorageSnapshot::totals).unwrap_or_default();
-        card(
+        section(
             &t("settings-storage-use"),
             rows(
                 [
@@ -958,7 +958,7 @@ impl StorageModel {
                     "settings-storage-free",
                     &[("size", ui::format::size(reclaimable).into())],
                 );
-                card_with_action(
+                section_with(
                     &t("settings-storage-synced-card"),
                     Box::new(self.cx.bind_invocation(
                         Button::new("storage.sync.free", &free),
@@ -974,11 +974,11 @@ impl StorageModel {
                 } else {
                     "settings-storage-offline"
                 })));
-                card(&t("settings-storage-synced-card"), rows(sync_rows))
+                section(&t("settings-storage-synced-card"), rows(sync_rows))
             }
         } else {
             let fallback = t("settings-storage-accounting-unavailable");
-            card(
+            section(
                 &t("settings-storage-synced-card"),
                 rows(vec![note(
                     self.sync_message.as_deref().unwrap_or(&fallback),
@@ -989,7 +989,7 @@ impl StorageModel {
 
     fn apps_card(&self) -> SettingsSection {
         let Some(scan) = &self.scan else {
-            return card(
+            return section(
                 &t("settings-storage-largest"),
                 rows(vec![note(&t("settings-pane-reading"))]),
             );
@@ -1012,7 +1012,7 @@ impl StorageModel {
                 )
             })
             .collect();
-        card(
+        section(
             &t("settings-storage-largest"),
             if scan.snapshot.entries.is_empty() {
                 rows(vec![note(&t("settings-storage-no-apps"))])
@@ -1024,13 +1024,13 @@ impl StorageModel {
 
     fn cleanup_card(&self) -> SettingsSection {
         let Some(scan) = &self.scan else {
-            return card(
+            return section(
                 &t("settings-storage-cleanup"),
                 rows(vec![note(&t("settings-pane-reading"))]),
             );
         };
         match &scan.cleanup {
-            Some(preview) if self.cleaning => card(
+            Some(preview) if self.cleaning => section(
                 &t("settings-storage-cleanup-preview"),
                 rows(vec![
                     value_row(
@@ -1060,13 +1060,13 @@ impl StorageModel {
                         &ui::format::size(i.bytes),
                     )
                 }));
-                card_with_action(
+                section_with(
                     &t("settings-storage-cleanup-preview"),
                     action,
                     rows(preview_rows),
                 )
             }
-            _ => card(
+            _ => section(
                 &t("settings-storage-cleanup"),
                 rows(vec![note(&t("settings-storage-cleanup-empty"))]),
             ),
@@ -1079,7 +1079,7 @@ impl StorageModel {
         let size_label = t("settings-storage-cache-size");
         let Some(policy) = self.cache_policy else {
             let unavailable = t("settings-storage-unavailable");
-            return card(
+            return section(
                 &t("settings-storage-cache-card"),
                 rows(vec![
                     value_row(&prefetch_label, &unavailable),
@@ -1104,7 +1104,7 @@ impl StorageModel {
                 &ui::format::size(policy.budget_bytes.unwrap_or_default()),
             ),
         };
-        card(
+        section(
             &t("settings-storage-cache-card"),
             rows(vec![
                 self.cx
@@ -1124,7 +1124,7 @@ impl StorageModel {
     fn tools_card(&self) -> SettingsSection {
         let open_disks = t("settings-storage-open-disks");
         let open_backups = t("settings-storage-open-backups");
-        card(
+        section(
             &t("settings-storage-tools"),
             rows(vec![
                 self.cx

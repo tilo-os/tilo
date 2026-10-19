@@ -8,11 +8,11 @@
 //! from its own storage service.
 
 use runtime_fs::storage::{ResidencySummary, WorkspaceResidency};
-use ui::widget::Button;
+use ui::widget::{ChipStyle, RowMenu};
 
 use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
-use crate::widgets::{SettingsSection, StatusTone, card, item_row, note, rows, status_pill};
+use crate::widgets::{SettingsSection, StatusTone, note, row, rows, section, thing_row};
 
 use super::StorageEffect;
 
@@ -73,7 +73,7 @@ impl Fleet {
 /// One card per device: each workspace it holds, and what of it would be
 /// lost with the device. This device's rows free its cache and keep a
 /// workspace here.
-pub fn cards(cx: &PaneCx, fleet: &Fleet, busy: bool) -> Vec<SettingsSection> {
+pub fn page(cx: &PaneCx, fleet: &Fleet, busy: bool) -> Vec<SettingsSection> {
     fleet
         .devices()
         .iter()
@@ -97,7 +97,7 @@ pub fn cards(cx: &PaneCx, fleet: &Fleet, busy: bool) -> Vec<SettingsSection> {
             if items.is_empty() {
                 items.push(note(&t("settings-storage-no-workspaces")));
             }
-            card(&title, rows(items))
+            section(&title, rows(items))
         })
         .collect()
 }
@@ -109,10 +109,10 @@ fn workspace_row(
 ) -> crate::widgets::Item {
     let split = &workspace.split;
     let size = |bytes| ui::format::size(bytes);
-    let mut marks = Vec::new();
+    let mut tags: Vec<(String, StatusTone)> = Vec::new();
     if split.only_here_bytes > 0 {
-        marks.push(status_pill(
-            &t_args(
+        tags.push((
+            t_args(
                 "settings-storage-only-here-mark",
                 &[("size", size(split.only_here_bytes).into())],
             ),
@@ -120,10 +120,7 @@ fn workspace_row(
         ));
     }
     if workspace.kept_here {
-        marks.push(status_pill(
-            &t("settings-storage-kept-here-mark"),
-            StatusTone::Neutral,
-        ));
+        tags.push((t("settings-storage-kept-here-mark"), StatusTone::Neutral));
     }
     let mut details = Vec::new();
     if split.only_here_bytes > 0 {
@@ -150,40 +147,52 @@ fn workspace_row(
     if details.is_empty() {
         details.push(t("settings-storage-nothing-here"));
     }
-    let mut buttons = Vec::new();
-    if actions {
+    let menu = actions.then(|| {
+        let mut menu = RowMenu::new(
+            format!("storage.residency.more.{}", workspace.workspace),
+            &t_args(
+                "settings-row-more",
+                &[("name", workspace.workspace.clone().into())],
+            ),
+        );
         if split.cache_bytes > 0 {
-            let label = t_args(
-                "settings-storage-free-cache",
-                &[("size", size(split.cache_bytes).into())],
-            );
-            buttons.push(cx.bind_invocation(
-                Button::new(
-                    &format!("storage.residency.free.{}", workspace.workspace),
-                    &label,
+            menu = menu.action(
+                t_args(
+                    "settings-storage-free-cache",
+                    &[("size", size(split.cache_bytes).into())],
                 ),
-                StorageEffect::FreeCache {
+                cx.invocation_binding(StorageEffect::FreeCache {
                     workspace: workspace.workspace.clone(),
-                },
-            ));
+                }),
+            );
         }
         let (key, keep) = if workspace.kept_here {
             ("settings-storage-stop-keeping", false)
         } else {
             ("settings-storage-keep-here", true)
         };
-        buttons.push(cx.bind_invocation(
-            Button::new(
-                &format!("storage.residency.keep.{}", workspace.workspace),
-                &t(key),
-            ),
-            StorageEffect::KeepHere {
+        Box::new(menu.action(
+            t(key),
+            cx.invocation_binding(StorageEffect::KeepHere {
                 workspace: workspace.workspace.clone(),
                 keep,
-            },
-        ));
-    }
-    item_row(&workspace.workspace, marks, &details, buttons)
+            }),
+        )) as Box<dyn ui::widget::Widget>
+    });
+    let tags: Vec<(&str, ChipStyle)> = tags
+        .iter()
+        .map(|(text, tone)| (text.as_str(), ChipStyle::Tinted(*tone)))
+        .collect();
+    row(Box::new(
+        thing_row(
+            &format!("storage.residency.workspace.{}", workspace.workspace),
+            &workspace.workspace,
+            &details,
+            menu,
+        )
+        .icon(ui::icons::Icon::Layers)
+        .tags(&tags),
+    ))
 }
 
 #[cfg(test)]

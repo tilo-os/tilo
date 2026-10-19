@@ -15,8 +15,12 @@ use std::sync::{Arc, Mutex};
 
 use runtime_identity::{IdentitySummary, KeyProtection};
 use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected, LiveRow};
+use ui::icons::Icon;
 use ui::tilo_resource::{self, Effect};
-use ui::widget::{Button, Row, Spacer, TextInput, TextInputKind, Widget};
+use ui::widget::{
+    Button, ButtonRole, ChipStyle, Column, DisclosureRow, DisclosureState, Row, RowMenu, TextInput,
+    TextInputKind, Widget,
+};
 use zeroize::Zeroizing;
 
 use crate::effects::{SettingsEffect, effect};
@@ -26,8 +30,8 @@ use crate::panes::model::{PaneModel, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    Item, SettingsSection, StatusTone, card, error_caption, field_row, item_row, note, row, rows,
-    semantic_status_pill,
+    Item, SettingsSection, StatusTone, block, error_caption, field_row, note, row, rows, section,
+    thing_row, untitled,
 };
 
 /// Changes to this device's login accounts and the person's identities.
@@ -501,72 +505,99 @@ impl UsersArea {
     /// One row per account other than the signed-in one, and per identity.
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
         let model = self.model().borrow();
-        let accounts = model.users.iter().filter(|user| !user.current).map(|user| {
-            let name = user.username.clone();
-            let mut row = LiveRow::new(
-                format!("settings.user:{name}"),
-                "settings.user",
-                user.full_name.clone(),
+        let accounts = model
+            .users
+            .iter()
+            .filter(|user| !user.current)
+            .map(user_live_row);
+        let identities = model.identities.iter().map(identity_live_row);
+        accounts.chain(identities).collect()
+    }
+}
+
+/// An account other than the signed-in one as a row of the published
+/// surface, offering what can be done to it now.
+fn user_live_row(user: &DeviceUser) -> LiveRow {
+    let name = user.username.clone();
+    let mut row = LiveRow::new(
+        format!("settings.user:{name}"),
+        "settings.user",
+        user.full_name.clone(),
+    )
+    .operation(
+        SettingsEffect::from(UsersEffect::SetAdministrator {
+            user: name.clone(),
+            admin: !user.admin,
+        })
+        .bound(),
+    );
+    // An unread automatic-login state offers no switch to flip.
+    if user.automatic_login_error.is_none() {
+        row = row.operation(
+            SettingsEffect::from(UsersEffect::SetAutomaticLogin {
+                user: name.clone(),
+                on: !user.automatic_login,
+            })
+            .bound(),
+        );
+    }
+    row.operation(
+        SettingsEffect::from(UsersEffect::RemoveUser {
+            user: name,
+            keep_files: true,
+        })
+        .bound(),
+    )
+}
+
+/// An identity as a row of the published surface.
+fn identity_live_row(identity: &IdentitySummary) -> LiveRow {
+    let id = identity.id.clone();
+    let mut row = LiveRow::new(
+        format!("settings.identity:{id}"),
+        "settings.identity",
+        identity_name(identity).to_owned(),
+    );
+    if !identity.active {
+        row = row
+            .operation(
+                SettingsEffect::from(UsersEffect::UseIdentity {
+                    identity: id.clone(),
+                })
+                .bound(),
             )
             .operation(
-                SettingsEffect::from(UsersEffect::SetAdministrator {
-                    user: name.clone(),
-                    admin: !user.admin,
+                SettingsEffect::from(UsersEffect::RemoveIdentity {
+                    identity: id.clone(),
                 })
                 .bound(),
             );
-            // An unread automatic-login state offers no switch to flip.
-            if user.automatic_login_error.is_none() {
-                row = row.operation(
-                    SettingsEffect::from(UsersEffect::SetAutomaticLogin {
-                        user: name.clone(),
-                        on: !user.automatic_login,
-                    })
-                    .bound(),
-                );
-            }
-            row.operation(
-                SettingsEffect::from(UsersEffect::RemoveUser {
-                    user: name,
-                    keep_files: true,
-                })
-                .bound(),
-            )
-        });
-        let identities = model.identities.iter().map(|identity| {
-            let id = identity.id.clone();
-            let mut row = LiveRow::new(
-                format!("settings.identity:{id}"),
-                "settings.identity",
-                if identity.display_name.is_empty() {
-                    id.clone()
-                } else {
-                    identity.display_name.clone()
-                },
-            );
-            if !identity.active {
-                row = row
-                    .operation(
-                        SettingsEffect::from(UsersEffect::UseIdentity {
-                            identity: id.clone(),
-                        })
-                        .bound(),
-                    )
-                    .operation(
-                        SettingsEffect::from(UsersEffect::RemoveIdentity {
-                            identity: id.clone(),
-                        })
-                        .bound(),
-                    );
-            }
-            if identity.protection == KeyProtection::LegacyPlaintext {
-                row = row.operation(
-                    SettingsEffect::from(UsersEffect::ProtectIdentity { identity: id }).bound(),
-                );
-            }
-            row
-        });
-        accounts.chain(identities).collect()
+    }
+    if identity.protection == KeyProtection::LegacyPlaintext {
+        row = row
+            .operation(SettingsEffect::from(UsersEffect::ProtectIdentity { identity: id }).bound());
+    }
+    row
+}
+
+/// How an identity's key is kept, in the person's words.
+fn protection_label(protection: KeyProtection) -> String {
+    t(match protection {
+        KeyProtection::SecretService => "settings-users-protection-service",
+        KeyProtection::BrokerFile => "settings-users-protection-file",
+        KeyProtection::HardwareBacked => "settings-users-protection-hardware-backed",
+        KeyProtection::LegacyPlaintext => "settings-users-protection-legacy",
+        KeyProtection::DeviceCertificate => "settings-users-protection-device-certificate",
+        KeyProtection::Unavailable => "settings-users-protection-unavailable",
+    })
+}
+
+/// What an identity is called: its display name, else its id.
+fn identity_name(identity: &IdentitySummary) -> &str {
+    if identity.display_name.is_empty() {
+        &identity.id
+    } else {
+        &identity.display_name
     }
 }
 
@@ -607,6 +638,8 @@ pub struct UsersModel {
     /// Whether the accounts are this device's, read again after a change.
     of_device: bool,
     form: AccountForm,
+    /// Whether the new-account form is open, kept across rebuilds.
+    add_open: DisclosureState,
     error: Option<String>,
     changed: bool,
 }
@@ -660,6 +693,7 @@ impl UsersModel {
             identity_changes: Vec::new(),
             of_device: true,
             form: AccountForm::default(),
+            add_open: DisclosureState::new(),
             error: None,
             changed: false,
         }
@@ -701,6 +735,7 @@ impl UsersModel {
             identity_changes: Vec::new(),
             of_device: false,
             form: AccountForm::default(),
+            add_open: DisclosureState::new(),
             error: None,
             changed: false,
         }
@@ -780,28 +815,28 @@ impl UsersModel {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        let mut cards: Vec<SettingsSection> = Vec::new();
+        let mut sections: Vec<SettingsSection> = Vec::new();
         if let Some(error) = &self.error {
-            cards.push(card(
+            sections.push(section(
                 &t("settings-users-error-title"),
                 rows(vec![note(error)]),
             ));
         }
-        let people = if let Some(error) = &self.users_error {
-            rows(vec![row(error_caption(&t_args(
+        let mut people: Vec<Item> = if let Some(error) = &self.users_error {
+            vec![block(error_caption(&t_args(
                 "settings-users-read-error",
                 &[("error", error.as_str().into())],
-            )))])
+            )))]
         } else if self.users.is_empty() {
-            rows(vec![note(&t("settings-users-empty-accounts"))])
+            vec![note(&t("settings-users-empty-accounts"))]
         } else {
-            rows(self.users.iter().flat_map(|u| self.user_row(u)).collect())
+            self.users.iter().flat_map(|u| self.user_row(u)).collect()
         };
-        cards.push(card(&t("settings-users-login-accounts"), people));
-        cards.push(self.add_form());
+        people.push(row(self.add_form()));
+        sections.push(section(&t("settings-users-login-accounts"), rows(people)));
 
         let identity_rows = if let Some(error) = &self.identities_error {
-            rows(vec![row(error_caption(&t_args(
+            rows(vec![block(error_caption(&t_args(
                 "settings-users-identities-read-error",
                 &[("error", error.as_str().into())],
             )))])
@@ -815,35 +850,32 @@ impl UsersModel {
                     .collect(),
             )
         };
-        cards.push(card(&t("settings-users-identities-title"), identity_rows));
-        let mut protection_rows: Vec<Item> =
-            vec![note(&t("settings-users-protection-secret-service"))];
+        let mut identity_rows =
+            identity_rows.push(note(&t("settings-users-protection-secret-service")));
         if self
             .identities
             .iter()
             .any(|identity| identity.protection == KeyProtection::BrokerFile)
         {
-            protection_rows.push(note(&t("settings-users-protection-broker-file")));
+            identity_rows = identity_rows.push(note(&t("settings-users-protection-broker-file")));
         }
         if self
             .identities
             .iter()
             .any(|identity| identity.protection == KeyProtection::HardwareBacked)
         {
-            protection_rows.push(note(&t("settings-users-protection-hardware")));
+            identity_rows = identity_rows.push(note(&t("settings-users-protection-hardware")));
         }
-        cards.push(card(
-            &t("settings-users-protection-title"),
-            rows(protection_rows),
+        identity_rows = identity_rows.push(note(&t("settings-users-boundary-body")));
+        sections.push(section(
+            &t("settings-users-identities-title"),
+            identity_rows,
         ));
-        cards.push(card(
-            &t("settings-users-boundary-title"),
-            rows(vec![note(&t("settings-users-boundary-body"))]),
-        ));
-        crate::widgets::cards(cards)
+        crate::widgets::page(sections)
     }
 
-    fn add_form(&self) -> SettingsSection {
+    /// Adding a login account: a row that opens its form in place.
+    fn add_form(&self) -> Box<dyn Widget> {
         let full = TextInput::local()
             .with_kind(TextInputKind::Name)
             .with_id("users.form.full_name")
@@ -863,7 +895,8 @@ impl UsersModel {
         let username = Arc::clone(&self.form.username);
         let full_name = Arc::clone(&self.form.full_name);
         let create = self.cx.bind(
-            Button::new("settings.users.save", &t("settings-users-create")),
+            Button::new("settings.users.save", &t("settings-users-create"))
+                .role(ButtonRole::Primary),
             effect(UsersEffect::CREATE_USER).map(move |()| {
                 (
                     username
@@ -877,110 +910,111 @@ impl UsersModel {
                 )
             }),
         );
-        let buttons = row(Box::new(
-            Row::new()
-                .push(Box::new(create))
-                .push(Box::new(Spacer::new())),
-        ));
-        card(
-            &t("settings-users-add-form-title"),
-            rows(vec![
-                field_row(&t("settings-users-full-name"), Box::new(full)),
-                field_row(&t("settings-users-username"), Box::new(user)),
-                field_row(&t("settings-users-password"), Box::new(password)),
-                note(&t("settings-users-password-note")),
-                buttons,
-            ]),
+        let form = crate::widgets::page(vec![untitled(rows(vec![
+            field_row(&t("settings-users-full-name"), Box::new(full)),
+            field_row(&t("settings-users-username"), Box::new(user)),
+            field_row(&t("settings-users-password"), Box::new(password)),
+            note(&t("settings-users-password-note")),
+            block(Box::new(Row::new().push(Box::new(create)))),
+        ]))]);
+        Box::new(
+            DisclosureRow::new(
+                t("settings-users-add-form-title"),
+                Box::new(
+                    Column::new()
+                        .with_no_padding()
+                        .with_intrinsic_height()
+                        .with_vertical_padding(crate::widgets::spacing().rhythm.sibling)
+                        .push(form),
+                ),
+            )
+            .icon(Icon::UserPlus)
+            .with_state(&self.add_open),
         )
     }
 
-    /// What can be done to `user`'s account: nothing for the signed-in one.
-    fn user_actions(&self, user: &DeviceUser) -> Vec<Button> {
-        let mut actions: Vec<Button> = Vec::new();
-        if !user.current {
-            let role_action = if user.admin {
-                t("settings-users-make-standard")
-            } else {
-                t("settings-users-make-administrator")
-            };
-            let auto_action = if user.automatic_login {
-                t("settings-users-disable-autologin")
-            } else {
-                t("settings-users-enable-autologin")
-            };
-            let name = &user.username;
-            actions.push(self.cx.bind_invocation(
-                Button::new(&format!("settings.users.role.{name}"), &role_action),
-                UsersEffect::SetAdministrator {
-                    user: name.clone(),
-                    admin: !user.admin,
-                },
-            ));
-            // An unread automatic-login state offers no switch to flip.
-            if user.automatic_login_error.is_none() {
-                actions.push(self.cx.bind_invocation(
-                    Button::new(&format!("settings.users.autologin.{name}"), &auto_action),
-                    UsersEffect::SetAutomaticLogin {
-                        user: name.clone(),
-                        on: !user.automatic_login,
-                    },
-                ));
-            }
-            actions.push(self.cx.bind_invocation(
-                Button::new(
-                    &format!("settings.users.remove_keep.{name}"),
-                    &t("settings-users-remove-keep-files"),
-                ),
-                UsersEffect::RemoveUser {
-                    user: name.clone(),
-                    keep_files: true,
-                },
-            ));
-            actions.push(self.cx.bind_invocation(
-                Button::new(
-                    &format!("settings.users.remove.{name}"),
-                    &t("settings-users-remove-account-and-files"),
-                ),
-                UsersEffect::RemoveUser {
-                    user: name.clone(),
-                    keep_files: false,
-                },
-            ));
-        }
-        actions
-    }
-
+    /// An account: who it is, its role, and its menu (role, automatic
+    /// login, removing it); the signed-in account offers none.
     fn user_row(&self, user: &DeviceUser) -> Vec<Item> {
-        let actions = self.user_actions(user);
         let role = if user.admin {
             t("settings-users-role-administrator")
         } else {
             t("settings-users-role-standard")
         };
-        let you = if user.current {
-            t("settings-users-signed-in")
-        } else {
-            String::new()
-        };
-        let detail = t_args(
-            "settings-users-uid-line",
-            &[
-                ("username", user.username.as_str().into()),
-                ("uid", user.uid.into()),
-                ("you", you.as_str().into()),
-            ],
-        );
-        let pill = semantic_status_pill(
-            &role,
-            if user.admin {
-                StatusTone::Success
-            } else {
-                StatusTone::Neutral
-            },
-        );
-        let mut items = vec![item_row(&user.full_name, vec![pill], &[detail], actions)];
+        let mut tags = vec![(role, ChipStyle::Tinted(StatusTone::Neutral))];
+        if user.current {
+            tags.push((
+                t("settings-users-signed-in"),
+                ChipStyle::Tinted(StatusTone::Success),
+            ));
+        }
+        let tags: Vec<(&str, ChipStyle)> = tags
+            .iter()
+            .map(|(label, style)| (label.as_str(), *style))
+            .collect();
+        let menu: Option<Box<dyn Widget>> = (!user.current).then(|| {
+            let name = &user.username;
+            let live = user_live_row(user).into_resource();
+            let mut menu = RowMenu::new(
+                format!("settings.users.more.{name}"),
+                &t_args(
+                    "settings-row-more",
+                    &[("name", user.full_name.clone().into())],
+                ),
+            )
+            .action(
+                t(if user.admin {
+                    "settings-users-make-standard"
+                } else {
+                    "settings-users-make-administrator"
+                }),
+                self.cx.row_invocation(
+                    &live,
+                    UsersEffect::SetAdministrator {
+                        user: name.clone(),
+                        admin: !user.admin,
+                    },
+                ),
+            );
+            // An unread automatic-login state offers no switch to flip.
+            if user.automatic_login_error.is_none() {
+                menu = menu.action(
+                    t(if user.automatic_login {
+                        "settings-users-disable-autologin"
+                    } else {
+                        "settings-users-enable-autologin"
+                    }),
+                    self.cx.row_invocation(
+                        &live,
+                        UsersEffect::SetAutomaticLogin {
+                            user: name.clone(),
+                            on: !user.automatic_login,
+                        },
+                    ),
+                );
+            }
+            Box::new(menu.destructive(
+                t("settings-users-remove-ellipsis"),
+                self.cx.row_invocation(
+                    &live,
+                    UsersEffect::RemoveUser {
+                        user: name.clone(),
+                        keep_files: true,
+                    },
+                ),
+            )) as Box<dyn Widget>
+        });
+        let account = thing_row(
+            &format!("settings.users.user.{}", user.username),
+            &user.full_name,
+            std::slice::from_ref(&user.username),
+            menu,
+        )
+        .avatar(user.full_name.clone(), user.username.clone())
+        .tags(&tags);
+        let mut items = vec![row(Box::new(account))];
         if let Some(error) = &user.automatic_login_error {
-            items.push(row(error_caption(&t_args(
+            items.push(block(error_caption(&t_args(
                 "settings-users-autologin-error",
                 &[("error", error.as_str().into())],
             ))));
@@ -988,70 +1022,81 @@ impl UsersModel {
         items
     }
 
+    /// An identity: its name, how its key is protected, whether it is the
+    /// one in use, and its menu (use, protect, remove).
     fn identity_row(&self, id: &IdentitySummary) -> Item {
-        let name = if id.display_name.is_empty() {
-            &id.id
-        } else {
-            &id.display_name
-        };
-        let key = hex::encode(&id.public_key[..4]);
+        let live = identity_live_row(id).into_resource();
         let status = if id.active {
             t("settings-users-identity-active")
         } else {
             t("settings-users-identity-available")
         };
-        let pill = semantic_status_pill(
-            &status,
-            if id.active {
-                StatusTone::Success
-            } else {
-                StatusTone::Neutral
-            },
+        let mut menu = RowMenu::new(
+            format!("settings.users.identity.more.{}", id.id),
+            &t_args(
+                "settings-row-more",
+                &[("name", identity_name(id).to_owned().into())],
+            ),
         );
-        let mut actions: Vec<Button> = Vec::new();
         if !id.active {
-            actions.push(self.cx.bind_invocation(
-                Button::new(
-                    &format!("settings.users.identity.activate.{}", id.id),
-                    &t("settings-users-identity-use"),
+            menu = menu.action(
+                t("settings-users-identity-use"),
+                self.cx.row_invocation(
+                    &live,
+                    UsersEffect::UseIdentity {
+                        identity: id.id.clone(),
+                    },
                 ),
-                UsersEffect::UseIdentity {
-                    identity: id.id.clone(),
-                },
-            ));
-            actions.push(self.cx.bind_invocation(
-                Button::new(
-                    &format!("settings.users.identity.remove.{}", id.id),
-                    &t("settings-users-identity-remove"),
-                ),
-                UsersEffect::RemoveIdentity {
-                    identity: id.id.clone(),
-                },
-            ));
+            );
         }
         if id.protection == KeyProtection::LegacyPlaintext {
-            actions.push(self.cx.bind_invocation(
-                Button::new(
-                    &format!("settings.users.identity.protect.{}", id.id),
-                    &t("settings-users-identity-protect"),
+            menu = menu.action(
+                t("settings-users-identity-protect"),
+                self.cx.row_invocation(
+                    &live,
+                    UsersEffect::ProtectIdentity {
+                        identity: id.id.clone(),
+                    },
                 ),
-                UsersEffect::ProtectIdentity {
-                    identity: id.id.clone(),
-                },
-            ));
+            );
         }
-        let protection = id.protection.label();
-        let detail = t_args(
-            "settings-users-identity-detail",
+        if !id.active {
+            menu = menu.destructive(
+                t("settings-users-identity-remove"),
+                self.cx.row_invocation(
+                    &live,
+                    UsersEffect::RemoveIdentity {
+                        identity: id.id.clone(),
+                    },
+                ),
+            );
+        }
+        let shares = t_args(
+            "settings-users-identity-shares",
             &[
-                ("id", id.id.as_str().into()),
-                ("key", key.as_str().into()),
                 ("threshold", id.threshold.into()),
                 ("total", id.total_shares.into()),
-                ("protection", protection.into()),
             ],
         );
-        item_row(name, vec![pill], &[detail], actions)
+        let trailing: Option<Box<dyn Widget>> =
+            (!menu.is_empty()).then(|| Box::new(menu) as Box<dyn Widget>);
+        row(Box::new(
+            thing_row(
+                &format!("settings.users.identity.{}", id.id),
+                identity_name(id),
+                &[protection_label(id.protection), shares],
+                trailing,
+            )
+            .icon(Icon::Fingerprint)
+            .tags(&[(
+                status.as_str(),
+                ChipStyle::Tinted(if id.active {
+                    StatusTone::Success
+                } else {
+                    StatusTone::Neutral
+                }),
+            )]),
+        ))
     }
 }
 

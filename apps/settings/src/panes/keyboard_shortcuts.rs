@@ -26,7 +26,7 @@ use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{Item, SettingsSection, card, note, rows, setting_row};
+use crate::widgets::{Item, SettingsSection, note, rows, section, setting_row};
 
 /// The shell's desktop navigation preferences, as the person's settings
 /// hold them.
@@ -147,15 +147,18 @@ fn app_tab_chords_note() -> String {
     )
 }
 
-fn chords_text(chords: &[KeyChord]) -> String {
-    if chords.is_empty() {
-        return t("settings-shortcut-unassigned");
-    }
-    chords
-        .iter()
-        .map(chord_label)
-        .collect::<Vec<_>>()
-        .join("  /  ")
+/// `chords` as drawn keycaps, side by side: the keys a person presses.
+fn chord_caps(chords: &[KeyChord]) -> Box<dyn Widget> {
+    let caps = ui::keycaps::active();
+    Box::new(ui::widget::KeyHints::new(
+        chords
+            .iter()
+            .map(|chord| ui::widget::KeyHint {
+                keys: caps.chord_keys(chord.modifiers.iter().map(String::as_str), &chord.key),
+                label: String::new(),
+            })
+            .collect(),
+    ))
 }
 
 pub struct ShortcutPane {
@@ -239,7 +242,10 @@ impl ShortcutPane {
                 };
                 setting_row(&label, Box::new(recorder))
             }
-            None => crate::widgets::value_row(&label, &chords_text(&entry.chords)),
+            None if entry.chords.is_empty() => {
+                crate::widgets::value_row(&label, &t("settings-shortcut-unassigned"))
+            }
+            None => setting_row(&label, chord_caps(&entry.chords)),
         }
     }
 
@@ -269,7 +275,7 @@ impl ShortcutPane {
                         .filter(|entry| entry.category == category)
                         .map(|entry| self.entry_row(entry)),
                 );
-                card(&t(&category.label_key()), rows(body))
+                section(&t(&category.label_key()), rows(body))
             })
             .collect();
         if !self.config.actions.is_empty() {
@@ -277,12 +283,14 @@ impl ShortcutPane {
                 .config
                 .actions
                 .iter()
-                .map(|bound| crate::widgets::value_row(&bound.label, &chord_label(&bound.chord)))
+                .map(|bound| {
+                    setting_row(&bound.label, chord_caps(std::slice::from_ref(&bound.chord)))
+                })
                 .collect();
             actions.push(note(&t("settings-shortcuts-actions-caption")));
-            cards.push(card(&t("settings-shortcuts-actions"), rows(actions)));
+            cards.push(section(&t("settings-shortcuts-actions"), rows(actions)));
         }
-        crate::widgets::cards(cards)
+        crate::widgets::page(cards)
     }
 }
 

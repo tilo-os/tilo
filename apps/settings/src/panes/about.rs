@@ -18,13 +18,13 @@ use std::time::Duration;
 
 use ui::framework::{EffectAnswer, EffectCx, Effected};
 use ui::tilo_resource;
-use ui::widget::{Button, Row, Spacer, Widget};
+use ui::widget::{Button, Widget};
 
 use crate::host::PaneCx;
 use crate::i18n::t;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{block_section, card, hero, note, row, rows, value_row};
+use crate::widgets::{block_section, hero, note, rows, section, setting_row_described, value_row};
 
 /// What About offers to do with this device's identity.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
@@ -219,31 +219,25 @@ pub fn build_with(cx: &PaneCx, info: &AboutInfo) -> Box<dyn Widget> {
     let cpu = fact(&info.cpu);
     let memory = fact(&info.memory);
     let backup_label = t("settings-about-backup-button");
-    let identity = card(
+    // Who this device is to the workspace, and keeping a copy of it.
+    let identity = section(
         &t("settings-about-identity-card"),
         rows(vec![
             value_row(&t("settings-about-person"), &person),
             value_row(&t("settings-about-identity"), &info.fingerprint()),
+            setting_row_described(
+                &t("settings-about-backup-card"),
+                &t("settings-about-backup-caption"),
+                Box::new(cx.bind_invocation(
+                    Button::new(PORTABLE_BACKUP_BUTTON, &backup_label),
+                    AboutEffect::BackUpIdentity,
+                )),
+            ),
             note(&t("settings-about-identity-caption")),
         ]),
     );
 
-    let backup = card(
-        &t("settings-about-backup-card"),
-        rows(vec![
-            note(&t("settings-about-backup-caption")),
-            row(Box::new(
-                Row::new()
-                    .push(Box::new(cx.bind_invocation(
-                        Button::new(PORTABLE_BACKUP_BUTTON, &backup_label),
-                        AboutEffect::BackUpIdentity,
-                    )))
-                    .push(Box::new(Spacer::new())),
-            )),
-        ]),
-    );
-
-    let system = card(
+    let system = section(
         &t("settings-about-system-card"),
         rows(vec![
             value_row(&t("settings-about-os"), &pretty),
@@ -253,7 +247,7 @@ pub fn build_with(cx: &PaneCx, info: &AboutInfo) -> Box<dyn Widget> {
         ]),
     );
 
-    let hardware = card(
+    let hardware = section(
         &t("settings-about-hardware-card"),
         rows(vec![
             value_row(&t("settings-about-processor"), &cpu),
@@ -261,7 +255,7 @@ pub fn build_with(cx: &PaneCx, info: &AboutInfo) -> Box<dyn Widget> {
         ]),
     );
 
-    crate::widgets::cards(vec![hero_block, identity, backup, system, hardware])
+    crate::widgets::page(vec![hero_block, identity, system, hardware])
 }
 
 pub(crate) fn parse_os_release_pretty_name(contents: &str) -> Option<String> {

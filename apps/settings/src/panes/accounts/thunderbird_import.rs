@@ -10,7 +10,7 @@ use crate::effects::SettingsEffect;
 use crate::i18n::{t, t_args};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{El, SettingsSection, caption, card_with_action, note, row, rows};
+use crate::widgets::{El, SettingsSection, caption, note, row, rows, section_with};
 
 pub(super) fn discover(
     app: &SettingsApp,
@@ -171,7 +171,7 @@ impl AccountsPane {
                 AccountsEffect::CancelThunderbirdImport,
             ))));
         }
-        card_with_action(&t("accounts-import-title"), button, rows(body))
+        section_with(&t("accounts-import-title"), button, rows(body))
     }
     fn import_choice_widgets(&self, choice: &super::import_review::Choice) -> Vec<El> {
         let mut body = Vec::new();

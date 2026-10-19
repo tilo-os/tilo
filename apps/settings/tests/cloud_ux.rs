@@ -213,29 +213,28 @@ fn assert_connected_frame<A: ui::framework::ResourceApp>(
         1,
         "one Google provider card"
     );
-    for label in [
-        "Remove Files",
-        "Disconnect Mail",
-        "Sign in again — Files",
-        "Sign in again — Mail",
-    ] {
+    // Each account's secondary actions are in its row's menu, one More
+    // button per account, and every entry runs the account's own action.
+    for label in ["More for Google Drive files", "More for Gmail"] {
         assert_button(app, label);
     }
-    for (id, action) in [
-        ("settings.accounts.reauth.ada@example.org", "sign-in-again"),
-        ("settings.accounts.remove.ada@example.org", "remove-account"),
-        ("settings.accounts.edit.ada@example.org", "edit-account"),
-        ("settings.accounts.test.ada@example.org", "test-account"),
+    for action in [
+        "sign-in-again",
+        "remove-account",
+        "edit-account",
+        "test-account",
     ] {
         assert_eq!(
             bindings
                 .iter()
-                .filter(|binding| binding.control_id == id
+                .filter(|binding| binding
+                    .control_id
+                    .starts_with("settings.accounts.more.ada@example.org/entry/")
                     && matches!(&binding.kind, ui::widget::ControlBindingKind::Action(address)
                     if address.action == action && address.resource == "settings.account:ada@example.org"))
                 .count(),
             1,
-            "linked Gmail keeps {id}"
+            "linked Gmail's menu keeps {action}"
         );
     }
 }

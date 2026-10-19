@@ -5,9 +5,6 @@ de-DE mesh-certified implementation
 de-DE mesh-source-detail implementation
 de-DE net-notice-password-sealed implementation
 de-DE net-notice-used-sealed implementation
-de-DE perm-secrets-detail chain
-de-DE settings-users-identity-detail chain
-de-DE settings-users-uid-line chain
 de-DE upd-caveat-apps all-caps
 de-DE upd-caveat-files all-caps
 de-DE upd-caveat-image implementation
@@ -24,11 +21,8 @@ en-US net-notice-used-sealed implementation
 en-US notif-apps-caption narration
 en-US perm-enforcement-caption narration
 en-US perm-no-grants-body narration
-en-US perm-secrets-detail chain
 en-US perm-unavailable-body narration
 en-US settings-printers-discover-empty narration
-en-US settings-users-identity-detail chain
-en-US settings-users-uid-line chain
 en-US upd-caveat-image implementation
 de-DE accounts-files-configured-sync glyph
 de-DE accounts-import-endpoints glyph
@@ -37,10 +31,7 @@ de-DE accounts-import-logins glyph
 de-DE accounts-mail-configured glyph
 de-DE accounts-service-action glyph
 de-DE display-device-screen glyph
-de-DE perm-secrets-detail glyph
 de-DE settings-storage-item-meta glyph
-de-DE settings-users-identity-detail glyph
-de-DE settings-users-uid-line glyph
 en-US accounts-files-configured-sync glyph
 en-US accounts-import-endpoints glyph
 en-US accounts-import-identity glyph
@@ -48,7 +39,4 @@ en-US accounts-import-logins glyph
 en-US accounts-mail-configured glyph
 en-US accounts-service-action glyph
 en-US display-device-screen glyph
-en-US perm-secrets-detail glyph
 en-US settings-storage-item-meta glyph
-en-US settings-users-identity-detail glyph
-en-US settings-users-uid-line glyph

@@ -34,7 +34,7 @@ use accounts::email::AccountConfig;
 use tracing::warn;
 use ui::framework::{ActionControl, EffectAnswer, EffectCx, Effected, LiveRow};
 use ui::tilo_resource::{self, Effect};
-use ui::widget::{Button, Row, Spacer, TextInput, TextInputKind, Widget};
+use ui::widget::{Button, Row, RowMenu, Spacer, TextInput, TextInputKind, Widget};
 
 use crate::accounts::{AccountDirectory, AccountKind, AccountRoot, AccountView};
 use crate::effects::SettingsEffect;
@@ -44,8 +44,8 @@ use crate::panes::model::{PaneModel, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    Body, El, Item, SettingsSection, StatusTone, card, field_row, item_row, note, row, rows,
-    semantic_status_pill, setting_row, setting_row_described, untitled, value_row,
+    Body, El, Item, SettingsSection, StatusTone, field_row, note, row, rows, section, setting_row,
+    setting_row_described, thing_row, untitled, value_row,
 };
 
 mod browser_sessions;
@@ -664,6 +664,8 @@ impl AccountsArea {
             return Vec::new();
         }
         let offer = |effect: AccountsEffect| SettingsEffect::from(effect).bound();
+        // The person's accounts are read once for every row, not per row.
+        let store = model.account_root.store();
         let mut published: Vec<LiveRow> = AccountKind::ALL
             .into_iter()
             .flat_map(|kind| model.dir.views_of(kind))
@@ -674,7 +676,7 @@ impl AccountsArea {
                     "settings.account",
                     view.label.clone(),
                 );
-                if let Some(action) = model.files_handoff(&view) {
+                if let Some(action) = model.files_handoff_in(&store, &view) {
                     row = row.operation(action);
                 }
                 if !view.kind.is_cloud_storage() {
@@ -716,11 +718,7 @@ impl AccountsArea {
             .collect();
         published.extend(model.thunderbird_import_rows());
         published.extend(model.calendar_choice_rows());
-        for account in model
-            .account_root
-            .store()
-            .list(&accounts::person::TILO_IDENTITY_TYPE.into())
-        {
+        for account in store.list(&accounts::person::TILO_IDENTITY_TYPE.into()) {
             let id = account.id.as_str().to_owned();
             published.push(
                 LiveRow::new(
@@ -763,6 +761,78 @@ fn kind_shown(kind: AccountKind) -> String {
         AccountKind::Dropbox => "accounts-kind-dropbox",
         AccountKind::ICloudDrive => "accounts-kind-icloud",
     })
+}
+
+/// The browser's website sessions, and when the file they came from was
+/// last changed.
+type SessionsRead = Option<(Option<std::time::SystemTime>, Vec<accounts::Account>)>;
+
+/// One entry of an account's menu: what it says and the row effect it runs.
+struct AccountEntry {
+    label: String,
+    effect: AccountsEffect,
+    destructive: bool,
+}
+
+impl AccountEntry {
+    fn new(label: String, effect: AccountsEffect) -> Self {
+        Self {
+            label,
+            effect,
+            destructive: false,
+        }
+    }
+
+    fn destructive(label: String, effect: AccountsEffect) -> Self {
+        Self {
+            label,
+            effect,
+            destructive: true,
+        }
+    }
+}
+
+/// Sync now, and pause or resume, for a mounted file account.
+fn sync_entries(id: &str, paused: bool) -> [AccountEntry; 2] {
+    let toggle = if paused {
+        AccountEntry::new(
+            t("accounts-resume-sync"),
+            AccountsEffect::ResumeSync {
+                account: id.to_owned(),
+            },
+        )
+    } else {
+        AccountEntry::new(
+            t("accounts-pause-sync"),
+            AccountsEffect::PauseSync {
+                account: id.to_owned(),
+            },
+        )
+    };
+    [
+        AccountEntry::new(
+            t("accounts-sync-now"),
+            AccountsEffect::SyncNow {
+                account: id.to_owned(),
+            },
+        ),
+        toggle,
+    ]
+}
+
+/// The icon of an account's kind.
+fn kind_icon(kind: AccountKind) -> ui::icons::Icon {
+    use ui::icons::Icon;
+    match kind {
+        AccountKind::Mail => Icon::Mail,
+        AccountKind::CalDav => Icon::Calendar,
+        AccountKind::WebDav => Icon::HardDrive,
+        AccountKind::Nextcloud
+        | AccountKind::GoogleDrive
+        | AccountKind::OneDrive
+        | AccountKind::Dropbox
+        | AccountKind::ICloudDrive => Icon::Cloud,
+    }
 }
 
 fn sync_detail(
@@ -914,6 +984,9 @@ pub struct AccountsPane {
     /// The revision of the person's accounts last shown, so an edit from
     /// another window or device is shown too.
     seen_accounts: Option<u64>,
+    /// The browser's website sessions as last read, with the modification
+    /// time of the file they were read from.
+    sessions_read: std::cell::RefCell<SessionsRead>,
     dir: AccountDirectory,
     sync_statuses: accounts::AccountSyncStatusStore,
     /// The credential vault as last opened, for where it keeps
@@ -1079,6 +1152,7 @@ impl AccountsPane {
             cx: None,
             account_root,
             seen_accounts: None,
+            sessions_read: std::cell::RefCell::new(None),
         }
     }
 
@@ -1176,9 +1250,22 @@ impl AccountsPane {
 
     /// `button`, invoking `effect` in the window this model serves.
     fn bound(&self, button: Button, effect: AccountsEffect) -> Button {
-        // Row effects are published on the existing account resource, not
-        // the Settings root. Bind the painted control to that same contract.
-        let account = match &effect {
+        match self.row_effect_binding(&effect) {
+            Some(binding) => return button.bind_action(binding),
+            None if Self::row_account(&effect).is_some() && self.cx.is_some() => {
+                return button.unavailable();
+            }
+            None => {}
+        }
+        match &self.cx {
+            Some(cx) => cx.bind_invocation(button, effect),
+            None => button,
+        }
+    }
+
+    /// The account a row effect acts on; `None` for an effect of the page.
+    fn row_account(effect: &AccountsEffect) -> Option<&String> {
+        match effect {
             AccountsEffect::EditAccount { account }
             | AccountsEffect::SignInAgain { account }
             | AccountsEffect::TestAccount { account }
@@ -1188,28 +1275,29 @@ impl AccountsPane {
             | AccountsEffect::ResumeSync { account }
             | AccountsEffect::RecoverCloudMode { account } => Some(account),
             _ => None,
+        }
+    }
+
+    /// `effect`'s binding: on the account's own resource for a row effect
+    /// (its contract is published there, not on the Settings root), else on
+    /// the root. `None` outside a host or where it is not offered.
+    fn row_effect_binding(
+        &self,
+        effect: &AccountsEffect,
+    ) -> Option<ui::tilo_actions::ActionBinding<()>> {
+        let cx = self.cx.as_ref()?;
+        let Some(account) = Self::row_account(effect) else {
+            return cx.invocation_binding(effect.clone());
         };
-        if let Some(cx) = &self.cx
-            && let Some(account) = account
-        {
-            let spec = SettingsEffect::from(effect.clone()).bound();
-            let resource = ui::tilo_actions::Resource::new(
-                format!("settings.account:{account}"),
-                "settings.account",
-                account,
-            )
-            .with_action(spec);
-            let invocation =
-                ui::tilo_resource::ActionRef::<SettingsEffect, ()>::new(effect.id(), &[]);
-            return match cx.row_binding(&resource, invocation) {
-                Some(binding) => button.bind_action(binding),
-                None => button.unavailable(),
-            };
-        }
-        match &self.cx {
-            Some(cx) => cx.bind_invocation(button, effect),
-            None => button,
-        }
+        let spec = SettingsEffect::from(effect.clone()).bound();
+        let resource = ui::tilo_actions::Resource::new(
+            format!("settings.account:{account}"),
+            "settings.account",
+            account,
+        )
+        .with_action(spec);
+        let invocation = ui::tilo_resource::ActionRef::<SettingsEffect, ()>::new(effect.id(), &[]);
+        cx.row_binding(&resource, invocation)
     }
 
     #[must_use]
@@ -1808,7 +1896,7 @@ impl AccountsPane {
         panel.push(untitled(rows(intro)));
 
         if let Some(flow) = &self.sign_in {
-            panel.push(flow.card(&|button, effect| self.bound(button, effect)));
+            panel.push(flow.section(&|button, effect| self.bound(button, effect)));
         } else if let Some(kind) = self.form_kind {
             panel.push(self.account_form(kind));
         }
@@ -1831,7 +1919,7 @@ impl AccountsPane {
             } else if kind == AccountKind::GoogleDrive {
                 for view in self.dir.views_of(kind) {
                     let title = kind_shown(kind);
-                    panel.push(card(&title, self.kind_body(kind, &[view])));
+                    panel.push(section(&title, self.kind_body(kind, &[view])));
                 }
             } else if !self.dir.views_of(kind).is_empty() {
                 panel.push(self.kind_card(kind));
@@ -1848,7 +1936,7 @@ impl AccountsPane {
             panel.push(self.browser_identity_card());
         }
 
-        crate::widgets::cards(panel)
+        crate::widgets::page(panel)
     }
 
     fn browser_service_sessions(&self) -> Vec<accounts::Account> {
@@ -1856,16 +1944,27 @@ impl AccountsPane {
         if self.is_sample {
             return Vec::new();
         }
-        self.account_root
-            .path()
-            .map(|root| {
-                accounts::AccountStore::load_in(&root)
-                    .list(&browser_sessions::TYPE.into())
-                    .into_iter()
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default()
+        let Some(root) = self.account_root.path() else {
+            return Vec::new();
+        };
+        // Every publication asks for them: read the file again only when it
+        // changed, not on each click and keystroke.
+        let stamp = std::fs::metadata(accounts::store_path_in(&root))
+            .and_then(|meta| meta.modified())
+            .ok();
+        if let Some((seen, sessions)) = &*self.sessions_read.borrow()
+            && stamp.is_some()
+            && *seen == stamp
+        {
+            return sessions.clone();
+        }
+        let sessions: Vec<accounts::Account> = accounts::AccountStore::load_in(&root)
+            .list(&browser_sessions::TYPE.into())
+            .into_iter()
+            .cloned()
+            .collect();
+        *self.sessions_read.borrow_mut() = Some((stamp, sessions.clone()));
+        sessions
     }
 
     fn browser_service_sessions_card(&self) -> SettingsSection {
@@ -1894,7 +1993,7 @@ impl AccountsPane {
                 ),
             ));
         }
-        card(&t("accounts-browser-sessions-title"), rows(body))
+        section(&t("accounts-browser-sessions-title"), rows(body))
     }
 
     /// The person's accounts with the services this room is connected to
@@ -1966,7 +2065,7 @@ impl AccountsPane {
                 ),
             });
         }
-        Some(card(&t("accounts-linked-title"), rows(body)))
+        Some(section(&t("accounts-linked-title"), rows(body)))
     }
 
     fn browser_identity_card(&self) -> SettingsSection {
@@ -1979,59 +2078,72 @@ impl AccountsPane {
             } else {
                 "accounts-browser-identity-show"
             };
-            let toggle = self.bound(
-                Button::new(
-                    &format!("settings.browser-identity.toggle:{id}"),
-                    &t(toggle),
+            let menu = RowMenu::new(
+                format!("settings.browser-identity.more:{id}"),
+                &t_args(
+                    "settings-row-more",
+                    &[("name", account.display_name.clone().into())],
                 ),
-                AccountsEffect::SetBrowserIdentityEnabled {
+            )
+            .action(
+                t(toggle),
+                self.row_effect_binding(&AccountsEffect::SetBrowserIdentityEnabled {
                     account: id.clone(),
                     enabled: !account.enabled,
-                },
+                }),
+            )
+            .destructive(
+                t("accounts-browser-identity-remove"),
+                self.row_effect_binding(&AccountsEffect::RemoveBrowserIdentity {
+                    account: id.clone(),
+                }),
             );
-            let remove = self.bound(
-                Button::new(
-                    &format!("settings.browser-identity.remove:{id}"),
-                    &t("accounts-browser-identity-remove"),
-                ),
-                AccountsEffect::RemoveBrowserIdentity { account: id },
-            );
-            let actions: El = Box::new(
-                Row::new()
-                    .no_wrap()
-                    .with_rhythm(ui::tokens::Rhythm::Related)
-                    .push(Box::new(toggle))
-                    .push(Box::new(remove)),
-            );
-            let origin = account
+            let origin: Vec<String> = account
                 .config
                 .get("origin")
-                .and_then(serde_json::Value::as_str);
-            body.push(match origin {
-                Some(origin) => setting_row_described(&account.display_name, origin, actions),
-                None => setting_row(&account.display_name, actions),
-            });
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .into_iter()
+                .collect();
+            body.push(row(Box::new(
+                thing_row(
+                    &format!("settings.browser-identity:{id}"),
+                    &account.display_name,
+                    &origin,
+                    Some(Box::new(menu)),
+                )
+                .icon(ui::icons::Icon::Globe),
+            )));
         }
-        card(&t("accounts-browser-identity-title"), rows(body))
+        section(&t("accounts-browser-identity-title"), rows(body))
     }
 
+    /// The services an account can be added for, one row each: choosing
+    /// one opens its form.
     fn add_account_card(&self) -> SettingsSection {
-        let mut providers = Row::new().with_rhythm(ui::tokens::Rhythm::Related);
-        for kind in AccountKind::ALL {
-            providers = providers.push(Box::new(self.bound(
-                Button::new(
-                    &format!("settings.accounts.add.{}", kind.slug()),
-                    &t_args(
+        let providers = AccountKind::ALL
+            .into_iter()
+            .map(|kind| {
+                let effect = AccountsEffect::AddAccount {
+                    kind: kind.slug().into(),
+                };
+                let mut provider = ui::widget::ListRow::new(
+                    format!("settings.accounts.add.{}", kind.slug()),
+                    t_args(
                         "accounts-add-provider",
                         &[("kind", kind_shown(kind).into())],
                     ),
-                ),
-                AccountsEffect::AddAccount {
-                    kind: kind.slug().into(),
-                },
-            )));
-        }
-        card(&t("accounts-add"), rows(vec![row(Box::new(providers))]))
+                )
+                .icon(kind_icon(kind))
+                .disclosure();
+                provider = match self.row_effect_binding(&effect) {
+                    Some(binding) => provider.on_action(binding),
+                    None => provider.with_enabled(false),
+                };
+                row(Box::new(provider))
+            })
+            .collect();
+        section(&t("accounts-add"), rows(providers))
     }
 
     fn mail_card(&self) -> Option<SettingsSection> {
@@ -2051,7 +2163,7 @@ impl AccountsPane {
             })
             .cloned()
             .collect();
-        (!views.is_empty()).then(|| card(&title, self.kind_body(AccountKind::Mail, &views)))
+        (!views.is_empty()).then(|| section(&title, self.kind_body(AccountKind::Mail, &views)))
     }
 
     /// Group only the explicit persisted service link, never an email/name match.
@@ -2073,7 +2185,7 @@ impl AccountsPane {
 
     fn kind_card(&self, kind: AccountKind) -> SettingsSection {
         let views = self.dir.views_of(kind);
-        card(&kind_shown(kind), self.kind_body(kind, &views))
+        section(&kind_shown(kind), self.kind_body(kind, &views))
     }
 
     fn kind_body(&self, kind: AccountKind, views: &[AccountView]) -> Body {
@@ -2108,19 +2220,33 @@ impl AccountsPane {
 
     /// One broker-routed contract shared by the painted button and account row.
     fn files_handoff(&self, view: &AccountView) -> Option<ui::tilo_actions::ActionSpec> {
-        use accounts::cloud_types::FilesMode;
-        if self.is_sample
-            || !view.enabled
-            || !(view.kind.is_cloud_storage()
-                || matches!(view.kind, AccountKind::WebDav | AccountKind::Nextcloud))
-        {
+        if !self.may_hand_off_files(view) {
             return None;
         }
-        let account = self
-            .account_root
-            .store()
-            .get(&view.id.clone().into())?
-            .clone();
+        self.files_handoff_in(&self.account_root.store(), view)
+    }
+
+    /// Whether `view`'s account can bring files at all, before its stored
+    /// configuration is read.
+    fn may_hand_off_files(&self, view: &AccountView) -> bool {
+        !self.is_sample
+            && view.enabled
+            && (view.kind.is_cloud_storage()
+                || matches!(view.kind, AccountKind::WebDav | AccountKind::Nextcloud))
+    }
+
+    /// [`Self::files_handoff`] reading the account from `store`, for a caller
+    /// that reads the store once for many accounts.
+    fn files_handoff_in(
+        &self,
+        store: &accounts::AccountStore,
+        view: &AccountView,
+    ) -> Option<ui::tilo_actions::ActionSpec> {
+        use accounts::cloud_types::FilesMode;
+        if !self.may_hand_off_files(view) {
+            return None;
+        }
+        let account = store.get(&view.id.clone().into())?;
         if account
             .config
             .get("use_files")
@@ -2129,7 +2255,7 @@ impl AccountsPane {
         {
             return None;
         }
-        let label = match accounts::cloud_types::files_mode(&account)? {
+        let label = match accounts::cloud_types::files_mode(account)? {
             FilesMode::Sync => t("accounts-browse-files"),
             FilesMode::Import => t("accounts-choose-import-files"),
         };
@@ -2212,75 +2338,111 @@ impl AccountsPane {
                 )
             };
 
-        // Identity and health lead; what is worth knowing hugs the name and
-        // the maintenance actions sit under the text, so narrow layouts stay
-        // legible and touch targets never crush the connection summary.
-        let mut marks: Vec<El> = Vec::new();
+        // Identity and health lead; what is worth knowing sits under the
+        // name, the files the account brings is the row's one button, and
+        // every other thing to do with it is in its menu.
+        let mut tags: Vec<(String, StatusTone)> = Vec::new();
         if view.kind.best_effort() {
-            marks.push(semantic_status_pill(
-                &t("accounts-best-effort"),
-                StatusTone::Neutral,
-            ));
+            tags.push((t("accounts-best-effort"), StatusTone::Neutral));
         }
-        marks.push(semantic_status_pill(&status, status_tone));
+        tags.push((status, status_tone));
 
         let mut details = vec![view.summary.clone()];
-        let mut actions: Vec<Button> = self.files_button(view, &mut details).into_iter().collect();
+        let files = self.files_button(view, &mut details);
+        let mut entries: Vec<AccountEntry> = Vec::new();
         if !self.is_sample {
             details.push(sync_detail(runtime, import_only, granted_mail));
-            actions.extend(self.account_maintenance_actions(
+            entries.extend(self.cloud_row_entries(
+                view,
+                mount.map(|mount| mount.paused),
+                &mut details,
+            ));
+            entries.extend(self.account_maintenance_entries(
                 view,
                 runtime.is_some_and(|status| {
                     status.health == accounts::AccountSyncHealth::NeedsAuthentication
                 }),
             ));
-            actions.extend(self.cloud_row_actions(
-                view,
-                mount.map(|mount| mount.paused),
-                &mut details,
-            ));
         }
         let label = self.account_row_label(view, &mut details);
-        item_row(&label, marks, &details, actions)
+        let menu = (!entries.is_empty()).then(|| {
+            entries.into_iter().fold(
+                RowMenu::new(
+                    format!("settings.accounts.more.{}", view.id),
+                    &t_args("settings-row-more", &[("name", label.clone().into())]),
+                ),
+                |menu, entry| {
+                    let binding = self.row_effect_binding(&entry.effect);
+                    if entry.destructive {
+                        menu.destructive(entry.label, binding)
+                    } else {
+                        menu.action(entry.label, binding)
+                    }
+                },
+            )
+        });
+        let trailing: Option<El> = match (files, menu) {
+            (Some(files), Some(menu)) => Some(Box::new(
+                Row::new()
+                    .no_wrap()
+                    .with_rhythm(ui::tokens::Rhythm::Related)
+                    .with_align_items(taffy::AlignItems::Center)
+                    .push(Box::new(files.control_size(ui::widget::ControlSize::Small)))
+                    .push(Box::new(menu)),
+            )),
+            (Some(files), None) => {
+                Some(Box::new(files.control_size(ui::widget::ControlSize::Small)))
+            }
+            (None, Some(menu)) => Some(Box::new(menu)),
+            (None, None) => None,
+        };
+        let tags: Vec<(&str, ui::widget::ChipStyle)> = tags
+            .iter()
+            .map(|(text, tone)| (text.as_str(), ui::widget::ChipStyle::Tinted(*tone)))
+            .collect();
+        row(Box::new(
+            thing_row(
+                &format!("settings.accounts.account.{}", view.id),
+                &label,
+                &details,
+                trailing,
+            )
+            .icon(kind_icon(view.kind))
+            .tags(&tags),
+        ))
     }
 
     /// What a row offers for the account's calendars and synced files:
     /// Nextcloud's calendars, then pausing or resuming a mounted account's
     /// sync (`paused` is `None` without a mount), or recovering an account
     /// whose files mode was lost, which says so in `details`.
-    fn cloud_row_actions(
+    fn cloud_row_entries(
         &self,
         view: &AccountView,
         paused: Option<bool>,
         details: &mut Vec<String>,
-    ) -> Vec<Button> {
-        let mut actions = Vec::new();
+    ) -> Vec<AccountEntry> {
+        let mut entries = Vec::new();
         if view.kind == AccountKind::Nextcloud {
-            actions.push(self.bound(
-                Button::new(
-                    &format!("settings.accounts.calendars.{}", view.id),
-                    &t("accounts-nextcloud-calendars"),
-                ),
+            entries.push(AccountEntry::new(
+                t("accounts-nextcloud-calendars"),
                 AccountsEffect::ConnectNextcloudCalendars {
                     account: view.id.clone(),
                 },
             ));
         }
         if let Some(paused) = paused {
-            actions.extend(self.sync_actions(&view.id, paused));
+            entries.extend(sync_entries(&view.id, paused));
         } else if self.can_recover_cloud_mode(view) {
             details.push(t("accounts-recover-mode-description"));
-            actions.push(self.bound(
-                Button::new(
-                    &format!("settings.accounts.recover-mode.{}", view.id),
-                    &t("accounts-recover-mode"),
-                ),
+            entries.push(AccountEntry::new(
+                t("accounts-recover-mode"),
                 AccountsEffect::RecoverCloudMode {
                     account: view.id.clone(),
                 },
             ));
         }
-        actions
+        entries
     }
 
     fn account_row_label(&self, view: &AccountView, details: &mut Vec<String>) -> String {
@@ -2313,10 +2475,14 @@ impl AccountsPane {
         }
     }
 
-    fn account_maintenance_actions(&self, view: &AccountView, needs_sign_in: bool) -> Vec<Button> {
-        // Shared MenuItem currently accepts view callbacks, not ActionBinding.
-        // Keep these native, service-labelled action controls rather than route
-        // maintenance through a private menu callback that bypasses admission.
+    /// What the account's menu offers to keep it working: edit it, sign in
+    /// again, check it, and remove it. Each entry runs the account row's own
+    /// action, so the host admits it as it does a button.
+    fn account_maintenance_entries(
+        &self,
+        view: &AccountView,
+        needs_sign_in: bool,
+    ) -> Vec<AccountEntry> {
         let mut actions = Vec::new();
         let service_label = |action: String| {
             let service = if view.kind == AccountKind::Mail {
@@ -2364,37 +2530,31 @@ impl AccountsPane {
             "accounts-remove"
         });
         if !view.kind.is_cloud_storage() {
-            actions.push(self.bound(
-                Button::new(&format!("settings.accounts.edit.{}", view.id), &edit),
+            actions.push(AccountEntry::new(
+                edit,
                 AccountsEffect::EditAccount {
                     account: view.id.clone(),
                 },
             ));
         }
-        actions.push(self.bound(
-            Button::new(
-                &format!("settings.accounts.reauth.{}", view.id),
-                &reauth_label,
-            ),
+        actions.push(AccountEntry::new(
+            reauth_label,
             AccountsEffect::SignInAgain {
                 account: view.id.clone(),
             },
         ));
-        actions.push(self.bound(
-            Button::new(&format!("settings.accounts.test.{}", view.id), &check),
+        actions.push(AccountEntry::new(
+            check,
             AccountsEffect::TestAccount {
                 account: view.id.clone(),
             },
         ));
-        actions.push(
-            self.bound(
-                Button::new(&format!("settings.accounts.remove.{}", view.id), &remove)
-                    .role(ui::widget::ButtonRole::Destructive),
-                AccountsEffect::RemoveAccount {
-                    account: view.id.clone(),
-                },
-            ),
-        );
+        actions.push(AccountEntry::destructive(
+            remove,
+            AccountsEffect::RemoveAccount {
+                account: view.id.clone(),
+            },
+        ));
         actions
     }
 
@@ -2406,39 +2566,6 @@ impl AccountsPane {
                 .sync_statuses
                 .get(&accounts::AccountId::from(view.id.as_str()))
                 .is_some_and(|status| status.health == accounts::AccountSyncHealth::Error)
-    }
-
-    /// Sync now, and pause or resume, for a mounted file account.
-    fn sync_actions(&self, id: &str, paused: bool) -> [Button; 2] {
-        let (toggle_id, toggle_label, toggle) = if paused {
-            (
-                format!("settings.accounts.resume-sync.{id}"),
-                t("accounts-resume-sync"),
-                AccountsEffect::ResumeSync {
-                    account: id.to_owned(),
-                },
-            )
-        } else {
-            (
-                format!("settings.accounts.pause-sync.{id}"),
-                t("accounts-pause-sync"),
-                AccountsEffect::PauseSync {
-                    account: id.to_owned(),
-                },
-            )
-        };
-        [
-            self.bound(
-                Button::new(
-                    &format!("settings.accounts.sync-now.{id}"),
-                    &t("accounts-sync-now"),
-                ),
-                AccountsEffect::SyncNow {
-                    account: id.to_owned(),
-                },
-            ),
-            self.bound(Button::new(&toggle_id, &toggle_label), toggle),
-        ]
     }
 
     /// The inline add-email form: fields bound to CRDT keys plus Save/Cancel.
@@ -2538,7 +2665,7 @@ impl AccountsPane {
             },
             &[("kind", kind_shown(kind).into())],
         );
-        card(
+        section(
             &title,
             rows({
                 let mut fields = vec![
@@ -2603,7 +2730,7 @@ impl AccountsPane {
                 )))
                 .push(Box::new(Spacer::new())),
         )));
-        card(&t("accounts-reauth-title"), rows(fields))
+        section(&t("accounts-reauth-title"), rows(fields))
     }
 
     /// Reload the real directory after a mutation, in turn with the vault
@@ -3768,7 +3895,7 @@ type PreviousSecrets = Vec<(accounts::AccountId, Option<accounts::Secret>)>;
 mod tests {
     use super::*;
     use crate::accounts::sample_directory;
-    use crate::host::testing::{count_named, labels_of};
+    use crate::host::testing::actions_of;
     use std::collections::HashMap;
     use taffy::{NodeId, TaffyTree};
     use ui::Theme;
@@ -3907,12 +4034,14 @@ mod tests {
     /// Sample directories are read-only, real ones get labelled destructive remove buttons, and empty stores stay empty.
     #[test]
     fn import_only_rows_keep_recorded_errors_offline_and_signin_requirements() {
+        /// What the rows say of each account's state: the marks after
+        /// their names.
         fn texts(widget: &dyn Widget) -> Vec<String> {
-            let mut result: Vec<_> = widget
-                .accessibility()
-                .and_then(|node| node.value)
-                .into_iter()
-                .collect();
+            let mut result: Vec<String> = widget
+                .as_any()
+                .and_then(|any| any.downcast_ref::<ui::widget::ListRow>())
+                .map(|row| row.tag_labels().into_iter().map(str::to_owned).collect())
+                .unwrap_or_default();
             for child in widget.children() {
                 result.extend(texts(child));
             }
@@ -3959,13 +4088,13 @@ mod tests {
             let (_scratch, root) = scratch_root();
             let pane = AccountsPane::from_dir_in(root, sample_directory(), true);
             let composed = lay_out(&pane);
-            assert_eq!(
-                count_named(composed.as_ref(), "Button"),
-                AccountKind::ALL.len() + 1,
-                "every provider kind can be added and metadata imported over the sample"
-            );
             let mut labels = Vec::new();
-            labels_of(composed.as_ref(), "Button", &mut labels);
+            actions_of(composed.as_ref(), &mut labels);
+            assert_eq!(
+                labels.len(),
+                AccountKind::ALL.len() + 1,
+                "every provider kind can be added and metadata imported over the sample: {labels:?}"
+            );
             assert_eq!(
                 labels
                     .iter()
@@ -4003,9 +4132,12 @@ mod tests {
             // One Add per kind, metadata import, four maintenance actions
             // on each of four accounts, and the Nextcloud account's
             // calendars.
+            let mut actions = Vec::new();
+            actions_of(composed.as_ref(), &mut actions);
             assert_eq!(
-                count_named(composed.as_ref(), "Button"),
-                AccountKind::ALL.len() + 1 + 16 + 1
+                actions.len(),
+                AccountKind::ALL.len() + 1 + 16 + 1,
+                "{actions:?}"
             );
         }
 
@@ -4018,7 +4150,7 @@ mod tests {
             let pane = AccountsPane::from_dir_in(root, sample_directory(), false);
             let composed = lay_out(&pane);
             let mut labels = Vec::new();
-            labels_of(composed.as_ref(), "Button", &mut labels);
+            actions_of(composed.as_ref(), &mut labels);
             assert_eq!(
                 labels
                     .iter()
@@ -4377,7 +4509,7 @@ mod tests {
             let pane = pane.with_cloud_mounts(CloudMounts::known(vec![mount(&files, paused)]));
             let composed = lay_out(&pane);
             let mut labels = Vec::new();
-            labels_of(composed.as_ref(), "Button", &mut labels);
+            actions_of(composed.as_ref(), &mut labels);
             let profile = tempfile::tempdir().unwrap();
             let cx = PaneCx::in_file(profile.path().join("settings.json"));
             let area = AccountsArea::new(&cx).with_account_root(root);

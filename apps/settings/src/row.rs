@@ -196,7 +196,7 @@ impl Row<'_> {
     /// A slider showing `value`, setting the section's field `field`.
     pub fn slider<T: Section>(self, value: &LocalState<f64>, field: Path<T, f64>) -> Item {
         let slider = self.cx.bind_field(self.slider_widget(value), field);
-        self.control(Box::new(slider))
+        self.slider_row(slider)
     }
 
     /// A slider showing `value`, setting the section's field `field` to what
@@ -214,7 +214,7 @@ impl Row<'_> {
         let slider = self
             .cx
             .bind_field_with(self.slider_widget(value), field, value_of);
-        self.control(Box::new(slider))
+        self.slider_row(slider)
     }
 
     /// A slider showing `value`, invoking the section's verb `verb` with each
@@ -225,7 +225,7 @@ impl Row<'_> {
         verb: impl Binds<T, f64>,
     ) -> Item {
         let slider = self.cx.bind_verb(self.slider_widget(value), verb);
-        self.control(Box::new(slider))
+        self.slider_row(slider)
     }
 
     /// A chooser of `choices` (a stable id and the label shown for it), on
@@ -262,7 +262,16 @@ impl Row<'_> {
         effect: impl Binds<SettingsEffect, f64>,
     ) -> Item {
         let slider = self.cx.bind(self.slider_widget(value), effect);
-        self.control(Box::new(slider))
+        self.slider_row(slider)
+    }
+
+    /// The row around a bound `slider`: on the trailing edge at one width
+    /// for every slider of a page, or spanning the group when stacked.
+    fn slider_row(self, slider: Slider) -> Item {
+        if self.stacked {
+            return self.control(Box::new(slider));
+        }
+        self.control(crate::widgets::trailing_slider(Box::new(slider)))
     }
 
     fn toggle_widget(&self, on: &LocalState<bool>) -> Toggle {

@@ -428,6 +428,44 @@ impl PaneCx {
         .ok()
     }
 
+    /// The binding of one fully specified `effect` that `row` offers, for a
+    /// button or a row menu entry acting on that row. `None` outside a host,
+    /// or where the row does not offer it now.
+    pub(crate) fn row_invocation(
+        &self,
+        row: &ui::tilo_actions::Resource,
+        effect: impl Into<SettingsEffect>,
+    ) -> Option<ui::tilo_actions::ActionBinding<()>> {
+        let effect = effect.into();
+        let door = self.door.as_ref()?;
+        let spec = row.actions.iter().find(|spec| spec.id == effect.id())?;
+        if !door.dispatcher.may(&spec.contract.need()) {
+            return None;
+        }
+        let mut args = effect.arguments();
+        let asked: Vec<String> = spec
+            .params()
+            .iter()
+            .map(|param| param.name.to_string())
+            .collect();
+        args.retain(|name, _| asked.contains(name));
+        ui::tilo_actions::ActionBinding::new(row, spec, move |()| args.clone()).ok()
+    }
+
+    /// `control` (a button) invoking the fully specified `effect` on `row`;
+    /// unavailable where the row does not offer it.
+    pub(crate) fn bind_row<C: ActionControl<()>>(
+        &self,
+        control: C,
+        row: &ui::tilo_actions::Resource,
+        effect: impl Into<SettingsEffect>,
+    ) -> C {
+        match self.row_invocation(row, effect) {
+            Some(binding) => control.bind_action(binding),
+            None => control.unavailable(),
+        }
+    }
+
     /// The binding of `effect` for a control the toolkit does not know: a
     /// pane's own widget that emits a value. `None` outside a host.
     #[must_use]
@@ -605,6 +643,28 @@ pub(crate) mod testing {
                 .into_iter()
                 .map(|child| count_named(child, name))
                 .sum::<usize>()
+    }
+
+    /// Every action a person can take under `w`, by what it says, in tree
+    /// order: its buttons, the rows that act when chosen, and the entries
+    /// of each row's menu (not the More button that opens it).
+    pub(crate) fn actions_of(w: &dyn ui::Widget, actions: &mut Vec<String>) {
+        if let Some(menu) = w
+            .as_any()
+            .and_then(|any| any.downcast_ref::<ui::widget::RowMenu>())
+        {
+            actions.extend(menu.labels().into_iter().map(str::to_owned));
+            return;
+        }
+        // A row that acts when chosen, offered or shown unavailable here.
+        let acts = w.name() == "Button"
+            || (w.name() == "ListRow" && (w.is_focusable() || !w.is_enabled()));
+        if acts && let Some(label) = w.accessibility().and_then(|node| node.name) {
+            actions.push(label);
+        }
+        for child in w.children() {
+            actions_of(child, actions);
+        }
     }
 
     /// The accessible names of the widgets named `name` under `w`, in tree
