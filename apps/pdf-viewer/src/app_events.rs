@@ -2560,7 +2560,7 @@ mod event_tests {
 
         // A portal-chosen file loads through the per-frame drain.
         let mut app = PdfApp::empty();
-        let mut st = ui::State::new();
+        let mut st = crate::scenarios::record_state();
         app.sync_settled(&mut st.doc, &st.root);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.recompute_regions();

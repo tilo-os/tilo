@@ -125,7 +125,7 @@ fn annotated_fixture(dir: &std::path::Path) -> Option<std::path::PathBuf> {
 /// laid out.
 fn open(path: &std::path::Path) -> Option<(PdfApp, ui::State)> {
     let mut app = tests::open_settled(path)?;
-    let mut state = ui::State::new();
+    let mut state = crate::scenarios::record_state();
     tests::settle_record(&mut app, &mut state);
     app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
     app.recompute_regions();
