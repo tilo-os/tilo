@@ -71,7 +71,7 @@ fn store(value: &AtomicU32, level: f32) {
 const SILENT: f32 = 0.002;
 
 /// The bar's height at the default text size.
-const HEIGHT: f32 = 6.0;
+const HEIGHT: f32 = ui::tokens::Metrics::BASE.meter_height;
 /// How much of the way to a lower level the bar falls each frame, and how
 /// fast the peak mark sinks: a meter that rises at once and settles.
 const FALL: f32 = 0.18;
@@ -180,6 +180,7 @@ impl Widget for LevelMeter {
     ) {
         let colors = &theme.tokens.colors;
         let radius = self.rect.height() / 2.0;
+        // ratchet-allow(raw_paint): the level meter draws live audio levels, content rather than chrome
         scene.fill(
             Fill::NonZero,
             transform,
@@ -195,9 +196,11 @@ impl Widget for LevelMeter {
                 self.rect.x0 + (width * f64::from(self.shown)).max(self.rect.height()),
                 self.rect.y1,
             );
+            // ratchet-allow(raw_paint): the level meter draws live audio levels, content rather than chrome
             scene.fill(
                 Fill::NonZero,
                 transform,
+                // ratchet-allow(literal_alpha): the level meter draws live audio levels, content rather than chrome
                 colors.text_primary.multiply_alpha(0.9),
                 None,
                 &RoundedRect::from_rect(fill, radius),
@@ -206,6 +209,7 @@ impl Widget for LevelMeter {
         if self.peak > 0.02 {
             let x = (self.rect.x0 + width * f64::from(self.peak))
                 .clamp(self.rect.x0 + 1.0, self.rect.x1 - 1.0);
+            // ratchet-allow(raw_paint): the level meter draws live audio levels, content rather than chrome
             scene.fill(
                 Fill::NonZero,
                 transform,

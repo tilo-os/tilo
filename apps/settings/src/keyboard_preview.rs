@@ -136,7 +136,7 @@ fn chassis_is_compact(chassis: Option<u32>) -> bool {
 /// How far the function row moves down on a laptop's drawing: from the
 /// published geometry's row (y 23 to 41) to one unit above the number row
 /// (which starts at 62).
-const LAPTOP_FUNCTION_ROW_DROP: f64 = 20.0;
+const LAPTOP_FUNCTION_ROW_DROP: u8 = 20;
 
 /// The pc105 drawing without the Print/Scroll/Pause, navigation and numpad
 /// clusters, the Windows/Menu/right-Ctrl keys replaced by the arrows in one
@@ -166,7 +166,7 @@ fn compact_geometry(geometry: &Geometry) -> (f64, Vec<GeometryKey>) {
         // the desktop keyboard's gap.
         if key.name == "ESC" || key.name.starts_with("FK") {
             for point in &mut key.outline {
-                point[1] += LAPTOP_FUNCTION_ROW_DROP;
+                point[1] += f64::from(LAPTOP_FUNCTION_ROW_DROP);
             }
         }
         keys.push(key);
