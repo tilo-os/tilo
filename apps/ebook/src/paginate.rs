@@ -1010,7 +1010,7 @@ fn compose_block_lines(
 ) -> Vec<LaidLine> {
     let text_width = (composition.content_width - composition.style.indent).max(40.0);
     let space_width = measure_space(text, composition.style.size, composition.base_family);
-    let bidi = BidiInfo::new(composition.canonical_text, None);
+    let bidi = ui::text_break::bidi_info(composition.canonical_text);
     let paragraph_rtl = bidi
         .paragraphs
         .first()
