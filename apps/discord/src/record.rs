@@ -435,22 +435,29 @@ fn overwrite_for<'a>(
 /// Bring a guild record of version `from` up to this one. Version 1 named
 /// the Chat workspace the server mirrored; Chat runs in its room and keeps
 /// no workspaces now, so the server mirrors the room's chat and the name is
-/// dropped.
+/// dropped. Up to version 2 a channel's kind and permission overwrites were
+/// each one JSON string; they are rewritten as the values they held.
 ///
 /// # Errors
-/// When `from` is not a version this record was.
+/// When `from` is not a version this record was, or a stored kind or
+/// overwrite list does not read.
 fn migrate(
     doc: &mut ui::tilo_resource::Doc,
     from: u32,
 ) -> Result<(), ui::tilo_resource::ModelError> {
     use ui::automerge::{ROOT, ReadDoc as _, transaction::Transactable as _};
-    if from != 1 {
+    use ui::tilo_resource::evolution::{map_values, retype_json};
+    if !(1..=2).contains(&from) {
         return Err(ui::tilo_resource::ModelError::invalid(format!(
             "no Discord server migration from {from}"
         )));
     }
     if doc.get(ROOT, "workspace")?.is_some() {
         doc.delete(ROOT, "workspace")?;
+    }
+    for (_, channel) in map_values(doc, &ROOT, "channels")? {
+        retype_json::<ChannelKind>(doc, &channel, "kind")?;
+        retype_json::<Vec<OverwriteInfo>>(doc, &channel, "overwrites")?;
     }
     Ok(())
 }
@@ -459,7 +466,7 @@ fn migrate(
     kind = "discord.guild",
     label = "Discord server",
     params = guild,
-    version = 2,
+    version = 3,
     migrate = migrate,
 )]
 impl Guild {
