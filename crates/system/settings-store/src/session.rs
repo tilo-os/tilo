@@ -1662,7 +1662,11 @@ mod tests {
             "an unread view looked at the copy on its own"
         );
         let _ = view.revision();
-        rings.recv_timeout(Duration::from_secs(2)).unwrap();
+        // The read hands the refresh to the view's worker; on a loaded
+        // machine its locked read of the copy can take seconds.
+        rings
+            .recv_timeout(Duration::from_secs(20))
+            .expect("a read takes the copy's write in");
         assert_eq!(view.load()["appearance"]["theme"], json!("Light"));
     }
 

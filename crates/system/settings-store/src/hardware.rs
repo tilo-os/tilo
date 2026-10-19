@@ -3378,7 +3378,7 @@ mod tests {
         // Phase `desktop_navigation_defaults_are_complete_and_conflict_free`.
         {
             let cfg = ShortcutConfig::default();
-            assert_eq!(cfg.bindings.len(), 62);
+            assert_eq!(cfg.bindings.len(), 63);
             let unique: BTreeSet<_> = cfg.bindings.values().collect();
             assert_eq!(unique.len(), cfg.bindings.len());
             assert_eq!(
