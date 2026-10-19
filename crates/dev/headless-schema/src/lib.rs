@@ -969,8 +969,8 @@ const BASIC_PERFORM_FIELDS: &[&str] = &["target", "semantic_target", "action"];
 mod tests {
     use super::*;
 
-    /// Complete payloads and standalone actions share one grammar, invocations address actions and
-    /// parse strictly, and malformed or unknown operations are rejected strictly.
+    /// Complete payloads and standalone actions share one grammar, bound
+    /// answers fill later resources and arguments, and captures name a path.
     #[test]
     fn the_headless_grammar_is_shared_and_strict() {
         // Phase: complete_payload_and_standalone_actions_share_one_grammar.
@@ -1063,7 +1063,12 @@ mod tests {
                 Some("r.json")
             );
         }
+    }
 
+    /// Invocations address actions and parse strictly, and malformed or
+    /// unknown operations are rejected strictly.
+    #[test]
+    fn invocations_and_malformed_operations_parse_strictly() {
         // Phase: invocations_address_actions_and_parse_strictly.
         {
             let actions = parse_actions(

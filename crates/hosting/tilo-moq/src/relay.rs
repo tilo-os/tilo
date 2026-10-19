@@ -814,9 +814,7 @@ async fn forward_pictures(
             continue;
         };
         if serving.len() >= MAX_PICTURE_TRACKS {
-            request.reject(moq_net::Error::BoundsExceeded(
-                moq_net::BoundsExceeded,
-            ));
+            request.reject(moq_net::Error::BoundsExceeded(moq_net::BoundsExceeded));
             continue;
         }
         serving.push(crate::Task::spawn(forward_picture(

@@ -1423,7 +1423,9 @@ mod tests {
                         let mut flight = flight.lock().unwrap();
                         let count = flight.entry(name.clone()).or_default();
                         *count = count.saturating_add(1);
-                        *count
+                        let writing = *count;
+                        drop(flight);
+                        writing
                     };
                     if writing > 1 {
                         overlap.store(true, Ordering::SeqCst);
