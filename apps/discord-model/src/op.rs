@@ -24,7 +24,12 @@ pub struct Queued {
 #[cfg(feature = "resource")]
 tilo_resource::json_model!(Queued);
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// On the wire an object tagged by `op`, its op's fields beside the tag, as
+/// serde's internally tagged enums are. It is read by hand rather than
+/// derived: a derived internally tagged enum buffers the whole op and reads
+/// it again from the buffer, a second reader compiled for every op type,
+/// while this one reads the object once and each op from it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "resource", derive(JsonSchema))]
 #[serde(tag = "op", rename_all = "kebab-case")]
 pub enum DiscordOp {
@@ -45,6 +50,66 @@ pub enum DiscordOp {
     Unban(MemberOp),
     SetOverwrite(OverwriteOp),
     FetchAsset(FetchAssetOp),
+}
+
+impl<'de> Deserialize<'de> for DiscordOp {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        fn op<T: serde::de::DeserializeOwned, E: Error>(
+            fields: serde_json::Map<String, serde_json::Value>,
+        ) -> Result<T, E> {
+            serde_json::from_value(serde_json::Value::Object(fields)).map_err(E::custom)
+        }
+        let mut fields = serde_json::Map::<String, serde_json::Value>::deserialize(deserializer)?;
+        let tag = match fields.remove("op") {
+            Some(serde_json::Value::String(tag)) => tag,
+            Some(_) => return Err(D::Error::custom("op is not a string")),
+            None => return Err(D::Error::missing_field("op")),
+        };
+        Ok(match tag.as_str() {
+            "send" => Self::Send(op(fields)?),
+            "edit" => Self::Edit(op(fields)?),
+            "delete" => Self::Delete(op(fields)?),
+            "react" => Self::React(op(fields)?),
+            "unreact" => Self::Unreact(op(fields)?),
+            "start-thread" => Self::StartThread(op(fields)?),
+            "create-webhook" => Self::CreateWebhook(op(fields)?),
+            "apply-channel" => Self::ApplyChannel(op(fields)?),
+            "delete-channel" => Self::DeleteChannel(op(fields)?),
+            "apply-role" => Self::ApplyRole(op(fields)?),
+            "delete-role" => Self::DeleteRole(op(fields)?),
+            "set-member-roles" => Self::SetMemberRoles(op(fields)?),
+            "kick" => Self::Kick(op(fields)?),
+            "ban" => Self::Ban(op(fields)?),
+            "unban" => Self::Unban(op(fields)?),
+            "set-overwrite" => Self::SetOverwrite(op(fields)?),
+            "fetch-asset" => Self::FetchAsset(op(fields)?),
+            other => {
+                return Err(D::Error::unknown_variant(
+                    other,
+                    &[
+                        "send",
+                        "edit",
+                        "delete",
+                        "react",
+                        "unreact",
+                        "start-thread",
+                        "create-webhook",
+                        "apply-channel",
+                        "delete-channel",
+                        "apply-role",
+                        "delete-role",
+                        "set-member-roles",
+                        "kick",
+                        "ban",
+                        "unban",
+                        "set-overwrite",
+                        "fetch-asset",
+                    ],
+                ));
+            }
+        })
+    }
 }
 
 /// The value of an absent outbox slot only; no verb queues it on purpose.
@@ -403,6 +468,44 @@ mod tests {
         assert_eq!(value["attach"], json!(["cd"]));
         let back: Queued = serde_json::from_value(value).unwrap();
         assert_eq!(back, queued);
+    }
+
+    /// Every op reads back from the form it is written in, from text as
+    /// well as from a value, with the tag anywhere in the object; an op
+    /// without a tag, or with one no op has, is refused.
+    #[test]
+    fn every_op_reads_back_from_its_tagged_form() {
+        let ops = [
+            DiscordOp::Delete(DeleteOp::default()),
+            DiscordOp::Kick(MemberOp::default()),
+            DiscordOp::Ban(MemberOp::default()),
+            DiscordOp::Unban(MemberOp::default()),
+            DiscordOp::SetOverwrite(OverwriteOp {
+                channel: "1".into(),
+                target: "2".into(),
+                target_kind: OverwriteKind::Role,
+                allow: "0".into(),
+                deny: "2048".into(),
+            }),
+        ];
+        for op in ops {
+            let text = serde_json::to_string(&op).unwrap();
+            assert_eq!(
+                serde_json::from_str::<DiscordOp>(&text).unwrap(),
+                op,
+                "{text}"
+            );
+            let value = serde_json::to_value(&op).unwrap();
+            assert_eq!(serde_json::from_value::<DiscordOp>(value).unwrap(), op);
+        }
+        let tag_last = json!({"channel": "1", "target": "2", "target_kind": "role",
+            "allow": "0", "deny": "2048", "op": "set-overwrite"});
+        assert!(matches!(
+            serde_json::from_value::<DiscordOp>(tag_last).unwrap(),
+            DiscordOp::SetOverwrite(_)
+        ));
+        assert!(serde_json::from_value::<DiscordOp>(json!({"channel": "1"})).is_err());
+        assert!(serde_json::from_value::<DiscordOp>(json!({"op": "dance"})).is_err());
     }
 
     #[test]
