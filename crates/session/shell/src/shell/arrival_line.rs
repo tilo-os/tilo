@@ -40,8 +40,13 @@ const BELOW_BAR: f64 = 8.0;
 pub struct Present {
     /// Their name.
     pub name: String,
-    /// What their face's colour is derived from: their stable id.
+    /// Their stable id: what their face's colour is derived from when the
+    /// roster gives none.
     pub id: String,
+    /// The colour the roster paints them in everywhere else, as `(r, g, b)`.
+    pub colour: Option<(u8, u8, u8)>,
+    /// Software, not a person: the agent mark instead of an initial.
+    pub is_agent: bool,
 }
 
 /// What the line says.
@@ -257,11 +262,16 @@ impl ArrivalLine {
             .people
             .iter()
             .take(FACES_SHOWN)
-            .map(|person| {
-                ui::presence::Face::new(
+            .map(|person| ui::presence::Face {
+                is_agent: person.is_agent,
+                ..ui::presence::Face::new(
                     &person.name,
                     &person.id,
-                    colors.presence.of_rgb(ui::presence::user_color(&person.id)),
+                    colors.presence.of_rgb(
+                        person
+                            .colour
+                            .unwrap_or_else(|| ui::presence::user_color(&person.id)),
+                    ),
                 )
             })
             .collect();
@@ -339,6 +349,8 @@ mod tests {
             .map(|k| Present {
                 name: format!("Person {k}"),
                 id: format!("{k:064x}"),
+                colour: None,
+                is_agent: false,
             })
             .collect()
     }

@@ -503,6 +503,9 @@ impl CollaboratorsOverlay {
         // Wave and Follow sit in the row's trailing slot, inside its
         // disclosure chevron when it has one.
         self.trailing_w = follow_w + TRAILING_GAP + control;
+        // Follow stands in one column down the list: where any row has a
+        // chevron, every row keeps its place free.
+        let any_disclosure = model.rows.iter().any(|row| !row.recent.is_empty());
         for (key, group) in [
             ("people-panel-section-people", people),
             ("people-panel-section-agents", agents),
@@ -523,7 +526,8 @@ impl CollaboratorsOverlay {
                 let Some(row) = model.rows.get(index) else {
                     continue;
                 };
-                let (follow, wave) = self.trailing_slots(text, theme, rect, row, follow_w);
+                let (follow, wave) =
+                    self.trailing_slots(text, theme, rect, (&row.label, any_disclosure), follow_w);
                 // The open part's lines end where Follow ends.
                 let line_right = follow.x1 + bleed;
                 let follow = if row.followable { follow } else { Rect::ZERO };
@@ -561,19 +565,20 @@ impl CollaboratorsOverlay {
         }
     }
 
-    /// Follow and Wave in `row`'s trailing slot at `rect`, inside its
-    /// disclosure chevron when it has one.
+    /// Follow and Wave in the trailing slot of the row labelled `label` at
+    /// `rect`, inside the disclosure chevron's place when the list keeps
+    /// one (`disclosure`).
     fn trailing_slots(
         &self,
         text: &mut TextRenderer,
         theme: &Theme,
         rect: Rect,
-        row: &RosterRow,
+        (label, disclosure): (&str, bool),
         follow_w: f64,
     ) -> (Rect, Rect) {
         let control = f64::from(theme.tokens.metrics.bar_control_height);
-        let mut probe = ListRowFace::new(&row.label).trailing_width(self.trailing_w);
-        if !row.recent.is_empty() {
+        let mut probe = ListRowFace::new(label).trailing_width(self.trailing_w);
+        if disclosure {
             probe = probe.disclosure();
         }
         let right = probe

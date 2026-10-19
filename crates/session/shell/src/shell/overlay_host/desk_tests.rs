@@ -307,6 +307,8 @@ fn each_widget_honours_its_own_setting() {
 #[test]
 fn the_team_widget_waits_clear_of_the_strip_switcher() {
     let (mut host, _chrome, _) = desk();
+    // As a frame does: the switcher reads the strips, then the desk lays out.
+    host.refresh_strip_switcher_model();
     host.update_desk(Instant::now());
     let zone = host.strip_switcher_zone();
     assert!(zone.area() > 0.0, "the demo desk offers the strip switcher");

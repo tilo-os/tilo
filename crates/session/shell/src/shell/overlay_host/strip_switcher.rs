@@ -75,8 +75,12 @@ const AVATARS_SHOWN: usize = 3;
 const REST_FACE: f64 = ui::tokens::Spacing::BASE.s4 as f64;
 /// Between a face at rest and its mark.
 const REST_FACE_GAP: f64 = ui::tokens::Spacing::BASE.s1 as f64;
+/// How far inside its square a face at rest's disc sits, and how far past
+/// the square its ring (2 px, with a pixel of ground either side) reaches.
+const REST_FACE_INSET: f64 = 1.0;
+const REST_FACE_RING: f64 = 4.0 - REST_FACE_INSET;
 /// How far left of the marks the faces at rest reach.
-pub(crate) const REST_FACES_REACH: f64 = REST_FACE + REST_FACE_GAP + 2.0;
+pub(crate) const REST_FACES_REACH: f64 = REST_FACE + REST_FACE_GAP + REST_FACE_RING;
 /// The icon in "New strip".
 const ICON: f64 = ui::tokens::Metrics::BASE.icon_sm as f64;
 /// One wheel notch, in the pixels a touchpad reports: a strip per notch, and
@@ -91,6 +95,8 @@ pub(crate) struct Person {
     pub id: String,
     pub label: String,
     pub color: Color,
+    /// Software, not a person: the agent mark instead of an initial.
+    pub is_agent: bool,
 }
 
 /// One strip of the active workspace, as the switcher lists it.
@@ -137,6 +143,7 @@ impl SwitcherModel {
                             id: row.id,
                             label: row.label,
                             color: row.color,
+                            is_agent: row.is_agent,
                         },
                     ))
                 })
@@ -1208,13 +1215,17 @@ impl StripSwitcher {
                 BlendMode::default(),
                 alpha,
                 paint.transform,
-                &rect.inflate(2.0, 2.0),
+                &rect.inflate(REST_FACE_RING, REST_FACE_RING),
             );
             // One face per strip fits the gutter; the label lists them all.
-            ui::widget::AvatarFace::new(&person.label, &person.id)
-                .presence(person.color)
-                .ringed_on(ground)
-                .paint(&mut paint, rect);
+            // The one face people have everywhere: one initial (or the agent
+            // mark) in a ring of their colour, the ring reaching just past
+            // the gutter's square.
+            ui::presence::Face {
+                is_agent: person.is_agent,
+                ..ui::presence::Face::new(&person.label, &person.id, person.color)
+            }
+            .paint(&mut paint, rect.inset(-REST_FACE_INSET), ground);
             paint.scene.pop_layer();
         }
     }
@@ -1364,7 +1375,10 @@ fn draw_people(cx: &mut DrawCx<'_>, people: &[Person], x_end: f64, cy: f64) -> f
     let faces: Vec<ui::presence::Face<'_>> = people
         .iter()
         .take(shown)
-        .map(|person| ui::presence::Face::new(&person.label, &person.id, person.color))
+        .map(|person| ui::presence::Face {
+            is_agent: person.is_agent,
+            ..ui::presence::Face::new(&person.label, &person.id, person.color)
+        })
         .collect();
     let ground = ui::widget::floating_surface::card_ground(cx.theme);
     let mut paint = ui::paint::PaintCtx::new(cx.scene, cx.transform, cx.text, cx.theme);

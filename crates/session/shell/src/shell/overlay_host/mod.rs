@@ -4584,6 +4584,8 @@ impl ShellOverlayHost {
                         .map(|person| crate::shell::arrival_line::Present {
                             name: person.name.clone(),
                             id: person.id.clone(),
+                            colour: None,
+                            is_agent: false,
                         })
                         .collect::<Vec<_>>();
                     (workspace.name.clone(), people)

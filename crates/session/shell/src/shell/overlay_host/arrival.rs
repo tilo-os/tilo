@@ -198,9 +198,14 @@ impl super::ShellOverlayHost {
         if self.presence_notices.look(room, &ids, intro) {
             let people = rows
                 .into_iter()
-                .map(|row| crate::shell::arrival_line::Present {
-                    name: row.label,
-                    id: row.id,
+                .map(|row| {
+                    let [r, g, b, _] = row.color.to_rgba8().to_u8_array();
+                    crate::shell::arrival_line::Present {
+                        name: row.label,
+                        id: row.id,
+                        colour: Some((r, g, b)),
+                        is_agent: row.is_agent,
+                    }
                 })
                 .collect();
             self.arrival_line.show(&workspace, people, now);
