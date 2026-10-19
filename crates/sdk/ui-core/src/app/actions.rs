@@ -658,6 +658,7 @@ impl App {
     /// Publish the surface a handled input left for the frame after its
     /// sync ([`super::runtime::ActionRuntime::action_surface_owed`]), if no
     /// publication has paid for it since.
+    #[cfg(feature = "native")]
     pub(super) fn publish_owed_action_surface(&mut self) {
         if self.actions.action_surface_owed {
             self.publish_action_surface();
