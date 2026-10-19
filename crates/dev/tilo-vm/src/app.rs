@@ -1189,6 +1189,10 @@ impl App {
             )),
             Err(e) => checks.push(Check::fail("manifest", e.to_string(), e.hint())),
         }
+        checks.push(doctor::ownership_check(
+            &doctor::root_owned_build_dirs(&build_dirs(&root), 3),
+            &std::env::var("USER").unwrap_or_else(|_| "$USER".into()),
+        ));
         let listing = disk::AuthHeader::new(token.as_ref())
             .and_then(|auth| disk::get(&mut self.runner, disk::VERSIONS, &auth));
         checks.push(doctor::disk_check(
@@ -6656,6 +6660,42 @@ fn describe_kept(result: &tilo_vm_protocol::GcResult) -> Option<String> {
     Some(lines.join("\n"))
 }
 
+/// Where cargo and the compiler cache write on this host: every worktree's
+/// `target/` (all worktrees of the repository `root` belongs to) and the
+/// compiler cache directory.
+fn build_dirs(root: &Path) -> Vec<PathBuf> {
+    let listing = std::process::Command::new("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(root)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+        .unwrap_or_default();
+    let mut dirs = worktree_targets(&listing);
+    if dirs.is_empty() {
+        dirs.push(root.join("target"));
+    }
+    let cache = std::env::var_os("SCCACHE_DIR").map_or_else(
+        || PathBuf::from("/var/cache/tilo-vm/sccache"),
+        PathBuf::from,
+    );
+    if cache.is_dir() {
+        dirs.push(cache);
+    }
+    dirs.retain(|dir| dir.exists());
+    dirs
+}
+
+/// The `target/` of every worktree in `git worktree list --porcelain` output.
+fn worktree_targets(listing: &str) -> Vec<PathBuf> {
+    listing
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .map(|path| Path::new(path).join("target"))
+        .collect()
+}
+
 fn doctor_outcome(checks: &[Check]) -> Outcome {
     let failed = checks.iter().any(|c| c.state == "fail");
     let text = checks
@@ -8969,5 +9009,17 @@ mod tests {
             assert_eq!(human_bytes(5 << 30), "5.0 GB");
             assert_eq!(human_bytes(300 << 20), "300 MB");
         }
+    }
+
+    #[test]
+    fn doctor_looks_at_the_target_of_every_worktree() {
+        let listing = "worktree /w/main\nHEAD abc\nbranch refs/heads/main\n\nworktree /w/wt/bar\nHEAD def\ndetached\n";
+        assert_eq!(
+            worktree_targets(listing),
+            vec![
+                PathBuf::from("/w/main/target"),
+                PathBuf::from("/w/wt/bar/target")
+            ]
+        );
     }
 }

@@ -19,6 +19,7 @@ use tilo_vm_protocol::{
     Provenance,
 };
 
+use crate::build_user::{self, BuildUser};
 use crate::daemon::{Daemon, on_path};
 use crate::error::DaemonError;
 use crate::fsutil;
@@ -115,13 +116,16 @@ fn capture(command: &mut Command) -> Option<String> {
         .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// `(hits, misses)` of the shared sccache.
-fn sccache_totals() -> Option<(u64, u64)> {
-    let text = capture(
-        Command::new("sccache")
-            .args(["--show-stats", "--stats-format=json"])
-            .env("SCCACHE_DIR", SCCACHE_DIR),
-    )?;
+/// `(hits, misses)` of the shared sccache. Asked as the build user: asking
+/// starts the server when none runs, and a server started as root would
+/// write root-owned cache entries for every later build.
+fn sccache_totals(user: Option<&BuildUser>) -> Option<(u64, u64)> {
+    let mut stats = Command::new("sccache");
+    stats
+        .args(["--show-stats", "--stats-format=json"])
+        .env("SCCACHE_DIR", SCCACHE_DIR);
+    as_user(user, &mut stats);
+    let text = capture(&mut stats)?;
     let stats: serde_json::Value = serde_json::from_str(&text).ok()?;
     let sum = |key: &str| -> Option<u64> {
         let counts = stats.get("stats")?.get(key)?.get("counts")?.as_object()?;
@@ -206,14 +210,21 @@ impl Daemon {
                 purpose: "build in the VM".into(),
             });
         }
+        let user = BuildUser::for_build_root(self.targets.dir())?;
+        if let Some(user) = &user {
+            prepare_user_build(user, &src)?;
+        }
         let result = match &job.target {
             BuildTarget::Component { name, profile } => {
-                self.build_component(&job, &src, name, profile.as_deref())
+                self.build_component(&job, &src, name, profile.as_deref(), user.as_ref())
             }
-            BuildTarget::App { dir, slot } => self.build_app(&job, &src, dir, slot),
+            BuildTarget::App { dir, slot } => self.build_app(&job, &src, dir, slot, user.as_ref()),
         };
         // Record the build dir's size even after a failed build: it still costs disk.
         self.targets.measure(&job.worktree)?;
+        if let Some(user) = &user {
+            user.own(&self.targets.record_path(&job.worktree))?;
+        }
         result
     }
 
@@ -223,6 +234,7 @@ impl Daemon {
         src: &Path,
         name: &str,
         profile: Option<&str>,
+        user: Option<&BuildUser>,
     ) -> Result<JobOutput, DaemonError> {
         if let Some(profile) = profile
             && !valid_profile(profile)
@@ -243,24 +255,33 @@ impl Daemon {
             })?
             .clone()
             .with_profile(profile);
-        let metadata = capture(
-            Command::new("cargo")
-                .args(["metadata", "--no-deps", "--format-version", "1"])
-                .current_dir(src),
-        )
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or(serde_json::Value::Null);
+        let mut metadata = Command::new("cargo");
+        metadata
+            .args(["metadata", "--no-deps", "--format-version", "1"])
+            .current_dir(src);
+        as_user(user, &mut metadata);
+        let metadata = capture(&mut metadata)
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or(serde_json::Value::Null);
         let extra = dev_override_features(&metadata, &component.packages);
         let sccache = on_path("sccache");
         let mut timer = Timer(BTreeMap::new());
-        let before = sccache.then(sccache_totals).flatten();
+        let before = sccache.then(|| sccache_totals(user)).flatten();
         let mut cargo = Command::new("cargo");
         cargo.args(component.cargo_args(&extra)).current_dir(src);
         cargo_env(&mut cargo, job.color, sccache);
+        as_user(user, &mut cargo);
         if matches!(component.profile.as_str(), "dev" | "test")
             && let (_, Some(target)) = toolchain()
         {
-            crate::linker::configure(&mut cargo, &self.root, &target)?;
+            // The driver lives beside the build dirs, where the build user
+            // can run it; the daemon's own state is root's alone.
+            crate::linker::configure(
+                &mut cargo,
+                &self.targets.dir().join(".linkers"),
+                &target,
+                user,
+            )?;
         }
         eprintln!(
             "tilo-vmd: cargo {} (in {})",
@@ -268,7 +289,7 @@ impl Daemon {
             src.display()
         );
         timer.time("build", || step("cargo build", &mut cargo))?;
-        let after = sccache.then(sccache_totals).flatten();
+        let after = sccache.then(|| sccache_totals(user)).flatten();
 
         let staging = self
             .root
@@ -329,6 +350,7 @@ impl Daemon {
         src: &Path,
         dir: &str,
         slot: &str,
+        user: Option<&BuildUser>,
     ) -> Result<JobOutput, DaemonError> {
         let apps = apps_in(src);
         if !apps.iter().any(|a| a == dir) {
@@ -341,23 +363,26 @@ impl Daemon {
         self.user_slot(slot)?;
         let sccache = on_path("sccache");
         let mut timer = Timer(BTreeMap::new());
-        let staging = self
-            .root
-            .join("staging")
+        // The package is built output: it lands in the tree's own target/,
+        // which the build user can write, and installing reads it from there.
+        let staging = src
+            .join("target/tilo-vm")
             .join(format!("app-{}", uuid::Uuid::new_v4().simple()));
-        std::fs::create_dir_all(&staging).map_err(DaemonError::io("create app staging"))?;
         let tapp = staging.join(format!("{dir}.tapp"));
         let built = timer.time("build", || {
             let mut tools = Command::new("cargo");
             tools.args(app_tool_args()).current_dir(src);
             cargo_env(&mut tools, job.color, sccache);
+            as_user(user, &mut tools);
             step("cargo build (tilo-app)", &mut tools)?;
+            create_dir_as(user, &staging)?;
             let mut package = Command::new(src.join("target/release/tilo-app"));
             package
                 .args(app_package_args(dir, &tapp))
                 .env("TILO_PKG", src.join("target/release/tilo-app-package"))
                 .current_dir(src);
             cargo_env(&mut package, job.color, sccache);
+            as_user(user, &mut package);
             step("tilo-app package", &mut package)
         });
         let installed = built.and_then(|()| {
@@ -453,6 +478,66 @@ impl Daemon {
             cache: BTreeMap::new(),
         })
     }
+}
+
+/// Run `command` as the build user, when builds have one.
+fn as_user(user: Option<&BuildUser>, command: &mut Command) {
+    if let Some(user) = user {
+        user.apply(command);
+    }
+}
+
+/// Create `dir` (and its missing parents) for the build user.
+fn create_dir_as(user: Option<&BuildUser>, dir: &Path) -> Result<(), DaemonError> {
+    let mut missing = Vec::new();
+    let mut probe = dir;
+    while !probe.exists() {
+        missing.push(probe.to_owned());
+        let Some(parent) = probe.parent() else { break };
+        probe = parent;
+    }
+    std::fs::create_dir_all(dir).map_err(DaemonError::io(format!("create {}", dir.display())))?;
+    if let Some(user) = user {
+        for path in missing {
+            user.own(&path)?;
+        }
+    }
+    Ok(())
+}
+
+/// Before a build as `user`: take back what root-run builds left in the
+/// tree and the compiler cache, and stop a root compiler-cache server, so
+/// the build (and the owner's own builds after it) can write everything
+/// they touch.
+fn prepare_user_build(user: &BuildUser, src: &Path) -> Result<(), DaemonError> {
+    let mut reclaimed = user.reclaim(&src.join("target"))?;
+    let cache =
+        std::env::var_os("SCCACHE_DIR").map_or_else(|| PathBuf::from(SCCACHE_DIR), PathBuf::from);
+    if std::fs::metadata(&cache).is_ok_and(|meta| {
+        use std::os::unix::fs::MetadataExt;
+        meta.uid() == user.uid
+    }) {
+        reclaimed = reclaimed.saturating_add(user.reclaim(&cache)?);
+    }
+    if reclaimed > 0 {
+        eprintln!(
+            "tilo-vmd: gave {reclaimed} root-owned build files back to {}",
+            user.name
+        );
+    }
+    let port = build_user::sccache_port();
+    if on_path("sccache") && build_user::root_listens_on(port) {
+        // A server started by an earlier root build: the build user's
+        // compiles would go through it and write root-owned cache entries.
+        // `--stop-server` asks exactly the server on this port to exit.
+        eprintln!("tilo-vmd: stopping the root compiler-cache server on port {port}");
+        let _ = Command::new("sccache")
+            .arg("--stop-server")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    Ok(())
 }
 
 /// `cargo` arguments that build the app packaging tools.

@@ -84,6 +84,16 @@ linker selection.
 
 Each worktree has its own build dir in the VM; `gc` evicts old ones.
 
+Builds run as whoever owns the build root (`/var/lib/tilo-vm/src`): root in a
+VM, the laptop's owner on a laptop whose build root is a directory of theirs
+mounted there. Only laying the layer out and installing it keep the daemon's
+privilege, so a swap leaves no root-owned files in the build dir or the
+compiler cache, and the owner's own `cargo` and sccache keep working beside
+it. Before the first such build the daemon gives back root-owned files earlier
+daemons left and stops a root sccache server; `tilo-vm doctor` lists any
+worktree `target/` or compiler cache that still holds root-owned files, with
+the `chown` that fixes it.
+
 `--builder host` builds with this host's cargo (or `TILO_VM_CARGO`, any cargo
 drop-in, such as one that builds on another machine) and uploads the layer. It
 needs a Linux host of the VM's architecture; macOS and Windows hosts use the
