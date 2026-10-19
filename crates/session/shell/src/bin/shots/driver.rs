@@ -2977,6 +2977,17 @@ impl ShellDriver {
             st.bump();
         });
         self.relayout();
+        // The desk's widgets at rest, not caught as they come.
+        let deadline = Instant::now().checked_add(CAPTURE_SETTLE);
+        loop {
+            let _ = self.paint_settled();
+            if !self.host().desk_settling_for_shots()
+                || deadline.is_none_or(|deadline| Instant::now() >= deadline)
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(FRAME_MS));
+        }
     }
 
     /// The launchpad a moment after its Notes card is clicked: Notes is
