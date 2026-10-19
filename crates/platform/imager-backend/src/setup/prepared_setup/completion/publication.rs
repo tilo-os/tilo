@@ -52,7 +52,7 @@ pub fn publish(
         // A proven identical delivered package already owns its ciphertext
         // allocation. Require copy capacity only when actual delivery is absent.
         let receipt = if let Some(receipt) =
-            media_setup::verify_completed_ciphertext(delivery, &root, cancel)?
+            media_setup::verify_completed_ciphertext(delivery, root, cancel)?
         {
             receipt
         } else {
@@ -64,7 +64,7 @@ pub fn publish(
             if needed > free {
                 return Err(changed("Completed setup lacks reserved writable capacity"));
             }
-            media_setup::deliver_completed_ciphertext(delivery, &root, cancel)?
+            media_setup::deliver_completed_ciphertext(delivery, root, cancel)?
         };
         if receipt.sealed_bytes != expected.sealed_bytes
             || receipt.ciphertext_sha256 != expected.ciphertext_sha256
@@ -222,7 +222,7 @@ fn recover(
         let mut recovered_delivery =
             media_setup::PreparedSetupDelivery::review(&path, &package.password, cancel)?;
         let receipt =
-            media_setup::verify_completed_ciphertext(&mut recovered_delivery, &root, cancel)?
+            media_setup::verify_completed_ciphertext(&mut recovered_delivery, root, cancel)?
                 .ok_or_else(invalid)?;
         if recovered_delivery.expectation() != committed.setup
             || receipt.sealed_bytes != committed.setup.sealed_bytes

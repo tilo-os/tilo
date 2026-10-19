@@ -234,7 +234,7 @@ pub fn prepare_migration(
         )
         .map_err(|error| error.to_string())?;
         let mut plan = intent.source_plan();
-        plan.operation_id = operation.to_owned();
+        operation.clone_into(&mut plan.operation_id);
         plan.write_private(directory)
             .map_err(|error| error.to_string())?;
         Ok(

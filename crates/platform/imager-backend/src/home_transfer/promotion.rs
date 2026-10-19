@@ -313,7 +313,7 @@ impl PromotionReview {
         let store =
             Store::new(scratch, Arc::new(AtomicBool::new(false))).map_err(|e| e.to_string())?;
         let source_items =
-            tree::items(&quarantine, Path::new(""), &store, &cancel).map_err(|e| e.to_string())?;
+            tree::items(&quarantine, Path::new(""), &store, cancel).map_err(|e| e.to_string())?;
         let mut entries = store.builder();
         tree::review(
             &quarantine,
@@ -321,11 +321,11 @@ impl PromotionReview {
             &home,
             Path::new(""),
             &mut entries,
-            &cancel,
+            cancel,
         )
         .map_err(|e| e.to_string())?;
         let confirmed =
-            tree::items(&quarantine, Path::new(""), &store, &cancel).map_err(|e| e.to_string())?;
+            tree::items(&quarantine, Path::new(""), &store, cancel).map_err(|e| e.to_string())?;
         if !same_paths(&source_items, &confirmed).map_err(|e| e.to_string())? {
             return Err("Quarantine contents changed during review".into());
         }

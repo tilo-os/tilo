@@ -286,7 +286,7 @@ fn run() -> io::Result<()> {
     let connected_stream = stream.clone();
     let operation = request.operation.clone();
     let connected_operation = operation.clone();
-    let connected_cancel = cancellation.clone();
+    let connected_cancel = cancellation;
     let command = bytes;
     let mut exchange = worker::Exchange::new(&operation, &request.command);
     let jobs = Arc::new(Mutex::new(None));

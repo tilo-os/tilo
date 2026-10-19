@@ -26,7 +26,7 @@ pub fn review(
     preparation: Arc<dyn InventoryScratchCustody>,
     current: crate::prepared_identity::DraftLock,
 ) -> io::Result<Arc<InventoryScratch>> {
-    let parent = PinnedDirectory::open_absolute(&operation)?;
+    let parent = PinnedDirectory::open_absolute(operation)?;
     parent.validate_destination()?;
     crate::destination_security::check_private_file(&parent.file)?;
     // Fresh exclusive child, held below the already acknowledged operation.

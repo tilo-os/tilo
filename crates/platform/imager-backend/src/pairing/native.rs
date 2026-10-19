@@ -485,6 +485,26 @@ pub fn failed_fixture() -> (tempfile::TempDir, Pairing) {
     (temporary, pairing)
 }
 
+fn ensure_private_tree(path: &Path) -> std::io::Result<Arc<PinnedDirectory>> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => {
+            let pin = PinnedDirectory::open_absolute(path)?;
+            pin.validate_destination()?;
+            Ok(pin)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let parent = ensure_private_tree(path.parent().ok_or(error)?)?;
+            let child = parent.create_child(path.file_name().ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "Missing custody name")
+            })?)?;
+            crate::migration_durability::sync_directory(&child.file)?;
+            crate::migration_durability::sync_directory(&parent.file)?;
+            Ok(child)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -632,25 +652,5 @@ mod tests {
         // SAFETY: path is a valid fixture-only NUL-terminated pathname.
         assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
         assert!(read_status(&custody).is_err());
-    }
-}
-
-fn ensure_private_tree(path: &Path) -> std::io::Result<Arc<PinnedDirectory>> {
-    match std::fs::symlink_metadata(path) {
-        Ok(_) => {
-            let pin = PinnedDirectory::open_absolute(path)?;
-            pin.validate_destination()?;
-            Ok(pin)
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let parent = ensure_private_tree(path.parent().ok_or(error)?)?;
-            let child = parent.create_child(path.file_name().ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::InvalidInput, "Missing custody name")
-            })?)?;
-            crate::migration_durability::sync_directory(&child.file)?;
-            crate::migration_durability::sync_directory(&parent.file)?;
-            Ok(child)
-        }
-        Err(error) => Err(error),
     }
 }

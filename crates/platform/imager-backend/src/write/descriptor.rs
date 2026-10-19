@@ -67,71 +67,6 @@ pub fn open_reviewed_source(
     Ok(source)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn reviewed_source_and_held_descriptor_use_the_same_exact_bytes() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("source.img");
-        let bytes = b"reviewed image bytes";
-        std::fs::write(&path, bytes).unwrap();
-        let held = File::open(&path).unwrap();
-        let identity = SourceIdentity::from_file(&held).unwrap();
-        let digest = hex::encode(Sha256::digest(bytes));
-        let mut source =
-            open_reviewed_source(&path, bytes.len() as u64, identity, Some(&digest), &|| {
-                false
-            })
-            .unwrap();
-        let mut destination = tempfile::tempfile().unwrap();
-        let mut writes = 0;
-        let mut verifies = 0;
-        assert_eq!(
-            copy_verify_descriptor(
-                &mut source,
-                &mut destination,
-                bytes.len() as u64,
-                Some(&digest),
-                &|| false,
-                |progress| match progress {
-                    CopyProgress::Writing { bytes, .. } => writes = bytes,
-                    CopyProgress::Verifying { bytes, .. } => verifies = bytes,
-                },
-            ),
-            JobResult::Verified
-        );
-        assert_eq!(writes, bytes.len() as u64);
-        assert_eq!(verifies, bytes.len() as u64);
-        destination.seek(SeekFrom::Start(0)).unwrap();
-        let mut actual = Vec::new();
-        destination.read_to_end(&mut actual).unwrap();
-        assert_eq!(actual, bytes);
-
-        // A same-length mutation cannot pass the digest-bound source review.
-        std::fs::write(&path, vec![b'x'; bytes.len()]).unwrap();
-        assert!(matches!(
-            open_reviewed_source(&path, bytes.len() as u64, identity, Some(&digest), &|| {
-                false
-            },),
-            Err(JobResult::WriteFailed(_))
-        ));
-    }
-
-    #[test]
-    fn cancelled_descriptor_copy_never_reports_verified() {
-        let mut source = tempfile::tempfile().unwrap();
-        source.write_all(b"image").unwrap();
-        let mut destination = tempfile::tempfile().unwrap();
-        assert_eq!(
-            copy_verify_descriptor(&mut source, &mut destination, 5, None, &|| true, |_| {},),
-            JobResult::Cancelled
-        );
-        assert_eq!(destination.metadata().unwrap().len(), 0);
-    }
-}
-
 /// Native byte counters; frontends choose presentation and rate estimation.
 pub enum CopyProgress {
     Writing { bytes: u64, total: u64 },
@@ -237,4 +172,69 @@ pub fn copy_verify_descriptor(
     }
 
     JobResult::Verified
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reviewed_source_and_held_descriptor_use_the_same_exact_bytes() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("source.img");
+        let bytes = b"reviewed image bytes";
+        std::fs::write(&path, bytes).unwrap();
+        let held = File::open(&path).unwrap();
+        let identity = SourceIdentity::from_file(&held).unwrap();
+        let digest = hex::encode(Sha256::digest(bytes));
+        let mut source =
+            open_reviewed_source(&path, bytes.len() as u64, identity, Some(&digest), &|| {
+                false
+            })
+            .unwrap();
+        let mut destination = tempfile::tempfile().unwrap();
+        let mut writes = 0;
+        let mut verifies = 0;
+        assert_eq!(
+            copy_verify_descriptor(
+                &mut source,
+                &mut destination,
+                bytes.len() as u64,
+                Some(&digest),
+                &|| false,
+                |progress| match progress {
+                    CopyProgress::Writing { bytes, .. } => writes = bytes,
+                    CopyProgress::Verifying { bytes, .. } => verifies = bytes,
+                },
+            ),
+            JobResult::Verified
+        );
+        assert_eq!(writes, bytes.len() as u64);
+        assert_eq!(verifies, bytes.len() as u64);
+        destination.seek(SeekFrom::Start(0)).unwrap();
+        let mut actual = Vec::new();
+        destination.read_to_end(&mut actual).unwrap();
+        assert_eq!(actual, bytes);
+
+        // A same-length mutation cannot pass the digest-bound source review.
+        std::fs::write(&path, vec![b'x'; bytes.len()]).unwrap();
+        assert!(matches!(
+            open_reviewed_source(&path, bytes.len() as u64, identity, Some(&digest), &|| {
+                false
+            },),
+            Err(JobResult::WriteFailed(_))
+        ));
+    }
+
+    #[test]
+    fn cancelled_descriptor_copy_never_reports_verified() {
+        let mut source = tempfile::tempfile().unwrap();
+        source.write_all(b"image").unwrap();
+        let mut destination = tempfile::tempfile().unwrap();
+        assert_eq!(
+            copy_verify_descriptor(&mut source, &mut destination, 5, None, &|| true, |_| {},),
+            JobResult::Cancelled
+        );
+        assert_eq!(destination.metadata().unwrap().len(), 0);
+    }
 }

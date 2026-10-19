@@ -121,6 +121,11 @@ fn private_file() -> io::Result<File> {
     }
     Ok(file)
 }
+impl<T: IndexValue> Default for SortedIndex<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl<T: IndexValue> SortedIndex<T> {
     pub fn new() -> Self {
         Self::from_factory(Factory::default())
@@ -135,6 +140,7 @@ impl<T: IndexValue> SortedIndex<T> {
     pub(super) fn working_storage(&self) -> Option<std::sync::Arc<scratch::InventoryScratch>> {
         self.factory.scratch.clone()
     }
+    #[must_use]
     pub fn empty_like(&self) -> Self {
         Self::from_factory(self.factory.clone())
     }
@@ -155,6 +161,9 @@ impl<T: IndexValue> SortedIndex<T> {
     }
     pub fn len(&self) -> usize {
         self.count
+    }
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
     }
     pub fn insert(&mut self, path: PathBuf, fact: T, cancel: &AtomicBool) -> io::Result<()> {
         super::super::migration::check_cancel(cancel)?;

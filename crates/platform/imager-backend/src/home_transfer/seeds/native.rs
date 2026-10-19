@@ -14,25 +14,6 @@ use std::{
 const PROOFS: &str = "/var/lib/tilo/firstboot-home-seeds";
 const SEED_LIMIT: u64 = 4 * 1024 * 1024;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn real_proof_reader_refuses_symlinked_authority_namespace() {
-        let home = File::open("/").unwrap();
-        let error = match read_at(Path::new("/proc/self/status"), &home) {
-            Err(error) => error,
-            Ok(_) => panic!("a process-local symlink must not supply firstboot authority"),
-        };
-        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-        assert_eq!(
-            error.to_string(),
-            "Firstboot seed proof namespace is not root controlled"
-        );
-    }
-}
-
 fn filesystem(home: &File) -> io::Result<u64> {
     let mut result = std::mem::MaybeUninit::<libc::statvfs>::uninit();
     // SAFETY: fstatvfs initializes this output on success; the FD is live.
@@ -130,4 +111,23 @@ pub fn stamp(metadata: &std::fs::Metadata) -> io::Result<Stamp> {
         mtime_ns: ns(metadata.mtime(), metadata.mtime_nsec())?,
         ctime_ns: ns(metadata.ctime(), metadata.ctime_nsec())?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn real_proof_reader_refuses_symlinked_authority_namespace() {
+        let home = File::open("/").unwrap();
+        let error = match read_at(Path::new("/proc/self/status"), &home) {
+            Err(error) => error,
+            Ok(_) => panic!("a process-local symlink must not supply firstboot authority"),
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            error.to_string(),
+            "Firstboot seed proof namespace is not root controlled"
+        );
+    }
 }
