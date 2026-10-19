@@ -88,7 +88,11 @@ python3 "$repo_root/tools/apps/app_release.py" --collection default > "$runtime_
 mapfile -t runtime_packages < <(jq -r '.packages[]' "$runtime_plan")
 features=$(jq -r '.features | join(",")' "$runtime_plan")
 if [[ -z $prebuilt ]]; then
-(cd "$repo_root" && cargo build --profile "$tools_profile" --locked -p tilo-app-package-cli -p runtime-bundle)
+# A compile that only reads the apps (TILO_APP_SKIP_TOOLS=1 with TILO_APP_COMPILE_ONLY, the
+# app-binaries check) packs nothing, so it needs no packing tools.
+if [[ ${TILO_APP_SKIP_TOOLS:-} != 1 ]]; then
+    (cd "$repo_root" && cargo build --profile "$tools_profile" --locked -p tilo-app-package-cli -p runtime-bundle)
+fi
 # The Rust dylib ABI includes dependency crate hashes and Cargo unifies
 # features across the selected graph.  Always resolve the shared runtime against
 # the complete default collection, even when only a few changed tapps will be
@@ -105,6 +109,8 @@ mapfile -t app_binaries < <(
 # Compiling needs no publisher identity; a caller can build here and sign in a
 # second invocation, whose Cargo builds are then already fresh.
 [[ ${TILO_APP_COMPILE_ONLY:-} != 1 ]] || exit 0
+[[ ${TILO_APP_SKIP_TOOLS:-} != 1 ]] \
+    || { printf 'TILO_APP_SKIP_TOOLS needs TILO_APP_COMPILE_ONLY: packing needs the tools\n' >&2; exit 2; }
 
 runtime_release=$(jq -er '[.catalog[].runtime] | unique | if length == 1 then .[0] else error("apps require different runtimes") end | sub("^tilo-runtime/"; "")' "$plan")
 [[ $runtime_release =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]]

@@ -1028,6 +1028,13 @@ codegen-units = 1
 [profile.thin-app.package.tilo-ui]
 codegen-units = 16
 
+# Imager's backend is the longest single compile of the thin graph: at one
+# unit it took three minutes of a warm build on sixteen cores, after the
+# toolkit, so it set when the collection was done. It is linked into Imager
+# alone, which has room under its budget for what parallel codegen costs.
+[profile.thin-app.package.imager-backend]
+codegen-units = 16
+
 # The demo profile keeps release optimisation while enabling shell's
 # debug-only test-control surface for recordings.
 [profile.demo]

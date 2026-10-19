@@ -80,5 +80,13 @@ or removed once its target holds. To re-seed the budgets from the registry,
 run `python3 tools/perf/tapp_size_ratchet.py seed entries.json`, where
 `entries.json` is `https://apps.tilo.so/entries`.
 
+To see what makes an app large, `t test app-binaries-aarch64` (or `-x86_64`) builds the
+collection exactly as a release does but keeps the symbol tables, and `t outputs
+app-binaries-aarch64` puts the apps, `libruntime_dylib.so` and its engines in
+`target/app-binaries/aarch64/`. `nm -S --size-sort -C` on an app lists what it compiled itself;
+a toolkit type's generic code there (a widget, a dialog, a serde instance) is code every app
+using it compiles again, and is usually cheapest to fix in the toolkit. A warm build after a
+toolkit change takes about five minutes on sixteen cores.
+
 `tools/binary-budget.toml` is different: it is a weekly guard against static
 linking in release binaries, not this KPI.

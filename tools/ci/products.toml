@@ -589,6 +589,19 @@ timeout_secs = 5400
 cost = "heavy"
 default = true
 
+# The default collection with its symbol tables, for reading what makes an app large:
+# `t test app-binaries-aarch64 && t outputs app-binaries-aarch64` puts the apps, the runtime and
+# its engines in target/app-binaries/aarch64/ (docs/measurements/app-package-size.md).
+[[matrix.check]]
+name = "app-binaries-{arch}"
+run = "bash tools/apps/t-release.sh binaries {arch} /target/app-binaries/{arch}"
+outputs = ["/target/app-binaries/{arch}/**"]
+requires = ["{node}"]
+requirement = { cores = 16, memory = "32GiB" }
+timeout_secs = 5400
+cost = "heavy"
+default = false
+
 [[matrix.check]]
 name = "sign-apps-{arch}"
 run = "bash tools/apps/t-release.sh sign {arch} /target/apps-release/{arch} /target/apps-release/{arch}/signed"
