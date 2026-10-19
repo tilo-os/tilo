@@ -1222,6 +1222,7 @@ net-choose-ca = Choose CA certificate…
 net-password = Password
 net-save-connect = Save and connect
 net-connected = Connected
+net-connecting = Connecting…
 net-cancel = Cancel
 net-connect = Connect
 net-join = Join

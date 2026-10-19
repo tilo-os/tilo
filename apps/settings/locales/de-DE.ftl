@@ -1222,6 +1222,7 @@ net-choose-ca = CA-Zertifikat wählen…
 net-password = Passwort
 net-save-connect = Speichern und verbinden
 net-connected = Verbunden
+net-connecting = Verbinde…
 net-cancel = Abbrechen
 net-connect = Verbinden
 net-join = Beitreten

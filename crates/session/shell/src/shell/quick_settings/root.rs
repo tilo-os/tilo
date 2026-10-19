@@ -2700,18 +2700,9 @@ impl QuickSettingsRoot {
             ctx.transform,
             &shape,
         );
-        // The section is one surface under its control: a step off the
-        // panel, like the tiles, so it reads as theirs. Opened to paste it
-        // is the whole panel, and lies on it.
-        if !state.pasting() {
-            ui::surface::card(
-                ctx.scene,
-                ctx.transform,
-                slot.rect,
-                radius,
-                tilo_desktop::drill_in::control_fill(ctx.theme, false),
-            );
-        }
+        // The section's rows lie on the panel's own surface, as a
+        // disclosure row's body does: its place under the control that
+        // opened it and its inset group them, never a box inside the panel.
         ctx.scene.push_layer(
             Fill::NonZero,
             vello::peniko::BlendMode::default(),

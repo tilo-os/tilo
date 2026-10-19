@@ -26,7 +26,10 @@ use ui::collaboration::{NetworkWakeStatus, WifiContinuityCommand, WifiContinuity
 use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow};
 use ui::tilo_resource::{self, ActionRef, Effect};
 use ui::tokens::Rhythm;
-use ui::widget::{Button, Dropdown, QrWidget, Row, Spacer, TextInput, Toggle, Widget};
+use ui::widget::{
+    Button, DisclosureGroup, DisclosureRow, Dropdown, ListRow, QrWidget, Row, Spacer, TextInput,
+    Toggle, Widget,
+};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::dispatcher::dispatcher_or_real;
@@ -1262,6 +1265,15 @@ pub struct NetworkModel {
     join_passwords: HashMap<String, Arc<Mutex<String>>>,
     /// The known network whose details are open in place.
     known_open: Option<String>,
+    /// The rows of the networks in range, keyed by name: a password prompt
+    /// opens under its network and stays open while the page is rebuilt.
+    prompts: DisclosureGroup,
+    /// The known networks' rows, keyed by profile, which open their details.
+    known_rows: DisclosureGroup,
+    /// The prompt and the details the rows were last opened for, so a row
+    /// the person closed is not opened again by the next rebuild.
+    prompt_shown: std::cell::RefCell<Option<String>>,
+    known_shown: std::cell::RefCell<Option<String>>,
     enterprise_open: bool,
     /// The hotspot's setup is open while the hotspot is off.
     hotspot_open: bool,
@@ -1305,6 +1317,24 @@ impl Drop for NetworkModel {
 }
 
 /// The AP identity shared by publication and inspection.
+/// A network in range as a row of the published surface, offering to join
+/// it; the pane's controls for it bind to it.
+fn network_live(network: &WifiNetworkInfo) -> ui::tilo_actions::Resource {
+    LiveRow::new(
+        network_row_id(network),
+        "settings.network",
+        network.ssid.clone(),
+    )
+    .operation(
+        SettingsEffect::from(NetworkEffect::ConnectNetwork {
+            ssid: network.ssid.clone(),
+            password: None,
+        })
+        .bound(),
+    )
+    .into_resource()
+}
+
 fn network_row_id(network: &WifiNetworkInfo) -> String {
     format!("settings.network:{}", network.ssid)
 }
@@ -1446,6 +1476,10 @@ impl NetworkModel {
             expanded: None,
             join_passwords: HashMap::new(),
             known_open: None,
+            prompts: DisclosureGroup::new(),
+            known_rows: DisclosureGroup::new(),
+            prompt_shown: std::cell::RefCell::new(None),
+            known_shown: std::cell::RefCell::new(None),
             enterprise_open: false,
             hotspot_open: false,
             scanned_at: None,
@@ -2668,12 +2702,9 @@ impl NetworkModel {
             wifi_rows.push(note(notice));
         }
         if self.wifi_enabled && !self.wifi_absent() {
+            self.open_rows();
             for net in self.networks_in_order() {
                 wifi_rows.push(self.network_row(net));
-                // The password prompt opens directly beneath its network.
-                if self.expanded.as_deref() == Some(net.ssid.as_str()) {
-                    wifi_rows.push(self.password_prompt(&net.ssid));
-                }
             }
             if self.networks.is_empty() && self.read_errors.networks.is_none() {
                 wifi_rows.push(note(&t(if self.scan_in_flight {
@@ -2948,34 +2979,31 @@ impl NetworkModel {
         if wifi_profiles.is_empty() {
             return vec![note(&t("net-no-saved-wifi"))];
         }
-        let mut rows_out: Vec<Item> = Vec::new();
-        for profile in wifi_profiles {
-            let open = self.known_open.as_deref() == Some(profile.uuid.as_str());
-            rows_out.push(crate::widgets::icon_row(
-                ui::icons::Icon::Wifi,
-                &profile.name,
-                &t(if profile.autoconnect {
-                    "net-known-joins-itself"
-                } else {
-                    "net-known-joins-when-chosen"
-                }),
-                Box::new(self.disclosure_button(
-                    &format!("settings.network.profile.details.{}", profile.uuid),
-                    &t_args(
-                        "net-known-details",
-                        &[("name", profile.name.as_str().into())],
-                    ),
-                    open,
-                    NetworkEffect::ShowKnownNetwork {
-                        profile: profile.uuid.clone(),
-                    },
-                )),
-            ));
-            if open {
-                rows_out.extend(self.known_network_details(profile));
-            }
-        }
-        rows_out
+        // Each known network opens its details in place; the row stays open
+        // while the page is rebuilt.
+        self.open_rows();
+        wifi_profiles
+            .into_iter()
+            .map(|profile| {
+                let details = crate::widgets::page(vec![crate::widgets::untitled(rows(
+                    self.known_network_details(profile),
+                ))]);
+                row(Box::new(
+                    DisclosureRow::keyed(
+                        profile.name.clone(),
+                        details,
+                        &self.known_rows,
+                        &profile.uuid,
+                    )
+                    .icon(ui::icons::Icon::Wifi)
+                    .secondary(t(if profile.autoconnect {
+                        "net-known-joins-itself"
+                    } else {
+                        "net-known-joins-when-chosen"
+                    })),
+                ))
+            })
+            .collect()
     }
 
     /// A known network's details: joining it by itself, metered data, its
@@ -3275,9 +3303,56 @@ impl NetworkModel {
     /// Keep specialist 802.1X credentials out of the ordinary connection
     /// view. The affordance remains visible, while the form appears only when
     /// someone has chosen to add that kind of network.
-    /// One scanned-network row: the network's name, under it whether it
-    /// is secured and how strong it is, and on the trailing edge Connect or
-    /// Cancel, or a quiet mark for the one in use.
+    /// Open the rows the model asks for (a password a join needs, the
+    /// details an agent asked for) once each time it asks.
+    fn open_rows(&self) {
+        let mut shown = self.prompt_shown.borrow_mut();
+        if *shown != self.expanded {
+            match &self.expanded {
+                Some(ssid) => self.prompts.open(ssid),
+                None => {
+                    if let Some(old) = shown.as_deref() {
+                        self.prompts.close(old);
+                    }
+                }
+            }
+            shown.clone_from(&self.expanded);
+        }
+        let mut shown = self.known_shown.borrow_mut();
+        if *shown != self.known_open {
+            match &self.known_open {
+                Some(uuid) => self.known_rows.open(uuid),
+                None => {
+                    if let Some(old) = shown.as_deref() {
+                        self.known_rows.close(old);
+                    }
+                }
+            }
+            shown.clone_from(&self.known_open);
+        }
+    }
+
+    /// Follow what the person opened and closed in place: closing a
+    /// network's password prompt cancels joining it, and the details open
+    /// are the ones the model says are open.
+    fn follow_rows(&mut self) {
+        if let Some(ssid) = self.expanded.clone()
+            && self.prompt_shown.borrow().as_deref() == Some(ssid.as_str())
+            && self.prompts.open_key().as_deref() != Some(ssid.as_str())
+        {
+            *self.prompt_shown.borrow_mut() = None;
+            self.set_expanded(None);
+        }
+        let open = self.known_rows.open_key();
+        if open != self.known_open && *self.known_shown.borrow() == self.known_open {
+            self.known_open.clone_from(&open);
+            *self.known_shown.borrow_mut() = open;
+        }
+    }
+
+    /// One network in range: its name, whether it is secured and how
+    /// strong it is, and its state on the trailing edge. Choosing it joins
+    /// it; a password it needs is asked for in place, under it.
     fn network_row(&self, net: &WifiNetworkInfo) -> Item {
         let security = t(if net.secure {
             "net-security-secured"
@@ -3285,45 +3360,47 @@ impl NetworkModel {
             "net-security-open"
         });
         let detail = format!("{security}, {}", wifi_signal_words(net.signal));
-        let cta_id = format!("settings.network.connect.{}", net.ssid);
-        let (marks, actions): (Vec<El>, Vec<Button>) = if net.connected {
-            (
-                vec![crate::widgets::semantic_status_pill(
-                    &t("net-connected"),
-                    crate::widgets::StatusTone::Success,
-                )],
-                Vec::new(),
-            )
-        } else if self.expanded.as_deref() == Some(net.ssid.as_str()) {
-            (
-                Vec::new(),
-                vec![self.button(
-                    &cta_id,
-                    &t("net-cancel"),
-                    NetworkEffect::CancelConnect {
-                        ssid: net.ssid.clone(),
-                    },
-                )],
-            )
+        let id = format!("settings.network.connect.{}", net.ssid);
+        if self.prompt_shown.borrow().as_deref() == Some(net.ssid.as_str())
+            || self.prompts.open_key().as_deref() == Some(net.ssid.as_str())
+        {
+            return row(Box::new(
+                DisclosureRow::keyed(
+                    net.ssid.clone(),
+                    self.password_prompt(&net.ssid),
+                    &self.prompts,
+                    &net.ssid,
+                )
+                .icon(ui::icons::Icon::Wifi)
+                .secondary(detail),
+            ));
+        }
+        let live = network_live(net);
+        let mut line = ListRow::new(id, net.ssid.clone())
+            .icon(ui::icons::Icon::Wifi)
+            .secondary(detail);
+        if net.connected {
+            line = line.value(t("net-connected"));
+        } else if self.connecting.contains(&net.ssid) {
+            line = line.value(t("net-connecting"));
         } else {
-            (
-                Vec::new(),
-                vec![self.button(
-                    &cta_id,
-                    &t("net-connect"),
-                    NetworkEffect::ConnectNetwork {
-                        ssid: net.ssid.clone(),
-                        password: None,
-                    },
-                )],
-            )
-        };
-        crate::widgets::item_row(&net.ssid, marks, &[detail], actions)
+            line = match self.cx.row_invocation(
+                &live,
+                NetworkEffect::ConnectNetwork {
+                    ssid: net.ssid.clone(),
+                    password: None,
+                },
+            ) {
+                Some(binding) => line.on_action(binding),
+                None => line.with_enabled(false),
+            };
+        }
+        row(Box::new(line))
     }
 
-    /// The password prompt beneath a secure network: a masked,
-    /// process-local field and a Join button.
-    fn password_prompt(&self, ssid: &str) -> Item {
+    /// The password prompt under a secure network: a masked, process-local
+    /// field and Join beside it. Closing the row cancels the join.
+    fn password_prompt(&self, ssid: &str) -> Box<dyn Widget> {
         let buffer = self
             .join_passwords
             .get(ssid)
@@ -3334,20 +3411,36 @@ impl NetworkModel {
             .with_external_buffer(buffer)
             .with_secret(true)
             .with_placeholder(t("net-password"));
-        // A field and its Join button share one line: not a label/control pair.
-        row(Box::new(
+        Box::new(
             Row::new()
-                .push(Box::new(field))
-                .push(Box::new(Spacer::new()))
-                .push(Box::new(self.button(
-                    &format!("settings.network.join.{ssid}"),
-                    &t("net-join"),
-                    NetworkEffect::ConnectNetwork {
-                        ssid: ssid.to_owned(),
-                        password: None,
-                    },
-                ))),
-        ))
+                .no_wrap()
+                .with_align_items(ui::taffy::AlignItems::Center)
+                .with_rhythm(ui::tokens::Rhythm::Related)
+                .with_padding(0.0, crate::widgets::spacing().s2)
+                .push(Box::new(
+                    ui::widget::Container::new()
+                        .with_no_padding()
+                        .with_flex_grow()
+                        .with_child(Box::new(field)),
+                ))
+                .push(Box::new({
+                    let join =
+                        Button::new(&format!("settings.network.join.{ssid}"), &t("net-join"))
+                            .role(ui::widget::ButtonRole::Primary);
+                    match self.networks.iter().find(|net| net.ssid == ssid) {
+                        // Joining is the network row's own action.
+                        Some(net) => self.cx.bind_row(
+                            join,
+                            &network_live(net),
+                            NetworkEffect::ConnectNetwork {
+                                ssid: ssid.to_owned(),
+                                password: None,
+                            },
+                        ),
+                        None => join.with_enabled(false),
+                    }
+                })),
+        )
     }
 
     /// Rows for the Wired card: the link, and the selected wired profile's
@@ -3551,6 +3644,7 @@ impl PaneModel for NetworkModel {
     fn poll(&mut self) -> bool {
         self.poll_background();
         self.scan_when_due(ui::time::now());
+        self.follow_rows();
         let selection = (self.wifi_profile.get(), self.wired_profile.get());
         if selection != self.seen_selection {
             self.seen_selection = selection;
@@ -4481,10 +4575,27 @@ mod tests {
             autoconnect: true,
         }];
         let mut model = model(&fake);
+        // The details are open when the row holding them is.
+        fn open_holding(widget: &dyn Widget, id: &str) -> bool {
+            if let Some(row) = widget
+                .as_any()
+                .and_then(|any| any.downcast_ref::<DisclosureRow>())
+                && widget
+                    .children()
+                    .iter()
+                    .any(|child| ui::widget::find_test_id(*child, id).is_some())
+            {
+                return row.is_open();
+            }
+            widget
+                .children()
+                .iter()
+                .any(|child| open_holding(*child, id))
+        }
         let details = |model: &NetworkModel| {
+            let _settled = ui::motion::testing::settled();
             let composed = model.build_composition();
-            ui::widget::find_test_id(composed.as_ref(), "network.profile.autoconnect.1234-abcd")
-                .is_some()
+            open_holding(composed.as_ref(), "network.profile.autoconnect.1234-abcd")
         };
         assert!(!details(&model), "closed until asked");
         assert!(shown(&model).join("\n").contains(&t("net-known")));
