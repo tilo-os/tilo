@@ -36,6 +36,7 @@ fields = [
   { path = "themes.*.status.info.lightness", type = "f64" },
   { path = "themes.*.status.info.chroma", type = "f64" },
   { path = "themes.*.tint", type = "Option<f64>" },
+  { path = "themes.*.monochrome", type = "bool" },
   { path = "themes.*.presence", type = "Presence", stored = "record" },
   { path = "themes.*.presence.lightness", type = "f64" },
   { path = "themes.*.presence.chroma", type = "f64" },

@@ -34,6 +34,7 @@ fields = [
   { path = "contacts.*.groups.*.id", type = "Uuid", readonly = true },
   { path = "contacts.*.groups.*.value", type = "String", label = true },
   { path = "contacts.*.favorite", type = "bool" },
+  { path = "contacts.*.photo", type = "String", readonly = true },
   { path = "removed", type = "Set<ContactId>", readonly = true },
 ]
 
@@ -48,7 +49,7 @@ params = [
 id = "add-contacts"
 kind = "undoable"
 params = [
-  { name = "contacts", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { addresses = { type = "array", items = { type = "object", additionalProperties = false, properties = { city = { type = "string" }, country = { type = "string" }, id = { type = "string", format = "uuid" }, label = { type = "string" }, postal = { type = "string" }, region = { type = "string" }, street = { type = "string" } }, required = ["id", "label", "street", "city", "region", "postal", "country"] } }, birthday = { oneOf = [{ type = "null" }, { oneOf = [{ type = "object", additionalProperties = false, properties = { Full = { type = "object", additionalProperties = false, properties = { day = { type = "integer", maximum = 4294967295, minimum = 0 }, month = { type = "integer", maximum = 4294967295, minimum = 0 }, year = { type = "integer", maximum = 2147483647, minimum = -2147483648 } }, required = ["year", "month", "day"] } }, required = ["Full"] }, { type = "object", additionalProperties = false, properties = { MonthDay = { type = "object", additionalProperties = false, properties = { day = { type = "integer", maximum = 4294967295, minimum = 0 }, month = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["month", "day"] } }, required = ["MonthDay"] }] }] }, emails = { type = "array", items = { type = "object", additionalProperties = false, properties = { id = { type = "string", format = "uuid" }, label = { type = "string" }, value = { type = "string" } }, required = ["id", "label", "value"] } }, favorite = { type = "boolean" }, first = { type = "string" }, groups = { type = "array", items = { type = "object", additionalProperties = false, properties = { id = { type = "string", format = "uuid" }, value = { type = "string" } }, required = ["id", "value"] } }, id = { type = "string", format = "uuid" }, last = { type = "string" }, notes = { type = "string" }, org = { type = "string" }, phones = { type = "array", items = { type = "object", additionalProperties = false, properties = { id = { type = "string", format = "uuid" }, label = { type = "string" }, value = { type = "string" } }, required = ["id", "label", "value"] } }, title = { type = "string" }, website = { type = "string" } }, required = ["id", "first", "last", "org", "title", "website", "notes", "phones", "emails", "addresses", "groups", "favorite"] } } },
+  { name = "contacts", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { addresses = { type = "array", items = { type = "object", additionalProperties = false, properties = { city = { type = "string" }, country = { type = "string" }, id = { type = "string", format = "uuid" }, label = { type = "string" }, postal = { type = "string" }, region = { type = "string" }, street = { type = "string" } }, required = ["id", "label", "street", "city", "region", "postal", "country"] } }, birthday = { oneOf = [{ type = "null" }, { oneOf = [{ type = "object", additionalProperties = false, properties = { Full = { type = "object", additionalProperties = false, properties = { day = { type = "integer", maximum = 4294967295, minimum = 0 }, month = { type = "integer", maximum = 4294967295, minimum = 0 }, year = { type = "integer", maximum = 2147483647, minimum = -2147483648 } }, required = ["year", "month", "day"] } }, required = ["Full"] }, { type = "object", additionalProperties = false, properties = { MonthDay = { type = "object", additionalProperties = false, properties = { day = { type = "integer", maximum = 4294967295, minimum = 0 }, month = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["month", "day"] } }, required = ["MonthDay"] }] }] }, emails = { type = "array", items = { type = "object", additionalProperties = false, properties = { id = { type = "string", format = "uuid" }, label = { type = "string" }, value = { type = "string" } }, required = ["id", "label", "value"] } }, favorite = { type = "boolean" }, first = { type = "string" }, groups = { type = "array", items = { type = "object", additionalProperties = false, properties = { id = { type = "string", format = "uuid" }, value = { type = "string" } }, required = ["id", "value"] } }, id = { type = "string", format = "uuid" }, last = { type = "string" }, notes = { type = "string" }, org = { type = "string" }, phones = { type = "array", items = { type = "object", additionalProperties = false, properties = { id = { type = "string", format = "uuid" }, label = { type = "string" }, value = { type = "string" } }, required = ["id", "label", "value"] } }, photo = { type = "string" }, title = { type = "string" }, website = { type = "string" } }, required = ["id", "first", "last", "org", "title", "website", "notes", "phones", "emails", "addresses", "groups", "favorite"] } } },
 ]
 
 [[resources.verbs]]
@@ -72,14 +73,15 @@ params = [
 [[resources]]
 kind = "tilo.contacts.identities"
 label = "Contact identities"
-version = 1
+version = 2
 person = true
 fields = [
   { path = "people", type = "Collection<Person>", stored = "collection" },
   { path = "people.*.label", type = "String" },
   { path = "people.*.removed", type = "bool" },
-  { path = "people.*.phones", type = "Json<Vec<String>>" },
-  { path = "people.*.emails", type = "Json<Vec<String>>" },
+  { path = "people.*.phones", type = "Vec<String>" },
+  { path = "people.*.emails", type = "Vec<String>" },
+  { path = "people.*.photo", type = "String" },
   { path = "people.*.endpoints", type = "Collection<Endpoint>", stored = "collection" },
   { path = "people.*.endpoints.*.service", type = "String" },
   { path = "people.*.endpoints.*.recipient", type = "String" },
@@ -173,7 +175,7 @@ params = [
 id = "project-contacts"
 kind = "undoable"
 params = [
-  { name = "people", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { emails = { type = "array", items = { type = "string" } }, label = { type = "string" }, person = { type = "string" }, phones = { type = "array", items = { type = "string" } } }, required = ["person", "label", "phones", "emails"] } } },
+  { name = "people", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { emails = { type = "array", items = { type = "string" } }, label = { type = "string" }, person = { type = "string" }, phones = { type = "array", items = { type = "string" } }, photo = { type = "string" } }, required = ["person", "label", "phones", "emails"] } } },
   { name = "removed", required = true, schema = { type = "array", items = { type = "string" } } },
 ]
 

@@ -15,12 +15,12 @@ fields = [
   { path = "bot_user", type = "String" },
   { path = "channels", type = "Keyed<DChannel>", stored = "keyed" },
   { path = "channels.*.id", type = "String", readonly = true },
-  { path = "channels.*.kind", type = "Json<ChannelKind>" },
+  { path = "channels.*.kind", type = "ChannelKind" },
   { path = "channels.*.name", type = "String" },
   { path = "channels.*.parent", type = "Option<String>" },
   { path = "channels.*.position", type = "i64" },
   { path = "channels.*.topic", type = "String" },
-  { path = "channels.*.overwrites", type = "Json<Vec<OverwriteInfo>>" },
+  { path = "channels.*.overwrites", type = "Vec<OverwriteInfo>" },
   { path = "roles", type = "Keyed<DRole>", stored = "keyed" },
   { path = "roles.*.id", type = "String", readonly = true },
   { path = "roles.*.name", type = "String" },
@@ -40,6 +40,8 @@ fields = [
   { path = "links.*.discord_user", type = "String", readonly = true },
   { path = "links.*.person", type = "String" },
   { path = "links.*.linked_at", type = "i64" },
+  { path = "links.*.user_name", type = "String" },
+  { path = "links.*.display_name", type = "Option<String>" },
   { path = "pending_links", type = "Keyed<PendingLink>", stored = "keyed" },
   { path = "pending_links.*.person", type = "String", readonly = true },
   { path = "pending_links.*.code_sha256", type = "String" },
@@ -230,6 +232,17 @@ params = [
   { name = "discord_user", required = true, schema = { type = "string" } },
   { name = "person", required = true, schema = { type = "string" } },
   { name = "code_sha256", required = true, schema = { type = "string" } },
+  { name = "user_name", required = false, schema = { type = ["string", "null"] } },
+  { name = "display_name", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "rename-link"
+kind = "undoable"
+params = [
+  { name = "discord_user", required = true, schema = { type = "string" } },
+  { name = "user_name", required = true, schema = { type = "string" } },
+  { name = "display_name", required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]

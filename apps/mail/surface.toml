@@ -30,7 +30,7 @@ fields = [
   { path = "draft.html_body", type = "Option<String>" },
   { path = "draft.calendar_ics", type = "Option<String>" },
   { path = "draft.attachments", type = "Vec<DraftAttachment>" },
-  { path = "draft.rich_body", type = "Option<RichText>", ops = "sha256:228bfc4bf4f5e079" },
+  { path = "draft.rich_body", type = "Option<RichText>", ops = "sha256:32d3007b3b137974" },
   { path = "outbox", type = "Outbox<Outgoing>" },
   { path = "server", type = "Outbox<ServerUpdate>" },
 ]
@@ -137,14 +137,15 @@ params = [
 [[resources]]
 kind = "tilo.contacts.identities"
 label = "Contact identities"
-version = 1
+version = 2
 person = true
 fields = [
   { path = "people", type = "Collection<Person>", stored = "collection" },
   { path = "people.*.label", type = "String" },
   { path = "people.*.removed", type = "bool" },
-  { path = "people.*.phones", type = "Json<Vec<String>>" },
-  { path = "people.*.emails", type = "Json<Vec<String>>" },
+  { path = "people.*.phones", type = "Vec<String>" },
+  { path = "people.*.emails", type = "Vec<String>" },
+  { path = "people.*.photo", type = "String" },
   { path = "people.*.endpoints", type = "Collection<Endpoint>", stored = "collection" },
   { path = "people.*.endpoints.*.service", type = "String" },
   { path = "people.*.endpoints.*.recipient", type = "String" },
@@ -238,7 +239,7 @@ params = [
 id = "project-contacts"
 kind = "undoable"
 params = [
-  { name = "people", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { emails = { type = "array", items = { type = "string" } }, label = { type = "string" }, person = { type = "string" }, phones = { type = "array", items = { type = "string" } } }, required = ["person", "label", "phones", "emails"] } } },
+  { name = "people", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { emails = { type = "array", items = { type = "string" } }, label = { type = "string" }, person = { type = "string" }, phones = { type = "array", items = { type = "string" } }, photo = { type = "string" } }, required = ["person", "label", "phones", "emails"] } } },
   { name = "removed", required = true, schema = { type = "array", items = { type = "string" } } },
 ]
 
