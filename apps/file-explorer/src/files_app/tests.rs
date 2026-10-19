@@ -5515,13 +5515,19 @@ mod responsive_body_tests {
         assert!(h.w.renaming.is_some(), "keyboard menu executes Rename");
     }
 
-    /// Narrow, the places are a screen of their own: the whole window, the
-    /// files one Back away, nothing darkened (HIG §1a).
+    /// Narrow, the places are a screen of their own: the whole window, reached
+    /// with Back from the folder, nothing darkened (HIG §1a).
     fn narrow_places_are_a_screen_of_their_own() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), b"x").unwrap();
         let mut h = H::new(Some(dir.path()), 480.0, 720.0);
-        h.w.debug_show_places();
+        assert!(
+            !h.w.debug_places_open(),
+            "a narrow window opens on the folder, so the files are what you see"
+        );
+        assert!(h.rect_of("FileView").is_some());
+        assert!(h.w.nav.back(), "Back goes to the places");
+        h.w.nav.snap();
         h.lay_out(480.0, 720.0);
         assert!(h.w.debug_places_open(), "the places screen is in front");
         assert_eq!(h.w.debug_sidebar_rect().width(), 480.0);
@@ -5529,7 +5535,8 @@ mod responsive_body_tests {
             h.rect_of("FileView").is_none(),
             "one column at a time: the files are not under the places"
         );
-        assert!(h.w.nav.back(), "Back returns to the files");
+        // Choosing a destination on the places screen returns to the files.
+        h.w.nav.show(ui::widget::NavPane::Content);
         h.w.nav.snap();
         h.lay_out(480.0, 720.0);
         assert!(!h.w.debug_places_open());
