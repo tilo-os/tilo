@@ -3005,11 +3005,12 @@ mod tests {
             })
             .expect("the viewer is mounted");
         }
-        // The shared shell docks the rail when it fits and exposes a real
-        // hamburger-controlled drawer on narrower windows.
+        // The shared shell docks the rail while the grid keeps its minimum
+        // width beside it; narrower, the rail is a screen of its own.
         {
-            use ui::widget::SidebarPlacement::{Docked, Drawer};
-            for (width, placement) in [(1280, Docked), (800, Drawer), (560, Drawer)] {
+            use ui::widget::SidebarPlacement::{Docked, Screen};
+            for (width, placement) in [(1280, Docked), (800, Docked), (560, Docked), (420, Screen)]
+            {
                 let mut framed = ui::headless::Framed::new(
                     ui::State::new(),
                     TubeApp::new(),
@@ -3021,14 +3022,10 @@ mod tests {
                     placement,
                     "the shared shell adapts the rail at {width} px"
                 );
-                if placement == Drawer {
-                    assert!(
-                        !framed.sidebar_open_for_test(),
-                        "the narrow drawer starts closed"
-                    );
+                if placement == Screen && !framed.sidebar_open_for_test() {
                     ui::headless::Framed::harness_mut(&mut framed)
                         .click_named("nav-shell-sidebar")
-                        .expect("the hamburger opens the narrow rail");
+                        .expect("the sidebar control goes back to the narrow rail");
                 }
                 assert!(
                     framed.sidebar_open_for_test(),
