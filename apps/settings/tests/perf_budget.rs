@@ -138,6 +138,64 @@ fn page_switch() {
     budget("page switch", p50, 8_000);
 }
 
+/// The pages with drawn views (the globe, the charge chart, the theme
+/// tiles, the keyboard) switch as fast as the plain ones.
+#[test]
+fn drawn_pages_switch() {
+    let config = crate::support::ScratchConfig::new();
+    let mut app = mount(&config);
+    let cats = [
+        Category::TimeDate,
+        Category::Power,
+        Category::Appearance,
+        Category::Keyboard,
+        Category::Sound,
+    ];
+    for c in cats {
+        click_row(&mut app, c);
+    }
+    let mut samples = Vec::new();
+    Framed::harness_mut(&mut app).begin_profiling();
+    for _ in 0..4 {
+        for c in cats {
+            let t = Instant::now();
+            click_row(&mut app, c);
+            samples.push(t.elapsed().as_micros() as u64);
+            assert_eq!(app.selected(), c, "the click must switch the page");
+        }
+    }
+    passes(
+        "drawn page switch",
+        &Framed::harness_mut(&mut app).take_profile_samples(),
+    );
+    let (p50, _) = summary("settings drawn page switch", &mut samples);
+    budget("drawn page switch", p50, 8_000);
+}
+
+/// Dragging the globe redraws it without rebuilding the page: each drag is
+/// a press, four moves and a release, reported per event.
+#[test]
+fn globe_drag_frame() {
+    let config = crate::support::ScratchConfig::new();
+    let mut app = mount_on(&config, Category::TimeDate);
+    let h = Framed::harness_mut(&mut app);
+    // The clock is read off the UI thread; the globe is drawn once it lands.
+    let globe = tilo_test_env::wait_for("the globe is laid out", || {
+        let _ = h.poll_frame();
+        h.targets().get("time.timezone-map").copied()
+    });
+    let c = globe.center();
+    let mut samples = Vec::new();
+    for i in 0..40 {
+        let dx = if i % 2 == 0 { 60.0 } else { -60.0 };
+        let t = Instant::now();
+        h.drag_at((c.x, c.y), (c.x + dx, c.y + dx / 4.0));
+        samples.push(t.elapsed().as_micros() as u64 / 6);
+    }
+    let (p50, _) = summary("settings globe drag event", &mut samples);
+    budget("globe drag event", p50, 4_000);
+}
+
 #[test]
 fn scroll_frame() {
     let config = crate::support::ScratchConfig::new();

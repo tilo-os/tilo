@@ -45,11 +45,13 @@ use crate::effects::{SettingsEffect, effect};
 use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
 use crate::panes::model::{PaneModel, Shared};
+
+mod level_meter;
 use crate::prefs::AudioPrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    Item, SettingsSection, card, error_caption, error_row, note, row, rows, setting_row,
+    Item, SettingsSection, block, card, error_caption, error_row, note, row, rows, setting_row,
     setting_row_described,
 };
 
@@ -311,6 +313,23 @@ fn event_shown(event: SystemSoundEvent) -> String {
         SystemSoundEvent::Error => "sound-event-error",
     })
 }
+
+/// Whether an output's name says it is worn: headphones, a headset or
+/// earbuds.
+fn device_is_headphones(name: &str) -> bool {
+    let name = name.to_lowercase();
+    ["headphone", "headset", "earbud", "airpods", "buds"]
+        .iter()
+        .any(|word| name.contains(word))
+}
+
+/// The narrowest an app's volume slider gets, and its name beside the
+/// controls before they move under it.
+const STREAM_SLIDER_WIDTH: f32 = 220.0;
+const STREAM_SLIDER_MIN_WIDTH: f32 = 88.0;
+const STREAM_LABEL_MIN_WIDTH: f32 = 160.0;
+/// How wide the output volume slider is, with its value beside it.
+const OUTPUT_SLIDER_WIDTH: f32 = 172.0;
 
 struct NoopAudioRuntime;
 impl AudioRuntimeControl for NoopAudioRuntime {
@@ -675,22 +694,7 @@ impl AudioArea {
             .iter()
             .chain(&model.graph.record_streams)
         {
-            let kind = if stream.playback {
-                "settings.audio-playback"
-            } else {
-                "settings.audio-recording"
-            };
-            rows.push(
-                LiveRow::new(format!("{kind}:{}", stream.id), kind, stream.label())
-                    .operation(offer(AudioEffect::SetStreamMuted {
-                        stream: stream.id,
-                        muted: !stream.muted.unwrap_or(false),
-                    }))
-                    .operation(offer(AudioEffect::RouteStream {
-                        stream: stream.id,
-                        device: FOLLOW_DEFAULT.into(),
-                    })),
-            );
+            rows.push(stream_live_row(stream));
         }
         for (kind, devices) in [
             ("settings.audio-output", &model.devices.sinks),
@@ -714,6 +718,42 @@ impl AudioArea {
         }
         rows
     }
+}
+
+/// `control` acting through `binding`, or shown unavailable without one.
+fn bound<I, C: ui::framework::ActionControl<I>>(
+    control: C,
+    binding: Option<ui::tilo_actions::ActionBinding<I>>,
+) -> C {
+    match binding {
+        Some(binding) => control.bind_action(binding),
+        None => control.unavailable(),
+    }
+}
+
+/// One app's stream as a row of the published surface: its volume, mute
+/// and route are operations on it, which the pane's controls for that
+/// stream bind to.
+fn stream_live_row(stream: &AudioStream) -> LiveRow {
+    let offer = |effect: AudioEffect| SettingsEffect::from(effect).bound();
+    let kind = if stream.playback {
+        "settings.audio-playback"
+    } else {
+        "settings.audio-recording"
+    };
+    LiveRow::new(format!("{kind}:{}", stream.id), kind, stream.label())
+        .operation(offer(AudioEffect::SetStreamMuted {
+            stream: stream.id,
+            muted: !stream.muted.unwrap_or(false),
+        }))
+        .operation(offer(AudioEffect::SetStreamVolume {
+            stream: stream.id,
+            volume: f64::from(stream.volume.unwrap_or(1.0)),
+        }))
+        .operation(offer(AudioEffect::RouteStream {
+            stream: stream.id,
+            device: FOLLOW_DEFAULT.into(),
+        }))
 }
 
 #[expect(
@@ -757,7 +797,8 @@ pub struct AudioModel {
     runtime_notice: Option<String>,
     channel_test: Option<Box<dyn BoundedSession>>,
     mic_session: Option<Box<dyn MicrophoneMeterSession>>,
-    mic_level: f32,
+    /// The microphone's level while it is tested, for the meter.
+    mic_meter: level_meter::Level,
     volume: f32,
     input_volume: f32,
     muted: bool,
@@ -1025,7 +1066,7 @@ impl AudioModel {
             runtime_notice: None,
             channel_test: None,
             mic_session: None,
-            mic_level: 0.0,
+            mic_meter: level_meter::Level::default(),
             volume: initial.level,
             input_volume,
             muted: initial.muted,
@@ -1062,7 +1103,7 @@ impl AudioModel {
             runtime_notice: None,
             channel_test: None,
             mic_session: None,
-            mic_level: 0.0,
+            mic_meter: level_meter::Level::default(),
             volume: 0.5,
             input_volume: 0.75,
             muted: false,
@@ -1457,6 +1498,7 @@ impl AudioModel {
             }
             AudioEffect::ToggleMicrophoneTest => {
                 if self.mic_session.take().is_some() {
+                    self.mic_meter.set_live(false);
                     self.runtime_notice = Some(t("sound-notice-mic-stopped"));
                     return Ok(t("sound-notice-mic-stopped"));
                 }
@@ -1474,7 +1516,7 @@ impl AudioModel {
                         notice
                     })?;
                 self.mic_session = Some(session);
-                self.mic_level = 0.0;
+                self.mic_meter.set_live(true);
                 self.runtime_notice = Some(t("sound-notice-mic-started"));
                 Ok(t("sound-notice-mic-started"))
             }
@@ -1608,15 +1650,8 @@ impl AudioModel {
             ))));
         }
         if self.devices.sinks.len() >= 2 {
-            let opts: Vec<String> = self.devices.sinks.iter().map(|d| d.name.clone()).collect();
-            let current = self.devices.default_sink().unwrap_or_default().to_owned();
-            let dd = Dropdown::from_state(opts, &LocalState::new(current.clone()))
-                .with_id("audio.output_device")
-                .with_placeholder(&current);
-            output_rows.push(setting_row(
-                &t("sound-output-device"),
-                Box::new(self.cx.bind(dd, effect(AudioEffect::SELECT_OUTPUT))),
-            ));
+            // The outputs as a list to pick from: the one in use checked.
+            output_rows.push(row(self.device_list(&self.devices.sinks, true)));
         }
         if let Some(error) = &self.volume_error {
             output_rows.push(error_row(
@@ -1624,18 +1659,47 @@ impl AudioModel {
                 &t_args("sound-volume-error", &[("error", error.as_str().into())]),
             ));
         } else {
-            output_rows.push(
-                self.cx
-                    .row(t("sound-volume"))
-                    .id("audio.volume")
-                    .slider_effect(
-                        &LocalState::new(f64::from(self.volume)),
-                        effect(AudioEffect::SET_OUTPUT_VOLUME),
-                    ),
+            // The volume and, beside it, the button that mutes it, as each
+            // app's line has.
+            let volume = self.cx.bind(
+                Slider::from_state(&LocalState::new(f64::from(self.volume)))
+                    .with_id("audio.volume")
+                    .with_accessible_name(&t("sound-volume"))
+                    .shows_value()
+                    .with_enabled(!self.muted),
+                effect(AudioEffect::SET_OUTPUT_VOLUME),
             );
-            output_rows.push(self.cx.row(t("sound-mute")).id("audio.mute").toggle_effect(
-                &LocalState::new(self.muted),
-                effect(AudioEffect::SET_OUTPUT_MUTED),
+            let mute = self.cx.bind_invocation(
+                ui::widget::primitives::IconButton::new(
+                    "audio.mute",
+                    if self.muted {
+                        ui::icons::Icon::VolumeX
+                    } else {
+                        ui::icons::Icon::Volume2
+                    },
+                    &t(if self.muted {
+                        "sound-unmute"
+                    } else {
+                        "sound-mute"
+                    }),
+                ),
+                AudioEffect::SetOutputMuted { muted: !self.muted },
+            );
+            output_rows.push(setting_row(
+                &t("sound-volume"),
+                Box::new(
+                    Row::new()
+                        .no_wrap()
+                        .with_align_items(taffy::AlignItems::Center)
+                        .with_rhythm(ui::tokens::Rhythm::Related)
+                        .push(Box::new(
+                            ui::widget::Container::new()
+                                .with_no_padding()
+                                .with_width(OUTPUT_SLIDER_WIDTH)
+                                .with_child(Box::new(volume)),
+                        ))
+                        .push(Box::new(mute)),
+                ),
             ));
         }
         let stereo_sink = self.graph.default_sink().filter(|sink| sink.channels == 2);
@@ -1711,20 +1775,7 @@ impl AudioModel {
     fn build_input_card(&self) -> SettingsSection {
         let mut input_rows = Vec::new();
         if self.devices.sources.len() >= 2 {
-            let opts: Vec<String> = self
-                .devices
-                .sources
-                .iter()
-                .map(|d| d.name.clone())
-                .collect();
-            let current = self.devices.default_source().unwrap_or_default().to_owned();
-            let dd = Dropdown::from_state(opts, &LocalState::new(current.clone()))
-                .with_id("audio.input_device")
-                .with_placeholder(&current);
-            input_rows.push(setting_row(
-                &t("sound-input-device"),
-                Box::new(self.cx.bind(dd, effect(AudioEffect::SELECT_INPUT))),
-            ));
+            input_rows.push(row(self.device_list(&self.devices.sources, false)));
         }
         if let Some(error) = &self.input_error {
             input_rows.push(error_row(
@@ -1745,16 +1796,16 @@ impl AudioModel {
         if self.runtime_caps.microphone_meter && self.graph.default_source().is_some() {
             let running = self.mic_session.is_some();
             let activity = if running {
-                t_args(
-                    "sound-input-activity",
-                    &[(
-                        "percent",
-                        i64::from((self.mic_level * 100.0).round() as u32).into(),
-                    )],
-                )
+                t("sound-mic-listening")
             } else {
                 t("sound-mic-idle")
             };
+            if running {
+                input_rows.push(block(Box::new(level_meter::LevelMeter::new(
+                    &self.mic_meter,
+                    t("sound-input-level"),
+                ))));
+            }
             input_rows.push(setting_row(
                 &activity,
                 Box::new(self.cx.bind_invocation(
@@ -1850,35 +1901,144 @@ impl AudioModel {
 
         let mut items: Vec<Item> = Vec::new();
         for s in streams {
-            let id = s.id;
-            let current = self.stream_target_label(s);
-            let dd = self.cx.bind(
-                Dropdown::from_state(options.clone(), &LocalState::new(current.clone()))
-                    .with_id(&format!("audio.stream.{id}.sink.dd"))
-                    .with_placeholder(&current),
-                effect(AudioEffect::ROUTE_STREAM).map(move |device: String| (id, device)),
-            );
-            let route_row =
-                setting_row_described(&s.app, s.media_name.as_deref().unwrap_or(""), Box::new(dd));
-            let vol_row = self
-                .cx
-                .row(t("sound-volume"))
-                .id(format!("audio.stream.{id}.volume.sl"))
-                .slider_effect(
-                    &LocalState::new(f64::from(s.volume.unwrap_or(1.0))),
-                    effect(AudioEffect::SET_STREAM_VOLUME).map(move |volume: f64| (id, volume)),
-                );
-            let mute_row = self
-                .cx
-                .row(t("sound-mute"))
-                .id(format!("audio.stream.{id}.muted.tg"))
-                .toggle_effect(
-                    &LocalState::new(s.muted.unwrap_or(false)),
-                    effect(AudioEffect::SET_STREAM_MUTED).map(move |muted: bool| (id, muted)),
-                );
-            items.extend([route_row, vol_row, mute_row]);
+            items.push(row(self.stream_row(s, &options, devices.len() >= 2)));
         }
         card(title, rows(items))
+    }
+
+    /// Outputs or inputs as rows to choose from, the one in use checked;
+    /// choosing another plays (or records) through it.
+    fn device_list(&self, devices: &[AudioDevice], outputs: bool) -> Box<dyn Widget> {
+        let mut list = ui::widget::Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(0.0);
+        for device in devices {
+            let icon = if !outputs {
+                ui::icons::Icon::Mic
+            } else if device_is_headphones(&device.name) {
+                ui::icons::Icon::Headphones
+            } else {
+                ui::icons::Icon::Speaker
+            };
+            let kind = if outputs { "output" } else { "input" };
+            let mut entry = ui::widget::ListRow::new(
+                format!("audio.{kind}.{}", device.id),
+                device.name.clone(),
+            )
+            .icon(icon)
+            .checked(device.default)
+            .selected(device.default);
+            if !device.default {
+                let choose = if outputs {
+                    AudioEffect::SelectOutput {
+                        device: device.name.clone(),
+                    }
+                } else {
+                    AudioEffect::SelectInput {
+                        device: device.name.clone(),
+                    }
+                };
+                if let Some(binding) = self.cx.invocation_binding(choose) {
+                    entry = entry.on_action(binding);
+                }
+            }
+            list = list.push(Box::new(entry));
+        }
+        Box::new(list)
+    }
+
+    /// One app's stream on one line: the app and what it plays, its
+    /// volume, a mute button and, with more than one device to choose
+    /// from, where it plays.
+    fn stream_row(&self, s: &AudioStream, options: &[String], routable: bool) -> Box<dyn Widget> {
+        let id = s.id;
+        let muted = s.muted.unwrap_or(false);
+        let mut label = ui::widget::Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_rhythm(ui::tokens::Rhythm::Tight)
+            .push(Box::new(ui::widget::Text::new(&s.app)));
+        if let Some(media) = s.media_name.as_deref().filter(|media| !media.is_empty()) {
+            label = label.push(Box::new(
+                ui::widget::Text::new(media)
+                    .with_role(ui::TextRole::Caption)
+                    .dimmed(),
+            ));
+        }
+        // The stream's controls act on its row of the published surface,
+        // where its volume, mute and route are operations.
+        let resource = stream_live_row(s).into_resource();
+        let volume = bound(
+            Slider::from_state(&LocalState::new(f64::from(s.volume.unwrap_or(1.0))))
+                .with_id(&format!("audio.stream.{id}.volume.sl"))
+                .with_accessible_name(&t_args(
+                    "sound-app-volume",
+                    &[("app", s.app.as_str().into())],
+                ))
+                .with_enabled(!muted),
+            self.cx.row_binding(
+                &resource,
+                effect(AudioEffect::SET_STREAM_VOLUME).map(move |volume: f64| (id, volume)),
+            ),
+        );
+        let mute = bound(
+            ui::widget::primitives::IconButton::new(
+                &format!("audio.stream.{id}.muted.tg"),
+                if muted {
+                    ui::icons::Icon::VolumeX
+                } else {
+                    ui::icons::Icon::Volume2
+                },
+                &t(if muted { "sound-unmute" } else { "sound-mute" }),
+            ),
+            self.cx.row_binding(
+                &resource,
+                effect(AudioEffect::SET_STREAM_MUTED).map(move |()| (id, !muted)),
+            ),
+        );
+        // The volume and its mute button stay together; in a narrow window
+        // they, and then the route, move under the name.
+        let controls = Row::new()
+            .no_wrap()
+            .with_align_items(taffy::AlignItems::Center)
+            .with_rhythm(ui::tokens::Rhythm::Related)
+            .push(Box::new(
+                // One width for every app's volume, so they line up, down to
+                // a short slider in a narrow window.
+                ui::widget::Container::new()
+                    .with_no_padding()
+                    .with_width(STREAM_SLIDER_WIDTH)
+                    .with_min_width(STREAM_SLIDER_MIN_WIDTH)
+                    .with_child(Box::new(volume)),
+            ))
+            .push(Box::new(mute));
+        let mut line = Row::new()
+            .with_align_items(taffy::AlignItems::Center)
+            .with_rhythm(ui::tokens::Rhythm::Sibling)
+            .push(Box::new(
+                ui::widget::Container::new()
+                    .with_no_padding()
+                    .with_flex_grow()
+                    .with_min_width(STREAM_LABEL_MIN_WIDTH)
+                    .with_child(Box::new(label)),
+            ))
+            .push(Box::new(controls));
+        if routable {
+            let current = self.stream_target_label(s);
+            let route = Dropdown::from_state(options.to_vec(), &LocalState::new(current.clone()))
+                .with_id(&format!("audio.stream.{id}.sink.dd"))
+                .with_placeholder(&current);
+            let route = bound(
+                route,
+                self.cx.row_binding(
+                    &resource,
+                    effect(AudioEffect::ROUTE_STREAM).map(move |device: String| (id, device)),
+                ),
+            );
+            line = line.push(Box::new(route));
+        }
+        Box::new(line)
     }
 
     /// The picker label for a stream's *current* route: the device it is linked
@@ -2017,6 +2177,7 @@ impl AudioModel {
         // mono is owned by the compositor session and handles hot-plug there.
         self.channel_test = None;
         self.mic_session = None;
+        self.mic_meter.set_live(false);
         // Refresh the sink/source pickers from the same enumeration so a new
         // headset is selectable, keeping the current default marker.
         self.devices = devices_from_graph(&fresh);
@@ -2037,13 +2198,12 @@ impl AudioModel {
             self.changed = true;
         }
         if let Some(session) = &mut self.mic_session {
-            let level = session.level();
-            if (level - self.mic_level).abs() >= 0.02 {
-                self.mic_level = level;
-                self.changed = true;
-            }
+            // The meter reads the level itself each frame; the page is not
+            // rebuilt for it.
+            self.mic_meter.set(session.level());
             if !session.running() {
                 self.mic_session = None;
+                self.mic_meter.set_live(false);
                 self.runtime_notice = Some(t("sound-notice-mic-done"));
                 self.changed = true;
             }

@@ -90,6 +90,14 @@ impl ChargeCapCapability {
     }
 }
 
+/// `amount` at `per_hour`, as a duration; `None` at no rate or past two
+/// days, which a driver's momentary reading can suggest but no battery
+/// lasts.
+fn hours_at(amount: u64, per_hour: u64) -> Option<std::time::Duration> {
+    let seconds = amount.checked_mul(3600)?.checked_div(per_hour)?;
+    (seconds <= 48 * 3600).then(|| std::time::Duration::from_secs(seconds))
+}
+
 /// A snapshot of the primary battery and external-power state.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BatteryInfo {
@@ -104,6 +112,11 @@ pub struct BatteryInfo {
     pub design_capacity: Option<u64>,
     /// Charge stop threshold reported by the platform driver.
     pub charge_limit: Option<u32>,
+    /// What the battery holds now, in the units of `full_capacity`.
+    pub remaining: Option<u64>,
+    /// How fast it fills or drains, in those units per hour (µW for
+    /// energy, µA for charge); `None` or zero when the driver does not say.
+    pub rate: Option<u64>,
 }
 
 impl BatteryInfo {
@@ -138,6 +151,8 @@ impl BatteryInfo {
                 full_capacity: None,
                 design_capacity: None,
                 charge_limit: None,
+                remaining: None,
+                rate: None,
             },
             |dir| Self::from_battery_dir(&dir, on_ac),
         )
@@ -149,8 +164,21 @@ impl BatteryInfo {
                 .iter()
                 .find_map(|name| read_trim(&dir.join(name)).and_then(|v| v.parse::<u64>().ok()))
         };
+        // The level now and its rate of change, in matching units: energy
+        // (µWh, µW) or charge (µAh, µA). Some drivers sign the rate.
+        let read_signed = |name: &str| {
+            read_trim(&dir.join(name))
+                .and_then(|v| v.parse::<i64>().ok())
+                .map(i64::unsigned_abs)
+        };
+        let (remaining, rate) = match read_num(&["energy_now"]) {
+            Some(energy) => (Some(energy), read_signed("power_now")),
+            None => (read_num(&["charge_now"]), read_signed("current_now")),
+        };
         Self {
             present: true,
+            remaining,
+            rate,
             capacity: read_num(&["capacity"])
                 .or_else(|| {
                     // Some drivers (Qualcomm's battmgr) publish no
@@ -175,6 +203,29 @@ impl BatteryInfo {
             charge_limit: read_num(&["charge_control_end_threshold", "charge_stop_threshold"])
                 .map(|v| v.min(100) as u32),
         }
+    }
+
+    /// How long until the battery is empty at the rate it drains now, while
+    /// it is discharging.
+    pub fn time_to_empty(&self) -> Option<std::time::Duration> {
+        if !self.present || self.on_ac || self.status != "Discharging" {
+            return None;
+        }
+        hours_at(self.remaining?, self.rate?)
+    }
+
+    /// How long until the battery is full (or at its charge limit) at the
+    /// rate it charges now, while it is charging.
+    pub fn time_to_full(&self) -> Option<std::time::Duration> {
+        if !self.present || self.status != "Charging" {
+            return None;
+        }
+        let full = self.full_capacity?;
+        let target = match self.charge_limit {
+            Some(limit) => full.saturating_mul(u64::from(limit.min(100))) / 100,
+            None => full,
+        };
+        hours_at(target.checked_sub(self.remaining?)?, self.rate?)
     }
 
     /// Remaining capacity relative to the factory design capacity.
@@ -399,6 +450,54 @@ mod tests {
             assert_eq!(cap.current, 60);
             assert_eq!(cap.choices, vec![60, 100]);
         }
+    }
+
+    /// Time left and time to full come from the level now and the rate the
+    /// driver reports, in matching units, signed or not; a battery that is
+    /// neither draining nor charging has neither.
+    #[test]
+    fn time_left_and_to_full_follow_the_drivers_rate() {
+        let read = |files: &[(&str, &str)], on_ac: bool| {
+            let dir = tempfile::tempdir().unwrap();
+            for (name, value) in files {
+                std::fs::write(dir.path().join(name), value).unwrap();
+            }
+            BatteryInfo::from_battery_dir(dir.path(), on_ac)
+        };
+        let draining = read(
+            &[
+                ("status", "Discharging"),
+                ("energy_now", "30000000"),
+                ("energy_full", "60000000"),
+                ("power_now", "10000000"),
+            ],
+            false,
+        );
+        assert_eq!(
+            draining.time_to_empty(),
+            Some(std::time::Duration::from_secs(3 * 3600))
+        );
+        assert_eq!(draining.time_to_full(), None);
+        let charging = read(
+            &[
+                ("status", "Charging"),
+                ("charge_now", "2000000"),
+                ("charge_full", "4000000"),
+                ("current_now", "-1000000"),
+                ("charge_control_end_threshold", "80"),
+            ],
+            true,
+        );
+        assert_eq!(
+            charging.time_to_full(),
+            Some(std::time::Duration::from_secs(72 * 60)),
+            "to the 80 % limit at 1 A"
+        );
+        assert_eq!(charging.time_to_empty(), None);
+        let idle = read(&[("status", "Not charging"), ("energy_now", "1")], true);
+        assert_eq!((idle.time_to_empty(), idle.time_to_full()), (None, None));
+        let unknown_rate = read(&[("status", "Discharging"), ("energy_now", "1")], false);
+        assert_eq!(unknown_rate.time_to_empty(), None);
     }
 
     #[test]

@@ -523,7 +523,13 @@ impl SettingsApp {
         match self.area_reads.step(self) {
             crate::effects::Step::Read => self.area_reads.wake(),
             crate::effects::Step::Waiting => {}
-            crate::effects::Step::Done => self.input.prefetch_catalog(),
+            crate::effects::Step::Done => {
+                self.input.prefetch_catalog();
+                // The battery and the clock are read once too, so their
+                // pages open on what they last reported.
+                self.power.warm();
+                self.time_date.warm();
+            }
         }
     }
 

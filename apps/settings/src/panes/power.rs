@@ -14,14 +14,17 @@
 //!   critical-battery actions are the device's `power` settings, which the
 //!   compositor's idle layer reads.
 
+mod history_chart;
+
 use std::sync::{Arc, Mutex};
 
 use os_actions::{BatteryInfo, ChargeCapBackend, ChargeCapCapability, PowerProfile};
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, Effected};
-use ui::theme::Theme;
 use ui::tilo_resource;
-use ui::widget::{AppModel, ModelPath, ProgressBar, Sparkline, Widget};
+use ui::widget::{AppModel, ModelPath, Widget};
+
+use history_chart::{HistoryChart, Span};
 
 use crate::device_read::Reading;
 use crate::effects::effect;
@@ -191,14 +194,28 @@ fn lock_label(minutes: u32) -> String {
     duration_shown(english)
 }
 
-fn battery_status_shown(battery: &BatteryInfo) -> String {
-    let capacity = ArgValue::from(i64::from(battery.capacity));
-    match battery.status.as_str() {
-        "Full" => t("power-status-full"),
-        "Charging" => t_args("power-status-charging", &[("capacity", capacity)]),
-        "Not charging" => t_args("power-status-plugged", &[("capacity", capacity)]),
-        _ => t_args("power-status-battery", &[("capacity", capacity)]),
+/// What the battery is doing, and how long that lasts: "On battery, 3 hr
+/// 20 min left", "Charging, full in 45 min", "Fully charged".
+fn battery_state_shown(battery: &BatteryInfo) -> String {
+    if let Some(left) = battery.time_to_empty() {
+        return t_args(
+            "power-state-left",
+            &[("time", ArgValue::from(ui::format::duration(left)))],
+        );
     }
+    if let Some(to_full) = battery.time_to_full() {
+        return t_args(
+            "power-state-to-full",
+            &[("time", ArgValue::from(ui::format::duration(to_full)))],
+        );
+    }
+    t(match battery.status.as_str() {
+        "Full" => "power-status-full",
+        "Charging" => "power-state-charging",
+        "Not charging" => "power-state-plugged",
+        _ if battery.on_ac => "power-state-plugged",
+        _ => "power-state-battery",
+    })
 }
 
 fn health_explanation_shown(battery: &BatteryInfo) -> String {
@@ -219,6 +236,10 @@ pub trait PowerControl: Send + Sync {
     fn devices(&self) -> Vec<os_actions::PowerDevice>;
     /// Recent charge, written by the shell's monitor.
     fn history(&self) -> os_actions::BatteryHistory;
+    /// Now, in minutes since the Unix epoch: where the history chart ends.
+    fn now_minute(&self) -> u64 {
+        tilo_clock::unix_now() / 60
+    }
     /// The active profile and the ones offered, or why they are unknown.
     fn profiles(
         &self,
@@ -320,6 +341,8 @@ impl PowerControl for SamplePower {
             full_capacity: Some(40_000_000),
             design_capacity: Some(50_000_000),
             charge_limit: Some(self.cap.lock_recover().current),
+            remaining: Some(28_800_000),
+            rate: Some(8_640_000),
         }
     }
 
@@ -330,7 +353,12 @@ impl PowerControl for SamplePower {
 
     fn history(&self) -> os_actions::BatteryHistory {
         crate::device_read::off_ui_thread();
-        os_actions::BatteryHistory::default()
+        sample_history(self.now_minute())
+    }
+
+    fn now_minute(&self) -> u64 {
+        // 2023-03-15 13:05 UTC, the captures' clock.
+        1_678_885_500 / 60
     }
 
     fn profiles(
@@ -365,6 +393,50 @@ impl PowerControl for SamplePower {
     }
 }
 
+/// A week of a laptop's charge for a capture: working days on battery,
+/// charged to its 80 % limit at lunch every other day and in the evening,
+/// asleep overnight (no points), and at 72 % now, as the capture's battery
+/// reads.
+fn sample_history(now: u64) -> os_actions::BatteryHistory {
+    const LIMIT: f64 = 80.0;
+    let start = now - 7 * 24 * 60;
+    let mut points = Vec::new();
+    let mut capacity: f64 = 70.0;
+    // On the quarter hour, from the start of the week on.
+    let mut minute = start.div_ceil(15) * 15;
+    while minute <= now {
+        // The captures' clock is an hour ahead of UTC.
+        let hour = (minute / 60 + 1) % 24;
+        let day = (minute - start) / (24 * 60);
+        if hour < 8 {
+            capacity = (capacity - 0.06).max(3.0);
+        } else {
+            let on_ac = (18..20).contains(&hour) || (day % 2 == 0 && hour == 12);
+            capacity = if on_ac {
+                (capacity + 9.0).min(LIMIT)
+            } else {
+                (capacity - 1.25).max(3.0)
+            };
+            points.push((minute, capacity, on_ac));
+        }
+        minute += 15;
+    }
+    // Meet the battery's reading now.
+    let shift = points
+        .last()
+        .map_or(0.0, |(_, last, _)| 72.0 - last.round());
+    let mut history = os_actions::BatteryHistory::default();
+    for (minute, capacity, on_ac) in points {
+        history.record(os_actions::BatteryHistoryPoint::sampled(
+            minute,
+            (capacity + shift).round().clamp(3.0, LIMIT) as u32,
+            Some(80),
+            on_ac,
+        ));
+    }
+    history
+}
+
 /// What the device's power hardware reports. `powerprofilesctl` asks
 /// power-profiles-daemon over the system bus, so this is read off the UI
 /// thread ([`Reading`]) when the pane first opens.
@@ -373,6 +445,8 @@ struct PowerState {
     battery: BatteryInfo,
     devices: Vec<os_actions::PowerDevice>,
     history: os_actions::BatteryHistory,
+    /// When it was read, in minutes since the Unix epoch.
+    now_minute: u64,
     profile: PowerProfile,
     available_profiles: Vec<PowerProfile>,
     /// Why the profiles could not be read.
@@ -417,6 +491,7 @@ impl PowerState {
             battery: control.battery(),
             devices: control.devices(),
             history: control.history(),
+            now_minute: control.now_minute(),
             profile,
             available_profiles,
             profiles_unavailable,
@@ -441,9 +516,19 @@ pub struct PowerArea {
     /// of that.
     state: Reading<PowerState>,
     notices: LocalState<Notices>,
+    /// Which span the charge chart shows, kept while the window is open.
+    span: LocalState<usize>,
 }
 
 impl PowerArea {
+    /// Read the hardware in the background unless it has been, so the
+    /// page opens on what it last reported.
+    pub(crate) fn warm(&self) {
+        if self.state.get().is_none() {
+            self.state.refresh();
+        }
+    }
+
     /// The area over this device's power hardware, or a stand-in for a
     /// capture. Nothing is read until the pane or an effect needs it.
     pub fn new(cx: &PaneCx) -> Self {
@@ -461,6 +546,7 @@ impl PowerArea {
             control,
             state: Reading::new(move || PowerState::read(read.as_ref())),
             notices: LocalState::new(Notices::default()),
+            span: LocalState::new(0),
         }
     }
 
@@ -619,6 +705,9 @@ pub struct PowerPane {
     state: Option<PowerState>,
     notices_state: LocalState<Notices>,
     notices: Notices,
+    /// Which span the charge chart shows: an index into [`Span::ALL`].
+    span: LocalState<usize>,
+    span_shown: usize,
     composed: ui::widget::Composed,
 }
 
@@ -639,6 +728,8 @@ impl PowerPane {
             hardware,
             notices: area.notices.get(),
             notices_state: area.notices.clone(),
+            span_shown: area.span.get(),
+            span: area.span.clone(),
             composed: ui::widget::Composed::default(),
         }
     }
@@ -680,14 +771,14 @@ impl PowerPane {
                 ]),
             )];
         }
-        // One row says the charge and what the battery is doing: "72%, on
-        // battery".
-        let status = battery_status_shown(&state.battery);
         let mut battery_rows: Vec<Item> = vec![
-            block(Box::new(ProgressBar::new(
-                state.battery.capacity as f32 / 100.0,
+            block(self.battery_head(&state.battery)),
+            block(Box::new(HistoryChart::new(
+                &state.history.points,
+                Span::ALL.get(self.span_shown).copied().unwrap_or(Span::Day),
+                state.now_minute,
+                i64::from(ui::clock::local_now().offset().local_minus_utc()),
             ))),
-            value_row(&t("power-charge"), &status),
         ];
         if let Some(cycles) = state.battery.cycle_count {
             battery_rows.push(value_row(&t("power-cycles"), &cycles.to_string()));
@@ -698,12 +789,6 @@ impl PowerPane {
         } else {
             battery_rows.push(value_row(&t("power-health"), &t("power-health-unknown")));
         }
-        let trend: Vec<f32> = state
-            .history
-            .points
-            .iter()
-            .map(|p| p.capacity as f32)
-            .collect();
         if let Some(capability) = &state.charge_cap {
             let choices: Vec<String> = capability
                 .choices
@@ -744,19 +829,45 @@ impl PowerPane {
         if let Some(notice) = &self.notices.charge {
             battery_rows.push(note(notice));
         }
-        let mut sections = vec![card(&t("power-battery-title"), rows(battery_rows))];
-        if trend.len() >= 2 {
-            sections.push(untitled(rows(vec![
-                // A chart is not a row.
-                block(Box::new(
-                    Sparkline::new(trend, Theme::dark().tokens.colors.text_primary)
-                        .with_max(100.0)
-                        .with_size(320.0, 56.0),
-                )),
-                note(&t("power-history-caption")),
-            ])));
-        }
-        sections
+        vec![card(&t("power-battery-title"), rows(battery_rows))]
+    }
+
+    /// The charge in large type, what the battery is doing and for how long,
+    /// and the chart's span on the trailing edge.
+    fn battery_head(&self, battery: &BatteryInfo) -> Box<dyn Widget> {
+        let charge = ui::widget::Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_rhythm(ui::tokens::Rhythm::Tight)
+            .push(Box::new(
+                ui::widget::Text::new(&ui::format::percent(f64::from(battery.capacity) / 100.0))
+                    .with_role(ui::TextRole::LargeTitle),
+            ))
+            .push(Box::new(
+                ui::widget::Text::new(&battery_state_shown(battery)).dimmed(),
+            ));
+        let span = ui::widget::ToggleGroup::new(
+            Span::ALL
+                .iter()
+                .map(|span| ui::widget::Segment::new(span.label()))
+                .collect(),
+            self.span_shown,
+        )
+        .with_id("power.history.span")
+        .with_accessible_name(t("power-history-span"))
+        .bind_selection(&self.span);
+        Box::new(
+            ui::widget::Row::new()
+                .no_wrap()
+                .with_align_items(taffy::AlignItems::End)
+                .push(Box::new(
+                    ui::widget::Container::new()
+                        .with_no_padding()
+                        .with_flex_grow()
+                        .with_child(Box::new(charge)),
+                ))
+                .push(Box::new(span)),
+        )
     }
 
     fn profile_card(&self, state: &PowerState) -> SettingsSection {
@@ -987,10 +1098,24 @@ impl Widget for PowerPane {
             self.notices = notices;
             self.composed.invalidate();
         }
+        let span = self.span.get();
+        if span != self.span_shown {
+            self.span_shown = span;
+            self.composed.invalidate();
+        }
         self.composed.sync(shared, root);
     }
 
     crate::panes::composed_pane!();
+
+    fn has_pending_visual_work(&self) -> bool {
+        // The hardware's first reading replaces "Reading…".
+        self.state.is_none()
+            || self
+                .composed
+                .element()
+                .is_some_and(|element| element.has_pending_visual_work())
+    }
 
     fn name(&self) -> &'static str {
         "PowerPane"
@@ -1005,6 +1130,66 @@ mod tests {
     use std::collections::HashMap;
     use taffy::{NodeId, TaffyTree};
     use ui::prelude::TestApp;
+    use ui::theme::Theme;
+
+    /// A capture's week of charge ends at the battery's own reading, keeps
+    /// to its charge limit and breaks overnight.
+    #[test]
+    fn the_sample_week_ends_at_the_batterys_reading() {
+        let power = SamplePower::default();
+        let now = power.now_minute();
+        let history = sample_history(now);
+        let last = history.points.last().expect("readings");
+        assert_eq!(last.capacity, power.battery().capacity);
+        assert!(last.unix_minute <= now && now - last.unix_minute < 15);
+        assert!(history.points.iter().all(|point| point.capacity <= 80));
+        assert!(
+            history
+                .points
+                .windows(2)
+                .any(|pair| pair[1].unix_minute - pair[0].unix_minute > 60),
+            "asleep overnight"
+        );
+    }
+
+    /// The battery shows its charge large, how long it lasts at the rate
+    /// it drains, and its charge over the last day (or week) drawn from the
+    /// history, not a bar.
+    #[test]
+    fn the_battery_shows_time_left_and_its_charge_history() {
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let area = PowerArea::new(&cx);
+        let mut pane = PowerPane::new(cx, &area);
+        let state = tilo_test_env::wait_for("the hardware is read", || area.state.get());
+        assert!(
+            state.history.points.len() > 100,
+            "a capture shows a week of readings"
+        );
+        pane.sync(&ui::automerge::AutoCommit::new(), &ui::automerge::ROOT);
+        let text = crate::widgets::announced_text(pane.build_composition().as_ref());
+        let says = |needle: &str| text.iter().any(|line| line.contains(needle));
+        assert!(says("72"), "{text:#?}");
+        assert!(says("left"), "time left at the rate it drains: {text:#?}");
+        assert!(says(&t("power-history-day")), "{text:#?}");
+        assert!(
+            says(&t_args(
+                "power-history-name",
+                &[("span", ArgValue::from(t("power-history-day")))]
+            )),
+            "{text:#?}"
+        );
+        area.span.set(1);
+        pane.sync(&ui::automerge::AutoCommit::new(), &ui::automerge::ROOT);
+        let text = crate::widgets::announced_text(pane.build_composition().as_ref());
+        assert!(
+            text.iter().any(|line| line.contains(&t_args(
+                "power-history-name",
+                &[("span", ArgValue::from(t("power-history-week")))]
+            ))),
+            "{text:#?}"
+        );
+    }
 
     /// The pane and the session's system-settings actions offer the same
     /// timeouts, so a value one accepts is never refused by the other.
@@ -1050,6 +1235,8 @@ mod tests {
             full_capacity: Some(40_000_000),
             design_capacity: Some(50_000_000),
             charge_limit: Some(80),
+            remaining: Some(28_800_000),
+            rate: Some(8_640_000),
         }
     }
 

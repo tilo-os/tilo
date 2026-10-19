@@ -788,11 +788,14 @@ impl MouseKeyboardPane {
         {
             page.push(self.layout_mismatch_section(&profile));
         }
+        // The layout drawn as its keys first, lighting up as they are
+        // pressed; then the layouts to choose from and how keys behave,
+        // with a field to try them in.
+        page.push(self.layout_preview_section(&shown, &profile, map));
         page.push(self.layouts_section(&profile));
         if !osk {
             page.push(self.keyboard_options_section(&shown));
         }
-        page.push(self.layout_preview_section(&shown, &profile, map));
         page
     }
 

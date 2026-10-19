@@ -24,7 +24,7 @@ use crate::panes::model::{PaneModel, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    Item, card_with_action, error_caption, note, row, rows, setting_row_described, value_row,
+    Item, card_with_action, error_caption, note, row, rows, setting_row, value_row,
 };
 
 fn token(path: &str) -> String {
@@ -515,37 +515,45 @@ impl BluetoothArea {
         model
             .devices
             .iter()
-            .map(|device| {
-                let path = device.path.clone();
-                let offer = |effect: BluetoothEffect| SettingsEffect::from(effect).bound();
-                let mut row = LiveRow::new(
-                    format!("settings.bluetooth-device:{path}"),
-                    "settings.bluetooth-device",
-                    device.name.clone(),
-                );
-                if model.pairing.as_deref() == Some(path.as_str()) {
-                    return row.operation(offer(BluetoothEffect::CancelPairing { device: path }));
-                }
-                if !device.paired {
-                    return row.operation(offer(BluetoothEffect::PairDevice { device: path }));
-                }
-                row = row.operation(offer(if device.connected {
-                    BluetoothEffect::DisconnectDevice {
-                        device: path.clone(),
-                    }
-                } else {
-                    BluetoothEffect::ConnectDevice {
-                        device: path.clone(),
-                    }
-                }));
-                row.operation(offer(BluetoothEffect::SetDeviceTrusted {
-                    device: path.clone(),
-                    trusted: !device.trusted,
-                }))
-                .operation(offer(BluetoothEffect::ForgetDevice { device: path }))
-            })
+            .map(|device| device_live_row(device, model.pairing.as_deref()))
             .collect()
     }
+}
+
+/// One device as a row of the published surface, offering what can be
+/// done to it now; the pane's controls for that device bind to it.
+fn device_live_row(device: &DeviceInfo, pairing: Option<&str>) -> LiveRow {
+    let path = device.path.clone();
+    let offer = |effect: BluetoothEffect| SettingsEffect::from(effect).bound();
+    let mut row = LiveRow::new(
+        format!("settings.bluetooth-device:{path}"),
+        "settings.bluetooth-device",
+        device.name.clone(),
+    );
+    if pairing == Some(path.as_str()) {
+        return row.operation(offer(BluetoothEffect::CancelPairing { device: path }));
+    }
+    if !device.paired {
+        return row.operation(offer(BluetoothEffect::PairDevice { device: path }));
+    }
+    row = row.operation(offer(if device.connected {
+        BluetoothEffect::DisconnectDevice {
+            device: path.clone(),
+        }
+    } else {
+        BluetoothEffect::ConnectDevice {
+            device: path.clone(),
+        }
+    }));
+    row.operation(offer(BluetoothEffect::SetDeviceTrusted {
+        device: path.clone(),
+        trusted: !device.trusted,
+    }))
+    .operation(offer(BluetoothEffect::RenameDevice {
+        device: path.clone(),
+        name: device.name.clone(),
+    }))
+    .operation(offer(BluetoothEffect::ForgetDevice { device: path }))
 }
 
 /// Whether `cx`'s device has no Bluetooth adapter, as its radios were last
@@ -580,8 +588,15 @@ pub struct BluetoothModel {
     pairing: Option<String>,
     /// The name typed for each paired device, by object path.
     aliases: HashMap<String, Arc<Mutex<String>>>,
+    /// When the adapter was last read, so discovery's finds are read in
+    /// as they come.
+    last_read: ui::time::Instant,
     changed: bool,
 }
+
+/// How often the adapter is read again while it looks for devices: what
+/// discovery finds appears without a refresh.
+const DISCOVERY_READ_INTERVAL: ui::time::Duration = ui::time::Duration::from_secs(2);
 
 /// The adapter's devices, power and discovery state as one read found
 /// them, or why it could not.
@@ -612,6 +627,7 @@ impl BluetoothModel {
             notice: None,
             pairing: None,
             aliases: HashMap::new(),
+            last_read: ui::time::now(),
             changed: false,
         };
         // A failure is kept on the model and shown in place of the adapter.
@@ -699,6 +715,7 @@ impl BluetoothModel {
     fn adopt(&mut self, read: AdapterRead) -> Result<(), String> {
         match read {
             Ok((devices, powered, scanning)) => {
+                self.last_read = ui::time::now();
                 self.devices = devices;
                 self.powered = powered;
                 self.scanning = scanning;
@@ -733,28 +750,46 @@ impl BluetoothModel {
         }
     }
 
-    fn primary_action(&self, d: &DeviceInfo) -> (String, BluetoothEffect) {
-        let device = d.path.clone();
+    /// The device's main button: its label and the action it takes.
+    fn primary_action(
+        &self,
+        d: &DeviceInfo,
+    ) -> (
+        String,
+        ui::tilo_resource::ActionRef<BluetoothEffect, String>,
+    ) {
         if self.pairing.as_deref() == Some(d.path.as_str()) {
             (
                 t("settings-bluetooth-cancel-pairing"),
-                BluetoothEffect::CancelPairing { device },
+                BluetoothEffect::CANCEL_PAIRING,
             )
         } else if !d.paired {
-            (
-                t("settings-bluetooth-pair"),
-                BluetoothEffect::PairDevice { device },
-            )
+            (t("settings-bluetooth-pair"), BluetoothEffect::PAIR_DEVICE)
         } else if d.connected {
             (
                 t("settings-bluetooth-disconnect"),
-                BluetoothEffect::DisconnectDevice { device },
+                BluetoothEffect::DISCONNECT_DEVICE,
             )
         } else {
             (
                 t("settings-bluetooth-connect"),
-                BluetoothEffect::ConnectDevice { device },
+                BluetoothEffect::CONNECT_DEVICE,
             )
+        }
+    }
+
+    /// `control` acting on `d`'s row of the published surface through
+    /// `effect`, or shown unavailable where the row does not offer it.
+    fn on_row<I: 'static, C: ui::framework::ActionControl<I>>(
+        &self,
+        d: &DeviceInfo,
+        control: C,
+        effect: impl ui::tilo_resource::Binds<SettingsEffect, I>,
+    ) -> C {
+        let resource = device_live_row(d, self.pairing.as_deref()).into_resource();
+        match self.cx.row_binding(&resource, effect) {
+            Some(binding) => control.bind_action(binding),
+            None => control.unavailable(),
         }
     }
 
@@ -772,16 +807,18 @@ impl BluetoothModel {
         }
         if d.paired {
             let path = d.path.clone();
-            block.push(
-                self.cx
-                    .row(t("settings-bluetooth-trust"))
-                    .id(format!("settings.bluetooth.trusted.{}", token(&d.path)))
-                    .toggle_effect(
-                        &LocalState::new(d.trusted),
+            block.push(setting_row(
+                &t("settings-bluetooth-trust"),
+                Box::new(
+                    self.on_row(
+                        d,
+                        Toggle::from_state(&LocalState::new(d.trusted))
+                            .with_id(&format!("settings.bluetooth.trusted.{}", token(&d.path))),
                         effect(BluetoothEffect::SET_DEVICE_TRUSTED)
                             .map(move |trusted: bool| (path.clone(), trusted)),
                     ),
-            );
+                ),
+            ));
             block.push(note(&t("settings-bluetooth-trust-caption")));
             let alias = self.aliases.get(&d.path).cloned().unwrap_or_default();
             // A name field has no label of its own: a free row, not a labelled one.
@@ -794,7 +831,8 @@ impl BluetoothModel {
             let path = d.path.clone();
             block.push(row(Box::new(
                 Row::new()
-                    .push(Box::new(self.cx.bind(
+                    .push(Box::new(self.on_row(
+                        d,
                         Button::new(
                             &format!("settings.bluetooth.rename.{}", token(&d.path)),
                             &t("settings-bluetooth-rename"),
@@ -809,15 +847,17 @@ impl BluetoothModel {
                             )
                         }),
                     )))
-                    .push(Box::new(self.cx.bind_invocation(
-                        Button::new(
-                            &format!("settings.bluetooth.forget.{}", token(&d.path)),
-                            &t("settings-bluetooth-forget"),
-                        ),
-                        BluetoothEffect::ForgetDevice {
-                            device: d.path.clone(),
-                        },
-                    ))),
+                    .push(Box::new({
+                        let path = d.path.clone();
+                        self.on_row(
+                            d,
+                            Button::new(
+                                &format!("settings.bluetooth.forget.{}", token(&d.path)),
+                                &t("settings-bluetooth-forget"),
+                            ),
+                            effect(BluetoothEffect::FORGET_DEVICE).map(move |()| path.clone()),
+                        )
+                    })),
             )));
         }
         if d.icon.starts_with("audio-") {
@@ -828,17 +868,23 @@ impl BluetoothModel {
 
     fn device_row(&self, d: &DeviceInfo) -> Vec<Item> {
         let (label, primary) = self.primary_action(d);
-        let mut items = vec![setting_row_described(
-            &d.name,
-            &Self::device_status_line(d),
-            Box::new(self.cx.bind_invocation(
+        let path = d.path.clone();
+        let mut items = vec![row(Box::new(
+            ui::widget::ListRow::new(
+                format!("settings.bluetooth.device.{}", token(&d.path)),
+                d.name.clone(),
+            )
+            .icon(device_icon(&d.icon))
+            .secondary(Self::device_status_line(d))
+            .trailing(Box::new(self.on_row(
+                d,
                 Button::new(
                     &format!("settings.bluetooth.primary.{}", token(&d.path)),
                     &label,
                 ),
-                primary,
-            )),
-        )];
+                effect(primary).map(move |()| path.clone()),
+            ))),
+        ))];
         if d.paired {
             items.extend(self.device_detail_rows(d));
         }
@@ -871,18 +917,11 @@ impl BluetoothModel {
         } else {
             "settings-bluetooth-find"
         });
-        let refresh = t("settings-bluetooth-refresh");
-        let mut body: Vec<Item> = vec![row(Box::new(
-            Row::new()
-                .push(Box::new(self.cx.bind_invocation(
-                    Button::new("settings.bluetooth.scan", &scan),
-                    BluetoothEffect::SetDiscovering { on: !self.scanning },
-                )))
-                .push(Box::new(self.cx.bind_invocation(
-                    Button::new("settings.bluetooth.refresh", &refresh),
-                    BluetoothEffect::RefreshBluetooth,
-                ))),
-        ))];
+        // What discovery finds is read in as it comes: no refresh.
+        let mut body: Vec<Item> = vec![row(Box::new(self.cx.bind_invocation(
+            Button::new("settings.bluetooth.scan", &scan),
+            BluetoothEffect::SetDiscovering { on: !self.scanning },
+        )))];
         if let Some(notice) = &self.notice {
             body.push(note(notice));
         }
@@ -924,6 +963,10 @@ impl PaneModel for BluetoothModel {
 
     fn poll(&mut self) -> bool {
         self.follow_adapter();
+        if self.scanning && ui::time::now() >= self.last_read + DISCOVERY_READ_INTERVAL {
+            self.last_read = ui::time::now();
+            self.read_again();
+        }
         let paired: Vec<String> = self
             .devices
             .iter()
@@ -939,6 +982,26 @@ impl PaneModel for BluetoothModel {
 
     fn name(&self) -> &'static str {
         "BluetoothPane"
+    }
+
+    fn next_wake(&self) -> Option<ui::time::Instant> {
+        self.scanning
+            .then(|| self.last_read + DISCOVERY_READ_INTERVAL)
+    }
+}
+
+/// The icon for a device from the kind BlueZ names (freedesktop icon
+/// names: `audio-headset`, `input-keyboard`, `phone`…).
+fn device_icon(kind: &str) -> ui::icons::Icon {
+    use ui::icons::Icon;
+    match kind {
+        kind if kind.starts_with("audio-head") => Icon::Headphones,
+        kind if kind.starts_with("audio") => Icon::Speaker,
+        "input-keyboard" => Icon::Keyboard,
+        "input-mouse" | "input-tablet" => Icon::Mouse,
+        "phone" => Icon::Phone,
+        "computer" => Icon::Monitor,
+        _ => Icon::Bluetooth,
     }
 }
 
