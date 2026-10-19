@@ -1297,12 +1297,6 @@ impl StoreApp {
             .collect()
     }
 
-    /// Whether the catalogue shows anything but Discover: a search or
-    /// another view.
-    pub(crate) fn filters_active(&self) -> bool {
-        !self.query.trim().is_empty() || self.view != View::Home
-    }
-
     fn draw_status_bubble(
         &mut self,
         scene: &mut Scene,

@@ -11,7 +11,7 @@ use discord_wire::op::{
     Queued, ReactOp, RoleSpec, SendOp, StartThreadOp,
 };
 use ui::tilo_resource::{
-    self, ActionCx, Id, Identified, Json, JsonSchema, Keyed, Model, Outbox, Refusal, Set, Settled,
+    self, ActionCx, Id, Identified, JsonSchema, Keyed, Model, Outbox, Refusal, Set, Settled,
     resource,
 };
 
