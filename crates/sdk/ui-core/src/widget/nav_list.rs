@@ -1598,6 +1598,50 @@ pub(crate) trait NavigationSource {
     fn take_navigation(&mut self) -> bool;
 }
 
+/// A rail whose width follows its destinations' words
+/// ([`crate::chrome::rail_width_fitting`]).
+pub(crate) trait RailExtent {
+    /// How wide this rail is under `theme`, or `None` when it is no rail.
+    fn fitted_rail_width(&self, theme: &crate::Theme) -> Option<f64>;
+}
+
+impl RailExtent for NavList {
+    fn fitted_rail_width(&self, theme: &crate::Theme) -> Option<f64> {
+        if !self.tree.is_rail() {
+            return None;
+        }
+        fn labels<'a>(items: &'a [NavItem], out: &mut Vec<&'a str>) {
+            for item in items {
+                out.push(&item.label);
+                labels(&item.children, out);
+            }
+        }
+        let mut all = Vec::new();
+        for section in &self.sections {
+            labels(&section.items, &mut all);
+        }
+        Some(crate::text_render::with_layout_renderer(
+            theme.text_scale,
+            |text| crate::chrome::rail_width_fitting(theme, text, all.iter().copied()),
+        ))
+    }
+}
+
+/// The width of the first rail in `widget`'s subtree under `theme`
+/// ([`RailExtent`]), or `None` where it holds none.
+pub(crate) fn fitted_rail_width(
+    widget: &dyn crate::widget::Widget,
+    theme: &crate::Theme,
+) -> Option<f64> {
+    if let Some(rail) = crate::widget::capability::capability::<dyn RailExtent>(widget) {
+        return rail.fitted_rail_width(theme);
+    }
+    widget
+        .children()
+        .into_iter()
+        .find_map(|child| fitted_rail_width(child, theme))
+}
+
 impl NavigationSource for NavList {
     fn take_navigation(&mut self) -> bool {
         std::mem::take(&mut self.shared.borrow_mut().navigated)
@@ -1635,6 +1679,10 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
     fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
         if request.wants::<dyn crate::widget::controls::ActionControls>() {
             request.provide::<dyn crate::widget::controls::ActionControls>(self);
+            return;
+        }
+        if request.wants::<dyn RailExtent>() {
+            request.provide::<dyn RailExtent>(self);
             return;
         }
         crate::widget::Widget::provide(&self.tree, request);

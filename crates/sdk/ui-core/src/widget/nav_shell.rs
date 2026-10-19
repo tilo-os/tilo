@@ -4007,6 +4007,15 @@ impl Widget for NavShell {
         let parts = {
             let mut inputs = self.inputs.borrow_mut();
             inputs.metrics = Metrics::resolve(theme);
+            // A rail grows with the text to fit its longest word, up to its cap.
+            let fitted = [self.rail.as_deref(), self.sidebar.as_deref()]
+                .into_iter()
+                .flatten()
+                .filter_map(|part| crate::widget::nav_list::fitted_rail_width(part, theme))
+                .reduce(f64::max);
+            if let Some(rail) = fitted {
+                inputs.metrics.rail = rail;
+            }
             let g = plan(&inputs, size.0, size.1);
             let parts = g.visible_parts(&inputs);
             inputs.parts.clone_from(&parts);
