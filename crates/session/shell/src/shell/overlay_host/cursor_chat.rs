@@ -13,7 +13,6 @@
 use std::time::Instant;
 
 use tilo_desktop::text_entry::{self, Edit, Mods};
-use ui::ColorCompat as _;
 use ui::text_selection::Selection;
 use ui::widget::{TextInput, Widget};
 use vello::Scene;
