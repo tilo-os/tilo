@@ -5915,6 +5915,20 @@ fn partial_capture_seals_reachable_and_unvisited_queues_at_entry() {
     assert!(app.pending_history_controls().is_empty());
 }
 
+/// The held controls without their names. A control whose declaration did
+/// not resolve when it was captured (its custody failed) is named once it
+/// resolves on a later History visit (`name_pending_controls`): a name is
+/// how the review row reads, not what the control would do, so it is not a
+/// rebaseline of the original.
+fn unlabelled(
+    mut controls: Vec<crate::history_mode::pending_controls::PendingControlReview>,
+) -> Vec<crate::history_mode::pending_controls::PendingControlReview> {
+    for control in &mut controls {
+        control.label = None;
+    }
+    controls
+}
+
 #[test]
 fn partial_capture_failed_through_return_never_automatically_dispatches_old_queues() {
     let (root, handles, failed) = component_control_root(&[
@@ -5988,7 +6002,10 @@ fn partial_capture_failed_through_return_never_automatically_dispatches_old_queu
     // A later History visit must not rebaseline the failed original or capture
     // an old queue copy. Both independent owners still accept genuinely fresh work.
     palette_history_round_trip(&mut app);
-    assert_eq!(app.pending_history_controls(), saved);
+    assert_eq!(
+        unlabelled(app.pending_history_controls()),
+        unlabelled(saved.clone())
+    );
     for (i, id) in ["sealed-a", "sealed-b"].iter().enumerate() {
         handles[i]
             .binding
@@ -6001,7 +6018,10 @@ fn partial_capture_failed_through_return_never_automatically_dispatches_old_queu
         assert_eq!(handle.starts.get(), 1);
         assert_eq!(handle.payloads.borrow()[0]["alias"], "fresh");
     }
-    assert_eq!(app.pending_history_controls(), saved);
+    assert_eq!(
+        unlabelled(app.pending_history_controls()),
+        unlabelled(saved.clone())
+    );
 }
 
 #[test]

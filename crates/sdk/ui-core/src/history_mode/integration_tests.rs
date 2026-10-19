@@ -322,6 +322,9 @@ fn review_driver() -> FrameHarness {
 
 #[test]
 fn managed_review_dialog_drains_and_returns_to_retained_preview() {
+    // Dialogs appear from their origin (4480e9f9b6): this test checks that
+    // the review dialog rests once drawn, so motion reads at its end.
+    let _settled = crate::motion::testing::settled();
     let mut driver = review_driver();
     assert!(driver.targets().contains_key("history-preview"));
     assert!(
