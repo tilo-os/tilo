@@ -111,6 +111,7 @@ pub struct AvatarFace<'a> {
     square: bool,
     ring_on: Option<Color>,
     status: Option<PresenceStatus>,
+    glyph: Option<crate::icons::Icon>,
 }
 
 impl<'a> AvatarFace<'a> {
@@ -127,7 +128,19 @@ impl<'a> AvatarFace<'a> {
             square: false,
             ring_on: None,
             status: None,
+            glyph: None,
         }
+    }
+
+    /// An app without artwork of its own: its glyph from the icon set
+    /// ([`crate::icons::app_glyph`]) instead of initials, on the neutral
+    /// square, the same mark the shell shows for it.
+    #[must_use]
+    pub fn glyph(mut self, glyph: crate::icons::Icon) -> Self {
+        self.glyph = Some(glyph);
+        self.tint = Tint::Neutral;
+        self.square = true;
+        self
     }
 
     /// A thing rather than a person (an app without an icon, a device): a
@@ -360,6 +373,19 @@ impl<'a> AvatarFace<'a> {
                 &shape,
             );
         }
+        if let Some(glyph) = self.glyph {
+            // The glyph takes the share of the tile an icon takes in the
+            // icon set's own 24 px grid, centred.
+            let side = shape.rect().width() * 0.55;
+            glyph.draw(
+                ctx.scene,
+                ctx.transform,
+                Rect::from_center_size(shape.rect().center(), (side, side)),
+                ctx.theme.text_primary,
+            );
+            self.paint_status(ctx, rect);
+            return;
+        }
         let initials = self.initials();
         if initials.is_empty() {
             self.paint_status(ctx, rect);
@@ -571,6 +597,7 @@ pub struct Avatar {
     square: bool,
     neutral: bool,
     status: Option<PresenceStatus>,
+    glyph: Option<crate::icons::Icon>,
     side: f64,
     rect: Rect,
     dirty: bool,
@@ -603,10 +630,21 @@ impl Avatar {
             square: false,
             neutral: false,
             status: None,
+            glyph: None,
             side: 0.0,
             rect: Rect::ZERO,
             dirty: true,
         }
+    }
+
+    /// An app without artwork of its own: see [`AvatarFace::glyph`]. A
+    /// picture ([`Self::with_image_url`]) still replaces it once it loads.
+    #[must_use]
+    pub fn with_glyph(mut self, glyph: crate::icons::Icon) -> Self {
+        self.glyph = Some(glyph);
+        self.neutral = true;
+        self.square = true;
+        self
     }
 
     /// Bind the displayed name and accessible description to process-local
@@ -719,6 +757,9 @@ impl Avatar {
         }
         if self.neutral {
             face = face.neutral();
+        }
+        if let Some(glyph) = self.glyph {
+            face = face.glyph(glyph);
         }
         if let Some(status) = self.status {
             face = face.status(status);
@@ -834,6 +875,21 @@ mod tests {
     fn image(width: u32, height: u32) -> PenikoImage {
         let pixels = usize::try_from(width * height * 4).unwrap();
         crate::raster::rgba8(vec![200; pixels], width, height)
+    }
+
+    #[test]
+    fn an_app_glyph_replaces_the_initials_on_the_neutral_square() {
+        let theme = Theme::dark();
+        // A nameless neutral tile paints only the tile.
+        let blank = paint_face(AvatarFace::new("", "so.tilo.notes").neutral(), &theme);
+        let glyph = paint_face(
+            AvatarFace::new("", "so.tilo.notes").glyph(crate::icons::Icon::FileText),
+            &theme,
+        );
+        assert!(
+            tags(&glyph, DrawTag::COLOR) > tags(&blank, DrawTag::COLOR),
+            "the glyph's strokes are painted on the tile"
+        );
     }
 
     fn paint_face(face: AvatarFace<'_>, theme: &Theme) -> Scene {
