@@ -18,6 +18,11 @@ enforces the budgets in four places:
   branch's `check.yml`, so a branch older than this job affecting an app
   fails `select` and asks for main to be merged in, rather than landing
   unmeasured.
+- **The size gate on main** (`app-sizes-x86_64`, `app-sizes-aarch64` in t) runs on every
+  commit of `main` that changes what an app is built from: it compiles the default collection as
+  a release does, packages it with throwaway keys (`tools/apps/t-release.sh sizes`) and holds
+  every tapp and the runtime to its budget. t names the commit a failure began with, so the
+  change that took an app over hears of it the day it lands, not at the next release.
 - **Release / apps** (`Shipped tapps within their size budget`) measures each
   tapp it has just packaged and signed, which is the affected apps only. It
   fails when an app is over its budget or has none, so nothing is published.
