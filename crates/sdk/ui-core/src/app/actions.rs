@@ -648,10 +648,20 @@ impl App {
     /// Level-triggered at the wire, diffed here so an unchanged frame emits
     /// nothing; publishing an empty list explicitly withdraws a closed tree.
     fn publish_action_surface(&mut self) {
+        self.actions.action_surface_owed = false;
         if self.collaboration.manager.is_connected() {
             self.refresh_document_routes();
         }
         self.publish_action_surface_after_refresh();
+    }
+
+    /// Publish the surface a handled input left for the frame after its
+    /// sync ([`super::runtime::ActionRuntime::action_surface_owed`]), if no
+    /// publication has paid for it since.
+    pub(super) fn publish_owed_action_surface(&mut self) {
+        if self.actions.action_surface_owed {
+            self.publish_action_surface();
+        }
     }
 
     fn publish_action_surface_after_refresh(&mut self) {

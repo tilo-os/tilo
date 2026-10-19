@@ -700,11 +700,25 @@ impl App {
             window.request_redraw();
         }
 
+        // A handled event (or one that moves focus) asks below for a sync and
+        // a frame, and that sync can move what the tree shows: a pane the
+        // click opened, an edit a view settles, a selection a list takes up.
+        // Publishing now would build the whole tree for the press and again
+        // after the sync; the frame that runs the sync publishes it once
+        // (`App::publish_owed_action_surface`). A pointer move may ask for no
+        // frame, and a view-only wheel for no sync, so both publish now.
+        let sync_follows = (handled || focus_target.is_some())
+            && !(view_only_scroll && !history_handled && focus_target.is_none())
+            && !matches!(event, WindowEvent::CursorMoved { .. });
         let publication = phases.start();
         app.broadcast_focus_presence();
         app.broadcast_location_presence();
         app.broadcast_view_presence();
-        app.publish_action_surface();
+        if sync_follows {
+            app.actions.action_surface_owed = true;
+        } else {
+            app.publish_action_surface();
+        }
         app.publish_continuation_metadata();
         app.publish_playback_handoff();
         app.publish_search_index();

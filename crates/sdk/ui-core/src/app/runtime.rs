@@ -183,6 +183,9 @@ pub(super) struct ActionRuntime {
     /// What the broker holds of the surface `last_published_actions` names,
     /// the base of the next delta.
     pub(super) published_surface: Option<crate::collaboration::SurfacePublication>,
+    /// A handled input left the surface to publish once the sync it asked
+    /// for has run: the frame that runs it publishes.
+    pub(super) action_surface_owed: bool,
     #[cfg(test)]
     pub(super) action_surface_publication_attempts: usize,
     /// Opaque, revision-bound continuation state for the broker directory.
@@ -260,6 +263,7 @@ impl ActionRuntime {
             local_history_status: None,
             last_published_actions: None,
             published_surface: None,
+            action_surface_owed: false,
             #[cfg(test)]
             action_surface_publication_attempts: 0,
             action_directory_cursors: std::collections::HashMap::new(),

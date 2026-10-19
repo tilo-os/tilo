@@ -3436,6 +3436,9 @@ impl AppHandler {
             scene.reset();
             render.buffers.unprepare((scene, damage_regions));
         }
+        // The surface a handled input left for this frame, now that its sync
+        // ran and the frame's availability refresh built the tree.
+        app.publish_owed_action_surface();
 
         if needs_followup_redraw {
             window.request_redraw();
