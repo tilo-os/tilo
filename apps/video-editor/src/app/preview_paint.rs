@@ -284,10 +284,11 @@ impl VideoEditorApp {
         let total = format!("/ {}", timecode(length, self.project.fps));
         // Project format — the app's own content area, rather than the OS's
         // title slot.
-        let meta = format!(
-            "{}×{}, {:.0} fps",
-            self.project.width, self.project.height, self.project.fps
-        );
+        let meta = if self.project.width == 0 || self.project.height == 0 {
+            String::new()
+        } else {
+            super::format_words(self.project.width, self.project.height, self.project.fps)
+        };
         // What the playhead is *doing* — playing, or shuttling in some
         // direction at some rate. It shares the readout's line.
         let motion = self.motion_words();

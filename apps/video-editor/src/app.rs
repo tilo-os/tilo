@@ -6039,6 +6039,14 @@ const RATE_PRESETS: [f64; 5] = [24.0, 25.0, 30.0, 50.0, 60.0];
 /// the numbers it was built from (see `VideoEditorApp::project_format_words`)
 /// rather than being formatted per frame.
 fn format_words(width: u32, height: u32, fps: f64) -> String {
+    // A blank project takes its shape from its first clip: until then there
+    // is no size or rate to state, and "0×0, 0 fps" would state one.
+    if width == 0 || height == 0 {
+        return "Set by the first clip".to_owned();
+    }
+    if fps <= 0.0 {
+        return format!("{width}\u{d7}{height}");
+    }
     format!("{width}\u{d7}{height}, {} fps", rate_words(fps))
 }
 
