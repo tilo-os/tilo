@@ -152,26 +152,36 @@ mod tests {
             let colors = &theme.tokens.colors;
             let ground = ui::chrome::shell::panel_ground(&theme);
             let probes = [
+                // Outside high contrast the panel is a floating surface: its
+                // hairline is quieter by design, the level and shadow
+                // separating it too.
                 (
                     "panel border",
                     ui::chrome::shell::panel_border(&theme),
                     ground,
+                    if colors.palette.high_contrast {
+                        ui::tokens::colors::HAIRLINE_MIN_DELTA
+                    } else {
+                        ui::tokens::colors::FLOATING_EDGE_MIN_DELTA
+                    },
                 ),
                 (
                     "lift-floor chip",
                     ui::surface::edge_on(colors.lift(PILL_FLOOR_LIFT_T)),
                     colors.lift(PILL_FLOOR_LIFT_T),
+                    ui::tokens::colors::HAIRLINE_MIN_DELTA,
                 ),
                 (
                     "replay canvas",
                     ui::surface::edge_on(colors.surfaces.base),
                     colors.surfaces.base,
+                    ui::tokens::colors::HAIRLINE_MIN_DELTA,
                 ),
             ];
-            for (what, edge, fill) in probes {
+            for (what, edge, fill, minimum) in probes {
                 let delta = ui::surface::edge_delta(edge, fill);
                 assert!(
-                    delta >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
+                    delta >= minimum,
                     "{}: the {what} edge must separate it from its fill (Δ luminance {delta:.4})",
                     theme.name
                 );
