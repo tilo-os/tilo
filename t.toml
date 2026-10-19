@@ -1444,6 +1444,7 @@ binary_lib account-custody account_custody account-custody-lib
 binary_lib runtime-bundle runtime_bundle runtime-bundle-lib
 binary_target tilo-install-helpers native_python tilo-install-helpers-native-python
 binary_target env-tools it env-tools-it
+binary_target installer accounts_native installer-accounts-native
 """
 outputs = [
   "/target/vm/tilo-sandbox-job",
@@ -1452,11 +1453,13 @@ outputs = [
   "/target/vm/runtime-bundle-lib",
   "/target/vm/tilo-install-helpers-native-python",
   "/target/vm/env-tools-it",
+  "/target/vm/installer-accounts-native",
+  "/target/debug/tilo-firstboot-home-seeds",
   "/target/debug/install-test-home-seeds",
   "/target/debug/install-test-firstboot-files",
   "/target/debug/staging-handoff-native-extractor",
 ]
-cargo_packages = ["tilo-sandbox", "runtime-fs", "account-custody", "runtime-bundle", "tilo-install-helpers", "env-tools"]
+cargo_packages = ["tilo-sandbox", "runtime-fs", "account-custody", "runtime-bundle", "tilo-install-helpers", "env-tools", "installer"]
 inputs = ["os/tests/**", "os/usr/libexec/tilo-install", "os/usr/libexec/tilo-guided-partition", "os/usr/libexec/tilo-installer-profile-extract", "os/usr/libexec/tilo-firstboot-user"]
 
 [[check]]
@@ -1507,6 +1510,9 @@ run_tests 2 /target/vm/runtime-fs-lib operations::tests::replacing_save_actual_o
 run_tests 1 /target/vm/account-custody-lib portable::tests::installed_adoption_succeeds_as_private_target_user --nocapture --test-threads=1
 run_tests 2 /target/vm/runtime-bundle-lib component_pins::tests:: --nocapture --test-threads=1
 run_tests 2 /target/vm/tilo-install-helpers-native-python staging_handoff_oracle native_home_seeds --nocapture --test-threads=1
+# The installer's account handoff mounts a disposable chroot; the job sandbox
+# ignores it, as it never gives root.
+run_tests 1 /target/vm/installer-accounts-native --ignored --exact tests::production_stage_adopt_accounts --nocapture --test-threads=1
 # The two real-runtime tests need TILO_ENV_RUNTIME_TREE (built by the env-runtime
 # chain) and the network. Selecting them here would turn a missing fixture
 # into a pass, so name the five sandbox fixtures this lane exists for.
