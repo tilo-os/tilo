@@ -315,7 +315,7 @@ fn write_previews(dir: &Path) -> std::io::Result<PathBuf> {
     ] {
         write_file(
             &dir.join(name),
-            &encode_image(gradient_image(width, height, kind), format),
+            &encode_image(&gradient_image(width, height, kind), format),
         )?;
     }
     write_file(&dir.join("Field guide.pdf"), &minimal_pdf("Field Guide"))?;
@@ -373,7 +373,7 @@ fn write_host_previews(workspace: &Path) -> std::io::Result<PathBuf> {
 
 /// `image` as a PNG, or as a JPEG (at the `image` crate's default quality)
 /// when `format` asks for one, through the runtime's encoders.
-fn encode_image(image: image::RgbaImage, format: image::ImageFormat) -> Vec<u8> {
+fn encode_image(image: &image::RgbaImage, format: image::ImageFormat) -> Vec<u8> {
     let (width, height) = image.dimensions();
     let encoded = if format == image::ImageFormat::Jpeg {
         ui::jpeg::encode_rgba8_opaque(width, height, image.as_raw(), 75)
@@ -431,7 +431,10 @@ fn gradient_image(width: u32, height: u32, kind: u8) -> image::RgbaImage {
 }
 
 fn gradient_png(width: u32, height: u32, kind: u8) -> Vec<u8> {
-    encode_image(gradient_image(width, height, kind), image::ImageFormat::Png)
+    encode_image(
+        &gradient_image(width, height, kind),
+        image::ImageFormat::Png,
+    )
 }
 
 /// A valid one-page PDF (a header band, a title, a framed body) with correct

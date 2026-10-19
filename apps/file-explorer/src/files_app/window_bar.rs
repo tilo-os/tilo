@@ -35,6 +35,10 @@ const EXTRACT: &str = "extract";
 /// declares them again, reading the folder's templates and completions,
 /// only when one of these changed.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "a cache key: each bool is one independent fact the bar was built from, compared whole"
+)]
 pub(super) struct BarKey {
     folder: PathBuf,
     back: bool,
@@ -114,6 +118,33 @@ impl FileExplorerWidget {
                 value: crate::model::format_path(path, home),
             })
             .collect();
+        let actions = self.bar_actions(recent);
+        WindowToolbar {
+            sidebar: Some(self.nav.is_sidebar_open()),
+            navigation: Some(ToolbarNavigation {
+                back: !self.history.is_empty(),
+                forward: !self.forward.is_empty(),
+            }),
+            location: Some(ToolbarLocation {
+                label,
+                value: crate::model::format_path(&self.current_path, home),
+                placeholder: t("files-path-placeholder"),
+                icon: None,
+                editable: !recent,
+                name: t("files-location"),
+                go_name: String::new(),
+                segments,
+                image: None,
+                suggestions: self.bar_suggestions(),
+            }),
+            actions,
+        }
+    }
+
+    /// The bar's actions: up, the view, what the folder offers to make
+    /// (or an archive to extract), sort in a grid, the terminal, and
+    /// hidden files.
+    fn bar_actions(&self, recent: bool) -> Vec<ToolbarAction> {
         let archive = crate::archive::location(&self.current_path).is_some();
         let mut actions = vec![
             action(
@@ -183,26 +214,7 @@ impl FileExplorerWidget {
             true,
             self.show_hidden,
         ));
-        WindowToolbar {
-            sidebar: Some(self.nav.is_sidebar_open()),
-            navigation: Some(ToolbarNavigation {
-                back: !self.history.is_empty(),
-                forward: !self.forward.is_empty(),
-            }),
-            location: Some(ToolbarLocation {
-                label,
-                value: crate::model::format_path(&self.current_path, home),
-                placeholder: t("files-path-placeholder"),
-                icon: None,
-                editable: !recent,
-                name: t("files-location"),
-                go_name: String::new(),
-                segments,
-                image: None,
-                suggestions: self.bar_suggestions(),
-            }),
-            actions,
-        }
+        actions
     }
 
     /// The folders and files the path typed in the bar completes to.

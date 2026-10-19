@@ -5895,6 +5895,10 @@ impl FileExplorerWidget {
 
     /// Stage the view state screenshot `scenario` shows, once the window is
     /// laid out: a selection, an open menu, a drag in flight.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one table of the screenshot scenarios, an arm each"
+    )]
     pub fn stage_scenario(&mut self, scenario: Option<&str>) {
         let rect = self.rect;
         match scenario {
