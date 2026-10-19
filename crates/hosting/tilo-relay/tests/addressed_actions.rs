@@ -387,12 +387,20 @@ async fn addressed_actions_are_private_live_and_demultiplexed_from_v1_state() {
     assert!(
         matches!(next_action(&ca).await, EnvelopeV2::Unavailable {reason:UnavailableReason::UnsupportedPeer, request_id,..} if request_id==Uuid::from_u128(100))
     );
+    // Every session has the one framing and so a private lane, but a peer
+    // that never enabled actions in the room is not routed: the relay
+    // refuses its directed action instead of delivering it.
+    cc.send_action(EnvelopeV2::Directed(refresh(room, &c, &a)))
+        .unwrap();
     assert!(
-        cc.send_action(EnvelopeV2::Directed(refresh(room, &c, &a)))
+        matches!(next_action(&cc).await, EnvelopeV2::Unavailable {reason:UnavailableReason::NotAuthorised, request_id,..} if request_id==Uuid::from_u128(100))
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), cc.recv_action())
+            .await
             .is_err()
     );
-    assert!(cc.recv_action().await.is_none());
-    // A v1 peer never sees private variants; state keeps working.
+    // That peer never sees private variants; state keeps working.
     cc.send(Envelope::Ping).unwrap();
     assert_eq!(next_state(&cc).await, Envelope::Pong);
     cb.close().await;
