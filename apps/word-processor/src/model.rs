@@ -952,7 +952,7 @@ mod tests {
         let (mut replica, block) = written("The budget doubled this year.", "ada");
         replica
             .apply(Document::ADD_COMMENT.with(document::AddComment {
-                block: block.clone(),
+                block,
                 start: 4,
                 end: 10,
                 text: "By how much exactly?".into(),
