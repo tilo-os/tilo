@@ -1329,6 +1329,32 @@ fn draw_name_chip(ctx: &mut PaintCtx<'_>, color: Color, name: &str, anchor: Poin
 /// Black or white ink for text on `bg`, by luma — a fixed white label is
 /// unreadable on over half the peer palette (11 of 24 entries under 2:1,
 /// palest 1.24:1 against white).
+/// The ring a speaking participant's tile wears over its picture: their
+/// colour, as strong as their voice is now (`level`, 0 to 1), a chrome rule
+/// thick on each side of the tile's edge.
+pub fn paint_speaking_ring(
+    scene: &mut Scene,
+    transform: Affine,
+    tile: RoundedRect,
+    colour: Color,
+    level: f32,
+    theme: &Theme,
+) {
+    if level <= 0.0 {
+        return;
+    }
+    let ring = 2.0 * f64::from(theme.tokens.metrics.chrome_rule_px);
+    let rect = tile.rect();
+    let radius = tile.radii().top_left;
+    scene.stroke(
+        &Stroke::new(ring),
+        transform,
+        colour.multiply_alpha(level),
+        None,
+        &RoundedRect::from_rect(rect.inset(-ring / 2.0), (radius - ring / 2.0).max(0.0)),
+    );
+}
+
 pub fn contrast_ink(bg: Color) -> Color {
     let c = bg.to_rgba8();
     // Rec. 601 luma on the 0..255 channels.

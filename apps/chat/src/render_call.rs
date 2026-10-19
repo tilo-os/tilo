@@ -1266,24 +1266,14 @@ impl ChatApp {
             // Over a picture, the tile's edge rings in their colour while
             // they talk, as their face does without one.
             let speaking = self.speaking.level(&p.user, ui::time::now());
-            if speaking > 0.0 {
-                let ring = 2.0 * f64::from(theme.tokens.metrics.chrome_rule_px);
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(ring),
-                    tf,
-                    theme
-                        .tokens
-                        .colors
-                        .presence
-                        .of(self.identity_colour(&p.user))
-                        .multiply_alpha(speaking),
-                    None,
-                    &RoundedRect::from_rect(
-                        rect.inset(-ring / 2.0),
-                        (radius - ring / 2.0).max(0.0),
-                    ),
-                );
-            }
+            ui::presence::paint_speaking_ring(
+                scene,
+                tf,
+                RoundedRect::from_rect(rect, radius),
+                theme.tokens.colors.presence.of(self.identity_colour(&p.user)),
+                speaking,
+                theme,
+            );
         } else {
             let caption = if is_stream {
                 "Audio stream"

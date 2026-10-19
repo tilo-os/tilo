@@ -13,6 +13,13 @@
 //! allows zero, so a unit that reaches zero deletes its file and is locked
 //! there.
 //!
+//! A hit that is genuinely irreducible (content drawing, say: a globe, a
+//! chart, the picture of a window) is allowed in place, never by growing a
+//! baseline: the comment line right above it reads
+//! `// ratchet-allow(<pattern>[, <pattern>…]): <why>`, naming the patterns
+//! it allows on that line and saying why ([`allow_marker`]). The reason is
+//! the review.
+//!
 //! Regenerate with `UPDATE_RATCHET_BASELINES=1`. `RATCHET_SCOPE=apps/mail`
 //! rewrites only that unit's shard. An update refuses to raise any count
 //! unless `RATCHET_ALLOW_GROWTH=1` is also set. A cargo drop-in that runs
@@ -296,11 +303,20 @@ impl Ratchet {
                 .unwrap_or_else(|e| panic!("could not read {}: {e}", f.display()));
             let skip = test_module_spans(&content);
             let rel = relative(f, repository);
+            let mut allowed: Vec<String> = Vec::new();
             for (i, line) in content.lines().enumerate() {
+                if let Some(keys) = allow_marker(line) {
+                    allowed = keys;
+                    continue;
+                }
                 if is_skipped(line, i, &skip) {
                     continue;
                 }
+                let allowed_here = std::mem::take(&mut allowed);
                 for pattern in &self.patterns {
+                    if allowed_here.iter().any(|key| key == pattern.key) {
+                        continue;
+                    }
                     let hits = pattern.hits(line);
                     if hits > 0 {
                         let entry = out
@@ -615,6 +631,22 @@ pub fn test_module_spans(content: &str) -> Vec<(usize, usize)> {
 
 /// Whether line `index` (0-based) is a comment line or inside a test span:
 /// the two things every ratchet skips.
+/// The patterns a `// ratchet-allow(<pattern>[, <pattern>…]): <why>`
+/// comment line allows on the line below it. A marker without a reason of a
+/// few words allows nothing.
+#[must_use]
+pub fn allow_marker(line: &str) -> Option<Vec<String>> {
+    let rest = line.trim_start().strip_prefix("// ratchet-allow(")?;
+    let (keys, reason) = rest.split_once("):")?;
+    let keys: Vec<String> = keys
+        .split(',')
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(str::to_owned)
+        .collect();
+    (!keys.is_empty() && reason.trim().len() >= 12).then_some(keys)
+}
+
 pub fn is_skipped(line: &str, index: usize, spans: &[(usize, usize)]) -> bool {
     line.trim_start().starts_with("//") || spans.iter().any(|(a, b)| index >= *a && index < *b)
 }
@@ -732,6 +764,57 @@ fn test_module_spans_cover_exactly_the_test_code() {
         assert_eq!(test_module_spans(source), vec![(0, 3)]);
         assert!(test_module_spans("fn draw() { let ink = Color::WHITE; }\n").is_empty());
     }
+}
+
+/// An allow marker names one pattern and a reason, and covers only the line
+/// right below it.
+#[test]
+fn an_allow_marker_covers_one_pattern_on_the_next_line_with_a_reason() {
+    assert_eq!(
+        allow_marker("    // ratchet-allow(raw_paint): the globe is content drawing"),
+        Some(vec!["raw_paint".to_owned()])
+    );
+    assert_eq!(
+        allow_marker(
+            "// ratchet-allow(literal_alpha, desktop_ground): the night side of the globe"
+        ),
+        Some(vec![
+            "literal_alpha".to_owned(),
+            "desktop_ground".to_owned()
+        ])
+    );
+    assert_eq!(
+        allow_marker("// ratchet-allow(raw_paint): ok"),
+        None,
+        "no reason"
+    );
+    assert_eq!(
+        allow_marker("// ratchet-allow(): a reason long enough"),
+        None
+    );
+    assert_eq!(allow_marker("// a plain comment"), None);
+    let folder = std::env::temp_dir().join(format!("ratchet-allow-{}", std::process::id()));
+    fs::create_dir_all(&folder).unwrap();
+    let file = folder.join("draw.rs");
+    fs::write(
+        &file,
+        "fn draw() {\n    // ratchet-allow(raw_paint): the picture of a window is content\n    scene.fill(a);\n    scene.fill(b);\n}\n",
+    )
+    .unwrap();
+    let ratchet = Ratchet {
+        name: "allow",
+        roots: &[],
+        patterns: vec![Pattern::new("raw_paint", r"scene\.fill\(", "raw paint")],
+        exempt: no_exemptions,
+        advice: "",
+    };
+    let counts = ratchet.count(&folder, &[file]);
+    assert_eq!(
+        counts.values().copied().sum::<usize>(),
+        1,
+        "the marked line is allowed, the next one is counted: {counts:?}"
+    );
+    let _ = fs::remove_dir_all(&folder);
 }
 
 #[test]

@@ -33,7 +33,7 @@ pub(crate) use render::label_magnification;
 pub use render::{
     PeerCursor, PillPlacement, PillRequest, contrast_ink, draw_peer_cursors, draw_peer_presence,
     draw_remote_cursors, draw_remote_presence, layout_peer_pills, paint_own_chat_bubble,
-    paint_reaction,
+    paint_reaction, paint_speaking_ring,
 };
 
 /// How long a "just typed" highlight lingers before fading out.
