@@ -3915,7 +3915,7 @@ mod command_path_tests {
         assert!(panel.lines.iter().any(|line| line.contains("Pages: 4")));
         w.apply_command(FileCommand::ShowSharing);
         let panel = w.collab_panel.as_ref().unwrap();
-        assert!(panel.title.contains("Sharing"));
+        assert!(panel.title.starts_with("Share "));
         assert!(panel.lines[0].contains("Anyone with the link"));
         w.apply_command(FileCommand::ShowHistory);
         assert!(w.collab_panel.is_none());
