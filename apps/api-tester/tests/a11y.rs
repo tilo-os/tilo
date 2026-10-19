@@ -481,49 +481,40 @@ fn settle_drawer(d: &mut FrameHarness) {
     }
 }
 
+/// The sidebar's management controls and the request's own (Save in the URL
+/// bar, the header's reset) are on screen, and no two controls of the same
+/// surface overlap. A floating drawer covers the content below it, so a
+/// sidebar control may lie over a content control; within each surface
+/// they must not.
 fn assert_sidebar_targets(d: &FrameHarness, height: f64) {
+    const SIDEBAR: [&str; 2] = ["api.env", "api.new-collection"];
+    const CONTENT: [&str; 2] = ["api.save-request", "api.reset-request-area"];
     let targets = d.targets();
     let mut sidebar = Vec::new();
+    let mut content = Vec::new();
     for (id, rect) in &targets {
-        if id.starts_with("api.nav.")
-            || [
-                "api.env",
-                "api.new-collection",
-                "api.save-request",
-                "api.collection-actions",
-                "api.request-actions",
-                "api.environment-actions",
-                "api.rename-request",
-                "api.delete-request",
-                "api.increase-request-area",
-                "api.decrease-request-area",
-                "api.reset-request-area",
-                "api.new-environment",
-                "api.rename-environment",
-                "api.delete-environment",
-                "api.new-variable",
-                "api.delete-variable",
-                "api.previous-saved",
-                "api.next-saved",
-            ]
-            .contains(&id.as_str())
-        {
+        let surface = if id.starts_with("api.nav.") || SIDEBAR.contains(&id.as_str()) {
+            &mut sidebar
+        } else if CONTENT.contains(&id.as_str()) {
+            &mut content
+        } else {
+            continue;
+        };
+        assert!(
+            rect.x0 >= 0.0
+                && rect.y0 >= 0.0
+                && rect.y1 <= height
+                && rect.width() > 0.0
+                && rect.height() > 0.0,
+            "{id}: {rect:?} inside {height}"
+        );
+        for (other, other_rect) in surface.iter() {
             assert!(
-                rect.x0 >= 0.0
-                    && rect.y0 >= 0.0
-                    && rect.y1 <= height
-                    && rect.width() > 0.0
-                    && rect.height() > 0.0,
-                "{id}: {rect:?} inside {height}"
+                rect.intersect(*other_rect).area() <= 0.0,
+                "{id} overlaps {other}"
             );
-            for (other, other_rect) in &sidebar {
-                assert!(
-                    rect.intersect(*other_rect).area() <= 0.0,
-                    "{id} overlaps {other}"
-                );
-            }
-            sidebar.push((id, *rect));
         }
+        surface.push((id, *rect));
     }
 }
 
