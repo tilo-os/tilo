@@ -39,7 +39,7 @@ chip-report-filter = Engineering evidence JSON
 chip-import-cancelled = Report import cancelled
 chip-import-too-large = Report exceeds the 1 MiB import limit
 chip-empty-title = No engineering reports
-chip-empty-message = Import an analytical storage report or immutable hardware verification receipt to inspect its reported evidence.
+chip-empty-message = Import a storage report or a hardware verification receipt to see the evidence it reports.
 chip-imported-evidence = Imported analytical storage report. Source authenticity and quantization quality are unverified.
 chip-remove = Remove report
 chip-show-all = All reports
@@ -123,7 +123,7 @@ chip-operator-disclaimer = Imported reported CPU numerical observations. Artifac
 chip-operator-checks = Reported numerical checks
 
 chip-graph-title = Operator graph
-chip-graph-scope = Structural design only · This graph does not execute or qualify hardware.
+chip-graph-scope = Structural design only. This graph does not run or qualify hardware.
 chip-graph-add = Add
 chip-op-input = Input
 chip-op-gate = Gate input
@@ -132,7 +132,7 @@ chip-op-rms = RMS normalization
 chip-op-apply-weight = Apply normalization weights
 chip-op-silu = SiLU activation
 chip-op-multiply = Multiply
-chip-op-add = Add
+chip-op-add = Sum
 chip-op-projection = Projection input
 chip-port-value = Value
 chip-port-weights = Weights
@@ -160,7 +160,7 @@ chip-graph-remove = Remove operator
 chip-graph-node-missing = This operator no longer exists
 chip-graph-port-missing = This output port no longer exists
 
-chip-synthetic-fixture = Synthetic contract example · No numerical or hardware experiment is represented.
+chip-synthetic-fixture = Synthetic contract example. No numerical or hardware experiment is represented.
 
 chip-tensor-shape = Tensor (F32): { $shape }
 

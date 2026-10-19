@@ -16,6 +16,9 @@ invoke = { resource = "chip_design.project", action = "add-node", args = { node 
 [[situation.steps]]
 invoke = { resource = "chip_design.project", action = "add-node", args = { node = "scale", kind = "apply_norm_weight", shape = [1, 4096], x = 640, y = 200 } }
 
+[[situation.steps]]
+invoke = { resource = "chip_design.project", action = "operator-graph" }
+
 [[situation]]
 name = "operator-graph"
 title = "The operator graph view"
