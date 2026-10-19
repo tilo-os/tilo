@@ -63,13 +63,20 @@ in the initramfs. A physical first boot showed that checking only the older
 filename allowed the newer GPU's firmware request to fail before the encrypted
 root was available. Firmware presence must follow the actual kernel requests.
 
-The 83ED firmware publishes a TPM event log for its Qualcomm firmware TPM,
-which Linux has no driver for. `systemd-tpm2-generator` reads that as "a TPM
-whose driver has not loaded yet" and makes `sysinit.target` wait for
-`/dev/tpm0` and `/dev/tpmrm0` until the 45 second device timeout, once in the
-initrd and again after switch-root. On a physical first boot that held the
-splash for a minute and a half after the disk was unlocked. The profile's
-`systemd.tpm2_wait=0` turns that wait off for this board only. Boards whose
+The 83ED's TPM is Microsoft Pluton. Windows reaches it through a TCG CRB
+window that the `qcom.tz.mssecapp` TrustZone app reports and services (ACPI
+TPM2 start method 14). Tilo's kernel drives it the same way with
+`tpm_qcom_mssec` (`os/kernel/patches/0016` and `0017`), built in. The driver
+binds when TrustZone reports a TPM type other than a discrete or Qualcomm
+firmware TPM.
+
+`systemd-tpm2-generator` sees the firmware's TPM event log and, by default,
+makes `sysinit.target` wait for `/dev/tpm0` and `/dev/tpmrm0` until the 45
+second device timeout, once in the initrd and again after switch-root. Before
+the driver existed, that held the splash for a minute and a half after the disk
+was unlocked on a physical first boot. The built-in driver now creates the
+device before systemd starts. The profile still sets `systemd.tpm2_wait=0`, so
+a firmware whose mssecapp refuses the TPM costs nothing at boot. Boards whose
 TPM driver is a module (an I2C or SPI TPM) still need the wait, so it stays on
 everywhere else.
 

@@ -217,10 +217,9 @@ request as a password agent, and only with a key it has already checked
 against the slot, so a failed or refused attempt costs the person nothing and
 leaves the prompt as it was.
 
-The Lenovo Yoga Slim 7x has no TPM Linux can use yet. Its firmware TPM sits
-behind Qualcomm's TEE, and the driver for it (`tpm_qcom` on QCOMTEE) is still
-in review. So on that machine the sibling factor is what replaces typing the
-passphrase.
+The Lenovo Yoga Slim 7x's TPM is Microsoft Pluton behind Qualcomm's
+`mssecapp` TrustZone app, which Tilo's kernel drives with `tpm_qcom_mssec`.
+It unlocks like any other machine with a TPM.
 
 ## Verification
 
