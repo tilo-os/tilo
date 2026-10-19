@@ -1303,6 +1303,8 @@ COPY os/usr/lib/systemd/user/tilo-ush.service \
     os/usr/lib/systemd/user/tilo-app-host.service \
     /tilo-components/usr/lib/systemd/user/
 COPY os/usr/share/licenses/tilo-speech-worker/LICENSE /tilo-components/usr/share/licenses/tilo-speech-worker/
+# The interface declaration the shell judges apps against travels with it.
+COPY os/usr/share/tilo/system-interfaces.toml /tilo-components/usr/share/tilo/system-interfaces.toml
 # Relay component metadata travels with the same component in images and updates.
 COPY os/usr/lib/tilo/node-relay.toml /tilo-components/usr/lib/tilo/node-relay.toml
 COPY os/usr/lib/sysusers.d/tilo-relay.conf /tilo-components/usr/lib/sysusers.d/tilo-relay.conf
@@ -2380,11 +2382,12 @@ COPY os/usr/lib/systemd/system/systemd-tpm2-setup-early.service.d/10-tilo-live-i
 # tmpfiles.d copies it to /var/lib/tilo on first boot, where it can be
 # edited and survives image updates. See fs.service for why the subject
 # is a principal rather than a key.
-# Beside it, the system interfaces this image serves: an app from the registry
-# updates past its preinstalled copy only to a build this OS can run, and that
-# copy is the fallback for one it cannot
+# The system interfaces this image serves sit beside it, installed by the shell
+# component (os/components.toml), which judges apps against them: an app from
+# the registry updates past its preinstalled copy only to a build this OS can
+# run, and that copy is the fallback for one it cannot
 # (crates/packaging/package-store/src/interfaces.rs).
-COPY os/usr/share/tilo/fs-capabilities.json os/usr/share/tilo/system-interfaces.toml /usr/share/tilo/
+COPY os/usr/share/tilo/fs-capabilities.json /usr/share/tilo/fs-capabilities.json
 # The community workspace a computer is in by default: the vendor's site,
 # which /etc/tilo/community.toml overrides (crates/session/shell, community.rs).
 COPY os/usr/share/tilo/community.toml /usr/share/tilo/community.toml

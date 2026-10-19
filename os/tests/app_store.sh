@@ -347,7 +347,8 @@ sys.exit(0 if re.search(pattern, source) else 1)
       if grep -Fq 'pub const SYSTEM_SERVICE: &str = "system";' "$services" \
           && grep -Fq 'services.contains_key(crate::services::SYSTEM_SERVICE)' "$authority" \
           && grep -Eq '^system *= *[0-9]+' "$REPO/os/usr/share/tilo/system-interfaces.toml" \
-          && grep -Eq '^COPY .*os/usr/share/tilo/system-interfaces\.toml .*/usr/share/tilo/' "$CONTAINERFILE"; then
+          && containerfile_copy_contract "$CONTAINERFILE" | \
+             awk -F '\t' '$3 == "/usr/share/tilo/system-interfaces.toml" { found=1 } END { exit !found }'; then
         ok "apps [$users] require 'system': the launcher grants it and the image declares serving it"
       else
         bad "apps [$users] require 'system', but the launcher's grant or the image's system-interfaces.toml does not serve it."
