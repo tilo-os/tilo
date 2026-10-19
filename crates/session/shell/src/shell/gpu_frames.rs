@@ -60,6 +60,27 @@ static PRESENT_DEVICE: Mutex<Option<PresentDevice>> = Mutex::new(None);
 pub fn publish_present_device(device: &wgpu::Device, queue: &wgpu::Queue) -> u64 {
     vello::set_external_image_source(external_pixels);
     let generation = NEXT_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if let Some(delay) = present_device_delay() {
+        // As on a laptop whose renderer comes up after the first apps
+        // committed: their frames are read back until the device is there.
+        let (device, queue) = (device.clone(), queue.clone());
+        let spawned = std::thread::Builder::new()
+            .name("tilo-present-delay".into())
+            .spawn(move || {
+                std::thread::sleep(delay);
+                install_present_device(&device, &queue, generation);
+            });
+        if spawned.is_ok() {
+            return generation;
+        }
+    }
+    install_present_device(device, queue, generation);
+    generation
+}
+
+/// Make `device` the one client frames are imported on, as presenting
+/// device `generation`.
+fn install_present_device(device: &wgpu::Device, queue: &wgpu::Queue, generation: u64) {
     #[cfg(target_os = "linux")]
     probe_sampleable(device);
     *PRESENT_DEVICE.lock_recover() = Some(PresentDevice {
@@ -67,7 +88,28 @@ pub fn publish_present_device(device: &wgpu::Device, queue: &wgpu::Queue) -> u64
         queue: queue.clone(),
         generation,
     });
-    generation
+}
+
+/// The variable that holds back the presenting device from client imports
+/// (and the dmabuf feedback its probe sends) for that many milliseconds
+/// after the renderer opened it.
+pub const PRESENT_DEVICE_DELAY_ENV: &str = "TILO_TEST_PRESENT_DEVICE_DELAY_MS";
+
+/// [`PRESENT_DEVICE_DELAY_ENV`], read only in a developer build
+/// ([`crate::compositor::dev_env::DEV_ENV_OVERRIDES`]): a headless session
+/// then meets its first clients without a presenting GPU, as a laptop does
+/// at session start.
+fn present_device_delay() -> Option<std::time::Duration> {
+    if !crate::compositor::dev_env::DEV_ENV_OVERRIDES {
+        return None;
+    }
+    std::env::var(PRESENT_DEVICE_DELAY_ENV)
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .filter(|ms| *ms > 0)
+        .map(std::time::Duration::from_millis)
 }
 
 /// The client buffer layouts the presenting device was confirmed to sample,
