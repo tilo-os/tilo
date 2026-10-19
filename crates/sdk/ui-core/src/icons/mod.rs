@@ -202,6 +202,7 @@ icons! {
     PhoneOff => "phone-off",
     Lock => "lock",
     MessageSquare => "message-square",
+    MessageCircle => "message-circle",
     Clock => "clock",
     AlarmClock => "alarm-clock",
     Hourglass => "hourglass",
@@ -227,6 +228,7 @@ icons! {
     Heading1 => "heading-1",
     Heading2 => "heading-2",
     ListOrdered => "list-ordered",
+    ListChecks => "list-checks",
     Quote => "quote",
     ReplyAll => "reply-all",
     Forward => "forward",
@@ -1168,6 +1170,9 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
         Icon::MessageSquare => vec![path_from_d(
             "M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z",
         )],
+        Icon::MessageCircle => vec![path_from_d(
+            "M2.992 16.342a2 2 0 0 1 .094 1.167l-1.065 3.29a1 1 0 0 0 1.236 1.168l3.413-.998a2 2 0 0 1 1.099.092 10 10 0 1 0-4.777-4.719",
+        )],
         Icon::Clock => vec![path_from_d("M12 6v6l4 2"), circle_path(12.0, 12.0, 10.0)],
         Icon::AlarmClock => vec![
             circle_path(12.0, 13.0, 8.0),
@@ -1303,6 +1308,13 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("M4 4h1v5"),
             path_from_d("M4 9h2"),
             path_from_d("M6.5 20H3.4c0-1 2.6-1.925 2.6-3.5a1.5 1.5 0 0 0-2.6-1.02"),
+        ],
+        Icon::ListChecks => vec![
+            path_from_d("M13 5h8"),
+            path_from_d("M13 12h8"),
+            path_from_d("M13 19h8"),
+            path_from_d("m3 17 2 2 4-4"),
+            path_from_d("m3 7 2 2 4-4"),
         ],
         Icon::Quote => vec![
             path_from_d(
@@ -2607,6 +2619,8 @@ mod tests {
             (Icon::PhoneOff, 3),
             (Icon::Lock, 2),
             (Icon::MessageSquare, 1),
+            (Icon::MessageCircle, 1),
+            (Icon::ListChecks, 5),
             (Icon::Clock, 2),
             (Icon::AlarmClock, 6),
             (Icon::Hourglass, 4),
