@@ -374,6 +374,13 @@ pub enum CollabRequest {
         app_id: String,
         reports_json: Vec<u8>,
     },
+    /// A change to this app's entries in the system's persistent search
+    /// index ([`crate::search::index_publication::IndexDelta`], encoded).
+    /// Bound to the certified primary route; never relayed to peers.
+    PublishSearchIndex {
+        app_id: String,
+        delta_json: Vec<u8>,
+    },
     /// One generic active-session continuity transition. The shell binds the
     /// command to this connection's certified app/workspace route.
     NativeMediaCommand {

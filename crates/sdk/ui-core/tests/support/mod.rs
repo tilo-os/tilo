@@ -216,6 +216,7 @@ pub fn pump(relay: &mut MemoryRelay) {
             | CollabRequest::PublishActionSurface { .. }
             | CollabRequest::ReportContinuation { .. }
             | CollabRequest::ReportPlayback { .. }
+            | CollabRequest::PublishSearchIndex { .. }
             | CollabRequest::ClearContinuation { .. }
             | CollabRequest::ReportHandoff { .. }
             | CollabRequest::CompleteInvocation { .. }

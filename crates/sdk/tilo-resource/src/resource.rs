@@ -1072,6 +1072,10 @@ pub struct SearchEntry {
     pub fields: Vec<(String, SearchWeight)>,
     /// Structured filter values: token key, localized group label, value.
     pub facets: Vec<(String, String, String)>,
+    /// The entry describes a secret (a vault's login): the system index
+    /// keeps its metadata but finds it only while the app reports its
+    /// secrets unlocked ([`SearchEntry::secret_bearing`]).
+    pub secret: bool,
 }
 
 impl Clone for SearchEntry {
@@ -1090,6 +1094,7 @@ impl Clone for SearchEntry {
             body: self.body.clone(),
             fields: self.fields.clone(),
             facets: self.facets.clone(),
+            secret: self.secret,
         }
     }
 }
@@ -1109,6 +1114,7 @@ impl PartialEq for SearchEntry {
             && self.body == other.body
             && self.fields == other.fields
             && self.facets == other.facets
+            && self.secret == other.secret
     }
 }
 
@@ -1318,6 +1324,17 @@ impl SearchEntry {
     #[must_use]
     pub fn with_body(mut self, body: SearchBody) -> Self {
         self.body = Some(body);
+        self
+    }
+
+    /// Mark the entry as describing a secret. The app publishes metadata
+    /// only (a name, a username, a site, never the secret), and the
+    /// system's search finds the entry only while the app reports its
+    /// secrets unlocked; while they are locked a match offers to unlock
+    /// the app instead.
+    #[must_use]
+    pub fn secret_bearing(mut self) -> Self {
+        self.secret = true;
         self
     }
 }

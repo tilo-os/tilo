@@ -326,6 +326,16 @@ pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
     fn search_entries(&self) -> Vec<SearchEntry> {
         Vec::new()
     }
+
+    /// Whether the secrets behind this surface's secret-bearing search
+    /// entries ([`SearchEntry::secret_bearing`]) are unlocked now: a vault
+    /// that opened and found its key. The system's search index finds those
+    /// entries only while the app last said `Some(true)`, and keeps them
+    /// after the app closes. `None` says nothing: a surface without secrets,
+    /// or one that opens none (a past version).
+    fn secrets_unlocked(&self) -> Option<bool> {
+        None
+    }
 }
 
 /// Run `forward`, a pass of a surface over the document, keeping every change
@@ -380,6 +390,7 @@ pub(crate) trait SurfacePublication {
     /// `Vec<ActionDecl<R>>` of its resource type `R`; whether it bound any.
     fn row_declarations(&self, row: &str, into: &mut dyn std::any::Any) -> bool;
     fn search_entries(&self) -> Vec<SearchEntry>;
+    fn secrets_unlocked(&self) -> Option<bool>;
     fn supports_device_shell(&self) -> bool;
     fn device_shell_operation(
         &mut self,
@@ -1074,6 +1085,9 @@ impl SurfacePublication for HostedSurface {
     fn search_entries(&self) -> Vec<SearchEntry> {
         self.host.search_entries()
     }
+    fn secrets_unlocked(&self) -> Option<bool> {
+        self.host.secrets_unlocked()
+    }
     fn supports_device_shell(&self) -> bool {
         self.host.supports_device_shell()
     }
@@ -1160,6 +1174,10 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfacePublicat
 
     fn search_entries(&self) -> Vec<SearchEntry> {
         self.surface.search_entries()
+    }
+
+    fn secrets_unlocked(&self) -> Option<bool> {
+        self.surface.secrets_unlocked()
     }
 
     fn search_queries(&self) -> SearchQueries {
