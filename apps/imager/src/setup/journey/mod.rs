@@ -6561,7 +6561,10 @@ mod tests {
             preview.journey.page = Page::Review;
             preview.journey.destination = Some(Destination::Computer);
             preview.journey.migrate = Some(true);
-            preview.journey.categories = [true, true, true];
+            // Entering Belongings rediscovers sources and turns off categories
+            // with nothing to bring; this fixture has no installed apps, so
+            // its reviewed choices leave Apps off to stay unchanged on Save.
+            preview.journey.categories = [true, false, true];
             preview.accounts = accounts;
             preview.belongings.home = Some(root.path().join("source"));
             // The source fixture contains user app data, with no system refs.
@@ -9939,18 +9942,23 @@ mod tests {
             assert!(!preview.direct_available());
         })
         .unwrap();
-        // The actual ordinary Continue queues preparation and stays on this
-        // page until the real Controller worker has returned and been joined.
         app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
+        let purpose = status(&mut app);
+        assert_eq!(purpose["page"], "purpose");
+        assert_eq!(purpose["belongings_preparation"]["pending"], false);
+        assert_eq!(purpose["belongings_preparation"]["prepared"], false);
+        // Choosing the purpose of a fresh install queues preparation and stays
+        // on this page until the real Controller worker has returned and been joined.
+        choose(&mut app, "computer");
         let immediate = status(&mut app);
         if immediate["belongings_preparation"]["pending"] == true {
-            assert_eq!(immediate["page"], "devices");
+            assert_eq!(immediate["page"], "purpose");
             assert_eq!(immediate["belongings_preparation"]["prepared"], false);
         } else {
             // A fast real worker may finish before the next semantic read.
             assert_eq!(immediate["belongings_preparation"]["prepared"], true);
-            assert_eq!(immediate["page"], "purpose");
+            assert_eq!(immediate["page"], "review");
         }
         let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
         loop {
@@ -9965,8 +9973,6 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        assert_eq!(status(&mut app)["page"], "purpose");
-        choose(&mut app, "computer");
         app.with_widget::<InstallerPreview, _>(|preview| {
             assert_eq!(preview.journey.page, Page::Review);
             assert!(!preview.direct.active);
@@ -10100,9 +10106,10 @@ mod tests {
         assert_eq!(prepared["page"], "devices");
         app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
-        assert_eq!(wait_for_belongings(&mut app)["page"], "purpose");
+        // A fresh install prepares once its purpose is chosen, not on Devices.
+        assert_eq!(status(&mut app)["page"], "purpose");
         choose(&mut app, "computer");
-        assert_eq!(status(&mut app)["page"], "review");
+        assert_eq!(wait_for_belongings(&mut app)["page"], "review");
         app.settle();
         app.with_widget::<InstallerPreview, _>(|preview| {
             assert!(!preview.journey.history.contains(&Page::Storage));
@@ -10137,7 +10144,7 @@ mod tests {
         assert!(retained["media_preparation"]["exported"].is_null());
         assert_eq!(retained["direct_install"]["active"], false);
         app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
-        assert_eq!(status(&mut app)["page"], "devices");
+        assert_eq!(status(&mut app)["page"], "purpose");
         app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
         assert_eq!(status(&mut app)["page"], "review");
@@ -11540,13 +11547,14 @@ mod tests {
             assert!(!preview.media_preparation.busy());
         })
         .unwrap();
+        // Back visits the last page with a choice, the purpose of this install.
         app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
-        assert_eq!(status(app)["page"], "devices");
+        assert_eq!(status(app)["page"], "purpose");
         app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
         assert_eq!(status(app)["page"], "review");
         app.with_widget::<InstallerPreview, _>(|preview| {
-            assert_eq!(preview.journey.history.last(), Some(&Page::Devices));
+            assert_eq!(preview.journey.history.last(), Some(&Page::Purpose));
         })
         .unwrap();
     }
@@ -11580,9 +11588,10 @@ mod tests {
         let identity_key = prepared["prepared_identity"]["public_key"].clone();
         app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
-        assert_eq!(wait_for_belongings(&mut app)["page"], "purpose");
+        // A fresh install prepares once its purpose is chosen, not on Devices.
+        assert_eq!(status(&mut app)["page"], "purpose");
         choose(&mut app, "computer");
-        assert_eq!(status(&mut app)["page"], "storage");
+        assert_eq!(wait_for_belongings(&mut app)["page"], "storage");
         let before = status(&mut app)["storage"].clone();
         assert!(before["plan_digest"].is_string());
         app.effect(&InstallerPreviewEffect::SetStorageSize { gib: 80 })
@@ -11668,13 +11677,13 @@ mod tests {
         app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
         assert_eq!(status(&mut app)["page"], "review");
-        for destination in ["another", "desktop"] {
-            assert_live_route_skips_empty_storage(&mut app, destination);
-            assert_eq!(
-                status(&mut app)["prepared_identity"]["public_key"],
-                identity_key
-            );
-        }
+        // Desktop setup keeps the existing account and retires a prepared
+        // identity, so only the other-computer route is revisited here.
+        assert_live_route_skips_empty_storage(&mut app, "another");
+        assert_eq!(
+            status(&mut app)["prepared_identity"]["public_key"],
+            identity_key
+        );
         app.effect(&InstallerPreviewEffect::EditPreview {
             section: "destination".into(),
         })

@@ -11,7 +11,8 @@ fn read(app: &mut App) -> serde_json::Value {
         .unwrap()
 }
 fn wait(app: &mut App, predicate: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    // Identity preparation derives keys; a loaded test node can take longer than a fixed 30 s.
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         app.settle();
         let state = read(app);
@@ -223,6 +224,8 @@ fn await_checkpoint(app: &mut App, accounts: usize) {
 fn go_to_accounts(app: &mut App) {
     app.effect(&InstallerPreviewEffect::ContinuePreview)
         .unwrap();
+    assert_eq!(read(app)["page"], "purpose");
+    choose(app, "computer");
     app.effect(&InstallerPreviewEffect::TogglePreviewDetails)
         .unwrap();
     for category in ["files", "flatpak"] {
@@ -304,6 +307,8 @@ fn resumed_draft_without_account_checkpoint_requires_review_before_bulk_import()
     resumed
         .effect(&InstallerPreviewEffect::ContinuePreview)
         .unwrap();
+    assert_eq!(read(&mut resumed)["page"], "purpose");
+    choose(&mut resumed, "computer");
     assert_eq!(read(&mut resumed)["page"], "belongings");
     // Normal forward navigation rediscovers metadata without importing
     // credentials or requiring the person to know about the recheck action.
@@ -474,7 +479,13 @@ fn guided_reopen_authenticates_connections_before_advancing_and_empty_selection_
     original
         .effect(&InstallerPreviewEffect::ContinuePreview)
         .unwrap();
-    assert_eq!(read(&mut original)["page"], "storage");
+    // Continue saves the account checkpoint and prepares belongings first. A
+    // build without direct installation has no storage decision; Review offers
+    // the USB installer.
+    let advanced = wait(&mut original, |state| {
+        state["page"] != "accounts" || state["media_preparation"]["state"] == "failed"
+    });
+    assert_eq!(advanced["page"], "review", "{advanced}");
     drop(original);
     let mut stale = open_at_saved_password();
     let mut resumed = open_at_saved_password();

@@ -4201,6 +4201,10 @@ mod tests {
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
         let artifact =
             crate::setup::journey::prepared_media::selected_applications_media_fixture(&root);
+        // Selected apps' own data travels in the home archive, so this medium
+        // needs both consumers; the release below admits only the home one.
+        assert_eq!(artifact.home_archive_protocol(), Some(2));
+        assert_eq!(artifact.applications_protocol(), Some(2));
         let handoffs = root.join("handoffs");
         std::fs::create_dir(&handoffs).unwrap();
         env.set("TMPDIR", &handoffs);
@@ -4209,6 +4213,15 @@ mod tests {
         let (mut app, _) = seeded_app();
         app.releases[0].size = std::fs::metadata(&image).unwrap().len();
         app.releases[0].local_path = image.display().to_string();
+        app.releases[0].home_archive = Some(crate::setup::home_admission::ConsumerCapability {
+            schema: 1,
+            archive_protocol: 2,
+            seed_protocol: 1,
+            firstboot_user_sha256: "1".repeat(64),
+            seed_helper_sha256: "2".repeat(64),
+            prepared_helper_sha256: "3".repeat(64),
+            tar_sha256: "4".repeat(64),
+        });
         app.source = Some(app.releases[0].to_source());
         app = app.with_prepared_media(Some(artifact));
         app.select_target(0);
