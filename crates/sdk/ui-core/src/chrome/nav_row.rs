@@ -460,9 +460,9 @@ fn rail_caption_width(theme: &Theme, width: f64) -> f64 {
     (width - 2.0 * f64::from(theme.tokens.spacing.s1)).max(0.0)
 }
 
-/// A rail caption broken into at most two lines of `max_w`: at a space
-/// when there is one, inside the word (with a hyphen) when one word is too
-/// long for a line; the second line elides.
+/// A rail caption broken into at most two lines of `max_w`, only at
+/// spaces: a single word never breaks inside, it elides when it is longer
+/// than the line, and so does the second line.
 #[must_use]
 pub fn rail_caption_lines(
     theme: &Theme,
@@ -496,43 +496,12 @@ pub fn rail_caption_lines(
     let (first, rest) = if taken > 0 {
         (first, words.get(taken..).unwrap_or_default().join(" "))
     } else {
-        // One word longer than the line: break inside it, at the last
-        // syllable boundary of the reader's language whose head still fits
-        // ("Connec-tions", not "Connecti-ons"). A word with no such boundary
-        // that fits falls back to the last character that does.
+        // One word longer than the line is never broken inside: a word cut
+        // with a hyphen ("Connec-tions") reads as two. It elides instead,
+        // and the words after it take the second line.
         let word = words.first().copied().unwrap_or(label);
-        let locale = crate::i18n::I18nManager::current_locale();
-        let syllable_cut = crate::text_break::discretionary_hyphen_breaks(word, &locale)
-            .into_iter()
-            .rev()
-            .find(|&byte| {
-                word.get(..byte)
-                    .is_some_and(|head| fits(text_renderer, &format!("{head}-")))
-            });
-        let cut = syllable_cut.unwrap_or_else(|| {
-            let mut cut = 0;
-            for (byte, _) in word.char_indices().skip(1) {
-                if word
-                    .get(..byte)
-                    .is_some_and(|head| fits(text_renderer, &format!("{head}-")))
-                {
-                    cut = byte;
-                } else {
-                    break;
-                }
-            }
-            cut
-        });
-        if cut == 0 {
-            let line = text_renderer.elide_to_width_style(label, f32_of_f64(max_w), &style);
-            return vec![line];
-        }
-        let (head, tail) = word.split_at(cut);
-        let rest = std::iter::once(tail)
-            .chain(words.iter().skip(1).copied())
-            .collect::<Vec<_>>()
-            .join(" ");
-        (format!("{head}-"), rest)
+        let line = text_renderer.elide_to_width_style(word, f32_of_f64(max_w), &style);
+        (line, words.get(1..).unwrap_or_default().join(" "))
     };
     if rest.is_empty() {
         return vec![first];
