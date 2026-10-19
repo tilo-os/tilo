@@ -732,7 +732,7 @@ impl WindowGroup {
         // The frame's time: after a stall the width lands where the motion
         // is, rather than crawling in slow motion; it is exactly at rest
         // once settled, so no sub-pixel remainder keeps asking for frames.
-        spring.step(crate::time::now());
+        spring.step(crate::motion::frame_now());
         self.style_dirty = true;
         if spring.is_settled() && !self.is_closing() {
             self.width_spring = None;
@@ -1753,7 +1753,7 @@ impl WindowGroup {
             self.rect_spring = None;
             return;
         }
-        spring.step(crate::time::now());
+        spring.step(crate::motion::frame_now());
         if spring.is_settled() {
             self.rect_spring = None;
         }

@@ -444,7 +444,9 @@ impl ScrollRegion {
     /// Paint the bars alone, for a host that clips and draws its content
     /// itself.
     pub fn paint_bars(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
-        let opacity = self.fade.opacity_at(crate::time::now(), self.held(theme));
+        let opacity = self
+            .fade
+            .opacity_at(crate::motion::frame_now(), self.held(theme));
         if opacity <= 0.003 {
             return;
         }
@@ -476,14 +478,15 @@ impl ScrollRegion {
     /// Whether the bar's fade needs frames now.
     #[must_use]
     pub fn needs_animation_frame(&self, theme: &Theme) -> bool {
-        self.fade.fading_at(crate::time::now(), self.held(theme))
+        self.fade
+            .fading_at(crate::motion::frame_now(), self.held(theme))
     }
 
     /// When the bar starts to fade, for the host's `next_wake_deadline`.
     #[must_use]
     pub fn next_wake_deadline(&self, theme: &Theme) -> Option<crate::time::Instant> {
         self.fade
-            .fade_deadline_at(crate::time::now(), self.held(theme))
+            .fade_deadline_at(crate::motion::frame_now(), self.held(theme))
     }
 
     /// Follow the host's keyboard focus: a focused region scrolls with the

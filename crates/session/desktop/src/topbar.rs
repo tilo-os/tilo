@@ -4726,11 +4726,11 @@ impl Widget for TopBarChrome {
     /// Must keep returning `true` until the first successful draw
     /// fills the cache, or the first frame after layout never paints.
     fn needs_animation_frame(&self) -> bool {
-        self.center_fade.is_moving(ui::time::now()) || self.center_frame_stale()
+        self.center_fade.is_moving(ui::motion::frame_now()) || self.center_frame_stale()
     }
 
     fn needs_redraw(&self) -> bool {
-        if self.center_fade.is_moving(ui::time::now()) || self.center_frame_stale() {
+        if self.center_fade.is_moving(ui::motion::frame_now()) || self.center_frame_stale() {
             return true;
         }
         if self.presence() != self.cache_fp.presence {

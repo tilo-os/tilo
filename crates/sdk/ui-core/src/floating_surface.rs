@@ -1582,7 +1582,7 @@ impl FloatingPlacement {
             return transform;
         }
         let progress = self.handoff_progress_override.unwrap_or_else(|| {
-            settle_progress(crate::time::now().saturating_duration_since(motion.started))
+            settle_progress(crate::motion::frame_now().saturating_duration_since(motion.started))
         });
         let amount = (1.0 - progress).powi(2) * motion.strength;
         if amount <= f64::EPSILON {
@@ -1616,7 +1616,8 @@ impl FloatingPlacement {
                 motion.started.set(Some(crate::time::now()));
                 return motion.from;
             };
-            let eased = settle_progress(crate::time::now().saturating_duration_since(started));
+            let eased =
+                settle_progress(crate::motion::frame_now().saturating_duration_since(started));
             Rect::new(
                 motion.from.x0 + (motion.to.x0 - motion.from.x0) * eased,
                 motion.from.y0 + (motion.to.y0 - motion.from.y0) * eased,

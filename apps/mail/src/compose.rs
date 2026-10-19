@@ -1051,7 +1051,7 @@ impl ComposeWindow {
     /// (`to`, `cc`, `bcc`, `subject`).
     pub(crate) fn take_due_headers(&mut self) -> Option<[String; 4]> {
         let due = self.headers_due_at()?;
-        if ui::time::now() < due {
+        if ui::motion::frame_now() < due {
             return None;
         }
         self.headers_edited = None;
@@ -1132,7 +1132,7 @@ impl ComposeWindow {
             let completed = crate::address_book::complete_with(field.value(), &chosen);
             field.set_text(&completed);
         }
-        self.headers_edited = Some(ui::time::now());
+        self.headers_edited = Some(ui::motion::frame_now());
         self.completions.clear();
         self.dirty = true;
     }
@@ -2014,7 +2014,7 @@ impl ComposeWindow {
     /// Part of [`Self::handle_keyboard_input`].
     fn handle_header_key(&mut self, event: &WindowEvent, ctx: &mut ComposeEventContext<'_>) {
         self.touched = true;
-        self.headers_edited = Some(ui::time::now());
+        self.headers_edited = Some(ui::motion::frame_now());
         let mut h = false;
         let mut ft: Option<taffy::NodeId> = None;
         if let Some(inp) = self.focused_input() {

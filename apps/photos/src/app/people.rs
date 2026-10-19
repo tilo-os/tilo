@@ -818,7 +818,10 @@ impl PhotosApp {
             let reveal = if theme.reduce_motion {
                 1.0_f32
             } else {
-                ui::motion::unit_opacity(self.people_detail_transition.progress(ui::time::now()))
+                ui::motion::unit_opacity(
+                    self.people_detail_transition
+                        .progress(ui::motion::frame_now()),
+                )
             };
             ctx.scene.push_layer(
                 vello::peniko::Fill::NonZero,

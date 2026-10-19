@@ -488,7 +488,7 @@ impl Widget for HistoryHost {
                 crate::motion::PanelSlide::SPEC,
                 self.motion,
                 crate::motion::input_source(),
-                crate::time::now(),
+                crate::motion::frame_now(),
             );
             // The panel is drawn outside the tree a frame pump polls: the
             // motion clock keeps frames coming until it has slid in.
@@ -500,7 +500,7 @@ impl Widget for HistoryHost {
         }
         // Then the panel, where its slide has it, clipped to its own place.
         let slide = if side {
-            let progress = self.panel_motion.progress(crate::time::now());
+            let progress = self.panel_motion.progress(crate::motion::frame_now());
             crate::motion::PanelSlide::shown(progress, self.panel_rect.width())
         } else {
             self.panel_rect.width()
@@ -695,7 +695,7 @@ impl Widget for HistoryHost {
         self.rect
     }
     fn needs_animation_frame(&self) -> bool {
-        self.panel_motion.is_moving(crate::time::now())
+        self.panel_motion.is_moving(crate::motion::frame_now())
             || self
                 .children()
                 .into_iter()

@@ -61,6 +61,7 @@ impl Presence {
     /// Show or hide with `spec`'s motion. Asking for the state it is already
     /// in or going to changes nothing; asking for the other one mid-flight
     /// reverses from where it is drawn.
+    #[track_caller]
     pub fn show(
         &mut self,
         open: bool,
@@ -105,16 +106,19 @@ impl Presence {
     }
 
     /// How open it is drawn at `now`, `0..=1`.
+    #[track_caller]
     pub fn progress(&self, now: Instant) -> f64 {
         self.openness.get(now).clamp(0.0, 1.0)
     }
 
     /// Whether anything of it is drawn at `now` (open, opening or closing).
+    #[track_caller]
     pub fn is_visible(&self, now: Instant) -> bool {
         self.open || self.progress(now) > 0.0
     }
 
     /// Whether it is still moving at `now`.
+    #[track_caller]
     pub fn is_moving(&self, now: Instant) -> bool {
         self.openness.is_moving(now)
     }

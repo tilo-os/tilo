@@ -174,20 +174,28 @@ impl<T: Animatable> MotionValue<T> {
     }
 
     /// The value at `now`.
+    #[track_caller]
     pub fn get(&self, now: Instant) -> T {
         T::from_channels(self.channels_at(now).0)
     }
 
     /// The velocity at `now`, per second, in the value's own units.
+    #[track_caller]
     pub fn velocity(&self, now: Instant) -> T {
         T::from_channels(self.channels_at(now).1)
     }
 
     /// Whether the value is still on its way at `now`.
+    #[track_caller]
     pub fn is_moving(&self, now: Instant) -> bool {
         // The settled clock (captures and tests) reads every motion at its
         // end.
-        !super::clock::testing::is_settled() && self.settles_at.is_some_and(|at| now < at)
+        let moving =
+            !super::clock::testing::is_settled() && self.settles_at.is_some_and(|at| now < at);
+        if moving {
+            super::clock::debug_assert_frame_instant(now);
+        }
+        moving
     }
 
     /// When the current motion arrives; `None` at rest. A host that sleeps
@@ -218,6 +226,7 @@ impl<T: Animatable> MotionValue<T> {
     /// it is drawn and how fast it is moving there. Setting the target it is
     /// already going to changes nothing (a repeated request never restarts
     /// the curve).
+    #[track_caller]
     pub fn set(&mut self, target: T, timing: Timing, now: Instant) {
         let spring = match timing {
             Timing::Instant => {
@@ -236,6 +245,7 @@ impl<T: Animatable> MotionValue<T> {
 
     /// Send the value to `target` carrying `velocity` (a gesture's release,
     /// a kick), whatever it was doing.
+    #[track_caller]
     pub fn release(&mut self, target: T, velocity: T, timing: Timing, now: Instant) {
         let Timing::Spring(spring) = timing else {
             self.snap(target);
@@ -245,6 +255,7 @@ impl<T: Animatable> MotionValue<T> {
         self.start(target, position, velocity.to_channels(), spring, now);
     }
 
+    #[track_caller]
     fn start(
         &mut self,
         target: T,
@@ -279,6 +290,7 @@ impl<T: Animatable> MotionValue<T> {
         }
     }
 
+    #[track_caller]
     fn channels_at(&self, now: Instant) -> (Channels, Channels) {
         let goal = self.target.to_channels();
         if !self.is_moving(now) {

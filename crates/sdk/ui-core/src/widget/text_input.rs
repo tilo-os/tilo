@@ -4442,7 +4442,7 @@ impl TextInput {
     }
 
     fn refresh_autocorrection_preview(&mut self) {
-        self.refresh_suggestion_at(crate::time::now());
+        self.refresh_suggestion_at(crate::motion::frame_now());
     }
 
     /// Bring the correction offered for the word under the caret up to

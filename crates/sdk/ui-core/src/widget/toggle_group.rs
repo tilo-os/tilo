@@ -2314,12 +2314,12 @@ impl Widget for ToggleGroup {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.thumb.is_moving(crate::time::now())
+        self.thumb.is_moving(crate::motion::frame_now())
     }
 
     fn needs_redraw(&self) -> bool {
         self.cache_dirty
-            || self.thumb.is_moving(crate::time::now())
+            || self.thumb.is_moving(crate::motion::frame_now())
             || self.selected != self.last_selected
             || self.focus_visible() != self.last_focused
             || self.hovered != self.last_hovered

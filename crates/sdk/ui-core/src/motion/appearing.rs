@@ -95,13 +95,13 @@ impl Appearing {
     /// Whether it is still moving now (its owner asks for frames).
     #[must_use]
     pub fn is_moving(&self) -> bool {
-        self.presence.is_moving(crate::time::now())
+        self.presence.is_moving(crate::motion::frame_now())
     }
 
     /// How open it is drawn now, `0..=1`.
     #[must_use]
     pub fn progress(&self) -> f64 {
-        self.presence.progress(crate::time::now())
+        self.presence.progress(crate::motion::frame_now())
     }
 
     /// The pose of `surface` now, coming from `anchor`: the summoning

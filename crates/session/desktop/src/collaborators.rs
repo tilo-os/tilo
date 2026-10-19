@@ -372,7 +372,7 @@ impl CollaboratorsOverlay {
             }
             self.shown_expanded = wanted;
         }
-        if self.shown_expanded.is_none() && !self.reveal.is_visible(ui::time::now()) {
+        if self.shown_expanded.is_none() && !self.reveal.is_visible(ui::motion::frame_now()) {
             self.opened = None;
         }
     }
@@ -408,7 +408,7 @@ impl CollaboratorsOverlay {
             heading_h * ui::num::f64_of_usize(shown_changes) + control + f64::from(spacing.s2)
         };
         let revealed = ui::motion::Disclose::reveal(
-            self.reveal.progress(ui::time::now()),
+            self.reveal.progress(ui::motion::frame_now()),
             self.details_height,
         )
         .height;

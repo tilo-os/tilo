@@ -185,6 +185,7 @@ impl DrillDepth {
     }
 
     /// Follow the stack to `level`. Deeper is an enter, shallower an exit.
+    #[track_caller]
     pub fn go(
         &mut self,
         level: usize,
@@ -209,12 +210,14 @@ impl DrillDepth {
     }
 
     /// Release a swipe at `velocity` (levels per second) toward `level`.
+    #[track_caller]
     pub fn release(&mut self, level: usize, velocity: f64, motion: EffectiveMotion, now: Instant) {
         let timing = Drill::SPEC.timing(Direction::Exit, motion, MotionSource::Gesture);
         self.depth.release(level_f64(level), velocity, timing, now);
     }
 
     /// The drawn depth at `now`.
+    #[track_caller]
     pub fn get(&self, now: Instant) -> f64 {
         self.depth.get(now)
     }
@@ -224,6 +227,7 @@ impl DrillDepth {
         self.depth.target()
     }
 
+    #[track_caller]
     pub fn is_moving(&self, now: Instant) -> bool {
         self.depth.is_moving(now)
     }
@@ -313,6 +317,7 @@ impl Default for Extent {
 impl Extent {
     /// Follow `to`. The first extent is taken as it is: nothing grows on
     /// first paint.
+    #[track_caller]
     pub fn follow(&mut self, to: f64, motion: EffectiveMotion, source: MotionSource, now: Instant) {
         if !self.known {
             self.known = true;
@@ -330,6 +335,7 @@ impl Extent {
         self.value.snap(to);
     }
 
+    #[track_caller]
     pub fn get(&self, now: Instant) -> f64 {
         self.value.get(now)
     }
@@ -338,6 +344,7 @@ impl Extent {
         self.value.target()
     }
 
+    #[track_caller]
     pub fn is_moving(&self, now: Instant) -> bool {
         self.value.is_moving(now)
     }
@@ -442,6 +449,7 @@ impl<K: Clone + PartialEq> CrossFade<K> {
     }
 
     /// Show `next`; a no-op when it is already shown.
+    #[track_caller]
     pub fn show(&mut self, next: K, motion: EffectiveMotion, source: MotionSource, now: Instant) {
         if next == self.shown {
             return;
@@ -466,6 +474,7 @@ impl<K: Clone + PartialEq> CrossFade<K> {
     }
 
     /// The outgoing content and its opacity, while it still shows.
+    #[track_caller]
     pub fn outgoing(&self, now: Instant) -> Option<(&K, f32)> {
         if !self.progress.is_moving(now) {
             return None;
@@ -478,10 +487,12 @@ impl<K: Clone + PartialEq> CrossFade<K> {
     }
 
     /// The incoming (shown) content's opacity.
+    #[track_caller]
     pub fn incoming(&self, now: Instant) -> f32 {
         unit_opacity(self.progress.get(now))
     }
 
+    #[track_caller]
     pub fn is_moving(&self, now: Instant) -> bool {
         self.progress.is_moving(now)
     }
@@ -1005,6 +1016,7 @@ impl Default for Feedback {
 
 impl Feedback {
     /// Turn the feedback on or off at `now`.
+    #[track_caller]
     pub fn set(&mut self, on: bool, motion: EffectiveMotion, now: Instant) {
         if on {
             self.level.snap(1.0);
@@ -1015,10 +1027,12 @@ impl Feedback {
     }
 
     /// How strongly the tint shows at `now`, `0..=1`.
+    #[track_caller]
     pub fn level(&self, now: Instant) -> f32 {
         unit_opacity(self.level.get(now))
     }
 
+    #[track_caller]
     pub fn is_moving(&self, now: Instant) -> bool {
         self.level.is_moving(now)
     }
@@ -1039,6 +1053,7 @@ pub struct Speaking {
 
 impl Speaking {
     /// Whether they are heard at `now`.
+    #[track_caller]
     pub fn set(&mut self, speaking: bool, motion: EffectiveMotion, now: Instant) {
         if motion.reduced() && !speaking {
             self.level = Feedback::default();
@@ -1048,10 +1063,12 @@ impl Speaking {
     }
 
     /// How strongly the ring shows at `now`, `0..=1`.
+    #[track_caller]
     pub fn level(&self, now: Instant) -> f32 {
         self.level.level(now)
     }
 
+    #[track_caller]
     pub fn is_moving(&self, now: Instant) -> bool {
         self.level.is_moving(now)
     }
@@ -1103,6 +1120,7 @@ impl Attention {
     const PULSE: f64 = 0.06;
 
     /// Refuse: shake sideways (or flash, under reduced motion).
+    #[track_caller]
     pub fn refuse(&mut self, motion: EffectiveMotion, now: Instant) {
         if motion.reduced() {
             self.flash(motion, now);
@@ -1119,6 +1137,7 @@ impl Attention {
     }
 
     /// Pulse once: up by 6 % and back (or flash, under reduced motion).
+    #[track_caller]
     pub fn pulse(&mut self, motion: EffectiveMotion, now: Instant) {
         if motion.reduced() {
             self.flash(motion, now);
@@ -1130,6 +1149,7 @@ impl Attention {
         self.amount.release(0.0, kick, Timing::Spring(spring), now);
     }
 
+    #[track_caller]
     fn flash(&mut self, motion: EffectiveMotion, now: Instant) {
         self.tint.snap(1.0);
         let base = SpringSpec::settling_within(motion.tokens().durations.base());
@@ -1137,20 +1157,24 @@ impl Attention {
     }
 
     /// The shake's horizontal offset at `now`, in px.
+    #[track_caller]
     pub fn offset(&self, now: Instant) -> Vec2 {
         Vec2::new(self.amount.get(now), 0.0)
     }
 
     /// The pulse's scale at `now` (1 at rest).
+    #[track_caller]
     pub fn scale(&self, now: Instant) -> f64 {
         1.0 + self.amount.get(now)
     }
 
     /// The reduced-motion tint at `now`, `0..=1`.
+    #[track_caller]
     pub fn tint(&self, now: Instant) -> f32 {
         unit_opacity(self.tint.get(now))
     }
 
+    #[track_caller]
     pub fn is_moving(&self, now: Instant) -> bool {
         self.amount.is_moving(now) || self.tint.is_moving(now)
     }

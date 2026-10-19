@@ -4448,7 +4448,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // reduce-motion. Its dwell is a wait: the loop sleeps until the
         // reveal is due (`scheduled_deadline`) and paints once then.
         let tooltip_reveal = app.input.tooltip_host.reveal_at();
-        let tooltip_pending = tooltip_reveal.is_some_and(|at| at <= crate::time::now());
+        let tooltip_pending = tooltip_reveal.is_some_and(|at| at <= crate::motion::frame_now());
         if tooltip_pending {
             request_primary_redraw();
         }

@@ -299,7 +299,7 @@ impl ChatApp {
         ui::widget::AvatarFace::new(&name, user)
             .presence(self.identity_colour(user))
             .presence_ring()
-            .speaking(self.speaking.level(user, ui::time::now()))
+            .speaking(self.speaking.level(user, ui::motion::frame_now()))
             .paint(ctx, rect);
     }
 
@@ -1265,12 +1265,16 @@ impl ChatApp {
             ui::image_store::paint_image_cover(scene, tf, rect, img, radius);
             // Over a picture, the tile's edge rings in their colour while
             // they talk, as their face does without one.
-            let speaking = self.speaking.level(&p.user, ui::time::now());
+            let speaking = self.speaking.level(&p.user, ui::motion::frame_now());
             ui::presence::paint_speaking_ring(
                 scene,
                 tf,
                 RoundedRect::from_rect(rect, radius),
-                theme.tokens.colors.presence.of(self.identity_colour(&p.user)),
+                theme
+                    .tokens
+                    .colors
+                    .presence
+                    .of(self.identity_colour(&p.user)),
                 speaking,
                 theme,
             );
