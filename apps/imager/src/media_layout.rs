@@ -5,13 +5,15 @@ pub use imager_backend::media_layout::{
     DATA_PARTITION_NAME, DATA_PARTITION_TYPE, MediaPartitionBinding, binding, provision,
 };
 #[cfg(any(test, feature = "installation"))]
-use std::{fs::File, io};
+use std::fs::File;
+#[cfg(feature = "installation")]
+use std::io;
 #[cfg(all(test, feature = "native-capture-qualification"))]
 mod native_capacity_tests;
 #[cfg(test)]
 pub(crate) mod tests;
 
-#[cfg(any(test, feature = "installation"))]
+#[cfg(feature = "installation")]
 pub(crate) use imager_backend::media_layout::PreparedLayout;
 
 #[cfg(feature = "installation")]
@@ -31,7 +33,7 @@ pub(crate) fn prepare(
         crate::setup::portable_home_media::payload_capacity_for_free_bytes,
     )
 }
-#[cfg(test)]
+#[cfg(all(test, feature = "installation"))]
 pub(crate) fn prepare_expected(
     image: &File,
     target: &File,
