@@ -277,6 +277,10 @@ fn a_room_holds_files_when_an_app_or_an_index_kept_any() {
     )
     .unwrap();
     std::fs::create_dir_all(home.path().join("so.tilo.notes").join("rooms")).unwrap();
+    // A data home keeps plain files beside its directories (the desktop's
+    // recently-used list): no room index can be below one. Counting one as
+    // holding files kept every duplicate on the first computer repaired.
+    std::fs::write(home.path().join("recently-used.xbel"), b"<xbel/>").unwrap();
     assert!(!room_holds_files(home.path(), empty));
     assert!(room_holds_files(home.path(), apps));
     assert!(room_holds_files(home.path(), index));
@@ -284,4 +288,34 @@ fn a_room_holds_files_when_an_app_or_an_index_kept_any() {
         room_holds_files(&home.path().join("missing"), empty),
         "a data home that cannot be read keeps everything"
     );
+}
+
+#[test]
+fn every_workspace_named_for_the_join_says_why_it_stays() {
+    let desktop = desktop();
+    let judged = judge_slots(&desktop.tree, &[desktop.anchor()], PERSON);
+    let verdict = |id: WorkspaceId| {
+        judged
+            .iter()
+            .find(|(judged, _, _)| *judged == id)
+            .map(|(_, _, verdict)| *verdict)
+    };
+    assert_eq!(verdict(desktop.keeper), Some(Err(Kept::Keeper)));
+    assert!(
+        desktop
+            .duplicates
+            .iter()
+            .all(|id| verdict(*id) == Some(Ok(())))
+    );
+    // A window, a member, someone present, a second strip, a renamed strip,
+    // someone else's, a grant to a person.
+    for id in &desktop.held[..7] {
+        assert_eq!(verdict(*id), Some(Err(Kept::NotEmpty)));
+    }
+    // A held record, another device's authority.
+    for id in &desktop.held[7..] {
+        assert_eq!(verdict(*id), Some(Err(Kept::Named)));
+    }
+    assert_eq!(verdict(desktop.home), None, "not named for the join");
+    assert_eq!(verdict(desktop.unrelated), None, "not named for the join");
 }
