@@ -2434,7 +2434,7 @@ start_qemu() { printf '%s' "$1"; }
                 Qemu.screenshot(&vm, Path::new("/tmp/out/boot.png"))
                     .unwrap()
                     .display(),
-                "TILO_SSH_PORT=2223 TILO_RUN=/tmp/out bash os/dev/vm.sh shot boot"
+                "TILO_SSH_PORT=2223 bash -c 'image=$(bash os/dev/vm.sh shot \"tilo-vm-shot-$$\") && mv -- \"$image\" \"$1\"' tilo-vm-shot /tmp/out/boot.png"
             );
             assert!(Qemu.destroy(&vm).is_empty());
             assert_eq!(
@@ -2574,6 +2574,7 @@ start_qemu() { printf '%s' "$1"; }
             let entry = VmEntry {
                 template: Some("Tilo Dev".into()),
                 disk: Some(disk.clone()),
+                key: Some("/keys/tilo-vm".into()),
                 ..entry()
             };
             let vm = Vm {
@@ -2598,7 +2599,13 @@ start_qemu() { printf '%s' "$1"; }
                 });
                 let in_domain = std::fs::read_to_string(domain_xml_path(&disk))
                     .is_ok_and(|xml| xml.contains("io.systemd.credential"));
-                let passes_key = in_args || in_domain;
+                // QEMU's boot script receives the key at each start instead.
+                let at_start = a.start(&vm).iter().any(|c| {
+                    c.env
+                        .iter()
+                        .any(|(name, _)| name == "TILO_VM_ROOT_KEY_FILE")
+                });
+                let passes_key = in_args || in_domain || at_start;
                 assert_eq!(caps.credentials.is_some(), passes_key, "{name} credentials");
                 assert_eq!(
                     caps.control.is_some(),
