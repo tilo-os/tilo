@@ -417,7 +417,10 @@ mod tests {
             let m = sample_model();
             let snap = m.selected_snapshot().unwrap();
             // San Francisco now_hour = 14.
-            assert_eq!(snap.hourly[0].hour_label(), "14");
+            assert_eq!(
+                snap.hourly[0].hour_label(),
+                ui::format::time(&chrono::NaiveTime::from_hms_opt(14, 0, 0).unwrap())
+            );
         }
         // Case `daily_dates_are_clean_sequence`.
         {

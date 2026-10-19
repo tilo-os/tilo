@@ -843,8 +843,8 @@ fn reading_tiles(snap: &WeatherSnapshot, units: Units, with_sun: bool) -> Vec<Ti
             .note(uv_word(cur.uv_index)),
     ];
     if with_sun && let Some(today) = snap.daily.first() {
-        tiles.push(Tile::new("Sunrise", hhmm(&today.sunrise)));
-        tiles.push(Tile::new("Sunset", hhmm(&today.sunset)));
+        tiles.push(Tile::new("Sunrise", clock_label(&today.sunrise)));
+        tiles.push(Tile::new("Sunset", clock_label(&today.sunset)));
     }
     tiles
 }
@@ -1316,6 +1316,15 @@ fn air_tiles(aq: &AirQuality) -> Vec<Tile> {
 
 pub(super) fn hhmm(iso: &str) -> String {
     iso.get(11..16).unwrap_or("--:--").to_string()
+}
+
+/// An ISO local time ("2026-06-30T07:40") as the person's clock shows it:
+/// "07:40" or "7:40 AM", like every other time on the desktop.
+pub(crate) fn clock_label(iso: &str) -> String {
+    iso.get(11..16)
+        .and_then(|clock| chrono::NaiveTime::parse_from_str(clock, "%H:%M").ok())
+        .map(|time| ui::format::time(&time))
+        .unwrap_or_default()
 }
 
 /// Parse an "HH:MM" clock string into minutes since local midnight.
