@@ -138,6 +138,11 @@ pub struct Status {
 /// One theme being written.
 #[derive(Model, Debug, Clone, PartialEq)]
 #[model(check = Theme::admitted)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each bool is one independent switch of the theme document the editor writes; \
+              folding them into a state enum would make combinations a person can set unrepresentable"
+)]
 pub struct Theme {
     /// Name
     #[model(label)]

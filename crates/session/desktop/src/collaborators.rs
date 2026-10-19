@@ -492,34 +492,22 @@ impl CollaboratorsOverlay {
         self.rows.clear();
         self.headings.clear();
         let bleed = ui::chrome::row_bleed(theme);
-        let mut y = self.body.y0;
+        // The exposure notice, when there is one, heads the list.
         self.exposure = if exposure_h > 0.0 {
-            let rect = Rect::new(
+            Rect::new(
                 self.body.x0 - bleed,
-                y,
+                self.body.y0,
                 self.body.x1 + bleed,
-                y + exposure_h,
-            );
-            y += exposure_h;
-            rect
+                self.body.y0 + exposure_h,
+            )
         } else {
             Rect::ZERO
         };
-        let follow_w = text_width(text, &t("people-panel-follow"), theme).max(text_width(
-            text,
-            &t("people-panel-stop-following"),
-            theme,
-        )) + 2.0 * f64::from(spacing.s3);
-        let changes_w =
-            text_width(text, &t("people-panel-changes"), theme) + 2.0 * f64::from(spacing.s3);
-        let join_w = text_width(text, &t("people-panel-join"), theme) + 2.0 * f64::from(spacing.s3);
+        let mut y = self.body.y0 + exposure_h.max(0.0);
+        let widths = ButtonWidths::measure(text, theme);
         // Join (where anyone has a call to join), Wave and Follow sit in the
         // row's trailing slot, inside its disclosure chevron when it has one.
-        let any_join = model.rows.iter().any(|row| row.join.is_some());
-        self.trailing_w = follow_w + TRAILING_GAP + control;
-        if any_join {
-            self.trailing_w += TRAILING_GAP + join_w;
-        }
+        self.trailing_w = widths.trailing(model.rows.iter().any(|row| row.join.is_some()), control);
         // Follow stands in one column down the list: where any row has a
         // chevron, every row keeps its place free.
         let any_disclosure = model.rows.iter().any(|row| !row.recent.is_empty());
@@ -543,31 +531,11 @@ impl CollaboratorsOverlay {
                 let Some(row) = model.rows.get(index) else {
                     continue;
                 };
-                let (follow, wave) =
-                    self.trailing_slots(text, theme, rect, (&row.label, any_disclosure), follow_w);
+                let (mut place, follow_right) =
+                    self.row_place(text, theme, (index, rect), row, any_disclosure, widths);
                 // The open part's lines end where Follow ends.
-                let line_right = follow.x1 + bleed;
-                let join = if row.join.is_some() {
-                    Rect::new(
-                        wave.x0 - TRAILING_GAP - join_w,
-                        wave.y0,
-                        wave.x0 - TRAILING_GAP,
-                        wave.y1,
-                    )
-                } else {
-                    Rect::ZERO
-                };
-                let follow = if row.followable { follow } else { Rect::ZERO };
-                let wave = if row.is_agent { Rect::ZERO } else { wave };
+                let line_right = follow_right + bleed;
                 y += row_h;
-                let mut place = RowPlace {
-                    index,
-                    rect,
-                    follow,
-                    wave,
-                    join,
-                    ..RowPlace::default()
-                };
                 if open_index == Some(index) {
                     place.details = Rect::new(self.body.x0, y, self.body.x1, y + revealed);
                     // Under the name: each change a line of its own, then
@@ -584,13 +552,58 @@ impl CollaboratorsOverlay {
                         .collect();
                     let link_top = y + self.details_height - control - f64::from(spacing.s2);
                     let link_x = column - f64::from(spacing.s3);
-                    place.changes =
-                        Rect::new(link_x, link_top, link_x + changes_w, link_top + control);
+                    place.changes = Rect::new(
+                        link_x,
+                        link_top,
+                        link_x + widths.changes,
+                        link_top + control,
+                    );
                     y += revealed;
                 }
                 self.rows.push(place);
             }
         }
+    }
+
+    /// The row `index` at `rect` with its trailing buttons: Join where the
+    /// person has a call to join, Follow where they can be followed, Wave
+    /// for a person (never an agent). Also where Follow's slot ends, whether
+    /// or not it shows.
+    fn row_place(
+        &self,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        (index, rect): (usize, Rect),
+        row: &RosterRow,
+        any_disclosure: bool,
+        widths: ButtonWidths,
+    ) -> (RowPlace, f64) {
+        let (follow, wave) = self.trailing_slots(
+            text,
+            theme,
+            rect,
+            (&row.label, any_disclosure),
+            widths.follow,
+        );
+        let join = if row.join.is_some() {
+            Rect::new(
+                wave.x0 - TRAILING_GAP - widths.join,
+                wave.y0,
+                wave.x0 - TRAILING_GAP,
+                wave.y1,
+            )
+        } else {
+            Rect::ZERO
+        };
+        let place = RowPlace {
+            index,
+            rect,
+            follow: if row.followable { follow } else { Rect::ZERO },
+            wave: if row.is_agent { Rect::ZERO } else { wave },
+            join,
+            ..RowPlace::default()
+        };
+        (place, follow.x1)
     }
 
     /// Follow and Wave in the trailing slot of the row labelled `label` at
@@ -1832,6 +1845,42 @@ struct RowsPlan<'p> {
     shown_changes: usize,
     revealed: f64,
     exposure_h: f64,
+}
+
+/// The widths of a row's text buttons, each its label plus its padding:
+/// Follow (wide enough for either of its labels), the changes link and Join.
+#[derive(Clone, Copy)]
+struct ButtonWidths {
+    follow: f64,
+    changes: f64,
+    join: f64,
+}
+
+impl ButtonWidths {
+    fn measure(text: &mut TextRenderer, theme: &Theme) -> Self {
+        let pad = 2.0 * f64::from(theme.tokens.spacing.s3);
+        let follow = text_width(text, &t("people-panel-follow"), theme).max(text_width(
+            text,
+            &t("people-panel-stop-following"),
+            theme,
+        ));
+        Self {
+            follow: follow + pad,
+            changes: text_width(text, &t("people-panel-changes"), theme) + pad,
+            join: text_width(text, &t("people-panel-join"), theme) + pad,
+        }
+    }
+
+    /// The width a row's trailing slot keeps: Follow and Wave (a `control`
+    /// square), and Join where any row has a call to join (`any_join`).
+    fn trailing(self, any_join: bool, control: f64) -> f64 {
+        let join = if any_join {
+            TRAILING_GAP + self.join
+        } else {
+            0.0
+        };
+        self.follow + TRAILING_GAP + control + join
+    }
 }
 
 #[cfg(test)]

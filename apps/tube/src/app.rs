@@ -710,8 +710,8 @@ impl TubeApp {
     }
 
     /// Open on the results for `query`, as typing it into the search field
-    /// and pressing Enter does: a launch from desktop search ("Search
-    /// YouTube for cats"). The search runs on the first frame, once the
+    /// and pressing Enter does: a launch from desktop search (`Search
+    /// YouTube for cats`). The search runs on the first frame, once the
     /// window can be woken by its results.
     #[must_use]
     pub fn searching(self, query: &str) -> Self {
