@@ -95,7 +95,11 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
             updated_at_unix: 1_760_000_000,
             ..crate::model::Listing::default()
         },
-        id: format!("so.tilo.{}", name.to_ascii_lowercase()),
+        // The real package ids, so each app wears its own desktop glyph.
+        id: match name {
+            "Files" => "so.tilo.file-explorer".to_owned(),
+            _ => format!("so.tilo.{}", name.to_ascii_lowercase()),
+        },
         name: name.into(),
         description: description.into(),
         tagline: match name {

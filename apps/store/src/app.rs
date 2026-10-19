@@ -811,7 +811,7 @@ impl StoreApp {
                 self.focus_detail("so.tilo.notes");
                 self.technical_details_open = scenario == Some("detail-technical");
             }
-            Some("detail-update") => self.focus_detail("so.tilo.files"),
+            Some("detail-update") => self.focus_detail("so.tilo.file-explorer"),
             Some("detail-flatpak") => self.focus_detail("org.inkscape.Inkscape"),
             Some("flatpak-detail") => self.focus_detail("org.gnome.Chess"),
             Some("flatpak-installed") => self.focus_detail("org.videolan.VLC"),
