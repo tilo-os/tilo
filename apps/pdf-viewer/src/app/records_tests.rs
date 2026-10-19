@@ -452,7 +452,7 @@ fn exports_are_deterministic_and_carry_page_operations() {
         let Some(mut app) = tests::open_settled(&path) else {
             break 'phase;
         };
-        let mut state = ui::State::new();
+        let mut state = crate::scenarios::record_state();
         tests::settle_record(&mut app, &mut state);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.recompute_regions();
@@ -575,7 +575,7 @@ fn exports_are_deterministic_and_carry_page_operations() {
         let Some(mut app) = tests::open_settled(&path) else {
             break 'phase;
         };
-        let mut state = ui::State::new();
+        let mut state = crate::scenarios::record_state();
         tests::settle_record(&mut app, &mut state);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.recompute_regions();

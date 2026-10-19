@@ -19,7 +19,7 @@ fn links_fixture() -> std::path::PathBuf {
 /// engine on this host.
 fn open_links() -> Option<(PdfApp, ui::State)> {
     let mut app = tests::open_settled(links_fixture())?;
-    let mut state = ui::State::new();
+    let mut state = crate::scenarios::record_state();
     tests::settle_record(&mut app, &mut state);
     app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
     app.recompute_regions();

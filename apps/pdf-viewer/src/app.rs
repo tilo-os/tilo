@@ -5876,7 +5876,7 @@ mod tests {
         {
             let (_dir, a, _b) = two_documents();
             let mut app = PdfApp::empty();
-            let mut st = ui::State::new();
+            let mut st = crate::scenarios::record_state();
             app.open_chosen(&a);
             settle_record(&mut app, &mut st);
             assert!(app.has_document);
@@ -6025,7 +6025,7 @@ mod tests {
     #[test]
     fn opening_seeds_the_record_once_not_every_frame() {
         let mut app = crate::scenarios::sample_reader();
-        let mut st = ui::State::new();
+        let mut st = crate::scenarios::record_state();
         sync_fixture(&mut app, &mut st);
         assert!(
             PdfMarkup::of(&st.doc).page_plan_seeded,
@@ -6277,7 +6277,7 @@ mod tests {
             let (mut a, mut state_a) = app_with_state();
             state_a.doc.commit();
             let base = state_a.doc.save();
-            let mut state_b = ui::State::new();
+            let mut state_b = crate::scenarios::record_state();
             state_b.doc = AutoCommit::load(&base).expect("clone shared base");
             let (mut b, _) = app_with_state();
 
@@ -6477,7 +6477,7 @@ mod tests {
         let Some(mut app) = open_raster_sample() else {
             return;
         };
-        let mut state = ui::State::new();
+        let mut state = crate::scenarios::record_state();
         settle_record(&mut app, &mut state);
         app.perform_action(
             &mut Edits::lend(&mut state.doc),
@@ -6521,7 +6521,7 @@ mod tests {
         eprintln!("phase drive_import_unavailable_shot");
         {
             let mut app = crate::scenarios::sample_reader();
-            let mut state = ui::State::new();
+            let mut state = crate::scenarios::record_state();
             app.sync_settled(&mut state.doc, &state.root);
             app.perform_action(
                 &mut Edits::lend(&mut state.doc),
@@ -6569,7 +6569,7 @@ mod tests {
             // --- exact 50 / 100 / 200 % zoom, each a live frame + shot. ---
             let mut app = framed_at_zoom(
                 app,
-                ui::State::new(),
+                crate::scenarios::record_state(),
                 0.5,
                 Some("/tmp/pdf_repro/zoom_50.png"),
             );
@@ -6772,7 +6772,7 @@ mod tests {
             assert!(narrow.match_count() > 0, "find remains usable when compact");
 
             let loading = staged_empty("loading");
-            let loading_state = ui::State::new();
+            let loading_state = crate::scenarios::record_state();
             let loading = framed(
                 loading,
                 loading_state,
@@ -6788,14 +6788,14 @@ mod tests {
                 "a pending open is progress, not a duplicate Open action"
             );
             let error = staged_empty("error");
-            let error_state = ui::State::new();
+            let error_state = crate::scenarios::record_state();
             let error = framed(error, error_state, 1280.0, 800.0, Some(&shot("error.png")));
             assert!(
                 error.canvas_rect.height() > 700.0,
                 "the persistent error keeps the full empty-state canvas"
             );
             let narrow_error = staged_empty("error");
-            let narrow_error_state = ui::State::new();
+            let narrow_error_state = crate::scenarios::record_state();
             framed(
                 narrow_error,
                 narrow_error_state,
@@ -6850,7 +6850,7 @@ mod tests {
             let Some(app) = open_raster_sample() else {
                 break 'phase;
             };
-            let mut app = framed(app, ui::State::new(), 1280.0, 800.0, None);
+            let mut app = framed(app, crate::scenarios::record_state(), 1280.0, 800.0, None);
 
             // --- search a word and shoot the hit over glyphs. ---
             let word = {
@@ -6907,7 +6907,7 @@ mod tests {
             let p_reopen = shot("real_reopened_saved.png");
             framed(
                 app2,
-                ui::State::new(),
+                crate::scenarios::record_state(),
                 1280.0,
                 800.0,
                 Some(p_reopen.as_str()),
@@ -8376,7 +8376,7 @@ mod tests {
             let Some(mut app) = open_raster_sample() else {
                 break 'phase;
             };
-            let mut st = ui::State::new();
+            let mut st = crate::scenarios::record_state();
             let theme = Theme::dark();
             let (w, h) = (1280.0f64, 800.0f64);
 
@@ -8468,7 +8468,7 @@ mod tests {
             let Some(mut app) = open_raster_sample() else {
                 break 'phase;
             };
-            let mut st = ui::State::new();
+            let mut st = crate::scenarios::record_state();
             let theme = Theme::dark();
             let (w, h) = (1280.0f64, 800.0f64);
             let mut tr = TextRenderer::new();
@@ -8552,7 +8552,7 @@ mod tests {
     /// Lay the reader out at 100 %, then switch to `zoom` without drawing, so
     /// the next `rasterize_visible` is the first frame at that zoom.
     fn zoom_without_frame(app: PdfApp, zoom: f64) -> Framed<PdfApp> {
-        let mut app = framed_at_zoom(app, ui::State::new(), 1.0, None);
+        let mut app = framed_at_zoom(app, crate::scenarios::record_state(), 1.0, None);
         rezoom_without_frame(&mut app, zoom);
         app
     }
@@ -8687,7 +8687,7 @@ mod tests {
         eprintln!("phase the_owner_worker_fills_a_zoomed_viewport_with_tiles");
         'phase: {
             let mut app = PdfApp::empty();
-            let mut st = ui::State::new();
+            let mut st = crate::scenarios::record_state();
             app.queue_worker_open(std::path::Path::new(LATIN_PDF));
             let deadline = tilo_test_env::hang_deadline();
             while app.pending_open.is_some() && ui::time::now() < deadline {
@@ -8820,7 +8820,7 @@ mod tests {
             let Some(mut app) = open_raster_sample() else {
                 break 'phase;
             };
-            let mut st = ui::State::new();
+            let mut st = crate::scenarios::record_state();
 
             // A press before the page's text layer is here asks the worker
             // for it rather than extracting it on the UI thread.
@@ -8888,7 +8888,7 @@ mod tests {
             let Some(mut app) = open_raster_sample() else {
                 break 'phase;
             };
-            let mut st = ui::State::new();
+            let mut st = crate::scenarios::record_state();
 
             // The text layer comes straight from pdfium's glyph geometry.
             let layer = text_layer(&mut app, &mut st, 1);
@@ -9131,7 +9131,7 @@ mod tests {
     /// seeded and laid out so `current_page` and region rects are valid.
     fn open_laid_out_sample() -> Option<(PdfApp, ui::State)> {
         let mut app = open_raster_sample()?;
-        let mut st = ui::State::new();
+        let mut st = crate::scenarios::record_state();
         settle_record(&mut app, &mut st);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.recompute_regions();

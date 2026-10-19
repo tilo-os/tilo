@@ -207,11 +207,22 @@ pub fn sample_review() -> Vec<Edit<PdfMarkup>> {
     ]
 }
 
+/// A brand-new markup record, as a host makes one: its genesis, at the
+/// storage version the reader reads (a bare document reads as version 1,
+/// which the reader refuses until it is migrated).
+#[cfg(test)]
+pub(crate) fn record_state() -> ui::State {
+    let mut state = ui::State::new();
+    <crate::markup::PdfMarkup as ui::tilo_resource::Resource>::initialize(&mut state.doc)
+        .expect("the genesis writes");
+    state
+}
+
 /// A document holding the demonstration review, as its actions write it:
 /// what a test of the reader starts from.
 #[cfg(test)]
 pub(crate) fn sample_state() -> ui::State {
-    let mut state = ui::State::new();
+    let mut state = record_state();
     for edit in sample_review() {
         let action = Invoke::from(edit).build(0).expect("the review builds");
         ui::tilo_actions::Action::apply(&action, &mut state.doc).expect("the review applies");
