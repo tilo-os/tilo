@@ -24,10 +24,9 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
-use ui::tokens::colors::PresenceHue;
 use ui::widget::{
     Button, ButtonFace, ButtonRole, ChipFace, ChipLead, ChipStyle, ControlSize, SegmentedFace,
-    SegmentedStyle, ToggleGroup, Tone, Widget,
+    SegmentedStyle, ToggleGroup, Widget,
 };
 
 use crate::app::{ChatApp, Hit};
@@ -38,6 +37,8 @@ use crate::paint::{elide, line_in, line_of, push_clip, text, width_of};
 /// membership (not hardcoded). The host (this peer) is listed first.
 struct Participant {
     user: String,
+    /// The call hears them now: their face rings.
+    talking: bool,
     muted: bool,
     audio_only: bool,
     sharing: bool,
@@ -232,6 +233,12 @@ impl ChatApp {
         // Host = this peer.
         out.push(Participant {
             user: self.me.id.clone(),
+            talking: self
+                .native_voice
+                .snapshot
+                .speaking
+                .iter()
+                .any(|person| self.is_me(person)),
             muted: self.call.muted,
             audio_only: self.call.audio_only,
             sharing: self.call.sharing,
@@ -242,6 +249,7 @@ impl ChatApp {
             }
             out.push(Participant {
                 user: m.user.clone(),
+                talking: m.talking,
                 muted: m.muted,
                 audio_only: m.audio_only,
                 sharing: m.sharing,
@@ -255,6 +263,34 @@ impl ChatApp {
     fn participants_should_show(&self, n: usize) -> bool {
         self.call.participants_expanded
             && (crate::call::CallState::auto_participants_expanded(n) || n <= 12)
+    }
+
+    /// Follow who the call hears with each face's speaking ring, once per
+    /// frame before anything paints a face.
+    pub(crate) fn reconcile_speaking(&mut self, theme: &Theme) {
+        if !self.call.active {
+            self.speaking.clear();
+            return;
+        }
+        let heard = self
+            .call_participants()
+            .into_iter()
+            .filter(|p| p.talking && !p.muted)
+            .map(|p| p.user)
+            .collect();
+        self.speaking
+            .reconcile(heard, theme.motion(), ui::time::now());
+    }
+
+    /// A person's face in the call: their colour as a ring, and their
+    /// speaking ring while the call hears them.
+    pub(crate) fn paint_call_face(&self, ctx: &mut PaintCtx<'_>, rect: Rect, user: &str) {
+        let name = self.user_name(user);
+        ui::widget::AvatarFace::new(&name, user)
+            .presence(self.identity_colour(user))
+            .presence_ring()
+            .speaking(self.speaking.level(user, ui::time::now()))
+            .paint(ctx, rect);
     }
 
     /// Sample the participant reveal once per frame. Every geometry consumer
@@ -277,10 +313,7 @@ impl ChatApp {
             let widths: Vec<f64> = parts
                 .iter()
                 .skip(1)
-                .map(|p| {
-                    let name = self.user_name(&p.user);
-                    ChipFace::intrinsic_width(&name, Self::chip_lead(p), false, tr, theme)
-                })
+                .map(|p| self.huddle_face_width(p, tr, theme))
                 .collect();
             self.huddle_chip_rows = if widths.is_empty() {
                 0
@@ -318,13 +351,25 @@ impl ChatApp {
         [left, self.chrome.header_h + top, right, bottom]
     }
 
-    /// A participant chip's lead: a muted microphone while they are muted.
-    fn chip_lead(p: &Participant) -> ChipLead {
-        if p.muted {
-            ChipLead::Glyph(Icon::MicOff)
+    /// The widest a participant's name stands beside their face.
+    fn huddle_name_max(theme: &Theme) -> f64 {
+        8.0 * f64::from(theme.tokens.metrics.icon_lg)
+    }
+
+    /// One participant beside the host in the call window: their face, their
+    /// name and, while muted, a muted microphone.
+    fn huddle_face_width(&self, p: &Participant, tr: &mut TextRenderer, theme: &Theme) -> f64 {
+        let sp = &theme.tokens.spacing;
+        let face = ui::widget::AvatarSize::Small.side(theme);
+        let name = self.user_name(&p.user);
+        let name_w =
+            width_of(tr, &name, &theme.text(TextRole::Label)).min(Self::huddle_name_max(theme));
+        let muted = if p.muted {
+            f64::from(sp.s1) + f64::from(theme.tokens.metrics.icon_sm)
         } else {
-            ChipLead::None
-        }
+            0.0
+        };
+        face + f64::from(sp.s2) + name_w + muted + f64::from(sp.s2)
     }
 
     /// The floating overlay's home rect (video) for the current drag offset.
@@ -402,7 +447,7 @@ impl ChatApp {
         };
         let cx = rect.center().x;
         let mut ctx = PaintCtx::new(scene, tf, tr, theme);
-        self.paint_avatar(
+        self.paint_call_face(
             &mut ctx,
             Rect::from_center_size(Point::new(cx, block.disc_cy), (block.side, block.side)),
             user,
@@ -604,9 +649,10 @@ impl ChatApp {
         }
     }
 
-    /// One chip per person beside the host, in their presence colour, with
-    /// a muted microphone when they are muted; wrapping to the panel width
-    /// in rows under the connection line.
+    /// One face per person beside the host, ringed in their colour and
+    /// ringing while they talk, with their name and a muted microphone while
+    /// they are muted; wrapping to the panel width in rows under the
+    /// connection line.
     fn draw_huddle_chips(&self, paint: PaintCtx<'_>, status: Rect, parts: &[Participant]) {
         let PaintCtx {
             scene,
@@ -614,31 +660,57 @@ impl ChatApp {
             text: tr,
             theme,
         } = paint;
+        let sp = &theme.tokens.spacing;
         let gap = self.chrome.call_gap;
         let h = self.chrome.call_chip_h;
+        let face = ui::widget::AvatarSize::Small.side(theme);
+        let icon = f64::from(theme.tokens.metrics.icon_sm);
+        let style = theme.text(TextRole::Label);
         let (x0, x1) = (status.x0, status.x1);
         let mut x = x0;
         let mut y = status.y1 + gap;
         for p in parts.iter().skip(1) {
-            let name = self.user_name(&p.user);
-            let lead = Self::chip_lead(p);
-            let w = ChipFace::intrinsic_width(&name, lead, false, tr, theme).min(x1 - x0);
+            let w = self.huddle_face_width(p, tr, theme).min(x1 - x0);
             if x + w > x1 && x > x0 {
                 x = x0;
                 y += h + gap;
             }
-            ChipFace::new(Rect::new(x, y, x + w, y + h), &name)
-                .lead(lead)
-                .style(ChipStyle::Tinted(self.presence_tone(&p.user)))
-                .paint(scene, tf, tr, theme);
+            let cy = y + h / 2.0;
+            let mut ctx = PaintCtx::new(scene, tf, tr, theme);
+            self.paint_call_face(
+                &mut ctx,
+                Rect::from_center_size(Point::new(x + face / 2.0, cy), (face, face)),
+                &p.user,
+            );
+            let name_x = x + face + f64::from(sp.s2);
+            let muted_w = if p.muted {
+                f64::from(sp.s1) + icon
+            } else {
+                0.0
+            };
+            let room = (x + w - f64::from(sp.s2) - muted_w - name_x).max(0.0);
+            let name = elide(ctx.text, &self.user_name(&p.user), &style, room);
+            let name_w = width_of(ctx.text, &name, &style);
+            line_in(
+                &mut ctx,
+                &name,
+                &style,
+                theme.text_primary,
+                name_x,
+                Rect::new(name_x, y, name_x + room, y + h),
+                room + 1.0,
+            );
+            if p.muted {
+                let ix = name_x + name_w + f64::from(sp.s1);
+                Icon::MicOff.draw(
+                    scene,
+                    tf,
+                    Rect::new(ix, cy - icon / 2.0, ix + icon, cy + icon / 2.0),
+                    theme.text_dim,
+                );
+            }
             x += w + gap;
         }
-    }
-
-    /// The tone that marks `id` as a person: the hue of their own colour.
-    fn presence_tone(&self, id: &str) -> Tone {
-        PresenceHue::nearest(self.identity_colour(id))
-            .map_or_else(|| Tone::of_identity(id), Tone::Presence)
     }
 
     /// Controls row, evenly distributed across the panel so it never
@@ -805,7 +877,8 @@ impl ChatApp {
         // This slot only ever holds a genuinely decoded frame (the native
         // voice path carries no video today, so it stays empty).
         if let Some(img) = self.remote_screens.get(sharer) {
-            ui::image_store::paint_image_cover(scene, tf, rect, img, radius);
+            // All of a shared screen shows, letterboxed: nothing is cut off.
+            ui::image_store::paint_image_contain(scene, tf, rect, img, radius);
         } else {
             let icon_side = 3.0 * f64::from(theme.tokens.metrics.icon_lg);
             let head_style = theme.text(TextRole::Heading);
@@ -1106,7 +1179,29 @@ impl ChatApp {
         // tile. This only ever holds a genuinely decoded frame — never a
         // fabricated picture (the native voice path carries no video today).
         if !is_stream && let Some(img) = self.remote_frames.get(&p.user) {
-            ui::image_store::paint_image_cover(scene, tf, rect, img, self.tile_radius(theme));
+            let radius = self.tile_radius(theme);
+            ui::image_store::paint_image_cover(scene, tf, rect, img, radius);
+            // Over a picture, the tile's edge rings in their colour while
+            // they talk, as their face does without one.
+            let speaking = self.speaking.level(&p.user, ui::time::now());
+            if speaking > 0.0 {
+                let ring = 2.0 * f64::from(theme.tokens.metrics.chrome_rule_px);
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(ring),
+                    tf,
+                    theme
+                        .tokens
+                        .colors
+                        .presence
+                        .of(self.identity_colour(&p.user))
+                        .multiply_alpha(speaking),
+                    None,
+                    &RoundedRect::from_rect(
+                        rect.inset(-ring / 2.0),
+                        (radius - ring / 2.0).max(0.0),
+                    ),
+                );
+            }
         } else {
             let caption = if is_stream {
                 "Audio stream"
@@ -1899,6 +1994,7 @@ mod tests {
     fn participant(audio_only: bool) -> Participant {
         Participant {
             user: "u_x".into(),
+            talking: false,
             muted: false,
             audio_only,
             sharing: false,

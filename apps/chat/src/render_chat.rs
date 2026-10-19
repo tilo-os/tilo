@@ -399,15 +399,6 @@ impl ChatApp {
         }
     }
 
-    /// Paint `id`'s avatar (their picture or initials in their colour) into
-    /// `rect`.
-    pub(crate) fn paint_avatar(&self, ctx: &mut PaintCtx<'_>, rect: Rect, id: &str) {
-        let name = self.user_name(id);
-        AvatarFace::new(&name, id)
-            .presence(self.identity_colour(id))
-            .paint(ctx, rect);
-    }
-
     /// Paint `m`'s author through the shared author helper: the avatar (an
     /// agent's mark, a bot's tile) into `mark`, the name from `name_at`, and
     /// for a bot its `BOT` chip, which is never elided. Nothing goes past
@@ -610,23 +601,70 @@ impl ChatApp {
         } else {
             side.y1
         };
-        self.draw_sidebar_tree(
+        // The tree scrolls in what the footer leaves: it stops above the
+        // footer and slides under the header, never through either.
+        let viewport = Rect::new(side.x0, side.y0, side.x1, bottom.max(side.y0));
+        self.nav_viewport = viewport;
+        let content_h = self.nav_content_h;
+        self.nav_scroll = self
+            .nav_scroll
+            .min((content_h - viewport.height()).max(0.0))
+            .max(0.0);
+        let first_hit = hits.len();
+        crate::paint::push_clip(scene, tf, viewport);
+        let end = self.draw_sidebar_tree(
             PaintCtx::new(scene, tf, tr, theme),
             presence,
-            Rect::new(side.x0, side.y0, side.x1, bottom),
+            Rect::new(
+                viewport.x0,
+                viewport.y0 - self.nav_scroll,
+                viewport.x1,
+                f64::INFINITY,
+            ),
             hits,
         );
+        self.nav_content_h = end - (viewport.y0 - self.nav_scroll);
+        // Rows fade out at an edge more of the list scrolls in from, so a
+        // row cut by the footer reads as more to come, not as a collision.
+        let ground = theme.tokens.colors.surfaces.content;
+        if self.nav_scroll > 0.5 {
+            ui::surface::content_edge_fade(
+                scene,
+                tf,
+                viewport,
+                ui::surface::ContentEdge::Top,
+                ground,
+            );
+        }
+        if self.nav_scroll + viewport.height() < self.nav_content_h - 0.5 {
+            ui::surface::content_edge_fade(
+                scene,
+                tf,
+                viewport,
+                ui::surface::ContentEdge::Bottom,
+                ground,
+            );
+        }
+        scene.pop_layer();
+        // Rows scrolled out of the viewport are not there to point at.
+        let mut tree_hits = hits.split_off(first_hit);
+        tree_hits.retain_mut(|(rect, _)| {
+            *rect = rect.intersect(viewport);
+            rect.width() > 0.0 && rect.height() > 0.0
+        });
+        hits.extend(tree_hits);
     }
 
     /// The channel tree: the uncategorised channels first, then each category
     /// as a collapsible section with a "new channel" action.
+    /// `side` starts at the tree's (scrolled) top; returns where it ends.
     fn draw_sidebar_tree(
         &mut self,
         paint: PaintCtx<'_>,
         presence: &PresenceCtx,
         side: Rect,
         hits: &mut Vec<(Rect, Hit)>,
-    ) {
+    ) -> f64 {
         let PaintCtx {
             scene,
             transform: tf,
@@ -702,7 +740,7 @@ impl ChatApp {
                 );
             }
         }
-        self.draw_agent_navigation(PaintCtx::new(scene, tf, tr, theme), side, y, first, hits);
+        self.draw_agent_navigation(PaintCtx::new(scene, tf, tr, theme), side, y, first, hits)
     }
 
     /// Keep private history reachable in the channel tree, before a long
@@ -763,9 +801,9 @@ impl ChatApp {
         mut y: f64,
         first: bool,
         hits: &mut Vec<(Rect, Hit)>,
-    ) {
+    ) -> f64 {
         if self.room_agents.is_empty() || y > side.y1 {
-            return;
+            return y;
         }
         let PaintCtx {
             scene,
@@ -819,6 +857,7 @@ impl ChatApp {
             ChatApp::push_hit(hits, row, Hit::Agent(agent.clone()));
             y += row_h;
         }
+        y
     }
 
     /// The channels of one category (`""` for the uncategorised group), each
@@ -942,15 +981,19 @@ impl ChatApp {
             theme,
         } = paint;
         let row_h = nav_row_height(theme);
+        let now = ui::time::now();
         for person in self.voice_people(channel_id) {
             if y > side.y1 {
                 break;
             }
             let row = Rect::new(side.x0, y, side.x1, y + row_h);
             let name = self.user_name(&person);
-            let face = NavRowFace::new(row, &name)
-                .depth(1)
-                .avatar(AvatarFace::new(&name, &person).presence(self.identity_colour(&person)));
+            let face = NavRowFace::new(row, &name).depth(1).avatar(
+                AvatarFace::new(&name, &person)
+                    .presence(self.identity_colour(&person))
+                    .presence_ring()
+                    .speaking(self.speaking.level(&person, now)),
+            );
             chrome::paint_nav_row(scene, tf, tr, theme, &face);
             y += row_h;
         }
@@ -1477,16 +1520,33 @@ impl ChatApp {
             theme,
         } = paint;
         // Calls happen in voice channels, joined from the sidebar; while
-        // one is on, the way back to its window stands here.
+        // one is on, the header says so: the call's channel, standing on
+        // the selection lift, opens it, and Leave sits beside it.
         let mut right = right;
         if self.call.active {
-            let call_label = crate::i18n::t("chat-header-call-open");
-            let probe = ButtonFace::new(Rect::ZERO, &call_label);
-            let call_w = probe.intrinsic_width(tr, theme);
+            let gap = f64::from(theme.tokens.spacing.s1);
+            let leave = square(Point::new(right - control / 2.0, cy), control);
+            let leave_label = crate::i18n::t("chat-call-leave-action");
+            Button::paint(
+                scene,
+                tf,
+                tr,
+                theme,
+                &ButtonFace::icon_only(leave, Icon::PhoneOff, &leave_label)
+                    .role(ButtonRole::Destructive)
+                    .hovered(self.hovered(leave)),
+            );
+            ChatApp::push_hit(hits, leave, Hit::CallLeave);
+            let name = self.channel(&self.call.channel).map_or_else(
+                || crate::i18n::t("chat-header-call-open"),
+                |c| c.name.clone(),
+            );
+            let probe = ButtonFace::new(Rect::ZERO, &name).icon(Icon::Volume2);
+            let call_w = probe.intrinsic_width(tr, theme).min(6.0 * control);
             let call = Rect::new(
-                right - call_w,
+                leave.x0 - gap - call_w,
                 cy - control / 2.0,
-                right,
+                leave.x0 - gap,
                 cy + control / 2.0,
             );
             Button::paint(
@@ -1494,7 +1554,10 @@ impl ChatApp {
                 tf,
                 tr,
                 theme,
-                &ButtonFace::new(call, &call_label).hovered(self.hovered(call)),
+                &ButtonFace::new(call, &name)
+                    .icon(Icon::Volume2)
+                    .toggled(true)
+                    .hovered(self.hovered(call)),
             );
             ChatApp::push_hit(hits, call, Hit::StartCall);
             right = call.x0 - f64::from(theme.tokens.spacing.s2);

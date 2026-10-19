@@ -141,9 +141,78 @@ impl CallState {
     }
 }
 
+/// Each call participant's speaking ring, following who the call hears:
+/// a ring is there the moment someone is heard and eases out when they
+/// pause ([`ui::motion::Speaking`]). Settled quiet rings are dropped, so a
+/// silent call costs nothing.
+#[derive(Debug, Default)]
+pub struct SpeakingRings {
+    rings: std::collections::BTreeMap<String, ui::motion::Speaking>,
+    heard: std::collections::BTreeSet<String>,
+    /// Some ring is still easing: the next frame draws it further.
+    pub animating: bool,
+}
+
+impl SpeakingRings {
+    /// Follow `heard`, the people the call hears now, at `now`.
+    pub fn reconcile(
+        &mut self,
+        heard: std::collections::BTreeSet<String>,
+        motion: ui::tokens::EffectiveMotion,
+        now: ui::time::Instant,
+    ) {
+        if heard != self.heard {
+            for person in heard.difference(&self.heard) {
+                self.rings
+                    .entry(person.clone())
+                    .or_default()
+                    .set(true, motion, now);
+            }
+            for person in self.heard.difference(&heard) {
+                if let Some(ring) = self.rings.get_mut(person) {
+                    ring.set(false, motion, now);
+                }
+            }
+            self.heard = heard;
+        }
+        let heard = &self.heard;
+        self.rings
+            .retain(|person, ring| heard.contains(person) || ring.is_moving(now));
+        self.animating = self.rings.values().any(|ring| ring.is_moving(now));
+    }
+
+    /// How strongly `person`'s ring shows at `now`, `0..=1`.
+    pub fn level(&self, person: &str, now: ui::time::Instant) -> f32 {
+        self.rings.get(person).map_or(0.0, |ring| ring.level(now))
+    }
+
+    /// Everyone's rings gone at once, as when the call ends.
+    pub fn clear(&mut self) {
+        self.rings.clear();
+        self.heard.clear();
+        self.animating = false;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_face_rings_while_its_person_is_heard_and_settles_to_nothing() {
+        let motion = ui::tokens::EffectiveMotion::new(ui::tokens::Motion::default(), false);
+        let now = ui::time::now();
+        let mut rings = SpeakingRings::default();
+        rings.reconcile(["ada".to_owned()].into(), motion, now);
+        assert_eq!(rings.level("ada", now), 1.0, "heard: ringed at once");
+        assert_eq!(rings.level("bo", now), 0.0);
+        rings.reconcile(std::collections::BTreeSet::new(), motion, now);
+        assert!(rings.animating, "a pause eases out");
+        let later = now + std::time::Duration::from_secs(1);
+        rings.reconcile(std::collections::BTreeSet::new(), motion, later);
+        assert_eq!(rings.level("ada", later), 0.0);
+        assert!(!rings.animating, "a quiet call costs no frames");
+    }
 
     #[test]
     fn native_voice_starts_unjoined_and_each_join_is_muted_audio_only() {
