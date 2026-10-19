@@ -146,6 +146,39 @@ impl Migration {
     }
 }
 
+/// Seal every `auth` object nested anywhere in a legacy JSON value.
+fn redact(
+    value: &mut serde_json::Value,
+    store: &SecretStore,
+    migration: &mut Migration,
+) -> Result<bool, &'static str> {
+    let mut changed = false;
+    match value {
+        serde_json::Value::Object(fields) => {
+            for (key, value) in fields {
+                if key == "auth" {
+                    if let Ok(auth) = serde_json::from_value::<Auth>(value.clone()) {
+                        let sealed = migration.seal(&auth, store)?;
+                        if sealed != auth {
+                            *value = serde_json::to_value(sealed).map_err(|_| UNAVAILABLE)?;
+                            changed = true;
+                        }
+                    }
+                } else {
+                    changed |= redact(value, store, migration)?;
+                }
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                changed |= redact(value, store, migration)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(changed)
+}
+
 /// Rewrite every visible legacy JSON auth field, including old record blobs.
 /// Automerge history is intentionally not described as erased by this operation.
 fn migrate_document(
@@ -155,37 +188,6 @@ fn migrate_document(
     migration: &mut Migration,
 ) -> Result<(), &'static str> {
     use automerge::{ReadDoc, Value};
-    fn redact(
-        value: &mut serde_json::Value,
-        store: &SecretStore,
-        migration: &mut Migration,
-    ) -> Result<bool, &'static str> {
-        let mut changed = false;
-        match value {
-            serde_json::Value::Object(fields) => {
-                for (key, value) in fields {
-                    if key == "auth" {
-                        if let Ok(auth) = serde_json::from_value::<Auth>(value.clone()) {
-                            let sealed = migration.seal(&auth, store)?;
-                            if sealed != auth {
-                                *value = serde_json::to_value(sealed).map_err(|_| UNAVAILABLE)?;
-                                changed = true;
-                            }
-                        }
-                    } else {
-                        changed |= redact(value, store, migration)?;
-                    }
-                }
-            }
-            serde_json::Value::Array(values) => {
-                for value in values {
-                    changed |= redact(value, store, migration)?;
-                }
-            }
-            _ => {}
-        }
-        Ok(changed)
-    }
     let mut objects = vec![root.clone()];
     let mut updates = Vec::new();
     while let Some(object) = objects.pop() {

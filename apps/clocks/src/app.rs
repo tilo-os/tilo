@@ -163,7 +163,11 @@ pub(crate) fn city_time(zone: &str, now: chrono::DateTime<Utc>) -> (String, Vec<
             there.date_naive(),
         )));
     }
-    let difference = there.offset().fix().local_minus_utc() - here.offset().fix().local_minus_utc();
+    let difference = there
+        .offset()
+        .fix()
+        .local_minus_utc()
+        .saturating_sub(here.offset().fix().local_minus_utc());
     facts.push(Fact::text(offset_from_here(difference)));
     (ui::clock::time_of_day(&there), facts)
 }
