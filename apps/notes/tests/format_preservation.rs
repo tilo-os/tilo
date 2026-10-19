@@ -317,18 +317,22 @@ fn block_kind_changes_preserve_marks_text_and_shaped_geometry() {
             edited: Some(edited.timestamp()),
         };
         let lines = edited_only.labels_at(now);
-        assert_eq!(lines, vec!["Edited 17 Nov 2023".to_string()]);
+        assert_eq!(lines, vec!["Edited Nov 17, 2023".to_string()]);
         let both = NoteDates {
             created: Some(created.timestamp()),
             edited: edited_only.edited,
         };
         let detailed = both.display_labels(false);
         assert_eq!(detailed.len(), 2);
-        assert!(detailed.iter().all(|label| label.contains("Nov 2023, ")));
+        assert!(
+            detailed
+                .iter()
+                .all(|label| label.contains("Nov 14, 2023, ") || label.contains("Nov 17, 2023, "))
+        );
         let lines = both.labels_at(now);
         assert_eq!(
             lines,
-            vec!["Created 14 Nov 2023, edited 17 Nov 2023".to_string()],
+            vec!["Created Nov 14, 2023, edited Nov 17, 2023".to_string()],
             "created and edited share one header line in the reader's local time"
         );
         assert!(
@@ -344,7 +348,7 @@ fn block_kind_changes_preserve_marks_text_and_shaped_geometry() {
         };
         assert_eq!(
             today.labels_at(now),
-            vec!["Created today at 10:42".to_string()]
+            vec!["Created today at 10:42 AM".to_string()]
         );
     }
 }

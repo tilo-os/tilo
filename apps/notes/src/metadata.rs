@@ -292,11 +292,11 @@ mod tests {
         };
         let cest = chrono::FixedOffset::east_opt(2 * 3600).unwrap();
         let labels = dates.display_labels_in(false, &cest);
-        assert!(labels[1].contains("2026-10-04 05:54"), "{labels:?}");
+        assert!(labels[1].contains("Oct 4, 2026, 5:54"), "{labels:?}");
         assert!(!labels[1].contains("UTC"), "{labels:?}");
         let compact =
             dates.display_labels_in(true, &chrono::FixedOffset::east_opt(-5 * 3600).unwrap());
-        assert!(compact[0].contains("2026-10-03"), "{compact:?}");
+        assert!(compact[0].contains("Oct 3, 2026"), "{compact:?}");
     }
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
