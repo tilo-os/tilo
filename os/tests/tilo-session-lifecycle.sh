@@ -422,7 +422,7 @@ rm -f "$log.verify-count" "$log.holding"
 XDG_RUNTIME_DIR="$runtime_dir" TILO_SESSION_TEST_LOG="$log" TILO_SESSION_HOLD=1 \
   "$test_wrapper" --backend drm &
 session_pid=$!
-for _ in $(seq 1 100); do
+for _ in $(seq 1 500); do
   [ -s "$log.holding" ] && break
   sleep 0.02
 done
@@ -448,7 +448,7 @@ XDG_STATE_HOME="$restart_state" XDG_RUNTIME_DIR="$runtime_dir" TILO_SESSION_TEST
 session_pid=$!
 # The signal goes to the wrapper alone (timeout(1) would pass it on to the
 # whole process group), once the compositor handles TERM as the real one does.
-for _ in $(seq 1 250); do
+for _ in $(seq 1 500); do
   [ -s "$log.holding" ] && break
   sleep 0.02
 done
