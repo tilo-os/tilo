@@ -7,6 +7,8 @@ untranslatable identifier to the screen. Keys passed straight to a resolver
 `locales/en-US.ftl`; Settings also routes keys through conditionals and
 tables, so its key-shaped literals in a known namespace are checked too.
 Lookups fall back to the toolkit's catalogue, so its messages count for all.
+A key passed to another crate's resolver (`tilo_desktop::i18n::t_args`) is
+checked in that crate's catalogue, the one it is looked up in.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ MESSAGE = re.compile(r"^([A-Za-z][A-Za-z0-9_-]*)\s*=", re.MULTILINE)
 IDENTIFIER = re.compile(r"[A-Za-z][A-Za-z0-9_-]*\Z")
 KEY = re.compile(r"[A-Za-z][A-Za-z0-9_]*(?:-[A-Za-z0-9_]+)+\Z")
 RESOLVER = re.compile(r"\b(?:t|t_args|tr|tr_args)\s*\(")
+QUALIFIED = re.compile(r"\b([A-Za-z_]\w*)::i18n::(?:t|t_args|tr|tr_args)\s*\(")
 # These argument positions are stable machine identifiers, never Fluent IDs.
 MACHINE_CALL = re.compile(
     r"(?:\bButton::new|\bdevice_read::thread|\.(?:with_id|thread_name|name))\s*\("
@@ -46,12 +49,26 @@ def contains(ranges: list[tuple[int, int]], offset: int) -> bool:
     return any(start <= offset < end for start, end in ranges)
 
 
-def used_keys(text: str, namespaces: set[str]) -> list[tuple[str, int]]:
-    """Production copy references, without comments/test or control IDs."""
+def foreign_calls(code: str, modules: dict[str, Path]) -> list[tuple[re.Match[str], Path]]:
+    """Resolver calls qualified with another crate's `i18n` module."""
+    return [(call, modules[call.group(1)]) for call in QUALIFIED.finditer(code)
+            if call.group(1) in modules]
+
+
+def used_keys(text: str, namespaces: set[str],
+              foreign: dict[str, Path] | None = None) -> list[tuple[str, int]]:
+    """Production copy references, without comments/test or control IDs.
+
+    Keys passed to another crate's resolver (`foreign`) are that crate's, so
+    they are left to `foreign_keys`.
+    """
     code, literals = rust.lex(text)
     pruned = rust.strip_tests(text, code)
+    elsewhere = [first_argument(pruned.code, call.end())
+                 for call, _ in foreign_calls(pruned.code, foreign or {})]
     resolved = [first_argument(pruned.code, call.end())
                 for call in RESOLVER.finditer(pruned.code)]
+    resolved = [span for span in resolved if span not in elsewhere]
     machine = [first_argument(pruned.code, call.end())
                for call in MACHINE_CALL.finditer(pruned.code)]
     # Navigation slugs and control-ID pairs are passed separately from copy.
@@ -80,6 +97,8 @@ def used_keys(text: str, namespaces: set[str]) -> list[tuple[str, int]]:
         if (re.search(r"[=!]=\s*$", code[:literal.start])
                 or re.match(r"\s*[=!]=", code[literal.end:])):
             continue
+        if contains(elsewhere, literal.start):
+            continue
         if not direct and key.partition("-")[0] not in namespaces:
             continue
         if not direct and (contains(machine, literal.start)
@@ -87,6 +106,44 @@ def used_keys(text: str, namespaces: set[str]) -> list[tuple[str, int]]:
             continue
         found.append((key, rust.line_number(text, literal.start)))
     return found
+
+
+def foreign_keys(text: str, modules: dict[str, Path]) -> list[tuple[Path, str, int]]:
+    """Keys passed straight to another crate's resolver, with that crate."""
+    code, literals = rust.lex(text)
+    pruned = rust.strip_tests(text, code)
+    found = []
+    for call, crate in foreign_calls(pruned.code, modules):
+        start, end = first_argument(pruned.code, call.end())
+        for literal in literals:
+            if (start <= literal.start < end and not literal.byte
+                    and pruned.keeps(literal.start) and IDENTIFIER.fullmatch(literal.value)):
+                found.append((crate, literal.value, rust.line_number(text, literal.start)))
+    return found
+
+
+def i18n_modules(root: Path, crates: list[Path]) -> dict[str, Path]:
+    """Each crate whose `i18n` module resolves a catalogue, by library name.
+
+    A crate that re-exports another's `i18n` (`pub use other::{i18n, ..}`)
+    resolves through that crate's catalogue.
+    """
+    def library(crate: Path) -> str | None:
+        manifest = crate / "Cargo.toml"
+        if not manifest.is_file():
+            return None
+        found = re.search(r'^name\s*=\s*"([^"]+)"', manifest.read_text(), re.MULTILINE)
+        return found.group(1).replace("-", "_") if found else None
+
+    modules = {name: crate for crate in crates if (name := library(crate))}
+    for lib in sorted(root.glob("crates/*/*/src/lib.rs")) + sorted(root.glob("apps/*/src/lib.rs")):
+        name = library(lib.parents[1])
+        if name is None or name in modules:
+            continue
+        for use in re.finditer(r"\bpub use (\w+)::\{?([^;]*);", lib.read_text()):
+            if use.group(1) in modules and re.search(r"\bi18n\b", use.group(2)):
+                modules[name] = modules[use.group(1)]
+    return modules
 
 
 TOOLKIT = "crates/sdk/ui-core"
@@ -111,7 +168,9 @@ def copy_crates(root: Path) -> list[Path]:
 def missing_copy(root: Path) -> list[str]:
     toolkit = catalogues(root / TOOLKIT)
     errors = []
-    for crate in copy_crates(root):
+    crates = copy_crates(root)
+    modules = i18n_modules(root, crates)
+    for crate in crates:
         own = catalogues(crate)
         name = crate.relative_to(root).as_posix()
         shared = [catalogues(root / fallback) for fallback in FALLBACK.get(name, [])]
@@ -121,12 +180,19 @@ def missing_copy(root: Path) -> list[str]:
             # Settings' scenarios name capture-only states, not live panes.
             if indirect and path.name == "scenarios.rs":
                 continue
-            for key, line in used_keys(path.read_text(), namespaces):
+            text = path.read_text()
+            foreign = {name: other for name, other in modules.items() if other != crate}
+            for key, line in used_keys(text, namespaces, foreign):
                 for locale, keys in own.items():
                     if key in keys or key in toolkit.get(locale, toolkit["en-US"]):
                         continue
                     if not any(key in fallback.get(locale, ()) for fallback in shared):
                         errors.append(f"{path.relative_to(root)}:{line}: {locale} lacks {key}")
+            for other, key, line in foreign_keys(text, foreign):
+                for locale, keys in catalogues(other).items():
+                    if key not in keys and key not in toolkit.get(locale, toolkit["en-US"]):
+                        errors.append(f"{path.relative_to(root)}:{line}: {locale} lacks {key} "
+                                      f"({other.relative_to(root).as_posix()})")
     return errors
 
 

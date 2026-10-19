@@ -32,8 +32,6 @@ de-DE activity-task-run-executing glyph
 de-DE activity-task-run-planning glyph
 de-DE activity-task-unassigned-by glyph
 de-DE activity-tasks-subtitle glyph
-de-DE people-panel-following-activity glyph
-de-DE people-panel-own-status glyph
 de-DE search-window-close-group-detail glyph
 de-DE search-window-close-tab-detail glyph
 de-DE workspace-settings-agent-access-always glyph
@@ -75,8 +73,6 @@ en-US activity-task-run-executing glyph
 en-US activity-task-run-planning glyph
 en-US activity-task-unassigned-by glyph
 en-US activity-tasks-subtitle glyph
-en-US people-panel-following-activity glyph
-en-US people-panel-own-status glyph
 en-US search-window-close-group-detail glyph
 en-US search-window-close-tab-detail glyph
 en-US workspace-settings-agent-access-always glyph
