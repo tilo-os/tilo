@@ -59,12 +59,11 @@
 //                  the new host: the old state was never reused or handed to it
 //   stale-rejoined the old room's link once joined again: refused without a
 //                  join, the new membership kept
-//   pruned-membership
-//                  the host started again (not anew) with a one-minute prune
-//                  horizon (TILO_ROOMS_PRUNE_AFTER_MINS), and the person away
-//                  past it and its next prune: the host no longer has them.
-//                  The bare entry joins at the door exactly once, and the
-//                  desktop presents as the same person in the same room
+//   kept-membership
+//                  the host started again (not anew), and the person away
+//                  past the old prune passes: the host still has them. The bare entry joins at no door,
+//                  and the desktop presents as the same person in the same
+//                  room (membership persists; TILO_ROOMS_INACTIVE_AFTER_DAYS)
 //   removed-member the host started again with the person as one of the
 //                  room's moderators (TILO_ROOMS_MODERATORS: a moderator
 //                  removes the guests ranked below them); a second person
@@ -367,12 +366,11 @@ async function keptFor(browser, context, web, profile) {
   }
 }
 
-/** The prune horizon the pruned-membership check runs the host with, in
- * minutes, and how long it waits for the host to prune: the horizon, then
- * the next prune pass (the relay prunes at most once a minute, and a guest
- * it first sees on a pass is pruned two passes on), and a margin. */
-export const PRUNE_AFTER_MINS = 1;
-export const PRUNE_WAIT_MS = (2 * PRUNE_AFTER_MINS * 60 + 30) * 1000;
+/** How long the kept-membership check keeps the person away from the
+ * restarted host: past the hour-long horizon's old minute-long prune passes,
+ * twice, and a margin. A person away this long, or an hour, is still a
+ * member. */
+export const AWAY_MS = (2 * 60 + 30) * 1000;
 /** How long a removed person's open page is given to be refused by the host
  * and join again by itself before the check reloads it. */
 export const REMOVED_REFUSED_MS = 4 * 60 * 1000;
@@ -848,23 +846,23 @@ async function main() {
     if (staleAgainOpened.entry !== 'refused') await shoot('stale-rejoined', staleAgain);
     await staleAgain.close();
 
-    // pruned-membership: the same host started again (its room kept) with a
-    // short prune horizon, every tab of the person closed, and the person
-    // away past it: the host prunes them.
+    // kept-membership: the same host started again (its room kept), every
+    // tab of the person closed, and the person away past its prune passes:
+    // they are still a member, and come back without joining again.
     const keptRoom = stack.room;
     await stack.stop();
-    stack = await startStack(options, ports, {fresh: false, env: {TILO_ROOMS_PRUNE_AFTER_MINS: String(PRUNE_AFTER_MINS)}});
-    await sleep(PRUNE_WAIT_MS);
+    stack = await startStack(options, ports, {fresh: false});
+    await sleep(AWAY_MS);
     const returning = await page(browser, person);
     const returned = await open(returning, `${web}/`, settleOptions);
-    keepLog('pruned-membership', returning);
-    const prunedJoins = joinsTo(returning.requests, api);
-    check('pruned-membership', stack.room === keptRoom && returned.entry === 'open' && returned.arrival === 'done'
-      && prunedJoins.length === 1 && prunedJoins[0].status === 200
+    keepLog('kept-membership', returning);
+    const keptJoins = joinsTo(returning.requests, api);
+    check('kept-membership', stack.room === keptRoom && returned.entry === 'open' && returned.arrival === 'done'
+      && keptJoins.length === 0
       && returned.membership?.userPublicKey === me && returned.membership?.room === keptRoom,
-    {entry: returned.entry, arrival: returned.arrival, joins: prunedJoins.map(j => j.status), membership: returned.membership,
+    {entry: returned.entry, arrival: returned.arrival, joins: keptJoins.map(j => j.status), membership: returned.membership,
       room: stack.room, keptRoom, status: returned.status, loading: returned.loading});
-    if (returned.entry !== 'open') await shoot('pruned-membership', returning);
+    if (returned.entry !== 'open') await shoot('kept-membership', returning);
     await returning.close();
 
     // removed-member: the host started again with the person as one of the

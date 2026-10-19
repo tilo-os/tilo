@@ -88,10 +88,11 @@ pub struct PersistentConfig {
     pub author_apps: Vec<String>,
     /// Seconds between resets of the seeded non-chat content; 0 never.
     pub reset_secs: u64,
-    /// Minutes a guest may be away (no session) before the relay removes
-    /// them from the room (`TILO_ROOMS_PRUNE_AFTER_MINS`); a guest who
-    /// comes back later joins through the door again as the same person.
-    pub prune_after_mins: u64,
+    /// Days a member may be away (no session) before their membership ends
+    /// (`TILO_ROOMS_INACTIVE_AFTER_DAYS`, 30 unless set); one who comes back
+    /// later joins through the door again as the same person. Membership
+    /// persists otherwise: an hour offline removes nobody.
+    pub inactive_after_days: u64,
     /// The room's owner root, mounted from the operator's encrypted secrets.
     pub root_file: PathBuf,
     /// The Discord bot token, when the bridge runs.
@@ -474,7 +475,7 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
         author_apps: author_apps(var, &seed_apps)?,
         seed_apps,
         reset_secs: parsed(var, "TILO_ROOMS_RESET_SECS", 21_600_u64)?,
-        prune_after_mins: prune_after_mins(var)?,
+        inactive_after_days: inactive_after_days(var)?,
         root_file: var("TILO_ROOMS_ROOT_FILE")
             .map_or_else(|| PathBuf::from("/run/secrets/room-root"), PathBuf::from),
         discord_token_file: var("TILO_ROOMS_DISCORD_TOKEN_FILE")
@@ -498,18 +499,26 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
     }))
 }
 
-/// The longest `TILO_ROOMS_PRUNE_AFTER_MINS` takes: a year.
-const MAX_PRUNE_AFTER_MINS: u64 = 365 * 24 * 60;
+/// The longest `TILO_ROOMS_INACTIVE_AFTER_DAYS` takes: ten years.
+const MAX_INACTIVE_AFTER_DAYS: u64 = 3650;
 
-/// `TILO_ROOMS_PRUNE_AFTER_MINS`: minutes without a session after which
-/// the relay removes a guest, 60 unless set.
-fn prune_after_mins(var: &impl Fn(&str) -> Option<String>) -> Result<u64> {
-    let minutes = parsed(var, "TILO_ROOMS_PRUNE_AFTER_MINS", 60_u64)?;
+/// `TILO_ROOMS_INACTIVE_AFTER_DAYS`: days without a session after which a
+/// member's membership ends, 30 unless set. The hour-long horizon the room
+/// once removed guests after is gone: `TILO_ROOMS_PRUNE_AFTER_MINS` is
+/// refused, so a deployment that still sets it learns that it no longer
+/// does what it says.
+fn inactive_after_days(var: &impl Fn(&str) -> Option<String>) -> Result<u64> {
     ensure!(
-        (1..=MAX_PRUNE_AFTER_MINS).contains(&minutes),
-        "TILO_ROOMS_PRUNE_AFTER_MINS must be 1-{MAX_PRUNE_AFTER_MINS}"
+        var("TILO_ROOMS_PRUNE_AFTER_MINS").is_none(),
+        "TILO_ROOMS_PRUNE_AFTER_MINS is gone: membership persists, and \
+         TILO_ROOMS_INACTIVE_AFTER_DAYS (days, 30 unless set) is when a member away that long stops being one"
     );
-    Ok(minutes)
+    let days = parsed(var, "TILO_ROOMS_INACTIVE_AFTER_DAYS", 30_u64)?;
+    ensure!(
+        (1..=MAX_INACTIVE_AFTER_DAYS).contains(&days),
+        "TILO_ROOMS_INACTIVE_AFTER_DAYS must be 1-{MAX_INACTIVE_AFTER_DAYS}"
+    );
+    Ok(days)
 }
 
 /// The per-address join limits: guests' and spectators'.
@@ -901,31 +910,32 @@ mod tests {
         assert_eq!(off.persistent.unwrap().reset_secs, 0);
     }
 
+    // USER REQUIREMENT (2026-10-19): "Membership in a public room persists. A person who joined stays a member until they leave, are removed by the host, or have been inactive for 30 days (configurable on the host). Going offline for an hour must never remove anyone."
     #[test]
-    fn guests_are_pruned_after_an_hour_away_unless_the_operator_says_otherwise() {
+    fn membership_ends_after_thirty_days_away_unless_the_host_says_otherwise() {
         let base = [
             ("TILO_ROOMS_PERSISTENT", "plaza"),
             ("TILO_ROOMS_LOCAL", "1"),
         ];
         assert_eq!(
-            config(&base).unwrap().persistent.unwrap().prune_after_mins,
-            60
+            config(&base)
+                .unwrap()
+                .persistent
+                .unwrap()
+                .inactive_after_days,
+            30
         );
-        let soon = config(&[base[0], base[1], ("TILO_ROOMS_PRUNE_AFTER_MINS", "1")]).unwrap();
-        assert_eq!(soon.persistent.unwrap().prune_after_mins, 1);
-        let year = MAX_PRUNE_AFTER_MINS.to_string();
-        let late = config(&[base[0], base[1], ("TILO_ROOMS_PRUNE_AFTER_MINS", &year)]).unwrap();
-        assert_eq!(
-            late.persistent.unwrap().prune_after_mins,
-            MAX_PRUNE_AFTER_MINS
-        );
-        let past = (MAX_PRUNE_AFTER_MINS + 1).to_string();
+        let week = config(&[base[0], base[1], ("TILO_ROOMS_INACTIVE_AFTER_DAYS", "7")]).unwrap();
+        assert_eq!(week.persistent.unwrap().inactive_after_days, 7);
+        let past = (MAX_INACTIVE_AFTER_DAYS + 1).to_string();
         for bad in ["0", "-1", "soon", past.as_str()] {
             assert!(
-                config(&[base[0], base[1], ("TILO_ROOMS_PRUNE_AFTER_MINS", bad)]).is_err(),
+                config(&[base[0], base[1], ("TILO_ROOMS_INACTIVE_AFTER_DAYS", bad)]).is_err(),
                 "{bad}"
             );
         }
+        // The hour-long rule is gone, not silently ignored.
+        assert!(config(&[base[0], base[1], ("TILO_ROOMS_PRUNE_AFTER_MINS", "60")]).is_err());
     }
 
     #[test]
