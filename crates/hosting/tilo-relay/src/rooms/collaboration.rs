@@ -911,10 +911,11 @@ impl Rooms {
         .await
     }
 
-    /// Install a bot as a governed member of `room`, update its program, or
-    /// renew its delegation ([`WorkspaceMembershipCommand::InstallBot`],
-    /// [`WorkspaceMembershipCommand::RenewBot`]), as the room's
-    /// administrator. Every member reads and enforces the result, so it is
+    /// Install a bot as a governed member of `room`, update its program,
+    /// renew its delegation or uninstall it
+    /// ([`WorkspaceMembershipCommand::InstallBot`],
+    /// [`WorkspaceMembershipCommand::RenewBot`], `UninstallBot`), as the
+    /// room's administrator. Every member reads and enforces the result, so it is
     /// a governed change rather than this host's own state.
     ///
     /// # Errors
@@ -934,9 +935,12 @@ impl Rooms {
         command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
     ) -> Result<GovernanceCompletion, CollaborationError> {
         use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand as Command;
-        if !matches!(command, Command::InstallBot(_) | Command::RenewBot(_)) {
+        if !matches!(
+            command,
+            Command::InstallBot(_) | Command::RenewBot(_) | Command::UninstallBot { .. }
+        ) {
             return Err(CollaborationError::new(
-                "only installing or renewing a bot governs a bot",
+                "only installing, renewing or uninstalling a bot governs a bot",
             ));
         }
         let now = tilo_clock::unix_now_ns();
@@ -972,6 +976,25 @@ impl Rooms {
             now,
         )
         .await
+    }
+
+    /// The bots `room` asks its host to run, as its governance records
+    /// them now.
+    ///
+    /// # Errors
+    /// The room is not governed here.
+    pub async fn bot_requests(
+        &self,
+        room: &str,
+    ) -> Result<Vec<tilo_peer_state::RequestedBot>, CollaborationError> {
+        Ok(self
+            .room(room)
+            .await?
+            .lock()
+            .await
+            .peer()
+            .governance()
+            .bot_requests())
     }
 
     /// Installation `id` of `room` as its governance records it now: the

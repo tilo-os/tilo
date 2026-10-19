@@ -1020,6 +1020,16 @@ pub(crate) async fn run(
         &state,
     )
     .await?;
+    // Bots the room's members ask for, beside the operator's.
+    let requested =
+        tilo_relay::room_bots::requested::spawn(tilo_relay::room_bots::requested::Follower {
+            rooms: rooms.clone(),
+            room: room.clone(),
+            host: host_cert.clone(),
+            root: root.clone(),
+            state: state.clone(),
+            operator: bots.iter().map(|spec| spec.entry.clone()).collect(),
+        });
     let context = PersistentRoom {
         rooms,
         room,
@@ -1041,7 +1051,11 @@ pub(crate) async fn run(
         result = serve_operator(&context, &governance, &mut operator) => result,
         result = shutdown => result,
     };
-    for runner in moderator.into_iter().chain(runners) {
+    for runner in moderator
+        .into_iter()
+        .chain(runners)
+        .chain(std::iter::once(requested))
+    {
         runner.abort();
     }
     drop(context);
