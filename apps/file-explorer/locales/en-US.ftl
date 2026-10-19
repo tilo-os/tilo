@@ -112,7 +112,7 @@ files-property-history = History: { $versions } { $versions ->
    *[other] conflicts
 }
 files-properties-collab-summary = File and sharing details
-files-availability-title = Availability — { $name }
+files-availability-title = Availability of { $name }
 files-availability-title-short = Availability…
 files-not-stored = Not stored on this device
 files-partly-stored = Partly stored ({ $bytes } bytes)
@@ -203,7 +203,7 @@ files-grant-exhausted = exhausted
 files-no-expiry = no expiry
 files-expires = expires { $time }
 files-share-grant-line = { $subject }: { $permission }, { $status }, { $expiry }
-files-sharing-title = Sharing — { $name }
+files-sharing-title = Share { $name }
 files-certified-devices = { $person }, devices: { $devices }
 files-certified-device-detail = { $device }, key { $fingerprint }, { $capabilities }, issued { $issued }, { $expiry }
 files-device-cap-own = manages workspaces
@@ -242,7 +242,7 @@ files-conflict-line = Conflict { $conflict }: { $count } { $count ->
 }, { $state }
 files-conflict-resolve-hint = Resolve from the context menu: keep current or use other
 files-conflict-unsupported-hint = Keep both and Merge aren’t available for this file yet
-files-history-title = Version history — { $name }
+files-history-title = Version history of { $name }
 files-history-summary = { $versions } { $versions ->
     [one] version
    *[other] versions
@@ -258,12 +258,12 @@ files-keeping-current = Keeping the current version…
 files-applying-other = Applying the other version…
 files-merging-versions = Safely merging non-overlapping changes…
 files-merge-review-menu = Review merge
-files-merge-review-title = Review merge — { $name }
+files-merge-review-title = Review the merge of { $name }
 files-merge-review-summary = No changes have been made yet
 files-merge-review-checking = Comparing the two versions…
 files-merge-review-checking-detail = Nothing changes while this runs.
 files-merge-review-safe = Safe to merge
-files-merge-review-needs-review = Needs review — no merge will be applied
+files-merge-review-needs-review = Needs review. No merge will be applied.
 files-merge-review-unavailable = The versions can’t be compared right now. Refresh the file and compare them in Version history.
 files-merge-review-no-apply = Keep both, or choose one after comparing them.
 files-merge-review-incoming = Incoming revision from device { $device }
@@ -439,7 +439,7 @@ files-property-pages = Pages: { $count }
 files-property-codec = Codec: { $codec }
 files-property-container = Container: { $container }
 files-property-unknown = Unknown
-files-properties-title = Properties — { $name }
+files-properties-title = Properties of { $name }
 files-properties-summary = Filesystem metadata
 
 ## Ordinary operation results
@@ -648,7 +648,7 @@ files-open-with-selection-changed = The selected file is no longer available. Ch
 files-open-with-timeout = Opening the original file took too long. Try again.
 
 files-mounted-converted = Read-only converted cloud document
-files-mounted-source = { $source } · read-only converted view
+files-mounted-source = { $source }, a read-only converted view
 files-mounted-readonly = Read-only conversion
 files-mounted-open = Open read-only conversion
 files-mounted-copy = Create independent editable copy…

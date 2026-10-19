@@ -6033,7 +6033,7 @@ mod accessibility_tests {
     fn collaboration_sheet_is_a_focused_modal_semantic_subtree() {
         let (_home, mut widget) = empty_widget();
         widget.show_collab_panel(CollabPanel {
-            title: "Sharing — report.pdf".into(),
+            title: "Share report.pdf".into(),
             summary: "Shared with 2 people".into(),
             lines: vec!["Alice can view".into(), "Bob can edit".into()],
             action: None,
@@ -6041,7 +6041,7 @@ mod accessibility_tests {
 
         let dialog = Widget::accessibility(&widget).expect("open sheet has semantics");
         assert_eq!(dialog.role, Role::Dialog);
-        assert_eq!(dialog.name.as_deref(), Some("Sharing — report.pdf"));
+        assert_eq!(dialog.name.as_deref(), Some("Share report.pdf"));
         assert!(dialog.state.modal && dialog.state.focusable && dialog.state.focused);
         assert_eq!(dialog.children[0].role, Role::Heading { level: 2 });
         assert_eq!(dialog.children[1].role, Role::Paragraph);
