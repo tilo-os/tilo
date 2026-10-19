@@ -1504,21 +1504,7 @@ pub fn definition_launch_spec(definition: &'static ApplicationDefinition) -> Lau
 pub fn run<A: ResourceApp>() {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().skip(1).any(|arg| arg == SURFACE_FLAG) {
-        let code = match serde_json::to_string_pretty(&super::testing::surface_report::<A>()) {
-            Ok(report) => {
-                println!("{report}");
-                0
-            }
-            Err(error) => {
-                eprintln!("Error: {error}");
-                1
-            }
-        };
-        #[allow(
-            clippy::exit,
-            reason = "the surface report is the whole run of the binary"
-        )]
-        std::process::exit(code);
+        print_surface_report(&super::testing::surface_report::<A>());
     }
     if let Some(code) = run_helper::<A>(&args) {
         #[allow(
@@ -1528,6 +1514,29 @@ pub fn run<A: ResourceApp>() {
         std::process::exit(code);
     }
     crate::launch::run_or_exit(&launch_spec::<A>());
+}
+
+/// Print `report` and end the process: what `--surface` does. Not generic
+/// over the app, so the JSON printer is compiled once rather than in every
+/// app's `run`.
+#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
+#[inline(never)]
+fn print_surface_report(report: &serde_json::Value) -> ! {
+    let code = match serde_json::to_string_pretty(report) {
+        Ok(report) => {
+            println!("{report}");
+            0
+        }
+        Err(error) => {
+            eprintln!("Error: {error}");
+            1
+        }
+    };
+    #[allow(
+        clippy::exit,
+        reason = "the surface report is the whole run of the binary"
+    )]
+    std::process::exit(code);
 }
 
 /// The flag that makes an app's binary print its

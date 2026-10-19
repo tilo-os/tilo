@@ -1649,7 +1649,7 @@ impl<O: Serialize + serde::de::DeserializeOwned + Default + 'static> Model for S
     #[inline(never)]
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
         let text = String::load(doc, value, id)?;
-        serde_json::from_str::<serde_json::Value>(&text)
+        crate::__private::value_of_bytes(text.as_bytes())
             .and_then(Self::from_json_value)
             .map_err(|error| ModelError::invalid(error.to_string()))
     }

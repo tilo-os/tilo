@@ -224,12 +224,20 @@ impl ActionContext {
         kind: impl Into<String>,
         label: impl Into<String>,
     ) -> Self {
+        Self::of_resource(ActionResource {
+            id: id.into(),
+            kind: kind.into(),
+            label: label.into(),
+        })
+    }
+
+    /// [`Self::for_resource`] once its strings are made: not generic, so the
+    /// rest of the context is built by code compiled once rather than in
+    /// every crate that names a resource with `&str`s.
+    #[inline(never)]
+    fn of_resource(resource: ActionResource) -> Self {
         Self {
-            resource: Some(ActionResource {
-                id: id.into(),
-                kind: kind.into(),
-                label: label.into(),
-            }),
+            resource: Some(resource),
             ..Self::default()
         }
     }
