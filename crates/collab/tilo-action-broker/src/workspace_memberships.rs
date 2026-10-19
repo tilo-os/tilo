@@ -88,7 +88,9 @@ impl CapnpBrokerState {
             | WorkspaceMembershipCommand::UninstallBot { .. }
             | WorkspaceMembershipCommand::PauseBot { .. }
             | WorkspaceMembershipCommand::ResumeBot { .. }
-            | WorkspaceMembershipCommand::SetBotAppearance { .. } => {
+            | WorkspaceMembershipCommand::SetBotAppearance { .. }
+            | WorkspaceMembershipCommand::RequestBot(_)
+            | WorkspaceMembershipCommand::WithdrawBotRequest { .. } => {
                 let (action, argument) = bot_invocation(command)?;
                 (WORKSPACE.into(), action, Some(argument))
             }
@@ -567,6 +569,11 @@ fn bot_command(
         installation: tilo_peer_state::InstallationId,
         appearance: tilo_peer_state::AppearancePolicy,
     }
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Entry {
+        entry: String,
+    }
     fn read<T: serde::de::DeserializeOwned>(
         envelope: &InvocationEnvelope,
         name: &str,
@@ -607,6 +614,12 @@ fn bot_command(
                 appearance: input.appearance,
             }
         }
+        "request-bot" => WorkspaceMembershipCommand::RequestBot(read::<
+            tilo_peer_state::workspace_membership::BotRequest,
+        >(envelope, "bot request")?),
+        "withdraw-bot-request" => WorkspaceMembershipCommand::WithdrawBotRequest {
+            entry: read::<Entry>(envelope, "bot request")?.entry,
+        },
         _ => return Ok(None),
     }))
 }
@@ -759,6 +772,22 @@ fn bot_invocation(command: &WorkspaceMembershipCommand) -> Result<(&'static str,
             );
             ("set-bot-appearance", argument)
         }
+        WorkspaceMembershipCommand::RequestBot(request) => {
+            let argument = format!(
+                "{}{}",
+                tilo_actions::ARGUMENTS_JSON_PREFIX,
+                serde_json::json!({ "entry": request.entry, "version": request.version })
+            );
+            ("request-bot", argument)
+        }
+        WorkspaceMembershipCommand::WithdrawBotRequest { entry } => {
+            let argument = format!(
+                "{}{}",
+                tilo_actions::ARGUMENTS_JSON_PREFIX,
+                serde_json::json!({ "entry": entry })
+            );
+            ("withdraw-bot-request", argument)
+        }
         _ => return Err("not a bot command".into()),
     })
 }
@@ -833,6 +862,35 @@ fn bot_actions() -> Vec<PublishedAction> {
                 "own, or personas to post as other names",
             ),
         ],
+    ));
+    actions.push(membership_action(
+        WORKSPACE,
+        "request-bot",
+        "Workspace",
+        "Add a bot",
+        vec![
+            tilo_actions::ActionParam::required(
+                "entry",
+                tilo_actions::ParamType::Text,
+                "The bot's directory entry",
+            ),
+            tilo_actions::ActionParam::required(
+                "version",
+                tilo_actions::ParamType::Text,
+                "The listed version to run",
+            ),
+        ],
+    ));
+    actions.push(membership_action(
+        WORKSPACE,
+        "withdraw-bot-request",
+        "Workspace",
+        "Remove a bot",
+        vec![tilo_actions::ActionParam::required(
+            "entry",
+            tilo_actions::ParamType::Text,
+            "The bot's directory entry",
+        )],
     ));
     actions
 }
@@ -973,7 +1031,7 @@ mod tests {
                 assert_eq!(state.published_surfaces_generation(), 0);
                 state.refresh_workspace_membership_services().unwrap();
                 assert_eq!(state.published_surfaces_generation(), 1);
-                assert_eq!(membership_surface_counts(&state, &room), (1, 19));
+                assert_eq!(membership_surface_counts(&state, &room), (1, 21));
                 let mut expected = vec![
                     (WORKSPACE, "add-agent"),
                     (WORKSPACE, "grant-app-authorship"),
@@ -986,6 +1044,8 @@ mod tests {
                     (WORKSPACE, "pause-bot"),
                     (WORKSPACE, "resume-bot"),
                     (WORKSPACE, "set-bot-appearance"),
+                    (WORKSPACE, "request-bot"),
+                    (WORKSPACE, "withdraw-bot-request"),
                     (WORKSPACE, "create-task"),
                     (WORKSPACE, "queue-agent-task"),
                     ("desktop:tasks", "queue"),
@@ -1013,7 +1073,7 @@ mod tests {
                 }
                 state.refresh_workspace_membership_services().unwrap();
                 assert_eq!(state.published_surfaces_generation(), 2);
-                assert_eq!(membership_surface_counts(&state, &room), (1, 20));
+                assert_eq!(membership_surface_counts(&state, &room), (1, 22));
                 expected.push(("desktop:agent:scribe", "remove"));
                 assert_membership_action_set(&state, &room, &expected);
                 state.refresh_workspace_membership_services().unwrap();
@@ -1058,6 +1118,58 @@ mod tests {
                 .map(|value| format!("{}{}", tilo_actions::ARGUMENTS_JSON_PREFIX, value)),
             actor: "not-authority".into(),
             context: None,
+        }
+    }
+
+    #[test]
+    fn adding_and_removing_a_directory_bot_are_closed_commands() {
+        let request = envelope(
+            WORKSPACE,
+            "request-bot",
+            Some(serde_json::json!({"entry": "so.tilo.bots.standup", "version": "1.2.0"})),
+        );
+        let command = membership_command(&request).unwrap();
+        assert_eq!(
+            command,
+            WorkspaceMembershipCommand::RequestBot(
+                tilo_peer_state::workspace_membership::BotRequest {
+                    entry: "so.tilo.bots.standup".into(),
+                    version: "1.2.0".into(),
+                }
+            )
+        );
+        let (action, argument) = bot_invocation(&command).unwrap();
+        assert_eq!(action, "request-bot");
+        assert_eq!(
+            membership_command(&InvocationEnvelope {
+                argument: Some(argument),
+                ..request.clone()
+            })
+            .unwrap(),
+            command,
+            "the command travels as the arguments it is read from"
+        );
+        let withdraw = envelope(
+            WORKSPACE,
+            "withdraw-bot-request",
+            Some(serde_json::json!({"entry": "so.tilo.bots.standup"})),
+        );
+        assert_eq!(
+            membership_command(&withdraw).unwrap(),
+            WorkspaceMembershipCommand::WithdrawBotRequest {
+                entry: "so.tilo.bots.standup".into()
+            }
+        );
+        for forged in [
+            serde_json::json!({"entry": "so.tilo.bots.standup", "version": "1.2.0", "requested_by": "ada"}),
+            serde_json::json!({"entry": "../standup", "version": "1.2.0"}),
+            serde_json::json!({"entry": "so.tilo.bots.standup"}),
+        ] {
+            assert!(
+                membership_command(&envelope(WORKSPACE, "request-bot", Some(forged.clone())))
+                    .is_err(),
+                "{forged}"
+            );
         }
     }
 
