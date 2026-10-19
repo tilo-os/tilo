@@ -717,9 +717,15 @@ fn a_pair_let_go_stays_apart_until_mapped_again() {
 
 /// A guild from before a channel's kind and permission overwrites were
 /// values: each was one JSON string. Opened now, every channel reads as the
-/// bot observed it.
+/// bot observed it, whether it was stored at version 1 or already at 2.
 #[test]
 fn channels_kept_with_json_kinds_migrate_to_values() {
+    for version in [1, 2] {
+        json_kinds_migrate_from(version);
+    }
+}
+
+fn json_kinds_migrate_from(version: u32) {
     use ui::tilo_resource::{Slot, evolution, read_key};
     let mut bot = connected();
     let expected = bot.state().unwrap();
@@ -742,12 +748,17 @@ fn channels_kept_with_json_kinds_migrate_to_values() {
     Slot::Key(&root, evolution::VERSION_KEY)
         .remove(doc)
         .unwrap();
+    evolution::write_version(doc, version).unwrap();
     doc.commit();
     let mut old = doc.fork();
     assert!(
         evolution::read_checked::<Guild>(&old).is_err(),
-        "unmigrated"
+        "unmigrated from {version}"
     );
     assert!(evolution::migrate::<Guild>(&mut old).unwrap());
-    assert_eq!(evolution::read_checked::<Guild>(&old).unwrap(), expected);
+    assert_eq!(
+        evolution::read_checked::<Guild>(&old).unwrap(),
+        expected,
+        "from {version}"
+    );
 }
