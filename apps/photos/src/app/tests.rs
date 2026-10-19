@@ -558,7 +558,7 @@ fn date_index_follows_timeline_rows_boundaries_and_honest_labels() {
             "the newest day opens the timeline; the year change after it is a major boundary"
         );
         assert!(markers[0].1 < markers[1].1);
-        assert_eq!(timeline_date_label(&markers[0].0), "Feb 03, 2026");
+        assert_eq!(timeline_date_label(&markers[0].0), "Feb 3, 2026");
         assert_eq!(timeline_date_label(&markers[1].0), "Dec 31, 2025");
     }
 
