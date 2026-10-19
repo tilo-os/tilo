@@ -823,6 +823,115 @@ impl ShellDriver {
     /// something to bring here. Reachable only from `--shots`, but goes
     /// through the real `RoomRecords::reference` path, so what the scene
     /// paints is what a real room index produces.
+    /// What universal search reaches beyond the apps here: Flathub's cached
+    /// apps, Tilo apps the registries offer that this device lacks, and a
+    /// vault Passwords indexed and left unlocked before it closed.
+    fn seed_search_sources(&self) {
+        use app_catalogue::{CatalogueEntry, Installation, Source};
+        use shell::shell::catalogue::CatalogueApp;
+        use ui::search::index_publication::{IndexDelta, IndexEntry, IndexWeight};
+        let flathub = |id: &str, name: &str, tagline: &str, category: &str| CatalogueEntry {
+            id: id.to_owned(),
+            source: Source::Flathub {
+                remote: "flathub".to_owned(),
+                installation: Installation::System,
+            },
+            name: name.to_owned(),
+            other_names: Vec::new(),
+            tagline: tagline.to_owned(),
+            description: String::new(),
+            keywords: Vec::new(),
+            category: Some(category.to_owned()),
+            icon_file: None,
+            icon_url: None,
+            resource_types: Vec::new(),
+            actions: Vec::new(),
+        };
+        let offered = |id: &str, name: &str, category: &str| CatalogueApp {
+            package_id: id.to_owned(),
+            display_name: name.to_owned(),
+            category: Some(category.to_owned()),
+            version: "1.4.0".to_owned(),
+            registry: "Tilo".to_owned(),
+            trust: "publisher-signed".to_owned(),
+            ..CatalogueApp::default()
+        };
+        shell::shell::catalogue::stage_for_shots(
+            vec![
+                offered("so.tilo.sheets", "Sheets", "Office"),
+                offered("so.tilo.calendar", "Calendar", "Office"),
+                offered("so.tilo.file-explorer", "Files", "System"),
+            ],
+            vec![
+                flathub(
+                    "com.spotify.Client",
+                    "Spotify",
+                    "Online music streaming service",
+                    "Audio",
+                ),
+                flathub(
+                    "dev.alextren.Spot",
+                    "Spot",
+                    "Listen to music on Spotify",
+                    "Audio",
+                ),
+                flathub(
+                    "org.gimp.GIMP",
+                    "GNU Image Manipulation Program",
+                    "Create images and edit photographs",
+                    "Graphics",
+                ),
+                flathub(
+                    "io.github.shiftey.Desktop",
+                    "GitHub Desktop",
+                    "Simple collaboration from your desktop",
+                    "Development",
+                ),
+            ],
+        );
+        let room = {
+            let handle = self.chrome_handle();
+            let st = handle.borrow();
+            st.tree()
+                .desktop
+                .active_workspace()
+                .map(|workspace| workspace.room.to_string())
+        };
+        let Some(room) = room else { return };
+        let login = |key: &str, site: &str, user: &str| IndexEntry {
+            key: key.to_owned(),
+            resource: key.to_owned(),
+            action: None,
+            title: site.to_owned(),
+            subtitle: Some(user.to_owned()),
+            group: Some("Passwords".to_owned()),
+            icon: Some("key-round".to_owned()),
+            boost: 0,
+            fields: vec![
+                (site.to_ascii_lowercase(), IndexWeight::Identity),
+                (user.to_owned(), IndexWeight::Identity),
+            ],
+            secret: true,
+        };
+        shell::shell::search::app_content_index::session().apply(
+            shell::shell::search::app_content_index::SlotKey::new(
+                "so.tilo.passwords",
+                &room,
+                "passwords:vault",
+            ),
+            IndexDelta {
+                reset: true,
+                upsert: vec![
+                    login("passwords.entry:github", "github.com", "ana.kowalski"),
+                    login("passwords.entry:gitlab", "gitlab.com", "ana@kowalski.dev"),
+                    login("passwords.entry:mail", "mail.example.org", "ana"),
+                ],
+                remove: Vec::new(),
+                secrets_unlocked: Some(true),
+            },
+        );
+    }
+
     fn seed_records_in_other_rooms(&self) {
         use ui::record::{RecordId, RecordKind};
         let rooms: Vec<_> = {
@@ -1617,6 +1726,26 @@ impl ShellDriver {
             "palette_sum" => self.scene_palette_query("2+2"),
             "palette_move" => self.scene_palette_query("move"),
             "palette_files" => self.scene_palette_query("files"),
+            "palette_finder" => {
+                self.seed_search_sources();
+                self.scene_palette_query("finder");
+            }
+            "palette_spotify" => {
+                self.seed_search_sources();
+                self.scene_palette_query("spotify");
+            }
+            "palette_youtube_cats" => {
+                self.seed_search_sources();
+                self.scene_palette_query("youtube cats");
+            }
+            "palette_github" => {
+                self.seed_search_sources();
+                self.scene_palette_query("github");
+            }
+            "palette_workbook" => {
+                self.seed_search_sources();
+                self.scene_palette_query("workbook");
+            }
             "topbar-edit" => self.scene_topbar_edit(),
             "quick-settings" => self.scene_quick_settings(),
             "qs-edit" => self.scene_qs_edit(false),
@@ -3062,6 +3191,11 @@ impl ShellDriver {
         "palette_sum",
         "palette_move",
         "palette_files",
+        "palette_finder",
+        "palette_spotify",
+        "palette_youtube_cats",
+        "palette_github",
+        "palette_workbook",
         "topbar-edit",
         "quick-settings",
         "qs-edit",

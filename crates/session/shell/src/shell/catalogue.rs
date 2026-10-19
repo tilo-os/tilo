@@ -453,6 +453,26 @@ pub fn refresh_shared() {
     }
 }
 
+/// Stage the catalogue a screenshot scene searches: the Tilo apps the
+/// registries offer and Flathub's cached apps, read from nowhere and kept
+/// from being read again. Only the `shots` harness calls this.
+#[doc(hidden)]
+pub fn stage_for_shots(apps: Vec<CatalogueApp>, flathub: Vec<app_catalogue::CatalogueEntry>) {
+    DISK_CACHE_LOADED.store(true, Ordering::Relaxed);
+    *lock_catalogue() = Some((apps, Instant::now()));
+    CATALOGUE_REVISION.fetch_add(1, Ordering::Relaxed);
+    *SHARED.lock_recover() = Some(SharedState {
+        catalogue: SharedCatalogue {
+            flathub: std::sync::Arc::new(flathub),
+            blocks: std::sync::Arc::default(),
+        },
+        flathub_read: Some((u64::MAX, String::new())),
+        blocks_stamp: Some(u64::MAX),
+        checked_at: Some(Instant::now()),
+    });
+    SHARED_REVISION.fetch_add(1, Ordering::Release);
+}
+
 /// A failure caches an *empty* list rather than leaving the cache cold
 /// (which would mean a new HTTP attempt per character typed), and
 /// expires under [`FAILED_REFRESH_BACKOFF`] so a registry that comes
