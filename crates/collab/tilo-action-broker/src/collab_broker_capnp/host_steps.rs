@@ -171,6 +171,10 @@ impl CapnpBrokerState {
     /// invocation answers `Accepted` at once and records the outcome when
     /// the host's step ends, which for a pairing approval may be minutes
     /// later.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ordered admission of a host step: room confinement, policy, confirmation and the host's own decision"
+    )]
     pub(super) fn invoke_host_step(
         self: &Arc<Self>,
         caller: &Caller,

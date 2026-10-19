@@ -823,6 +823,10 @@ impl CapnpBrokerState {
         self.eager_catalogue_with_origin(caller, None, scope)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the catalogue is built in one pass over every provider so installed apps and shortcut settings are read at most once and each row passes the same checks"
+    )]
     fn eager_catalogue_with_origin(
         &self,
         caller: &Caller,
@@ -2608,6 +2612,10 @@ impl CapnpBrokerState {
         .map_err(refusal)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ordered door for a workspace action: the room's copied authority, then each host service's admission in turn"
+    )]
     fn start_workspace_action(
         self: &Arc<Self>,
         caller: &Caller,
@@ -2843,7 +2851,7 @@ impl CapnpBrokerState {
             // Answered with the instance it started, once that instance
             // connects with the launch's ticket and publishes.
             Ok(started) => {
-                self.record_launch(admitted, (app_id, &workspace.room.to_string()), started)?
+                self.record_launch(admitted, (app_id, &workspace.room.to_string()), started)?;
             }
             Err(error) => self.complete_host_action(
                 &admitted,
@@ -2868,6 +2876,10 @@ impl CapnpBrokerState {
     ///
     /// Returns a message when the caller may not change the application or
     /// the host cannot close applications.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "the dispatch permit is spent here: taken by value, a caller cannot complete it twice"
+    )]
     pub(super) fn close_application(
         &self,
         custody: (&Caller, Option<&super::InvocationCaller>, &str),

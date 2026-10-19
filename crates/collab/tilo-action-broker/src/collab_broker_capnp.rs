@@ -70,6 +70,12 @@ pub use committed_document::{
 use durable_local_invocation::DurableContext;
 pub(crate) use invocation_journal::{DurableInvocation, admission_request_digest};
 use invocation_journal::{InvocationJournal, InvocationKey, InvocationOwner};
+
+/// A durable local invocation's original caller and its invocation id.
+type LocalProvenance = (
+    durable_local_invocation::LocalCaller,
+    tilo_actions::InvocationId,
+);
 pub use native_media::{
     AudioOutputFuture, AudioOutputServices, NativeMediaFuture, NativeMediaRequestContext,
     NativeMediaServices,
@@ -4454,6 +4460,12 @@ impl CapnpBrokerState {
     /// A transport-free fixture with an explicit admission turn. Certified
     /// invocations enqueue inert custody, just as they do on the live broker.
     #[cfg(any(test, feature = "test-support"))]
+    #[allow(
+        clippy::expect_used,
+        clippy::panic,
+        clippy::missing_panics_doc,
+        reason = "a test-support fixture: a turn with nothing to service fails the test that asked for it"
+    )]
     pub fn test_broker_with_authority_and_invoke_turn(
         membership: WorkspaceTreeHandle,
         services: HostServices,
@@ -5880,12 +5892,11 @@ impl CapnpBrokerState {
                 "local action report requires authenticated document or read-only admission".into(),
             );
         }
-        if let Some(report) = local_report {
-            if report.bound_invocation()? != report.invocation
-                || inputs.requested != Some(tilo_actions::InvocationId(report.invocation))
-            {
-                return Err("local report invocation does not bind capture".into());
-            }
+        if let Some(report) = local_report
+            && (report.bound_invocation()? != report.invocation
+                || inputs.requested != Some(tilo_actions::InvocationId(report.invocation)))
+        {
+            return Err("local report invocation does not bind capture".into());
         }
         let typed_local_arguments = local_report
             .map(|report| report.typed_arguments(&offered.1.params))
@@ -6326,7 +6337,7 @@ impl CapnpBrokerState {
                 self.local_report_receipts
                     .lock()
                     .map_err(|_| "local receipt cache unavailable")?
-                    .admit(key.clone(), intent, id, peer_id)?;
+                    .admit(key.clone(), &intent, id, peer_id)?;
                 Some(key)
             } else {
                 let admission = if owner.verified_actor().is_some() {
@@ -7246,13 +7257,7 @@ impl CapnpBrokerState {
         run_id: u64,
         lease: &str,
         target: runtime_collab::TaskAction<'_>,
-        (provenance, confirmed): (
-            Option<&(
-                durable_local_invocation::LocalCaller,
-                tilo_actions::InvocationId,
-            )>,
-            (bool, Option<&str>),
-        ),
+        (provenance, confirmed): (Option<&LocalProvenance>, (bool, Option<&str>)),
     ) -> Result<InvocationJob, String> {
         let runtime_collab::TaskAction {
             peer_id: target_peer,
@@ -7287,13 +7292,7 @@ impl CapnpBrokerState {
         run: PendingTaskRun,
         lease: &str,
         target: runtime_collab::TaskAction<'_>,
-        (provenance, confirmed): (
-            Option<&(
-                durable_local_invocation::LocalCaller,
-                tilo_actions::InvocationId,
-            )>,
-            (bool, Option<&str>),
-        ),
+        (provenance, confirmed): (Option<&LocalProvenance>, (bool, Option<&str>)),
         offered: (PublishedSurface, PublishedAction),
     ) -> Result<InvocationJob, String> {
         let runtime_collab::TaskAction {
@@ -10103,6 +10102,10 @@ impl channel_handle::Server for CapnpChannelHandle {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one RPC: parse, caller custody, clipboard access and the reply, kept in order"
+    )]
     fn local_file_clipboard(
         self: Rc<Self>,
         params: channel_handle::LocalFileClipboardParams,
