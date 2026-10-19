@@ -5197,7 +5197,7 @@ const QS_DISPLAY_BRIGHTNESS_PREFIX: &str = "quick-settings.brightness.on.";
 
 /// How far ←/→ moves one display's brightness row: the brightness keys'
 /// step, as "brighter" and "dimmer" take.
-const DISPLAY_BRIGHTNESS_STEP: f32 = 10.0;
+const DISPLAY_BRIGHTNESS_STEP: f32 = ui::tokens::Layout::BASE.display_brightness_step;
 
 /// The connector a display's brightness row sets, from its id.
 fn display_brightness_connector(id: &str) -> Option<&str> {

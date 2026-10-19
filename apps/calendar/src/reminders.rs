@@ -110,7 +110,7 @@ fn body(shown: &crate::shown::Shown<'_>) -> String {
     if shown.event.location.trim().is_empty() {
         when
     } else {
-        format!("{when} · {}", shown.event.location.trim())
+        format!("{when} — {}", shown.event.location.trim())
     }
 }
 
@@ -222,7 +222,7 @@ mod tests {
                 ),
             ]
         );
-        assert_eq!(due[1].body, "15:00–15:45 · Meet");
+        assert_eq!(due[1].body, "15:00–15:45 — Meet");
         assert!(due.iter().all(|reminder| reminder.title != "No reminder"));
         assert!(
             due.iter().all(|reminder| reminder.title != "Earlier"),

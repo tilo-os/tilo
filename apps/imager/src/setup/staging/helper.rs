@@ -1911,7 +1911,10 @@ impl Engine<'_> {
             .iter()
             .try_fold(0u64, |total, range| total.checked_add(range.len))
             .ok_or_else(|| {
-                Refusal::new(codes::ESP_PLACEHOLDER, "ESP reservation length overflow")
+                Refusal::new(
+                    codes::ESP_PLACEHOLDER,
+                    "EFI system partition reservation length overflow",
+                )
             })?;
         let mut handoff = handoff::for_plan(
             &self.request.operation_id,

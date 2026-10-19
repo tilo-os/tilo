@@ -10,7 +10,7 @@ const BTN_RIGHT: u32 = 0x111;
 const BTN_MIDDLE: u32 = 0x112;
 const BTN_SIDE: u32 = 0x113;
 const BTN_EXTRA: u32 = 0x114;
-const WHEEL_STEP: f64 = 15.0;
+const WHEEL_STEP: f64 = ui::tokens::Layout::BASE.wheel_step as f64;
 /// Resolve the foreign surface hosted by the *focused* tab (active tab of
 /// the active group/strip/workspace). `None` when shell-owned or empty — the keyboard-focus rule: input follows the active tab.
 pub fn active_foreign_surface(tree: &WorkspaceTree) -> Option<u64> {
@@ -865,7 +865,7 @@ pub const SUPER_FULL: std::time::Duration = std::time::Duration::from_millis(600
 /// How far the pointer moves (physical px) while Super is held before the
 /// peek counts as being used and grows into the whole surface at once.
 /// More than a hand resting on a touchpad drifts.
-pub const SUPER_PEEK_MOTION_PX: f64 = 6.0;
+pub const SUPER_PEEK_MOTION_PX: f64 = ui::tokens::Metrics::BASE.icon_label_gap as f64;
 
 /// What Super alone asks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

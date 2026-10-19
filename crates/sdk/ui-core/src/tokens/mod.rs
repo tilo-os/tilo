@@ -1,10 +1,12 @@
 pub mod colors;
 pub mod contrast;
 pub mod elevation;
+pub mod layout;
 pub mod metrics;
 pub mod motion;
 pub mod palette;
 pub mod radii;
+pub mod search;
 pub mod selector;
 pub mod spacing;
 pub mod syntax_palette;
@@ -17,6 +19,7 @@ pub use colors::{
     dark_overlays, light_overlays,
 };
 pub use elevation::{Elevation, Shadow};
+pub use layout::Layout;
 pub use metrics::Metrics;
 pub use motion::{
     Durations, EffectiveMotion, Gesture, Motion, MotionSource, SpringParams, SpringPresets,

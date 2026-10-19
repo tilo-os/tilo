@@ -4730,13 +4730,7 @@ impl Widget for ForeignSurfaceWidget {
                 return;
             }
             // Neutral backdrop so letterbox bands (and client transparency) read as compositor surface, not whatever the tile card painted.
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.surfaces.base,
-                None,
-                &clip,
-            );
+            ui::paint::fill_shape(scene, transform, &clip, theme.tokens.colors.surfaces.base);
             if self.full_bleed && self.sheet_images.is_empty() && !overflows {
                 // Square: the image lands inside the tile (`fit_rect`), so
                 // no clip is needed, and the frame stays one plain image

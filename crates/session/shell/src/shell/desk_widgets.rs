@@ -73,7 +73,7 @@ pub const LEAVE_GRACE: Duration = Duration::from_millis(300);
 
 /// The space kept clear around the text caret, so a widget near it never
 /// sits on the line being typed.
-pub const CARET_CLEARANCE: f64 = 24.0;
+pub const CARET_CLEARANCE: f64 = ui::tokens::Spacing::BASE.s6 as f64;
 
 /// One of a widget's three forms.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

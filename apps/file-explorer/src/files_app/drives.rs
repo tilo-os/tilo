@@ -239,7 +239,7 @@ impl FileExplorerWidget {
                 };
                 resource.presentation = Some(tilo_actions::ResourcePresentation {
                     detail: Some(format!(
-                        "{where_} · {}",
+                        "{where_} — {}",
                         crate::i18n::format_bytes(drive.size_bytes)
                     )),
                     badge: drive.open_at.is_some().then(|| t("files-drive-open")),

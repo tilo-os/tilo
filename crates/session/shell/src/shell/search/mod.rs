@@ -1656,10 +1656,10 @@ const SHORT_QUERY_SCALARS: usize = 3;
 /// for a longer one. For a short query it outweighs the gap between an exact
 /// name and a prefix (1.5) and an app's launch intent; for a longer one it
 /// only settles near ties.
-const SHORT_QUERY_USAGE: f32 = 6.0;
+const SHORT_QUERY_USAGE: f32 = ui::tokens::search::SHORT_QUERY_USAGE;
 const LONG_QUERY_USAGE: f32 = 0.4;
 /// What a row chosen before for the same typed text adds: it leads.
-const SAME_TEXT_CHOICE: f32 = 8.0;
+const SAME_TEXT_CHOICE: f32 = ui::tokens::search::SAME_TEXT_CHOICE;
 /// A title matched from a word start: the hits frecency may reorder.
 const WORD_START_LEXICAL: f32 = 1.5;
 

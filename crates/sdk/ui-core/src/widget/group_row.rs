@@ -38,7 +38,7 @@ const SNAP_IDLE_MS: u32 = 200;
 const SNAP_ANIM_MS: u32 = 200;
 /// A group this close to its laid-out x, and this slow, has arrived.
 const MOVE_SETTLED_PX: f64 = 0.25;
-const MOVE_SETTLED_PX_PER_S: f64 = 4.0; // rest velocity in px/s, not a Theme gap
+const MOVE_SETTLED_PX_PER_S: f64 = crate::tokens::motion::MOVE_SETTLED_PX_PER_S; // rest velocity in px/s, not a Theme gap
 /// Two pan targets closer than this are the same place on screen.
 const SNAP_SETTLED_PX: f64 = 0.5;
 
@@ -64,10 +64,10 @@ const PAN_MIN_REPORT_INTERVAL: Duration = Duration::from_millis(8);
 const PAN_SAMPLE_WINDOW: Duration = Duration::from_millis(100);
 /// How close to a lane's left or right edge a drag has to be for the strip
 /// to pan under it ([`DragReach`]).
-const DRAG_EDGE_BAND_PX: f64 = 32.0;
+const DRAG_EDGE_BAND_PX: f64 = crate::tokens::Spacing::BASE.s8 as f64;
 /// How fast the strip pans under a drag pressed right against the edge; it
 /// starts from nothing at the band's inner side and grows with depth.
-const DRAG_EDGE_PAN_PX_PER_S: f64 = 1600.0;
+const DRAG_EDGE_PAN_PX_PER_S: f64 = crate::tokens::motion::DRAG_EDGE_PAN_PX_PER_S;
 /// Longest frame step the edge pan integrates, so a stalled frame does not
 /// fling the strip.
 const DRAG_EDGE_MAX_STEP: Duration = Duration::from_millis(50);
@@ -91,7 +91,7 @@ struct DragReach {
 }
 /// Release velocity (px/s) below which lifted fingers leave the strip where
 /// it is rather than throwing it.
-const FLING_MIN_VELOCITY: f64 = 60.0;
+const FLING_MIN_VELOCITY: f64 = crate::tokens::motion::FLING_MIN_VELOCITY;
 /// Ceiling on a release velocity (px/s): a bad timestamp must not send the
 /// strip across the whole canvas.
 const FLING_MAX_VELOCITY: f64 = 6_000.0;
@@ -126,11 +126,11 @@ const STRIP_OVERSCROLL_REACH_FRAC: f64 = 0.28;
 /// (120 px) in `TileHost::draw_steady_state`, with the clip's margin.
 /// Not a Theme spacing token: it must match the compositor shadow draw,
 /// not layout padding a theme can resize.
-const GROUP_SPRITE_REACH_PX: f64 = 160.0;
+const GROUP_SPRITE_REACH_PX: f64 = crate::tokens::motion::GROUP_SPRITE_REACH;
 
 /// Touchpad px per wheel detent for the discrete jump gestures; also the
 /// scale for hi-res wheel notches reported as pixel deltas.
-pub const JUMP_PX_PER_DETENT: f64 = 50.0;
+pub const JUMP_PX_PER_DETENT: f64 = crate::tokens::Layout::BASE.jump_px_per_detent as f64;
 
 /// Turns fractional-detent scroll deltas into whole steps. No quiet-time
 /// decay: it would stop slow scrolling from ever accumulating a whole
@@ -278,7 +278,7 @@ impl SnapAnim {
 
 /// Press displacement (px) before a tab-bar-background press becomes a
 /// whole-group reorder drag instead of a focus click.
-const GROUP_DRAG_THRESHOLD: f64 = 6.0;
+const GROUP_DRAG_THRESHOLD: f64 = crate::tokens::Metrics::BASE.icon_label_gap as f64;
 
 /// How long a finger rests on a tab bar before moving for the drag to carry
 /// the window instead of panning the strip. A quick swipe pans; touch, hold

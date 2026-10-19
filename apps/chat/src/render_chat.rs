@@ -3969,7 +3969,7 @@ impl ChatApp {
                 break;
             }
             let name = self.user_name(&m.author);
-            let when = format!("{} · {}", day_label(m.ts), clock_label(m.ts));
+            let when = format!("{} — {}", day_label(m.ts), clock_label(m.ts));
             let face = ListRowFace::new(&name)
                 .meta(&when)
                 .secondary(&m.text)
