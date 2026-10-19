@@ -38,6 +38,9 @@ use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{Item, SettingsSection, block, card, note, rows, value_row};
 
+mod theme_tiles;
+use theme_tiles::ThemeTiles;
+
 /// The shape of the wallpaper thumbnails: the laptop panel's 16:10.
 const WALLPAPER_ASPECT: f64 = 16.0 / 10.0;
 
@@ -96,6 +99,35 @@ fn value_for_shown<'a>(
         .iter()
         .find(|(english, value)| *english == label || shown(value) == label)
         .map(|(_, value)| *value)
+}
+
+/// The spacing densities offered, `(ftl key, density)`.
+const DENSITIES: [(&str, f32); 3] = [
+    (
+        "settings-appearance-density-compact",
+        ui::theme::ThemeDensity::COMPACT,
+    ),
+    (
+        "settings-appearance-density-regular",
+        ui::theme::ThemeDensity::REGULAR,
+    ),
+    (
+        "settings-appearance-density-roomy",
+        ui::theme::ThemeDensity::ROOMY,
+    ),
+];
+
+/// The label of the offered density nearest `density`.
+fn density_label(density: f64) -> String {
+    DENSITIES
+        .iter()
+        .min_by(|a, b| {
+            (f64::from(a.1) - density)
+                .abs()
+                .total_cmp(&(f64::from(b.1) - density).abs())
+        })
+        .map(|(key, _)| t(key))
+        .unwrap_or_default()
 }
 
 /// The label of a persisted schedule value.
@@ -377,6 +409,7 @@ fn choose_wallpaper(app: &SettingsApp, cx: &mut EffectCx<Settings, SettingsApp>)
 /// What the pane's controls show: the stored preferences, as labels.
 struct Shown {
     theme: LocalState<String>,
+    density: LocalState<String>,
     ui_scale: LocalState<String>,
     text_size: LocalState<String>,
     high_contrast: LocalState<bool>,
@@ -393,6 +426,7 @@ impl Shown {
     fn of(prefs: &AppearancePrefs) -> Self {
         let shown = Self {
             theme: LocalState::new(String::new()),
+            density: LocalState::new(String::new()),
             ui_scale: LocalState::new(String::new()),
             text_size: LocalState::new(String::new()),
             high_contrast: LocalState::new(false),
@@ -410,6 +444,7 @@ impl Shown {
 
     fn show(&self, prefs: &AppearancePrefs) {
         self.theme.set(prefs.theme_choice());
+        self.density.set(density_label(prefs.density));
         self.ui_scale.set(ui_scale_label(prefs.ui_scale).to_owned());
         self.text_size.set(text_size_label(prefs.text_scale));
         self.high_contrast.set(prefs.high_contrast);
@@ -471,12 +506,27 @@ impl AppearancePane {
         card(
             &t("settings-appearance-theme-card"),
             rows(vec![
-                cx.row(t("settings-appearance-theme"))
-                    .id("appearance.theme")
-                    .choice_verb(
-                        AppearancePrefs::THEMES.iter().copied(),
-                        &self.shown.theme,
-                        AppearancePrefs::PICK_THEME,
+                // Each theme drawn in its own colours, the chosen one ringed.
+                block(Box::new(cx.bind_verb(
+                    ThemeTiles::new(self.shown.theme.get()),
+                    AppearancePrefs::PICK_THEME,
+                ))),
+                cx.row(t("settings-appearance-density"))
+                    .described(t("settings-appearance-density-desc"))
+                    .id("appearance.density")
+                    .choice(
+                        DENSITIES
+                            .iter()
+                            .map(|(_, value)| density_label(f64::from(*value))),
+                        &self.shown.density,
+                        AppearancePrefs::paths().density,
+                        |shown: String| {
+                            DENSITIES
+                                .iter()
+                                .find(|(_, value)| density_label(f64::from(*value)) == shown)
+                                .map(|(_, value)| f64::from(*value))
+                                .ok_or_else(|| format!("`{shown}` is not a density"))
+                        },
                     ),
                 cx.row(t("settings-appearance-ui-scale"))
                     .id("appearance.ui_scale")

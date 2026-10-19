@@ -7,8 +7,8 @@ use vello::kurbo::Point;
 
 #[derive(Deserialize)]
 struct Geometry {
-    width: f64,
-    height: f64,
+    // The published drawing's `width` and `height` are not read: the
+    // drawing is cut to its keys ([`tight`]).
     keys: Vec<GeometryKey>,
 }
 #[derive(Deserialize, Clone)]
@@ -65,21 +65,49 @@ pub(crate) fn map_for_form(
     let geometry = geometries
         .get(model)
         .ok_or("unknown physical keyboard model")?;
-    let (width, keys) = if compact {
-        compact_geometry(geometry)
+    let keys = if compact {
+        compact_geometry(geometry).1
     } else {
-        (geometry.width, geometry.keys.clone())
+        geometry.keys.clone()
     };
+    let (size, keys) = tight(keys);
     let keys = compile(&source, model, &keys, options)?;
-    Ok(KeyboardMap::new(
-        keys,
+    Ok(KeyboardMap::new(keys, size, label).with_configuration(source_id, model.to_owned()))
+}
+
+/// The keys moved to the drawing's corner and the drawing cut to them, with
+/// a hair of room for the keycaps' edges: the published geometry's margins
+/// would show as empty bands above and below the keyboard.
+fn tight(mut keys: Vec<GeometryKey>) -> (taffy::Size<f64>, Vec<GeometryKey>) {
+    const ROOM: f64 = 1.5;
+    let points = || keys.iter().flat_map(|key| key.outline.iter());
+    let (x0, y0) = points().fold((f64::MAX, f64::MAX), |(x, y), [px, py]| {
+        (x.min(*px), y.min(*py))
+    });
+    let (x1, y1) = points().fold((f64::MIN, f64::MIN), |(x, y), [px, py]| {
+        (x.max(*px), y.max(*py))
+    });
+    if x0 > x1 || y0 > y1 {
+        return (
+            taffy::Size {
+                width: 1.0,
+                height: 1.0,
+            },
+            keys,
+        );
+    }
+    for key in &mut keys {
+        for point in &mut key.outline {
+            *point = [point[0] - x0 + ROOM, point[1] - y0 + ROOM];
+        }
+    }
+    (
         taffy::Size {
-            width,
-            height: geometry.height,
+            width: x1 - x0 + 2.0 * ROOM,
+            height: y1 - y0 + 2.0 * ROOM,
         },
-        label,
+        keys,
     )
-    .with_configuration(source_id, model.to_owned()))
 }
 
 /// What the keyboard drawn for this device looks like: compact (a laptop's,
@@ -105,6 +133,11 @@ fn chassis_is_compact(chassis: Option<u32>) -> bool {
     !matches!(chassis, Some(3..=7 | 13 | 15..=24))
 }
 
+/// How far the function row moves down on a laptop's drawing: from the
+/// published geometry's row (y 23 to 41) to one unit above the number row
+/// (which starts at 62).
+const LAPTOP_FUNCTION_ROW_DROP: f64 = 20.0;
+
 /// The pc105 drawing without the Print/Scroll/Pause, navigation and numpad
 /// clusters, the Windows/Menu/right-Ctrl keys replaced by the arrows in one
 /// row: the main block a laptop keyboard is.
@@ -128,7 +161,15 @@ fn compact_geometry(geometry: &Geometry) -> (f64, Vec<GeometryKey>) {
         {
             continue;
         }
-        keys.push(key.clone());
+        let mut key = key.clone();
+        // A laptop's function row sits on top of the number row, without
+        // the desktop keyboard's gap.
+        if key.name == "ESC" || key.name.starts_with("FK") {
+            for point in &mut key.outline {
+                point[1] += LAPTOP_FUNCTION_ROW_DROP;
+            }
+        }
+        keys.push(key);
     }
     for (name, x0) in arrows {
         keys.push(GeometryKey {
@@ -263,6 +304,29 @@ mod tests {
         assert!(chassis_is_compact(None), "unknown is a laptop");
         let map = map_for_form("de", "pc105", String::new(), Some(""), true).unwrap();
         assert!(map.inspection_keys().iter().any(|(name, _)| name == "AD06"));
+    }
+
+    /// The drawing is cut to its keys: no empty band above, below or
+    /// beside the keyboard.
+    #[test]
+    fn the_drawing_is_cut_to_its_keys() {
+        let geometry: BTreeMap<String, Geometry> =
+            serde_json::from_str(include_str!("../data/pc-keyboard-geometry.json")).unwrap();
+        let (size, keys) = tight(compact_geometry(&geometry["pc105"]).1);
+        let points: Vec<[f64; 2]> = keys.iter().flat_map(|key| key.outline.clone()).collect();
+        let min_x = points.iter().map(|p| p[0]).fold(f64::MAX, f64::min);
+        let max_y = points.iter().map(|p| p[1]).fold(f64::MIN, f64::max);
+        assert!((min_x - 1.5).abs() < 1e-9, "{min_x}");
+        assert!(
+            (size.height - max_y - 1.5).abs() < 1e-9,
+            "{max_y} in {}",
+            size.height
+        );
+        assert!(
+            size.height < 140.0,
+            "the 180-unit model's margins are gone: {}",
+            size.height
+        );
     }
 
     #[test]

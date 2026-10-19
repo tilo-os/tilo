@@ -538,17 +538,35 @@ pub fn pane_of_row(row: &str) -> Option<Category> {
 
 /// One row per pane, each opening it.
 fn pane_rows() -> Vec<ui::framework::LiveRow> {
-    Category::ALL
-        .iter()
-        .map(|category| {
-            ui::framework::LiveRow::new(
-                pane_row_id(*category),
-                "settings.section",
-                category.label(),
-            )
-            .operation(open_pane(*category).bound())
-        })
-        .collect()
+    // The pane rows change only with the language, and the host asks for
+    // the rows on every frame it publishes: they are built once per
+    // language, not looked up again each time.
+    thread_local! {
+        static BUILT: std::cell::RefCell<Option<(u64, Vec<ui::framework::LiveRow>)>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    let language = ui::i18n::I18nManager::revision();
+    BUILT.with(|built| {
+        let mut built = built.borrow_mut();
+        if let Some((revision, rows)) = built.as_ref()
+            && *revision == language
+        {
+            return rows.clone();
+        }
+        let rows: Vec<_> = Category::ALL
+            .iter()
+            .map(|category| {
+                ui::framework::LiveRow::new(
+                    pane_row_id(*category),
+                    "settings.section",
+                    category.label(),
+                )
+                .operation(open_pane(*category).bound())
+            })
+            .collect();
+        *built = Some((language, rows.clone()));
+        rows
+    })
 }
 
 /// How a search hit or an agent's `open` names a setting:

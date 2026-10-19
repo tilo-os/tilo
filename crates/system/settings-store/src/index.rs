@@ -270,8 +270,8 @@ pub const SETTINGS: &[Setting] = &[
     ),
     // Sound
     s("sound.volume", "sound", "audio.volume"),
-    s("sound.output_device", "sound", "audio.output_device"),
-    s("sound.input_device", "sound", "audio.input_device"),
+    s("sound.output_device", "sound", "audio.output.*"),
+    s("sound.input_device", "sound", "audio.input.*"),
     s("sound.input_level", "sound", "audio.input_volume"),
     s("sound.mute", "sound", "audio.mute"),
     s("sound.balance", "sound", "audio.balance"),
