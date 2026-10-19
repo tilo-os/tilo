@@ -215,7 +215,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_system_profile_is_read_only_and_names_no_user_path() {
+    fn the_system_profile_names_no_user_path_and_not_the_root() {
         // Phase `the_profile_names_no_user_path`.
         // The profile is a *system* list. If a user path ever appears in it,
         // every app on the machine silently gained access — checked
@@ -264,7 +264,10 @@ mod tests {
                 );
             }
         }
-        // Phase `the_profile_binds_read_only_and_devices_as_devices`.
+    }
+
+    #[test]
+    fn the_profile_binds_read_only_and_devices_as_devices() {
         {
             let mut argv = Vec::new();
             push_system_profile(&mut argv, false);

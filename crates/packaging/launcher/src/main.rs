@@ -418,58 +418,9 @@ fn dispatch_command(
         launcher::priority::leave_session_protection();
     }
     match command {
-        Cmd::Run {
-            manifest,
-            expected_package_hash,
-            payload_root,
-            runtime,
-            no_services,
-            minimal_libs,
-            allow_missing_runtime,
-            allow_unsigned_runtime,
-            require_runtime_publisher,
-            wayland_socket,
-            workspace_id,
-            capabilities,
-            file_locations,
-            action_authority,
-            app_id,
-            identity,
-            render_node,
-            open,
-            open_uri,
-            headless_console,
-            service,
-            rest,
-        } => run_gui_command(
-            RunCliArgs {
-                manifest,
-                expected_package_hash,
-                payload_root,
-                runtime,
-                no_services,
-                minimal_libs,
-                allow_missing_runtime,
-                allow_unsigned_runtime,
-                require_runtime_publisher,
-                wayland_socket,
-                workspace_id,
-                capabilities,
-                trusted_identities: file_locations.trusted_identities,
-                retained_files: file_locations.retained_files,
-                browser_continuity: file_locations.browser_continuity,
-                action_authority: action_authority.action_authority,
-                app_id,
-                identity,
-                render_node,
-                open,
-                open_uri,
-                headless_console,
-                service,
-                rest,
-            },
-            retained_endpoint,
-        ),
+        command @ Cmd::Run { .. } => run_cli_args(command).map_or(ExitCode::FAILURE, |args| {
+            run_gui_command(args, retained_endpoint)
+        }),
         Cmd::RunInstalled {
             package,
             command,
@@ -519,6 +470,63 @@ fn dispatch_command(
             user: false,
         } => runtime_resident(Path::new(&registry), &runtime_root),
     }
+}
+
+/// The arguments of a `run` command; `None` for any other command.
+fn run_cli_args(command: Cmd) -> Option<RunCliArgs> {
+    let Cmd::Run {
+        manifest,
+        expected_package_hash,
+        payload_root,
+        runtime,
+        no_services,
+        minimal_libs,
+        allow_missing_runtime,
+        allow_unsigned_runtime,
+        require_runtime_publisher,
+        wayland_socket,
+        workspace_id,
+        capabilities,
+        file_locations,
+        action_authority,
+        app_id,
+        identity,
+        render_node,
+        open,
+        open_uri,
+        headless_console,
+        service,
+        rest,
+    } = command
+    else {
+        return None;
+    };
+    Some(RunCliArgs {
+        manifest,
+        expected_package_hash,
+        payload_root,
+        runtime,
+        no_services,
+        minimal_libs,
+        allow_missing_runtime,
+        allow_unsigned_runtime,
+        require_runtime_publisher,
+        wayland_socket,
+        workspace_id,
+        capabilities,
+        trusted_identities: file_locations.trusted_identities,
+        retained_files: file_locations.retained_files,
+        browser_continuity: file_locations.browser_continuity,
+        action_authority: action_authority.action_authority,
+        app_id,
+        identity,
+        render_node,
+        open,
+        open_uri,
+        headless_console,
+        service,
+        rest,
+    })
 }
 
 /// Keep the libraries of this person's own runtimes resident until SIGTERM
