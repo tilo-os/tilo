@@ -253,7 +253,7 @@ fn decode(bytes: &[u8], optional_engine: bool) -> std::io::Result<Option<String>
 }
 
 #[cfg(test)]
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 mod tests {
     use super::*;
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
@@ -262,6 +262,7 @@ mod tests {
     fn namespace(executable: &Path, operator: &Path) -> Command {
         let mut command = Command::new("timeout");
         command.args([
+            "--kill-after=5",
             "20",
             "bwrap",
             "--die-with-parent",
@@ -344,6 +345,14 @@ mod tests {
             assert_retained_namespace_case(&case);
             return;
         }
+        // The fixture runs the pinned binary in a bubblewrap user namespace.
+        // A capability-less job sandbox refuses that namespace; the micro-VM
+        // check sets TILO_REQUIRE_USERNS=1 and runs it as real root.
+        tilo_test_env::require_capability!(
+            UserNamespace,
+            tilo_test_env::bubblewrap(),
+            "the read-only bundle fixture runs in bubblewrap"
+        );
         let temp = tempfile::tempdir().unwrap();
         let host = temp.path().join("host");
         std::fs::create_dir(&host).unwrap();
@@ -426,6 +435,12 @@ mod tests {
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             );
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains("test result: ok. 1 passed"),
+                "{case}: the fixture ran no test: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
         }
     }
 
@@ -447,6 +462,12 @@ mod tests {
             }
             return;
         }
+        // As above: bubblewrap is the immutable-filesystem subject here.
+        tilo_test_env::require_capability!(
+            UserNamespace,
+            tilo_test_env::bubblewrap(),
+            "the read-only pin fixture runs in bubblewrap"
+        );
         let fixture = tempfile::tempdir().unwrap();
         let pin = fixture.path().join("pin");
         let malformed = fixture.path().join("malformed");
@@ -510,6 +531,12 @@ mod tests {
             assert!(
                 output.status.success(),
                 "case {case}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains("test result: ok. 1 passed"),
+                "case {case}: the fixture ran no test: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             );
         }

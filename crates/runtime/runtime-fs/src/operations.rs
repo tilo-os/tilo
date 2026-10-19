@@ -4134,6 +4134,16 @@ pub(super) mod tests {
         use std::io::Write;
         use std::os::fd::{AsRawFd, FromRawFd};
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        // The fixture gives files to the original uid and then becomes it. A
+        // job sandbox is uid 0 without CAP_CHOWN or CAP_SETUID, so the chown
+        // below would fail before the production code runs. Require the
+        // capability where it exists (the micro-VM check sets
+        // TILO_REQUIRE_CHOWN=1) and skip with that reason where it does not.
+        tilo_test_env::require_capability!(
+            Chown,
+            tilo_test_env::switch_identity(ORIGINAL_UID),
+            "the original-UID fixture gives files to another user and becomes it"
+        );
         assert_eq!(
             rustix::process::geteuid().as_raw(),
             0,
@@ -4195,6 +4205,13 @@ pub(super) mod tests {
                 "actual original-UID subprocess failed: {}\n{}",
                 String::from_utf8_lossy(&out),
                 String::from_utf8_lossy(&err)
+            );
+            // A renamed or filtered test would otherwise exit successfully
+            // after running zero cases and silently stop covering the boundary.
+            assert!(
+                String::from_utf8_lossy(&out).contains("1 passed"),
+                "actual original-UID subprocess ran no test: {}",
+                String::from_utf8_lossy(&out)
             );
             return;
         }

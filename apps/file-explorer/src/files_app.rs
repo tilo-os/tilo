@@ -6506,14 +6506,8 @@ impl FileExplorerWidget {
         };
         let area = vello::kurbo::Rect::from_points(*start, *now);
         let ink = theme.tokens.colors.border_focus;
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            ink.with_alpha(0.12),
-            None,
-            &area,
-        );
-        scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, ink, None, &area);
+        ui::paint::fill_rect(scene, transform, area, ui::paint::with_alpha(ink, 31));
+        ui::paint::stroke_rect(scene, transform, area, ink, 1.0);
     }
 
     /// The sidebar place a drop at `pt` lands in, with its row: the middle

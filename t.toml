@@ -19,6 +19,16 @@ inputs = ["rust-toolchain.toml", ".cargo/config.toml", "deny.toml"]
 # ci-fast image), and the tests that fail on aarch64 for reasons of the architecture (the
 # `test-x86_64` family, the goldens).
 
+# What every check and cargo family must be able to pass with unless it declares its own
+# `requirement`: its job's memory limit, so a check that needs more fails as its own failure
+# instead of quietly taking more. Checks and families declare their own where their runs
+# measured differently: the 99th-percentile peak memory with half again as much room, rounded up
+# to 1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48 or 64 GiB, and the 90th-percentile peak cores (at
+# most 16 for cargo families, 8 for other checks). The default covers `t cargo` commands, which
+# take it too: their 99th-percentile peak at 4 cores is about 10 GiB.
+[defaults]
+requirement = { cores = 4, memory = "16GiB" }
+
 # check.yml's workflow environment. Warnings fail through the per-target flags, which
 # Cargo joins with .cargo/config.toml's target rustflags (RUSTFLAGS would replace them).
 # Tests render with Mesa's CPU Vulkan driver, never whatever adapter a node has.
@@ -46,6 +56,8 @@ args = ["--locked", "--profile", "ci", "--tests"]
 exclude = ["launcher", "shell", "store", "tilo-sandbox", "tilo-vmd"]
 inputs = [".config/nextest.toml", ".config/nextest-filters.toml", "tools/ci/t-nextest.sh", "tools/ci/package_features.py", "tools/ci/nextest_filters.py", "tools/test-env.sh", "tools/with-test-environment.sh", "tools/with-headless-audio.sh"]
 env = { TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "1" }
+# Each job of this family runs under it; t cuts batches so none is expected to need more.
+requirement = { cores = 16, memory = "32GiB" }
 # Packages whose tests start sandboxes of their own (bubblewrap, unshare): in t's job
 # sandbox they may create user, mount and network namespaces, as uid 1000 inside.
 nested_sandboxes = ["shell", "launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-vmd", "settings", "tilo-sandbox-core", "thumbnails", "runtime-bundle"]
@@ -86,7 +98,7 @@ tilo-crypto = ["keys/release/trust.env"]
 tilo-doc-codecs = ["crates/doc/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
 tilo-egress = ["crates/collab/collab-types/tests/net_host_vectors.txt"]
 tilo-esp-write = ["os/usr/libexec/tilo-deployment", "os/tests/test_installer_target_cmdline.py", "os/tests/test_installer_target_boot_digest.py", "os/Containerfile.installer", "os/usr/libexec/tilo-install", "os/usr/lib/bootc/kargs.d/**"]
-tilo-extension = ["os/usr/share/tilo/system-extensions/sysext.d/*.json", "os/etc/polkit-1/rules.d/49-tilo-extension.rules", "os/usr/lib/systemd/system/tilo-extension@.service", "os/usr/lib/systemd/system/tilo-extension-activate.service", "os/usr/lib/systemd/system/tilo-extension-refresh.timer", "os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/40-tilo-extension.conf", "os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension", "os/usr/libexec/tilo-install", "keys/extensions.pub", "keys/cosign.pub", "keys/release/trust.env", "tools/signing/release-ca.sh", "os/Containerfile", "os/components.toml"]
+tilo-extension = ["os/usr/share/tilo/system-extensions/sysext.d/*.json", "os/etc/polkit-1/rules.d/49-tilo-extension.rules", "os/usr/lib/systemd/system/tilo-extension@.service", "os/usr/lib/systemd/system/tilo-extension-activate.service", "os/usr/lib/systemd/system/tilo-extension-refresh.timer", "os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/40-tilo-extension.conf", "os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/50-tilo-live-update.conf", "os/usr/lib/systemd/system/tilo-live-update.service", "os/usr/lib/systemd/system/tilo-live-update-session.service", "os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension", "os/usr/libexec/tilo-install", "keys/extensions.pub", "keys/cosign.pub", "keys/release/trust.env", "tools/signing/release-ca.sh", "os/Containerfile", "os/components.toml"]
 tilo-firstboot-files = ["os/usr/libexec/tilo-firstboot-user"]
 tilo-font-catalog = ["crates/sdk/ui-core/assets/fonts/**", "tools/font-catalog.py"]
 tilo-fs = ["crates/system/cloud-source-gdrive/tests/fixtures/docx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/empty.svg", "os/Containerfile", "os/usr/lib/systemd/system/fs.service", "dist/session/tilo-files-workspace.service", "os/usr/lib/tmpfiles.d/tilo.conf", "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/artifacts.json", "os/tests/seeded-state/var/lib/tilo/fs-capabilities.json/*", "tools/test-assets.py", "tools/test-assets-build.rs"]
@@ -115,6 +127,7 @@ word-processor = ["crates/doc/fixtures/artifacts.json", "tools/test-assets.py", 
 name = "test-x86_64"
 tool = "nextest"
 requires = ["arch=x86_64"]
+requirement = { cores = 16, memory = "48GiB" }
 wrapper = ["bash", "tools/ci/t-nextest.sh"]
 args = ["--locked", "--profile", "ci", "--tests"]
 packages = ["launcher", "shell", "store", "tilo-sandbox", "tilo-vmd"]
@@ -157,7 +170,7 @@ tilo-crypto = ["keys/release/trust.env"]
 tilo-doc-codecs = ["crates/doc/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
 tilo-egress = ["crates/collab/collab-types/tests/net_host_vectors.txt"]
 tilo-esp-write = ["os/usr/libexec/tilo-deployment", "os/tests/test_installer_target_cmdline.py", "os/tests/test_installer_target_boot_digest.py", "os/Containerfile.installer", "os/usr/libexec/tilo-install", "os/usr/lib/bootc/kargs.d/**"]
-tilo-extension = ["os/usr/share/tilo/system-extensions/sysext.d/*.json", "os/etc/polkit-1/rules.d/49-tilo-extension.rules", "os/usr/lib/systemd/system/tilo-extension@.service", "os/usr/lib/systemd/system/tilo-extension-activate.service", "os/usr/lib/systemd/system/tilo-extension-refresh.timer", "os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/40-tilo-extension.conf", "os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension", "os/usr/libexec/tilo-install", "keys/extensions.pub", "keys/cosign.pub", "keys/release/trust.env", "tools/signing/release-ca.sh", "os/Containerfile", "os/components.toml"]
+tilo-extension = ["os/usr/share/tilo/system-extensions/sysext.d/*.json", "os/etc/polkit-1/rules.d/49-tilo-extension.rules", "os/usr/lib/systemd/system/tilo-extension@.service", "os/usr/lib/systemd/system/tilo-extension-activate.service", "os/usr/lib/systemd/system/tilo-extension-refresh.timer", "os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/40-tilo-extension.conf", "os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/50-tilo-live-update.conf", "os/usr/lib/systemd/system/tilo-live-update.service", "os/usr/lib/systemd/system/tilo-live-update-session.service", "os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension", "os/usr/libexec/tilo-install", "keys/extensions.pub", "keys/cosign.pub", "keys/release/trust.env", "tools/signing/release-ca.sh", "os/Containerfile", "os/components.toml"]
 tilo-firstboot-files = ["os/usr/libexec/tilo-firstboot-user"]
 tilo-font-catalog = ["crates/sdk/ui-core/assets/fonts/**", "tools/font-catalog.py"]
 tilo-fs = ["crates/system/cloud-source-gdrive/tests/fixtures/docx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/empty.svg", "os/Containerfile", "os/usr/lib/systemd/system/fs.service", "dist/session/tilo-files-workspace.service", "os/usr/lib/tmpfiles.d/tilo.conf", "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/artifacts.json", "os/tests/seeded-state/var/lib/tilo/fs-capabilities.json/*", "tools/test-assets.py", "tools/test-assets-build.rs"]
@@ -182,6 +195,7 @@ word-processor = ["crates/doc/fixtures/artifacts.json", "tools/test-assets.py", 
 name = "clippy"
 tool = "clippy"
 requires = ["arch=any"]
+requirement = { cores = 16, memory = "32GiB" }
 args = ["--locked", "--all-targets"]
 trailing = ["-D", "warnings"]
 # BEGIN generated by tools/ci/t_toml.py: clippy-package-inputs
@@ -220,7 +234,7 @@ tilo-crypto = ["keys/release/trust.env"]
 tilo-doc-codecs = ["crates/doc/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
 tilo-egress = ["crates/collab/collab-types/tests/net_host_vectors.txt"]
 tilo-esp-write = ["os/usr/libexec/tilo-deployment", "os/tests/test_installer_target_cmdline.py", "os/tests/test_installer_target_boot_digest.py", "os/Containerfile.installer", "os/usr/libexec/tilo-install", "os/usr/lib/bootc/kargs.d/**"]
-tilo-extension = ["os/usr/share/tilo/system-extensions/sysext.d/*.json", "os/etc/polkit-1/rules.d/49-tilo-extension.rules", "os/usr/lib/systemd/system/tilo-extension@.service", "os/usr/lib/systemd/system/tilo-extension-activate.service", "os/usr/lib/systemd/system/tilo-extension-refresh.timer", "os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/40-tilo-extension.conf", "os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension", "os/usr/libexec/tilo-install", "keys/extensions.pub", "keys/cosign.pub", "keys/release/trust.env", "tools/signing/release-ca.sh", "os/Containerfile", "os/components.toml"]
+tilo-extension = ["os/usr/share/tilo/system-extensions/sysext.d/*.json", "os/etc/polkit-1/rules.d/49-tilo-extension.rules", "os/usr/lib/systemd/system/tilo-extension@.service", "os/usr/lib/systemd/system/tilo-extension-activate.service", "os/usr/lib/systemd/system/tilo-extension-refresh.timer", "os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/40-tilo-extension.conf", "os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/50-tilo-live-update.conf", "os/usr/lib/systemd/system/tilo-live-update.service", "os/usr/lib/systemd/system/tilo-live-update-session.service", "os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension", "os/usr/libexec/tilo-install", "keys/extensions.pub", "keys/cosign.pub", "keys/release/trust.env", "tools/signing/release-ca.sh", "os/Containerfile", "os/components.toml"]
 tilo-firstboot-files = ["os/usr/libexec/tilo-firstboot-user"]
 tilo-font-catalog = ["crates/sdk/ui-core/assets/fonts/**", "tools/font-catalog.py"]
 tilo-fs = ["crates/system/cloud-source-gdrive/tests/fixtures/docx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/empty.svg", "os/Containerfile", "os/usr/lib/systemd/system/fs.service", "dist/session/tilo-files-workspace.service", "os/usr/lib/tmpfiles.d/tilo.conf", "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/artifacts.json", "os/tests/seeded-state/var/lib/tilo/fs-capabilities.json/*", "tools/test-assets.py", "tools/test-assets-build.rs"]
@@ -283,7 +297,7 @@ tilo-crypto = ["keys/release/trust.env"]
 tilo-doc-codecs = ["crates/doc/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
 tilo-egress = ["crates/collab/collab-types/tests/net_host_vectors.txt"]
 tilo-esp-write = ["os/usr/libexec/tilo-deployment", "os/tests/test_installer_target_cmdline.py", "os/tests/test_installer_target_boot_digest.py", "os/Containerfile.installer", "os/usr/libexec/tilo-install", "os/usr/lib/bootc/kargs.d/**"]
-tilo-extension = ["os/usr/share/tilo/system-extensions/sysext.d/*.json", "os/etc/polkit-1/rules.d/49-tilo-extension.rules", "os/usr/lib/systemd/system/tilo-extension@.service", "os/usr/lib/systemd/system/tilo-extension-activate.service", "os/usr/lib/systemd/system/tilo-extension-refresh.timer", "os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/40-tilo-extension.conf", "os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension", "os/usr/libexec/tilo-install", "keys/extensions.pub", "keys/cosign.pub", "keys/release/trust.env", "tools/signing/release-ca.sh", "os/Containerfile", "os/components.toml"]
+tilo-extension = ["os/usr/share/tilo/system-extensions/sysext.d/*.json", "os/etc/polkit-1/rules.d/49-tilo-extension.rules", "os/usr/lib/systemd/system/tilo-extension@.service", "os/usr/lib/systemd/system/tilo-extension-activate.service", "os/usr/lib/systemd/system/tilo-extension-refresh.timer", "os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/40-tilo-extension.conf", "os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/50-tilo-live-update.conf", "os/usr/lib/systemd/system/tilo-live-update.service", "os/usr/lib/systemd/system/tilo-live-update-session.service", "os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension", "os/usr/libexec/tilo-install", "keys/extensions.pub", "keys/cosign.pub", "keys/release/trust.env", "tools/signing/release-ca.sh", "os/Containerfile", "os/components.toml"]
 tilo-firstboot-files = ["os/usr/libexec/tilo-firstboot-user"]
 tilo-font-catalog = ["crates/sdk/ui-core/assets/fonts/**", "tools/font-catalog.py"]
 tilo-fs = ["crates/system/cloud-source-gdrive/tests/fixtures/docx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/empty.svg", "os/Containerfile", "os/usr/lib/systemd/system/fs.service", "dist/session/tilo-files-workspace.service", "os/usr/lib/tmpfiles.d/tilo.conf", "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/artifacts.json", "os/tests/seeded-state/var/lib/tilo/fs-capabilities.json/*", "tools/test-assets.py", "tools/test-assets-build.rs"]
@@ -310,6 +324,7 @@ word-processor = ["crates/doc/fixtures/artifacts.json", "tools/test-assets.py", 
 [[check]]
 name = "policy"
 requires = ["arch=any"]
+requirement = { cores = 4, memory = "1GiB" }
 run = "bash tools/policy/run.sh"
 git = true
 writable_sources = true
@@ -329,6 +344,7 @@ inputs = ["tools/test-env.sh", "tools/with-test-environment.sh", "tools/with-hea
 cargo_packages = ["tilo-projector"]
 env = { TILO_REQUIRE_SCREEN_CAPTURE = "1", TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1" }
 requires = ["arch=x86_64"]
+requirement = { cores = 4, memory = "2GiB" }
 cost = "minutes"
 
 # The generated blocks of this file match what they are generated from (suites.toml,
@@ -338,6 +354,7 @@ cost = "minutes"
 [[check]]
 name = "t-toml"
 requires = ["arch=any"]
+requirement = { cores = 1, memory = "1GiB" }
 run = "python3 tools/ci/t_toml.py check"
 inputs = ["t.toml", "tools/ci/**", ".config/**", "Cargo.toml", "**/Cargo.toml", "Cargo.lock", "**/*.rs"]
 
@@ -354,6 +371,7 @@ inputs = ["t.toml", "tools/ci/**", ".config/**", "Cargo.toml", "**/Cargo.toml", 
 [[check]]
 name = "fmt"
 requires = ["arch=any"]
+requirement = { cores = 1, memory = "1GiB" }
 run = "cargo fmt --check"
 # t applies this on main by itself when fmt fails there; `t fix fmt` applies it here.
 fix = "cargo fmt"
@@ -368,6 +386,7 @@ name = "hakari"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 8, memory = "2GiB" }
 run = """
 if ! { cargo hakari generate --diff && cargo hakari manage-deps --dry-run; }; then
   echo "crates/workspace-hack is stale: run 'cargo hakari generate' and 'cargo hakari manage-deps', then commit the result (DEVELOPMENT.md, Dependency features)." >&2
@@ -380,6 +399,7 @@ inputs = ["Cargo.toml", "**/Cargo.toml", "Cargo.lock", ".config/hakari.toml", "c
 [[check]]
 name = "deny"
 requires = ["arch=any"]
+requirement = { cores = 1, memory = "1GiB" }
 run = "cargo deny --workspace check --hide-inclusion-graph"
 inputs = ["Cargo.toml", "**/Cargo.toml", "Cargo.lock"]
 
@@ -387,6 +407,7 @@ inputs = ["Cargo.toml", "**/Cargo.toml", "Cargo.lock"]
 [[check]]
 name = "machete"
 requires = ["arch=any"]
+requirement = { cores = 4, memory = "24GiB" }
 run = "bash tools/ci/t-git-index.sh bash tools/ci/check-unused-dependencies.sh"
 inputs = ["**/Cargo.toml", "**/*.rs", ".gitignore", "tools/ci/check-unused-dependencies.sh", "tools/ci/t-git-index.sh"]
 
@@ -396,6 +417,7 @@ inputs = ["**/Cargo.toml", "**/*.rs", ".gitignore", "tools/ci/check-unused-depen
 # and runtime size budgets, which may only shrink unless a raise file says why.
 [[check]]
 name = "changes"
+requirement = { cores = 1, memory = "1GiB" }
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 git = true
 run = """
@@ -413,11 +435,12 @@ python3 tools/perf/runtime_size_ratchet.py check-budget --base "$base"
 [[check]]
 name = "app-lints"
 requires = ["arch=any"]
+requirement = { cores = 4, memory = "2GiB" }
 run = "cargo run --locked --quiet -p tilo-app-cli --bin tilo-app -- check --lint --all"
 # BEGIN generated by tools/ci/t_toml.py: app-lints-reads
 cargo_packages = ["tilo-app-cli"]
 cargo_dev_dependencies = false
-inputs = ["Cargo.toml", "apps/**", "examples/apps/**", ".cargo/config.toml", "Cargo.lock", "apps/browser/tilo-app.toml", "apps/calculator/tilo-app.toml", "crates/collab/collab-types/tests/net_host_vectors.txt", "crates/dev/tilo-app-cli/src/included.rs", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-default.x86_64.bpf.hex", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-jit.x86_64.bpf.hex", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-web-engine.x86_64.bpf.hex", "crates/sdk/tilo-app/Cargo.toml", "crates/sdk/ui-core/assets/fonts/**", "crates/system/cloud-source-gdrive/tests/fixtures/docx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/empty.svg", "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs", "crates/system/fs/tests/cloud_mount/import.rs", "crates/system/fs/tests/cloud_mount/import_transition.rs", "crates/system/fs/tests/cloud_mount/native.rs", "docs/developers/tasks/actions.md", "docs/developers/tasks/collaborate.md", "docs/developers/tasks/network.md", "docs/developers/tasks/permissions.md", "docs/developers/tasks/publish.md", "docs/developers/tasks/start.md", "docs/developers/tasks/verify.md", "examples/apps/shared-checklist/tests/app.rs", "os/usr/libexec/tilo-session", "rust-toolchain.toml", "tools/font-catalog.py", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/test-assets-build.rs"]
+inputs = ["Cargo.toml", "apps/**", "examples/apps/**", ".cargo/config.toml", "Cargo.lock", "apps/browser/tilo-app.toml", "apps/calculator/tilo-app.toml", "crates/collab/collab-types/tests/net_host_vectors.txt", "crates/dev/tilo-app-cli/src/included.rs", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-default.x86_64.bpf.hex", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-jit.x86_64.bpf.hex", "crates/packaging/launcher/tests/fixtures/seccomp/tilo-web-engine.x86_64.bpf.hex", "crates/sdk/tilo-app/Cargo.toml", "crates/system/cloud-source-gdrive/tests/fixtures/docx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/empty.svg", "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs", "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs", "crates/system/fs/tests/cloud_mount/import.rs", "crates/system/fs/tests/cloud_mount/import_transition.rs", "crates/system/fs/tests/cloud_mount/native.rs", "docs/developers/tasks/actions.md", "docs/developers/tasks/collaborate.md", "docs/developers/tasks/network.md", "docs/developers/tasks/permissions.md", "docs/developers/tasks/publish.md", "docs/developers/tasks/start.md", "docs/developers/tasks/verify.md", "examples/apps/shared-checklist/tests/app.rs", "os/usr/libexec/tilo-session", "rust-toolchain.toml", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/test-assets-build.rs"]
 # END generated
 cost = "minutes"
 env = { CARGO_INCREMENTAL = "0", CARGO_PROFILE_DEV_DEBUG = "0" }
@@ -434,6 +457,7 @@ env = { CARGO_INCREMENTAL = "0", CARGO_PROFILE_DEV_DEBUG = "0" }
 [[check]]
 name = "workspace-layout"
 requires = ["arch=any"]
+requirement = { cores = 1, memory = "1GiB" }
 run = """
 bash tools/ci/t-git-index.sh ./scripts/check-workspace-complete.sh
 bash tools/ci/t-git-index.sh python3 tools/policy/check_repository_layout.py
@@ -447,6 +471,7 @@ name = "security"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 1, memory = "1GiB" }
 # The Wine producer's static i686 probe needs the 32-bit syscall ABI, which the
 # job sandbox refuses on x86_64; a micro-VM has it.
 isolation = "vm"
@@ -480,6 +505,7 @@ python3 tools/signing/release_trust.py check-committed
 """
 inputs = ["keys/**", "tools/signing/release_trust.py"]
 requires = ["arch=x86_64"]
+requirement = { cores = 1, memory = "2GiB" }
 isolation = "vm"
 cache = false
 on = ["schedule:20 5 * * *", "dispatch"]
@@ -498,6 +524,7 @@ packages = ["ebook", "shell", "tilo-ui"]
 args = ["--locked", "--profile", "ci", "--tests", "--no-tests=pass", "-E", "(package(tilo-ui) and test(typography_visual_regression::)) or (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline))) or (package(shell) and test(e2e_shell_flows::))"]
 inputs = [".config/nextest.toml", ".config/nextest-filters.toml", ".config/visual-goldens-image", "tools/test-env.sh", "tools/with-test-environment.sh", "tools/with-headless-audio.sh"]
 env = { TILO_REQUIRE_GPU = "1", TILO_TEST_NTFS_FIXTURES = "0" }
+requirement = { cores = 16, memory = "48GiB" }
 cost = "minutes"
 # END generated
 
@@ -506,6 +533,7 @@ cost = "minutes"
 [[check]]
 name = "portable"
 requires = ["arch=any"]
+requirement = { cores = 4, memory = "4GiB" }
 run = """
 cargo check --locked -p tilo-ui --no-default-features --lib
 cargo check --locked -p tilo-app --no-default-features --lib
@@ -519,6 +547,7 @@ cost = "minutes"
 [[check]]
 name = "android"
 requires = ["arch=x86_64"]
+requirement = { cores = 4, memory = "4GiB" }
 run = "bash tools/ci/clippy-android.sh"
 # BEGIN generated by tools/ci/t_toml.py: android-reads
 cargo_packages = ["calculator", "notes"]
@@ -530,6 +559,7 @@ cost = "minutes"
 [[check]]
 name = "wasm"
 requires = ["arch=any"]
+requirement = { cores = 4, memory = "4GiB" }
 run = "bash tools/ci/check-wasm.sh $(python3 tools/ci/package_sets.py browser)"
 env = { CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS = "-D warnings" }
 # BEGIN generated by tools/ci/t_toml.py: wasm-reads
@@ -545,6 +575,7 @@ cost = "minutes"
 [[check]]
 name = "accounts-web-storage"
 requires = ["arch=x86_64"]
+requirement = { cores = 2, memory = "1GiB" }
 run = """
 cargo clippy --locked --target wasm32-unknown-unknown --lib --example account_storage_probe -p accounts -p tilo-secret-vault -p tilo-files -p tilo-secrets -- -D warnings -A clippy::future_not_send -A clippy::arc_with_non_send_sync -A clippy::drop_non_drop
 bash tools/ci/ensure-browser-dependencies.sh
@@ -562,6 +593,7 @@ cost = "minutes"
 [[check]]
 name = "chromium-host"
 requires = ["arch=x86_64"]
+requirement = { cores = 8, memory = "2GiB" }
 # Chromium's renderers are confined in user namespaces of their own.
 nested_sandboxes = true
 run = """
@@ -590,6 +622,7 @@ default = false
 [[check]]
 name = "web-examples"
 requires = ["arch=any"]
+requirement = { cores = 8, memory = "24GiB" }
 run = "bash tools/ci/build-web-examples.sh $(for d in examples/apps/*/; do printf ' example-%s' \"$(basename \"$d\")\"; done)"
 # BEGIN generated by tools/ci/t_toml.py: web-examples-reads
 cargo_packages = ["example-background-task", "example-bound-controls", "example-counter", "example-data-table", "example-graph-screens", "example-localized", "example-qr-code", "example-shared-checklist", "example-tree-browser", "example-virtual-list", "tilo-app-cli", "tilo-browser-runtime"]
@@ -617,6 +650,7 @@ inputs = ["os/kernel-snapshot.env", "os/dev/verify-snapshot-pins.sh", "os/dev/ve
 # The own test suites of vendored crates that carry Tilo patches.
 [[check]]
 name = "vendored"
+requirement = { cores = 8, memory = "2GiB" }
 run = "bash tools/ci/test-vendored-crates.sh"
 inputs = ["vendor/**", "Cargo.lock", "tools/ci/test-vendored-crates.sh", "tools/ci/affected_packages.py"]
 cost = "minutes"
@@ -625,6 +659,7 @@ cost = "minutes"
 # with the native audit.
 [[check]]
 name = "example-scenarios"
+requirement = { cores = 6, memory = "8GiB" }
 run = "bash tools/test-env.sh bash tools/ci/example-scenarios.sh -p tilo-app-cli"
 env = { TILO_REQUIRE_GPU = "1", TILO_TEST_NTFS_FIXTURES = "0" }
 # BEGIN generated by tools/ci/t_toml.py: example-scenarios-reads
@@ -638,6 +673,7 @@ cost = "minutes"
 [[check]]
 name = "certify"
 requires = ["arch=any"]
+requirement = { cores = 8, memory = "12GiB" }
 run = "cargo run --locked -p tilo-app-cli --bin tilo-app -- certify --workspace"
 env = { TILO_REQUIRE_GPU = "1" }
 # BEGIN generated by tools/ci/t_toml.py: certify-reads
@@ -656,6 +692,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group android-runtime-superviso
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["tools/android/atl_entry.c", "tools/android/test_sticky_entry.c", "tools/android/test_sticky_entry.py", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh"]
 
 [[check]]
@@ -664,6 +701,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group headless-launch-preflight
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["scripts/headless-examples/spawn-headless.sh", "scripts/headless-examples/test_spawn_headless.py", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh"]
 
 [[check]]
@@ -672,6 +710,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group chat-task-approval"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["apps/chat/**", "apps/chat/tests/test_agent_start_surface.py", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh"]
 
 [[check]]
@@ -680,6 +719,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group runtime-dependency-closur
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["dist/apps/package-apps.sh", "os/scripts/bake-runtime-bundle.sh", "os/scripts/collect-runtime-dependencies.py", "os/scripts/verify-runtime-bundle-closure.sh", "os/tests/test_runtime_dependency_closure.py", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh"]
 
 [[check]]
@@ -696,6 +736,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group release-trust"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["keys/**", "os/Containerfile", "os/Containerfile.host", "os/dev/hardware_profile.py", "os/etc/containers/**", "os/tests/test_container_signature_policy.py", "tools/ci/products.py", "tools/ci/products.toml", "tools/ci/publish/lib.sh", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/signing/**", "tools/with-test-environment.sh"]
 
 # It writes fixtures next to its sources and reads Git history, and as root builds bubblewrap namespaces and gives fixtures other owners, which the capability-less job sandbox cannot.
@@ -705,6 +746,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group os"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 2, memory = "2GiB" }
 writable_sources = true
 git = true
 isolation = "vm"
@@ -716,6 +758,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group native-store-autoclear"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 2, memory = "1GiB" }
 inputs = ["tools/ci/native-store-autoclear.py", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/ci/test_native_store_autoclear.py", "tools/with-test-environment.sh"]
 
 [[check]]
@@ -724,6 +767,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group os-workflows"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 2, memory = "1GiB" }
 inputs = [".forgejo/workflows/**", "os/**", "os/containers/tilo-agent-host/test-contract.sh", "os/containers/tilo-relay/test-contract.sh", "os/tests/rpm_snapshot_invariants.sh", "os/tests/test_ci_fast_images.py", "os/tests/test_kernel_build_environment.py", "os/tests/test_open_snapshot_pr.py", "os/tests/test_rpm_snapshot_fingerprint.py", "t.toml", "tools/ci/publish/**", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh"]
 
 [[check]]
@@ -732,6 +776,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group pipewire-echo-cancel"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["crates/platform/tilo-media/src/audio.rs", "crates/platform/tilo-media/src/audio_runtime.rs", "os/Containerfile", "os/tests/test_pipewire_echo_cancel.py", "os/usr/share/pipewire/**", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh"]
 
 [[check]]
@@ -740,6 +785,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group no-cisco-openh264"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 1, memory = "1GiB" }
 inputs = [".forgejo/workflows/build-rpms.yml", "dist/ci/install-build-deps.sh", "os/**", "os/tests/test_no_cisco_openh264.py", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh"]
 
 # It lists files through Git.
@@ -749,6 +795,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group mount-source-cache-keys"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 1, memory = "1GiB" }
 git = true
 inputs = ["os/**", "os/tests/test_mount_source_cache_keys.py", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh"]
 
@@ -758,6 +805,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group dev-feature-targets"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["*Cargo.toml", "os/components.toml", "os/tests/dev_feature_targets.py", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh"]
 
 [[check]]
@@ -766,6 +814,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group containerfile-sources"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 1, memory = "1GiB" }
 inputs = [".cargo/**", ".containerignore", "Cargo.lock", "Cargo.toml", "apps/**", "crates/**", "dist/**", "docs/**", "examples/**", "keys/**", "os/**", "os/tests/containerfile_sources.sh", "rust-toolchain.toml", "tools/**", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh", "vendor/**"]
 
 [[check]]
@@ -774,6 +823,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group workspace-release"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["*/src/bin/*", "*/src/main.rs", "*Cargo.toml", ".cargo/**", "Cargo.toml", "os/**", "os/tests/native_release_bin_selection.py", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh"]
 
 [[check]]
@@ -782,6 +832,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group app-store"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["*Cargo.toml", "Cargo.toml", "apps/**", "crates/packaging/install/**", "crates/packaging/launcher/**", "crates/packaging/runtime-bundle/**", "crates/session/shell/src/compositor/**", "os/**", "os/tests/app_store.sh", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh"]
 
 [[check]]
@@ -790,6 +841,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group system-extension"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["crates/system/system-extension/**", "os/**", "os/tests/boot_pack_invariants.sh", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh"]
 
 [[check]]
@@ -798,6 +850,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group rollback"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["crates/system/tilo-rollback/**", "os/**", "os/tests/esp_capacity.sh", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh"]
 
 [[check]]
@@ -806,6 +859,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group direct-boot-bundle"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["os/dev/disk-image.sh", "os/dev/export-direct-boot-bundle.sh", "os/tests/direct_boot_bundle_export.sh", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh"]
 
 [[check]]
@@ -814,6 +868,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group home-peer"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["apps/settings/**", "crates/hosting/tilo-relay/**", "crates/system/bounded-command/**", "os/**", "os/tests/home_peer_setup.sh", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh"]
 
 [[check]]
@@ -822,6 +877,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group app-publication"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["os/**", "os/tests/parallel_package_uploads.sh", "os/tests/prior_app_collection_reuse.sh", "tools/**", "tools/apps/test_compare_build_outputs.py", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh"]
 
 [[check]]
@@ -830,6 +886,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group printing"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["crates/packaging/launcher/**", "crates/session/shell/src/portal/**", "crates/system/os-actions/**", "crates/system/sandbox-core/**", "docs/printing-threat-model.md", "os/**", "os/tests/printing_isolation.sh", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh"]
 
 [[check]]
@@ -838,6 +895,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group remote-capture"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["crates/session/shell/src/shell/remote_capture/**", "os/**", "os/tests/remote_capture_image_contract.sh", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh"]
 
 [[check]]
@@ -846,6 +904,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group image-size"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 1, memory = "1GiB" }
 inputs = [".forgejo/workflows/build-image.yml", "os/image-size-budget.toml", "os/tests/image_size_budget.py", "os/tests/test_image_size_budget.py", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/perf/image_size.py", "tools/with-test-environment.sh"]
 
 [[check]]
@@ -854,6 +913,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group windows"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["crates/packaging/launcher/**", "crates/session/shell/src/shell/windows_compat.rs", "crates/system/extension-helper/src/**", "crates/windows/**", "docs/windows-compatibility.md", "os/**", "os/tests/test_windows_compat_sysext.py", "os/tests/windows_compat_stack.sh", "os/tests/windows_presentation_capabilities.sh", "os/tests/windows_vm_isolation.sh", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh"]
 
 [[check]]
@@ -862,6 +922,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group kernel-signer"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["Cargo.toml", "crates/system/tilo-crypto/**", "os/**", "os/tests/test_project_kernel_crate.py", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh"]
 
 [[check]]
@@ -870,6 +931,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group imager-packaging"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 2, memory = "1GiB" }
 inputs = [".forgejo/workflows/host-session-e2e.yml", ".forgejo/workflows/release-desktop.yml", ".forgejo/workflows/release-imager.yml", "apps/imager/desktop-catalog.json", "apps/imager/packaging/**", "apps/imager/packaging/test_build_desktop_catalog.py", "apps/imager/packaging/test_capture_admission.py", "apps/imager/packaging/test_capture_build_evidence.py", "apps/imager/packaging/test_capture_build_phases.py", "apps/imager/packaging/test_capture_build_script.py", "apps/imager/packaging/test_capture_openpgp.py", "apps/imager/packaging/test_capture_protocol.py", "apps/imager/packaging/test_capture_qualification.py", "apps/imager/packaging/test_capture_release_pipeline.py", "apps/imager/packaging/test_capture_runtime_pins.py", "apps/imager/packaging/test_continuous_release.py", "apps/imager/packaging/test_desktop_catalog_release.py", "apps/imager/packaging/test_product_display_name.py", "apps/imager/packaging/test_service_source_assets.py", "apps/imager/tilo-app.toml", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/tests/test_imager_enabled_platforms.py", "tools/with-test-environment.sh"]
 
 [[check]]
@@ -878,6 +940,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group native-qualification-stor
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["tools/ci/disposable-native-vm.py", "tools/ci/native-store-virtio.py", "tools/ci/native-stores.sh", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/ci/test_native_store_virtio.py", "tools/with-test-environment.sh"]
 
 [[check]]
@@ -886,6 +949,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group ntfs-helper"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["crates/session/tilo-ntfs-helper/**", "crates/session/tilo-ntfs-helper/tests/test_build_native.py", "crates/session/tilo-ntfs-helper/tests/test_source_artifact.py", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh"]
 
 # It writes under target/ in the source tree and reads Git history.
@@ -895,6 +959,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group dist"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 2, memory = "1GiB" }
 writable_sources = true
 git = true
 inputs = ["dist/**", "dist/ci/tests/test_failed_rpm_retention.py", "dist/ci/tests/test_host_session_rpm_replay.py", "dist/ci/tests/test_package_lane.py", "dist/ci/tests/test_package_source_transfer.py", "dist/dev/tests/fedora44-vm-iterate-test.sh", "dist/local-models/smolvlm2-500m/contract-test.sh", "dist/local-models/u2net-subject/contract-test.sh", "dist/rpm/test-app-collection.sh", "dist/rpm/test-app-store-stage.sh", "dist/rpm/test-build-target-dir.sh", "dist/rpm/test-host-update.sh", "dist/rpm/test-rename-contract.sh", "dist/rpm/test-rpmbuild-route.sh", "dist/rpm/test-rpmlint-config.py", "dist/session/tests/test-files-workspace.py", "dist/session/tests/vm-e2e-exit-status.py", "dist/session/tests/vm-e2e-input-import.py", "os/registry-runtime-publisher.hex", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh"]
@@ -905,6 +970,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group browser-tools"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 2, memory = "1GiB" }
 inputs = ["apps/browser/tilo-app.toml", "crates/sdk/ui-core/src/webview/chromium/runtime.rs", "os/Containerfile", "os/external-assets/github-assets.tsv", "scripts/browser/**", "scripts/browser/test_build_host.py", "scripts/browser/test_engine_runtime.py", "scripts/browser/test_frame_presentation.py", "scripts/browser/test_native_fixture.py", "scripts/browser/test_package.py", "scripts/browser/test_scroll_presentation.py", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh"]
 
 # It writes under target/ in the source tree, and as root gives its probe fixtures another uid, which the capability-less job sandbox cannot.
@@ -924,6 +990,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group perf-tools"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 4, memory = "1GiB" }
 inputs = [".forgejo/workflows/perf-scheduled.yml", ".forgejo/workflows/vm-acceptance.yml", "apps/*/tilo-app.toml", "apps/settings/src/categories.rs", "crates/dev/room-load/src/**", "crates/dev/ui-examples/examples/dashboard_perf_bench.rs", "crates/hosting/tilo-relay/examples/legacy_stream_source.rs", "crates/hosting/tilo-relay/examples/relay_load/main.rs", "crates/session/shell/examples/redraw_bench.rs", "crates/session/shell/src/compositor/switch_latency.rs", "crates/session/shell/src/shell/search/providers/files.rs", "crates/system/fs/tests/performance_gate.rs", "dist/apps/app-collections.toml", "scripts/perf/**", "scripts/perf/agent_rtt_test.py", "scripts/perf/agent_task_test.py", "scripts/perf/browser_qualification.test.mjs", "scripts/perf/code_editor_effects_test.py", "scripts/perf/collect_code_editor_native_test.py", "scripts/perf/collect_file_explorer_native_test.py", "scripts/perf/collect_scratchpad_native_test.py", "scripts/perf/collect_settings_native_test.py", "scripts/perf/device_latency_bench_test.py", "scripts/perf/device_notes_latency_test.py", "scripts/perf/device_notes_trace_test.py", "scripts/perf/file_explorer_effects_test.py", "scripts/perf/input_latency_test.py", "scripts/perf/latency_bench_test.py", "scripts/perf/main_stages_test.py", "scripts/perf/native_app_capture_test.py", "scripts/perf/native_delivery_test.py", "scripts/perf/native_stream_qualification.test.mjs", "scripts/perf/physical_notes_latency_test.py", "scripts/perf/physical_notes_stages_test.py", "scripts/perf/presentation_feedback_test.py", "scripts/perf/render_bench_test.py", "scripts/perf/render_boundaries_test.py", "scripts/perf/resource_bench_test.py", "scripts/perf/runtime_benchmark_test.py", "scripts/perf/scratchpad_effects_test.py", "scripts/perf/settings_effects_test.py", "scripts/perf/word_processor_effects_test.py", "scripts/perf/worker_handoff_test.py", "tools/apps/app_release.py", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/perf/**", "tools/perf/test_ab.py", "tools/perf/test_adapters.py", "tools/perf/test_compare.py", "tools/perf/test_image_size.py", "tools/perf/test_record.py", "tools/perf/test_room_capacity.py", "tools/perf/test_runtime_size_ratchet.py", "tools/perf/test_store.py", "tools/perf/test_tapp_size_ratchet.py", "tools/web/chrome.mjs", "tools/with-test-environment.sh"]
 
 [[check]]
@@ -932,6 +999,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group developer-scripts"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["scripts/agent-loop/**", "scripts/app-launch-sweep.py", "scripts/headless-examples/**", "scripts/runtime-mcp-proof.py", "scripts/tests/**", "scripts/tests/test_agent_loop_usage.py", "scripts/tests/test_app_launch_sweep.py", "scripts/tests/test_headless_error_handling.py", "scripts/tests/test_runtime_mcp_proof.py", "scripts/tests/test_tilo_mcp_server.py", "scripts/tilo-mcp-server.py", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh"]
 
 [[check]]
@@ -940,6 +1008,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group vm-acceptance-tools"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["scripts/vm-acceptance/**", "scripts/vm-acceptance/tests/test_error_paths.py", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh"]
 
 [[check]]
@@ -948,6 +1017,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group ux-bench"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["scripts/ux-bench/**", "scripts/ux-bench/test_suite.py", "scripts/ux-bench/usability_test.py", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh"]
 
 [[check]]
@@ -956,6 +1026,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group platform-web"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["crates/platform/tilo-clipboard/web/**", "crates/platform/tilo-clipboard/web/clipboard.test.mjs", "crates/platform/tilo-dialogs/web/**", "crates/platform/tilo-dialogs/web/dialogs.test.mjs", "crates/platform/tilo-location/web/**", "crates/platform/tilo-location/web/location.test.mjs", "crates/platform/tilo-notify/web/**", "crates/platform/tilo-notify/web/notify.test.mjs", "crates/platform/tilo-secrets/web/**", "crates/platform/tilo-secrets/web/secrets.test.mjs", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh"]
 
 # It installs the MoQ library's npm dependencies in scripts/moq-browser and reads Git.
@@ -965,6 +1036,7 @@ run = "bash tools/ci/prepare-moq-library.sh && python3 tools/ci/suites.py run --
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 1, memory = "1GiB" }
 writable_sources = true
 git = true
 inputs = ["crates/browser/tilo-browser-compute/**", "crates/browser/tilo-browser-compute/scripts/artifact.test.mjs", "crates/browser/tilo-browser-compute/scripts/stage.test.mjs", "crates/browser/tilo-browser-compute/scripts/test_packaging.py", "crates/browser/tilo-browser-compute/web/compute-domains.test.mjs", "crates/browser/tilo-browser-runtime/scripts/build.sh", "crates/dev/tilo-app-cli/src/targets/web.rs", "tools/ci/prepare-moq-library.sh", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh"]
@@ -976,6 +1048,7 @@ run = "bash tools/ci/prepare-moq-library.sh && python3 tools/ci/suites.py run --
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 6, memory = "1GiB" }
 writable_sources = true
 inputs = ["crates/browser/tilo-browser-runtime/**", "crates/browser/tilo-browser-runtime/web/actions.test.mjs", "crates/browser/tilo-browser-runtime/web/admission.test.mjs", "crates/browser/tilo-browser-runtime/web/agents.test.mjs", "crates/browser/tilo-browser-runtime/web/app-crash.test.mjs", "crates/browser/tilo-browser-runtime/web/arrival.test.mjs", "crates/browser/tilo-browser-runtime/web/asset-recovery.test.mjs", "crates/browser/tilo-browser-runtime/web/browser-accounts.test.mjs", "crates/browser/tilo-browser-runtime/web/browser-locale.test.mjs", "crates/browser/tilo-browser-runtime/web/bundle-update.test.mjs", "crates/browser/tilo-browser-runtime/web/channel-vault.test.mjs", "crates/browser/tilo-browser-runtime/web/data-loader.test.mjs", "crates/browser/tilo-browser-runtime/web/desktop-navigation.test.mjs", "crates/browser/tilo-browser-runtime/web/device-custody.test.mjs", "crates/browser/tilo-browser-runtime/web/durable-host.test.mjs", "crates/browser/tilo-browser-runtime/web/entry-page.test.mjs", "crates/browser/tilo-browser-runtime/web/entry.test.mjs", "crates/browser/tilo-browser-runtime/web/font-loader.test.mjs", "crates/browser/tilo-browser-runtime/web/here.test.mjs", "crates/browser/tilo-browser-runtime/web/host-core-keys.test.mjs", "crates/browser/tilo-browser-runtime/web/host-core-wheel.test.mjs", "crates/browser/tilo-browser-runtime/web/host-input.test.mjs", "crates/browser/tilo-browser-runtime/web/identity-actions.test.mjs", "crates/browser/tilo-browser-runtime/web/json-text.test.mjs", "crates/browser/tilo-browser-runtime/web/legacy-windows.test.mjs", "crates/browser/tilo-browser-runtime/web/live-cursors.test.mjs", "crates/browser/tilo-browser-runtime/web/live-fake-relay.test.mjs", "crates/browser/tilo-browser-runtime/web/live-presence.test.mjs", "crates/browser/tilo-browser-runtime/web/live-speakers.test.mjs", "crates/browser/tilo-browser-runtime/web/live-transport.test.mjs", "crates/browser/tilo-browser-runtime/web/machine-setup.test.mjs", "crates/browser/tilo-browser-runtime/web/membership.test.mjs", "crates/browser/tilo-browser-runtime/web/native-catalogue.test.mjs", "crates/browser/tilo-browser-runtime/web/node-apps.test.mjs", "crates/browser/tilo-browser-runtime/web/panorama.test.mjs", "crates/browser/tilo-browser-runtime/web/peer.test.mjs", "crates/browser/tilo-browser-runtime/web/qr.test.mjs", "crates/browser/tilo-browser-runtime/web/resource-reference.test.mjs", "crates/browser/tilo-browser-runtime/web/root-identity.test.mjs", "crates/browser/tilo-browser-runtime/web/router.test.mjs", "crates/browser/tilo-browser-runtime/web/scrub.test.mjs", "crates/browser/tilo-browser-runtime/web/semantic-presentation.test.mjs", "crates/browser/tilo-browser-runtime/web/session-refusal.test.mjs", "crates/browser/tilo-browser-runtime/web/storage-revision.test.mjs", "crates/browser/tilo-browser-runtime/web/voice-audio-codecs.test.mjs", "crates/browser/tilo-browser-runtime/web/voice-audio.test.mjs", "crates/browser/tilo-browser-runtime/web/voice-buffers.test.mjs", "crates/browser/tilo-browser-runtime/web/voice-controls.test.mjs", "crates/browser/tilo-browser-runtime/web/voice-profile.test.mjs", "crates/browser/tilo-browser-runtime/web/voice-revocation.test.mjs", "crates/browser/tilo-browser-runtime/web/voice-transport.test.mjs", "crates/browser/tilo-browser-runtime/web/voice.test.mjs", "crates/browser/tilo-browser-runtime/web/webgpu-safety.test.mjs", "crates/browser/tilo-browser-runtime/web/workspace-actions.test.mjs", "crates/browser/tilo-browser-runtime/web/workspaces.test.mjs", "crates/collab/reference/tests/links.json", "crates/collab/tilo-user-identity/tests/fixtures/root-envelope.json", "scripts/moq-browser/**", "tools/ci/prepare-moq-library.sh", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/web/wasm-split/src/main.rs", "tools/with-test-environment.sh"]
 
@@ -985,6 +1058,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group desktop-open-times"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["crates/browser/tilo-web-desktop/scripts/**", "crates/browser/tilo-web-desktop/scripts/open-times-summary.test.mjs", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh"]
 
 [[check]]
@@ -993,6 +1067,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group browser-auth-e2e"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["crates/hosting/tilo-room-service/dev/**", "crates/hosting/tilo-room-service/dev/auth-e2e.test.mjs", "scripts/perf/browser_qualification.mjs", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/web/chrome.mjs", "tools/with-test-environment.sh"]
 
 [[check]]
@@ -1001,6 +1076,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group browser-benchmark-scripts
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["scripts/browser/**", "scripts/browser/benchmark-pages.test.mjs", "scripts/browser/scroll-response.test.mjs", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/with-test-environment.sh"]
 
 [[check]]
@@ -1009,6 +1085,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group browser-fixture-assets"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["tools/ci/suites.py", "tools/ci/suites.toml", "tools/test-assets.py", "tools/web/fixture-assets.mjs", "tools/web/fixture-assets.test.mjs", "tools/with-test-environment.sh"]
 
 [[check]]
@@ -1017,6 +1094,7 @@ run = "python3 tools/ci/suites.py run --jobs 8 --group cloud-rystic-ci"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["tools/ci/run-rystic-ci.sh", "tools/ci/rystic_ci.py", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/ci/test_rystic_ci.py", "tools/with-test-environment.sh"]
 # END generated
 
@@ -1027,6 +1105,7 @@ inputs = ["tools/ci/run-rystic-ci.sh", "tools/ci/rystic_ci.py", "tools/ci/suites
 [[check]]
 name = "sdk-policy"
 requires = ["arch=any"]
+requirement = { cores = 1, memory = "1GiB" }
 run = """
 python3 tools/policy/check_app_portability.py
 python3 tools/policy/check_app_capabilities.py
@@ -1040,6 +1119,7 @@ inputs = ["apps/**", "crates/**", "examples/**", "Cargo.toml", "Cargo.lock", "to
 [[check]]
 name = "sdk-web-budget"
 requires = ["arch=any"]
+requirement = { cores = 1, memory = "1GiB" }
 run = "python3 tools/web/wasm_size_ratchet.py check-budget --base main"
 git = true
 inputs = ["tools/web/wasm_size_ratchet.py", "tools/web/wasm-size-budget/**", "tools/web/wasm-size-budget.toml"]
@@ -1048,6 +1128,7 @@ inputs = ["tools/web/wasm_size_ratchet.py", "tools/web/wasm-size-budget/**", "to
 # repository, and Calculator built and packaged as a .tapp.
 [[check]]
 name = "sdk-linux"
+requirement = { cores = 8, memory = "12GiB" }
 run = """
 cargo test --locked -p tilo-caps
 cargo test --locked -p tilo-app-cli --lib targets::
@@ -1073,6 +1154,7 @@ cost = "minutes"
 # root, so they run as an unprivileged user in a user namespace of their own.
 [[check]]
 name = "sdk-web"
+requirement = { cores = 8, memory = "48GiB" }
 nested_sandboxes = true
 run = """
 node --test crates/platform/*/web/*.test.mjs
@@ -1113,6 +1195,7 @@ cost = "heavy"
 # The real shared provider panel in the production single-app WASM runtime.
 [[check]]
 name = "model-providers-web"
+requirement = { cores = 8, memory = "8GiB" }
 run = """
 python3 tools/web/generate_web_desktop.py --check
 cargo build --locked -p tilo-app-cli --bin tilo-app
@@ -1137,6 +1220,7 @@ cost = "heavy"
 # records the commit it qualified.
 [[check]]
 name = "sdk-web-size"
+requirement = { cores = 8, memory = "24GiB" }
 run = """
 cargo build --locked -p tilo-app-cli --bin tilo-app
 cargo test --locked --manifest-path tools/web/wasm-split/Cargo.toml
@@ -1170,6 +1254,7 @@ cost = "heavy"
 [[check]]
 name = "render-counters"
 requires = ["arch=x86_64"]
+requirement = { cores = 8, memory = "12GiB" }
 run = """
 cargo build --locked --release -p ui-examples --example ui-perf
 test -r "$VK_DRIVER_FILES"
@@ -1197,6 +1282,7 @@ default = false
 [[check]]
 name = "files-ux"
 requires = ["arch=any"]
+requirement = { cores = 5, memory = "8GiB" }
 run = "cargo test --locked -p file-explorer --lib -- --nocapture --test-threads=1"
 env = { TILO_FS_FUSE_REQUIRED = "0", TILO_REQUIRE_FUSE = "0" }
 cargo_packages = ["file-explorer"]
@@ -1208,6 +1294,7 @@ cost = "minutes"
 name = "real-fuse"
 devices = ["/dev/fuse"]
 requires = ["/dev/fuse"]
+requirement = { cores = 6, memory = "16GiB" }
 env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1" }
 isolation = "nested"
 run = """
@@ -1261,6 +1348,7 @@ cost = "heavy"
 name = "real-fuse-privileged-build"
 # The micro-VM runs these binaries, on the same architecture.
 requires = ["arch=x86_64"]
+requirement = { cores = 6, memory = "12GiB" }
 run = """
 test=$(cargo test --locked -p tilo-relay --test it --no-run --message-format json \
   | python3 -c 'import json, sys; print(next(m["executable"] for m in map(json.loads, sys.stdin) if m.get("reason") == "compiler-artifact" and m.get("executable") and m["target"]["name"] == "it"))')
@@ -1276,6 +1364,7 @@ inputs = ["apps/browser/tilo-app.toml", "crates/agent/agent-participant/tests/ro
 [[check]]
 name = "real-fuse-privileged"
 requires = ["arch=x86_64"]
+requirement = { cores = 1, memory = "1GiB" }
 isolation = "vm"
 needs = ["real-fuse-privileged-build"]
 run = """
@@ -1292,23 +1381,105 @@ inputs = []
 name = "sandbox-host-ids-build"
 requires = ["arch=x86_64"]
 run = """
-test=$(cargo test --locked -p tilo-sandbox --test job --no-run --message-format json \
-  | python3 -c 'import json, sys; print(next(m["executable"] for m in map(json.loads, sys.stdin) if m.get("reason") == "compiler-artifact" and m.get("executable") and m["target"]["name"] == "job"))')
+set -eu
 mkdir -p "$CARGO_TARGET_DIR/vm"
-cp "$test" "$CARGO_TARGET_DIR/vm/tilo-sandbox-job"
+binary_target() {
+  package=$1
+  target=$2
+  name=$3
+  # Read every message before selecting: closing cargo's pipe early makes it
+  # fail with a broken pipe while it is still writing build messages.
+  executable=$(cargo test --locked -p "$package" --test "$target" --no-run --message-format json \
+    | python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m["executable"] for m in messages if m.get("reason") == "compiler-artifact" and m.get("executable") and m["target"]["name"] == sys.argv[1]))' "$target")
+  cp "$executable" "$CARGO_TARGET_DIR/vm/$name"
+}
+binary_lib() {
+  package=$1
+  lib=$2
+  name=$3
+  executable=$(cargo test --locked -p "$package" --lib --no-run --message-format json \
+    | python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m["executable"] for m in messages if m.get("reason") == "compiler-artifact" and m.get("executable") and m["target"]["name"] == sys.argv[1]))' "$lib")
+  cp "$executable" "$CARGO_TARGET_DIR/vm/$name"
+}
+binary_target tilo-sandbox job tilo-sandbox-job
+binary_lib runtime-fs runtime_fs runtime-fs-lib
+binary_lib account-custody account_custody account-custody-lib
+binary_lib runtime-bundle runtime_bundle runtime-bundle-lib
+binary_target tilo-install-helpers native_python tilo-install-helpers-native-python
+binary_target env-tools it env-tools-it
 """
-outputs = ["/target/vm/tilo-sandbox-job"]
-cargo_packages = ["tilo-sandbox"]
-inputs = []
+outputs = [
+  "/target/vm/tilo-sandbox-job",
+  "/target/vm/runtime-fs-lib",
+  "/target/vm/account-custody-lib",
+  "/target/vm/runtime-bundle-lib",
+  "/target/vm/tilo-install-helpers-native-python",
+  "/target/vm/env-tools-it",
+  "/target/debug/install-test-home-seeds",
+  "/target/debug/install-test-firstboot-files",
+  "/target/debug/staging-handoff-native-extractor",
+]
+cargo_packages = ["tilo-sandbox", "runtime-fs", "account-custody", "runtime-bundle", "tilo-install-helpers", "env-tools"]
+inputs = ["os/tests/**", "os/usr/libexec/tilo-install", "os/usr/libexec/tilo-guided-partition", "os/usr/libexec/tilo-installer-profile-extract", "os/usr/libexec/tilo-firstboot-user"]
 
 [[check]]
 name = "sandbox-host-ids"
 requires = ["arch=x86_64"]
 isolation = "vm"
 needs = ["sandbox-host-ids-build"]
+env = { TILO_REQUIRE_CHOWN = "1", TILO_REQUIRE_USERNS = "1", TMPDIR = "/var/tmp/tilo-test" }
 run = """
-cd crates/platform/tilo-sandbox
-/target/vm/tilo-sandbox-job host_ids:: overlays:: --nocapture --test-threads=1
+set -eu
+# These fixtures must run as real root in the micro-VM. If t ever stops giving
+# the guest root, fail here instead of letting the fixtures take their
+# unprivileged branches or skip.
+if [ "$(id -u)" != "0" ]; then
+  echo "sandbox-host-ids: expected euid 0 in the micro-VM, got $(id -u)" >&2
+  exit 1
+fi
+mkdir -p "$TMPDIR"
+# Every fixture below must run the exact cases it exists for. A filter that
+# matches fewer (or no) tests still exits 0, so compare the reported count.
+run_tests() {
+  expected=$1
+  shift
+  if output=$("$@" 2>&1); then
+    printf '%s\\n' "$output"
+    case "$output" in
+      *"skipping:"*|*"skipped:"*)
+        echo "selected fixture skipped: $*" >&2
+        return 1
+        ;;
+    esac
+    actual=$(printf '%s\\n' "$output" | sed -n 's/^test result: ok\\. \\([0-9][0-9]*\\) passed.*/\\1/p' | tail -n 1)
+    if [ "${actual:-}" != "$expected" ]; then
+      echo "expected $expected passing tests, got ${actual:-none}: $*" >&2
+      return 1
+    fi
+  else
+    status=$?
+    printf '%s\\n' "$output"
+    return "$status"
+  fi
+}
+repo=$PWD
+cd "$repo/crates/platform/tilo-sandbox"
+run_tests 15 /target/vm/tilo-sandbox-job host_ids:: overlays:: --nocapture --test-threads=1
+cd "$repo"
+run_tests 2 /target/vm/runtime-fs-lib operations::tests::replacing_save_actual_original_uid --nocapture --test-threads=1
+run_tests 1 /target/vm/account-custody-lib portable::tests::installed_adoption_succeeds_as_private_target_user --nocapture --test-threads=1
+run_tests 2 /target/vm/runtime-bundle-lib component_pins::tests:: --nocapture --test-threads=1
+run_tests 2 /target/vm/tilo-install-helpers-native-python staging_handoff_oracle native_home_seeds --nocapture --test-threads=1
+# The two real-runtime tests need TILO_ENV_RUNTIME_TREE (built by the env-runtime
+# chain) and the network. Selecting them here would turn a missing fixture
+# into a pass, so name the five sandbox fixtures this lane exists for.
+run_tests 5 /target/vm/env-tools-it \
+  build::a_fixture_build_seals_only_what_the_packages_added \
+  build::two_fixture_builds_are_identical \
+  build::a_catalog_hit_skips_the_build \
+  build::requests_dnf_rejects_fail_before_building \
+  build::set_runtime_rebuilds_every_tool_or_none \
+  --nocapture --test-threads=1
 """
 inputs = []
 
@@ -1652,6 +1823,7 @@ env = { CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS 
 inputs = ["apps/**", "crates/**", "vendor/**", "scripts/moq-browser/**", "scripts/perf/browser_qualification.mjs", "tools/web/**", "tools/ci/ensure-browser-dependencies.sh", "tools/font-catalog.py", "Cargo.toml", "Cargo.lock"]
 git = true
 requires = ["arch=x86_64"]
+requirement = { cores = 8, memory = "32GiB" }
 on = ["dispatch"]
 cache = false
 outputs = ["/target/shared-desktop-e2e/**"]
@@ -1980,8 +2152,7 @@ outputs = ["/target/perf-room-capacity/**"]
 # A measurement of the node it ran on, never a stored result.
 cache = false
 # The bench's guests and the host share the node; the write-up's runs had 40 CPUs and 36 GiB.
-cpus = 40
-memory = "36G"
+requirement = { cores = 40, memory = "36GiB" }
 timeout_secs = 9000
 cost = "heavy"
 default = false
@@ -2119,8 +2290,7 @@ requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh hosting-room"
 env = { CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16" }
 # 100 guests and their host on one node, as on the large Forgejo runner.
-cpus = 16
-memory = "32G"
+requirement = { cores = 16, memory = "32GiB" }
 inputs = ["crates/**", "vendor/**", "apps/**", "examples/**", "scripts/perf/**", "scripts/moq-browser/**", "tools/**", "Cargo.toml", "Cargo.lock"]
 outputs = ["/target/perf/hosting-room/**"]
 cache = false
@@ -2265,6 +2435,7 @@ apps = ""
 [[check]]
 name = "vm-acceptance"
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+requirement = { cores = 1, memory = "6GiB" }
 privileged = true
 git = true
 writable_sources = true
@@ -2320,6 +2491,7 @@ on = ["schedule:23 2 * * *"]
 name = "staging-loop"
 on = ["schedule:40 2 * * *", "dispatch"]
 requires = ["disk-100g"]
+requirement = { cores = 1, memory = "2GiB" }
 privileged = true
 devices = ["/dev/loop-control"]
 run = """
@@ -2390,6 +2562,7 @@ outputs = ["/target/publish/room-service/context/**"]
 git = true
 requires = ["arch=x86_64"]
 cost = "heavy"
+requirement = { cores = 8, memory = "24GiB" }
 default = false
 
 [[check]]
@@ -2405,6 +2578,7 @@ outputs = ["/target/publish/room-service/image.oci.tar", "/target/publish/room-s
 requires = ["arch=x86_64"]
 isolation = "vm"
 cost = "minutes"
+requirement = { cores = 2, memory = "12GiB" }
 default = false
 
 [[check]]
@@ -2430,6 +2604,7 @@ outputs = ["/target/publish/room-service/receipt.json"]
 pointers = { room-service = "/target/publish/room-service/receipt.json" }
 id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
+requirement = { cores = 1, memory = "2GiB" }
 on = ["main", "dispatch", "stable"]
 
 # The web entry: the Tilo app on the web, tested before it is published, deployed by digest from
@@ -2444,6 +2619,7 @@ outputs = ["/target/publish/web-entry/context/**"]
 git = true
 requires = ["arch=x86_64"]
 cost = "heavy"
+requirement = { cores = 8, memory = "24GiB" }
 default = false
 
 [[check]]
@@ -2459,6 +2635,7 @@ outputs = ["/target/publish/web-entry/image.oci.tar", "/target/publish/web-entry
 requires = ["arch=x86_64"]
 isolation = "vm"
 cost = "minutes"
+requirement = { cores = 2, memory = "4GiB" }
 default = false
 
 [[check]]
@@ -2499,6 +2676,7 @@ pointers = { web-entry = "/target/publish/web-entry/receipt.json" }
 id_token = ["registry.tilo.so"]
 env = { TILO_RELEASE_OUT = "/target/publish/web-entry/release" }
 requires = ["arch=any"]
+requirement = { cores = 1, memory = "2GiB" }
 on = ["main", "dispatch", "stable"]
 
 # The app registry server (crates/packaging/registry-server): x86_64 only, like the cluster it
@@ -2520,8 +2698,7 @@ outputs = ["/target/publish/registry-server/image.oci.tar", "/target/publish/reg
 requires = ["arch=x86_64"]
 isolation = "vm"
 cost = "heavy"
-cpus = 8
-memory = "12G"
+requirement = { cores = 5, memory = "24GiB" }
 default = false
 
 [[check]]
@@ -2533,6 +2710,7 @@ needs = ["image-registry-server"]
 outputs = ["/target/publish/registry-server/receipt.json"]
 id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
+requirement = { cores = 1, memory = "1GiB" }
 on = ["main", "dispatch"]
 
 # The release rehearsal (tools/ci/publish/rehearsal): a one-file image that runs the whole chain
@@ -2549,7 +2727,7 @@ inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/
 outputs = ["/target/publish/release-rehearsal/image.oci.tar", "/target/publish/release-rehearsal/digest"]
 requires = ["arch=x86_64"]
 isolation = "vm"
-memory = "2G"
+requirement = { cores = 4, memory = "2GiB" }
 default = false
 
 [[check]]
@@ -2593,7 +2771,7 @@ outputs = ["/target/publish/ci-fast/image.oci.tar", "/target/publish/ci-fast/dig
 requires = ["arch=x86_64"]
 isolation = "vm"
 cost = "heavy"
-memory = "8G"
+requirement = { cores = 4, memory = "8GiB" }
 default = false
 
 [[check]]
@@ -2621,7 +2799,7 @@ outputs = ["/target/publish/ci-control/image.oci.tar", "/target/publish/ci-contr
 requires = ["arch=x86_64"]
 isolation = "vm"
 cost = "minutes"
-memory = "8G"
+requirement = { cores = 4, memory = "8GiB" }
 default = false
 
 [[check]]
@@ -2712,8 +2890,7 @@ outputs = ["/target/publish/ci-builder/x86_64/image.oci.tar", "/target/publish/c
 requires = ["arch=x86_64"]
 isolation = "vm"
 cost = "heavy"
-cpus = 16
-memory = "32G"
+requirement = { cores = 16, memory = "32GiB" }
 timeout_secs = 14400
 default = false
 
@@ -2726,8 +2903,7 @@ outputs = ["/target/publish/ci-builder/aarch64/image.oci.tar", "/target/publish/
 requires = ["arch=aarch64"]
 isolation = "vm"
 cost = "heavy"
-cpus = 16
-memory = "32G"
+requirement = { cores = 16, memory = "32GiB" }
 timeout_secs = 14400
 default = false
 
@@ -2786,6 +2962,7 @@ optional_needs = ["sign-ci-builder", "sign-dev-ci-builder"]
 outputs = ["/target/publish/ci-builder/x86_64/receipt.json", "/target/publish/ci-builder/aarch64/receipt.json", "/target/publish/ci-builder/index/receipt.json"]
 id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
+requirement = { cores = 2, memory = "24GiB" }
 on = ["main", "dispatch", "stable"]
 
 [[check]]
@@ -2821,8 +2998,7 @@ cargo_packages = ["tilo-browser-peer", "tilo-agent-participant"]
 requires = ["arch=x86_64"]
 writable_sources = true
 cost = "heavy"
-cpus = 8
-memory = "16G"
+requirement = { cores = 8, memory = "12GiB" }
 default = false
 
 [[check]]
@@ -2833,8 +3009,7 @@ inputs = ["tools/ci/t-nextest.sh", "tools/ci/nextest_filters.py", ".config/nexte
 cargo_packages = ["shell"]
 requires = ["arch=x86_64"]
 cost = "heavy"
-cpus = 8
-memory = "16G"
+requirement = { cores = 8, memory = "12GiB" }
 default = false
 
 [[check]]
@@ -2870,8 +3045,7 @@ cargo_packages = ["tilo-browser-peer", "tilo-agent-participant"]
 requires = ["arch=aarch64"]
 writable_sources = true
 cost = "heavy"
-cpus = 8
-memory = "16G"
+requirement = { cores = 8, memory = "12GiB" }
 default = false
 
 [[check]]
@@ -2882,8 +3056,7 @@ inputs = ["tools/ci/t-nextest.sh", "tools/ci/nextest_filters.py", ".config/nexte
 cargo_packages = ["shell"]
 requires = ["arch=aarch64"]
 cost = "heavy"
-cpus = 8
-memory = "16G"
+requirement = { cores = 8, memory = "12GiB" }
 default = false
 # END generated
 
@@ -2898,7 +3071,7 @@ needs = ["image-ci-fast", "image-ci-control"]
 requires = ["arch=x86_64"]
 cost = "minutes"
 # It unpacks both multi-GB images; a micro-VM step can't grow past what it reserves.
-memory = "8G"
+requirement = { cores = 4, memory = "8GiB" }
 default = false
 
 # ---------------------------------------------------------------------------
@@ -3127,8 +3300,7 @@ outputs = ["/target/nested-session/**"]
 requires = ["arch=x86_64"]
 # The shell's optimised link and the runtime library's link run side by side; under a
 # compile-sized cap they were killed for memory.
-cpus = 16
-memory = "32G"
+requirement = { cores = 16, memory = "32GiB" }
 cost = "heavy"
 timeout_secs = 5400
 default = false
@@ -3142,8 +3314,7 @@ outputs = ["/target/nested-session/**"]
 requires = ["arch=arm64"]
 # The shell's optimised link and the runtime library's link run side by side; under a
 # compile-sized cap they were killed for memory.
-cpus = 16
-memory = "32G"
+requirement = { cores = 16, memory = "32GiB" }
 cost = "heavy"
 timeout_secs = 5400
 default = false
@@ -3156,6 +3327,7 @@ default = false
 [[check]]
 name = "desktop-preflight"
 requires = ["arch=any"]
+requirement = { cores = 1, memory = "2GiB" }
 run = """
 set -eu
 python3 scripts/check-install-contract.py
@@ -3212,8 +3384,7 @@ requires = ["arch=x86_64"]
 privileged = true
 writable_sources = true
 cost = "heavy"
-cpus = 8
-memory = "32G"
+requirement = { cores = 8, memory = "32GiB" }
 timeout_secs = 14400
 default = false
 secrets = ["TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY"]
@@ -3228,8 +3399,7 @@ requires = ["arch=arm64"]
 privileged = true
 writable_sources = true
 cost = "heavy"
-cpus = 8
-memory = "32G"
+requirement = { cores = 8, memory = "32GiB" }
 timeout_secs = 14400
 default = false
 secrets = ["TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY"]
@@ -3269,14 +3439,13 @@ default = false
 name = "image-relay"
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 run = "bash tools/ci/publish/relay-build.sh /target/publish/rpm-snapshot /target/publish/relay"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/base-snapshot.env", "os/scripts/verify-elf-hardening.sh", "os/usr/lib/systemd/system/tilo-relay.service", ".cargo/**", "Cargo.lock", "Cargo.toml", "crates/collab/action-policy/**", "crates/collab/actions/**", "crates/collab/automation/**", "crates/collab/channel-crypto/**", "crates/collab/collab-types/**", "crates/collab/neighbour-wire/**", "crates/collab/threshold-identity/**", "crates/collab/tilo-identity-ceremony/**", "crates/collab/tilo-peer-state/**", "crates/collab/tilo-unlock-protocol/**", "crates/collab/tilo-user-identity/**", "crates/collab/workspace-join/**", "crates/doc/bounded-zip/**", "crates/doc/tilo-doc-codecs/**", "crates/doc/tilo-doc/**", "crates/doc/tilo-automerge-isolate/**", "crates/doc/tilo-automerge/**", "crates/hosting/tilo-delivery-protocol/**", "crates/hosting/tilo-relay-client/**", "crates/hosting/tilo-relay-protocol/**", "crates/hosting/tilo-relay-session/**", "crates/hosting/tilo-relay/**", "crates/hosting/tilo-relay-shell/**", "crates/hosting/tilo-relay-store/**", "crates/media/thumbnail/**", "crates/packaging/app-registry/**", "crates/packaging/launcher/**", "crates/packaging/package-store/**", "crates/packaging/registry-types/**", "crates/packaging/runtime-bundle/**", "crates/packaging/tilo-app-package/**", "crates/platform/tilo-clock/**", "crates/platform/tilo-lock/**", "crates/platform/tilo-files/**", "crates/platform/tilo-net/**", "crates/platform/tilo-paths/**", "crates/platform/tilo-platform-caps/**", "crates/platform/tilo-rt/**", "crates/platform/tilo-wake/**", "crates/platform/tilo-secrets/**", "crates/runtime/egress/**", "crates/browser/browser-continuity/**", "crates/browser/browser-continuity-core/**", "crates/runtime/runtime-collab/**", "crates/runtime/runtime-fs/**", "crates/runtime/runtime-identity/**", "crates/runtime/runtime-portal/**", "crates/runtime/tilo-identity-host/**", "crates/sdk/tilo-resource-macros/**", "crates/sdk/tilo-resource/**", "crates/session/desktop-model/**", "crates/system/accounts/**", "crates/system/advisory-lock/**", "crates/system/bounded-command/**", "crates/system/cloud-source-dav/**", "crates/system/cloud-source-dropbox/**", "crates/system/cloud-source-gdrive/**", "crates/system/cloud-source-icloud/**", "crates/system/cloud-source-onedrive/**", "crates/system/cloud-source/**", "crates/system/endpoint-reachability/**", "crates/system/content/**", "crates/system/content-types/**", "crates/platform/tilo-mime/**", "crates/platform/tilo-render-protocol/**", "crates/system/content-device/**", "vendor/pulldown-cmark/**", "vendor/regex-syntax/**", "vendor/vello_encoding/**", "crates/system/desktop-entry/**", "crates/system/desktop-policy/**", "crates/system/fs-content/**", "crates/system/fs-native/**", "crates/system/fs-protocol/**", "crates/system/fs/**", "crates/system/power/**", "crates/system/sandbox-core/**", "crates/system/secret-vault/**", "crates/system/tilo-dav/**", "crates/system/tilo-native-certs/**", "crates/system/tilo-nm/**", "crates/system/tilo-seal/**", "crates/system/tilo-startup-metrics/**", "crates/system/system-stats/**", "crates/system/wire-frame/**", "crates/workspace-hack/**", "crates/packaging/oci-images/**", "crates/runtime/cli/**", "crates/runtime/env-tools/**", "crates/runtime/environment/**", "crates/runtime/legacy-agent-protocol/**", "crates/runtime/legacy-vm/**", "crates/system/libvirt-domain/**", "crates/runtime/ush/**", "crates/system/app-state/**", "crates/system/durable-store/**", "keys/cosign.pub", "os/containers/tilo-relay/**", "os/dev/await-rpm-snapshot.sh", "os/dev/install-cached-cosign.sh", "os/dev/resolve-rpm-snapshot.sh", "os/dev/rpm-snapshot-fingerprint.py", "os/dev/verify-rpm-snapshot-buildkit.py", "os/dev/verify-rpm-snapshot-package-set.sh", "os/tests/test_rpm_snapshot_buildkit.py", "vendor/automerge/**", "vendor/iroh/**", "vendor/iroh-gossip/**", "vendor/genawaiter-proc-macro/**", "vendor/netwatch/**", "vendor/wayland-backend/**", "vendor/wgpu/**", "vendor/wgpu-hal/**", "tools/ci/publish/relay-build.sh"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/base-snapshot.env", "os/scripts/verify-elf-hardening.sh", "os/usr/lib/systemd/system/tilo-relay.service", ".cargo/**", "Cargo.lock", "Cargo.toml", "crates/collab/action-policy/**", "crates/collab/actions/**", "crates/collab/automation/**", "crates/collab/channel-crypto/**", "crates/collab/collab-types/**", "crates/collab/neighbour-wire/**", "crates/collab/threshold-identity/**", "crates/collab/tilo-identity-ceremony/**", "crates/collab/tilo-peer-state/**", "crates/collab/tilo-unlock-protocol/**", "crates/collab/tilo-user-identity/**", "crates/collab/workspace-join/**", "crates/doc/bounded-zip/**", "crates/doc/tilo-doc-codecs/**", "crates/doc/tilo-doc/**", "crates/doc/tilo-automerge-isolate/**", "crates/doc/tilo-automerge/**", "crates/hosting/tilo-delivery-protocol/**", "crates/hosting/tilo-relay-client/**", "crates/hosting/tilo-relay-protocol/**", "crates/hosting/tilo-relay-session/**", "crates/hosting/tilo-relay/**", "crates/hosting/tilo-relay-shell/**", "crates/hosting/tilo-relay-store/**", "crates/media/thumbnail/**", "crates/packaging/app-registry/**", "crates/packaging/launcher/**", "crates/packaging/package-store/**", "crates/packaging/registry-types/**", "crates/packaging/runtime-bundle/**", "crates/packaging/tilo-app-package/**", "crates/platform/tilo-clock/**", "crates/platform/tilo-lock/**", "crates/platform/tilo-files/**", "crates/platform/tilo-net/**", "crates/platform/tilo-paths/**", "crates/platform/tilo-platform-caps/**", "crates/platform/tilo-rt/**", "crates/platform/tilo-wake/**", "crates/platform/tilo-secrets/**", "crates/runtime/egress/**", "crates/browser/browser-continuity/**", "crates/browser/browser-continuity-core/**", "crates/runtime/runtime-collab/**", "crates/runtime/runtime-fs/**", "crates/runtime/runtime-identity/**", "crates/runtime/runtime-portal/**", "crates/runtime/tilo-identity-host/**", "crates/sdk/tilo-resource-macros/**", "crates/sdk/tilo-resource/**", "crates/session/desktop-model/**", "crates/system/accounts/**", "crates/system/advisory-lock/**", "crates/system/bounded-command/**", "crates/system/cloud-source-dav/**", "crates/system/cloud-source-dropbox/**", "crates/system/cloud-source-gdrive/**", "crates/system/cloud-source-icloud/**", "crates/system/cloud-source-onedrive/**", "crates/system/cloud-source/**", "crates/system/endpoint-reachability/**", "crates/system/content/**", "crates/system/content-types/**", "crates/system/desktop-entry/**", "crates/system/desktop-policy/**", "crates/system/fs-content/**", "crates/system/fs-native/**", "crates/system/fs-protocol/**", "crates/system/fs/**", "crates/system/power/**", "crates/system/sandbox-core/**", "crates/system/secret-vault/**", "crates/system/tilo-dav/**", "crates/system/tilo-native-certs/**", "crates/system/tilo-nm/**", "crates/system/tilo-seal/**", "crates/system/tilo-startup-metrics/**", "crates/system/system-stats/**", "crates/system/wire-frame/**", "crates/workspace-hack/**", "crates/packaging/oci-images/**", "crates/runtime/cli/**", "crates/runtime/env-tools/**", "crates/runtime/environment/**", "crates/runtime/legacy-agent-protocol/**", "crates/runtime/legacy-vm/**", "crates/system/libvirt-domain/**", "crates/runtime/ush/**", "crates/system/app-state/**", "crates/system/durable-store/**", "keys/cosign.pub", "os/containers/tilo-relay/**", "os/dev/await-rpm-snapshot.sh", "os/dev/install-cached-cosign.sh", "os/dev/resolve-rpm-snapshot.sh", "os/dev/rpm-snapshot-fingerprint.py", "os/dev/verify-rpm-snapshot-buildkit.py", "os/dev/verify-rpm-snapshot-package-set.sh", "os/tests/test_rpm_snapshot_buildkit.py", "vendor/automerge/**", "vendor/iroh/**", "vendor/iroh-gossip/**", "vendor/genawaiter-proc-macro/**", "vendor/netwatch/**", "vendor/wayland-backend/**", "vendor/wgpu/**", "vendor/wgpu-hal/**", "tools/ci/publish/relay-build.sh"]
 needs = ["rpm-snapshot"]
 outputs = ["/target/publish/relay/image.oci.tar", "/target/publish/relay/digest"]
 requires = ["arch=x86_64"]
 isolation = "vm"
 cost = "heavy"
-cpus = 16
-memory = "24G"
+requirement = { cores = 16, memory = "24GiB" }
 default = false
 
 [[check]]
@@ -3319,8 +3488,7 @@ outputs = ["/target/publish/legacy-guest/image/image.oci.tar", "/target/publish/
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 writable_sources = true
-cpus = 8
-memory = "16G"
+requirement = { cores = 8, memory = "16GiB" }
 timeout_secs = 9000
 default = false
 
@@ -3371,8 +3539,7 @@ requires = ["arch=x86_64"]
 cost = "heavy"
 # A micro-VM step can't grow past what it reserves, and buildah installs and exports the whole
 # runtime tree: the default 4 GiB guest ran out of memory.
-cpus = 4
-memory = "8G"
+requirement = { cores = 4, memory = "8GiB" }
 default = false
 
 [[check]]
@@ -3387,8 +3554,7 @@ requires = ["arch=aarch64"]
 cost = "heavy"
 # A micro-VM step can't grow past what it reserves, and buildah installs and exports the whole
 # runtime tree: the default 4 GiB guest ran out of memory.
-cpus = 4
-memory = "8G"
+requirement = { cores = 4, memory = "8GiB" }
 default = false
 
 [[check]]
@@ -3479,8 +3645,7 @@ inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/
 outputs = ["/target/publish/rpms/x86_64/image.oci.tar", "/target/publish/rpms/x86_64/digest"]
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
-cpus = 8
-memory = "16G"
+requirement = { cores = 8, memory = "16GiB" }
 timeout_secs = 10800
 default = false
 
@@ -3492,8 +3657,7 @@ inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/
 outputs = ["/target/publish/rpms/aarch64/image.oci.tar", "/target/publish/rpms/aarch64/digest"]
 requires = ["arch=aarch64", "disk-100g"]
 isolation = "vm"
-cpus = 8
-memory = "16G"
+requirement = { cores = 8, memory = "16GiB" }
 timeout_secs = 10800
 default = false
 
@@ -3626,8 +3790,7 @@ inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/
 outputs = ["/target/publish/kernel/x86_64/image.oci.tar", "/target/publish/kernel/x86_64/digest", "/target/publish/kernel/x86_64/secureboot/**"]
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
-cpus = 16
-memory = "24G"
+requirement = { cores = 16, memory = "24GiB" }
 timeout_secs = 14400
 default = false
 
@@ -3639,8 +3802,7 @@ inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/
 outputs = ["/target/publish/kernel/aarch64/image.oci.tar", "/target/publish/kernel/aarch64/digest", "/target/publish/kernel/aarch64/secureboot/**"]
 requires = ["arch=aarch64", "disk-100g"]
 isolation = "vm"
-cpus = 16
-memory = "24G"
+requirement = { cores = 16, memory = "24GiB" }
 timeout_secs = 14400
 default = false
 
@@ -3696,8 +3858,7 @@ inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/kernel-acceptance.sh", "o
 needs = ["image-kernel-x86_64"]
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
-cpus = 4
-memory = "8G"
+requirement = { cores = 4, memory = "8GiB" }
 timeout_secs = 3600
 default = false
 
@@ -3708,8 +3869,7 @@ inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/kernel-acceptance.sh", "o
 needs = ["image-kernel-aarch64"]
 requires = ["arch=aarch64", "disk-100g"]
 isolation = "vm"
-cpus = 4
-memory = "8G"
+requirement = { cores = 4, memory = "8GiB" }
 timeout_secs = 3600
 default = false
 # END generated
@@ -3774,8 +3934,7 @@ inputs = ["os/tests/development_signing_native.sh"]
 needs = ["development-signing-context-x86_64"]
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
-cpus = 4
-memory = "16G"
+requirement = { cores = 4, memory = "16GiB" }
 timeout_secs = 2700
 
 [[check]]
@@ -3794,8 +3953,7 @@ inputs = ["os/tests/development_signing_native.sh"]
 needs = ["development-signing-context-aarch64"]
 requires = ["arch=aarch64", "disk-100g"]
 isolation = "vm"
-cpus = 4
-memory = "16G"
+requirement = { cores = 4, memory = "16GiB" }
 timeout_secs = 2700
 # END generated
 
@@ -3816,8 +3974,7 @@ run = "bash tools/ci/publish/legacy-guest.sh binaries /target/publish/legacy-gue
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/legacy-guest.sh", "crates/**", "vendor/**", "Cargo.toml", "Cargo.lock", "apps/**", "dist/**"]
 outputs = ["/target/publish/legacy-guest/e2e-bin/*"]
 requires = ["arch=x86_64"]
-cpus = 16
-memory = "32G"
+requirement = { cores = 16, memory = "32GiB" }
 default = false
 
 # As root in a micro-VM step with a /dev/kvm of its own: the guest boots under KVM nested in it.
@@ -3828,8 +3985,7 @@ inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/legacy-guest-e2e.sh", "os
 needs = ["image-legacy-guest", "legacy-guest-e2e-binaries"]
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
-cpus = 8
-memory = "16G"
+requirement = { cores = 8, memory = "16GiB" }
 timeout_secs = 5400
 default = false
 
@@ -3855,8 +4011,7 @@ inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-tools.sh", "os/env-to
 needs = ["env-tools-binaries-x86_64"]
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
-cpus = 8
-memory = "16G"
+requirement = { cores = 8, memory = "16GiB" }
 timeout_secs = 9000
 default = false
 
@@ -3876,8 +4031,7 @@ inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-tools.sh", "os/env-to
 needs = ["env-tools-binaries-aarch64"]
 requires = ["arch=aarch64", "disk-100g"]
 isolation = "vm"
-cpus = 8
-memory = "16G"
+requirement = { cores = 8, memory = "16GiB" }
 timeout_secs = 9000
 default = false
 # END generated
@@ -3895,8 +4049,7 @@ image = "registry.tilo.so/tilo/tilo-builder@sha256:da7c1556f8a38b33e5e85f8086bbd
 run = "bash tools/ci/windows/build.sh sdk x86_64 /target/windows/sdk"
 inputs = ["tools/ci/windows/build.sh", "tools/ci/windows/xwin-env.sh"]
 outputs = ["/target/windows/sdk/sdk-x86_64.tar.zst", "/target/windows/sdk/sdk-x86_64.tar.zst.sha256"]
-cpus = 4
-memory = "4G"
+requirement = { cores = 4, memory = "4GiB" }
 default = false
 
 [[check]]
@@ -3906,8 +4059,7 @@ run = "bash tools/ci/windows/build.sh imager x86_64 /target/windows/sdk/sdk-x86_
 inputs = ["apps/imager/**", "apps/staging-handoff-model/**", "crates/**", "vendor/**", "dist/session/**", "os/tests/fixtures/**", "Cargo.toml", "Cargo.lock", "tools/ci/windows/build.sh", "tools/ci/windows/xwin-env.sh"]
 needs = ["build/windows-sdk-x86_64"]
 outputs = ["/target/windows/x86_64/build/imager.exe", "/target/windows/x86_64/build/imager.exe.sha256"]
-cpus = 16
-memory = "24G"
+requirement = { cores = 16, memory = "24GiB" }
 default = false
 
 [[check]]
@@ -3917,8 +4069,7 @@ run = "bash tools/ci/windows/build.sh tests x86_64 /target/windows/sdk/sdk-x86_6
 inputs = ["apps/imager/**", "apps/staging-handoff-model/**", "crates/**", "vendor/**", "dist/session/**", "os/tests/fixtures/**", "Cargo.toml", "Cargo.lock", "tools/ci/windows/build.sh", "tools/ci/windows/xwin-env.sh"]
 needs = ["build/windows-sdk-x86_64"]
 outputs = ["/target/windows/x86_64/tests/imager-tests.exe", "/target/windows/x86_64/tests/imager-tests.exe.sha256"]
-cpus = 16
-memory = "24G"
+requirement = { cores = 16, memory = "24GiB" }
 default = false
 
 # The unsigned package: standalone EXE, zip and Inno Setup installer, each with a digest.
@@ -3930,8 +4081,7 @@ inputs = ["apps/imager/packaging/package-windows.sh", "apps/imager/packaging/win
 needs = ["build/windows-x86_64"]
 outputs = ["/target/windows/x86_64/package/*"]
 requires = ["arch=x86_64"]
-cpus = 4
-memory = "4G"
+requirement = { cores = 4, memory = "4GiB" }
 default = false
 
 # Authenticode, for imager release tags only: re-checks the build's digest against the one
@@ -3945,8 +4095,7 @@ inputs = ["apps/imager/packaging/package-windows.sh", "apps/imager/packaging/win
 needs = ["build/windows-x86_64", "package/windows-x86_64"]
 outputs = ["/target/windows/x86_64/signed/*"]
 requires = ["arch=x86_64"]
-cpus = 2
-memory = "4G"
+requirement = { cores = 2, memory = "4GiB" }
 on = ["tag:imager-v*"]
 cache = false
 secrets = ["TILO_SIGNING_AWS_ACCESS_KEY_ID", "TILO_SIGNING_AWS_SECRET_ACCESS_KEY", "TILO_AUTHENTICODE_KMS_KEY", "TILO_AUTHENTICODE_CERT_CHAIN", "TILO_WINDOWS_PUBLISHER"]
@@ -3960,8 +4109,7 @@ run = "bash tools/ci/windows/wine-test.sh units /target/windows/x86_64/tests/ima
 inputs = ["tools/ci/windows/wine-test.sh", "tools/ci/windows/wine-prefix.sh", "tools/ci/windows/wine-skip.txt"]
 needs = ["build/windows-x86_64-tests"]
 requires = ["arch=x86_64"]
-cpus = 8
-memory = "8G"
+requirement = { cores = 8, memory = "8GiB" }
 default = false
 
 [[check]]
@@ -3971,8 +4119,7 @@ run = "bash tools/ci/windows/wine-test.sh install /target/windows/x86_64/package
 inputs = ["tools/ci/windows/wine-test.sh", "tools/ci/windows/wine-prefix.sh"]
 needs = ["package/windows-x86_64"]
 requires = ["arch=x86_64"]
-cpus = 4
-memory = "8G"
+requirement = { cores = 4, memory = "8GiB" }
 default = false
 
 [[check]]
@@ -3981,8 +4128,7 @@ image = "registry.tilo.so/tilo/tilo-builder@sha256:da7c1556f8a38b33e5e85f8086bbd
 run = "bash tools/ci/windows/build.sh sdk aarch64 /target/windows/sdk"
 inputs = ["tools/ci/windows/build.sh", "tools/ci/windows/xwin-env.sh"]
 outputs = ["/target/windows/sdk/sdk-aarch64.tar.zst", "/target/windows/sdk/sdk-aarch64.tar.zst.sha256"]
-cpus = 4
-memory = "4G"
+requirement = { cores = 4, memory = "4GiB" }
 default = false
 
 [[check]]
@@ -3992,8 +4138,7 @@ run = "bash tools/ci/windows/build.sh imager aarch64 /target/windows/sdk/sdk-aar
 inputs = ["apps/imager/**", "apps/staging-handoff-model/**", "crates/**", "vendor/**", "dist/session/**", "os/tests/fixtures/**", "Cargo.toml", "Cargo.lock", "tools/ci/windows/build.sh", "tools/ci/windows/xwin-env.sh"]
 needs = ["build/windows-sdk-aarch64"]
 outputs = ["/target/windows/aarch64/build/imager.exe", "/target/windows/aarch64/build/imager.exe.sha256"]
-cpus = 16
-memory = "24G"
+requirement = { cores = 16, memory = "24GiB" }
 default = false
 
 [[check]]
@@ -4003,8 +4148,7 @@ run = "bash tools/ci/windows/build.sh tests aarch64 /target/windows/sdk/sdk-aarc
 inputs = ["apps/imager/**", "apps/staging-handoff-model/**", "crates/**", "vendor/**", "dist/session/**", "os/tests/fixtures/**", "Cargo.toml", "Cargo.lock", "tools/ci/windows/build.sh", "tools/ci/windows/xwin-env.sh"]
 needs = ["build/windows-sdk-aarch64"]
 outputs = ["/target/windows/aarch64/tests/imager-tests.exe", "/target/windows/aarch64/tests/imager-tests.exe.sha256"]
-cpus = 16
-memory = "24G"
+requirement = { cores = 16, memory = "24GiB" }
 default = false
 
 # The unsigned package: standalone EXE, zip and Inno Setup installer, each with a digest.
@@ -4016,8 +4160,7 @@ inputs = ["apps/imager/packaging/package-windows.sh", "apps/imager/packaging/win
 needs = ["build/windows-aarch64"]
 outputs = ["/target/windows/aarch64/package/*"]
 requires = ["arch=x86_64"]
-cpus = 4
-memory = "4G"
+requirement = { cores = 4, memory = "4GiB" }
 default = false
 
 # Authenticode, for imager release tags only: re-checks the build's digest against the one
@@ -4031,8 +4174,7 @@ inputs = ["apps/imager/packaging/package-windows.sh", "apps/imager/packaging/win
 needs = ["build/windows-aarch64", "package/windows-aarch64"]
 outputs = ["/target/windows/aarch64/signed/*"]
 requires = ["arch=x86_64"]
-cpus = 2
-memory = "4G"
+requirement = { cores = 2, memory = "4GiB" }
 on = ["tag:imager-v*"]
 cache = false
 secrets = ["TILO_SIGNING_AWS_ACCESS_KEY_ID", "TILO_SIGNING_AWS_SECRET_ACCESS_KEY", "TILO_AUTHENTICODE_KMS_KEY", "TILO_AUTHENTICODE_CERT_CHAIN", "TILO_WINDOWS_PUBLISHER"]
@@ -4054,8 +4196,7 @@ inputs = ["apps/imager/packaging/generate-winget.py", "apps/imager/packaging/val
 needs = ["package/windows-x86_64", "package/windows-aarch64"]
 outputs = ["/target/windows/winget/*"]
 requires = ["arch=any"]
-cpus = 1
-memory = "2G"
+requirement = { cores = 1, memory = "2GiB" }
 default = false
 # END generated
 
@@ -4072,8 +4213,7 @@ outputs = ["/target/publish/fex-buildroot/image.oci.tar", "/target/publish/fex-b
 requires = ["arch=aarch64"]
 isolation = "vm"
 cost = "heavy"
-cpus = 8
-memory = "32G"
+requirement = { cores = 8, memory = "32GiB" }
 timeout_secs = 5400
 default = false
 
@@ -4099,8 +4239,7 @@ outputs = ["/target/publish/fex-x86-sdk/image.oci.tar", "/target/publish/fex-x86
 requires = ["arch=x86_64"]
 isolation = "vm"
 cost = "heavy"
-cpus = 4
-memory = "16G"
+requirement = { cores = 4, memory = "16GiB" }
 timeout_secs = 5400
 default = false
 
@@ -4138,8 +4277,7 @@ outputs = ["/target/publish/fex-payload/image.oci.tar", "/target/publish/fex-pay
 requires = ["arch=aarch64"]
 isolation = "vm"
 cost = "heavy"
-cpus = 16
-memory = "48G"
+requirement = { cores = 16, memory = "48GiB" }
 timeout_secs = 10800
 default = false
 
@@ -4193,8 +4331,7 @@ outputs = ["/target/publish/wine-tools/image.oci.tar", "/target/publish/wine-too
 requires = ["arch=x86_64"]
 isolation = "vm"
 cost = "heavy"
-cpus = 4
-memory = "8G"
+requirement = { cores = 4, memory = "8GiB" }
 timeout_secs = 3600
 default = false
 
@@ -4227,8 +4364,7 @@ outputs = ["/target/windows-compat/wine-resolve-x86_64/bundle.tar"]
 requires = ["arch=x86_64"]
 isolation = "vm"
 cost = "heavy"
-cpus = 4
-memory = "8G"
+requirement = { cores = 4, memory = "8GiB" }
 timeout_secs = 3600
 default = false
 
@@ -4242,8 +4378,7 @@ outputs = ["/target/windows-compat/wine-build-x86_64/**"]
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
 cost = "heavy"
-cpus = 16
-memory = "32G"
+requirement = { cores = 16, memory = "32GiB" }
 timeout_secs = 14400
 default = false
 
@@ -4257,8 +4392,7 @@ outputs = ["/target/windows-compat/wine-resolve-i686/bundle.tar"]
 requires = ["arch=x86_64"]
 isolation = "vm"
 cost = "heavy"
-cpus = 4
-memory = "8G"
+requirement = { cores = 4, memory = "8GiB" }
 timeout_secs = 3600
 default = false
 
@@ -4272,8 +4406,7 @@ outputs = ["/target/windows-compat/wine-build-i686/**"]
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
 cost = "heavy"
-cpus = 16
-memory = "32G"
+requirement = { cores = 16, memory = "32GiB" }
 timeout_secs = 14400
 default = false
 
@@ -4301,8 +4434,7 @@ outputs = ["/target/windows-compat/wine-paired/**"]
 requires = ["arch=x86_64"]
 isolation = "vm"
 cost = "minutes"
-cpus = 2
-memory = "8G"
+requirement = { cores = 2, memory = "8GiB" }
 timeout_secs = 3600
 default = false
 
@@ -4316,8 +4448,7 @@ outputs = ["/target/windows-compat/windows-guest/**"]
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
 cost = "heavy"
-cpus = 8
-memory = "16G"
+requirement = { cores = 8, memory = "16GiB" }
 timeout_secs = 5400
 default = false
 
@@ -4368,8 +4499,7 @@ requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
 writable_sources = true
 cost = "heavy"
-cpus = 12
-memory = "24G"
+requirement = { cores = 12, memory = "24GiB" }
 timeout_secs = 10800
 default = false
 
@@ -4385,8 +4515,7 @@ git = true
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
 cost = "heavy"
-cpus = 12
-memory = "24G"
+requirement = { cores = 12, memory = "24GiB" }
 timeout_secs = 7200
 default = false
 
@@ -4408,8 +4537,7 @@ git = true
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 cost = "heavy"
-cpus = 8
-memory = "16G"
+requirement = { cores = 8, memory = "16GiB" }
 timeout_secs = 5400
 on = ["schedule:30 1 * * *"]
 default = false
@@ -4425,8 +4553,7 @@ requires = ["arch=arm64", "disk-100g"]
 isolation = "vm"
 writable_sources = true
 cost = "heavy"
-cpus = 12
-memory = "24G"
+requirement = { cores = 12, memory = "24GiB" }
 timeout_secs = 10800
 default = false
 
@@ -4442,8 +4569,7 @@ git = true
 requires = ["arch=arm64", "disk-100g"]
 isolation = "vm"
 cost = "heavy"
-cpus = 12
-memory = "24G"
+requirement = { cores = 12, memory = "24GiB" }
 timeout_secs = 7200
 default = false
 
@@ -4465,8 +4591,7 @@ git = true
 requires = ["arch=arm64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 cost = "heavy"
-cpus = 8
-memory = "16G"
+requirement = { cores = 8, memory = "16GiB" }
 timeout_secs = 5400
 on = ["schedule:30 1 * * *"]
 default = false
@@ -4489,8 +4614,7 @@ requires = ["arch=arm64", "disk-100g"]
 isolation = "vm"
 writable_sources = true
 cost = "heavy"
-cpus = 4
-memory = "8G"
+requirement = { cores = 4, memory = "8GiB" }
 timeout_secs = 3600
 default = false
 
@@ -4516,8 +4640,7 @@ requires = ["arch=arm64", "disk-100g"]
 isolation = "vm"
 writable_sources = true
 cost = "heavy"
-cpus = 4
-memory = "8G"
+requirement = { cores = 4, memory = "8GiB" }
 timeout_secs = 3600
 default = false
 
@@ -4547,8 +4670,7 @@ inputs = ["tools/extensions/**", "tools/ci/publish/extension-manifests.sh", "too
 outputs = ["/target/extension-manifests/x86_64/**"]
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
-cpus = 4
-memory = "8G"
+requirement = { cores = 4, memory = "8GiB" }
 timeout_secs = 3600
 on = ["schedule:40 4 * * *", "dispatch"]
 default = false
@@ -4566,8 +4688,7 @@ inputs = ["tools/extensions/**", "tools/ci/publish/extension-manifests.sh", "too
 outputs = ["/target/extension-manifests/aarch64/**"]
 requires = ["arch=arm64", "disk-100g"]
 isolation = "vm"
-cpus = 4
-memory = "8G"
+requirement = { cores = 4, memory = "8GiB" }
 timeout_secs = 3600
 on = ["schedule:40 4 * * *", "dispatch"]
 default = false
@@ -4608,6 +4729,7 @@ cargo_packages = ["cloud-source-dropbox", "cloud-source-gdrive", "tilo-fs"]
 inputs = ["tools/ci/rystic_ci.py", "crates/system/cloud-source-gdrive/tests/validate_docx.py"]
 outputs = ["/target/rystic-ci/**"]
 requires = ["arch=x86_64", "os=linux"]
+requirement = { cores = 5, memory = "3GiB" }
 default = false
 cost = "minutes"
 
@@ -4621,6 +4743,7 @@ cargo_packages = ["cloud-source-dropbox", "cloud-source-gdrive", "tilo-fs"]
 inputs = ["tools/ci/rystic_ci.py", "tools/ci/run-rystic-ci.sh", "crates/system/cloud-source-gdrive/tests/validate_docx.py"]
 outputs = ["/target/rystic-results/**"]
 requires = ["arch=x86_64", "os=linux"]
+requirement = { cores = 1, memory = "1GiB" }
 isolation = "vm"
 secrets = ["RYSTIC_CI_TOKEN"]
 on = ["main", "dispatch"]

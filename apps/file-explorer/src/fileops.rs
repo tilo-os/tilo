@@ -72,15 +72,7 @@ pub(crate) fn readable_error(reason: &str) -> String {
         39 => Some("files-error-not-empty"),
         _ => None,
     };
-    key.map_or_else(
-        || {
-            let mut chars = text.chars();
-            chars.next().map_or_else(String::new, |first| {
-                first.to_uppercase().chain(chars).collect()
-            })
-        },
-        crate::i18n::t,
-    )
+    key.map_or_else(|| ui::format::capitalize_first(text), crate::i18n::t)
 }
 
 /// A system error message split into its words and its error number.

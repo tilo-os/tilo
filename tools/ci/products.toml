@@ -28,6 +28,7 @@ outputs = ["{dir}/context/**"]
 # The release bundle records the commit it was built from (git rev-parse, git status).
 git = true
 cost = "heavy"
+requirement = { cores = 8, memory = "24GiB" }
 
 [product.build]
 context = "{dir}/context"
@@ -36,10 +37,12 @@ build_args = ["--build-arg SOURCE_REVISION=$(cat {dir}/context/source-revision)"
 test = ["bash crates/hosting/tilo-room-service/container/test-image.sh {out}/image.oci.tar $(cat {dir}/context/source-revision)"]
 inputs = ["crates/hosting/tilo-room-service/container/test-image.sh"]
 cost = "minutes"
+requirement = { cores = 2, memory = "12GiB" }
 
 # Stable's receipt is what cloud-deploy deploys.
 [product.publish]
 pointers = { room-service = "{dir}/receipt.json" }
+requirement = { cores = 1, memory = "2GiB" }
 
 [[product]]
 family = "services"
@@ -59,6 +62,7 @@ inputs = ["Cargo.lock", "crates/browser/**", "apps/**", "scripts/moq-browser/**"
 outputs = ["{dir}/context/**"]
 git = true
 cost = "heavy"
+requirement = { cores = 8, memory = "24GiB" }
 
 [product.build]
 context = "{dir}/context"
@@ -67,6 +71,7 @@ build_args = ["--build-arg SOURCE_REVISION=$(cat {dir}/context/source-revision)"
 test = ["bash crates/browser/tilo-browser-runtime/container/test-image.sh {out}/image.oci.tar"]
 inputs = ["crates/browser/tilo-browser-runtime/container/test-image.sh"]
 cost = "minutes"
+requirement = { cores = 2, memory = "4GiB" }
 
 # It observes production (the image it replaces), so it runs on every release.
 [product.release_build]
@@ -80,6 +85,7 @@ cost = "minutes"
 # Stable's receipt is what cloud-deploy deploys.
 [product.publish]
 pointers = { web-entry = "{dir}/receipt.json" }
+requirement = { cores = 1, memory = "2GiB" }
 
 [[product]]
 family = "services"
@@ -90,6 +96,7 @@ runs in. Rust compiles inside the Containerfile; the image is tested before main
 and the GitOps repository pins the receipt's digest."""
 repository = "registry.tilo.so/tilo/tilo-registry-server"
 dev = ["sha-{commit}"]
+publish = { requirement = { cores = 1, memory = "1GiB" } }
 
 [product.build]
 run = """
@@ -101,8 +108,7 @@ inputs = ["crates/packaging/registry-server/container/**", "os/dev/cache-github-
 cargo_packages = ["registry-server"]
 cargo_dev_dependencies = false
 cost = "heavy"
-cpus = 8
-memory = "12G"
+requirement = { cores = 5, memory = "24GiB" }
 
 [[product]]
 family = "services"
@@ -123,7 +129,7 @@ release_on = ["dispatch", "tag:v0-rehearsal-*"]
 context = "tools/ci/publish/rehearsal"
 containerfile = "tools/ci/publish/rehearsal/Containerfile"
 inputs = ["tools/ci/publish/rehearsal/**"]
-memory = "2G"
+requirement = { cores = 4, memory = "2GiB" }
 
 [product.publish]
 pointers = { release-rehearsal = "{dir}/receipt.json" }
@@ -146,7 +152,7 @@ containerfile = "os/Containerfile.ci-fast"
 inputs = ["os/Containerfile.ci-fast"]
 cost = "heavy"
 # It builds FROM the multi-GB CI builder: a micro-VM step can't grow past what it reserves.
-memory = "8G"
+requirement = { cores = 4, memory = "8GiB" }
 
 [[product]]
 family = "ci-images"
@@ -162,7 +168,7 @@ build_args = ["--build-arg CI_FAST_IMAGE=oci-archive:/target/publish/ci-fast/ima
 needs = ["image-ci-fast"]
 inputs = ["os/Containerfile.ci-control"]
 cost = "minutes"
-memory = "8G"
+requirement = { cores = 4, memory = "8GiB" }
 
 [[product]]
 family = "ci-images"
@@ -207,15 +213,14 @@ dev = ["dev-{commit}"]
 release = ["{commit}", "{rust}"]
 dev_signed = true
 gates = ["canary-ci-builder-cache-warm-x86_64", "canary-ci-builder-cache-warm-aarch64", "canary-ci-builder-browser-x86_64", "canary-ci-builder-x11-bridge-x86_64"]
-publish = { inputs = ["rust-toolchain.toml"] }
+publish = { inputs = ["rust-toolchain.toml"], requirement = { cores = 2, memory = "24GiB" } }
 
 [product.build]
 run = "bash tools/ci/publish/ci-builder.sh build {arch} {out}"
 inputs = ["os/Containerfile.builder", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "rust-toolchain.toml", "dist/ci/install-build-deps.sh", "tools/ci/check-build-env.sh", "tools/ci/install-android-ndk.sh", "tools/ci/install-pdfium.sh", "tools/ci/install-xwayland-satellite.sh", "os/external-assets/xwayland-satellite/**", "tools/ci/native-mold-linker.sh", "tools/ci/verify-native-mold.sh", "tools/ci/windows/wine-prefix.sh", "tools/ci/sccache.sh", "tools/ci/measure.sh"]
 cost = "heavy"
 timeout_secs = 14400
-cpus = 16
-memory = "32G"
+requirement = { cores = 16, memory = "32GiB" }
 
 # The builder's canaries, in the candidate the same run built (build-ci-builder.yml's
 # cache-cold and cache-warm steps). Two jobs prove t's compiler cache works from it: the
@@ -259,8 +264,7 @@ inputs = ["tools/web/chrome.mjs", "tools/web/owned_browser.py", "tools/ci/t-next
 cargo_packages = ["tilo-browser-peer", "tilo-agent-participant"]
 writable_sources = true
 cost = "heavy"
-cpus = 8
-memory = "16G"
+requirement = { cores = 8, memory = "12GiB" }
 
 # The shell's X11 clipboard tests against the candidate's own xwayland-satellite, which is built
 # from patched source (os/external-assets/xwayland-satellite/): a builder whose bridge drops a
@@ -273,8 +277,7 @@ run = "bash tools/ci/publish/ci-builder-canary.sh x11-bridge"
 inputs = ["tools/ci/t-nextest.sh", "tools/ci/nextest_filters.py", ".config/nextest.toml", ".config/nextest-filters.toml", "tools/test-env.sh", "tools/with-test-environment.sh", "tools/ci/install-xwayland-satellite.sh", "os/external-assets/github-assets.tsv", "os/external-assets/xwayland-satellite/**"]
 cargo_packages = ["shell"]
 cost = "heavy"
-cpus = 8
-memory = "16G"
+requirement = { cores = 8, memory = "12GiB" }
 
 # ---------------------------------------------------------------------------
 # The OS's foundations: the frozen RPM snapshot, the kernel buildroot and the kernel.
@@ -307,8 +310,7 @@ outputs = ["{dir}/index/fingerprint", "{dir}/x86_64/fingerprint", "{dir}/aarch64
 run = "bash tools/ci/publish/rpms-build.sh {arch} {out}"
 inputs = ["os/Containerfile.rpms", "os/base-snapshot.env", "os/dev/verify-rpm-snapshot-signatures.sh", "os/scripts/verify-no-cisco-openh264.sh", "os/dev/layer-rpm-snapshot.py", "os/dev/derive-rpm-package-set.py", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "os/Containerfile", "os/Containerfile.dev", "os/Containerfile.host", "os/dev/composefs/Containerfile", "os/containers/tilo-relay/Containerfile", "os/Containerfile.env-runtime", "os/dev/uki-tools.packages"]
 requires = ["disk-100g"]
-cpus = 8
-memory = "16G"
+requirement = { cores = 8, memory = "16GiB" }
 timeout_secs = 10800
 
 [[product]]
@@ -374,8 +376,7 @@ run = "bash tools/ci/publish/kernel.sh build {arch} {out}"
 inputs = ["os/kernel/**", "os/kernel-buildroot-snapshot.env", "Cargo.toml", "Cargo.lock", "crates/system/tilo-crypto/Cargo.toml", "crates/system/tilo-crypto/src/lib.rs", "crates/system/tilo-crypto/src/main.rs", "os/tests/secureboot_vm_app.c", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "os/dev/install-cached-cosign.sh", "keys/cosign.pub"]
 outputs = ["{out}/secureboot/**"]
 requires = ["disk-100g"]
-cpus = 16
-memory = "24G"
+requirement = { cores = 16, memory = "24GiB" }
 timeout_secs = 14400
 
 # ---------------------------------------------------------------------------
@@ -400,8 +401,7 @@ run = "bash tools/ci/publish/relay-build.sh /target/publish/rpm-snapshot {out}"
 needs = ["rpm-snapshot"]
 inputs = ["os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/base-snapshot.env", "os/scripts/verify-elf-hardening.sh", "os/usr/lib/systemd/system/tilo-relay.service", ".cargo/**", "Cargo.lock", "Cargo.toml", "crates/collab/action-policy/**", "crates/collab/actions/**", "crates/collab/automation/**", "crates/collab/channel-crypto/**", "crates/collab/collab-types/**", "crates/collab/neighbour-wire/**", "crates/collab/threshold-identity/**", "crates/collab/tilo-identity-ceremony/**", "crates/collab/tilo-peer-state/**", "crates/collab/tilo-unlock-protocol/**", "crates/collab/tilo-user-identity/**", "crates/collab/workspace-join/**", "crates/doc/bounded-zip/**", "crates/doc/tilo-doc-codecs/**", "crates/doc/tilo-doc/**", "crates/doc/tilo-automerge-isolate/**", "crates/doc/tilo-automerge/**", "crates/hosting/tilo-delivery-protocol/**", "crates/hosting/tilo-relay-client/**", "crates/hosting/tilo-relay-protocol/**", "crates/hosting/tilo-relay-session/**", "crates/hosting/tilo-relay/**", "crates/hosting/tilo-relay-shell/**", "crates/hosting/tilo-relay-store/**", "crates/media/thumbnail/**", "crates/packaging/app-registry/**", "crates/packaging/launcher/**", "crates/packaging/package-store/**", "crates/packaging/registry-types/**", "crates/packaging/runtime-bundle/**", "crates/packaging/tilo-app-package/**", "crates/platform/tilo-clock/**", "crates/platform/tilo-lock/**", "crates/platform/tilo-files/**", "crates/platform/tilo-net/**", "crates/platform/tilo-paths/**", "crates/platform/tilo-platform-caps/**", "crates/platform/tilo-rt/**", "crates/platform/tilo-wake/**", "crates/platform/tilo-lock/**", "crates/platform/tilo-secrets/**", "crates/runtime/egress/**", "crates/browser/browser-continuity/**", "crates/browser/browser-continuity-core/**", "crates/runtime/runtime-collab/**", "crates/runtime/runtime-fs/**", "crates/runtime/runtime-identity/**", "crates/runtime/runtime-portal/**", "crates/runtime/tilo-identity-host/**", "crates/sdk/tilo-resource-macros/**", "crates/sdk/tilo-resource/**", "crates/session/desktop-model/**", "crates/system/accounts/**", "crates/system/advisory-lock/**", "crates/system/bounded-command/**", "crates/system/cloud-source-dav/**", "crates/system/cloud-source-dropbox/**", "crates/system/cloud-source-gdrive/**", "crates/system/cloud-source-icloud/**", "crates/system/cloud-source-onedrive/**", "crates/system/cloud-source/**", "crates/system/endpoint-reachability/**", "crates/system/content/**", "crates/system/content-types/**", "crates/system/desktop-entry/**", "crates/system/desktop-policy/**", "crates/system/fs-content/**", "crates/system/fs-native/**", "crates/system/fs-protocol/**", "crates/system/fs/**", "crates/system/power/**", "crates/system/sandbox-core/**", "crates/system/secret-vault/**", "crates/system/tilo-dav/**", "crates/system/tilo-native-certs/**", "crates/system/tilo-nm/**", "crates/system/tilo-seal/**", "crates/system/tilo-startup-metrics/**", "crates/system/system-stats/**", "crates/system/wire-frame/**", "crates/workspace-hack/**", "crates/packaging/oci-images/**", "crates/runtime/cli/**", "crates/runtime/env-tools/**", "crates/runtime/environment/**", "crates/runtime/legacy-agent-protocol/**", "crates/runtime/legacy-vm/**", "crates/system/libvirt-domain/**", "crates/runtime/ush/**", "crates/system/app-state/**", "crates/system/durable-store/**", "keys/cosign.pub", "os/containers/tilo-relay/**", "os/dev/await-rpm-snapshot.sh", "os/dev/install-cached-cosign.sh", "os/dev/resolve-rpm-snapshot.sh", "os/dev/rpm-snapshot-fingerprint.py", "os/dev/verify-rpm-snapshot-buildkit.py", "os/dev/verify-rpm-snapshot-package-set.sh", "os/tests/test_rpm_snapshot_buildkit.py", "vendor/automerge/**", "vendor/iroh/**", "vendor/iroh-gossip/**", "vendor/genawaiter-proc-macro/**", "vendor/netwatch/**", "vendor/wayland-backend/**", "vendor/wgpu/**", "vendor/wgpu-hal/**"]
 cost = "heavy"
-cpus = 16
-memory = "24G"
+requirement = { cores = 16, memory = "24GiB" }
 
 [[product]]
 family = "os-images"
@@ -428,8 +428,7 @@ image = ""
 needs = ["legacy-guest-agent"]
 inputs = ["os/Containerfile.legacy-guest", "os/legacy-guest/**", "os/external-assets/xwayland-satellite/**", "tools/ci/install-xwayland-satellite.sh", "os/base-snapshot.env", "os/dev/legacy-guest-smoke.sh", "os/dev/disk-image.sh", "os/dev/ci-native-podman-store.sh", "os/dev/probe-kvm.py", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv"]
 requires = ["/dev/kvm", "disk-100g"]
-cpus = 8
-memory = "16G"
+requirement = { cores = 8, memory = "16GiB" }
 isolation = "vm"
 writable_sources = true
 timeout_secs = 9000
@@ -457,8 +456,7 @@ run = "bash tools/ci/windows/build.sh sdk {arch} /target/windows/sdk"
 inputs = ["tools/ci/windows/build.sh", "tools/ci/windows/xwin-env.sh"]
 outputs = ["/target/windows/sdk/sdk-{arch}.tar.zst", "/target/windows/sdk/sdk-{arch}.tar.zst.sha256"]
 default = false
-cpus = 4
-memory = "4G"
+requirement = { cores = 4, memory = "4GiB" }
 
 [[matrix.check]]
 name = "build/windows-{arch}"
@@ -466,8 +464,7 @@ run = "bash tools/ci/windows/build.sh imager {arch} /target/windows/sdk/sdk-{arc
 needs = ["build/windows-sdk-{arch}"]
 inputs = ["apps/imager/**", "apps/staging-handoff-model/**", "crates/**", "vendor/**", "dist/session/**", "os/tests/fixtures/**", "Cargo.toml", "Cargo.lock", "tools/ci/windows/build.sh", "tools/ci/windows/xwin-env.sh"]
 outputs = ["/target/windows/{arch}/build/imager.exe", "/target/windows/{arch}/build/imager.exe.sha256"]
-cpus = 16
-memory = "24G"
+requirement = { cores = 16, memory = "24GiB" }
 default = false
 
 [[matrix.check]]
@@ -476,8 +473,7 @@ run = "bash tools/ci/windows/build.sh tests {arch} /target/windows/sdk/sdk-{arch
 needs = ["build/windows-sdk-{arch}"]
 inputs = ["apps/imager/**", "apps/staging-handoff-model/**", "crates/**", "vendor/**", "dist/session/**", "os/tests/fixtures/**", "Cargo.toml", "Cargo.lock", "tools/ci/windows/build.sh", "tools/ci/windows/xwin-env.sh"]
 outputs = ["/target/windows/{arch}/tests/imager-tests.exe", "/target/windows/{arch}/tests/imager-tests.exe.sha256"]
-cpus = 16
-memory = "24G"
+requirement = { cores = 16, memory = "24GiB" }
 default = false
 
 [[matrix.check]]
@@ -488,8 +484,7 @@ inputs = ["apps/imager/packaging/package-windows.sh", "apps/imager/packaging/win
 outputs = ["/target/windows/{arch}/package/*"]
 requires = ["arch=x86_64"]
 default = false
-cpus = 4
-memory = "4G"
+requirement = { cores = 4, memory = "4GiB" }
 comment = "The unsigned package: standalone EXE, zip and Inno Setup installer, each with a digest."
 
 [[matrix.check]]
@@ -502,8 +497,7 @@ secrets = ["TILO_SIGNING_AWS_ACCESS_KEY_ID", "TILO_SIGNING_AWS_SECRET_ACCESS_KEY
 on = ["tag:imager-v*"]
 requires = ["arch=x86_64"]
 cache = false
-cpus = 2
-memory = "4G"
+requirement = { cores = 2, memory = "4GiB" }
 comment = """
 Authenticode, for imager release tags only: re-checks the build's digest against the one
 the package carries, then packages that executable again signing the EXE and the installer
@@ -525,8 +519,7 @@ outputs = ["/target/windows/winget/*"]
 # Python over the two installers: the manifests are the same from any node.
 requires = ["arch=any"]
 default = false
-cpus = 1
-memory = "2G"
+requirement = { cores = 1, memory = "2GiB" }
 comment = """
 Both installers in one WinGet manifest set, checked against WinGet's schemas (the version
 and URL are placeholders: the release generates the real set from the signed installers)."""
@@ -538,8 +531,7 @@ needs = ["build/windows-{arch}-tests"]
 inputs = ["tools/ci/windows/wine-test.sh", "tools/ci/windows/wine-prefix.sh", "tools/ci/windows/wine-skip.txt"]
 requires = ["arch={arch}"]
 default = false
-cpus = 8
-memory = "8G"
+requirement = { cores = 8, memory = "8GiB" }
 only = ["x86_64"]
 comment = """
 What runs without Windows, under Wine: the unit tests (less wine-skip.txt), and the
@@ -552,8 +544,7 @@ needs = ["package/windows-{arch}"]
 inputs = ["tools/ci/windows/wine-test.sh", "tools/ci/windows/wine-prefix.sh"]
 requires = ["arch={arch}"]
 default = false
-cpus = 4
-memory = "8G"
+requirement = { cores = 4, memory = "8GiB" }
 only = ["x86_64"]
 
 [[matrix]]
@@ -637,8 +628,7 @@ timeout_secs = 14400
 cost = "heavy"
 # The lanes build one after another, TILO_CARGO_JOBS (6) compilers at a time; fat-LTO links
 # peak at several GiB each, and the guest is OOM-killed beyond what it reserves.
-cpus = 8
-memory = "32G"
+requirement = { cores = 8, memory = "32GiB" }
 # The tilo registry's owner public key, which the packages install as the trust root for
 # system app updates (dist/rpm/stage-app-store.sh). Public, but server configuration: t gives it
 # to trusted runs of main, stable and tags only, so a working tree's run builds no Fedora RPMs.
@@ -710,8 +700,7 @@ inputs = ["os/tests/development_signing_native.sh"]
 needs = ["development-signing-context-{arch}"]
 requires = ["arch={arch}", "disk-100g"]
 isolation = "vm"
-cpus = 4
-memory = "16G"
+requirement = { cores = 4, memory = "16GiB" }
 timeout_secs = 2700
 
 [[matrix]]
@@ -740,8 +729,7 @@ inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-tools.sh", "os/env-to
 needs = ["env-tools-binaries-{arch}"]
 requires = ["arch={arch}", "disk-100g"]
 isolation = "vm"
-cpus = 8
-memory = "16G"
+requirement = { cores = 8, memory = "16GiB" }
 timeout_secs = 9000
 
 [[matrix]]
@@ -759,8 +747,7 @@ inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/kernel-acceptance.sh", "o
 needs = ["image-kernel-{arch}"]
 requires = ["arch={arch}", "disk-100g"]
 isolation = "vm"
-cpus = 4
-memory = "8G"
+requirement = { cores = 4, memory = "8GiB" }
 timeout_secs = 3600
 default = false
 
@@ -787,8 +774,7 @@ dispatch = true
 run = "bash tools/ci/publish/windows-compat.sh fex-buildroot {out}"
 inputs = ["os/Containerfile.fex-buildroot", "os/base-snapshot.env", "os/tests/fex-assembler.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", ".containerignore"]
 cost = "heavy"
-cpus = 8
-memory = "32G"
+requirement = { cores = 8, memory = "32GiB" }
 timeout_secs = 5400
 
 [[product]]
@@ -805,8 +791,7 @@ dispatch = true
 run = "bash tools/ci/publish/windows-compat.sh fex-x86-sdk {out}"
 inputs = ["os/Containerfile.fex-x86-sdk", "os/base-snapshot.env", ".containerignore"]
 cost = "heavy"
-cpus = 4
-memory = "16G"
+requirement = { cores = 4, memory = "16GiB" }
 timeout_secs = 5400
 
 [[product]]
@@ -846,8 +831,7 @@ run = "bash tools/ci/publish/fex-payload.sh {out} /target/publish/fex-buildroot 
 inputs = ["os/Containerfile.fex-payload", "os/base-snapshot.env", "os/external-assets/fex-source.env", "os/dev/fetch-fex-source.sh", "os/dev/build-fex-payload.sh", "os/dev/validate-fex-payload.py", "os/dev/apply-fex-patches.py", "os/external-assets/fex-patches/**", "os/dev/toolchains/**", ".containerignore"]
 needs = ["image-fex-buildroot", "image-fex-x86-sdk"]
 cost = "heavy"
-cpus = 16
-memory = "48G"
+requirement = { cores = 16, memory = "48GiB" }
 timeout_secs = 10800
 
 [[product]]
@@ -864,8 +848,7 @@ dispatch = true
 run = "bash tools/ci/publish/windows-compat.sh wine-tools {out}"
 inputs = ["os/Containerfile.wine-tools", "os/base-snapshot.env", "os/dev/fetch-wine-source.py", "os/dev/wine_rpm_contract.py", "os/dev/wine-source.json", "os/dev/wine-mock-producer.py", "os/dev/merge-wine-rpms.py", ".containerignore"]
 cost = "heavy"
-cpus = 4
-memory = "8G"
+requirement = { cores = 4, memory = "8GiB" }
 timeout_secs = 3600
 
 [[matrix]]
@@ -899,8 +882,7 @@ inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/wine.sh"]
 needs = ["wine-source"]
 outputs = ["/target/windows-compat/wine-resolve-{target}/bundle.tar"]
 cost = "heavy"
-cpus = 4
-memory = "8G"
+requirement = { cores = 4, memory = "8GiB" }
 timeout_secs = 3600
 
 [[matrix.check]]
@@ -911,8 +893,7 @@ needs = ["wine-resolve-{target}"]
 outputs = ["/target/windows-compat/wine-build-{target}/**"]
 requires = ["arch=x86_64", "disk-100g"]
 cost = "heavy"
-cpus = 16
-memory = "32G"
+requirement = { cores = 16, memory = "32GiB" }
 timeout_secs = 14400
 
 [[matrix.check]]
@@ -922,8 +903,7 @@ inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/wine.sh"]
 needs = ["wine-build-x86_64", "wine-build-i686"]
 outputs = ["/target/windows-compat/wine-paired/**"]
 cost = "minutes"
-cpus = 2
-memory = "8G"
+requirement = { cores = 2, memory = "8GiB" }
 timeout_secs = 3600
 
 [[matrix.check]]
@@ -934,8 +914,7 @@ needs = ["image-wine-paired"]
 outputs = ["/target/windows-compat/windows-guest/**"]
 requires = ["arch=x86_64", "disk-100g"]
 cost = "heavy"
-cpus = 8
-memory = "16G"
+requirement = { cores = 8, memory = "16GiB" }
 timeout_secs = 5400
 
 [[matrix.check]]
@@ -989,8 +968,7 @@ requires = ["{node}", "disk-100g"]
 isolation = "vm"
 writable_sources = true
 cost = "heavy"
-cpus = 12
-memory = "24G"
+requirement = { cores = 12, memory = "24GiB" }
 timeout_secs = 10800
 default = false
 
@@ -1007,8 +985,7 @@ git = true
 requires = ["{node}", "disk-100g"]
 isolation = "vm"
 cost = "heavy"
-cpus = 12
-memory = "24G"
+requirement = { cores = 12, memory = "24GiB" }
 timeout_secs = 7200
 default = false
 
@@ -1031,8 +1008,7 @@ git = true
 requires = ["{node}", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 cost = "heavy"
-cpus = 8
-memory = "16G"
+requirement = { cores = 8, memory = "16GiB" }
 timeout_secs = 5400
 on = ["schedule:30 1 * * *"]
 default = false
@@ -1060,8 +1036,7 @@ requires = ["arch=arm64", "disk-100g"]
 isolation = "vm"
 writable_sources = true
 cost = "heavy"
-cpus = 4
-memory = "8G"
+requirement = { cores = 4, memory = "8GiB" }
 timeout_secs = 3600
 default = false
 
@@ -1095,8 +1070,7 @@ inputs = ["tools/extensions/**"]
 outputs = ["/target/extension-manifests/{arch}/**"]
 requires = ["{node}", "disk-100g"]
 isolation = "vm"
-cpus = 4
-memory = "8G"
+requirement = { cores = 4, memory = "8GiB" }
 timeout_secs = 3600
 cache = false
 on = ["schedule:40 4 * * *", "dispatch"]

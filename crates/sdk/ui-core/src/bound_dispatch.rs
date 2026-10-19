@@ -2693,7 +2693,16 @@ pub(crate) fn execute_resource_operation(
             // Before apply, so a delete can still read the row it removes. Undo
             // of this span applies the compensating action instead of patches.
             note_native_text_policy(widget, doc, &encoded);
-            let applied = match execute_document(
+            // A document action that runs without an authenticated publication
+            // makes this input's history unsigned only when it actually changes
+            // the document. Input that edits nothing never reaches this branch.
+            let unsigned = if !broker_admitted && source_invocation.is_none() {
+                crate::local_document_action::unsigned_input(Some(&context))
+                    .map(|edits| (edits, doc.get_heads()))
+            } else {
+                None
+            };
+            let dispatched = execute_document(
                 doc,
                 action.as_ref(),
                 encoded,
@@ -2701,7 +2710,17 @@ pub(crate) fn execute_resource_operation(
                 actor,
                 broker_admitted,
                 context,
-            )? {
+            );
+            // A refusing action can have committed changes before returning
+            // its error; the executor rolls back only the open transaction.
+            // Look at the document before propagating the error so an edit
+            // that survived is still recorded as unsigned history.
+            if let Some((edits, heads)) = unsigned
+                && doc.get_heads() != heads
+            {
+                crate::local_document_action::note_unsigned_edit(&edits);
+            }
+            let applied = match dispatched? {
                 tilo_actions::Dispatched::AppliedLocal(envelope) => Some(envelope),
                 tilo_actions::Dispatched::SubmittedToHost(_) => None,
             };

@@ -18,12 +18,12 @@ use vello::kurbo::{Point, Rect, Size, Vec2};
 use super::{DockEdge, Slot, WidgetId};
 
 /// Gap between a widget and the display edge, and between stacked widgets.
-pub const MARGIN: f64 = 12.0;
+pub const MARGIN: f64 = ui::tokens::Spacing::BASE.s3 as f64;
 /// How far around a glance form a pointer coming to rest still counts as
 /// reaching for it; behind the form the zone runs on to the display edge.
 /// Kept small: inside it, a resting pointer brings the widget, so any wider
 /// and an app control near the edge would bring it when aimed at.
-pub const REACH_PAD: f64 = 8.0;
+pub const REACH_PAD: f64 = ui::tokens::Spacing::BASE.s2 as f64;
 
 /// One widget to place.
 #[derive(Clone, Copy, Debug, PartialEq)]
