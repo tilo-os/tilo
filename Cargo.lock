@@ -3553,6 +3553,7 @@ dependencies = [
  "serde_json",
  "tilo-app",
  "tilo-automation",
+ "tilo-net",
  "workspace-hack",
 ]
 

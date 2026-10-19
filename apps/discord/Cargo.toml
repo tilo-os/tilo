@@ -20,6 +20,8 @@ thin = ["dep:runtime-dylib"]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 discord-wire = { path = "../discord-model", features = ["resource"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+# Finding the servers a bot is in, for bridging one from the app.
+tilo-net = { path = "../../crates/platform/tilo-net", features = ["http"] }
 serde.workspace = true
 serde_json.workspace = true
 data-encoding.workspace = true

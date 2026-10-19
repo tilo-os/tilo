@@ -10,6 +10,7 @@ use ui::widget::primitives::{Fact, Facts};
 use crate::effects::{self, DiscordEffect};
 use crate::locales::CATALOG;
 use crate::record::{Guild, Ownership};
+use crate::setup::{self, Setup, SetupDoor};
 
 /// What the view is built from: whether a server is bridged, how far the
 /// bridge got, and how many channels and accounts it holds.
@@ -59,13 +60,17 @@ fn facts(shown: &Shown) -> Vec<Fact> {
     ]
 }
 
-/// Before a server is bridged: what the app is and how it starts.
-fn not_connected() -> Element {
+/// Before a server is bridged: what the app is, and bridging one.
+fn not_connected(setup: &Setup) -> Element {
+    let setup = setup.clone();
     Box::new(
         EmptyState::new(CATALOG.t("discord-empty-title"))
             .with_id("guild-status")
             .with_icon(Icon::MessageSquare)
-            .with_message(CATALOG.t("discord-empty-body")),
+            .with_message(CATALOG.t("discord-empty-body"))
+            .with_action(CATALOG.t("discord-bridge-server"))
+            .with_action_id("discord-bridge-server")
+            .on_view(move || setup.open()),
     )
 }
 
@@ -86,7 +91,12 @@ impl ResourceApp for Discord {
     fn view(cx: &mut ViewCx<Guild>) -> Element {
         let code = cx.local(String::new());
         let shown_code = code.clone();
+        let bridging = Setup::new();
+        let answering = bridging.clone();
         cx.effects::<DiscordEffect>(move |effect, ecx| {
+            if let Some(answer) = setup::answer(&answering, &effect, ecx) {
+                return answer;
+            }
             let linking = effect == DiscordEffect::LinkAccount;
             let answer = effects::answer(effect, ecx);
             if linking
@@ -98,9 +108,10 @@ impl ResourceApp for Discord {
             answer
         });
         let shown = cx.value(Shown::of);
-        cx.switch(&shown, move |cx, shown| {
+        let offered = bridging.clone();
+        let page = cx.switch(&shown, move |cx, shown| {
             if !shown.connected {
-                return not_connected();
+                return not_connected(&offered);
             }
             let name = cx
                 .text(|g: &Guild| g.name.clone())
@@ -137,7 +148,9 @@ impl ResourceApp for Discord {
                     .push(Box::new(Facts::new(facts(shown))))
                     .push(Box::new(account)),
             )
-        })
+        });
+        let sheet = setup::sheet(cx, &bridging);
+        Box::new(SetupDoor::new(page, sheet, &bridging))
     }
 }
 

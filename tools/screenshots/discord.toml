@@ -3,3 +3,10 @@
 [[situation]]
 name = "not-connected"
 title = "Before a server is connected"
+
+[[situation]]
+name = "bridge-server"
+title = "Bridging a server: the bot token"
+steps = [
+  { perform = { target = "discord-bridge-server", action = "activate" } },
+]
