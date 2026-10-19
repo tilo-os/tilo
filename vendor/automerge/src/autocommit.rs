@@ -60,7 +60,7 @@ use crate::{LoadOptions, VerificationMode};
 /// ## Authors and Actors
 ///
 /// See the ["Authors and Actors"](`Automerge#authors-and-actors`) docs.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct AutoCommit {
     pub(crate) doc: Automerge,
     transaction: Option<(PatchLog, TransactionInner)>,
@@ -69,6 +69,23 @@ pub struct AutoCommit {
     diff_cache: Option<(OpRange, ObjId, bool, Vec<Patch>)>,
     save_cursor: Vec<ChangeHash>,
     isolation: Option<Vec<ChangeHash>>,
+}
+
+impl Clone for AutoCommit {
+    /// Out of line: a derived clone is inlined, with the whole document it copies, so every crate
+    /// that cloned a document compiled one of its own.
+    #[inline(never)]
+    fn clone(&self) -> Self {
+        Self {
+            doc: self.doc.clone(),
+            transaction: self.transaction.clone(),
+            patch_log: self.patch_log.clone(),
+            diff_cursor: self.diff_cursor.clone(),
+            diff_cache: self.diff_cache.clone(),
+            save_cursor: self.save_cursor.clone(),
+            isolation: self.isolation.clone(),
+        }
+    }
 }
 
 /// An autocommit document with an inactive [`PatchLog`]

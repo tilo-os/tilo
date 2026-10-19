@@ -108,7 +108,7 @@ fn tokens_of(document: &ThemeDocument, you: PresenceHue) -> Tokens {
     tokens
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct Theme {
     pub name: String,
     /// The document this theme was built from, as applied: after the
@@ -156,6 +156,34 @@ pub struct Theme {
     /// High contrast or forced colours is the active track. Content surfaces
     /// ask [`Theme::colors_are_forced`] instead of comparing [`Theme::name`].
     pub forced_colors: bool,
+}
+
+impl Clone for Theme {
+    /// Out of line: a derived clone is inlined, with the token tables it copies, so every app that
+    /// cloned a theme compiled one of its own.
+    #[inline(never)]
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            document: self.document.clone(),
+            tokens: self.tokens.clone(),
+            border_standard: self.border_standard,
+            border_focus: self.border_focus,
+            text_primary: self.text_primary,
+            text_dim: self.text_dim,
+            text_tertiary: self.text_tertiary,
+            status_success: self.status_success,
+            radius_standard: self.radius_standard,
+            padding_standard: self.padding_standard,
+            gap_standard: self.gap_standard,
+            reduce_motion: self.reduce_motion,
+            reduce_transparency: self.reduce_transparency,
+            text_scale: self.text_scale,
+            ui_scale: self.ui_scale,
+            caret_width: self.caret_width,
+            forced_colors: self.forced_colors,
+        }
+    }
 }
 
 impl Default for Theme {
