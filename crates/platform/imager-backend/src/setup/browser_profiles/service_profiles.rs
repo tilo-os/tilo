@@ -5,6 +5,7 @@ use super::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Material {
     Cookies,
+    #[cfg(feature = "installation")]
     DiscordOrigin,
 }
 pub struct CookieProfile {
@@ -38,9 +39,11 @@ impl CookieProfile {
             return Ok(Presence::Unavailable);
         }
         let result = match self.material {
+            #[cfg(feature = "installation")]
             Material::DiscordOrigin if service == Service::Discord => {
                 source::discord_origin::read_selected(&self.origin_grant()?).map(drop)
             }
+            #[cfg(feature = "installation")]
             Material::DiscordOrigin => return Ok(Presence::Unavailable),
             Material::Cookies => {
                 // Deliberately omit the selected-capture decryptor. This cannot
@@ -81,6 +84,7 @@ impl CookieProfile {
         }
         Ok(())
     }
+    #[cfg(feature = "installation")]
     pub fn origin_grant(
         &self,
     ) -> io::Result<crate::setup::service_sessions::source::discord_origin::DiscordOriginGrant>
@@ -265,9 +269,13 @@ fn discover_candidate(
                     Provider::Firefox => regular(&profile, "cookies.sqlite")?,
                     Provider::Chromium => chromium_store(&profile)?,
                 };
+                #[cfg(feature = "installation")]
                 let origin = !native_slack
                     && provider == Provider::Chromium
                     && discord_origin_store(&profile)?;
+                // Only the installation reads a Discord session, so only it offers one.
+                #[cfg(not(feature = "installation"))]
+                let origin = false;
                 Ok((present, origin))
             })();
             let (present, origin_present) = if let Ok(stores) = stores {
@@ -325,6 +333,7 @@ fn discover_candidate(
                     brand,
                 }));
             }
+            #[cfg(feature = "installation")]
             if origin_present {
                 if output.len() >= browser_continuity::MAX_PROFILES {
                     return Err(io::Error::new(
@@ -350,6 +359,7 @@ fn discover_candidate(
     root.validate()?;
     Ok(output)
 }
+#[cfg(feature = "installation")]
 fn discord_origin_store(profile: &Arc<PinnedDirectory>) -> io::Result<bool> {
     let local = match metadata_nofollow(&profile.file, Path::new("Local Storage")) {
         Ok(metadata) => profile.open_child("Local Storage".as_ref(), &metadata)?,

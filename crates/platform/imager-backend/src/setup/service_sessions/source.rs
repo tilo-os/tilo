@@ -16,7 +16,7 @@ use zeroize::Zeroizing;
 
 #[cfg(target_os = "linux")]
 pub mod chromium_linux;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "installation"))]
 pub mod discord_origin;
 #[cfg(target_os = "linux")]
 mod slack_asar;

@@ -6,9 +6,11 @@ use super::account_transfer::{Connector, PasswordSealedAccounts};
 #[cfg(target_os = "linux")]
 use accounts::Account;
 use accounts::{AccountId, AccountStore, SecretVault};
+#[cfg(all(target_os = "linux", feature = "installation"))]
+use browser_continuity::sessions::OriginStorage;
 use browser_continuity::sessions::Service;
 #[cfg(target_os = "linux")]
-use browser_continuity::sessions::{OriginStorage, SessionCookies};
+use browser_continuity::sessions::SessionCookies;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 #[cfg(target_os = "linux")]
@@ -91,7 +93,7 @@ pub struct PreparedSessions {
 #[cfg(target_os = "linux")]
 pub enum SelectedSource {
     Cookies(source::SourceGrant, Service),
-    #[cfg(target_os = "linux")]
+    #[cfg(feature = "installation")]
     DiscordOrigin(source::discord_origin::DiscordOriginGrant),
 }
 #[cfg(target_os = "linux")]
@@ -99,7 +101,7 @@ impl SelectedSource {
     fn kind(&self) -> (Service, bool) {
         match self {
             Self::Cookies(_, service) => (*service, false),
-            #[cfg(target_os = "linux")]
+            #[cfg(feature = "installation")]
             Self::DiscordOrigin(_) => (Service::Discord, true),
         }
     }
@@ -174,7 +176,7 @@ impl PreparedSessions {
                     *cookie_digest = Some(captured.source_snapshot_digest);
                     session.cookies = captured.cookies;
                 }
-                #[cfg(target_os = "linux")]
+                #[cfg(feature = "installation")]
                 SelectedSource::DiscordOrigin(grant) => {
                     let captured = source::discord_origin::read_selected(&grant)
                         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
