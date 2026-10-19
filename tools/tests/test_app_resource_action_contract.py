@@ -380,6 +380,56 @@ class AppResourceActionContractTests(unittest.TestCase):
                 "Widget::resources",
                 reasons(fixture(code=shared("todo!()"))),
             )
+        with self.subTest(phase="an unused construction does not substitute for the returned definition"):
+            self.assertIn(
+                "Widget::resources",
+                reasons(
+                    fixture(
+                        code=(
+                            "#[derive(Model, Default)] pub struct Note {}\n"
+                            '#[resource(kind = "shared.note", label = "Note")]\n'
+                            "impl Note {}\n"
+                            "pub struct SampleApp;\n"
+                            "impl ResourceApp for SampleApp { type Resource = Note; }\n"
+                            "fn actual_definition() -> &'static ApplicationDefinition {\n"
+                            "    todo!()\n"
+                            "}\n"
+                            "pub fn definition() -> &'static ApplicationDefinition {\n"
+                            "    let _ = ui::built_in_definition!(SampleApp);\n"
+                            "    actual_definition()\n"
+                            "}\n"
+                        )
+                    )
+                ),
+            )
+        with self.subTest(phase="a private namesake does not stand in for the exported definition"):
+            self.assertIn(
+                "Widget::resources",
+                reasons(
+                    fixture(
+                        code=(
+                            "#[derive(Model, Default)] pub struct Note {}\n"
+                            '#[resource(kind = "shared.note", label = "Note")]\n'
+                            "impl Note {}\n"
+                            "pub struct SampleApp;\n"
+                            "impl ResourceApp for SampleApp { type Resource = Note; }\n"
+                            "pub struct Other;\n"
+                            "impl ResourceApp for Other { type Resource = Missing; }\n"
+                            "fn actual_definition() -> &'static ApplicationDefinition {\n"
+                            "    ui::framework::definition::<Other>()\n"
+                            "}\n"
+                            "pub fn definition() -> &'static ApplicationDefinition {\n"
+                            "    actual_definition()\n"
+                            "}\n"
+                            "mod other {\n"
+                            "    pub fn definition() -> &'static ApplicationDefinition {\n"
+                            "        ui::built_in_definition!(SampleApp)\n"
+                            "    }\n"
+                            "}\n"
+                        )
+                    )
+                ),
+            )
         with self.subTest(phase="re-exporting an unrelated item does not name the host"):
             self.assertIn(
                 "Widget::resources",

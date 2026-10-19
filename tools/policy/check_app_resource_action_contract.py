@@ -762,17 +762,22 @@ def component_launch_registry_wired(main_text: str, crate_text: str) -> bool:
     return False
 
 
-SHARED_DEFINITION = re.compile(
-    r"\bfn\s+definition\s*\(\s*\)[^{]*\{\s*([A-Za-z_][A-Za-z0-9_]*)::definition\s*\(\s*\)"
-)
 SHARED_REEXPORT = re.compile(r"\bpub\s+use\s+([A-Za-z_][A-Za-z0-9_]*)::([^;]+);")
-DEFINITION_APP = re.compile(
-    r"\bbuilt_in_definition!\s*\(\s*"
-    r"((?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*[A-Za-z_][A-Za-z0-9_]*)\s*\)"
-    r"|\bframework\s*::\s*definition\s*::\s*<\s*"
-    r"((?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*[A-Za-z_][A-Za-z0-9_]*)\s*>"
+PUBLIC_USE = re.compile(r"\bpub\s+use\s+([^;]+);")
+TOP_LEVEL_DEFINITION = re.compile(r"\bpub\s+fn\s+definition\s*\(\s*\)")
+DEFINITION_BUILT_IN = re.compile(
+    r"(?:(?:crate|self|super|[A-Za-z_][A-Za-z0-9_]*)\s*::\s*)*"
+    r"built_in_definition\s*!\s*\(\s*"
+    r"(?P<app>(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*[A-Za-z_][A-Za-z0-9_]*)\s*\)"
 )
-DEFINITION_PLACEHOLDER = re.compile(r"\b(?:todo|unimplemented|unreachable|panic)!\s*\(")
+DEFINITION_FRAMEWORK = re.compile(
+    r"(?:(?:crate|self|super|[A-Za-z_][A-Za-z0-9_]*)\s*::\s*)*"
+    r"framework\s*::\s*definition\s*::\s*<\s*"
+    r"(?P<app>(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*[A-Za-z_][A-Za-z0-9_]*)\s*>\s*\(\s*\)"
+)
+DEFINITION_DELEGATE = re.compile(
+    r"(?P<alias>[A-Za-z_][A-Za-z0-9_]*)\s*::\s*definition\s*\(\s*\)"
+)
 RESOURCE_APP_IMPL = re.compile(
     r"\bimpl(?:\s*<[^>{}]*>)?\s+(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*ResourceApp\s+for\s+"
     r"((?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*[A-Za-z_][A-Za-z0-9_]*)"
@@ -856,12 +861,113 @@ def production_dependency_code(dependency: Path) -> str:
     return "\n".join(sources)
 
 
+def definition_tail(body: str) -> str:
+    """The expression a `definition()` returns, without a trailing semicolon."""
+    tail = body.strip()
+    if tail.endswith(";"):
+        tail = tail[:-1].rstrip()
+    return tail
+
+
 def definition_app_type(body: str) -> str | None:
-    """The `ResourceApp` type a production `definition()` builds, if named."""
-    match = DEFINITION_APP.search(body)
+    """The `ResourceApp` type a canonical production `definition()` builds."""
+    tail = definition_tail(body)
+    for pattern in (DEFINITION_BUILT_IN, DEFINITION_FRAMEWORK):
+        match = pattern.fullmatch(tail)
+        if match is not None:
+            return rust_type_name(match.group("app"))
+    return None
+
+
+def definition_delegate(body: str) -> str | None:
+    """The crate alias a canonical production `definition()` delegates to."""
+    match = DEFINITION_DELEGATE.fullmatch(definition_tail(body))
+    return match.group("alias") if match is not None else None
+
+
+def brace_depth(code: str, offset: int) -> int:
+    """The brace nesting depth at `offset` in lexed Rust code."""
+    depth = 0
+    for char in code[:offset]:
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+    return depth
+
+
+def top_level_definition_body(code: str) -> str | None:
+    """The body of the crate root's one `pub fn definition()`."""
+    matches = [
+        match
+        for match in TOP_LEVEL_DEFINITION.finditer(code)
+        if brace_depth(code, match.start()) == 0
+    ]
+    if len(matches) != 1:
+        return None
+    return brace_body(code, matches[0].start())
+
+
+def reexported_definition_module(items: str) -> list[str] | None:
+    """The module a `pub use` re-exports `definition` from, if it does."""
+    match = re.fullmatch(
+        r"(?P<path>(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*[A-Za-z_][A-Za-z0-9_]*)"
+        r"\s*::\s*(?P<items>\{[^}]*\}|[A-Za-z_][A-Za-z0-9_]*)",
+        " ".join(items.split()),
+    )
     if match is None:
         return None
-    return rust_type_name(match.group(1) or match.group(2))
+    item = match.group("items")
+    names = (
+        [part.strip() for part in item[1:-1].split(",")]
+        if item.startswith("{")
+        else [item]
+    )
+    if "definition" not in names:
+        return None
+    path = [part for part in re.split(r"\s*::\s*", match.group("path")) if part]
+    if path and path[0] in {"crate", "self"}:
+        path = path[1:]
+    if any(part == "super" for part in path):
+        return None
+    return path
+
+
+def module_source(crate_dir: Path, segments: list[str]) -> Path | None:
+    """The source file a module path names, if it exists."""
+    source = crate_dir / "src"
+    if not segments:
+        return source / "lib.rs"
+    base = source.joinpath(*segments)
+    for candidate in (base.with_suffix(".rs"), base / "mod.rs"):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def exported_definition_body(crate_dir: Path) -> str | None:
+    """The body of the crate root's exported `definition()`, if unambiguous."""
+    root = crate_dir / "src" / "lib.rs"
+    if not root.is_file():
+        return None
+    code = production_code(root.read_text(encoding="utf-8"))
+    bodies: list[str] = []
+    direct = top_level_definition_body(code)
+    if direct is not None:
+        bodies.append(direct)
+    for match in PUBLIC_USE.finditer(code):
+        if brace_depth(code, match.start()) != 0:
+            continue
+        segments = reexported_definition_module(match.group(1))
+        if segments is None:
+            continue
+        source = module_source(crate_dir, segments)
+        if source is None:
+            continue
+        body = top_level_definition_body(production_code(source.read_text(encoding="utf-8")))
+        if body is not None:
+            bodies.append(body)
+    return bodies[0] if len(bodies) == 1 else None
 
 
 def resource_app_resource(code: str, app_type: str) -> str | None:
@@ -899,21 +1005,27 @@ def shared_framework_host(
     `definition()`; the resource, its verbs and its surface live in that
     crate. The app then publishes through the shared app exactly as an app
     that declares the same items locally. Follow only a normal (runtime)
-    path dependency the app re-exports, and only when the dependency's own
-    production `definition()` builds the re-exported host, that host's
-    `ResourceApp` impl names a resource, and that resource carries the
-    resource declaration. `type Resource = Unrelated` and an unrelated
-    `#[resource]` elsewhere are not a connection, and a `todo!()` definition
-    or a test-only impl publishes nothing.
+    path dependency the app re-exports. The app root's exported
+    `definition()` must return exactly one delegation, and the dependency
+    root's exported `definition()` must return exactly one canonical
+    `built_in_definition!` or `framework::definition::<..>()` tail that
+    builds the re-exported host. That host's `ResourceApp` impl must name a
+    resource, and that resource must carry the declaration. Anything else —
+    an unused construction, another statement, a private namesake, `type
+    Resource = Unrelated`, an unrelated `#[resource]` or a test-only impl —
+    publishes nothing.
     """
-    delegated = set(SHARED_DEFINITION.findall(code))
-    if not delegated:
+    body = exported_definition_body(app_dir)
+    if body is None:
+        return False
+    delegated = definition_delegate(body)
+    if delegated is None:
         return False
     reexports = app_reexports(code)
     for table in runtime_dependency_tables(manifest):
         for alias, specification in table.items():
             rust_alias = alias.replace("-", "_")
-            if rust_alias not in delegated or not isinstance(specification, dict):
+            if rust_alias != delegated or not isinstance(specification, dict):
                 continue
             names, glob = reexports.get(rust_alias, (set(), False))
             path = specification.get("path")
@@ -927,18 +1039,17 @@ def shared_framework_host(
             source = dependency / "src"
             if not source.is_dir():
                 continue
+            definition = exported_definition_body(dependency)
+            if definition is None:
+                continue
+            app_type = definition_app_type(definition)
+            if app_type is None or (not glob and app_type not in names):
+                continue
             production = production_dependency_code(dependency)
-            for definition in re.finditer(r"\bfn\s+definition\s*\(\s*\)", production):
-                body = brace_body(production, definition.start())
-                if body is None or DEFINITION_PLACEHOLDER.search(body):
-                    continue
-                app_type = definition_app_type(body)
-                if app_type is None or (not glob and app_type not in names):
-                    continue
-                resource = resource_app_resource(production, app_type)
-                if resource is None or not declares_resource(production, resource):
-                    continue
-                return True
+            resource = resource_app_resource(production, app_type)
+            if resource is None or not declares_resource(production, resource):
+                continue
+            return True
     return False
 
 
