@@ -714,3 +714,58 @@ fn a_refused_join_says_why_leaves_no_empty_workspace_and_joining_again_makes_one
     drop(net);
     site.shutdown();
 }
+
+/// Two computers in a site's workspace see each other's pointer, as two
+/// people in tilo.coffee's Lounge do: each joined through the door and
+/// holds the room over the host's routes, so neither sends the other a
+/// hello (hellos travel between direct neighbours only). The room's
+/// governance, which lists both devices, admits the pointer instead.
+#[test]
+#[serial_test::serial]
+fn two_computers_in_a_sites_workspace_see_each_others_pointer() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let site = Site::start(dir.path());
+    let room = RoomId::parse(&site.room).unwrap();
+    let (ada, ada_tree) = computer(&dir.path().join("ada"), key(1), "Ada's computer");
+    let (ben, ben_tree) = computer(&dir.path().join("ben"), key(2), "Ben's computer");
+    for (net, tree) in [(&ada, &ada_tree), (&ben, &ben_tree)] {
+        net.join_site(&site.entry).unwrap();
+        held(net, tree, room);
+        // In the Lounge, as a person who arrived there is.
+        let mut tree = tree.write();
+        let lounge = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room == room)
+            .map(|workspace| workspace.id)
+            .unwrap();
+        tree.desktop.active = lounge;
+    }
+
+    let key = serde_json::to_string(&ui::presence::PresenceKey::tile_pointer(
+        site.room.clone(),
+        7,
+    ))
+    .unwrap();
+    let inbound = ben.inbound_presence_handle();
+    let from = ada.local_peer_id_hash();
+    until("Ada's pointer to reach Ben through the host", || {
+        ada.publish_presence(key.clone(), (12.0, 34.0));
+        ada.tick();
+        ben.tick();
+        inbound
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|presence| {
+                presence.peer == from && presence.key == key && presence.point == (12.0, 34.0)
+            })
+            .then_some(())
+    });
+
+    drop(ada);
+    drop(ben);
+    site.shutdown();
+}
