@@ -1181,6 +1181,10 @@ impl StoreApp {
             self.remotes_open = false;
             self.safety_open = false;
         }
+        // The field shows the query whoever set it (typing, an action, a
+        // link), or the field's stale text would set it back next frame.
+        let query = self.query.clone();
+        self.set_filter_field(&query);
         self.structure_dirty = true;
     }
 
@@ -1449,6 +1453,12 @@ impl Widget for StoreApp {
             root.set_content(self.compose(theme));
             self.composition_context = Some((theme.clone(), locale, pseudo));
             self.composition_dirty = false;
+        }
+        // A field made after the query was set starts with it.
+        if let Some(field) = root.filter_mut()
+            && field.value() != self.query
+        {
+            field.set_query(&self.query);
         }
         let child = root.build_layout(taffy, theme, node_map);
         self.root = Some(root);
@@ -3744,7 +3754,9 @@ mod tests {
                         "{scenario}: the ordinary owner can use {action} at {width} in {theme}"
                     );
                     let additional = match scenario {
-                        "account-remotes" => &["Refresh remotes"][..],
+                        // Sources refresh by themselves; refreshing stays an
+                        // action, not a button.
+                        "account-remotes" => &[][..],
                         "remotes" => &["Disable source"][..],
                         "wide" => &["Review package"][..],
                         "detail" => &["Open"][..],
@@ -5007,6 +5019,12 @@ mod tests {
     /// Device, heading and source-summary copy tell the truth about what is loaded.
     #[test]
     fn catalogue_copy_is_honest_about_sources_and_queries() {
+        ui::i18n::I18nManager::install(
+            "en-US",
+            "en-US",
+            &[("en-US", include_str!("../locales/en-US.ftl"))],
+        )
+        .unwrap();
         // Case `device_copy_distinguishes_tilo_on_demand_from_flatpak_installation`.
         {
             let tilo = item(

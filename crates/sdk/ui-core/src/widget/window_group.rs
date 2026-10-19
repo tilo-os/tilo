@@ -285,6 +285,12 @@ pub struct WindowGroup {
     /// bar shown over a window under an auto-hiding top bar): the window's
     /// bar stands below it.
     top_overlay_inset: f64,
+    /// A maximized window moves down while the desktop's bar shows over its
+    /// top edge, so its own bar is never under the desktop's: where the
+    /// slide started, and when. It moves, it is not resized, so the app is
+    /// not laid out again for a bar that comes and goes.
+    top_slide_from: f64,
+    top_slide_since: Option<Instant>,
     /// Nothing of the desktop's stands beside a maximized window on its
     /// display (the top bar is not docked above it): maximized, it fills the
     /// display and draws edge to edge ([`Widget::set_full_bleed`]).
@@ -520,6 +526,8 @@ impl WindowGroup {
             bar_slot: None,
             chrome_motion: crate::tokens::EffectiveMotion::default(),
             top_overlay_inset: 0.0,
+            top_slide_from: 0.0,
+            top_slide_since: None,
             fills_display: false,
             last_cursor: Point::ZERO,
             spawned_at: None,
@@ -892,13 +900,48 @@ impl WindowGroup {
     pub fn set_top_overlay_inset(&mut self, inset: f64) {
         let inset = inset.max(0.0);
         if (self.top_overlay_inset - inset).abs() > f64::EPSILON {
+            self.top_slide_from = self.top_slide_now();
+            self.top_slide_since = Some(crate::time::now());
             self.top_overlay_inset = inset;
+            if self.maximized {
+                self.style_dirty = true;
+            }
             self.grip_dirty = true;
             if self.bar_offered_to.is_some() {
                 self.style_dirty = true;
             }
             self.clear_maximized_controls();
         }
+    }
+
+    /// How far a maximized window stands moved down now: on its way to
+    /// [`Self::top_overlay_inset`] on the panel slide.
+    fn top_slide_now(&self) -> f64 {
+        let to = self.top_overlay_inset;
+        let Some(since) = self.top_slide_since else {
+            return to;
+        };
+        if self.reduce_motion {
+            return to;
+        }
+        let direction = if to >= self.top_slide_from {
+            crate::motion::Direction::Enter
+        } else {
+            crate::motion::Direction::Exit
+        };
+        let spec = crate::motion::PanelSlide::SPEC;
+        let motion = crate::tokens::EffectiveMotion::default();
+        let source = crate::tokens::MotionSource::Pointer;
+        let elapsed = crate::time::now().saturating_duration_since(since);
+        if elapsed >= spec.settle_time(direction, motion, source) {
+            return to;
+        }
+        let p = spec.progress_after(direction, motion, source, elapsed).clamp(0.0, 1.0);
+        self.top_slide_from + (to - self.top_slide_from) * p
+    }
+
+    fn top_slide_in_flight(&self) -> bool {
+        (self.top_slide_now() - self.top_overlay_inset).abs() > 0.25
     }
 
     /// Test and shot fixture: as if the person had reached for the bar
@@ -1529,6 +1572,8 @@ impl WindowGroup {
             bar_slot: None,
             chrome_motion: crate::tokens::EffectiveMotion::default(),
             top_overlay_inset: 0.0,
+            top_slide_from: 0.0,
+            top_slide_since: None,
             fills_display: false,
             last_cursor: Point::ZERO,
             spawned_at: None,
@@ -3208,6 +3253,11 @@ impl Widget for WindowGroup {
             style.size.width = Dimension::auto();
             style.flex_grow = 1.0e6;
             style.flex_basis = Dimension::length(0.0);
+            // Moved down, not shrunk, while the desktop's bar shows above.
+            let slide = self.top_slide_now();
+            if slide > 0.0 {
+                style.inset.top = taffy::LengthPercentageAuto::length(f32_of_f64(slide));
+            }
         }
         let nodes = bar_node.map_or_else(|| vec![tile_node], |bar| vec![bar, tile_node]);
         taffy.widget_node(style, &nodes, node_map, self)
@@ -3249,6 +3299,10 @@ impl Widget for WindowGroup {
         presence: &PresenceCtx,
     ) {
         self.reduce_motion = theme.reduce_motion;
+        // The slide is a layout offset: lay out again on every frame of it.
+        if self.maximized && self.top_slide_in_flight() {
+            self.style_dirty = true;
+        }
         self.step_rect_spring();
         self.offer_history_controls();
         // An indicator that flashes in and out before an app has time to
@@ -3326,6 +3380,7 @@ impl Widget for WindowGroup {
             h.set_focused(focused);
             // A maximized window filling its display draws edge to edge;
             // under a docked bar, or mid-fade, it is still a card.
+            h.set_square_bottom(self.maximized);
             h.set_full_bleed(
                 self.maximized
                     && self.fills_display
@@ -3585,7 +3640,9 @@ impl Widget for WindowGroup {
         let rect_in_flight = !self.reduce_motion && self.rect_spring.is_some();
         let chrome_fade = self.maximized_chrome_live()
             && self.top_edge.fading(crate::time::now(), self.chrome_motion);
+        let top_slide = self.maximized && self.top_slide_in_flight();
         spawn_in_flight
+            || top_slide
             || chrome_fade
             || close_in_flight
             || group_close_in_flight

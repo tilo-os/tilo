@@ -3483,13 +3483,15 @@ mod tests {
             }
         }
 
-        fn odd_control_count_uses_a_balanced_full_width_last_card() {
+        /// Every card is the same kind of control at the same size: an odd
+        /// last card stays half the width rather than stretching across.
+        fn odd_control_count_keeps_the_last_card_half_width() {
             let panel = Rect::new(0., 48., 400., 520.);
             let root = QuickSettingsRoot::default();
-            let full = root.control_card(panel, 2, 3);
-            assert_eq!(full.x0, panel.x0 + PANEL_PAD);
-            assert_eq!(full.x1, panel.x1 - PANEL_PAD);
-            assert_eq!(full.width(), 368.);
+            let last = root.control_card(panel, 2, 3);
+            let first = root.control_card(panel, 0, 3);
+            assert_eq!(last.x0, panel.x0 + PANEL_PAD);
+            assert_eq!(last.width(), first.width());
         }
 
         #[allow(
@@ -3634,7 +3636,7 @@ mod tests {
         }
 
         compact_geometry_never_overlaps();
-        odd_control_count_uses_a_balanced_full_width_last_card();
+        odd_control_count_keeps_the_last_card_half_width();
         bottom_utilities_keep_independent_touch_targets();
         a_short_popover_keeps_natural_tiles_and_scrolls_to_the_power_profile();
         a_root_with_room_keeps_the_token_rhythm();
@@ -3749,11 +3751,11 @@ mod tests {
             }
         }
 
-        /// One rhythm at 1× (HIG §7b, §9.6): every adjacent pair in the root
-        /// keeps its token step — sections `s4`, grid siblings `s3`, the two
-        /// slider bands and a card's icon row `s2` — nothing touches, glyphs and
-        /// switches share their row's centre line, and the power row rests at
-        /// the Control height because its two lines fit inside it.
+        /// One rhythm at 1× (HIG §7b, §9.6), top to bottom: the title band,
+        /// the sliders, the control cards, the Devices, Clipboard and power
+        /// rows, and the destination tiles as the footer. Every adjacent pair
+        /// keeps its token step — sections `s4`, siblings `s3`, the two slider
+        /// bands and a card's icon row `s2` — and nothing touches.
         fn root_geometry_keeps_one_rhythm_at_one_x() {
             let mut root = QuickSettingsRoot::default();
             let mut state = QuickSettingsState::default();
@@ -3767,14 +3769,6 @@ mod tests {
             let eps = 1e-6;
             let close = |a: f64, b: f64| (a - b).abs() < eps;
             let tiles: Vec<Rect> = (0..4).map(|i| root.action(i)).collect();
-            assert!(
-                close(tiles[0].y0 - root.header_rect().y1, s4),
-                "title band → tiles is s4"
-            );
-            assert!(
-                root.edit_rect().y1 + s2 <= tiles[0].y0 + eps,
-                "the Edit button clears the tiles by at least s2"
-            );
             for pair in tiles.windows(2) {
                 assert!(
                     close(pair[1].x0 - pair[0].x1, s3),
@@ -3782,7 +3776,14 @@ mod tests {
                 );
             }
             let sliders = root.sliders_rect(panel);
-            assert!(close(sliders.y0 - tiles[0].y1, s4), "tiles → sliders is s4");
+            assert!(
+                close(sliders.y0 - root.header_rect().y1, s4),
+                "title band → sliders is s4"
+            );
+            assert!(
+                root.edit_rect().y1 + s2 <= sliders.y0 + eps,
+                "the Edit button clears the sliders by at least s2"
+            );
             let (b, v) = (
                 root.slider_face_rect(panel, 0),
                 root.slider_face_rect(panel, 1),
@@ -3814,12 +3815,13 @@ mod tests {
                 root.link_rect(panel, &state, 1),
             ];
             assert!(close(links[0].y0 - cards[2].y1, s4), "cards → rows is s4");
-            assert!(close(links[1].x0 - links[0].x1, s3), "row ↔ row is s3");
+            assert!(close(links[1].y0 - links[0].y1, s3), "row ↔ row is s3");
             let power = root.power_geometry(panel, &state);
-            assert!(close(power.y0 - links[0].y1, s3), "rows → power is s3");
+            assert!(close(power.y0 - links[1].y1, s3), "rows → power is s3");
+            assert!(close(tiles[0].y0 - power.y1, s4), "power → footer tiles is s4");
             assert!(
-                close(panel.y1 - power.y1, s4),
-                "power → panel edge is the panel padding"
+                close(panel.y1 - tiles[0].y1, s4),
+                "footer tiles → panel edge is the panel padding"
             );
             assert!(
                 close(
@@ -3832,7 +3834,12 @@ mod tests {
             // centre line, sit on the s3 inset and never meet.
             let icon_row = root.card_icon_row(cards[0]);
             let glyph = leading_glyph(icon_row, s3, GLYPH);
-            let toggle = trailing_toggle(icon_row, s3, TOGGLE_W, TOGGLE_H);
+            let toggle = trailing_toggle(
+                icon_row,
+                s3,
+                tilo_desktop::drill_in::TOGGLE_W,
+                tilo_desktop::drill_in::TOGGLE_H,
+            );
             assert!(
                 close(glyph.center().y, icon_row.center().y)
                     && close(toggle.center().y, icon_row.center().y)
