@@ -74,6 +74,8 @@ fn visibility_detail_key(visibility: ui::PresenceVisibility) -> &'static str {
 /// What a profile action is about, so the card can group them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProfileGroup {
+    /// Being with the people here: saying something beside the pointer.
+    Together,
     /// Keeping this identity: a passkey, a recovery key, signing in.
     Identity,
     /// The person's other devices.
@@ -254,8 +256,9 @@ impl ProfileCard {
             body = self.push_sharing(body.push(Box::new(Divider::horizontal())), model);
         }
         for (group, heading) in [
-            (ProfileGroup::Identity, "profile-section-identity"),
-            (ProfileGroup::Devices, "profile-section-devices"),
+            (ProfileGroup::Together, None),
+            (ProfileGroup::Identity, Some("profile-section-identity")),
+            (ProfileGroup::Devices, Some("profile-section-devices")),
         ] {
             let actions: Vec<&ProfileAction> = model
                 .actions
@@ -265,9 +268,12 @@ impl ProfileCard {
             if actions.is_empty() {
                 continue;
             }
-            body = body.push(Box::new(Divider::horizontal())).push(Box::new(
-                Text::new(&t(heading)).with_role(TextRole::Caption).dimmed(),
-            ));
+            body = body.push(Box::new(Divider::horizontal()));
+            if let Some(heading) = heading {
+                body = body.push(Box::new(
+                    Text::new(&t(heading)).with_role(TextRole::Caption).dimmed(),
+                ));
+            }
             for action in actions {
                 let chosen = Rc::clone(&self.chosen);
                 let id = action.id.clone();

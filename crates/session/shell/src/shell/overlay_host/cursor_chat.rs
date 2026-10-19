@@ -34,6 +34,9 @@ pub(crate) enum ChatOut {
 pub(crate) struct CursorChatComposer {
     /// A shared window is under the pointer, so `/` may open the composer.
     available: bool,
+    /// What is said would reach a shared window: one is under the pointer,
+    /// or one was said to before in this workspace.
+    reachable: bool,
     /// The keyboard route claimed the `/` press that opens the composer.
     armed: bool,
     open: bool,
@@ -160,6 +163,35 @@ impl super::ShellOverlayHost {
             && !self.cursor_chat.open
             && !self.person_cursor_controls_suppressed()
             && opens_chat(key, modifiers)
+    }
+
+    /// Open the composer on purpose (Super+/, the avatar menu's "Say
+    /// something here"), whatever has the keyboard: beside the pointer over
+    /// the shared window under it, or the one it last went to. Says so when
+    /// there is no shared window to say it in.
+    pub(crate) fn open_cursor_chat_on_request(&mut self) {
+        if self.cursor_chat.open || self.person_cursor_controls_suppressed() {
+            return;
+        }
+        if !self.cursor_chat.reachable {
+            if let Some(chrome) = self.chrome.as_ref() {
+                chrome.borrow_mut().push_warning_notification(
+                    crate::shell::i18n::t("cursor-chat-no-window"),
+                    crate::shell::i18n::t("cursor-chat-no-window-body"),
+                );
+            }
+            return;
+        }
+        let chat = &mut self.cursor_chat;
+        chat.armed = false;
+        chat.open = true;
+        chat.sent = None;
+    }
+
+    /// Whether what is said would reach a shared window: one is under the
+    /// pointer, or one was said to before in this workspace.
+    pub(crate) fn set_cursor_chat_reachable(&mut self, reachable: bool) {
+        self.cursor_chat.reachable = reachable;
     }
 
     /// The keyboard route kept this `/` from the focused window: the
@@ -491,6 +523,25 @@ mod tests {
             panic!("typed text is said");
         };
         assert_eq!(last.chars().count(), ui::presence::CURSOR_CHAT_MAX_CHARS);
+    }
+
+    /// Super+/ and the avatar menu open it whatever has the keyboard, as
+    /// long as what is said reaches a shared window; with none, the person
+    /// is told where to point instead.
+    #[test]
+    fn asking_for_it_opens_it_wherever_the_keyboard_is() {
+        let tree = crate::shell::state::WorkspaceTree::bootstrap_demo();
+        let (mut host, chrome) = crate::shell::build_tilo_overlay_host_with_chrome(&tree);
+        let before = chrome.borrow().notifications().len();
+        host.open_cursor_chat_on_request();
+        assert!(!host.cursor_chat_open(), "no shared window: nothing opens");
+        assert!(
+            chrome.borrow().notifications().len() > before,
+            "and the person is told where to point"
+        );
+        host.set_cursor_chat_reachable(true);
+        host.open_cursor_chat_on_request();
+        assert!(host.cursor_chat_open(), "a shared window: it opens");
     }
 
     /// `/` opens it, also where Shift types it; a command chord with `/`

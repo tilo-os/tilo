@@ -4142,6 +4142,10 @@ impl FrameBuilder {
             .as_deref()
             .is_some_and(|room| relay.chat_target(room).is_some());
         self.host.set_cursor_chat_available(available);
+        let reachable = room
+            .as_deref()
+            .is_some_and(|room| relay.chat_destination(room).is_some());
+        self.host.set_cursor_chat_reachable(reachable);
         // Waves at this person, from whoever waved.
         let own = relay.own_presence_id();
         let waves: Vec<String> = self

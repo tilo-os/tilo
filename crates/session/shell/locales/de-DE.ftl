@@ -180,6 +180,7 @@ shortcut-name-magnifier-zoom-out = Lupe verkleinern
 shortcut-name-power-menu = Ein/Aus-Menü
 shortcut-name-next-input-source = Nächstes Tastaturlayout
 shortcut-name-emoji-picker = Emoji
+shortcut-name-say-something = Hier etwas sagen
 shortcut-name-ask-agent = Agent zur Auswahl fragen
 
 # Die Gruppen, in denen Tastenkürzel aufgeführt werden
@@ -3140,6 +3141,10 @@ presence-arrival-intro-where = Andere hier sehen deinen Namen, deine Farbe und w
 presence-arrival-intro-here = Andere hier sehen deinen Namen und deine Farbe, nie wo du bist
 presence-arrival-intro-nothing = Andere hier sehen dich nicht, und du siehst ihre Zeiger nicht
 presence-arrival-change = Ändern
+profile-action-say-something = Hier etwas sagen
+cursor-chat-no-window = Zeig auf ein geteiltes Fenster, um etwas zu sagen
+cursor-chat-no-window-body = Was du sagst, erscheint neben deinem Zeiger für die Personen in diesem Fenster
+presence-guest-name = Gast
 people-join-call-failed = Dem Anruf konnte nicht beigetreten werden
 people-join-call-not-taken = Tritt ihm in Chat bei
 presence-wave-notice = { $person } winkt

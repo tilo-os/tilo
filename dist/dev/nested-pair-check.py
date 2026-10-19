@@ -17,7 +17,7 @@ and the actions people and agents use, it checks:
             same tab and at the same offset from that tile's corner
   follow    B follows A: B's view goes to the window A is in, and goes with
             A when A moves to another window
-  chat      what A types in cursor chat ("/" over a shared window) shows
+  chat      what A types in cursor chat (Super+/ over a shared window) shows
             beside A's pointer on B
 
 A check that cannot observe its subject fails; nothing is skipped. Every
@@ -358,12 +358,14 @@ def check_follow(a: Session, b: Session, a_on_b: dict):
 def check_cursor_chat(a: Session, b: Session, a_on_b: dict):
     text = "hi from A"
     _, (ax, ay, aw, ah), _ = shared_chat_window(a, b)
-    # "/" opens cursor chat where the focused widget takes no text: Chat
-    # starts in its message field, so A first picks the channel in the
-    # channel list, as a person clicking it does.
-    ok(a.control, {"op": "click_at", "x": ax + 56, "y": ay + 72})
+    # Super+/ opens cursor chat whatever has the keyboard: Chat keeps text
+    # focus in its message field, where a bare "/" is typing.
     wiggle(a, ax + aw * 0.6, ay + ah * 0.45)
-    ok(a.control, {"op": "type", "text": "/"})
+    ok(a.control, {"op": "modifiers", "ctrl": False, "shift": False, "alt": False, "logo": True})
+    try:
+        ok(a.control, {"op": "type", "text": "/"})
+    finally:
+        ok(a.control, {"op": "modifiers", "ctrl": False, "shift": False, "alt": False, "logo": False})
     ok(a.control, {"op": "type", "text": text})
 
     def said():
@@ -386,7 +388,7 @@ def start_pair(args, out: pathlib.Path) -> tuple[subprocess.Popen | None, dict]:
     if args.no_build:
         command.append("--no-build")
     log = open(out / "pair.log", "w")
-    # Keys are typed as a US keyboard makes them ("/" opens cursor chat);
+    # Keys are typed as a US keyboard makes them (Super+/ opens cursor chat);
     # the sessions take the machine's layout from here, not the host's.
     env = dict(os.environ, XKB_DEFAULT_LAYOUT="us")
     pair = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
