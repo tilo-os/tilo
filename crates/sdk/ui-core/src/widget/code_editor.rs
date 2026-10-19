@@ -1481,10 +1481,10 @@ mod document_tests {
         editor.set_text("replace me");
         editor.set_focused(true);
         editor.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
-        assert_eq!(
-            Widget::ime_content(&editor),
-            Some(crate::ime::InputContent::TEXT)
-        );
+        // Source is text over many lines; the input method is told so.
+        let mut source = crate::ime::InputContent::TEXT;
+        source.hints.multiline = true;
+        assert_eq!(Widget::ime_content(&editor), Some(source));
         let key = [19; 32];
         let stamp = Widget::ime_edit_fingerprint(&editor, &key).unwrap();
         editor.select_all();
