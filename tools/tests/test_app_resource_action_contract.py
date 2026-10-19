@@ -116,6 +116,32 @@ class AppResourceActionContractTests(unittest.TestCase):
             root = self.fixture("struct Sample;\nimpl ResourceApp for Sample {}\n")
             violations, _ = contract.audit(root)
             self.assertIn("Widget::resources", "\n".join(item.reason for item in violations))
+        with self.subTest(phase='a direct app cannot borrow a qualified impl target'):
+            root = self.fixture(
+                "mod legacy {\n"
+                "    pub struct SampleApp;\n"
+                "}\n"
+                "pub struct SampleApp;\n"
+                "impl ResourceApp for legacy::SampleApp { type Resource = Note; }\n"
+                "#[derive(Model, Default)] pub struct Note {}\n"
+                '#[resource(kind = "sample.note", label = "Note")]\n'
+                "impl Note {}\n"
+            )
+            violations, _ = contract.audit(root)
+            self.assertIn("Widget::resources", "\n".join(item.reason for item in violations))
+        with self.subTest(phase='a direct app cannot borrow a qualified declaration target'):
+            root = self.fixture(
+                "mod legacy {\n"
+                "    pub struct Note;\n"
+                "}\n"
+                "pub struct SampleApp;\n"
+                "impl ResourceApp for SampleApp { type Resource = Note; }\n"
+                "#[derive(Model, Default)] pub struct Note {}\n"
+                '#[resource(kind = "sample.legacy-note", label = "Legacy")]\n'
+                "impl legacy::Note {}\n"
+            )
+            violations, _ = contract.audit(root)
+            self.assertIn("Widget::resources", "\n".join(item.reason for item in violations))
         with self.subTest(phase='missing protocol and surface fail'):
             root = self.fixture("struct App;\n", dependencies="")
             violations, _ = contract.audit(root)
@@ -646,6 +672,68 @@ class AppResourceActionContractTests(unittest.TestCase):
                                 '#[resource(kind = "shared.legacy-note", label = "Legacy")]\n'
                                 "impl Note {}\n"
                             ),
+                        },
+                    )
+                ),
+            )
+        with self.subTest(phase="a qualified impl target in the host's own module does not stand in"):
+            self.assertIn(
+                "Widget::resources",
+                reasons(
+                    fixture(
+                        lib_source=(
+                            "mod legacy {\n"
+                            "    pub struct SampleApp;\n"
+                            "}\n"
+                            "pub struct SampleApp;\n"
+                            "impl ResourceApp for legacy::SampleApp { type Resource = Note; }\n"
+                            "#[derive(Model, Default)] pub struct Note {}\n"
+                            '#[resource(kind = "shared.note", label = "Note")]\n'
+                            "impl Note {}\n"
+                            "pub fn definition() -> &'static ApplicationDefinition {\n"
+                            "    ui::built_in_definition!(SampleApp)\n"
+                            "}\n"
+                        )
+                    )
+                ),
+            )
+        with self.subTest(phase="a qualified resource declaration target does not certify the local type"):
+            self.assertIn(
+                "Widget::resources",
+                reasons(
+                    fixture(
+                        lib_source=(
+                            "pub struct SampleApp;\n"
+                            "impl ResourceApp for SampleApp { type Resource = Note; }\n"
+                            "#[derive(Model, Default)] pub struct Note {}\n"
+                            "mod legacy {\n"
+                            "    pub struct Note;\n"
+                            "}\n"
+                            '#[resource(kind = "shared.legacy-note", label = "Legacy")]\n'
+                            "impl legacy::Note {}\n"
+                            "pub fn definition() -> &'static ApplicationDefinition {\n"
+                            "    ui::built_in_definition!(SampleApp)\n"
+                            "}\n"
+                        )
+                    )
+                ),
+            )
+        with self.subTest(phase="a dependency re-export of another host does not stand in"):
+            self.assertIn(
+                "Widget::resources",
+                reasons(
+                    fixture(
+                        lib_source=(
+                            "mod app;\n"
+                            "mod legacy;\n"
+                            "pub use app::SampleApp;\n"
+                            "pub fn definition() -> &'static ApplicationDefinition {\n"
+                            "    ui::built_in_definition!(crate::legacy::SampleApp)\n"
+                            "}\n"
+                        ),
+                        extra={
+                            "crates/shared-ui/src/app.rs": "pub struct SampleApp;\n",
+                            "crates/shared-ui/src/legacy.rs": local(),
                         },
                     )
                 ),

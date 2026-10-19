@@ -51,7 +51,10 @@ TOOLKIT_RESOURCE_VALUE = re.compile(
 # `ResourceApp`; the framework publishes that resource's actions (named
 # declarations plus the typed `apply` door), builds its runtime Resource value
 # and installs its replay decoder in the component registry.
-FRAMEWORK_APP = re.compile(r"\bimpl\s+(?:[\w:]+::)?ResourceApp\s+for\b")
+FRAMEWORK_APP = re.compile(
+    r"\bimpl\s+(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*ResourceApp\s+for\s+"
+    r"[A-Za-z_][A-Za-z0-9_]*\b(?!\s*::)"
+)
 # The framework's launch installs the resource's replay decoder
 # (`Resource::register`) into the component registry itself, whether the
 # binary calls it or `ui::main!` expands to it.
@@ -61,9 +64,6 @@ FRAMEWORK_LAUNCH = re.compile(
 # A framework app answers its effect and view operations as a typed
 # vocabulary: a surface's `ResourceSurface::effect`, a view's `cx.effects(..)`.
 TYPED_EFFECT_HANDLER = re.compile(r"\bfn\s+effect\s*\(|\.\s*effects\s*\(\s*(?:move\s*)?\|")
-FRAMEWORK_RESOURCE = re.compile(
-    r"#\[\s*(?:[\w:]+::)?resource\s*\(|\bimpl\s+(?:[\w:]+::)?Resource\s+for\b"
-)
 LEGACY_ENTRY_POINTS = {
     "legacy room-action override": re.compile(r"\bfn\s+apply_room_action\s*\("),
     "bespoke automation entry point": re.compile(
@@ -790,11 +790,11 @@ RESOURCE_ATTRIBUTE = re.compile(
     r"#\[\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*resource\s*\([^\]]*\)\s*\]"
     r"(?:\s*#\[[^\]]*\])*"
     r"\s*(?:pub(?:\s*\([^)]*\))?\s+)?(?:struct|enum|impl)\s+"
-    r"((?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*[A-Za-z_][A-Za-z0-9_]*)"
+    r"([A-Za-z_][A-Za-z0-9_]*)\b(?!\s*::)(?!\s+for\b)"
 )
 RESOURCE_IMPL = re.compile(
     r"\bimpl(?:\s*<[^>{}]*>)?\s+(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*Resource\s+for\s+"
-    r"((?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*[A-Za-z_][A-Za-z0-9_]*)"
+    r"([A-Za-z_][A-Za-z0-9_]*)\b(?!\s*::)"
 )
 
 
@@ -1068,6 +1068,39 @@ def resource_provider_source(
     return (module, segments[-1]) if module is not None else None
 
 
+def dependency_exports_host(
+    crate_dir: Path,
+    names: set[str],
+    host_source: Path,
+    host_type: str,
+) -> bool | None:
+    """Whether a dependency root's explicit re-export names the built host.
+
+    `None` means none of `names` is re-exported, so the host may be declared
+    in the root itself. `False` means every explicit re-export with one of
+    those names resolves to another type.
+    """
+    root = crate_dir / "src" / "lib.rs"
+    if not root.is_file():
+        return False
+    origins = use_origins(production_code(root.read_text(encoding="utf-8")))
+    explicit = [name for name in names if name in origins]
+    if not explicit:
+        return None
+    for name in explicit:
+        for target in origins[name]:
+            if not target:
+                continue
+            module = module_path_source(crate_dir, root, target[:-1])
+            if (
+                module is not None
+                and module.resolve() == host_source.resolve()
+                and target[-1] == host_type
+            ):
+                return True
+    return False
+
+
 def shipping_source(source: Path, dependency: Path, excluded: set[Path]) -> bool:
     """Whether `source` is production code of `dependency`."""
     try:
@@ -1078,22 +1111,33 @@ def shipping_source(source: Path, dependency: Path, excluded: set[Path]) -> bool
 
 
 def top_level_resource_app_impls(code: str, app_type: str) -> list[re.Match]:
-    """The `ResourceApp` impls for `app_type` declared in this module itself."""
+    """The `ResourceApp` impls whose target is exactly the local `app_type`.
+
+    A qualified target names another type, even when its last segment matches,
+    so it does not certify this module's type.
+    """
     return [
         match
         for match in RESOURCE_APP_IMPL.finditer(code)
         if brace_depth(code, match.start()) == 0
-        and rust_type_name(match.group(1)) == app_type
+        and split_path(match.group(1)) == [app_type]
     ]
 
 
 def declared_resource_names(code: str) -> set[str]:
-    """Types this module itself declares as a framework resource."""
+    """Plain target types this module itself declares as a framework resource.
+
+    A qualified target is not a canonical local declaration, so it certifies
+    no type in this module.
+    """
     names: set[str] = set()
     for pattern in (RESOURCE_IMPL, RESOURCE_ATTRIBUTE):
         for match in pattern.finditer(code):
-            if brace_depth(code, match.start()) == 0:
-                names.add(rust_type_name(match.group(1)))
+            if brace_depth(code, match.start()) != 0:
+                continue
+            target = split_path(match.group(1))
+            if len(target) == 1:
+                names.add(target[0])
     return names
 
 
@@ -1191,6 +1235,10 @@ def shared_framework_host(
             host_source, host_type = host
             excluded = test_only_module_files(dependency)
             if not shipping_source(host_source, dependency, excluded):
+                continue
+            if not glob and dependency_exports_host(
+                dependency, names, host_source, host_type
+            ) is False:
                 continue
             host_code = production_code(host_source.read_text(encoding="utf-8"))
             impls = top_level_resource_app_impls(host_code, host_type)
@@ -1489,7 +1537,7 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
         ):
             framework_host = (
                 FRAMEWORK_APP.search(combined) is not None
-                and FRAMEWORK_RESOURCE.search(combined) is not None
+                and bool(declared_resource_names(combined))
             ) or shared_framework_host(root, manifest_path.parent, manifest, shipped)
             toolkit_host = TOOLKIT_ACTION_HOST.search(combined) is not None
             # A host with several operations builds its descriptor directly;
