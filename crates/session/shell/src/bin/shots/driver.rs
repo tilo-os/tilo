@@ -823,10 +823,24 @@ impl ShellDriver {
     /// something to bring here. Reachable only from `--shots`, but goes
     /// through the real `RoomRecords::reference` path, so what the scene
     /// paints is what a real room index produces.
+    /// `query` typed on a device whose search sources are staged and whose
+    /// indexes a frame has already taken in, as on a device in use.
+    fn scene_seeded_query(&mut self, query: &str) {
+        self.seed_search_sources();
+        self.scene_palette_query(query);
+    }
+
     /// What universal search reaches beyond the apps here: Flathub's cached
     /// apps, Tilo apps the registries offer that this device lacks, and a
     /// vault Passwords indexed and left unlocked before it closed.
-    fn seed_search_sources(&self) {
+    fn seed_search_sources(&mut self) {
+        // One device across the scenes: staged once, so each scene's query
+        // meets indexes already built, as every keystroke after the first
+        // does.
+        static SEEDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if SEEDED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
         use app_catalogue::{CatalogueEntry, Installation, Source};
         use shell::shell::catalogue::CatalogueApp;
         use ui::search::index_publication::{IndexDelta, IndexEntry, IndexWeight};
@@ -897,6 +911,22 @@ impl ShellDriver {
                 .active_workspace()
                 .map(|workspace| workspace.room.to_string())
         };
+        // A live session's broker answers apps' content (its search) and
+        // opens a hit; the capture's stands in for it.
+        #[cfg(feature = "test-support")]
+        self.fb.host_mut().attach_app_action_broker(
+            shell::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
+        );
+        // A device has its catalogue indexed long before anyone types: ask
+        // once so the background index builds, and let it land, so the
+        // scene's query is answered from it as a keystroke is.
+        // A frame with the palette open refreshes the indexes; the builds
+        // land on a later one.
+        self.fb.host_mut().set_palette_visible(true);
+        self.fb.host_mut().set_palette_query("a");
+        let _ = self.paint_settled();
+        std::thread::sleep(Duration::from_millis(400));
+        let _ = self.paint_settled();
         let Some(room) = room else { return };
         let login = |key: &str, site: &str, user: &str| IndexEntry {
             key: key.to_owned(),
@@ -905,7 +935,7 @@ impl ShellDriver {
             title: site.to_owned(),
             subtitle: Some(user.to_owned()),
             group: Some("Passwords".to_owned()),
-            icon: Some("key-round".to_owned()),
+            icon: Some("globe".to_owned()),
             boost: 0,
             fields: vec![
                 (site.to_ascii_lowercase(), IndexWeight::Identity),
@@ -1727,24 +1757,19 @@ impl ShellDriver {
             "palette_move" => self.scene_palette_query("move"),
             "palette_files" => self.scene_palette_query("files"),
             "palette_finder" => {
-                self.seed_search_sources();
-                self.scene_palette_query("finder");
+                self.scene_seeded_query("finder");
             }
             "palette_spotify" => {
-                self.seed_search_sources();
-                self.scene_palette_query("spotify");
+                self.scene_seeded_query("spotify");
             }
             "palette_youtube_cats" => {
-                self.seed_search_sources();
-                self.scene_palette_query("youtube cats");
+                self.scene_seeded_query("youtube cats");
             }
             "palette_github" => {
-                self.seed_search_sources();
-                self.scene_palette_query("github");
+                self.scene_seeded_query("github");
             }
             "palette_workbook" => {
-                self.seed_search_sources();
-                self.scene_palette_query("workbook");
+                self.scene_seeded_query("workbook");
             }
             "topbar-edit" => self.scene_topbar_edit(),
             "quick-settings" => self.scene_quick_settings(),
