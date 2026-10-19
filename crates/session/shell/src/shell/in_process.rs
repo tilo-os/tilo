@@ -439,6 +439,19 @@ impl InProcessApps {
         Ok(apps)
     }
 
+    /// The store `app`'s records in `room` live in, as its mounted tabs
+    /// share it.
+    ///
+    /// # Errors
+    /// The store cannot be opened.
+    pub fn records(
+        &mut self,
+        app: &str,
+        room: &str,
+    ) -> Result<ui::record::RecordStore, RecordOpenError> {
+        self.owners.open(app, room)
+    }
+
     /// Mount `definition` for tab `tab` of `room` on `record` (the tab's
     /// own, or the room's default the app shares between its windows),
     /// created by the app's genesis the first time, reopened every time
