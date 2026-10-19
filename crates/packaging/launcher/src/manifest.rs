@@ -236,7 +236,7 @@ bin = "bin/app"
                     .get(service)
                     .unwrap_or_else(|| panic!("Settings declares the {service} integration"));
                 assert!(
-                    !requirement.is_required() && requirement.version == 1,
+                    !requirement.is_required() && requirement.version == 2,
                     "Settings must open when {service} is not running"
                 );
             }
