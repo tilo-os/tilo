@@ -446,6 +446,232 @@ class AppResourceActionContractTests(unittest.TestCase):
                 reasons(fixture(source=delegated(item="Note"))),
             )
 
+    def test_a_shared_framework_host_is_proved_in_the_module_the_definition_builds(self):
+        def delegated() -> str:
+            return (
+                "pub use shared_ui::SampleApp;\n"
+                "pub fn definition() -> &'static ui::application::ApplicationDefinition {\n"
+                "    shared_ui::definition()\n"
+                "}\n"
+            )
+
+        def local() -> str:
+            return (
+                "#[derive(Model, Default)] pub struct Note {}\n"
+                '#[resource(kind = "shared.note", label = "Note")]\n'
+                "impl Note {}\n"
+                "pub struct SampleApp;\n"
+                "impl ResourceApp for SampleApp { type Resource = Note; }\n"
+                "pub fn definition() -> &'static ApplicationDefinition {\n"
+                "    ui::built_in_definition!(SampleApp)\n"
+                "}\n"
+            )
+
+        def fixture(
+            *,
+            app_source: str = delegated(),
+            lib_source: str | None = None,
+            extra: dict[str, str] | None = None,
+        ) -> Path:
+            root = self.fixture(
+                app_source,
+                dependencies=(
+                    'ui={package="tilo-app",path="../../crates/sdk/tilo-app"}\n'
+                    'shared_ui={path="../../crates/shared-ui"}\n'
+                ),
+            )
+            crate = root / "crates" / "shared-ui" / "src"
+            crate.mkdir(parents=True)
+            (crate / "lib.rs").write_text(lib_source or local(), encoding="utf-8")
+            for relative, text in (extra or {}).items():
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(text, encoding="utf-8")
+            return root
+
+        def reasons(root: Path) -> str:
+            violations, _ = contract.audit(root)
+            return "\n".join(item.reason for item in violations)
+
+        with self.subTest(phase="the local provider in the definition's module passes"):
+            self.assertEqual(contract.audit(fixture())[0], [])
+        with self.subTest(phase="a re-exported definition is read in its own module"):
+            violations, _ = contract.audit(
+                fixture(
+                    lib_source="pub use app::definition;\n",
+                    extra={"crates/shared-ui/src/app.rs": local()},
+                )
+            )
+            self.assertEqual(violations, [])
+        with self.subTest(phase="a qualified host is read in the module it names"):
+            violations, _ = contract.audit(
+                fixture(
+                    lib_source=(
+                        "mod app;\n"
+                        "pub fn definition() -> &'static ApplicationDefinition {\n"
+                        "    ui::built_in_definition!(crate::app::SampleApp)\n"
+                        "}\n"
+                    ),
+                    extra={"crates/shared-ui/src/app.rs": local()},
+                )
+            )
+            self.assertEqual(violations, [])
+        with self.subTest(phase="an imported host is followed to its module"):
+            host = local().split("pub fn definition()", 1)[0]
+            violations, _ = contract.audit(
+                fixture(
+                    lib_source=(
+                        "pub use app::SampleApp;\n"
+                        "pub fn definition() -> &'static ApplicationDefinition {\n"
+                        "    ui::built_in_definition!(SampleApp)\n"
+                        "}\n"
+                    ),
+                    extra={"crates/shared-ui/src/app.rs": host},
+                )
+            )
+            self.assertEqual(violations, [])
+        with self.subTest(phase="an imported resource is followed to its module"):
+            violations, _ = contract.audit(
+                fixture(
+                    lib_source=(
+                        "pub use resource::Note;\n"
+                        "pub struct SampleApp;\n"
+                        "impl ResourceApp for SampleApp { type Resource = Note; }\n"
+                        "pub fn definition() -> &'static ApplicationDefinition {\n"
+                        "    ui::built_in_definition!(SampleApp)\n"
+                        "}\n"
+                    ),
+                    extra={
+                        "crates/shared-ui/src/resource.rs": (
+                            "#[derive(Model, Default)] pub struct Note {}\n"
+                            '#[resource(kind = "shared.note", label = "Note")]\n'
+                            "impl Note {}\n"
+                        )
+                    },
+                )
+            )
+            self.assertEqual(violations, [])
+        with self.subTest(phase="an earlier same-named host in another module does not stand in"):
+            self.assertIn(
+                "Widget::resources",
+                reasons(
+                    fixture(
+                        lib_source=(
+                            "mod legacy;\n"
+                            "pub struct SampleApp;\n"
+                            "pub fn definition() -> &'static ApplicationDefinition {\n"
+                            "    ui::built_in_definition!(SampleApp)\n"
+                            "}\n"
+                        ),
+                        extra={
+                            "crates/shared-ui/src/legacy.rs": (
+                                "pub struct SampleApp;\n"
+                                "impl ResourceApp for SampleApp { type Resource = Note; }\n"
+                                '#[resource(kind = "shared.legacy-note", label = "Legacy")]\n'
+                                "impl Note {}\n"
+                            )
+                        },
+                    )
+                ),
+            )
+        with self.subTest(phase="a same-named Resource in another module does not stand in"):
+            self.assertIn(
+                "Widget::resources",
+                reasons(
+                    fixture(
+                        lib_source=(
+                            "mod legacy;\n"
+                            "#[derive(Model, Default)] pub struct Note {}\n"
+                            "pub struct SampleApp;\n"
+                            "impl ResourceApp for SampleApp { type Resource = Note; }\n"
+                            "pub fn definition() -> &'static ApplicationDefinition {\n"
+                            "    ui::built_in_definition!(SampleApp)\n"
+                            "}\n"
+                        ),
+                        extra={
+                            "crates/shared-ui/src/legacy.rs": (
+                                '#[resource(kind = "shared.legacy-note", label = "Legacy")]\n'
+                                "impl Note {}\n"
+                            )
+                        },
+                    )
+                ),
+            )
+        with self.subTest(phase="a qualified host without its own impl does not borrow one"):
+            self.assertIn(
+                "Widget::resources",
+                reasons(
+                    fixture(
+                        lib_source=(
+                            "mod app;\n"
+                            "mod legacy;\n"
+                            "pub fn definition() -> &'static ApplicationDefinition {\n"
+                            "    ui::built_in_definition!(crate::app::SampleApp)\n"
+                            "}\n"
+                        ),
+                        extra={
+                            "crates/shared-ui/src/app.rs": (
+                                "pub struct SampleApp;\n"
+                                "#[derive(Model, Default)] pub struct Note {}\n"
+                            ),
+                            "crates/shared-ui/src/legacy.rs": (
+                                "pub struct SampleApp;\n"
+                                "impl ResourceApp for SampleApp { type Resource = Note; }\n"
+                                '#[resource(kind = "shared.legacy-note", label = "Legacy")]\n'
+                                "impl Note {}\n"
+                            ),
+                        },
+                    )
+                ),
+            )
+        with self.subTest(phase="ambiguous import origins do not stand in"):
+            self.assertIn(
+                "Widget::resources",
+                reasons(
+                    fixture(
+                        lib_source=(
+                            "mod app;\n"
+                            "mod legacy;\n"
+                            "pub use app::SampleApp;\n"
+                            "pub use legacy::SampleApp;\n"
+                            "pub fn definition() -> &'static ApplicationDefinition {\n"
+                            "    ui::built_in_definition!(SampleApp)\n"
+                            "}\n"
+                        ),
+                        extra={
+                            "crates/shared-ui/src/app.rs": "pub struct SampleApp;\n",
+                            "crates/shared-ui/src/legacy.rs": (
+                                "pub struct SampleApp;\n"
+                                "impl ResourceApp for SampleApp { type Resource = Note; }\n"
+                                '#[resource(kind = "shared.legacy-note", label = "Legacy")]\n'
+                                "impl Note {}\n"
+                            ),
+                        },
+                    )
+                ),
+            )
+        with self.subTest(phase="a nested same-named host does not stand in"):
+            self.assertIn(
+                "Widget::resources",
+                reasons(
+                    fixture(
+                        lib_source=(
+                            "#[derive(Model, Default)] pub struct Note {}\n"
+                            '#[resource(kind = "shared.note", label = "Note")]\n'
+                            "impl Note {}\n"
+                            "pub struct SampleApp;\n"
+                            "mod legacy {\n"
+                            "    pub struct SampleApp;\n"
+                            "    impl ResourceApp for SampleApp { type Resource = Note; }\n"
+                            "}\n"
+                            "pub fn definition() -> &'static ApplicationDefinition {\n"
+                            "    ui::built_in_definition!(SampleApp)\n"
+                            "}\n"
+                        )
+                    )
+                ),
+            )
+
     def test_only_a_compute_package_publishes_no_surface_of_its_own(self):
         compute_manifest = (
             '[package]\nid="so.tilo.sample"\nkind="service"\n'
