@@ -2087,11 +2087,25 @@ impl ActivityTimeline {
         } = layout;
         let x = dot_x + AVATAR_DIAM / 2.0 + 8.0;
         let slot_end = row.x0 + author_slot_w - 6.0;
+        // A bot's change carries the bot chip after its name, as its
+        // messages do; the chip keeps its width and the name gives way.
+        let bot_chip = is_bot_author(&entry.author).then(|| {
+            let label = crate::i18n::widget_format("author-bot-chip", &[]);
+            let width = crate::widget::ChipFace::intrinsic_width(
+                &label,
+                crate::widget::ChipLead::None,
+                false,
+                text_renderer,
+                theme,
+            );
+            (label, width)
+        });
+        let chip_reserve = bot_chip.as_ref().map_or(0.0, |(_, width)| width + 6.0);
         let name = fit_text(
             text_renderer,
             entry.author.name.as_str(),
             text_style,
-            (slot_end - x).max(24.0),
+            (slot_end - x - chip_reserve).max(24.0),
         );
         let name_top = text_top(text_renderer, text_style, cy);
         // The reader's own changes read quieter than other people's.
@@ -2108,6 +2122,23 @@ impl ActivityTimeline {
             None,
             text_style,
         );
+        if let Some((label, width)) = bot_chip {
+            let (name_width, _) = text_renderer.measure_style(&name, None, text_style);
+            let chip_x = x + f64::from(name_width) + 6.0;
+            let height = crate::widget::ChipFace::height(theme).min(row.height());
+            let chip = Rect::new(
+                chip_x,
+                cy - height / 2.0,
+                (chip_x + width).min(slot_end),
+                cy + height / 2.0,
+            );
+            crate::widget::ChipFace::new(chip, &label).paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+            );
+        }
     }
 
     /// The op-class glyph and the summary column, including the redaction
@@ -3746,6 +3777,14 @@ impl ActivityTimeline {
     }
 }
 
+/// Whether `author` is an installed bot acting as itself.
+fn is_bot_author(author: &crate::widget::history::HistoryAuthor) -> bool {
+    author
+        .attribution
+        .as_ref()
+        .is_some_and(|attribution| attribution.kind == tilo_actions::ActorKind::Bot)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3757,6 +3796,24 @@ mod tests {
     use collab_types::ArtifactKind;
     use std::cell::RefCell;
     use std::rc::Rc;
+
+    #[test]
+    fn a_bots_change_is_marked_as_the_bots_and_an_agents_is_not() {
+        let acting = |kind| {
+            HistoryAuthor::new("Standup Bot", 120.0, "ab12")
+                .with_relation(crate::widget::history::AuthorRelation::Software)
+                .with_attribution(crate::widget::history::HistoryAttribution {
+                    actor: "bot:standup".into(),
+                    kind,
+                    actor_name: "Standup Bot".into(),
+                    on_behalf_of: Some("ada".into()),
+                    on_behalf_of_name: Some("Ada".into()),
+                })
+        };
+        assert!(is_bot_author(&acting(tilo_actions::ActorKind::Bot)));
+        assert!(!is_bot_author(&acting(tilo_actions::ActorKind::Agent)));
+        assert!(!is_bot_author(&HistoryAuthor::new("Ada", 10.0, "cd34")));
+    }
 
     /// Relative luminance of the composited pixel at (`x`, `y`).
     #[allow(
