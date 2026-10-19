@@ -345,9 +345,14 @@ fn rich_blocks_render_insets_copy_actions_and_contiguous_code() {
                 (editor.content_bottom() - editor.get_rect().y1).abs() < 0.01,
                 "scroll extent includes complete image/table/embed, not just its source line"
             );
+            // The block's handle shows for the pointer over it; grab it there.
             let line = editor.blocks()[0].line.get_rect();
-            let x = line.x0 - 14.0;
-            let y = line.y0 + 12.0;
+            block_event(&mut editor, cursor_moved(line.center().x, line.center().y));
+            let handle = editor
+                .hover_handle()
+                .expect("the hovered rich block shows its drag handle")
+                .center();
+            let (x, y) = (handle.x, handle.y);
             block_event(&mut editor, cursor_moved(x, y));
             let idle = block_scene(&mut editor).encoding().draw_tags.len();
             block_event(&mut editor, mouse_press());
