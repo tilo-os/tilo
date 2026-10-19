@@ -76,6 +76,16 @@ impl Action {
 /// What the engine reports as its connection when no podman answered.
 pub const UNREACHABLE: &str = "Podman didn't respond";
 
+/// Why no podman answered, from an engine's `connection` (what the probe
+/// failed with), for the "Details" of the page that says so.
+#[must_use]
+pub fn unreachable_detail(connection: &str) -> Option<&str> {
+    connection
+        .strip_prefix(UNREACHABLE)
+        .and_then(|rest| rest.strip_prefix(": "))
+        .filter(|detail| !detail.trim().is_empty())
+}
+
 /// Result of probing the engine. The UI only needs the snapshot; errors are
 /// folded into a fallback so the surface never goes blank.
 pub struct Probe {
