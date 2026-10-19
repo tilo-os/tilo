@@ -592,7 +592,7 @@ fn a_trailing_control_reserves_its_width_and_wraps_under_narrow_text() {
         );
         let root = harness.inspection().root;
         let row = find(&root, "ListRow").unwrap();
-        let toggle = rect_of(&row.children[0]);
+        let toggle = rect_of(find(row, "Toggle").unwrap());
         (rect_of(row), toggle)
     };
     let (row, toggle) = layout(600);

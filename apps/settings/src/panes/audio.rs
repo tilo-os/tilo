@@ -323,13 +323,8 @@ fn device_is_headphones(name: &str) -> bool {
 /// How wide an app's volume slider is, and the narrowest it gets.
 const STREAM_SLIDER_WIDTH: f32 = 172.0;
 const STREAM_SLIDER_MIN_WIDTH: f32 = 88.0;
-/// How wide an app's route chooser is.
-const STREAM_ROUTE_WIDTH: f32 = 132.0;
 /// How wide the output volume slider is, with its value beside it.
 const OUTPUT_SLIDER_WIDTH: f32 = 184.0;
-/// What follows the volume slider on its row (the gap and the mute
-/// button): the meter under the slider leaves the same room.
-const OUTPUT_METER_TRAIL: f32 = 36.0;
 
 struct NoopAudioRuntime;
 impl AudioRuntimeControl for NoopAudioRuntime {
@@ -1695,29 +1690,26 @@ impl AudioModel {
                 ),
                 AudioEffect::SetOutputMuted { muted: !self.muted },
             );
-            output_rows.push(setting_row(
-                &t("sound-volume"),
+            let line = Row::new()
+                .no_wrap()
+                .with_align_items(taffy::AlignItems::Center)
+                .with_rhythm(ui::tokens::Rhythm::Related)
+                .push(Box::new(
+                    ui::widget::Container::new()
+                        .with_no_padding()
+                        .with_width(OUTPUT_SLIDER_WIDTH)
+                        .with_child(Box::new(volume)),
+                ))
+                .push(Box::new(mute));
+            // What the output in use plays, while the page is open: a meter
+            // under the slider, as wide as it.
+            let control: Box<dyn Widget> = if self.output_meter.is_live() {
                 Box::new(
-                    Row::new()
-                        .no_wrap()
-                        .with_align_items(taffy::AlignItems::Center)
-                        .with_rhythm(ui::tokens::Rhythm::Related)
-                        .push(Box::new(
-                            ui::widget::Container::new()
-                                .with_no_padding()
-                                .with_width(OUTPUT_SLIDER_WIDTH)
-                                .with_child(Box::new(volume)),
-                        ))
-                        .push(Box::new(mute)),
-                ),
-            ));
-            // What the output in use plays, while the page is open.
-            // It sits under the volume slider, as wide as it.
-            if self.output_meter.is_live() {
-                output_rows.push(block(Box::new(
-                    Row::new()
-                        .no_wrap()
-                        .with_justify(taffy::JustifyContent::FlexEnd)
+                    ui::widget::Column::new()
+                        .with_no_padding()
+                        .with_intrinsic_height()
+                        .with_rhythm(ui::tokens::Rhythm::Tight)
+                        .push(Box::new(line))
                         .push(Box::new(
                             ui::widget::Container::new()
                                 .with_no_padding()
@@ -1726,14 +1718,12 @@ impl AudioModel {
                                     &self.output_meter,
                                     t("sound-output-level"),
                                 ))),
-                        ))
-                        .push(Box::new(
-                            ui::widget::Container::new()
-                                .with_no_padding()
-                                .with_width(OUTPUT_METER_TRAIL),
                         )),
-                )));
-            }
+                )
+            } else {
+                Box::new(line)
+            };
+            output_rows.push(setting_row(&t("sound-volume"), control));
         }
         let stereo_sink = self.graph.default_sink().filter(|sink| sink.channels == 2);
         if self.runtime_caps.balance && stereo_sink.is_some() {
@@ -2041,12 +2031,7 @@ impl AudioModel {
                     effect(AudioEffect::ROUTE_STREAM).map(move |device: String| (id, device)),
                 ),
             );
-            controls = controls.push(Box::new(
-                ui::widget::Container::new()
-                    .with_no_padding()
-                    .with_width(STREAM_ROUTE_WIDTH)
-                    .with_child(Box::new(route)),
-            ));
+            controls = controls.push(Box::new(route));
         }
         let mut line = ui::widget::ListRow::new(format!("audio.stream.{id}"), s.app.clone())
             .trailing(Box::new(controls));
