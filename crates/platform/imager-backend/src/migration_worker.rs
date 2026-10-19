@@ -71,6 +71,7 @@ impl MigrationJob {
         })
     }
 
+    #[must_use]
     pub fn with_reviewed_identities(
         mut self,
         source: migration_durability::Identity,
@@ -294,7 +295,15 @@ impl MigrationWorker {
     /// Block until the engine's terminal channel event arrives. Progress lives
     /// in a separate slot and never wakes this wait, so a slow runner cannot
     /// fail a correct result the way a spin-plus-deadline loop can.
+    ///
+    /// # Panics
+    /// When the terminal event was already observed, a non-terminal event
+    /// arrives, or the worker does not finish within the test hang bound.
     #[cfg(any(test, feature = "test-support"))]
+    #[allow(
+        clippy::panic,
+        reason = "a test helper: a worker that never finishes fails the test"
+    )]
     pub fn wait_terminal(&mut self) -> WorkerEvent {
         use std::sync::mpsc::RecvTimeoutError;
         assert!(

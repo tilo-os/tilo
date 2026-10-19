@@ -895,19 +895,19 @@ fn assert_offline_declaration_cannot_split(manifest: &Manifest, staging: &Path) 
     );
     let mut split = manifest.clone();
     split.portable_home = None;
-    assert!(split.write(&staging).is_err());
+    assert!(split.write(staging).is_err());
     let mut split = manifest.clone();
     split.offline_home.as_mut().unwrap().identity_public_key = [9; 32];
-    assert!(split.write(&staging).is_err());
+    assert!(split.write(staging).is_err());
     let mut split = manifest.clone();
     split.offline_home.as_mut().unwrap().setup_binding = "another-setup".into();
-    assert!(split.write(&staging).is_err());
+    assert!(split.write(staging).is_err());
     let mut split = manifest.clone();
     split.portable_home.as_mut().unwrap().applications = true;
-    assert!(split.write(&staging).is_err());
+    assert!(split.write(staging).is_err());
     let mut split = manifest.clone();
     split.offline_home.as_mut().unwrap().source.operation_id = uuid::Uuid::new_v4().to_string();
-    assert!(split.write(&staging).is_err());
+    assert!(split.write(staging).is_err());
 }
 #[test]
 fn offline_home_crypto_reopen_preserves_exact_selection_and_refuses_split_declaration() {

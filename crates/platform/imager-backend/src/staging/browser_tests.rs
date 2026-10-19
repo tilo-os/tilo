@@ -10,7 +10,7 @@ impl Expectation for Receipt {
     fn validate(&self) -> io::Result<()> {
         Ok(())
     }
-    fn filename(&self) -> &str {
+    fn filename(&self) -> &'static str {
         "browser.sealed"
     }
     fn sealed_bytes(&self) -> u64 {

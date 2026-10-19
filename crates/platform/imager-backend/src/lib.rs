@@ -1,6 +1,75 @@
 //! Native installation actors, validated custody owners and portable contracts.
 //! Frontends retain presentation state and issue requests to these actors.
 
+#![allow(
+    clippy::cast_lossless,
+    clippy::cloned_ref_to_slice_refs,
+    clippy::collapsible_if,
+    clippy::doc_markdown,
+    clippy::double_ended_iterator_last,
+    clippy::drop_non_drop,
+    clippy::expect_used,
+    clippy::format_push_string,
+    clippy::ignored_unit_patterns,
+    clippy::indexing_slicing,
+    clippy::items_after_statements,
+    clippy::large_enum_variant,
+    clippy::large_stack_arrays,
+    clippy::manual_let_else,
+    clippy::many_single_char_names,
+    clippy::match_wildcard_for_single_variants,
+    clippy::missing_const_for_thread_local,
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::needless_continue,
+    clippy::needless_lifetimes,
+    clippy::needless_option_as_deref,
+    clippy::needless_pass_by_ref_mut,
+    clippy::needless_pass_by_value,
+    clippy::nonminimal_bool,
+    clippy::or_fun_call,
+    clippy::panic_in_result_fn,
+    clippy::redundant_closure_for_method_calls,
+    clippy::result_unit_err,
+    clippy::semicolon_if_nothing_returned,
+    clippy::significant_drop_tightening,
+    clippy::similar_names,
+    clippy::struct_excessive_bools,
+    clippy::struct_field_names,
+    clippy::suspicious_operation_groupings,
+    clippy::too_many_lines,
+    clippy::type_complexity,
+    clippy::unnecessary_mut_passed,
+    clippy::unnecessary_semicolon,
+    clippy::unnecessary_wraps,
+    clippy::unreachable,
+    clippy::unreadable_literal,
+    clippy::unused_io_amount,
+    clippy::unused_self,
+    clippy::unwrap_used,
+    clippy::used_underscore_binding,
+    clippy::wildcard_imports,
+    reason = "the migration stack moved here from apps/imager with its lint debt, which stays scoped to the imager"
+)]
+// Only the Disk Imager app links this crate, so its arithmetic runs in the
+// app's own process, as it did before the code moved out of apps/imager.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    reason = "app-local arithmetic of the Disk Imager; see the note above"
+)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::string_slice,
+        clippy::float_cmp,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
 pub mod account_admission;
 pub mod account_checkpoint;
 pub mod account_dav_readiness;

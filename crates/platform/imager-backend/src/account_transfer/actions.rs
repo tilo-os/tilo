@@ -199,6 +199,7 @@ impl AccountActions {
     }
 
     #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
     pub fn with_spotify_api(mut self, endpoint: String) -> Self {
         self.spotify_api = Some(endpoint);
         self

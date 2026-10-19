@@ -234,7 +234,7 @@ impl Connector {
                     .get(id)
                     .ok_or(ConnectionError::CredentialUnavailable)?,
             );
-            if !account_custody::imported_oauth_matches(&secret.0, &registration) {
+            if !account_custody::imported_oauth_matches(&secret.0, registration) {
                 return Err(ConnectionError::AlreadyPresent);
             }
             return Ok(true);

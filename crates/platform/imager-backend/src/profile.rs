@@ -168,7 +168,7 @@ fn cancelled_error() -> io::Error {
 #[cfg(test)]
 mod windows_tests {
     use super::*;
-    use account_custody::hints::{AccountHint, Provider, media};
+    use account_custody::hints::{AccountHint, HintSources, Provider, media};
 
     #[test]
     fn production_writer_and_reader_bind_exact_private_hints_and_recovery() {
@@ -179,7 +179,7 @@ mod windows_tests {
                 provider: Provider::Microsoft,
                 email: "private@example.org".into(),
                 server: String::new(),
-                sources: Default::default(),
+                sources: HintSources::default(),
             }],
             b"independently verified recovery copies",
         )
