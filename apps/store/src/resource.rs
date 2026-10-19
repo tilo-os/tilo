@@ -698,6 +698,13 @@ impl ResourceSurface<Reports, StoreEffect> for StoreApp {
     fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
         self.catalogue_search_entries()
     }
+
+    /// Desktop search finds the catalogue's apps from the shared catalogue
+    /// whether or not the Store runs; keeping thousands of them in the
+    /// system's search index as well would find every app twice.
+    fn kept_in_search_index(&self) -> bool {
+        false
+    }
 }
 
 /// The resource as the palette sees it without a window: its declarations
@@ -2427,6 +2434,26 @@ mod tests {
 
         let mut empty = TestApp::<StoreShell>::capture(Some("empty")).unwrap();
         assert!(!frame(&mut empty).contains("Terminal"));
+    }
+
+    /// The catalogue is found in the Store's own search while it runs and
+    /// by desktop search from the shared catalogue; none of it is kept in
+    /// the system's search index, which would list every app twice.
+    #[test]
+    fn the_catalogue_is_searchable_but_never_kept_in_the_search_index() {
+        let mut wide = TestApp::<StoreShell>::capture(Some("wide")).unwrap();
+        let apps: Vec<String> = wide
+            .surface_mut::<StoreApp>()
+            .catalogue_search_entries()
+            .into_iter()
+            .filter_map(|entry| entry.anchor)
+            .collect();
+        assert!(!apps.is_empty(), "the running Store finds its catalogue");
+        let kept = wide.search_index_entries();
+        assert!(
+            kept.iter().all(|entry| !apps.contains(&entry.resource)),
+            "no catalogue app is kept in the search index: {kept:?}"
+        );
     }
 
     /// Publisher metadata reaches the running view and the same semantic

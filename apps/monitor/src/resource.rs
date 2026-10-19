@@ -204,6 +204,13 @@ impl ResourceSurface<Monitor, MonitorEffect> for MonitorApp {
     fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
         self.process_search_entries()
     }
+
+    /// Processes are the machine's state of the moment: a closed Monitor
+    /// leaves none in the system's search index to open into one that has
+    /// ended.
+    fn kept_in_search_index(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -593,6 +600,37 @@ mod tests {
         assert!(
             app.effect(&MonitorEffect::CopyPid { process: id }).is_err(),
             "a process that is gone is refused"
+        );
+    }
+
+    #[test]
+    fn processes_are_found_while_the_monitor_runs_and_never_kept_in_the_search_index() {
+        let scenario = MonitorShell::scenarios()
+            .iter()
+            .find(|scenario| {
+                !matches!(
+                    **scenario,
+                    "empty" | "process-loading" | "process-permission-error"
+                )
+            })
+            .expect("a scenario with the sample processes");
+        let mut app = TestApp::<MonitorShell>::capture(Some(scenario)).unwrap();
+        app.harness().relayout();
+        let processes: Vec<String> = app
+            .surface_mut::<MonitorApp>()
+            .process_search_entries()
+            .into_iter()
+            .filter_map(|entry| entry.anchor)
+            .collect();
+        assert!(
+            !processes.is_empty(),
+            "the running Monitor finds its processes"
+        );
+        let kept = app.search_index_entries();
+        assert!(
+            kept.iter()
+                .all(|entry| !processes.contains(&entry.resource)),
+            "no process outlives the Monitor in the search index: {kept:?}"
         );
     }
 
