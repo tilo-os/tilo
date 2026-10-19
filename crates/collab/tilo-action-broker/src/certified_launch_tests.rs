@@ -16,6 +16,10 @@ impl crate::services::LauncherServices for CertifiedLaunchCatalog {
         }]
     }
 
+    #[allow(
+        clippy::panic,
+        reason = "test code included into the broker module: clippy does not see the cfg(test) on its include!, so it reads the test's checks as production code"
+    )]
     fn launch(
         &self,
         _: &str,

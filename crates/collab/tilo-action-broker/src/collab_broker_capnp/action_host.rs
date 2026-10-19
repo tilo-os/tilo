@@ -3425,6 +3425,10 @@ mod app_close_tests {
         assert!(invoke_close(&state, &caller, &close_request(&room)).is_err());
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the test keeps its fixture and guards alive through its assertions"
+    )]
     #[test]
     fn close_preserves_the_requested_uuid_in_its_terminal_journal_record() {
         let launcher = Arc::new(Launcher {
@@ -3432,10 +3436,12 @@ mod app_close_tests {
             ..Default::default()
         });
         let (state, caller, room) = broker(Arc::clone(&launcher), true);
-        let root = tempfile::tempdir().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
         *state.journal.lock().unwrap() = Ok(Some(
-            super::super::invocation_journal::InvocationJournal::open(&root.path().join("journal"))
-                .unwrap(),
+            super::super::invocation_journal::InvocationJournal::open(
+                &scratch.path().join("journal"),
+            )
+            .unwrap(),
         ));
         let request = close_request(&room);
         let job = invoke_close(&state, &caller, &request).unwrap();
@@ -3479,10 +3485,11 @@ mod app_close_tests {
             ..Default::default()
         });
         let (state, caller, room) = broker(Arc::clone(&launcher), true);
-        let root = tempfile::tempdir().unwrap();
-        let mut journal =
-            super::super::invocation_journal::InvocationJournal::open(&root.path().join("journal"))
-                .unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let mut journal = super::super::invocation_journal::InvocationJournal::open(
+            &scratch.path().join("journal"),
+        )
+        .unwrap();
         journal.fail_at = Some(super::super::invocation_journal::BarrierFailure::File);
         *state.journal.lock().unwrap() = Ok(Some(journal));
         assert!(invoke_close(&state, &caller, &close_request(&room)).is_err());
@@ -3702,6 +3709,10 @@ mod device_pairing_tests {
             .expect("admission answers at once")
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the test keeps its fixture and guards alive through its assertions"
+    )]
     #[test]
     fn settings_pairs_as_its_person_and_the_outcome_follows_the_host() {
         let host = Arc::new(Host::default());
@@ -3716,7 +3727,7 @@ mod device_pairing_tests {
         let room = fixture.room.clone();
         let owner = match person.principal() {
             tilo_actions::remote::CallerPrincipal::Person(owner) => owner.clone(),
-            _ => unreachable!("the settings caller is a person"),
+            _ => panic!("the settings caller is a person"),
         };
 
         let rows = state
@@ -3778,7 +3789,7 @@ mod device_pairing_tests {
         // A remote device, or a caller confined to no room, is never offered
         // pairing on this machine.
         let super::super::InvocationCaller::Local { admitted, .. } = &fixture.origin else {
-            unreachable!("the settings fixture retains local custody")
+            panic!("the settings fixture retains local custody")
         };
         let certificate = admitted.certificate.as_ref().unwrap();
         let remote =

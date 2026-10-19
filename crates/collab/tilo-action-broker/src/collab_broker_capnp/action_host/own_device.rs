@@ -259,6 +259,10 @@ mod tests {
             .expect("admission answers at once")
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the test keeps its fixture and guards alive through its assertions"
+    )]
     #[test]
     fn certified_own_device_refuses_foreign_and_unproven_device_callers() {
         for foreign in [false, true] {
@@ -286,6 +290,10 @@ mod tests {
         }
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the test keeps its fixture and guards alive through its assertions"
+    )]
     #[test]
     fn certified_own_device_preserves_service_caller_and_signed_ownership() {
         let network = Arc::new(Network::default());
@@ -301,7 +309,7 @@ mod tests {
         f.assert_signed(&asked, false);
         assert_eq!(
             network.callers.lock().unwrap().as_slice(),
-            &[f.caller.clone()]
+            std::slice::from_ref(&f.caller)
         );
         assert!(
             f.caller.device_public_key().is_some(),
@@ -313,7 +321,7 @@ mod tests {
             .unwrap()
             .pop()
             .unwrap()
-            .complete(Ok(Default::default()));
+            .complete(Ok(tilo_actions::ActionOutput::default()));
         f.assert_signed(&asked, true);
         f.invoke(&asked).unwrap();
         assert_eq!(network.sent.lock().unwrap().len(), 1);
@@ -324,6 +332,10 @@ mod tests {
         assert_eq!(network.sent.lock().unwrap().len(), 1);
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the test keeps its fixture and guards alive through its assertions"
+    )]
     #[test]
     fn own_device_rechecks_authority_after_blocked_durable_admission() {
         use std::sync::{atomic::Ordering, mpsc};
@@ -393,7 +405,7 @@ mod tests {
                         .unwrap()
                         .pop()
                         .unwrap()
-                        .complete(Ok(Default::default()));
+                        .complete(Ok(tilo_actions::ActionOutput::default()));
                     let record = f.assert_signed(&asked, true);
                     assert!(matches!(record.update, InvocationUpdate::Succeeded { .. }));
                 } else {
@@ -413,6 +425,10 @@ mod tests {
         }
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the test keeps its fixture and guards alive through its assertions"
+    )]
     #[test]
     fn own_device_signs_before_send_and_preserves_uuid_through_completion() {
         let network = Arc::new(Network::default());
@@ -459,6 +475,10 @@ mod tests {
         assert_eq!(f.assert_signed(&asked, true), completed);
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the test keeps its fixture and guards alive through its assertions"
+    )]
     #[test]
     fn own_device_signs_failure_and_a_lost_remote_answer_without_resending() {
         for dropped in [false, true] {
@@ -499,6 +519,10 @@ mod tests {
         }
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the test keeps its fixture and guards alive through its assertions"
+    )]
     #[test]
     fn own_device_journal_barriers_precede_dispatch_and_reported_success() {
         for admission_failure in [false, true] {
@@ -536,6 +560,10 @@ mod tests {
         }
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the test keeps its fixture and guards alive through its assertions"
+    )]
     #[test]
     fn own_device_immediate_refusal_is_signed_and_replayed_without_sending() {
         let network = Arc::new(Network {
@@ -568,6 +596,10 @@ mod tests {
         assert!(network.sent.lock().unwrap().is_empty());
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the test keeps its fixture and guards alive through its assertions"
+    )]
     #[test]
     fn own_device_missing_signer_and_revoked_custody_never_reach_the_network() {
         for revoked in [false, true] {

@@ -129,10 +129,7 @@ mod external_moderation_rpc_tests {
                 ),
                 self.state.membership.as_ref(),
                 None,
-                self.state
-                    .certificate_authority
-                    .get()
-                    .map(|authority| authority.as_ref()),
+                self.state.certificate_authority.get().map(AsRef::as_ref),
                 scope.as_ref(),
             )
             .unwrap();
@@ -146,6 +143,10 @@ mod external_moderation_rpc_tests {
             )
         }
 
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "test code included into the broker module: clippy does not see the cfg(test) on its include!, so it reads the test's checks as production code"
+        )]
         fn invoke(&self, peer: u64, resource: &str, action: &str, argument: &str) -> u64 {
             let offered = self.state.surfaces.lock().unwrap()[&peer]
                 .actions
@@ -320,12 +321,12 @@ mod external_moderation_rpc_tests {
                         match field {
                             "destination" => changed.operation.destination.base_url.push('/'),
                             "owner" => {
-                                changed.operation.destination.owner_pubkey_hex = "ef".repeat(32)
+                                changed.operation.destination.owner_pubkey_hex = "ef".repeat(32);
                             }
                             "mutation" => match &mut changed.operation.mutation {
                                 ModerationMutation::FileReport { summary, .. } => summary.push('!'),
                                 ModerationMutation::PublisherAppeal { reason, .. } => {
-                                    reason.push('!')
+                                    reason.push('!');
                                 }
                                 _ => unreachable!(),
                             },
@@ -506,12 +507,12 @@ mod external_moderation_rpc_tests {
                         let mut changed = operation.clone();
                         match altered {
                             "destination" => {
-                                changed.destination.base_url = "http://other.invalid".into()
+                                changed.destination.base_url = "http://other.invalid".into();
                             }
                             "payload" => match &mut changed.mutation {
                                 ModerationMutation::FileReport { summary, .. } => summary.push('!'),
                                 ModerationMutation::PublisherAppeal { reason, .. } => {
-                                    reason.push('!')
+                                    reason.push('!');
                                 }
                                 _ => unreachable!(),
                             },

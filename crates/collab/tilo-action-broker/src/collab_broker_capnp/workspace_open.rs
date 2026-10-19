@@ -62,7 +62,7 @@ impl Opening {
                 invocation: self.admitted.invocation,
                 output: ActionOutput {
                     value: peer.map(|peer| serde_json::json!({ OPENED_PEER_FIELD: peer })),
-                    ..ActionOutput::default()
+                    ..tilo_actions::ActionOutput::default()
                 },
             },
             admitted: self.admitted,
@@ -120,7 +120,7 @@ impl CapnpBrokerState {
                 &admitted,
                 InvocationUpdate::Succeeded {
                     invocation: admitted.invocation,
-                    output: ActionOutput::default(),
+                    output: tilo_actions::ActionOutput::default(),
                 },
             )?;
             return Ok(());
@@ -261,7 +261,8 @@ mod tests {
             _: LaunchContent<'_>,
             _: &LaunchPlace,
         ) -> Result<Launched, String> {
-            if let Some(outcome) = self.outcome.lock().unwrap().take() {
+            let outcome = self.outcome.lock().unwrap().take();
+            if let Some(outcome) = outcome {
                 return outcome;
             }
             let mut next = self.next.lock().unwrap();
@@ -395,12 +396,17 @@ mod tests {
         }
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        clippy::too_many_lines,
+        reason = "one scenario, end to end, reads as one test; the test keeps its fixture and guards alive through its assertions"
+    )]
     #[test]
     fn native_launch_and_close_keep_certified_ownership_and_signed_terminals() {
         use tilo_identity_host::provisioning::{self, IdentityStorage};
-        let root = tempfile::tempdir().unwrap();
-        let config = root.path().join("config");
-        let system = root.path().join("system");
+        let scratch = tempfile::tempdir().unwrap();
+        let config = scratch.path().join("config");
+        let system = scratch.path().join("system");
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("XDG_CONFIG_HOME", &config)
             .set("TILO_IDENTITY_ROOT", &system)
@@ -441,8 +447,10 @@ mod tests {
                 .is_ok()
         );
         *state.journal.lock().unwrap() = Ok(Some(
-            super::super::invocation_journal::InvocationJournal::open(&root.path().join("journal"))
-                .unwrap(),
+            super::super::invocation_journal::InvocationJournal::open(
+                &scratch.path().join("journal"),
+            )
+            .unwrap(),
         ));
         let caller = Caller::local_person(person).in_room(&room);
         for step in 0..6 {
@@ -450,7 +458,7 @@ mod tests {
                 4 => *launcher.outcome.lock().unwrap() = Some(Ok(Launched::Unconfirmed)),
                 5 => {
                     *launcher.outcome.lock().unwrap() =
-                        Some(Err("application could not start".into()))
+                        Some(Err("application could not start".into()));
                 }
                 _ => {}
             }
@@ -499,7 +507,7 @@ mod tests {
                     state.launch_disconnected(81);
                 }
                 2 => {
-                    state.expire_workspace_opens(Instant::now().checked_add(CONNECT_WAIT).unwrap())
+                    state.expire_workspace_opens(Instant::now().checked_add(CONNECT_WAIT).unwrap());
                 }
                 _ => {}
             }
@@ -547,13 +555,19 @@ mod tests {
         }
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the test keeps its fixture and guards alive through its assertions"
+    )]
     #[test]
     fn launch_preserves_the_requested_uuid_through_the_terminal_journal_record() {
         let (state, room) = broker();
-        let root = tempfile::tempdir().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
         *state.journal.lock().unwrap() = Ok(Some(
-            super::super::invocation_journal::InvocationJournal::open(&root.path().join("journal"))
-                .unwrap(),
+            super::super::invocation_journal::InvocationJournal::open(
+                &scratch.path().join("journal"),
+            )
+            .unwrap(),
         ));
         let caller = Caller::local_person(hex::encode([41; 32])).in_room(&room);
         let request = request(&room);
@@ -600,10 +614,11 @@ mod tests {
     #[test]
     fn a_failed_admission_barrier_never_calls_the_launcher() {
         let (state, room) = broker();
-        let root = tempfile::tempdir().unwrap();
-        let mut journal =
-            super::super::invocation_journal::InvocationJournal::open(&root.path().join("journal"))
-                .unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let mut journal = super::super::invocation_journal::InvocationJournal::open(
+            &scratch.path().join("journal"),
+        )
+        .unwrap();
         journal.fail_at = Some(super::super::invocation_journal::BarrierFailure::File);
         *state.journal.lock().unwrap() = Ok(Some(journal));
         let caller = Caller::local_person(hex::encode([41; 32])).in_room(&room);

@@ -21,6 +21,10 @@ impl LauncherServices for Launcher {
             offers: Vec::new(),
         }]
     }
+    #[allow(
+        clippy::panic_in_result_fn,
+        reason = "a test double asserts what it is asked to launch; the Result is the launcher contract's"
+    )]
     fn launch(
         &self,
         app: &str,
@@ -85,6 +89,10 @@ impl std::ops::Deref for SignedLaunchFixture {
     }
 }
 
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the test keeps its fixture and guards alive through its assertions"
+)]
 fn fixture() -> (
     SignedLaunchFixture,
     tokio::sync::mpsc::UnboundedReceiver<String>,
@@ -659,6 +667,10 @@ async fn a_capped_authenticated_task_cannot_activate_outside_its_connection_ceil
         .await;
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, end to end, reads as one test"
+)]
 #[tokio::test(flavor = "current_thread")]
 async fn once_activation_is_spent_and_completed_retry_after_close_never_relaunches() {
     tokio::task::LocalSet::new()
@@ -807,6 +819,10 @@ async fn a_terminal_activation_receipt_rechecks_the_authenticated_connection_cei
     })).await;
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, end to end, reads as one test"
+)]
 /// Durable custody must not turn an expired connection or workspace decision
 /// into permission to perform the host effect. Mutate only the live projection
 /// here: canonical task mutations are serialized behind this admission turn.

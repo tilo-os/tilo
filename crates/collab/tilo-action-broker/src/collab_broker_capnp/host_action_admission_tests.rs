@@ -144,11 +144,15 @@ fn configured_certificates_without_a_native_seat_never_admit_unsigned_owners() {
     assert!(state.completed_invocations.lock().unwrap().is_empty());
 }
 
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the test keeps its fixture and guards alive through its assertions"
+)]
 #[test]
 fn certificate_less_local_origin_is_compatible_only_without_identity_authority() {
     use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
-    let root = [17; 32];
-    let actor = principal_id_for_root(root);
+    let root_key = [17; 32];
+    let actor = principal_id_for_root(root_key);
     let mut workspace = Workspace::new(WorkspaceId(17), "Owner room");
     workspace.set_owner(actor.clone());
     let room = workspace.room.to_string();
@@ -157,7 +161,7 @@ fn certificate_less_local_origin_is_compatible_only_without_identity_authority()
         Some(&workspace),
         &route,
         super::super::VerifiedJoinIdentity {
-            user_public_key: root,
+            user_public_key: root_key,
             device_public_key: [18; 32],
             capped: false,
         },
@@ -195,6 +199,10 @@ fn certificate_less_local_origin_is_compatible_only_without_identity_authority()
     }
 }
 
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the test keeps its fixture and guards alive through its assertions"
+)]
 #[test]
 fn host_uuid_and_terminal_use_the_same_durable_record() {
     let root = tempfile::tempdir().unwrap();
@@ -268,6 +276,10 @@ fn host_uuid_and_terminal_use_the_same_durable_record() {
     );
 }
 
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the test keeps its fixture and guards alive through its assertions"
+)]
 #[test]
 fn failed_admission_barrier_returns_no_dispatch_permit_or_accepted_update() {
     for failure in [
@@ -306,6 +318,10 @@ fn failed_admission_barrier_returns_no_dispatch_permit_or_accepted_update() {
     }
 }
 
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the test keeps its fixture and guards alive through its assertions"
+)]
 #[test]
 fn failed_terminal_barrier_does_not_publish_success() {
     let root = tempfile::tempdir().unwrap();

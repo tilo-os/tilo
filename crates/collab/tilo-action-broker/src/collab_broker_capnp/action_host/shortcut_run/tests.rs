@@ -13,7 +13,7 @@ struct Library(tokio::runtime::Handle);
 
 impl ShortcutLibraryServices for Library {
     fn keymap(&self) -> settings_store::hardware::ShortcutConfig {
-        Default::default()
+        settings_store::hardware::ShortcutConfig::default()
     }
     fn store(&self, _: &ShortcutLibraryRequest<'_>) -> Result<(), String> {
         Err("not a library editing test".into())
@@ -68,24 +68,28 @@ struct Fixture {
 }
 
 impl Fixture {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, end to end, reads as one test"
+    )]
     fn new() -> Self {
-        let root = tempfile::tempdir().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
         let mut environment = tilo_test_env::ScopedEnv::new();
         environment
-            .set("XDG_CONFIG_HOME", root.path().join("config"))
-            .set("TILO_IDENTITY_ROOT", root.path().join("identity"))
+            .set("XDG_CONFIG_HOME", scratch.path().join("config"))
+            .set("TILO_IDENTITY_ROOT", scratch.path().join("identity"))
             .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
         tilo_identity_host::provisioning::ensure_collaboration_identity(
-            &root.path().join("config/tilo/identity"),
-            &tilo_user_identity::IdentityPaths::under(root.path().join("identity")),
+            &scratch.path().join("config/tilo/identity"),
+            &tilo_user_identity::IdentityPaths::under(scratch.path().join("identity")),
             tilo_identity_host::provisioning::IdentityStorage::Files,
         )
         .unwrap();
         let owner =
-            crate::test_owner::SessionOwner::initialize(&root.path().join("owner")).unwrap();
+            crate::test_owner::SessionOwner::initialize(&scratch.path().join("owner")).unwrap();
         let certificate = owner.peer().authority().clone();
         let (clock, _control) = crate::peer_actions::OwnerPolicyClock::for_test(
-            certificate.issued_at_ns + 1_000_000_000,
+            certificate.issued_at_ns.saturating_add(1_000_000_000),
         );
         let clock_origin = clock.new_origin();
         let time = clock_origin.capture().unwrap();
@@ -124,7 +128,7 @@ impl Fixture {
                     resource: tilo_automation::Selector::Fixed(
                         tilo_automation::shortcut_resource_id(target),
                     ),
-                    args: Default::default(),
+                    args: std::collections::BTreeMap::default(),
                     appearance: None,
                 },
             )];
@@ -156,7 +160,7 @@ impl Fixture {
                 ..Default::default()
             },
         );
-        let journal = InvocationJournal::open(&root.path().join("journal")).unwrap();
+        let journal = InvocationJournal::open(&scratch.path().join("journal")).unwrap();
         let invocation = tilo_actions::InvocationId::new();
         let key = InvocationKey {
             room: room.clone(),
@@ -197,11 +201,15 @@ impl Fixture {
             request,
             key,
             _clock_origin: clock_origin,
-            _root: root,
+            _root: scratch,
             _environment: environment,
         }
     }
 
+    #[allow(
+        clippy::future_not_send,
+        reason = "the fixture's broker state is thread confined to the test's current-thread runtime"
+    )]
     async fn invoke(&self) -> Result<InvocationReceipt, ActionHostError> {
         self.state
             .action_invoke_with_origin(&self.caller, None, None, Some(&self.origin), &self.request)
@@ -209,6 +217,10 @@ impl Fixture {
             .unwrap()
     }
 
+    #[allow(
+        clippy::future_not_send,
+        reason = "the fixture's broker state is thread confined to the test's current-thread runtime"
+    )]
     async fn finish(&self) {
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             while !self
@@ -248,6 +260,10 @@ fn start_direct(
     }
 }
 
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the test keeps its fixture and guards alive through its assertions"
+)]
 #[tokio::test(flavor = "current_thread")]
 async fn direct_palette_keyboard_and_unattended_runs_cross_signed_barriers() {
     for trigger in [
@@ -263,13 +279,14 @@ async fn direct_palette_keyboard_and_unattended_runs_cross_signed_barriers() {
         let job = start_direct(&fixture, trigger.as_ref()).unwrap();
         // The run has not been polled: evidence must already be durable.
         let mut key = fixture.key.clone();
-        let completed = fixture.state.completed_invocations.lock().unwrap();
-        let (_, update) = completed.get(&job).unwrap();
-        let tilo_actions::InvocationUpdate::Accepted { invocation } = update else {
-            panic!("run must be admitted before executing");
+        key.invocation = {
+            let completed = fixture.state.completed_invocations.lock().unwrap();
+            let (_, update) = completed.get(&job).unwrap();
+            let tilo_actions::InvocationUpdate::Accepted { invocation } = update else {
+                panic!("run must be admitted before executing");
+            };
+            *invocation
         };
-        key.invocation = *invocation;
-        drop(completed);
         let record = fixture
             .state
             .journal
@@ -361,6 +378,10 @@ async fn direct_entry_points_refuse_missing_journal_before_spawning() {
     }
 }
 
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the test keeps its fixture and guards alive through its assertions"
+)]
 #[tokio::test(flavor = "current_thread")]
 async fn direct_palette_refuses_native_custody_mismatch_without_fallback() {
     let mut fixture = Fixture::new();
@@ -379,6 +400,10 @@ async fn direct_palette_refuses_native_custody_mismatch_without_fallback() {
     );
 }
 
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the test keeps its fixture and guards alive through its assertions"
+)]
 #[tokio::test(flavor = "current_thread")]
 async fn signed_run_keeps_original_uuid_owner_and_terminal_and_retries_only_once() {
     let fixture = Fixture::new();
@@ -432,6 +457,10 @@ async fn signed_run_keeps_original_uuid_owner_and_terminal_and_retries_only_once
     );
 }
 
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the test keeps its fixture and guards alive through its assertions"
+)]
 #[tokio::test(flavor = "current_thread")]
 async fn journal_failure_starts_no_run_and_can_retry_after_repair() {
     let fixture = Fixture::new();
@@ -454,6 +483,10 @@ async fn journal_failure_starts_no_run_and_can_retry_after_repair() {
     assert_eq!(fixture.state.take_finished_shortcut_runs().len(), 1);
 }
 
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the test keeps its fixture and guards alive through its assertions"
+)]
 #[tokio::test(flavor = "current_thread")]
 async fn certified_run_cannot_downgrade_to_an_unjournaled_job() {
     let fixture = Fixture::new();
@@ -469,6 +502,10 @@ async fn certified_run_cannot_downgrade_to_an_unjournaled_job() {
     );
 }
 
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the test keeps its fixture and guards alive through its assertions"
+)]
 #[tokio::test(flavor = "current_thread")]
 async fn terminal_barrier_failure_never_publishes_success() {
     let fixture = Fixture::new();
@@ -492,6 +529,10 @@ async fn terminal_barrier_failure_never_publishes_success() {
     assert!(!fixture.state.has_finished_shortcut_runs());
 }
 
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the test keeps its fixture and guards alive through its assertions"
+)]
 #[tokio::test(flavor = "current_thread")]
 async fn nested_steps_keep_original_owner_and_sign_each_steps_own_uuid() {
     let mut fixture = Fixture::new();
@@ -532,6 +573,10 @@ async fn nested_steps_keep_original_owner_and_sign_each_steps_own_uuid() {
     }
 }
 
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the test keeps its fixture and guards alive through its assertions"
+)]
 #[tokio::test(flavor = "current_thread")]
 async fn propagated_custody_does_not_bypass_the_shortcut_grant() {
     let mut fixture = Fixture::new();
@@ -546,6 +591,10 @@ async fn propagated_custody_does_not_bypass_the_shortcut_grant() {
     ));
 }
 
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the test keeps its fixture and guards alive through its assertions"
+)]
 #[tokio::test(flavor = "current_thread")]
 async fn an_unscoped_broker_door_does_not_invent_native_custody() {
     let fixture = Fixture::new();
@@ -587,6 +636,10 @@ async fn an_unscoped_broker_door_does_not_invent_native_custody() {
     );
 }
 
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the test keeps its fixture and guards alive through its assertions"
+)]
 #[tokio::test(flavor = "current_thread")]
 async fn mismatched_original_uuid_and_retired_host_start_nothing() {
     let mut fixture = Fixture::new();

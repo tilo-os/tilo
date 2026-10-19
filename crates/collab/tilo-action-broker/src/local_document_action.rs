@@ -190,7 +190,7 @@ mod tests {
             let changed: Request = serde_json::from_value(changed).unwrap();
             assert_ne!(changed.bound_invocation().unwrap(), expected, "{field}");
         }
-        let mut rebound = request.clone();
+        let mut rebound = request;
         rebound.invocation = expected;
         assert_eq!(rebound.bound_invocation().unwrap(), expected);
         rebound.mutation_hashes.clear();

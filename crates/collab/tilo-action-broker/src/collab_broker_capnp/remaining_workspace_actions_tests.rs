@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use tilo_actions::remote::{InvokeArgument, RemoteActionTarget};
 
 thread_local! {
-    static EFFECT_BARRIER: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = Default::default();
+    static EFFECT_BARRIER: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = std::cell::RefCell::default();
 }
 
 pub(super) fn at_effect_barrier() {
@@ -16,6 +16,10 @@ pub(super) fn at_effect_barrier() {
     }
 }
 
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the test keeps its fixture and guards alive through its assertions"
+)]
 #[test]
 fn registered_services_recheck_original_certificate_after_signed_admission() {
     use super::super::host_steps::signed_test_support::Fixture;
@@ -50,7 +54,7 @@ fn registered_services_recheck_original_certificate_after_signed_admission() {
                 authority
                     .revoked
                     .store(true, std::sync::atomic::Ordering::SeqCst);
-            }))
+            }));
         });
         let (workspace, actor, now) = f
             .state
@@ -122,7 +126,7 @@ fn library_replans_after_custody_instead_of_applying_a_stale_delete() {
     EFFECT_BARRIER.with(|hook| {
         *hook.borrow_mut() = Some(Box::new(move || {
             current.write().workspaces[0].shortcuts.clear();
-        }))
+        }));
     });
     let actor = BrokerActor::for_caller(&caller);
     assert!(
@@ -193,7 +197,7 @@ fn keyboard_rechecks_live_policy_and_execution_after_custody() {
                             tilo_action_policy::Subject::person("owner"),
                         ));
                 }
-            }))
+            }));
         });
         let actor = BrokerActor::for_caller(&caller);
         assert!(
@@ -214,7 +218,7 @@ fn keyboard_rechecks_live_policy_and_execution_after_custody() {
 
 struct LostGovernance;
 impl WorkspaceGovernanceServices for LostGovernance {
-    fn app_id(&self) -> &str {
+    fn app_id(&self) -> &'static str {
         "so.tilo.workspace"
     }
     fn handles(&self, action: &str) -> bool {
@@ -234,6 +238,10 @@ impl WorkspaceGovernanceServices for LostGovernance {
     }
 }
 
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the test keeps its fixture and guards alive through its assertions"
+)]
 #[test]
 fn lost_governance_answer_has_signed_uncertain_terminal() {
     use super::super::host_steps::signed_test_support::Fixture;
@@ -274,7 +282,7 @@ fn lost_governance_answer_has_signed_uncertain_terminal() {
 #[derive(Default)]
 struct Governance(Mutex<Vec<(tilo_actions::InvocationId, bool)>>);
 impl WorkspaceGovernanceServices for Governance {
-    fn app_id(&self) -> &str {
+    fn app_id(&self) -> &'static str {
         "so.tilo.workspace"
     }
     fn handles(&self, action: &str) -> bool {
@@ -392,6 +400,10 @@ fn registered_governance_never_runs_before_durable_admission() {
     }
 }
 
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the test keeps its fixture and guards alive through its assertions"
+)]
 #[test]
 fn registered_governance_keeps_original_uuid_context_and_terminal_owner() {
     let root = tempfile::tempdir().unwrap();
@@ -464,7 +476,7 @@ fn registered_governance_does_not_upgrade_a_transport_label_into_custody() {
 #[derive(Default)]
 struct Keyboard(std::sync::atomic::AtomicUsize);
 impl crate::services::KeyboardShortcutServices for Keyboard {
-    fn app_id(&self) -> &str {
+    fn app_id(&self) -> &'static str {
         "so.tilo.settings"
     }
     fn is_resource(&self, resource: &str) -> bool {
@@ -495,7 +507,7 @@ impl crate::services::KeyboardShortcutServices for Keyboard {
         _: Option<&str>,
     ) -> Result<(tilo_actions::ActionOutput, bool), Box<ActionFailure>> {
         self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Ok((Default::default(), false))
+        Ok((tilo_actions::ActionOutput::default(), false))
     }
 }
 
@@ -503,7 +515,7 @@ impl crate::services::KeyboardShortcutServices for Keyboard {
 struct Library(Mutex<Vec<(tilo_actions::InvocationId, tilo_actions::ActionContext)>>);
 impl crate::services::ShortcutLibraryServices for Library {
     fn keymap(&self) -> settings_store::hardware::ShortcutConfig {
-        Default::default()
+        settings_store::hardware::ShortcutConfig::default()
     }
     fn store(&self, request: &crate::services::ShortcutLibraryRequest<'_>) -> Result<(), String> {
         self.0
@@ -517,6 +529,10 @@ impl crate::services::ShortcutLibraryServices for Library {
     }
 }
 
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the test keeps its fixture and guards alive through its assertions"
+)]
 #[test]
 fn keyboard_and_library_effects_require_admission_and_keep_request_identity() {
     use super::super::invocation_journal::{BarrierFailure, InvocationJournal};

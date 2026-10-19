@@ -12,6 +12,10 @@ thread_local! {
 
 #[cfg(test)]
 impl super::CapnpBrokerState {
+    #[allow(
+        clippy::unused_self,
+        reason = "the hook is per test thread; taking the broker keeps tests reading as acting on it"
+    )]
     pub(crate) fn set_observed_launch_effect_hook(&self, hook: impl FnOnce() + 'static) {
         EFFECT_BARRIER.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
     }
@@ -19,6 +23,10 @@ impl super::CapnpBrokerState {
 
 impl CapnpChannelHandle {
     #[cfg(test)]
+    #[allow(
+        clippy::unused_self,
+        reason = "the barrier is per test thread; taking the channel keeps it at the effect it guards"
+    )]
     pub(super) fn observed_launch_effect_barrier(&self) {
         if let Some(hook) = EFFECT_BARRIER.with(|slot| slot.borrow_mut().take()) {
             hook();
