@@ -25,12 +25,14 @@ thin = ["dep:runtime-dylib"]
 # without it (`tilo-app dev`) links account-custody and async-imap
 # statically, because an engine library links only through
 # tools/ci/rustc-thin-app-wrapper.sh.
-runtime-engine = ["thin", "tilo-accounts-engine/thin"]
+runtime-engine = ["thin", "tilo-accounts-engine/thin", "tilo-settings-engine/thin"]
 
 [dependencies]
 provider-settings-ui = { version = "0.1.0", path = "../../crates/sdk/provider-settings-ui" }
 # Shared platform layout data keeps Settings independent of the OSK app.
 tilo-keyboard-map = { version = "0.1.0", path = "../../crates/platform/tilo-keyboard-map" }
+# The outlines the keyboard preview draws.
+tilo-pc-keyboard-geometry = { path = "../../crates/platform/pc-keyboard-geometry" }
 tilo-locale = { path = "../../crates/platform/tilo-locale" }
 # The shipped wallpapers' catalog and thumbnails, for the Appearance picker.
 tilo-wallpapers = { version = "0.1.0", path = "../../crates/platform/tilo-wallpapers" }
@@ -39,6 +41,7 @@ tilo-clock = { path = "../../crates/platform/tilo-clock" }
 bounded-command = { path = "../../crates/system/bounded-command" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-accounts-engine = { path = "../../crates/runtime/engines/accounts", optional = true }
+tilo-settings-engine = { path = "../../crates/runtime/engines/settings", optional = true }
 # One owner for ~/.config/tilo/settings.json.
 settings-store = { path = "../../crates/system/settings-store", features = ["model"] }
 tilo-accessibility-settings = { path = "../../crates/platform/tilo-accessibility-settings", features = ["model"] }

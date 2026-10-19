@@ -137,6 +137,22 @@ ENGINES = {
     "browser-continuity": "the import from another browser's profile, which Browser loads from "
                           "libtilo_browser_import_engine.so (the runtime keeps "
                           "browser-continuity-core)",
+    "tilo-app-host-engine": "the app host client's engine library (libtilo_app_host_engine.so)",
+    "app-catalogue": "the Store's catalogue, which Store loads from libtilo_app_host_engine.so",
+    "tilo-mail-engine": "Mail's engine library (libtilo_mail_engine.so)",
+    "mail-parser": "Mail's message reader, which Mail loads from libtilo_mail_engine.so",
+    "mail-builder": "Mail's message writer, which Mail loads from libtilo_mail_engine.so",
+    "lettre": "Mail's SMTP client, which Mail loads from libtilo_mail_engine.so",
+    "tilo-settings-engine": "Settings' engine library (libtilo_settings_engine.so)",
+    "tilo-ntfs-mount": "the NTFS mount protocol, which Settings loads from libtilo_settings_engine.so",
+    "tilo-wallpapers": "the wallpaper catalogue, which Settings loads from libtilo_settings_engine.so",
+    "tilo-accessibility-settings": "the accessibility settings, which Settings loads from "
+                                   "libtilo_settings_engine.so",
+    "tilo-pc-keyboard-geometry": "the PC keyboard outlines, which Settings loads from "
+                                 "libtilo_settings_engine.so",
+    "tilo-emoji-engine": "the emoji catalogue's engine library (libtilo_emoji_engine.so)",
+    "emoji": "the emoji catalogue, which Chat and the on-screen keyboard load from "
+             "libtilo_emoji_engine.so",
     "tilo-fuse-engine": "the FUSE presentation's engine library (libtilo_fuse_engine.so)",
     "runtime-fs-fuse": "the workspace filesystem's FUSE presentation, which Imager's projection "
                        "worker loads from libtilo_fuse_engine.so",

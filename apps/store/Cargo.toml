@@ -17,6 +17,14 @@ path = "src/main.rs"
 
 [features]
 thin = ["dep:runtime-dylib"]
+# Reach the app host's client and the catalogue (app-host, app-catalogue)
+# through their engine library in the runtime bundle
+# (libtilo_app_host_engine.so, crates/runtime/engines/app-host) instead of
+# linking them. The release collection enables it
+# (dist/apps/app-collections.toml); a `thin` build without it (`tilo-app dev`)
+# links them statically, because an engine library links only through
+# tools/ci/rustc-thin-app-wrapper.sh.
+runtime-engine = ["thin", "tilo-app-host-engine/thin"]
 
 [dependencies]
 fluent.workspace = true
@@ -24,6 +32,7 @@ lru.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-files = { path = "../../crates/platform/tilo-files" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+tilo-app-host-engine = { path = "../../crates/runtime/engines/app-host", optional = true }
 # The registry list, its client and its trust classification. Shared
 # with the desktop's search box, which offers the same registries' apps
 # — one definition, so the two cannot drift into disagreeing about

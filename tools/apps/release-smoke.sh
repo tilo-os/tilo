@@ -195,9 +195,10 @@ spotify() (
 
 # Apps run their engine libraries. Settings has no probe, to keep its tapp as
 # it is, Calendar none for the accounts engine (its probe runs the time-zone
-# one), and the PDF engine's apps, Imager and Browser none (build-thin-apps.sh
-# runs those engines' own checks): for those only the trace of the start
-# counts (an app need not accept --help).
+# one), and the PDF engine's apps, Imager, Browser, Store, Chat and the
+# on-screen keyboard none (build-thin-apps.sh runs those engines' own
+# checks): for those only the trace of the start counts (an app need not
+# accept --help).
 engines() (
   set -euo pipefail
   libdir=$(rustc --print target-libdir)
@@ -207,18 +208,23 @@ engines() (
                "tube libtilo_youtube_engine.so --probe-youtube-engine" \
                "mail libtilo_accounts_engine.so --probe-accounts-engine" \
                "settings libtilo_accounts_engine.so" \
+               "settings libtilo_settings_engine.so" \
                "calendar libtilo_timezone_engine.so --probe-timezone-engine" \
                "calendar libtilo_accounts_engine.so" \
                "clocks libtilo_timezone_engine.so --probe-timezone-engine" \
                "contacts libtilo_contact_directory_engine.so --probe-contact-directory-engine" \
                "mail libtilo_contact_directory_engine.so --probe-contact-directory-engine" \
+               "mail libtilo_mail_engine.so" \
                "messages libtilo_contact_directory_engine.so --probe-contact-directory-engine" \
                "pdf-viewer libtilo_pdf_engine.so" \
                "file-explorer libtilo_pdf_engine.so" \
                "print-centre libtilo_pdf_engine.so" \
                "imager libtilo_fuse_engine.so" \
                "imager libtilo_accounts_engine.so" \
-               "browser libtilo_browser_import_engine.so"; do
+               "browser libtilo_browser_import_engine.so" \
+               "store libtilo_app_host_engine.so" \
+               "chat libtilo_emoji_engine.so" \
+               "osk libtilo_emoji_engine.so"; do
     read -r app library option <<<"$probe"
     if [[ ! -x $target/thin-app/$app ]]; then
       echo "$app is not among this run's apps; no $library to run" | tee -a "$GITHUB_STEP_SUMMARY"

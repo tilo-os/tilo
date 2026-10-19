@@ -78,7 +78,16 @@ shares; the workspace filesystem's FUSE presentation, runtime-fs-fuse with
 fuser: `libtilo_fuse_engine.so` for Imager's projection worker; the import
 from another browser's profile, browser-continuity's capture with the SQLite
 it reads Chromium's and Firefox's databases with:
-`libtilo_browser_import_engine.so` for Browser). It is
+`libtilo_browser_import_engine.so` for Browser; the app host's client, with
+its Cap'n Proto RPC, and the catalogue Store browses:
+`libtilo_app_host_engine.so` for Store; Mail's message codecs and SMTP
+client, mail-parser, mail-builder and lettre: `libtilo_mail_engine.so` for
+Mail; the libraries only Settings uses, the model-provider administration
+panel, the NTFS mount protocol, the wallpaper catalogue, the accessibility
+settings and the PC keyboard outlines: `libtilo_settings_engine.so` for
+Settings; the emoji catalogue with
+its names and keywords in every locale: `libtilo_emoji_engine.so` for Chat and
+the on-screen keyboard). It is
 signed into the runtime bundle beside `libruntime_dylib.so`, so the runtime's
 id, signature and verity cover it, but only its apps name it `DT_NEEDED`;
 every other app no longer maps or relocates it. Apps share one engine library
@@ -97,7 +106,7 @@ relies on:
   another);
 - the app links the engine under a feature of its own (`runtime-engine` in
   Typst Editor, Music, Canvas, Tube, Mail, Settings, Calendar, Clocks,
-  Contacts, Messages, PDF Viewer, Files, Print Centre, Imager and Browser), named in `dist/apps/app-collections.toml`, the
+  Contacts, Messages, PDF Viewer, Files, Print Centre, Imager, Browser, Store, Chat and the on-screen keyboard), named in `dist/apps/app-collections.toml`, the
   Containerfile's `APP_FEATURES` and `os/components.toml`; without it the app
   links the engine's crates statically, as `tilo-app dev` does;
 - one app may not load two engine libraries that both carry a crate (rustc

@@ -1,0 +1,19 @@
+[package]
+name = "tilo-pc-keyboard-geometry"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Physical outlines of the PC keyboard models pc104, pc105, jp106 and kr106 (xkeyboard-config's geometry, The Open Group), for drawing a keyboard with its layout's legends."
+
+[lib]
+name = "pc_keyboard_geometry"
+path = "src/lib.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

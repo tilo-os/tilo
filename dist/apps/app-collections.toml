@@ -49,3 +49,10 @@ imager = ["runtime-engine"]
 # The import from another browser's profile, with the SQLite it reads, from its
 # engine library beside the runtime.
 browser = ["runtime-engine"]
+# The app host's client, with its RPC, and the catalogue, from their engine
+# library beside the runtime.
+store = ["runtime-engine"]
+# The emoji catalogue, with its names in every locale, from its engine library
+# beside the runtime.
+chat = ["runtime-engine"]
+osk = ["runtime-engine"]
