@@ -361,6 +361,11 @@ fn process_default() -> (collab_types::Surfaces, AppSurfaces) {
         .unwrap_or_default()
 }
 
+/// Why a received change was neither admitted nor refused: the app surface
+/// it is decided against is not here yet. The same change is decided again
+/// once one is ([`collab_types::Surfaces`]).
+pub const HELD_FOR_SURFACE: &str = "document change held: its app surface is not here yet";
+
 /// The app surfaces this process decides received changes against
 /// ([`decide_with_surfaces`]).
 #[must_use]
@@ -1378,7 +1383,7 @@ impl StatePeer {
             .authorize_document(&source, app, record, op, now)?
             .is_none()
         {
-            return Err("document change held: its app surface is not here yet".into());
+            return Err(HELD_FOR_SURFACE.into());
         }
         collab_types::validate_whole_document_payload_route(app, room, record, op).map_err(err)?;
         collab_types::verify_op(op).map_err(err)?;

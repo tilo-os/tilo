@@ -6946,6 +6946,15 @@ impl ShellNetwork {
             native_admission::Lane::Finished(admitted) => self.complete_native_input(*admitted),
             native_admission::Lane::Idle => {}
         }
+        // Inputs held for an app surface that is here now go first, one
+        // admission at a time, as they arrived.
+        if let Some(input) = self.native_admission.next_again() {
+            match admission {
+                Admission::OffLoop => self.dispatch_native_input_off_loop(input),
+                Admission::InPlace => self.dispatch_native_input(input),
+            }
+            return;
+        }
         // Inbound events read the room's governance from the native owner.
         // While it opens (off this thread: binding its writer and publishing
         // its generation can take seconds) they stay queued, in order, and

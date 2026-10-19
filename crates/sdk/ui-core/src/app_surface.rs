@@ -28,6 +28,17 @@ struct Named {
     bytes: &'static [u8],
 }
 
+/// Counts the surfaces named so far ([`registered`]).
+static NAMED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many times an app's surface was named in this process: a change
+/// decided against a surface that was not here may be decided again once
+/// this moves.
+#[must_use]
+pub fn registered() -> u64 {
+    NAMED.load(std::sync::atomic::Ordering::Acquire)
+}
+
 fn registry() -> &'static Mutex<BTreeMap<String, Named>> {
     static REGISTRY: OnceLock<Mutex<BTreeMap<String, Named>>> = OnceLock::new();
     REGISTRY.get_or_init(Mutex::default)
@@ -65,10 +76,11 @@ pub fn launch_env(path: &std::path::Path, bytes: &[u8]) -> [(&'static str, Strin
 /// unless a package already named one.
 pub fn register_built_in(app_id: &str, bytes: &'static [u8]) {
     let hash = *blake3::hash(bytes).as_bytes();
-    if let Ok(mut registry) = registry().lock() {
-        registry
-            .entry(app_id.to_owned())
-            .or_insert(Named { hash, bytes });
+    if let Ok(mut registry) = registry().lock()
+        && let std::collections::btree_map::Entry::Vacant(entry) = registry.entry(app_id.to_owned())
+    {
+        entry.insert(Named { hash, bytes });
+        NAMED.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     }
 }
 
@@ -85,6 +97,7 @@ pub fn register_package(app_id: &str, bytes: &[u8]) {
     // Kept for the process's life, once per distinct surface.
     let bytes = held_bytes(hash, bytes);
     registry.insert(app_id.to_owned(), Named { hash, bytes });
+    NAMED.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
 }
 
 /// The bytes of surface `hash`, kept once however many apps or launches

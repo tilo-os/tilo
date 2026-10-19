@@ -383,6 +383,11 @@ impl ShellNetwork {
         } = admitted;
         let report = match report {
             Ok(report) => report,
+            Err(error) if error == tilo_peer_state::HELD_FOR_SURFACE => {
+                tracing::debug!(room = %input.room(), "native relay input held for its app surface");
+                self.native_admission.hold(input);
+                return;
+            }
             Err(error) => {
                 tracing::warn!(%error,room=%input.room(),"native relay admission denied");
                 return;
