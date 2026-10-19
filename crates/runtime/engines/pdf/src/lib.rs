@@ -3,9 +3,9 @@
 //!
 //! `tilo-pdf` carries two PDF engines' worth of code: hayro, the in-process
 //! rasteriser with its own font stack (an older `skrifa` and `read-fonts`
-//! than the toolkit's), CPU renderer (`vello_cpu`), CMap tables and JPEG 2000
-//! decoder, and the pdfium helper's client, plus PDF export (`pdf-writer`,
-//! `subsetter`). None of it is on any app's way to its first frame, and only
+//! than the toolkit's), CPU renderer (`vello_cpu`), character-map tables and
+//! JPEG 2000 decoder, and the pdfium helper's client, plus PDF export
+//! (`pdf-writer`, `subsetter`). None of it is on any app's way to its first frame, and only
 //! the apps that read or write PDFs reach it at all: PDF Viewer, Files,
 //! Writer and Print Centre. Inside `libruntime_dylib.so` every app process
 //! mapped and relocated it. Here it is a library of its own in the runtime

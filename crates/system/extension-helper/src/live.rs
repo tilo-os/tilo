@@ -664,6 +664,10 @@ pub enum ChangeKind {
 
 /// Every change, classified, and what each phase restarts.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent facts the classification found about one update, not states of one machine"
+)]
 pub struct Plan {
     pub changes: Vec<(Change, Class)>,
     /// A restart of the machine is needed for part of the update.
@@ -1020,6 +1024,7 @@ impl LiveTree<'_> {
         if let Some(layer) = self.layer {
             let parts: Vec<&str> = relative.split('/').collect();
             let mut at = layer.to_path_buf();
+            let last = parts.len().saturating_sub(1);
             for (index, part) in parts.iter().enumerate() {
                 at.push(part);
                 let Ok(meta) = fs::symlink_metadata(&at) else {
@@ -1028,7 +1033,7 @@ impl LiveTree<'_> {
                 if self.live.is_whiteout(&at) {
                     return None;
                 }
-                if index + 1 == parts.len() {
+                if index == last {
                     return Some(at);
                 }
                 if !meta.is_dir() {
@@ -1352,13 +1357,13 @@ pub trait LiveHost {
 }
 
 fn systemctl(user: Option<&str>, args: &[&str]) -> Vec<String> {
-    let mut argv = vec!["systemctl".to_owned()];
+    let mut command = vec!["systemctl".to_owned()];
     if let Some(user) = user {
-        argv.push(format!("--machine={user}@"));
-        argv.push("--user".to_owned());
+        command.push(format!("--machine={user}@"));
+        command.push("--user".to_owned());
     }
-    argv.extend(args.iter().map(|arg| (*arg).to_owned()));
-    argv
+    command.extend(args.iter().map(|arg| (*arg).to_owned()));
+    command
 }
 
 fn run_strings(argv: &[String], check: bool) -> Result<crate::host::Output> {
