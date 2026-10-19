@@ -481,6 +481,31 @@ impl PermissionContext {
         self
     }
 
+    /// This launch's permissions with its participation changed: an
+    /// author's (`writable`, the room's Editor) or a viewer's, as the room's
+    /// grants now say ([`crate::room_sync::RoomSync::writable`]). Only for
+    /// the permissions a workspace launch made from its participation, the
+    /// person a Viewer or an Editor and nothing bounding them; anything else
+    /// (an owner's own app, a delegation) is `None` and stays as it is. The
+    /// samplers, sandbox and spent grants carry over.
+    #[must_use]
+    pub fn with_participation(&self, writable: bool) -> Option<Self> {
+        let person = &self.standing.person;
+        let current = self.standing.policy.members.get(person).copied()?;
+        if !self.standing.bounds.is_empty()
+            || !matches!(current, Role::Viewer | Role::Editor)
+            || self.standing.policy.members.len() != 1
+        {
+            return None;
+        }
+        let role = if writable { Role::Editor } else { Role::Viewer };
+        let mut standing = (*self.standing).clone();
+        standing.policy.members.insert(person.clone(), role);
+        let mut next = self.clone();
+        next.standing = Arc::new(standing);
+        Some(next)
+    }
+
     /// The same context with the room's policy replaced, for a host that
     /// learned of a change.
     #[must_use]

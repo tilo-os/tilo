@@ -44,6 +44,14 @@ pub struct RoomSync {
     /// The workspace's name, as the person knows it.
     #[serde(default)]
     pub workspace: String,
+    /// Whether this app may write the room now: the room's grants let the
+    /// person change it and make the app one of its authors, the same
+    /// decision that opened it writable or read-only. It follows the room's
+    /// grants as they change, so an app opened read-only becomes writable
+    /// the moment its authorship arrives, and the other way round. Absent
+    /// when the shell has no answer; the launch's stands then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub writable: Option<bool>,
 }
 
 impl RoomSync {
@@ -63,6 +71,10 @@ struct Told {
 
 thread_local! {
     static TOLD: RefCell<Option<Told>> = const { RefCell::new(None) };
+    /// The permissions of the components a workspace launch hosts, which
+    /// follow [`RoomSync::writable`] (`follow_participation`).
+    static FOLLOWERS: RefCell<Vec<std::rc::Weak<RefCell<crate::permissions::PermissionContext>>>> =
+        const { RefCell::new(Vec::new()) };
     /// The spinner step an empty state painted last, and where (scene
     /// pixels) a new pose was painted that no presented frame has damaged
     /// yet.
@@ -83,11 +95,54 @@ pub fn set(sync: Option<RoomSync>) -> bool {
             .as_ref()
             .filter(|told| told.sync.before_first_sync())
             .map_or_else(crate::time::now, |told| told.since);
+        let writable = sync.as_ref().and_then(|sync| sync.writable);
         *told = sync.map(|sync| Told { sync, since });
+        drop(told);
+        if let Some(writable) = writable {
+            follow(writable);
+        }
         // What the window shows changes with it: it is laid out again.
         SPINNER.with(|spinner| spinner.set((None, None)));
         true
     })
+}
+
+/// Let `permissions`, a workspace launch's, follow the room's grants: when
+/// the shell says the app may write the room now, or may not any more, they
+/// become an author's or a viewer's at once ([`RoomSync::writable`]).
+pub fn follow_participation(
+    permissions: &std::rc::Rc<RefCell<crate::permissions::PermissionContext>>,
+) {
+    FOLLOWERS.with(|followers| {
+        let mut followers = followers.borrow_mut();
+        followers.retain(|follower| follower.strong_count() > 0);
+        followers.push(std::rc::Rc::downgrade(permissions));
+    });
+    if let Some(writable) = current().and_then(|sync| sync.writable) {
+        rebase(permissions, writable);
+    }
+}
+
+/// Make every following launch an author's (`writable`) or a viewer's.
+fn follow(writable: bool) {
+    let live: Vec<_> = FOLLOWERS.with(|followers| {
+        let mut followers = followers.borrow_mut();
+        followers.retain(|follower| follower.strong_count() > 0);
+        followers
+            .iter()
+            .filter_map(std::rc::Weak::upgrade)
+            .collect()
+    });
+    for permissions in live {
+        rebase(&permissions, writable);
+    }
+}
+
+fn rebase(permissions: &RefCell<crate::permissions::PermissionContext>, writable: bool) {
+    let next = permissions.borrow().with_participation(writable);
+    if let Some(next) = next {
+        *permissions.borrow_mut() = next;
+    }
 }
 
 /// What the shell last said about this window's room.
@@ -191,6 +246,7 @@ mod tests {
         Some(RoomSync {
             state,
             workspace: "Lounge".into(),
+            writable: None,
         })
     }
 
@@ -237,11 +293,58 @@ mod tests {
         set(None);
     }
 
+    // USER REQUIREMENT (2026-10-19): "An app's write permission must follow grants live. When the room's grants change (authorship granted or withdrawn, role changed), open apps switch between read-only and writable without a restart"
+    #[test]
+    fn a_launch_opened_read_only_becomes_writable_when_its_authorship_arrives_and_back() {
+        use crate::permissions::{ActionKind, PermissionContext, PermissionScope, Role};
+        let room = "3f2b1c00-0000-4000-8000-000000000001";
+        let writes = |permissions: &std::rc::Rc<RefCell<PermissionContext>>| {
+            permissions
+                .borrow()
+                .check(&PermissionScope::workspace(ActionKind::Undoable))
+        };
+        set(None);
+        let launch = std::rc::Rc::new(RefCell::new(PermissionContext::member_of(
+            room,
+            "person-a",
+            Role::Viewer,
+        )));
+        let own = std::rc::Rc::new(RefCell::new(PermissionContext::member_of(
+            room,
+            "person-a",
+            Role::Owner,
+        )));
+        follow_participation(&launch);
+        follow_participation(&own);
+        assert!(!writes(&launch), "opened read-only");
+        let told = |writable| {
+            Some(RoomSync {
+                state: RoomSyncState::Synced,
+                workspace: "Lounge".into(),
+                writable,
+            })
+        };
+        set(told(Some(true)));
+        assert!(writes(&launch), "writable the moment authorship arrives");
+        set(told(Some(false)));
+        assert!(!writes(&launch), "read-only again when it is withdrawn");
+        assert!(
+            writes(&own),
+            "an owner's own launch is no participation to follow"
+        );
+        // No answer from the shell leaves the launch as it is.
+        set(told(Some(true)));
+        set(told(None));
+        assert!(writes(&launch));
+        set(None);
+    }
+
     #[test]
     fn the_wire_names_each_state() {
         let sync = RoomSync {
             state: RoomSyncState::HostNeedsUpdate,
             workspace: "Lounge".into(),
+            writable: None,
         };
         let json = serde_json::to_value(&sync).unwrap();
         assert_eq!(

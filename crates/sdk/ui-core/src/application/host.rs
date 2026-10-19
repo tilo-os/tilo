@@ -56,12 +56,19 @@ impl NativeProcessHost {
     ) -> Result<Self, LaunchError> {
         let launcher_instance = environment.continuity_instance.is_some();
         let resolved = environment.resolve(definition.app_id, &author)?;
+        let permissions = Rc::new(RefCell::new(resolved.permissions));
+        // A workspace launch's participation follows the room's grants, as
+        // the shell tells the window (`crate::room_sync`): read-only becomes
+        // writable the moment the app's authorship arrives, and back.
+        if resolved.workspace_scoped {
+            crate::room_sync::follow_participation(&permissions);
+        }
         let mut host = ApplicationHost::with_store(
             Rc::new(app_state::FsStore::new(resolved.profile_root)),
             resolved.device_id,
             &resolved.workspace_id,
             author,
-            Rc::new(RefCell::new(resolved.permissions)),
+            permissions,
             tilo_actions::ActionContext::default(),
         )?;
         host.package_id = Some(resolved.package_id);

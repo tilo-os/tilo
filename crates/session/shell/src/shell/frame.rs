@@ -951,6 +951,27 @@ fn shots_theme_requested() -> bool {
         || std::env::var_os("TILO_SHOTS_TEXT_SCALE").is_some()
 }
 
+/// Whether `app` may write `workspace`'s room for `person` at `now`: the
+/// room lets the person change the app's content and makes the app one of
+/// its authors, the decision a launch opens the app writable or read-only
+/// by. `None` for a person the room has no role for here (this device's view
+/// of the room names someone else), so nothing is decided on it.
+fn app_writes(
+    workspace: &crate::shell::state::Workspace,
+    person: &str,
+    app: &str,
+    now: u64,
+) -> Option<bool> {
+    workspace.role_of(person)?;
+    let changes = workspace.answer_at(
+        person,
+        &workspace.node().app(app),
+        tilo_action_policy::ActionKind::Undoable,
+        now,
+    ) == tilo_action_policy::Answer::Allow;
+    Some(changes && workspace.app_is_author_at(app, now))
+}
+
 impl FrameBuilder {
     /// Build a frame builder around the canonical bootstrap workspace
     /// tree at `viewport` size.
@@ -4021,10 +4042,14 @@ impl FrameBuilder {
     /// that syncs with no host.
     #[must_use]
     pub fn room_sync_for_app(&self, app_id: &str) -> Option<ui::room_sync::RoomSync> {
+        let person = self
+            .with_app_workspace(app_id, |workspace| workspace.room)
+            .map(|room| self.chrome.borrow().local_user_for_room(&room))?;
         self.with_app_workspace(app_id, |workspace| {
             crate::shell::room_sync::told(
                 crate::shell::network::room_topic_id(workspace.room),
                 &workspace.name,
+                app_writes(workspace, &person, app_id, tilo_clock::unix_now()),
             )
         })
         .flatten()

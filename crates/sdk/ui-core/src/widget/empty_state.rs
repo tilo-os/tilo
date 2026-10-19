@@ -2427,6 +2427,7 @@ mod tests {
             Some(RoomSync {
                 state,
                 workspace: "Lounge".into(),
+                writable: None,
             })
         };
 
