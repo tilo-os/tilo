@@ -18,6 +18,15 @@ path = "src/main.rs"
 # Live browsing runs the Chromium engine runtime (ui::webview::chromium).
 # Headless fixtures and unit tests use the deterministic test engine.
 thin = ["dep:runtime-dylib"]
+# Reach the import from another browser's profile (browser-continuity's
+# capture and the SQLite it reads Chromium's and Firefox's databases with)
+# through its engine library in the runtime bundle
+# (libtilo_browser_import_engine.so, crates/runtime/engines/browser-import)
+# instead of linking it. The release collection enables it
+# (dist/apps/app-collections.toml); a `thin` build without it (`tilo-app dev`)
+# links them statically, because an engine library links only through
+# tools/ci/rustc-thin-app-wrapper.sh.
+runtime-engine = ["thin", "tilo-browser-import-engine/thin"]
 
 [dependencies]
 tilo-browser-sessions = { path = "../../crates/platform/tilo-browser-sessions" }
@@ -32,6 +41,7 @@ tilo-clock = { path = "../../crates/platform/tilo-clock" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["webview-adblock"] }
 tilo-actions = { path = "../../crates/collab/actions" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+tilo-browser-import-engine = { path = "../../crates/runtime/engines/browser-import", optional = true }
 
 # Filter lists (EasyList/EasyPrivacy) are fetched on a background thread
 # with a blocking client and cached under the user cache dir.
@@ -51,7 +61,6 @@ url.workspace = true
 bounded-zip = { path = "../../crates/doc/bounded-zip" }
 zip.workspace = true
 serde_json.workspace = true
-rusqlite = { version = "0.37.0", features = ["bundled"] }
 tempfile.workspace = true
 serde.workspace = true
 blake3.workspace = true
@@ -70,6 +79,8 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 hex.workspace = true
+# The import tests write the Chromium and Firefox databases they read.
+rusqlite = { version = "0.37.0", features = ["bundled"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 # extension install tests unpack into throwaway directories
 tempfile.workspace = true

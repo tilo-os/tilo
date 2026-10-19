@@ -1428,6 +1428,7 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automerge-fork",
+ "tilo-browser-import-engine",
  "tilo-browser-sessions",
  "tilo-clock",
  "tilo-files",
@@ -16673,6 +16674,17 @@ dependencies = [
  "image",
  "tilo-image-codec",
  "wasm-bindgen",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-browser-import-engine"
+version = "0.1.0"
+dependencies = [
+ "browser-continuity",
+ "runtime-dylib",
+ "rusqlite",
+ "tempfile",
  "workspace-hack",
 ]
 

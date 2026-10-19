@@ -47,3 +47,6 @@ print-centre = ["runtime-engine"]
 # Account custody with the WebDAV client, and the projection worker's FUSE
 # presentation, from their engine libraries beside the runtime.
 imager = ["runtime-engine"]
+# The import from another browser's profile, with the SQLite it reads, from its
+# engine library beside the runtime.
+browser = ["runtime-engine"]

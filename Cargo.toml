@@ -317,6 +317,7 @@ members = [
     "crates/runtime/engine-loader",
     "crates/runtime/engines/accounts",
     "crates/runtime/engines/adblock",
+    "crates/runtime/engines/browser-import",
     "crates/runtime/engines/contact-directory",
     "crates/runtime/engines/fuse",
     "crates/runtime/engines/highlight",

@@ -195,9 +195,9 @@ spotify() (
 
 # Apps run their engine libraries. Settings has no probe, to keep its tapp as
 # it is, Calendar none for the accounts engine (its probe runs the time-zone
-# one), and the PDF engine's apps and Imager none (build-thin-apps.sh runs
-# those engines' own checks): for those only the trace of the start counts (an
-# app need not accept --help).
+# one), and the PDF engine's apps, Imager and Browser none (build-thin-apps.sh
+# runs those engines' own checks): for those only the trace of the start
+# counts (an app need not accept --help).
 engines() (
   set -euo pipefail
   libdir=$(rustc --print target-libdir)
@@ -218,7 +218,8 @@ engines() (
                "word-processor libtilo_pdf_engine.so" \
                "print-centre libtilo_pdf_engine.so" \
                "imager libtilo_fuse_engine.so" \
-               "imager libtilo_accounts_engine.so"; do
+               "imager libtilo_accounts_engine.so" \
+               "browser libtilo_browser_import_engine.so"; do
     read -r app library option <<<"$probe"
     if [[ ! -x $target/thin-app/$app ]]; then
       echo "$app is not among this run's apps; no $library to run" | tee -a "$GITHUB_STEP_SUMMARY"
