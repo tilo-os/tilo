@@ -63,6 +63,7 @@ pub(super) async fn handle_voice(
         Envelope::VoiceCall { workspace_id, .. }
         | Envelope::VoiceJoin { workspace_id, .. }
         | Envelope::VoiceLeave { workspace_id, .. }
+        | Envelope::VoiceShow { workspace_id, .. }
         | Envelope::VoiceCalls { workspace_id } => *workspace_id,
         _ => return Ok(None),
     };
@@ -131,6 +132,17 @@ pub(super) async fn handle_voice(
         } => {
             if let Some((rooms, _)) = &rooms {
                 rooms.voice_leave(peer, call, participation);
+            }
+            None
+        }
+        Envelope::VoiceShow {
+            call,
+            participation,
+            showing,
+            ..
+        } => {
+            if let Some((rooms, _)) = &rooms {
+                rooms.voice_show(peer, call, participation, showing);
             }
             None
         }

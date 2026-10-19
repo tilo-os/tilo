@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 
 use tilo_relay_protocol::Envelope;
-use tilo_relay_protocol::voice::{CallState, CallSummary, VoiceGrant};
+use tilo_relay_protocol::voice::{CallState, CallSummary, Showing, VoiceGrant};
 
 /// What the host said about this device's calls.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -60,6 +60,9 @@ struct Joined {
     participation: Option<[u8; 32]>,
     /// A fresh join is on its way to the host.
     joining: bool,
+    /// What this participation shows besides its voice: said to the host
+    /// when it changes, with every heartbeat and after a fresh grant.
+    showing: Showing,
 }
 
 /// The participations of this session, one per room at most.
@@ -86,6 +89,7 @@ impl Participations {
                 call,
                 participation: None,
                 joining: true,
+                showing: Showing::default(),
             },
         );
         out.push(Envelope::VoiceJoin {
@@ -94,6 +98,19 @@ impl Participations {
             participation: None,
         });
         out
+    }
+
+    /// Show `showing` besides the voice in the call of `workspace_id` from
+    /// now on: what to send, once the participation is granted.
+    pub(crate) fn show(&mut self, workspace_id: u64, showing: Showing) -> Option<Envelope> {
+        let joined = self.joined.get_mut(&workspace_id)?;
+        joined.showing = showing;
+        Some(Envelope::VoiceShow {
+            workspace_id,
+            call: joined.call,
+            participation: joined.participation?,
+            showing,
+        })
     }
 
     /// Leave the call of `workspace_id`, if any.
@@ -122,17 +139,29 @@ impl Participations {
             .collect()
     }
 
-    /// Every granted participation's heartbeat.
+    /// Every granted participation's heartbeat, with what it shows when it
+    /// shows anything.
     pub(crate) fn heartbeats(&self) -> Vec<Envelope> {
         self.joined
             .iter()
             .filter_map(|(workspace_id, joined)| {
-                Some(Envelope::VoiceJoin {
+                let participation = joined.participation?;
+                let mut out = vec![Envelope::VoiceJoin {
                     workspace_id: *workspace_id,
                     call: joined.call,
-                    participation: Some(joined.participation?),
-                })
+                    participation: Some(participation),
+                }];
+                if joined.showing != Showing::default() {
+                    out.push(Envelope::VoiceShow {
+                        workspace_id: *workspace_id,
+                        call: joined.call,
+                        participation,
+                        showing: joined.showing,
+                    });
+                }
+                Some(out)
             })
+            .flatten()
             .collect()
     }
 
@@ -174,6 +203,9 @@ impl Participations {
                         && (joined.joining
                             || joined.participation == Some(grant.participation)) =>
                 {
+                    // A fresh participation shows nothing at the host until
+                    // told.
+                    let fresh = joined.joining && joined.showing != Showing::default();
                     joined.participation = Some(grant.participation);
                     joined.joining = false;
                     (
@@ -181,7 +213,12 @@ impl Participations {
                             workspace_id: *workspace_id,
                             grant: grant.clone(),
                         }),
-                        None,
+                        fresh.then_some(Envelope::VoiceShow {
+                            workspace_id: *workspace_id,
+                            call: grant.call,
+                            participation: grant.participation,
+                            showing: joined.showing,
+                        }),
                     )
                 }
                 // A grant for a participation this session left or replaced.

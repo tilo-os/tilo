@@ -25,6 +25,12 @@
 //! session) learns its calls with
 //! [`Envelope::VoiceCalls`](crate::Envelope::VoiceCalls).
 //!
+//! What a participant shows besides its voice (its camera, a shared screen)
+//! is [`Showing`], set with
+//! [`Envelope::VoiceShow`](crate::Envelope::VoiceShow) and carried on its
+//! [`VoiceParticipant`] in every grant and call list, so everyone sees who
+//! has a camera on or shares a screen before any picture arrives.
+//!
 //! Browser and native devices use the same envelopes: a browser session is
 //! one more peer of the relay.
 
@@ -180,6 +186,18 @@ pub struct VoiceParticipant {
     pub namespace: String,
     /// Whether it may publish.
     pub publishes: bool,
+    /// What it shows besides its voice.
+    pub showing: Showing,
+}
+
+/// What a participant shows besides its voice: its pictures are published
+/// on the carrier while it shows them (tilo-video/1, `tilo_moq::video`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Showing {
+    /// Its camera is on.
+    pub camera: bool,
+    /// It shares a screen.
+    pub screen: bool,
 }
 
 /// The voice namespace of `participation` in `call`: `<call hex>/<participation hex>`.

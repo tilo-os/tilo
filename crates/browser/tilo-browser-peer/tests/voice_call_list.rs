@@ -22,7 +22,7 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_relay::RelayClient;
 use tilo_relay::coedit::RelayCoeditSession;
 use tilo_relay_protocol::Envelope;
-use tilo_relay_protocol::voice::{CallOperation, CallSummary};
+use tilo_relay_protocol::voice::{CallOperation, CallSummary, Showing};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use call::{CHAT, create_voice_channel, endpoint, enter, granted, invite, native, operate};
@@ -145,6 +145,148 @@ async fn whoever_watches_a_rooms_calls_is_told_each_join_and_leave_unasked() {
         listed(envelope).filter(|list| in_call(list, &channel) == 0)
     })
     .await;
+
+    drop(web);
+    relay.shutdown().await;
+}
+
+/// Whether the participant of `user` on `channel` in `list` shows `showing`.
+fn shows(list: &[CallSummary], channel: &str, user: [u8; 32], showing: Showing) -> bool {
+    list.iter()
+        .filter(|call| call.channel_id == channel && call.state.active)
+        .flat_map(|call| &call.participants)
+        .any(|participant| participant.user_public_key == user && participant.showing == showing)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn turning_a_camera_on_and_sharing_a_screen_reach_everyone_watching_the_call() {
+    let alice = SigningKey::generate(&mut UnwrapErr(SysRng));
+    let host = enrol(&alice, "alice-home", DeviceCapabilities::host());
+    let laptop = enrol(&alice, "alice-laptop", DeviceCapabilities::primary());
+    let state = tempfile::tempdir().unwrap();
+    let TestHost { relay, web } = start_room_host(&alice, &host, state.path(), false).await;
+    let address = relay.node_addr();
+    let room = relay.rooms().unwrap().create("Lounge").await.unwrap();
+    enter(&relay, &laptop.cert, &room.room).await;
+    let (owner, channel) = create_voice_channel(
+        address.clone(),
+        room.workspace_id,
+        &room.room,
+        &host.cert,
+        &laptop,
+    )
+    .await;
+    let owner = owner.into_client();
+
+    let bob = SigningKey::generate(&mut UnwrapErr(SysRng));
+    let bob_laptop = enrol(&bob, "bob-laptop", DeviceCapabilities::member());
+    invite(&relay, &laptop.cert, &room.room, &bob, &bob_laptop).await;
+    let bob_link = session(address.clone(), room.workspace_id, &bob_laptop).await;
+    bob_link
+        .send(Envelope::VoiceCalls {
+            workspace_id: room.workspace_id,
+        })
+        .unwrap();
+    native(&bob_link, listed).await;
+
+    let opened = wait_for("the governor to learn the voice channel", || {
+        let owner = &owner;
+        let open = CallOperation::Open {
+            app_id: CHAT.into(),
+            record_id: String::new(),
+            channel_id: channel.clone(),
+        };
+        async move { operate(owner, room.workspace_id, 1, open).await.ok() }
+    })
+    .await;
+    owner
+        .send(Envelope::VoiceJoin {
+            workspace_id: room.workspace_id,
+            call: opened.call,
+            participation: None,
+        })
+        .unwrap();
+    let grant = native(&owner, granted).await;
+    let joined = native(&bob_link, |envelope| {
+        listed(envelope).filter(|list| in_call(list, &channel) == 1)
+    })
+    .await;
+    assert!(
+        shows(
+            &joined,
+            &channel,
+            laptop.cert.user_public_key,
+            Showing::default()
+        ),
+        "a participant joins showing nothing but its voice"
+    );
+
+    // Alice turns her camera on: Bob is told without asking, and so is
+    // Alice's own participation, in its next grant.
+    let camera = Showing {
+        camera: true,
+        screen: false,
+    };
+    owner
+        .send(Envelope::VoiceShow {
+            workspace_id: room.workspace_id,
+            call: opened.call,
+            participation: grant.participation,
+            showing: camera,
+        })
+        .unwrap();
+    native(&bob_link, |envelope| {
+        listed(envelope).filter(|list| shows(list, &channel, laptop.cert.user_public_key, camera))
+    })
+    .await;
+    let regranted = native(&owner, |envelope| {
+        granted(envelope).filter(|grant| {
+            grant
+                .participants
+                .iter()
+                .any(|participant| participant.showing == camera)
+        })
+    })
+    .await;
+    assert_eq!(regranted.participation, grant.participation);
+
+    // She shares her screen and turns the camera off.
+    let screen = Showing {
+        camera: false,
+        screen: true,
+    };
+    owner
+        .send(Envelope::VoiceShow {
+            workspace_id: room.workspace_id,
+            call: opened.call,
+            participation: grant.participation,
+            showing: screen,
+        })
+        .unwrap();
+    native(&bob_link, |envelope| {
+        listed(envelope).filter(|list| shows(list, &channel, laptop.cert.user_public_key, screen))
+    })
+    .await;
+
+    // Nobody says what another participation shows.
+    bob_link
+        .send(Envelope::VoiceShow {
+            workspace_id: room.workspace_id,
+            call: opened.call,
+            participation: grant.participation,
+            showing: Showing::default(),
+        })
+        .unwrap();
+    bob_link
+        .send(Envelope::VoiceCalls {
+            workspace_id: room.workspace_id,
+        })
+        .unwrap();
+    let after = native(&bob_link, listed).await;
+    assert!(
+        shows(&after, &channel, laptop.cert.user_public_key, screen),
+        "a foreign VoiceShow changed nothing"
+    );
 
     drop(web);
     relay.shutdown().await;

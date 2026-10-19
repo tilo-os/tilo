@@ -143,6 +143,7 @@ pub(super) async fn handle_envelope(
         env @ (Envelope::VoiceCall { .. }
         | Envelope::VoiceJoin { .. }
         | Envelope::VoiceLeave { .. }
+        | Envelope::VoiceShow { .. }
         | Envelope::VoiceCalls { .. }) => handle_voice(peer, session, subscribed, env).await,
         env @ Envelope::OpenRecord { .. } => {
             handle_open_record(peer, session, subscribed, env).await

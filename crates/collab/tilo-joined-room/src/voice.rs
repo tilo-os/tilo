@@ -29,7 +29,7 @@ use parking_lot::Mutex;
 use tilo_desktop_model::RoomId;
 use tilo_moq::client::{Client, ClientAuthority, Connection, ConnectionScope};
 use tilo_moq::relay::Direction;
-use tilo_relay_protocol::voice::{CallOperation, PARTICIPATION_TTL, VoiceGrant};
+use tilo_relay_protocol::voice::{CallOperation, PARTICIPATION_TTL, Showing, VoiceGrant};
 use tilo_relay_session::coedit::{RelayCoeditSession, VoiceEvent};
 
 use crate::{NativeCommittedView, NativeFenceSubscription, NativeWorkspaceOwner};
@@ -63,6 +63,10 @@ struct State {
     refused: Option<String>,
     carrier: Option<ConnectionScope>,
     generation: u64,
+    /// What this participation shows besides its voice, as this device
+    /// wants it shown: said to the governor when it changes and with every
+    /// heartbeat, so a rejoined participation shows it again.
+    showing: Showing,
 }
 
 /// Stop hooks use only this independent slot. The weak client avoids a
@@ -155,6 +159,7 @@ impl Participation {
                 refused: None,
                 carrier: None,
                 generation: 0,
+                showing: Showing::default(),
             }),
             changed: tokio::sync::Notify::new(),
             stops: Mutex::new(Stops::default()),
@@ -258,10 +263,16 @@ impl Participation {
                 if !ours {
                     return false;
                 }
+                // A fresh participation (a join, a rejoin over a new
+                // connection) shows nothing at the governor until told.
+                let fresh = state.phase == Phase::Joining && state.showing != Showing::default();
                 state.phase = Phase::Joined;
                 state.grant = Some((**grant).clone());
                 state.revision = state.revision.saturating_add(1);
                 drop(state);
+                if fresh && let Some(session) = session {
+                    let _ = self.say_showing(session);
+                }
                 self.extend();
                 self.changed.notify_waiters();
                 true
@@ -310,6 +321,51 @@ impl Participation {
         if let (Some(call), Some(id)) = (call, id) {
             session
                 .voice_join(call, Some(id))
+                .map_err(|_| "the room's relay session is gone")?;
+            self.say_showing(session)?;
+        }
+        Ok(())
+    }
+
+    /// Show `showing` besides this participation's voice from now on (its
+    /// camera, a shared screen), and tell the governor over `session` when
+    /// granted; without a session the next heartbeat or rejoin tells it.
+    ///
+    /// # Errors
+    /// The participation ended or the session is gone.
+    pub fn show(
+        &self,
+        session: Option<&RelayCoeditSession>,
+        showing: Showing,
+    ) -> Result<(), String> {
+        self.live()?;
+        self.state.lock().showing = showing;
+        match session {
+            Some(session) => self.say_showing(session),
+            None => Ok(()),
+        }
+    }
+
+    /// What this device wants this participation to show.
+    #[must_use]
+    pub fn showing(&self) -> Showing {
+        self.state.lock().showing
+    }
+
+    /// Tell the governor what this participation shows, once it has an id;
+    /// it ignores a repeat of what it already records.
+    fn say_showing(&self, session: &RelayCoeditSession) -> Result<(), String> {
+        let (call, id, showing) = {
+            let state = self.state.lock();
+            (
+                state.call.filter(|_| state.phase == Phase::Joined),
+                state.grant.as_ref().map(|grant| grant.participation),
+                state.showing,
+            )
+        };
+        if let (Some(call), Some(id)) = (call, id) {
+            session
+                .voice_show(call, id, showing)
                 .map_err(|_| "the room's relay session is gone")?;
         }
         Ok(())

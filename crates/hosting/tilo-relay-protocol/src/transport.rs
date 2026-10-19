@@ -550,6 +550,21 @@ pub enum Envelope {
         /// How many frames it sent.
         frames: u32,
     },
+
+    /// What `participation` shows besides its voice from now on (its
+    /// camera, a shared screen). The relay records it on the participation
+    /// and tells the call's participants and the room's call list when it
+    /// changed. Not answered.
+    VoiceShow {
+        /// Workspace id.
+        workspace_id: u64,
+        /// The call.
+        call: [u8; 32],
+        /// The participation.
+        participation: [u8; 32],
+        /// What it shows.
+        showing: crate::voice::Showing,
+    },
 }
 
 impl Envelope {
@@ -592,6 +607,7 @@ impl Envelope {
             | Self::VoiceLeave { workspace_id, .. }
             | Self::VoiceCalls { workspace_id }
             | Self::VoiceCallList { workspace_id, .. }
+            | Self::VoiceShow { workspace_id, .. }
             | Self::OpenRecord { workspace_id, .. }
             | Self::RecordOpened { workspace_id, .. } => Some(*workspace_id),
             Self::Ping | Self::Pong | Self::PeerRelayHello { .. } => None,
