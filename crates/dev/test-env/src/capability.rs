@@ -38,10 +38,15 @@ pub enum Capability {
     /// (`pipewire`, `wireplumber`, `pw-dump` and `GStreamer`'s `PipeWire`
     /// plugin).
     ScreenCapture,
-    /// Giving a file in the temporary directory to another user ([`chown_to`]):
-    /// root with `CAP_CHOWN` on a filesystem that can hold that user. Root in a
-    /// job sandbox without capabilities is uid 0 and still cannot.
+    /// Giving a file in the temporary directory to another user and becoming
+    /// it ([`chown_to`], [`switch_identity`]): root with `CAP_CHOWN` and
+    /// `CAP_SETUID`/`CAP_SETGID` on a filesystem that can hold that user. Root
+    /// in a job sandbox without capabilities is uid 0 and still cannot.
     Chown,
+    /// Creating the user or mount namespaces the fixtures use: a real root
+    /// process for a mount namespace, or an unprivileged caller for a user
+    /// namespace (bubblewrap, `unshare --user`). The job sandbox refuses both.
+    UserNamespace,
 }
 
 impl Capability {
@@ -58,6 +63,7 @@ impl Capability {
             Self::FsVerity => "TILO_REQUIRE_FSVERITY",
             Self::ScreenCapture => "TILO_REQUIRE_SCREEN_CAPTURE",
             Self::Chown => "TILO_REQUIRE_CHOWN",
+            Self::UserNamespace => "TILO_REQUIRE_USERNS",
         }
     }
 
@@ -81,6 +87,7 @@ impl fmt::Display for Capability {
             Self::FsVerity => "fs-verity",
             Self::ScreenCapture => "screen capture",
             Self::Chown => "giving files to another user",
+            Self::UserNamespace => "user and mount namespaces",
         })
     }
 }
@@ -97,6 +104,137 @@ impl fmt::Display for Capability {
 pub fn chown_to(uid: u32) -> std::io::Result<()> {
     let file = tempfile::NamedTempFile::new()?;
     std::os::unix::fs::chown(file.path(), Some(uid), None)
+}
+
+/// Whether this process can give a file in the temporary directory to `uid`
+/// and then become that user, tried on a scratch file and a throwaway child.
+///
+/// # Errors
+///
+/// Returns why the chown or the identity switch failed.
+#[cfg(unix)]
+pub fn switch_identity(uid: u32) -> std::io::Result<()> {
+    use std::os::unix::process::CommandExt as _;
+    chown_to(uid)?;
+    let status = std::process::Command::new("true")
+        .uid(uid)
+        .gid(uid)
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "becoming uid {uid} exited with {status}"
+        )))
+    }
+}
+
+/// Whether this process can create a user namespace with the unprivileged
+/// mapping the fixtures use, tried on a throwaway `true`.
+///
+/// # Errors
+///
+/// Returns why `unshare` could not be started or exited non-zero.
+#[cfg(target_os = "linux")]
+pub fn user_namespace() -> std::io::Result<()> {
+    namespace(
+        "unshare",
+        &[
+            "--user",
+            "--map-user=19991",
+            "--map-group=19992",
+            "--",
+            "true",
+        ],
+    )
+}
+
+/// Whether this process can create a private mount namespace, trying `unshare`
+/// as the caller and then `sudo -n` for an unprivileged developer host.
+///
+/// # Errors
+///
+/// Returns why neither `unshare` nor `sudo -n unshare` succeeded.
+#[cfg(target_os = "linux")]
+pub fn mount_namespace() -> std::io::Result<()> {
+    match namespace(
+        "unshare",
+        &[
+            "--mount",
+            "--fork",
+            "--propagation",
+            "private",
+            "--",
+            "true",
+        ],
+    ) {
+        Ok(()) => Ok(()),
+        Err(direct) => namespace(
+            "sudo",
+            &[
+                "-n",
+                "--",
+                "unshare",
+                "--mount",
+                "--fork",
+                "--propagation",
+                "private",
+                "--",
+                "true",
+            ],
+        )
+        .map_err(|sudo| {
+            std::io::Error::other(format!("unshare: {direct}; sudo -n unshare: {sudo}"))
+        }),
+    }
+}
+
+/// Whether this process can start bubblewrap with a user namespace of its own,
+/// tried on the read-only root the bundle fixtures use.
+///
+/// # Errors
+///
+/// Returns why `bwrap` could not be started or exited non-zero.
+#[cfg(target_os = "linux")]
+pub fn bubblewrap() -> std::io::Result<()> {
+    namespace(
+        "bwrap",
+        &[
+            "--die-with-parent",
+            "--unshare-all",
+            "--ro-bind",
+            "/",
+            "/",
+            "--",
+            "true",
+        ],
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn namespace(program: &str, args: &[&str]) -> std::io::Result<()> {
+    let mut child = std::process::Command::new(program).args(args).spawn()?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return if status.success() {
+                Ok(())
+            } else {
+                Err(std::io::Error::other(format!(
+                    "{program} exited with {status}"
+                )))
+            };
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("{program} did not finish within 10s"),
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 }
 
 /// Report that `capability` is unavailable: print why the calling test is
