@@ -555,7 +555,12 @@ fn private_artifact_reader_rejects_fifo_without_waiting_for_writer() {
 
 #[test]
 fn protected_consumer_requirement_follows_exact_authenticated_selected_grants() {
-    let fixture = tempfile::tempdir().unwrap();
+    // A sealed artifact is only read from a private directory; make it one
+    // whatever the umask.
+    let fixture = tempfile::Builder::new()
+        .permissions(<std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700))
+        .tempdir()
+        .unwrap();
     let source = fixture.path().join("source");
     let copied = fixture.path().join("copied");
     let fresh = connect(&source, "Fresh", "original-private-password");
