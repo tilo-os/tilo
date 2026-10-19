@@ -140,6 +140,8 @@ pub struct DefaultAppsArea {
     /// The installed apps, read off the UI thread after the window's first
     /// frame ([`Self::start_read`]).
     read: crate::device_read::DeviceRead<Vec<AppCandidate>>,
+    /// The rows, kept for the defaults version and locale they show.
+    rows: crate::host::RowsMemo<(ui::storage::SettingsRevision, u64)>,
 }
 
 impl DefaultAppsArea {
@@ -151,6 +153,7 @@ impl DefaultAppsArea {
             candidates: OnceCell::new(),
             sample: !cx.reaches_devices(),
             read: crate::device_read::DeviceRead::default(),
+            rows: crate::host::RowsMemo::default(),
         }
     }
 
@@ -199,7 +202,12 @@ impl DefaultAppsArea {
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
         let mut prefs = self.prefs.borrow_mut();
         prefs.refresh();
-        let defaults = prefs.get().personal();
+        let key = (prefs.revision(), ui::i18n::I18nManager::revision());
+        self.rows.rows(key, || self.make_rows(prefs.get()))
+    }
+
+    fn make_rows(&self, prefs: &DefaultApps) -> Vec<LiveRow> {
+        let defaults = prefs.personal();
         let candidates = self.candidates();
         let resolver = DefaultAppResolver::new(candidates);
         kinds(candidates)
@@ -628,6 +636,7 @@ mod tests {
             ]),
             sample: true,
             read: crate::device_read::DeviceRead::default(),
+            rows: crate::host::RowsMemo::default(),
         };
         let pdf = ResourceKind::extension("pdf").unwrap();
         let mut pane = PersonalAppsPane::new(cx.clone(), &area);

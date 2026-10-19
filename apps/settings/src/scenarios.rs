@@ -553,7 +553,7 @@ mod tests {
     fn scenarios_name_their_pane_and_size() {
         assert_eq!(
             names().len(),
-            Category::ALL.len() + 11 + CODEC_SCENARIOS.len()
+            Category::ALL.len() + 13 + CODEC_SCENARIOS.len()
         );
         assert_eq!(
             staged(Some(STORAGE_DRIVES)),

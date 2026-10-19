@@ -6077,7 +6077,16 @@ impl FrameHarness {
         self.pump_component_wakes();
         // Read before dispatch, as the live App reads it: a wheel the root
         // declares view-only moves scroll geometry and nothing else.
-        let view_only_wheel = !history_input && self.is_view_only_scroll(event);
+        let may_pan = !history_input && self.may_pan_view_only(event);
+        let declared_view_only = may_pan && self.root.view_only_scroll(event);
+        let pan_before = may_pan.then(|| {
+            crate::widget::take_view_only_pan();
+            (
+                crate::doc::settle_mark(&self.state.doc),
+                crate::widget::resource_presentation_epoch(),
+                self.focused,
+            )
+        });
         let detected = if self.dispatching_touch_pointer {
             None
         } else {
@@ -6226,6 +6235,20 @@ impl FrameHarness {
         // `Widget::view_only_scroll`): its tick would find no bracket, no
         // control and no undo request. The frame's own tick, before that
         // frame lays out, runs for whatever else is pending.
+        // A container that reported its pan moved only its view, when the
+        // dispatch left the documents, the declared presentation and focus
+        // as they were.
+        let panned = crate::widget::take_view_only_pan();
+        let view_only_wheel = declared_view_only
+            || (panned
+                && pan_before.as_ref().is_some_and(|before| {
+                    *before
+                        == (
+                            crate::doc::settle_mark(&self.state.doc),
+                            crate::widget::resource_presentation_epoch(),
+                            self.focused,
+                        )
+                }));
         let coalesced_view_only =
             self.coalesce_wheel_frames && !history_input && focus_target.is_none();
         if !(coalesced_view_only && view_only_wheel) {
@@ -6329,6 +6352,13 @@ impl FrameHarness {
     /// trusts that declaration in: no modifier or modal capture changes what
     /// the wheel does, and no floating surface takes it.
     fn is_view_only_scroll(&self, event: &WindowEvent) -> bool {
+        self.may_pan_view_only(event) && self.root.view_only_scroll(event)
+    }
+
+    /// Whether a wheel `event` arrives where the live App lets it prove
+    /// view-only, declared up front or by a container's reported pan
+    /// ([`crate::widget::note_view_only_pan`]).
+    fn may_pan_view_only(&self, event: &WindowEvent) -> bool {
         matches!(event, WindowEvent::MouseWheel { .. })
             && self.modifiers.state().is_empty()
             && self.root.modal_capture().is_none()
@@ -6336,7 +6366,6 @@ impl FrameHarness {
                 self.root.as_ref(),
             )
             .is_empty()
-            && self.root.view_only_scroll(event)
     }
 
     fn frame_schedule_demands_frame(&self) -> bool {

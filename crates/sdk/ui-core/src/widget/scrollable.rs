@@ -1804,6 +1804,11 @@ impl Widget for Scrollable {
                 ctx.modifiers.state().shift_key(),
                 ctx.scale_factor,
             );
+            // Every child refused it and it moved only this view: nothing
+            // the app publishes changed.
+            if *ctx.handled {
+                crate::widget::note_view_only_pan();
+            }
             return;
         }
 

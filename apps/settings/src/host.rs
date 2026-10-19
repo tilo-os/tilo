@@ -542,6 +542,46 @@ impl<T: SettingsSchema + Clone + PartialEq> Followed<T> {
     pub fn settings(&self) -> &StoredSettings<T> {
         &self.settings
     }
+
+    /// The document version the value was last read at.
+    #[must_use]
+    pub fn revision(&self) -> SettingsRevision {
+        self.seen
+    }
+}
+
+/// An area's live rows, kept while what they were made from holds. Every
+/// publication asks each area for its rows; an area listing every installed
+/// app made hundreds of action declarations each time, on every click and
+/// keystroke, though nothing they show had changed.
+pub(crate) struct RowsMemo<K> {
+    kept: std::cell::RefCell<Option<(K, Vec<ui::framework::LiveRow>)>>,
+}
+
+impl<K> Default for RowsMemo<K> {
+    fn default() -> Self {
+        Self {
+            kept: std::cell::RefCell::new(None),
+        }
+    }
+}
+
+impl<K: PartialEq> RowsMemo<K> {
+    /// The rows made from `key`: those kept when they were made from it,
+    /// else what `make` makes now.
+    pub(crate) fn rows(
+        &self,
+        key: K,
+        make: impl FnOnce() -> Vec<ui::framework::LiveRow>,
+    ) -> Vec<ui::framework::LiveRow> {
+        let mut kept = self.kept.borrow_mut();
+        if let Some((_, rows)) = kept.as_ref().filter(|(was, _)| *was == key) {
+            return rows.clone();
+        }
+        let rows = make();
+        *kept = Some((key, rows.clone()));
+        rows
+    }
 }
 
 /// What tests reach of the sections, as an agent or assistive technology
