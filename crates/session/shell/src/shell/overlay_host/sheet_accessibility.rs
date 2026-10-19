@@ -20,7 +20,6 @@ const FILE_PICKER_PREFIX: &str = "file-picker:";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WifiPasswordPart {
-    Back,
     Field,
     Cancel,
     Connect,
@@ -29,7 +28,6 @@ enum WifiPasswordPart {
 impl WifiPasswordPart {
     const fn slug(self) -> &'static str {
         match self {
-            Self::Back => "back",
             Self::Field => "field",
             Self::Cancel => "cancel",
             Self::Connect => "connect",
@@ -37,7 +35,7 @@ impl WifiPasswordPart {
     }
 
     fn from_slug(slug: &str) -> Option<Self> {
-        [Self::Back, Self::Field, Self::Cancel, Self::Connect]
+        [Self::Field, Self::Cancel, Self::Connect]
             .into_iter()
             .find(|part| part.slug() == slug)
     }
@@ -101,16 +99,15 @@ impl ShellOverlayHost {
             }
     }
 
-    fn wifi_password_prompt_up(&self) -> bool {
+    pub(super) fn wifi_password_prompt_up(&self) -> bool {
         self.overlay_flags().quick_settings
             && self.chrome.as_ref().is_some_and(|chrome| {
                 let state = chrome.borrow();
                 state.quick_settings.wifi_password.is_some()
-                    && matches!(
-                        state.quick_settings.current_level(),
-                        crate::shell::quick_settings::QsLevel::Wifi
-                            | crate::shell::quick_settings::QsLevel::WifiDetails(_)
-                    )
+                    && state.quick_settings.current_level()
+                        == &crate::shell::quick_settings::QsLevel::Root
+                    && state.quick_settings.section
+                        == Some(crate::shell::quick_settings::QsSection::Wifi)
             })
     }
 
@@ -207,11 +204,6 @@ impl ShellOverlayHost {
         let target = |part| wifi_password_target(prompt.id, part);
         let (cancel, connect) = self.qs_password_button_rects();
         let mut children = vec![
-            AccessNode::new(Role::Button)
-                .with_name(t("qs-back"))
-                .with_action_target(target(WifiPasswordPart::Back))
-                .with_bounds(self.qs_back_chevron_rect())
-                .with_state(AccessState::new().focusable(true)),
             self.wifi_password_field_accessibility(prompt)
                 .with_action_target(target(WifiPasswordPart::Field)),
         ];
@@ -253,7 +245,7 @@ impl ShellOverlayHost {
         AccessNode::new(Role::Dialog)
             .with_name(prompt.ssid.clone())
             .with_description(t("qs-wifi-protected"))
-            .with_bounds(self.quick_settings_rect())
+            .with_bounds(self.qs_password_field_rect().union(connect).union(cancel))
             .with_state(AccessState::new().modal(true).busy(prompt.connecting))
             .with_children(children)
     }
@@ -364,7 +356,7 @@ impl ShellOverlayHost {
         match (part, action) {
             (_, Action::ScrollIntoView | Action::Focus)
             | (WifiPasswordPart::Field, Action::Activate) => true,
-            (WifiPasswordPart::Back | WifiPasswordPart::Cancel, Action::Activate) => {
+            (WifiPasswordPart::Cancel, Action::Activate) => {
                 self.cancel_wifi_password();
                 true
             }

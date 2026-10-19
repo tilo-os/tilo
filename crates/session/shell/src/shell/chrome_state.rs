@@ -498,6 +498,8 @@ pub struct QuickSettingsState {
     /// The top bar's battery reading — same type, same sysfs parser — so
     /// the panel and the tray cannot disagree about the charge.
     pub battery: tilo_power_mgmt::BatterySnapshot,
+    /// Time to empty or to full, when the battery reports its rate.
+    pub battery_time: Option<tilo_power_mgmt::BatteryTime>,
     /// `None` when fwupd is unavailable, otherwise the offered update count.
     pub firmware_updates: Option<usize>,
     pub radios: os_actions::RadioState,
@@ -513,6 +515,9 @@ pub struct QuickSettingsState {
     /// `Root`) — pushing `Wifi`/`Bluetooth` flips the popover to the
     /// drill-in list.
     pub nav_stack: Vec<QsLevel>,
+    /// The section open in place on the root page (Wi-Fi's networks,
+    /// Bluetooth's devices, a VPN's profiles, the battery); at most one.
+    pub section: Option<crate::shell::quick_settings::QsSection>,
     /// Set while clipboard history is open to paste (Super+V): where it was
     /// summoned from, so it opens there instead of under the tray and a
     /// choice is pasted into that field. `None` when history is browsed from
@@ -558,6 +563,10 @@ pub struct QuickSettingsState {
     pub do_not_disturb: bool,
     /// Private clipboard history entries, read when the popover opens.
     pub clipboard_items: usize,
+    /// Notifications in the history, read when the popover opens.
+    pub notification_count: usize,
+    /// This machine's sound outputs, read when the popover opens.
+    pub sound_outputs: Vec<crate::shell::quick_settings::SoundOutput>,
 }
 
 /// Session-local drill-down into one app-published resource directory.
@@ -602,6 +611,7 @@ impl Default for QuickSettingsState {
             bluetooth_available: false,
             wired: None,
             battery: tilo_power_mgmt::BatterySnapshot::absent(),
+            battery_time: None,
             firmware_updates: None,
             radios: os_actions::RadioState::default(),
             vpns: Vec::new(),
@@ -610,6 +620,7 @@ impl Default for QuickSettingsState {
             rotation_available: os_actions::has_accelerometer(),
             rotation_lock: settings_store::hardware::ROTATION_LOCK.get(),
             nav_stack: vec![QsLevel::Root],
+            section: None,
             paste_origin: None,
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
@@ -628,6 +639,8 @@ impl Default for QuickSettingsState {
             personal_devices: None,
             do_not_disturb: false,
             clipboard_items: 0,
+            notification_count: 0,
+            sound_outputs: Vec::new(),
         }
     }
 }
@@ -646,6 +659,7 @@ impl QuickSettingsState {
             bluetooth_available: false,
             wired: None,
             battery: tilo_power_mgmt::BatterySnapshot::absent(),
+            battery_time: None,
             firmware_updates: None,
             radios: os_actions::RadioState::default(),
             vpns: Vec::new(),
@@ -654,6 +668,7 @@ impl QuickSettingsState {
             rotation_available: false,
             rotation_lock: false,
             nav_stack: vec![QsLevel::Root],
+            section: None,
             paste_origin: None,
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
@@ -672,6 +687,8 @@ impl QuickSettingsState {
             personal_devices: None,
             do_not_disturb: false,
             clipboard_items: 0,
+            notification_count: 0,
+            sound_outputs: Vec::new(),
         }
     }
 
@@ -693,6 +710,17 @@ impl QuickSettingsState {
         if level != QsLevel::Root {
             self.nav_stack.push(level);
         }
+    }
+
+    /// Open `section` in place on the root page, closing any other: one
+    /// section is open at a time.
+    pub fn open_section(&mut self, section: crate::shell::quick_settings::QsSection) {
+        self.section = Some(section);
+    }
+
+    /// Open `section`, or close it when it is the one open.
+    pub fn toggle_section(&mut self, section: crate::shell::quick_settings::QsSection) {
+        self.section = (self.section != Some(section)).then_some(section);
     }
 
     /// No-op when only `Root` remains so the popover can't be emptied.
@@ -2199,6 +2227,20 @@ impl ChromeState {
         self.overlays.quick_settings = true;
         self.overlays.ws_settings = false;
         self.quick_settings.show_level(level);
+        self.bump();
+    }
+
+    /// Open Quick Settings on its root page with `section` open in place:
+    /// Wi-Fi's networks, Bluetooth's devices, the battery.
+    pub fn open_quick_settings_section(
+        &mut self,
+        section: crate::shell::quick_settings::QsSection,
+    ) {
+        self.overlays.quick_settings = true;
+        self.overlays.ws_settings = false;
+        self.quick_settings
+            .show_level(crate::shell::quick_settings::QsLevel::Root);
+        self.quick_settings.open_section(section);
         self.bump();
     }
 
@@ -4275,10 +4317,7 @@ mod panel_exclusion_tests {
         fn quick_settings_deep_link_replaces_stale_navigation_history() {
             let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
             let mut state = chrome.borrow_mut();
-            state.quick_settings.push_level(QsLevel::Wifi);
-            state
-                .quick_settings
-                .push_level(QsLevel::WifiDetails("Cafe".into()));
+            state.quick_settings.push_level(QsLevel::Clipboard);
 
             state.open_quick_settings_level(QsLevel::Devices);
 

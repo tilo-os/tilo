@@ -1743,7 +1743,7 @@ impl Action {
             "qs-network-details",
             "search-action-quick-settings-network-subtitle",
             |st, _| {
-                st.open_quick_settings_level(crate::shell::quick_settings::QsLevel::Wifi);
+                st.open_quick_settings_section(crate::shell::quick_settings::QsSection::Wifi);
                 Ok(())
             },
         ),
@@ -1752,7 +1752,7 @@ impl Action {
             "qs-bluetooth-details",
             "search-action-quick-settings-bluetooth-subtitle",
             |st, _| {
-                st.open_quick_settings_level(crate::shell::quick_settings::QsLevel::Bluetooth);
+                st.open_quick_settings_section(crate::shell::quick_settings::QsSection::Bluetooth);
                 Ok(())
             },
         ),
@@ -9582,14 +9582,14 @@ mod tests {
     }
     #[test]
     fn radio_details_navigation_actions_are_views_and_do_not_toggle_radios() {
-        for (id, level) in [
+        for (id, section) in [
             (
                 "quick-settings.network",
-                crate::shell::quick_settings::QsLevel::Wifi,
+                crate::shell::quick_settings::QsSection::Wifi,
             ),
             (
                 "quick-settings.bluetooth",
-                crate::shell::quick_settings::QsLevel::Bluetooth,
+                crate::shell::quick_settings::QsSection::Bluetooth,
             ),
         ] {
             let provider = ActionsProvider::new();
@@ -9608,10 +9608,12 @@ mod tests {
                 invoke_action(&results, id, &chrome);
                 let state = chrome.borrow();
                 assert!(state.overlays.quick_settings);
+                // The list opens in place on the root page.
                 assert_eq!(
                     state.quick_settings.nav_stack,
-                    [crate::shell::quick_settings::QsLevel::Root, level.clone()]
+                    [crate::shell::quick_settings::QsLevel::Root]
                 );
+                assert_eq!(state.quick_settings.section, Some(section));
                 assert_eq!(
                     (state.quick_settings.wifi, state.quick_settings.bluetooth),
                     before

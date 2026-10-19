@@ -34,6 +34,76 @@ pub fn battery_snapshot() -> BatterySnapshot {
     snapshot_in(Path::new(POWER_SUPPLY))
 }
 
+/// How long the battery has left to run, or to charge, at the rate it is
+/// going now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BatteryTime {
+    /// Minutes until it is empty.
+    ToEmpty(u32),
+    /// Minutes until it is full.
+    ToFull(u32),
+}
+
+/// [`BatteryTime`] from sysfs: the packs' energy (or charge) and the rate
+/// it is flowing at. `None` while the rate is not known — just after the
+/// cable moved, on firmware that does not report it, at rest when full.
+#[must_use]
+pub fn battery_time() -> Option<BatteryTime> {
+    time_in(Path::new(POWER_SUPPLY))
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "energy and power are tens of watt-hours and watts in micro units, far inside f64's \
+              exact range; the minutes are clamped to a day before the cast"
+)]
+fn time_in(root: &Path) -> Option<BatteryTime> {
+    let mut now_total: u64 = 0;
+    let mut full_total: u64 = 0;
+    let mut rate_total: u64 = 0;
+    let mut states = Vec::new();
+    for dir in supplies_of_type(root, "Battery") {
+        if read_u64(&dir, "present").is_some_and(|p| p == 0) {
+            continue;
+        }
+        states.push(read_state(&dir));
+        // Energy (µWh) over power (µW), or charge (µAh) over current
+        // (µA): never one of each, so the ratio is hours either way.
+        let (now, full, rate) = match (
+            read_u64(&dir, "energy_now"),
+            read_u64(&dir, "energy_full"),
+            read_u64(&dir, "power_now"),
+        ) {
+            (Some(now), Some(full), Some(rate)) => (now, full, rate),
+            _ => (
+                read_u64(&dir, "charge_now")?,
+                read_u64(&dir, "charge_full")?,
+                read_u64(&dir, "current_now")?,
+            ),
+        };
+        now_total = now_total.saturating_add(now);
+        full_total = full_total.saturating_add(full);
+        rate_total = rate_total.saturating_add(rate);
+    }
+    if rate_total == 0 {
+        return None;
+    }
+    let minutes = |amount: u64| -> u32 {
+        ((amount as f64 / rate_total as f64) * 60.0)
+            .round()
+            .clamp(0.0, 24.0 * 60.0) as u32
+    };
+    match composite_state(&states) {
+        BatteryState::Discharging => Some(BatteryTime::ToEmpty(minutes(now_total))),
+        BatteryState::Charging => Some(BatteryTime::ToFull(minutes(
+            full_total.saturating_sub(now_total),
+        ))),
+        _ => None,
+    }
+}
+
 /// Whether the machine is running on battery (no mains supply online).
 ///
 /// Read separately from the battery because it is also true on a machine
@@ -203,6 +273,43 @@ mod tests {
             }
         }
         dir
+    }
+
+    #[test]
+    fn time_left_is_energy_over_the_rate_it_flows_at() {
+        let draining = tree(&[(
+            "BAT0",
+            &[
+                ("type", "Battery\n"),
+                ("status", "Discharging\n"),
+                ("energy_now", "30000000\n"),
+                ("energy_full", "60000000\n"),
+                ("power_now", "10000000\n"),
+            ],
+        )]);
+        assert_eq!(time_in(draining.path()), Some(BatteryTime::ToEmpty(180)));
+        let charging = tree(&[(
+            "BAT0",
+            &[
+                ("type", "Battery\n"),
+                ("status", "Charging\n"),
+                ("charge_now", "2000000\n"),
+                ("charge_full", "4000000\n"),
+                ("current_now", "1000000\n"),
+            ],
+        )]);
+        assert_eq!(time_in(charging.path()), Some(BatteryTime::ToFull(120)));
+        let resting = tree(&[(
+            "BAT0",
+            &[
+                ("type", "Battery\n"),
+                ("status", "Full\n"),
+                ("energy_now", "60000000\n"),
+                ("energy_full", "60000000\n"),
+                ("power_now", "0\n"),
+            ],
+        )]);
+        assert_eq!(time_in(resting.path()), None, "no rate, no estimate");
     }
 
     #[test]

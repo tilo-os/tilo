@@ -1,32 +1,67 @@
-//! `QuickSettings` — the top-right status-area popover. Owns the headline
-//! controls (brightness, volume) and popover navigation (root →
-//! WiFi/Bluetooth drill-in via `nav_stack`). `wifi_ssid`/`bluetooth_device`
-//! populate the toggle-card sub-line, falling back to "Not connected" when off or unset.
+//! `QuickSettings` — the top-right status-area popover: sliders, a grid of
+//! tiles whose sections (Wi-Fi, Bluetooth, VPN, the battery) open in place
+//! on the root page, and drill-in pages (devices, clipboard, notification
+//! history) through `nav_stack`.
 
 pub mod actions;
-pub(crate) mod bluetooth;
 pub mod now_playing;
 pub mod refresh;
 pub(crate) mod root;
-pub(crate) mod vpn;
-pub(crate) mod wifi;
+pub(crate) mod sections;
 
-/// A single frame in the `QuickSettings` navigation stack.
+/// A single frame in the `QuickSettings` navigation stack. Wi-Fi,
+/// Bluetooth, VPN and the battery are not pages: they open in place on the
+/// root page ([`QsSection`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QsLevel {
     Root,
-    Wifi,
-    WifiDetails(String),
-    Bluetooth,
+    /// One accessory's exact-device handoff to the person's other devices.
     BluetoothDetails(String),
-    /// Configured `NetworkManager` VPN profiles.
-    Vpn,
     /// Session-local notification history owned by shell chrome.
     Notifications,
     /// Private clipboard history, including authenticated same-person copies.
     Clipboard,
     /// Certified personal devices, local audio outputs, and media routes.
     Devices,
+}
+
+/// A part of Quick Settings that opens in place on the root page, below
+/// the control it belongs to, with the standard disclosure motion. One is
+/// open at a time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum QsSection {
+    /// The networks in range, the one in use first.
+    Wifi,
+    /// Paired accessories.
+    Bluetooth,
+    /// `NetworkManager`'s VPN profiles.
+    Vpn,
+    /// Charge, the power mode and what keeps the machine awake.
+    Battery,
+    /// Where sound plays: this machine's outputs.
+    Sound,
+}
+
+impl QsSection {
+    /// Every section, in the order the page is laid out.
+    pub const ALL: [Self; 5] = [
+        Self::Sound,
+        Self::Wifi,
+        Self::Bluetooth,
+        Self::Vpn,
+        Self::Battery,
+    ];
+}
+
+/// One of this machine's sound outputs (speakers, headphones, a display's
+/// speakers), as the Sound section lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SoundOutput {
+    /// The audio graph's node: what routing to it names.
+    pub node: u32,
+    pub name: String,
+    /// Sound plays here now.
+    pub current: bool,
 }
 
 /// A `WiFi` entry in the drill-in list. `signal` is a strength bucket
@@ -41,6 +76,8 @@ pub struct WifiNetwork {
     pub secure: bool,
     pub security: os_actions::WifiSecurity,
     pub connected: bool,
+    /// This machine has joined it before: it connects without asking.
+    pub known: bool,
 }
 
 /// An in-flight "join this protected network" prompt. `connect_wifi(ssid,
@@ -91,30 +128,6 @@ pub struct BtDevice {
     pub address: String,
     pub battery: u8,
     pub connected: bool,
-}
-
-/// What a key does in a drill-in pane's list.
-#[derive(Clone, Copy)]
-pub(crate) enum PaneKey {
-    /// Move focus to the previous row when `true`, the next one otherwise.
-    Focus(bool),
-    /// Use the focused row.
-    Activate,
-}
-
-impl PaneKey {
-    /// Tab moves along `backwards`, arrows move regardless of it, Enter and
-    /// Space activate. Any other key is not the pane's.
-    pub(crate) fn of(logical_key: &winit::keyboard::Key, backwards: bool) -> Option<Self> {
-        use winit::keyboard::{Key, NamedKey};
-        match logical_key {
-            Key::Named(NamedKey::Tab) => Some(Self::Focus(backwards)),
-            Key::Named(NamedKey::ArrowUp | NamedKey::ArrowLeft) => Some(Self::Focus(true)),
-            Key::Named(NamedKey::ArrowDown | NamedKey::ArrowRight) => Some(Self::Focus(false)),
-            Key::Named(NamedKey::Enter | NamedKey::Space) => Some(Self::Activate),
-            _ => None,
-        }
-    }
 }
 
 /// The three canonical profiles `powerprofilesctl` exposes on Linux.

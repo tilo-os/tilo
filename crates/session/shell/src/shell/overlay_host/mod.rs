@@ -139,17 +139,16 @@ use crate::shell::power_menu::PowerMenu;
 #[cfg(test)]
 use crate::shell::power_menu::PowerMenuClick;
 use crate::shell::projection_overlay::ProjectionOverlay;
-use crate::shell::quick_settings::bluetooth::{BluetoothOutcome, QuickSettingsBluetoothPane};
-use crate::shell::quick_settings::root::{QuickSettingsRoot, RootAction, SliderCommit};
-use crate::shell::quick_settings::vpn::{QuickSettingsVpnPane, VpnPaneOutcome};
-use crate::shell::quick_settings::wifi::QuickSettingsWifiPane;
+use crate::shell::quick_settings::root::{
+    BluetoothIntent, QuickSettingsRoot, RootAction, SliderCommit, WifiIntent,
+};
 use crate::shell::search::ResourceKindText as _;
 use crate::shell::state::{Capability, GroupId, StripId, WorkspaceId};
 pub use peer_sync_dispatch::{PeerSyncCall, PeerSyncJob, PeerSyncRunner, PeerSyncWorker};
 pub use tilo_desktop::collaborators::RosterRow;
 use tilo_desktop::collaborators::{CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay};
 use tilo_desktop::drill_in as qs;
-use tilo_desktop::drill_in::{DrillInList, DrillInOutcome};
+use tilo_desktop::drill_in::DrillInList;
 use tilo_desktop::notifications::{
     CenterLayout, CenterMetrics, CenterOutcome, NotificationCenter, NotificationHost as _,
     NotificationStack,
@@ -547,6 +546,10 @@ struct PendingLaunchpadApp {
 /// How often a launchpad card's app action, delivered once its app is up,
 /// is asked whether it was admitted.
 const LAUNCHPAD_ACTION_POLL: Duration = Duration::from_millis(100);
+/// How often the open Wi-Fi section scans for networks again: often enough
+/// that walking into range shows up while the person looks, rarely enough
+/// that the radio is not kept busy.
+const QS_WIFI_RESCAN: Duration = Duration::from_secs(10);
 
 /// A launchpad card's app action awaiting admission: the app may be
 /// launching first. The card's title names it if it is refused.
@@ -1034,16 +1037,11 @@ pub struct ShellOverlayHost {
     /// a test dispatcher updates the existing provider rather than registering
     /// a duplicate action source.
     qs_action_slot: crate::shell::search::providers::actions::SharedQsActions,
-    /// Wi-Fi network-list layout, painting and join hit-testing. The
-    /// specialised ephemeral password editor remains host-owned.
-    qs_wifi_pane: QuickSettingsWifiPane,
-    /// Bluetooth discovery list layout, painting and back hit-testing.
-    qs_bluetooth_pane: QuickSettingsBluetoothPane,
-    /// Shared drill-in chrome for host-owned notification/password panes.
+    /// Shared drill-in chrome for host-owned pages (Bluetooth details).
     qs_aux_drill_in: DrillInList,
-    /// VPN drill-in geometry, shared toggle painting, click routing and OS
-    /// dispatch. Chrome remains the source of the profile snapshot.
-    qs_vpn_pane: QuickSettingsVpnPane,
+    /// When the open Wi-Fi section last asked for a scan: it scans again
+    /// while it stays open, so the list follows the room.
+    qs_wifi_scanned_at: Option<Instant>,
     /// Live battery/network/volume readings, or `None` when nothing
     /// polls — `--shots` and headless tests have no poller so their
     /// pixels don't depend on host hardware. See
@@ -1828,6 +1826,18 @@ struct SearchFilterInputs {
 /// tests.
 type GroupsPerStrip = Vec<(StripId, Vec<(u64, Vec<u64>)>)>;
 
+/// This machine's sound outputs as Quick Settings lists them.
+fn sound_outputs_of(view: &DeviceFabricView) -> Vec<crate::shell::quick_settings::SoundOutput> {
+    view.local_outputs
+        .iter()
+        .map(|output| crate::shell::quick_settings::SoundOutput {
+            node: output.node_id,
+            name: output.label.clone(),
+            current: output.is_default,
+        })
+        .collect()
+}
+
 /// The control a radio change writes.
 const fn radio_field(change: os_actions::RadioChange) -> QsField {
     match change {
@@ -1869,7 +1879,9 @@ impl ShellOverlayHost {
                 capture_studio: self.capture_studio.needs_animation_frame(),
                 root_transition: self.transition_started.is_some(),
                 workspace_switch: self.workspace_switch_holding_at(now),
-                quick_settings: self.qs_motion.is_animating(now) || self.qs_root_scroll_fading(),
+                quick_settings: self.qs_motion.is_animating(now)
+                    || self.qs_root.is_animating(now)
+                    || self.qs_root_scroll_fading(),
                 workspace_settings: self.workspace_settings_overlay.is_animating(now),
                 palette: self.palette_transition.is_moving(now),
                 power_menu: self.layers.power_menu.is_animating(now),
@@ -2742,10 +2754,8 @@ impl ShellOverlayHost {
             desk: desk::DeskState::default(),
             qs_actions: inputs.qs_actions,
             qs_action_slot: inputs.qs_action_slot,
-            qs_wifi_pane: QuickSettingsWifiPane::default(),
-            qs_bluetooth_pane: QuickSettingsBluetoothPane::default(),
             qs_aux_drill_in: DrillInList::default(),
-            qs_vpn_pane: QuickSettingsVpnPane::default(),
+            qs_wifi_scanned_at: None,
             status_bridge: None,
             session_audio_policy: None,
             room_activity: inputs.room_activity,
@@ -11901,6 +11911,7 @@ impl ShellOverlayHost {
             power_profiles,
             wired,
             battery,
+            battery_time,
             radios,
             privacy,
             vpns,
@@ -11931,6 +11942,7 @@ impl ShellOverlayHost {
             st.quick_settings.power_profile = ui_power_profile(profile);
         }
         st.quick_settings.battery = battery;
+        st.quick_settings.battery_time = battery_time;
         st.quick_settings.privacy = privacy;
     }
 
@@ -12055,6 +12067,7 @@ impl ShellOverlayHost {
                 secure: n.secure,
                 security: n.security,
                 connected: n.connected,
+                known: n.known,
             })
             .collect();
     }
@@ -12132,6 +12145,17 @@ impl ShellOverlayHost {
                     } else {
                         t("host-wifi-join-check-password")
                     });
+                } else if st
+                    .quick_settings
+                    .wifi_networks
+                    .iter()
+                    .any(|network| network.ssid == ssid && network.secure)
+                {
+                    // A protected network that turned its saved password
+                    // down asks for it, in place.
+                    let mut prompt = crate::shell::quick_settings::WifiPasswordPrompt::new(ssid);
+                    prompt.error = Some(t("host-wifi-join-check-password"));
+                    st.quick_settings.wifi_password = Some(prompt);
                 } else {
                     st.push_notification(
                         t_args(
@@ -12310,9 +12334,8 @@ impl ShellOverlayHost {
     }
 
     /// A drill-in is a compact continuation of Quick Settings, not a blank
-    /// fixed-height sheet. Its height follows the actual rows and grows only
-    /// when discovery gives us something to show, so an empty Wi-Fi scan,
-    /// Bluetooth list or VPN list never swallows the desktop. The one cap on
+    /// fixed-height sheet. Its height follows the actual rows; the root
+    /// page's follows its open section. The one cap on
     /// every page is the popover's available height in
     /// [`Self::quick_settings_rect`] — the bar above and the desktop inset
     /// below — the same budget the root page is fitted to; rows past it are
@@ -12324,25 +12347,6 @@ impl ShellOverlayHost {
         use crate::shell::quick_settings::QsLevel;
         match state.quick_settings.current_level() {
             QsLevel::Root => self.qs_root.preferred_height(&state.quick_settings),
-            QsLevel::Wifi | QsLevel::WifiDetails(_) => {
-                if state.quick_settings.wifi_password.is_some() {
-                    // Header, explanation, field/status and a comfortable
-                    // footer for Cancel/Connect.
-                    244.0
-                } else {
-                    // The Hotspot row, then discovery rows on the shared
-                    // list rhythm (`DrillInList`).
-                    let rows = state.quick_settings.wifi_networks.len();
-                    DrillInList::list_height(
-                        crate::shell::quick_settings::wifi::QuickSettingsWifiPane::LIST_TOP,
-                        rows,
-                    )
-                }
-            }
-            QsLevel::Bluetooth => {
-                let rows = state.quick_settings.bt_devices.len();
-                DrillInList::list_height(qs::LIST_TOP, rows)
-            }
             QsLevel::BluetoothDetails(_) => self
                 .device_fabric_call(DeviceFabricUiAction::Snapshot)
                 .map_or(216.0, |view| {
@@ -12350,10 +12354,6 @@ impl ShellOverlayHost {
                     (78.0 + 58.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
                         .clamp(216.0, 552.0)
                 }),
-            QsLevel::Vpn => {
-                let rows = state.quick_settings.vpns.len();
-                DrillInList::list_height(qs::LIST_TOP, rows)
-            }
             // `state` is the caller's shared borrow of this same chrome; the
             // host reads it again for the rows' own actions.
             QsLevel::Notifications => self.chrome.as_ref().map_or(0.0, |chrome| {
@@ -12483,52 +12483,6 @@ impl ShellOverlayHost {
     fn qs_root_scroll_fading(&self) -> bool {
         self.overlay_flags().quick_settings
             && self.qs_root.scroll_needs_frame(&self.overview_layout_theme)
-    }
-
-    /// Scroll the bounded Wi-Fi, Bluetooth, and VPN lists without allowing a
-    /// compact popover's wheel gesture to move the workspace underneath it.
-    fn handle_qs_drill_in_wheel(&mut self, delta: MouseScrollDelta, scale_factor: f64) -> bool {
-        let Some(chrome) = self.chrome.clone() else {
-            return false;
-        };
-        if !self
-            .last_cursor
-            .is_some_and(|point| self.quick_settings_rect().contains(point))
-        {
-            return false;
-        }
-        let state = chrome.borrow().quick_settings.clone();
-        let panel = self.quick_settings_rect();
-        let rows = match delta {
-            MouseScrollDelta::LineDelta(_, y) => -f64::from(y),
-            MouseScrollDelta::PixelDelta(position) => -position.y / (56.0 * scale_factor.max(0.1)),
-        };
-        match state.current_level() {
-            crate::shell::quick_settings::QsLevel::Wifi => {
-                let changed = self.qs_wifi_pane.scroll_wheel(panel, &state, rows);
-                if changed {
-                    chrome.borrow_mut().bump();
-                }
-                true
-            }
-            crate::shell::quick_settings::QsLevel::Bluetooth => {
-                let changed = self
-                    .qs_bluetooth_pane
-                    .scroll_wheel(panel, &state.bt_devices, rows);
-                if changed {
-                    chrome.borrow_mut().bump();
-                }
-                true
-            }
-            crate::shell::quick_settings::QsLevel::Vpn => {
-                let changed = self.qs_vpn_pane.scroll_wheel(panel, &state.vpns, rows);
-                if changed {
-                    chrome.borrow_mut().bump();
-                }
-                true
-            }
-            _ => false,
-        }
     }
 
     /// Keyboard navigation for the notification centre, available without
@@ -13159,15 +13113,6 @@ impl ShellOverlayHost {
                 rects.extend(self.now_playing_semantic_rects());
                 rects
             }
-            crate::shell::quick_settings::QsLevel::Wifi => self
-                .qs_wifi_pane
-                .semantic_rects(self.quick_settings_rect(), &state.quick_settings),
-            crate::shell::quick_settings::QsLevel::Bluetooth => self
-                .qs_bluetooth_pane
-                .semantic_rects(self.quick_settings_rect(), &state.quick_settings.bt_devices),
-            crate::shell::quick_settings::QsLevel::Vpn => self
-                .qs_vpn_pane
-                .semantic_rects(self.quick_settings_rect(), &state.quick_settings.vpns),
             crate::shell::quick_settings::QsLevel::Notifications => {
                 drop(state);
                 self.chrome.as_ref().map_or_else(Vec::new, |chrome| {
@@ -17091,6 +17036,8 @@ impl ShellOverlayHost {
             // keyboard navigation consistent with pointer navigation and
             // prevents a single mistaken key from losing the user's place in
             // Quick Settings.
+            // An open section closes before the panel does, as its
+            // chevron would.
             if st.quick_settings.wifi_password.take().is_some() {
                 st.bump();
             } else if !matches!(
@@ -17098,6 +17045,8 @@ impl ShellOverlayHost {
                 crate::shell::quick_settings::QsLevel::Root
             ) {
                 st.quick_settings_back();
+            } else if self.qs_root.close_section(&mut st.quick_settings) {
+                st.bump();
             } else {
                 st.overlays.quick_settings = false;
                 st.bump();
@@ -17894,23 +17843,10 @@ impl ShellOverlayHost {
         } else {
             self.qs_back_chevron_rect()
         };
-        // A passphrase prompt owns the pane while up, so
-        // its controls (including back) are tested first.
-        let prompt_up = self
-            .chrome
-            .as_ref()
-            .is_some_and(|c| c.borrow().quick_settings.wifi_password.is_some());
-        if prompt_up {
-            self.handle_wifi_password_prompt_click(p, back);
-            return;
-        }
         match current_level {
-            crate::shell::quick_settings::QsLevel::Wifi => self.handle_qs_wifi_click(p),
-            crate::shell::quick_settings::QsLevel::Bluetooth => self.handle_qs_bluetooth_click(p),
             crate::shell::quick_settings::QsLevel::BluetoothDetails(address) => {
                 self.handle_qs_bluetooth_details_click(p, address);
             }
-            crate::shell::quick_settings::QsLevel::Vpn => self.handle_qs_vpn_click(p),
             crate::shell::quick_settings::QsLevel::Clipboard => self.handle_qs_clipboard_click(p),
             crate::shell::quick_settings::QsLevel::Devices => {
                 self.handle_qs_device_fabric_click(p);
@@ -17923,166 +17859,167 @@ impl ShellOverlayHost {
         }
     }
 
-    fn handle_wifi_password_prompt_click(&mut self, p: Point, back: Rect) {
-        let (cancel, connect) = self.qs_password_button_rects();
-        if back.contains(p) || cancel.contains(p) {
-            self.cancel_wifi_password();
-        } else if connect.contains(p) {
-            self.submit_wifi_password();
-        }
-        // The field is always focused; nothing else on the pane can be
-        // focused while the prompt owns it.
-    }
-
-    fn finish_quick_settings_drill_in_click(chrome: &Chrome, outcome: DrillInOutcome) {
-        let mut state = chrome.borrow_mut();
-        match outcome {
-            DrillInOutcome::Back => state.quick_settings.pop_level(),
-            DrillInOutcome::Changed => {}
-            DrillInOutcome::None => return,
-        }
-        state.bump();
-    }
-
-    fn handle_qs_wifi_click(&mut self, p: Point) {
-        let Some(chrome) = self.chrome.clone() else {
-            return;
-        };
-        let outcome = self.qs_wifi_pane.handle_click(
-            p,
-            self.quick_settings_rect(),
-            &mut chrome.borrow_mut().quick_settings,
-            &crate::shell::search::providers::actions::ValidatedQsActions::new(
-                self.qs_actions.as_ref(),
-            ),
-        );
-        self.apply_qs_wifi_outcome(&chrome, outcome);
-    }
-
-    fn apply_qs_wifi_outcome(
-        &mut self,
-        chrome: &Chrome,
-        outcome: crate::shell::quick_settings::wifi::WifiPaneOutcome,
-    ) {
-        match outcome {
-            crate::shell::quick_settings::wifi::WifiPaneOutcome::RequestWifi(enabled) => {
-                self.dispatch_quick_settings_radio(os_actions::RadioChange::Wifi(enabled));
-            }
-            crate::shell::quick_settings::wifi::WifiPaneOutcome::DrillIn(outcome) => {
-                Self::finish_quick_settings_drill_in_click(chrome, outcome);
-            }
-            // Wi-Fi and the hotspot are both the radio snapshot.
-            crate::shell::quick_settings::wifi::WifiPaneOutcome::Reconcile => {
-                chrome.borrow_mut().bump();
-                self.qs_refresh.kick_field(QsField::Wifi);
-            }
-            crate::shell::quick_settings::wifi::WifiPaneOutcome::ActionFailed { action, error } => {
-                chrome.borrow_mut().push_notification(
-                    t_args("qs-action-failed", &[("action", action.into())]),
-                    t_args("qs-action-failed-refreshing", &[("error", error.into())]),
-                );
-                self.qs_refresh.kick_field(QsField::Wifi);
-            }
-            crate::shell::quick_settings::wifi::WifiPaneOutcome::JoinOpen(ssid) => {
-                let mut state = chrome.borrow_mut();
-                state.quick_settings.wifi_joining = Some(ssid.clone());
-                state.bump();
-                drop(state);
+    /// Carry out a press in the Wi-Fi section.
+    fn apply_qs_wifi_intent(&mut self, chrome: &Chrome, intent: WifiIntent) {
+        match intent {
+            WifiIntent::Join(ssid) => {
+                {
+                    let mut state = chrome.borrow_mut();
+                    state.quick_settings.wifi_password = None;
+                    state.quick_settings.wifi_joining = Some(ssid.clone());
+                    state.bump();
+                }
+                self.sync_wifi_password_input();
                 self.qs_refresh.kick_wifi_join(ssid, None, false);
             }
+            WifiIntent::AskPassword(ssid) => {
+                self.begin_wifi_password(&ssid);
+                // A password another of the person's devices shares joins
+                // without asking.
+                let _ = self.try_connect_with_shared_wifi_password();
+            }
+            WifiIntent::SubmitPassword => self.submit_wifi_password(),
+            WifiIntent::CancelPassword => self.cancel_wifi_password(),
         }
-        if self.qs_wifi_pane.take_rescan_request() {
-            let mut state = chrome.borrow_mut();
-            state.quick_settings.wifi_scanning = true;
-            state.quick_settings.wifi_scan_error = None;
-            state.bump();
-            drop(state);
-            self.qs_refresh.kick_wifi_rescan();
-        }
-        let _ = self.try_connect_with_shared_wifi_password();
     }
 
-    fn handle_qs_bluetooth_click(&mut self, p: Point) {
-        let Some(chrome) = self.chrome.clone() else {
-            return;
-        };
-        let panel = self.quick_settings_rect();
-        let mut state = chrome.borrow_mut();
-        let outcome = self.qs_bluetooth_pane.handle_click(
-            p,
-            panel,
-            &mut state.quick_settings.bt_devices,
-            &crate::shell::search::providers::actions::ValidatedQsActions::new(
-                self.qs_actions.as_ref(),
-            ),
+    /// Carry out a press in the Bluetooth section: connect or disconnect an
+    /// accessory, or open its use on the person's other devices.
+    fn apply_qs_bluetooth_intent(&mut self, chrome: &Chrome, intent: BluetoothIntent) {
+        let actions = crate::shell::search::providers::actions::ValidatedQsActions::new(
+            self.qs_actions.as_ref(),
         );
-        drop(state);
-        self.apply_qs_bluetooth_outcome(&chrome, outcome);
-    }
-
-    fn apply_qs_bluetooth_outcome(&mut self, chrome: &Chrome, outcome: BluetoothOutcome) {
-        let mut state = chrome.borrow_mut();
-        match outcome {
-            BluetoothOutcome::Back => state.quick_settings.pop_level(),
-            BluetoothOutcome::Changed => {
-                state.bump();
-                drop(state);
-                self.qs_refresh.kick_bt_devices();
-                return;
-            }
-            BluetoothOutcome::ActionFailed { device, error } => {
-                state.push_notification(
-                    t_args("qs-bluetooth-connect-failed", &[("device", device.into())]),
-                    t_args("qs-action-failed-refreshing", &[("error", error.into())]),
-                );
-                drop(state);
-                self.qs_refresh.kick_bt_devices();
-                return;
-            }
-            BluetoothOutcome::OpenDetails { address } => {
+        let (address, connect) = match intent {
+            BluetoothIntent::Details(address) => {
+                let mut state = chrome.borrow_mut();
                 state.quick_settings.push_level(
                     crate::shell::quick_settings::QsLevel::BluetoothDetails(address),
                 );
                 self.qs_device_fabric_start = 0;
                 self.qs_device_fabric_wheel_remainder = 0.0;
+                state.bump();
+                return;
             }
-            BluetoothOutcome::None => return,
+            BluetoothIntent::Connect(address) => (address, true),
+            BluetoothIntent::Disconnect(address) => (address, false),
+        };
+        let result = if connect {
+            actions.connect_bluetooth(&address)
+        } else {
+            actions.disconnect_bluetooth(&address)
+        };
+        {
+            let mut state = chrome.borrow_mut();
+            let name = state
+                .quick_settings
+                .bt_devices
+                .iter()
+                .find(|device| device.address == address)
+                .map_or_else(|| address.clone(), |device| device.name.clone());
+            match result {
+                Ok(()) => {
+                    if let Some(device) = state
+                        .quick_settings
+                        .bt_devices
+                        .iter_mut()
+                        .find(|device| device.address == address)
+                    {
+                        device.connected = connect;
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(target: "tilo::os_actions", %error, connect, "Bluetooth accessory change failed");
+                    state.push_notification(
+                        t_args(
+                            if connect {
+                                "qs-bluetooth-connect-failed"
+                            } else {
+                                "qs-bluetooth-disconnect-failed"
+                            },
+                            &[("device", name.into())],
+                        ),
+                        t_args("qs-action-failed-refreshing", &[("error", error.into())]),
+                    );
+                }
+            }
+            state.bump();
         }
-        state.bump();
+        // The accessory list is BlueZ's: read it back either way.
+        self.qs_refresh.kick_bt_devices();
     }
 
-    fn apply_qs_vpn_outcome(&mut self, chrome: &Chrome, outcome: VpnPaneOutcome) {
-        match outcome {
-            VpnPaneOutcome::DrillIn(outcome) => {
-                Self::finish_quick_settings_drill_in_click(chrome, outcome);
+    /// Turn a VPN profile on or off, then read the profiles back.
+    fn apply_qs_vpn_change(&mut self, chrome: &Chrome, name: &str, enabled: bool) {
+        let result = crate::shell::search::providers::actions::ValidatedQsActions::new(
+            self.qs_actions.as_ref(),
+        )
+        .set_vpn_connection(name, enabled);
+        {
+            let mut state = chrome.borrow_mut();
+            match result {
+                Ok(()) => {
+                    if let Some(profile) = state
+                        .quick_settings
+                        .vpns
+                        .iter_mut()
+                        .find(|profile| profile.name == name)
+                    {
+                        profile.active = enabled;
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(target: "tilo::os_actions", %error, "VPN change failed");
+                    state.push_notification(
+                        t_args("qs-vpn-change-failed", &[("profile", name.into())]),
+                        t_args("qs-action-failed-refreshing", &[("error", error.into())]),
+                    );
+                }
             }
-            VpnPaneOutcome::Reconcile => {
-                chrome.borrow_mut().bump();
-                self.qs_refresh.kick_field(QsField::Vpn);
-            }
-            VpnPaneOutcome::ActionFailed { profile, error } => {
-                chrome.borrow_mut().push_notification(
-                    t_args("qs-vpn-change-failed", &[("profile", profile.into())]),
-                    t_args("qs-action-failed-refreshing", &[("error", error.into())]),
-                );
-                self.qs_refresh.kick_field(QsField::Vpn);
-            }
+            state.bump();
         }
+        self.qs_refresh.kick_field(QsField::Vpn);
     }
 
-    fn handle_qs_vpn_click(&mut self, p: Point) {
+    /// The open Wi-Fi section scans for networks when it opens and again
+    /// every [`QS_WIFI_RESCAN`] while it stays open with the radio on.
+    fn rescan_open_wifi_section(&mut self, now: Instant) {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        let outcome = self.qs_vpn_pane.handle_click(
-            p,
-            self.quick_settings_rect(),
-            &mut chrome.borrow_mut().quick_settings.vpns,
-            &crate::shell::search::providers::actions::ValidatedQsActions::new(
-                self.qs_actions.as_ref(),
-            ),
-        );
-        self.apply_qs_vpn_outcome(&chrome, outcome);
+        let wanted = {
+            let state = chrome.borrow();
+            state.overlays.quick_settings
+                && state.quick_settings.current_level()
+                    == &crate::shell::quick_settings::QsLevel::Root
+                && state.quick_settings.section
+                    == Some(crate::shell::quick_settings::QsSection::Wifi)
+                && state.quick_settings.wifi
+                && !state.quick_settings.radio_change_pending
+        };
+        if !wanted {
+            self.qs_wifi_scanned_at = None;
+            return;
+        }
+        if self
+            .qs_wifi_scanned_at
+            .is_some_and(|at| now.saturating_duration_since(at) < QS_WIFI_RESCAN)
+        {
+            return;
+        }
+        self.qs_wifi_scanned_at = Some(now);
+        {
+            let mut state = chrome.borrow_mut();
+            state.quick_settings.wifi_scanning = true;
+            state.quick_settings.wifi_scan_error = None;
+            state.bump();
+        }
+        self.qs_refresh.kick_wifi_rescan();
+    }
+
+    /// When the open Wi-Fi section scans next.
+    fn qs_wifi_rescan_deadline(&self) -> Option<Instant> {
+        self.qs_wifi_scanned_at
+            .and_then(|at| at.checked_add(QS_WIFI_RESCAN))
     }
 
     fn handle_qs_notifications_click(&mut self, p: Point) {
@@ -18801,7 +18738,10 @@ impl ShellOverlayHost {
             let mut st = chrome.borrow_mut();
             self.qs_root.handle_click(p, panel, &mut st.quick_settings)
         };
-        self.qs_navigation_release_pending |= matches!(action, RootAction::Enter(_));
+        // A press that changes what is under the pointer (a page, a section
+        // opening) owns its release.
+        self.qs_navigation_release_pending |=
+            matches!(action, RootAction::Enter(_) | RootAction::SectionOpened(_));
         self.apply_quick_settings_root_action(action, &chrome);
     }
 
@@ -18855,77 +18795,6 @@ impl ShellOverlayHost {
             let consumed = self.handle_qs_device_fabric_keyboard(logical_key);
             *handled = consumed;
             return consumed;
-        }
-        if matches!(
-            history_level,
-            Some(crate::shell::quick_settings::QsLevel::Wifi)
-        ) {
-            let panel = self.quick_settings_rect();
-            let outcome = {
-                let mut state = chrome.borrow_mut();
-                self.qs_wifi_pane.handle_key(
-                    logical_key,
-                    backwards,
-                    panel,
-                    &mut state.quick_settings,
-                    self.qs_actions.as_ref(),
-                )
-            };
-            let Some(outcome) = outcome else {
-                return false;
-            };
-            // Focus-only movement also needs a frame even though its typed
-            // pane outcome deliberately carries no device mutation.
-            chrome.borrow_mut().bump();
-            self.apply_qs_wifi_outcome(&chrome, outcome);
-            *handled = true;
-            return true;
-        }
-        if matches!(
-            history_level,
-            Some(crate::shell::quick_settings::QsLevel::Bluetooth)
-        ) {
-            let panel = self.quick_settings_rect();
-            let outcome = {
-                let mut state = chrome.borrow_mut();
-                self.qs_bluetooth_pane.handle_key(
-                    logical_key,
-                    backwards,
-                    panel,
-                    &mut state.quick_settings.bt_devices,
-                    self.qs_actions.as_ref(),
-                )
-            };
-            let Some(outcome) = outcome else {
-                return false;
-            };
-            chrome.borrow_mut().bump();
-            self.apply_qs_bluetooth_outcome(&chrome, outcome);
-            *handled = true;
-            return true;
-        }
-        if matches!(
-            history_level,
-            Some(crate::shell::quick_settings::QsLevel::Vpn)
-        ) {
-            let panel = self.quick_settings_rect();
-            let outcome = {
-                let mut state = chrome.borrow_mut();
-                self.qs_vpn_pane.handle_key(
-                    logical_key,
-                    backwards,
-                    panel,
-                    &mut state.quick_settings.vpns,
-                    self.qs_actions.as_ref(),
-                )
-            };
-            let Some(outcome) = outcome else {
-                return false;
-            };
-            chrome.borrow_mut().bump();
-            self.apply_qs_vpn_outcome(&chrome, outcome);
-            *handled = true;
-            return true;
         }
         let at_root = {
             let state = chrome.borrow();
@@ -19152,28 +19021,55 @@ impl ShellOverlayHost {
         match action {
             RootAction::None => {}
             RootAction::Enter(level) => {
-                match level {
-                    crate::shell::quick_settings::QsLevel::Wifi => {
-                        self.qs_wifi_pane.reset_focus();
-                        let mut st = chrome.borrow_mut();
-                        st.quick_settings.wifi_scanning = true;
-                        st.quick_settings.wifi_scan_error = None;
-                        st.bump();
-                        drop(st);
-                        self.qs_refresh.kick_wifi_networks();
-                    }
-                    crate::shell::quick_settings::QsLevel::Bluetooth => {
-                        self.qs_bluetooth_pane.reset_focus();
-                        self.qs_refresh.kick_bt_devices();
-                    }
-                    crate::shell::quick_settings::QsLevel::Vpn => {
-                        self.qs_vpn_pane.reset_focus();
-                    }
-                    _ => {}
-                }
                 let mut st = chrome.borrow_mut();
                 st.quick_settings.push_level(level);
                 st.bump();
+            }
+            RootAction::SectionOpened(section) => {
+                // What the section lists is read as it opens.
+                match section {
+                    crate::shell::quick_settings::QsSection::Wifi => {
+                        // The first scan starts now; the section keeps
+                        // scanning while it is open.
+                        self.qs_wifi_scanned_at = None;
+                        self.rescan_open_wifi_section(Instant::now());
+                    }
+                    crate::shell::quick_settings::QsSection::Bluetooth => {
+                        self.qs_refresh.kick_bt_devices();
+                    }
+                    crate::shell::quick_settings::QsSection::Vpn => {
+                        self.qs_refresh.kick_field(QsField::Vpn);
+                    }
+                    crate::shell::quick_settings::QsSection::Battery => {
+                        self.qs_refresh.kick_field(QsField::Power);
+                    }
+                    crate::shell::quick_settings::QsSection::Sound => {
+                        if let Ok(view) = self.device_fabric_call(DeviceFabricUiAction::Snapshot) {
+                            chrome.borrow_mut().quick_settings.sound_outputs =
+                                sound_outputs_of(&view);
+                        }
+                    }
+                }
+                chrome.borrow_mut().bump();
+            }
+            RootAction::Wifi(intent) => self.apply_qs_wifi_intent(chrome, intent),
+            RootAction::Bluetooth(intent) => self.apply_qs_bluetooth_intent(chrome, intent),
+            RootAction::Vpn { name, enabled } => self.apply_qs_vpn_change(chrome, &name, enabled),
+            RootAction::SoundOutput(node_id) => {
+                // The same route the Devices page takes; its answer is the
+                // outputs as they stand now.
+                match self.device_fabric_call(DeviceFabricUiAction::RouteLocalAudio { node_id }) {
+                    Ok(view) => {
+                        let mut st = chrome.borrow_mut();
+                        st.quick_settings.sound_outputs = sound_outputs_of(&view);
+                        st.bump();
+                    }
+                    Err(error) => {
+                        let mut st = chrome.borrow_mut();
+                        st.push_notification(t("host-fabric-action-failed"), error);
+                        st.bump();
+                    }
+                }
             }
             RootAction::Changed(pending) => {
                 {
@@ -19191,19 +19087,20 @@ impl ShellOverlayHost {
             RootAction::LayoutChanged => {
                 chrome.borrow_mut().bump();
             }
-            RootAction::OpenSettings => {
+            RootAction::OpenSettings(link) => {
                 // This is the device settings affordance, not workspace
-                // sharing settings. Settings opens on the page the person
-                // used last.
-                self.open_settings(chrome, None);
+                // sharing settings. Without a link Settings opens on the
+                // page the person used last.
+                self.open_settings(chrome, link);
             }
-            RootAction::OpenPrivacy => {
-                // The same destination as the `settings.privacy.open` action:
-                // the active workspace's app grants and enforced access.
-                let mut st = chrome.borrow_mut();
-                st.quick_settings.nav_stack = vec![crate::shell::quick_settings::QsLevel::Root];
-                st.open_workspace_settings(tilo_desktop::workspace_settings::WsTab::Permissions);
-                st.bump();
+            RootAction::Lock => {
+                {
+                    let mut st = chrome.borrow_mut();
+                    st.overlays.quick_settings = false;
+                    st.quick_settings.nav_stack = vec![crate::shell::quick_settings::QsLevel::Root];
+                    st.bump();
+                }
+                self.execute_session_action(os_actions::SessionAction::Lock);
             }
             RootAction::OpenPowerMenu => {
                 let mut st = chrome.borrow_mut();
@@ -20733,42 +20630,6 @@ const OVERVIEW_PANEL_START_SCALE: f64 = 0.97;
 const OVERVIEW_SCROLL_FADE_PX: f64 = 40.0;
 
 fn focus_quick_settings_accessibility(host: &mut ShellOverlayHost, child_path: &[usize]) -> bool {
-    let drill_state = host.chrome.as_ref().and_then(|chrome| {
-        let state = chrome.borrow();
-        matches!(
-            state.quick_settings.current_level(),
-            crate::shell::quick_settings::QsLevel::Wifi
-                | crate::shell::quick_settings::QsLevel::Bluetooth
-                | crate::shell::quick_settings::QsLevel::Vpn
-        )
-        .then(|| state.quick_settings.clone())
-    });
-    if let Some(drill_state) = drill_state {
-        let focused = match drill_state.current_level() {
-            crate::shell::quick_settings::QsLevel::Wifi => host
-                .qs_wifi_pane
-                .focus_accessibility_path(child_path, host.quick_settings_rect(), &drill_state),
-            crate::shell::quick_settings::QsLevel::Bluetooth => {
-                host.qs_bluetooth_pane.focus_accessibility_path(
-                    child_path,
-                    host.quick_settings_rect(),
-                    &drill_state.bt_devices,
-                )
-            }
-            crate::shell::quick_settings::QsLevel::Vpn => {
-                host.qs_vpn_pane.focus_accessibility_path(
-                    child_path,
-                    host.quick_settings_rect(),
-                    &drill_state.vpns,
-                )
-            }
-            _ => false,
-        };
-        if focused && let Some(chrome) = host.chrome.as_ref() {
-            chrome.borrow_mut().bump();
-        }
-        return focused;
-    }
     let Some(chrome) = host.chrome.clone() else {
         return false;
     };
@@ -21069,6 +20930,7 @@ impl Widget for ShellOverlayHost {
         }
         let pairing_dirty = self.pairing.pump(doc, path);
         let radio_dirty = self.poll_quick_settings_radio();
+        self.rescan_open_wifi_section(Instant::now());
         let quick_settings_dirty = self.apply_quick_settings_readings();
         let projection_open = self.overlay_flags().projection;
         let display_storage_dirty =
@@ -22115,8 +21977,7 @@ impl Widget for ShellOverlayHost {
             return;
         }
         if let WindowEvent::MouseWheel { delta, .. } = event
-            && (self.handle_qs_drill_in_wheel(*delta, ctx.scale_factor)
-                || self.handle_qs_notification_wheel(*delta, ctx.scale_factor)
+            && (self.handle_qs_notification_wheel(*delta, ctx.scale_factor)
                 || self.handle_qs_clipboard_wheel(*delta, ctx.scale_factor)
                 || self.handle_qs_device_fabric_wheel(*delta, ctx.scale_factor))
         {
@@ -22671,35 +22532,6 @@ impl Widget for ShellOverlayHost {
                             );
                         } else if matches!(
                             state.quick_settings.current_level(),
-                            crate::shell::quick_settings::QsLevel::Wifi
-                                | crate::shell::quick_settings::QsLevel::WifiDetails(_)
-                        ) {
-                            root.children.push(
-                                if let Some(prompt) = state.quick_settings.wifi_password.as_ref() {
-                                    self.wifi_password_accessibility(prompt)
-                                } else {
-                                    self.qs_wifi_pane
-                                        .accessibility_snapshot(&state.quick_settings)
-                                },
-                            );
-                        } else if matches!(
-                            state.quick_settings.current_level(),
-                            crate::shell::quick_settings::QsLevel::Bluetooth
-                        ) {
-                            root.children.push(
-                                self.qs_bluetooth_pane
-                                    .accessibility_snapshot(&state.quick_settings.bt_devices),
-                            );
-                        } else if matches!(
-                            state.quick_settings.current_level(),
-                            crate::shell::quick_settings::QsLevel::Vpn
-                        ) {
-                            root.children.push(
-                                self.qs_vpn_pane
-                                    .accessibility_snapshot(&state.quick_settings.vpns),
-                            );
-                        } else if matches!(
-                            state.quick_settings.current_level(),
                             crate::shell::quick_settings::QsLevel::Devices
                         ) {
                             let view = self
@@ -22757,6 +22589,13 @@ impl Widget for ShellOverlayHost {
                         } else {
                             root.children
                                 .push(self.qs_root.accessibility_snapshot(&state.quick_settings));
+                            // The inline password, while it is asked for,
+                            // holds the keyboard like a sheet.
+                            if self.wifi_password_prompt_up()
+                                && let Some(prompt) = state.quick_settings.wifi_password.as_ref()
+                            {
+                                root.children.push(self.wifi_password_accessibility(prompt));
+                            }
                         }
                     }
                 }
@@ -22926,28 +22765,8 @@ impl Widget for ShellOverlayHost {
                 .collaborators_overlay
                 .accessibility_rect_for_path(child_path),
             LayerId::QuickSettings => {
-                let drill_in_action = self.chrome.as_ref().and_then(|chrome| {
-                    let state = chrome.borrow();
-                    if matches!(child_path, [0]) {
-                        return Some(self.quick_settings_rect());
-                    }
-                    match state.quick_settings.current_level() {
-                        crate::shell::quick_settings::QsLevel::Wifi => {
-                            self.qs_wifi_pane.accessibility_rect_for_path(
-                                self.quick_settings_rect(),
-                                child_path,
-                                &state.quick_settings,
-                            )
-                        }
-                        crate::shell::quick_settings::QsLevel::Bluetooth => self
-                            .qs_bluetooth_pane
-                            .accessibility_rect_for_path(self.quick_settings_rect(), child_path),
-                        crate::shell::quick_settings::QsLevel::Vpn => self
-                            .qs_vpn_pane
-                            .accessibility_rect_for_path(self.quick_settings_rect(), child_path),
-                        _ => None,
-                    }
-                });
+                let drill_in_action = (self.chrome.is_some() && matches!(child_path, [0]))
+                    .then(|| self.quick_settings_rect());
                 let notification_action = self.chrome.as_ref().and_then(|chrome| {
                     if !matches!(
                         chrome.borrow().quick_settings.current_level(),
@@ -23249,7 +23068,7 @@ impl Widget for ShellOverlayHost {
 }
 
 impl ShellOverlayHost {
-    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 18] {
+    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 19] {
         // Overview and workspace-switch motion is animation demand, so the
         // frame clock paces it. A 1 ms deadline here woke the loop on every
         // millisecond and still painted nothing until cadence was due.
@@ -23314,6 +23133,7 @@ impl ShellOverlayHost {
                     })
                     .flatten(),
             ),
+            ("quick-settings-wifi-scan", self.qs_wifi_rescan_deadline()),
             ("window-previews", self.window_previews_wake_deadline(now)),
             (
                 "strip-indicators",
@@ -23449,7 +23269,9 @@ impl ShellOverlayHost {
         // widget's animation is in flight. `tick_*` clear their own flags once
         // the duration has elapsed, so at rest this returns false and the
         // event loop can go idle.
-        let qs_in_flight = self.qs_motion.is_animating(now) || self.qs_root_scroll_fading();
+        let qs_in_flight = self.qs_motion.is_animating(now)
+            || self.qs_root.is_animating(now)
+            || self.qs_root_scroll_fading();
         let ws_settings_in_flight = self.workspace_settings_overlay.is_animating(now);
         let palette_in_flight = self.palette_transition.is_moving(now);
         let layers_in_flight = self.layers.is_animating(now);
@@ -24992,6 +24814,29 @@ impl ShellOverlayHost {
             .as_ref()
             .map(|chrome| chrome.borrow().quick_settings.nav_stack.clone())
             .unwrap_or_default();
+        let now = ui::time::now();
+        let was_visible = self.qs_motion.is_visible(now);
+        if let Some(chrome) = self.chrome.clone() {
+            let mut st = chrome.borrow_mut();
+            if !flags.quick_settings && !was_visible && st.quick_settings.section.is_some() {
+                // A panel that has gone opens next time with its sections
+                // closed.
+                st.quick_settings.section = None;
+                st.quick_settings.wifi_password = None;
+            }
+            if was_visible {
+                // An open section grows the panel on the same disclosure
+                // motion the panel's height follows below.
+                self.qs_root.follow_sections(
+                    &st.quick_settings,
+                    theme.motion(),
+                    self.input_source,
+                    now,
+                );
+            } else {
+                self.qs_root.settle_sections(&st.quick_settings);
+            }
+        }
         let height = self.quick_settings_rect().height();
         self.qs_motion.follow(&qs_motion::QsFrame {
             open: flags.quick_settings,
@@ -24999,7 +24844,7 @@ impl ShellOverlayHost {
             height,
             motion: theme.motion(),
             source: self.input_source,
-            now: ui::time::now(),
+            now,
         });
     }
 
@@ -25029,10 +24874,9 @@ impl ShellOverlayHost {
     /// Counts the root page shows on its Devices and Clipboard rows. Read
     /// once per opening: both panes re-read their full lists on entry.
     fn refresh_quick_settings_summaries(&self) {
-        let personal_devices = self
-            .device_fabric_call(DeviceFabricUiAction::Snapshot)
-            .ok()
-            .map(|view| view.devices.len());
+        let fabric = self.device_fabric_call(DeviceFabricUiAction::Snapshot).ok();
+        let personal_devices = fabric.as_ref().map(|view| view.devices.len());
+        let sound_outputs = fabric.as_ref().map(sound_outputs_of);
         let clipboard_items = self
             .clipboard_manager_call(ClipboardManagerAction::Snapshot)
             .len();
@@ -25040,6 +24884,12 @@ impl ShellOverlayHost {
             let mut st = chrome.borrow_mut();
             st.quick_settings.personal_devices = personal_devices;
             st.quick_settings.clipboard_items = clipboard_items;
+            st.quick_settings.notification_count = st.notification_history().len();
+            // Without a device fabric (a capture, a test) the outputs stay
+            // as they are.
+            if let Some(outputs) = sound_outputs {
+                st.quick_settings.sound_outputs = outputs;
+            }
         }
     }
 
@@ -28155,6 +28005,12 @@ impl ShellOverlayHost {
         // Root level renders the action row + sliders + toggles; Wifi/
         // Bluetooth levels replace the body with a header + list.
         if !self.draw_quick_settings_drill_in(scene, transform, text_renderer, theme, &qs) {
+            self.sync_wifi_password_input();
+            let ready = qs
+                .wifi_password
+                .as_ref()
+                .is_some_and(|prompt| prompt.can_submit(self.wifi_password_input.value()));
+            self.qs_root.set_wifi_password_ready(ready);
             self.qs_root.draw(
                 scene,
                 transform,
@@ -28164,6 +28020,35 @@ impl ShellOverlayHost {
                 self.last_cursor,
                 &qs,
             );
+            // The inline password's field is the host's secret input, drawn
+            // where the Wi-Fi section leaves room for it.
+            if let Some(prompt) = qs.wifi_password.as_ref()
+                && let Some(field) = self.qs_root.wifi_password_field_rect(&qs)
+            {
+                scene.push_layer(
+                    Fill::NonZero,
+                    BlendMode::default(),
+                    1.0,
+                    transform,
+                    &self.qs_root.shown_rect(),
+                );
+                self.draw_qs_wifi_password_field(scene, transform, text_renderer, theme, field);
+                if prompt.error.is_some() {
+                    // A rejected password outlines its field in the danger
+                    // colour, over the field's own edge.
+                    scene.stroke(
+                        &vello::kurbo::Stroke::new(1.5),
+                        transform,
+                        theme.tokens.colors.semantic.danger,
+                        None,
+                        &RoundedRect::from_rect(
+                            field,
+                            ui::chrome::ChromeRole::Control.radius(theme, field.height()),
+                        ),
+                    );
+                }
+                scene.pop_layer();
+            }
         }
     }
 
@@ -28225,55 +28110,8 @@ impl ShellOverlayHost {
         qs: &crate::shell::chrome_state::QuickSettingsState,
     ) -> bool {
         match qs.current_level() {
-            crate::shell::quick_settings::QsLevel::Wifi
-            | crate::shell::quick_settings::QsLevel::WifiDetails(_) => {
-                if let Some(prompt) = qs.wifi_password.as_ref() {
-                    self.draw_qs_wifi_password(scene, transform, text_renderer, theme, prompt);
-                } else {
-                    let panel = self.quick_settings_rect();
-                    let cursor = self.last_cursor;
-                    self.qs_wifi_pane.draw(
-                        scene,
-                        transform,
-                        text_renderer,
-                        theme,
-                        panel,
-                        cursor,
-                        qs,
-                    );
-                }
-                true
-            }
-            crate::shell::quick_settings::QsLevel::Bluetooth => {
-                let panel = self.quick_settings_rect();
-                let cursor = self.last_cursor;
-                self.qs_bluetooth_pane.draw(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    panel,
-                    cursor,
-                    &qs.bt_devices,
-                );
-                true
-            }
             crate::shell::quick_settings::QsLevel::BluetoothDetails(address) => {
                 self.draw_qs_bluetooth_details(scene, transform, text_renderer, theme, qs, address);
-                true
-            }
-            crate::shell::quick_settings::QsLevel::Vpn => {
-                let panel = self.quick_settings_rect();
-                let cursor = self.last_cursor;
-                self.qs_vpn_pane.draw(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    panel,
-                    cursor,
-                    &qs.vpns,
-                );
                 true
             }
             crate::shell::quick_settings::QsLevel::Notifications => {
@@ -30034,87 +29872,40 @@ impl ShellOverlayHost {
         claimed
     }
 
-    /// Geometry of the passphrase prompt's controls. Derived rather than
-    /// stored so the hit tests and the paint cannot drift apart — the
-    /// same contract [`Self::qs_back_chevron_rect`] follows.
+    /// The inline passphrase field, where the Wi-Fi section leaves room for
+    /// it; empty while it is not shown. Derived rather than stored so the
+    /// hit tests and the paint cannot drift apart.
     fn qs_password_field_rect(&self) -> Rect {
-        let r = self.quick_settings_rect();
-        let y = r.y0 + 104.0;
-        Rect::new(r.x0 + 16.0, y, r.x1 - 16.0, y + 40.0)
+        self.chrome
+            .as_ref()
+            .and_then(|chrome| {
+                self.qs_root
+                    .wifi_password_field_rect(&chrome.borrow().quick_settings)
+            })
+            .unwrap_or(Rect::ZERO)
     }
 
-    /// Cancel + Connect, anchored to the pane's foot rather than stacked
-    /// under the field — the popover's height is set by the network list
-    /// this pane replaces, and the prompt only needs about a third of it.
+    /// Cancel and Connect under the inline passphrase.
     fn qs_password_button_rects(&self) -> (Rect, Rect) {
-        let r = self.quick_settings_rect();
-        let h = 36.0_f64;
-        let gap = 10.0_f64;
-        let y = r.y1 - 16.0 - h;
-        let w = (r.width() - 32.0 - gap) / 2.0;
-        let cancel = Rect::new(r.x0 + 16.0, y, r.x0 + 16.0 + w, y + h);
-        let connect = Rect::new(r.x1 - 16.0 - w, y, r.x1 - 16.0, y + h);
-        (cancel, connect)
+        self.chrome
+            .as_ref()
+            .and_then(|chrome| {
+                self.qs_root
+                    .wifi_password_button_rects(&chrome.borrow().quick_settings)
+            })
+            .unwrap_or((Rect::ZERO, Rect::ZERO))
     }
 
-    /// The "join this protected network" prompt.
-    fn draw_qs_wifi_password(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        prompt: &crate::shell::quick_settings::WifiPasswordPrompt,
-    ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let rect = self.quick_settings_rect();
-
-        // The header names the network, because by the time the keyboard
-        // has focus the list that named it is gone.
-        self.draw_qs_drill_in_header(scene, transform, text_renderer, theme, &prompt.ssid);
-
-        let sub_y = rect.y0 + 66.0;
-        let lock_box = Rect::new(rect.x0 + 16.0, sub_y, rect.x0 + 32.0, sub_y + 16.0);
-        ui::icons::draw_icon(
-            scene,
-            transform,
-            lock_box,
-            ui::icons::Icon::Shield,
-            colors.text_dim,
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
-        text_renderer.draw_style(
-            scene,
-            &t("qs-wifi-protected"),
-            colors.text_dim,
-            transform.pre_translate((lock_box.x1 + 8.0, sub_y + 1.0).into()),
-            None,
-            &tokens
-                .typography
-                .style(TextRole::Caption)
-                .with_weight(TextWeight::Medium),
-        );
-
-        let field =
-            self.draw_qs_wifi_password_field(scene, transform, text_renderer, theme, prompt);
-        Self::draw_qs_wifi_password_status(scene, transform, text_renderer, theme, prompt, field);
-        self.draw_qs_wifi_password_buttons(scene, transform, text_renderer, theme, prompt);
-    }
-
-    /// The passphrase field, hidden until its show/hide control is used,
-    /// outlined in the danger colour after a rejection. Returns the field's
-    /// rect so [`Self::draw_qs_wifi_password_status`] can anchor under it.
+    /// The passphrase field, hidden until its show/hide control is used.
+    /// Its status line and buttons are the Wi-Fi section's.
     fn draw_qs_wifi_password_field(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        prompt: &crate::shell::quick_settings::WifiPasswordPrompt,
-    ) -> Rect {
-        let field = self.qs_password_field_rect();
-        self.sync_wifi_password_input();
+        field: Rect,
+    ) {
         self.wifi_password_input.apply_layout_external(field);
         self.wifi_password_input.draw(
             scene,
@@ -30123,100 +29914,6 @@ impl ShellOverlayHost {
             theme,
             &PresenceCtx::default(),
         );
-        if prompt.error.is_some() {
-            let outline = RoundedRect::from_rect(
-                field,
-                ui::chrome::ChromeRole::Control.radius(theme, field.height()),
-            );
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.5),
-                transform,
-                theme.tokens.colors.semantic.danger,
-                None,
-                &outline,
-            );
-        }
-        field
-    }
-
-    /// Error/connecting status line under the passphrase field.
-    fn draw_qs_wifi_password_status(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        prompt: &crate::shell::quick_settings::WifiPasswordPrompt,
-        field: Rect,
-    ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        // A failed attempt says so where the eye already is, rather than
-        // as a toast that would outlive the prompt.
-        if let Some(err) = prompt.error.as_ref() {
-            text_renderer.draw_style(
-                scene,
-                err,
-                colors.semantic.danger,
-                transform.pre_translate((field.x0 + 2.0, field.y1 + 8.0).into()),
-                None,
-                &tokens
-                    .typography
-                    .style(TextRole::Caption)
-                    .with_weight(TextWeight::Medium),
-            );
-        } else if prompt.connecting {
-            text_renderer.draw_style(
-                scene,
-                &t("qs-connecting"),
-                colors.text_dim,
-                transform.pre_translate((field.x0 + 2.0, field.y1 + 8.0).into()),
-                None,
-                &tokens
-                    .typography
-                    .style(TextRole::Caption)
-                    .with_weight(TextWeight::Medium),
-            );
-        }
-    }
-
-    /// Cancel + Connect buttons, anchored to the pane's foot.
-    fn draw_qs_wifi_password_buttons(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        prompt: &crate::shell::quick_settings::WifiPasswordPrompt,
-    ) {
-        let (cancel, connect) = self.qs_password_button_rects();
-        Button::paint(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            &ButtonFace::new(cancel, &t("portal-cancel"))
-                .hovered(self.last_cursor.is_some_and(|point| cancel.contains(point))),
-        );
-        Button::paint(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            &ButtonFace::new(
-                connect,
-                &if prompt.connecting {
-                    t("qs-connecting")
-                } else {
-                    t("portal-connect")
-                },
-            )
-            .role(ButtonRole::Primary)
-            .disabled(!prompt.can_submit(self.wifi_password_input.value()))
-            .hovered(
-                self.last_cursor
-                    .is_some_and(|point| connect.contains(point)),
-            ),
-        );
     }
 
     /// Root slider geometry exposed for integration click routing tests.
@@ -30224,35 +29921,14 @@ impl ShellOverlayHost {
         QuickSettingsRoot::slider_geometry(self.quick_settings_rect(), i)
     }
 
-    /// Root toggle geometry exposed for integration click routing tests.
-    pub fn quick_settings_toggle_geometry(&self, i: usize) -> Rect {
-        QuickSettingsRoot::toggle_geometry(self.quick_settings_rect(), i)
-    }
-
-    /// Wi-Fi drill-in discovery row `index`, exposed for integration click
-    /// routing tests so they read the list's rhythm instead of restating it.
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "the list is laid out with index + 1 rows just before it is indexed"
-    )]
-    pub fn quick_settings_wifi_row_rect_for_tests(&self, index: usize) -> Rect {
-        let mut list = DrillInList::default();
-        list.layout_from(
-            self.quick_settings_rect(),
-            index.saturating_add(1),
-            crate::shell::quick_settings::wifi::QuickSettingsWifiPane::LIST_TOP,
-        );
-        list.rows()[index]
-    }
-
-    /// Root power-profile geometry exposed for integration click routing tests.
-    pub fn quick_settings_power_profile_geometry(&self) -> Rect {
-        let panel = self.quick_settings_rect();
-        let Some(chrome) = self.chrome.as_ref() else {
-            return Rect::ZERO;
-        };
-        self.qs_root
-            .power_geometry(panel, &chrome.borrow().quick_settings)
+    /// The Quick Settings target named `name` (`quick_settings_network`,
+    /// `quick_settings_network_details`, `quick_settings_battery`, …) where
+    /// it is on screen now, for integration click routing tests.
+    pub fn quick_settings_target(&self, name: &str) -> Option<Rect> {
+        self.quick_settings_semantic_rects()
+            .into_iter()
+            .find(|(target, _)| target == name)
+            .map(|(_, rect)| rect)
     }
 }
 
@@ -30401,7 +30077,7 @@ pub(crate) fn install_fixture_search_provider(
     host.search_registry.register_or_replace(provider);
 }
 
-/// The quick settings panel's theme-resolved size: the utility Panel width
+/// The quick settings panel's theme-resolved size: the list Panel width
 /// grown with the text, and the floating Panel margin it keeps inside its
 /// display.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -30413,7 +30089,9 @@ struct QsPanelMetrics {
 impl QsPanelMetrics {
     fn for_theme(theme: &Theme) -> Self {
         Self {
-            width: f64::from(theme.tokens.metrics.panel_width_utility * theme.text_growth()),
+            // A list Panel's width: two tiles side by side keep their
+            // names whole.
+            width: f64::from(theme.tokens.metrics.panel_width_list * theme.text_growth()),
             margin: ui::widget::floating_surface::viewport_margin(theme),
         }
     }

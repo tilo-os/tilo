@@ -399,6 +399,7 @@ mod tests {
                 os_actions::WifiSecurity::Open
             },
             connected,
+            known: false,
         }
     }
 

@@ -427,7 +427,10 @@ mod tests {
                 .any(|(name, _)| name == "now_playing_play_pause")
         );
 
-        chrome.borrow_mut().quick_settings.push_level(QsLevel::Wifi);
+        chrome
+            .borrow_mut()
+            .quick_settings
+            .push_level(QsLevel::Clipboard);
         assert!(
             host.now_playing_view().is_none(),
             "drill-ins replace the card"

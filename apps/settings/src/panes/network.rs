@@ -780,6 +780,7 @@ impl SampleNetwork {
                 secure: true,
                 security: os_actions::WifiSecurity::Wpa3,
                 connected: true,
+                known: false,
             },
             WifiNetworkInfo {
                 ssid: "Cafe_Guest".into(),
@@ -787,6 +788,7 @@ impl SampleNetwork {
                 secure: false,
                 security: os_actions::WifiSecurity::Open,
                 connected: false,
+                known: false,
             },
             WifiNetworkInfo {
                 ssid: "Office_5G".into(),
@@ -794,6 +796,7 @@ impl SampleNetwork {
                 secure: true,
                 security: os_actions::WifiSecurity::Wpa2,
                 connected: false,
+                known: false,
             },
         ]
     }
@@ -3943,7 +3946,8 @@ mod tests {
                 signal: 0,
                 secure: false,
                 security: os_actions::WifiSecurity::Open,
-                connected: false
+                connected: false,
+                known: false,
             };
             257
         ];

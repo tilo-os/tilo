@@ -1981,20 +1981,38 @@ pub enum QuickSettingsControl {
     /// Stop a convertible's screen following the device. Shown only where
     /// an accelerometer exists.
     RotationLock,
+    /// The power saver, switched on and off; its section has all three
+    /// power modes. Shown where the power daemon offers a saver.
+    PowerMode,
 }
 
 impl QuickSettingsControl {
-    /// A small, useful surface for a typical laptop.  Airplane mode and Do
-    /// Not Disturb are available extras, not always-visible destinations:
-    /// the compact root must still fit a small display with a VPN present.
-    /// Rotation lock is hidden on machines that cannot rotate, so it costs
-    /// room only on a convertible.
-    pub const DEFAULT: [Self; 5] = [
+    /// The everyday controls, two to a row. Each shows only where this
+    /// machine has what it controls (a VPN profile, an accelerometer, a
+    /// radio, a power daemon), so a desktop sees fewer; a panel taller than
+    /// its display scrolls rather than dropping any.
+    pub const DEFAULT: [Self; 8] = [
         Self::Wifi,
         Self::Bluetooth,
         Self::Vpn,
+        Self::DoNotDisturb,
         Self::NightLight,
+        Self::AirplaneMode,
+        Self::PowerMode,
         Self::RotationLock,
+    ];
+
+    /// Every control, in the order the editor offers the ones not shown.
+    pub const ALL: [Self; 9] = [
+        Self::Wifi,
+        Self::Bluetooth,
+        Self::Vpn,
+        Self::DoNotDisturb,
+        Self::NightLight,
+        Self::AirplaneMode,
+        Self::PowerMode,
+        Self::RotationLock,
+        Self::MobileData,
     ];
 
     /// Wi-Fi remains reachable even after customisation: it is the recovery
@@ -2012,7 +2030,21 @@ impl QuickSettingsControl {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct QuickSettingsConfig {
+    /// A control a later release added and this one does not know is
+    /// skipped, never a reason to drop the person's whole arrangement.
+    #[serde(deserialize_with = "known_controls")]
     pub controls: Vec<QuickSettingsControl>,
+}
+
+fn known_controls<'de, D>(deserializer: D) -> Result<Vec<QuickSettingsControl>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let values = Vec::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(values
+        .into_iter()
+        .filter_map(|value| serde_json::from_value(value).ok())
+        .collect())
 }
 
 impl Default for QuickSettingsConfig {
@@ -2092,12 +2124,17 @@ mod quick_settings_tests {
                 vec![QuickSettingsControl::Wifi, QuickSettingsControl::NightLight]
             );
         }
-        // Phase `airplane_is_available_but_not_a_default_control`.
+        // Phase `an_unknown_control_is_skipped_and_the_arrangement_kept`.
         {
-            assert!(
-                !QuickSettingsConfig::default()
-                    .controls
-                    .contains(&QuickSettingsControl::AirplaneMode)
+            let config = QuickSettingsConfig::from_section(
+                serde_json::json!({"controls": ["night_light", "teleporter", "wifi"]})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            );
+            assert_eq!(
+                config.controls,
+                vec![QuickSettingsControl::NightLight, QuickSettingsControl::Wifi]
             );
         }
         // Phase `quick_settings_order_survives_restart_without_replacing_other_settings`.

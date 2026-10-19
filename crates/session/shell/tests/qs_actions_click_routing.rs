@@ -518,12 +518,15 @@ fn quick_settings_toggles_chips_and_wifi_rows_route_to_their_actions() {
         }
         host.force_quick_settings_settled();
         let (taffy, host_node) = layout_host(&mut host);
-        let card = host.quick_settings_toggle_geometry(0);
-        // Slightly off the chevron (which would drill in to the wifi list); the
-        // card's bottom-left maps to the toggle hit.
-        let click_x = card.x0 + 24.0;
-        let click_y = card.y1 - 16.0;
-        click(&mut host, &taffy, host_node, Point::new(click_x, click_y));
+        paint(&mut host);
+        // The tile's body, not its chevron (which opens its networks).
+        let tile = quick_settings_target(&host, "quick_settings_network");
+        click(
+            &mut host,
+            &taffy,
+            host_node,
+            Point::new(tile.x0 + 12.0, tile.center().y),
+        );
 
         let calls = recorder.0.calls();
         assert!(
@@ -551,10 +554,14 @@ fn quick_settings_toggles_chips_and_wifi_rows_route_to_their_actions() {
         }
         host.force_quick_settings_settled();
         let (taffy, host_node) = layout_host(&mut host);
-        let card = host.quick_settings_toggle_geometry(1);
-        let click_x = card.x0 + 24.0;
-        let click_y = card.y1 - 16.0;
-        click(&mut host, &taffy, host_node, Point::new(click_x, click_y));
+        paint(&mut host);
+        let tile = quick_settings_target(&host, "quick_settings_bluetooth");
+        click(
+            &mut host,
+            &taffy,
+            host_node,
+            Point::new(tile.x0 + 12.0, tile.center().y),
+        );
 
         let calls = recorder.0.calls();
         assert!(
@@ -574,14 +581,17 @@ fn quick_settings_toggles_chips_and_wifi_rows_route_to_their_actions() {
             let mut st = chrome.borrow_mut();
             st.overlays.quick_settings = true;
             st.quick_settings.brightness_available = true;
+            st.quick_settings.power_profiles = vec![
+                shell::shell::quick_settings::PowerProfile::Saver,
+                shell::shell::quick_settings::PowerProfile::Balanced,
+            ];
             st.bump();
         }
         host.force_quick_settings_settled();
         let (taffy, host_node) = layout_host(&mut host);
-        let pp = host.quick_settings_power_profile_geometry();
-        let click_x = pp.x0 + pp.width() / 2.0;
-        let click_y = f64::midpoint(pp.y0, pp.y1);
-        click(&mut host, &taffy, host_node, Point::new(click_x, click_y));
+        paint(&mut host);
+        let tile = quick_settings_target(&host, "quick_settings_power_mode");
+        click(&mut host, &taffy, host_node, tile.center());
 
         let calls = recorder.0.calls();
         assert!(
@@ -590,7 +600,7 @@ fn quick_settings_toggles_chips_and_wifi_rows_route_to_their_actions() {
         );
     }
 
-    // Phase `wifi_drill_in_row_click_prompts_or_marks_an_async_join`.
+    // Phase `wifi_section_row_click_prompts_for_a_password_in_place`.
     {
         let tree = minimal_tree();
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
@@ -598,59 +608,61 @@ fn quick_settings_toggles_chips_and_wifi_rows_route_to_their_actions() {
         host = host.with_qs_actions(Box::new(recorder.clone()));
 
         // A secured network not yet joined and one already connected take
-        // different click branches.
+        // different branches.
         let scanned = vec![
             WifiNetwork {
                 ssid: "hallway-2g".into(),
-                signal: 71,
+                signal: 3,
                 secure: true,
                 security: os_actions::WifiSecurity::Wpa2,
                 connected: false,
+                known: false,
             },
             WifiNetwork {
                 ssid: "studio-5g".into(),
-                signal: 92,
+                signal: 4,
                 secure: true,
                 security: os_actions::WifiSecurity::Wpa2,
                 connected: true,
+                known: true,
             },
         ];
         {
             let mut st = chrome.borrow_mut();
             st.overlays.quick_settings = true;
-            st.quick_settings
-                .push_level(shell::shell::quick_settings::QsLevel::Wifi);
+            st.quick_settings.wifi = true;
+            st.quick_settings.radios.wifi_available = true;
+            st.quick_settings.section = Some(shell::shell::quick_settings::QsSection::Wifi);
             st.quick_settings.wifi_networks = scanned.clone();
             st.bump();
         }
         host.force_quick_settings_settled();
         let (taffy, host_node) = layout_host(&mut host);
-        let rect = host.quick_settings_rect_for_tests();
-        let click_x = rect.x0 + rect.width() / 2.0;
-        // Read the discovery list's rhythm from the host rather than restating
-        // it: the click lands mid-row wherever the header, hotspot affordance
-        // and row pitch put each row.
-        let secured_row_y = host.quick_settings_wifi_row_rect_for_tests(0).center().y;
-        let connected_row_y = host.quick_settings_wifi_row_rect_for_tests(1).center().y;
-
-        // Row 0 — secured, not joined: must prompt for a passphrase rather than
-        // firing a connect that would fail silently.
-        click(
-            &mut host,
-            &taffy,
-            host_node,
-            Point::new(click_x, secured_row_y),
+        paint(&mut host);
+        assert!(
+            host.quick_settings_target("quick_settings_wifi_network_studio-5g")
+                .is_none(),
+            "the network in use is status, not a second join"
         );
+        let row = quick_settings_target(&host, "quick_settings_wifi_network_hallway-2g");
+        // A secured network this machine does not know asks for its
+        // passphrase rather than firing a connect that would fail silently.
+        click(&mut host, &taffy, host_node, row.center());
         {
             let st = chrome.borrow();
             let prompt = st
                 .quick_settings
                 .wifi_password
                 .as_ref()
-                .expect("clicking a secured network must open the passphrase prompt");
+                .expect("clicking a secured network must ask for its passphrase");
             assert_eq!(
                 prompt.ssid, scanned[0].ssid,
                 "the prompt must name the network that was clicked"
+            );
+            assert_eq!(
+                st.quick_settings.section,
+                Some(shell::shell::quick_settings::QsSection::Wifi),
+                "in place, in the Wi-Fi section"
             );
         }
         assert!(
@@ -658,30 +670,7 @@ fn quick_settings_toggles_chips_and_wifi_rows_route_to_their_actions() {
             "no connect may be attempted before the passphrase is entered; got {:?}",
             recorder.0.calls()
         );
-
-        // Row 1 is already connected, so it is truthful status rather than a
-        // second join action.
-        {
-            let mut st = chrome.borrow_mut();
-            st.quick_settings.wifi_password = None;
-            st.bump();
-        }
-        click(
-            &mut host,
-            &taffy,
-            host_node,
-            Point::new(click_x, connected_row_y),
-        );
-        let calls = recorder.0.calls();
-        assert!(
-            calls.is_empty(),
-            "the compositor must not block in the injected dispatcher; got {calls:?}"
-        );
-        assert_eq!(
-            chrome.borrow().quick_settings.wifi_joining.as_deref(),
-            None,
-            "an already-connected network must not enter another join lifecycle"
-        );
+        assert_eq!(chrome.borrow().quick_settings.wifi_joining.as_deref(), None);
     }
 }
 
@@ -807,7 +796,7 @@ fn every_quick_settings_destination_click_lands_on_its_surface() {
     use shell::shell::quick_settings::QsLevel;
 
     for (target, level) in [
-        ("quick_settings_history", QsLevel::Notifications),
+        ("quick_settings_notifications", QsLevel::Notifications),
         ("quick_settings_devices", QsLevel::Devices),
         ("quick_settings_clipboard", QsLevel::Clipboard),
     ] {
@@ -829,23 +818,15 @@ fn every_quick_settings_destination_click_lands_on_its_surface() {
         );
     }
 
-    // Privacy opens the workspace's app grants — the same destination as
-    // the `settings.privacy.open` action.
+    // Lock locks the screen and closes the popover.
     let tree = minimal_tree();
     let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
     paint(&mut host);
-    let centre = quick_settings_target(&host, "quick_settings_privacy").center();
+    let centre = quick_settings_target(&host, "quick_settings_lock").center();
     click(&mut host, &taffy, host_node, centre);
-    {
-        let st = chrome.borrow();
-        assert!(!st.overlays.quick_settings);
-        assert!(st.overlays.ws_settings);
-        assert_eq!(
-            st.ws_settings_tab,
-            shell::shell::chrome_state::WsTab::Permissions
-        );
-    }
+    assert!(!chrome.borrow().overlays.quick_settings);
+    assert!(chrome.borrow_mut().take_session_lock_request());
 
     // Power opens the session menu and closes the popover.
     let tree = minimal_tree();
@@ -907,14 +888,14 @@ fn tab_through_every_quick_settings_stop_focuses_exactly_one_node() {
         "Volume",
         "Wi-Fi",
         "Bluetooth",
+        "Wi-Fi networks",
         "Night Light",
         "Devices",
         "Clipboard",
-        "Change power profile",
+        "Notifications",
         "Edit controls",
         "Settings",
-        "Privacy",
-        "History",
+        "Lock",
         "Power",
     ] {
         assert!(

@@ -44,7 +44,6 @@ use vello::peniko::Color;
 
 use shell::shell::build_tilo_overlay_host_with_chrome;
 use shell::shell::chrome_state::{Chrome, WsTab};
-use shell::shell::quick_settings::QsLevel;
 use shell::shell::state::WorkspaceTree;
 use shell::shell::topbar_chrome::TopBarChrome;
 
@@ -729,7 +728,10 @@ fn quick_settings_renders_power_utility_white_slider_fill_and_wifi_drill_in() {
         let (root_fills, _) = render_quick_settings_open(&tree, |_| {});
 
         let (wifi_fills, _) = render_quick_settings_open(&tree, |chrome| {
-            chrome.borrow_mut().open_quick_settings_level(QsLevel::Wifi);
+            let mut chrome = chrome.borrow_mut();
+            chrome.quick_settings.radios.wifi_available = true;
+            chrome.quick_settings.wifi = false;
+            chrome.open_quick_settings_section(shell::shell::quick_settings::QsSection::Wifi);
         });
 
         // EXPECTED: root_fills != wifi_fills. CURRENT: equal (drill-in unwired).

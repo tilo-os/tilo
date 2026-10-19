@@ -234,7 +234,7 @@ pub(crate) mod fixture {
     impl os_actions::Dispatcher for Dispatcher {
         fn prepare_radio_change(&self, change: RadioChange) -> Option<RadioWork> {
             let dispatcher = self.clone();
-            Some(Box::new(move || dispatcher.execute(change)))
+            Some(Box::new(move || dispatcher.execute(change).map(|()| None)))
         }
         fn set_wifi(&self, enabled: bool) -> Result<(), String> {
             self.execute(RadioChange::Wifi(enabled))
