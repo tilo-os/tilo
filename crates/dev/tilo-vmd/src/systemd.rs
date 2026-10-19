@@ -58,6 +58,8 @@ const NOTICE_DIR: &str = "/run/tilo-vm";
 /// The one merger of system layers: the production system extension
 /// activation (`tilo-extension activate`).
 pub const ACTIVATION_UNIT: &str = "tilo-extension-activate.service";
+/// The image's activation unit, which says whether it merges signed layers.
+const ACTIVATION_UNIT_FILE: &str = "/usr/lib/systemd/system/tilo-extension-activate.service";
 /// Where `systemd-sysext` finds extension trees, `SYSEXT_DIR` among them.
 const SYSEXT_SEARCH_DIRS: &[&str] = &["/etc/extensions", "/run/extensions", SYSEXT_DIR];
 /// A registry larger than this is not one `tilo-install` wrote.
@@ -731,7 +733,7 @@ impl Apply for SystemdApply {
         // An older tilo-vmd linked its layers into /var/lib/extensions for
         // systemd-sysext.service; the activation merges nothing while
         // anything it did not verify is in the search path.
-        let legacy = signed_layers::remove_legacy_links(Path::new(SYSEXT_DIR), &self.layers_dir)?;
+        let legacy = self.drop_unverified_merge()?;
         let staged = signed_layers::stage(
             Path::new(tilo_layer_trust::SIGNED_LAYERS_DIR),
             &self.layers_dir,
@@ -740,6 +742,19 @@ impl Apply for SystemdApply {
         )?;
         self.staged = layers.to_vec();
         Ok(legacy || staged)
+    }
+
+    fn activation_takes_signed_layers(&mut self) -> bool {
+        signed_layers::activation_takes_signed_layers(Path::new(ACTIVATION_UNIT_FILE))
+    }
+
+    fn drop_unverified_merge(&mut self) -> Result<bool, DaemonError> {
+        // On an image from before signed layers, those links are what keeps
+        // the layers on /usr until the next boot of one that verifies them.
+        if !self.activation_takes_signed_layers() {
+            return Ok(false);
+        }
+        signed_layers::remove_legacy_links(Path::new(SYSEXT_DIR), &self.layers_dir)
     }
 
     fn activate_system_layers(&mut self) -> Result<(), DaemonError> {

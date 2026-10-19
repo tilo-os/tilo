@@ -2680,6 +2680,9 @@ impl App {
 
     fn vm_upgrade(&mut self, args: &UpgradeArgs) -> Result<Outcome, CliError> {
         let vm = self.resolve_vm(args.name.as_deref())?;
+        if let Some(report) = self.check_signed_layers(&vm, args)? {
+            self.receipt.set("signed_layers", report);
+        }
         let endpoint = self.endpoint(&vm)?;
         let Some(from) = args.from.as_deref() else {
             if let Some(layout) = args.image.as_deref().map(Path::new)
@@ -5308,19 +5311,113 @@ impl App {
         .next(&["tilo-vm shot", "tilo-vm control state-dump --pretty"]))
     }
 
+    /// A session to `vm` whose daemon signs layers: this one, or, on a
+    /// machine whose tilo-vmd predates signed layers, the tilo-vmd `vmd_from`
+    /// brings (worktree, `sha:`, `ci:`, `layer:`), imported into the
+    /// machine's layer store and run for this session only. Nothing is
+    /// swapped, so the machine's `/usr` stays as it is.
+    fn endorsing_remote(
+        &mut self,
+        vm: &Resolved,
+        mut remote: Remote,
+        vmd_from: &str,
+    ) -> Result<Remote, CliError> {
+        if remote.takes_endorsements() {
+            return Ok(remote);
+        }
+        let layer = match ci::parse(vmd_from, self.worktree.as_ref())? {
+            ci::Source::Layer(hash) => hash,
+            source => {
+                let manifest_path = self.base_dir().join("os/components.toml");
+                let manifest = self.manifest()?.ok_or_else(|| CliError::NoManifest {
+                    path: manifest_path.display().to_string(),
+                })?;
+                let entry =
+                    manifest
+                        .get("vmd")
+                        .cloned()
+                        .ok_or_else(|| CliError::UnknownComponent {
+                            name: "vmd".into(),
+                            known: manifest.components.keys().cloned().collect(),
+                        })?;
+                match source {
+                    ci::Source::Ci { tag, commit } => {
+                        self.ci_layer(&mut remote, vm, &entry, &tag, commit)?
+                    }
+                    _ => {
+                        self.worktree_component_layer(&mut remote, vm, &entry, (None, None), None)?
+                    }
+                }
+            }
+        };
+        // Building or pulling the layer can outlast the idle connection.
+        let remote = self.connect_with_wake(vm, false)?;
+        let imported = self.handoff_daemon(vm, remote, &layer)?;
+        if !imported.takes_endorsements() {
+            return Err(CliError::Trust(format!(
+                "the tilo-vmd {vmd_from} brings does not sign layers either; pick a current one with --vmd-from"
+            )));
+        }
+        Ok(imported)
+    }
+
+    /// `vm upgrade` moves onto an image whose activation merges only signed
+    /// layers. Refuse while a layer merged into the machine's `/usr` is not
+    /// signed by a key it enrolled, or carries a tilo-vmd that would merge
+    /// layers behind the activation: the person would come up on the image as
+    /// installed, without their deployed work.
+    fn check_signed_layers(
+        &mut self,
+        vm: &Resolved,
+        args: &UpgradeArgs,
+    ) -> Result<Option<Value>, CliError> {
+        if args.allow_unsigned_layers {
+            return Ok(None);
+        }
+        let vmd_from = match args.from.as_deref() {
+            Some(from) if from.starts_with("sha:") || from.starts_with("ci:") => from.to_owned(),
+            _ => "worktree".to_owned(),
+        };
+        let mut remote = self.connect(vm)?;
+        if !remote.takes_endorsements() {
+            // Nothing merged into /usr: nothing for a new image to leave out.
+            let slots = remote.call(SlotList {})?;
+            let merged = slots.iter().any(|slot| {
+                (slot.name == VM_SLOT || slot.name == tilo_vm_protocol::DEVICE_SLOT)
+                    && !slot.components.is_empty()
+            });
+            if !merged {
+                return Ok(None);
+            }
+        }
+        let mut remote = self.endorsing_remote(vm, remote, &vmd_from)?;
+        let pending = remote.call(tilo_vm_protocol::LayerEndorsePending {
+            slot: None,
+            layers: Vec::new(),
+        })?;
+        let report = signed_layers_report(&vm.name, &pending)?;
+        Ok(Some(report))
+    }
+
     fn trust_command(&mut self, command: &crate::cli::TrustCommand) -> Result<Outcome, CliError> {
         let vm = self.resolve_vm(None)?;
         let key_path = crate::devtrust::key_path(&self.registry_path);
-        let mut remote = self.connect(&vm)?;
-        if !remote.takes_endorsements() {
-            return Err(CliError::Unsupported {
-                what: format!("signed layers on {}", vm.name),
-                alternative: format!(
-                    "its tilo-vmd merges layers unsigned; move it to a current dev image first: tilo-vm vm upgrade {}",
-                    vm.name
-                ),
-            });
-        }
+        let remote = self.connect(&vm)?;
+        let mut remote = match command {
+            crate::cli::TrustCommand::Enroll { vmd_from } => {
+                self.endorsing_remote(&vm, remote, vmd_from)?
+            }
+            crate::cli::TrustCommand::Status if !remote.takes_endorsements() => {
+                return Err(CliError::Unsupported {
+                    what: format!("signed layers on {}", vm.name),
+                    alternative: format!(
+                        "its tilo-vmd predates them; tilo-vm --target {} trust enroll signs its layers with a current one",
+                        vm.name
+                    ),
+                });
+            }
+            crate::cli::TrustCommand::Status => remote,
+        };
         match command {
             crate::cli::TrustCommand::Status => {
                 let key = crate::devtrust::load(&key_path)?;
@@ -5381,7 +5478,7 @@ impl App {
                 }
                 Ok(outcome)
             }
-            crate::cli::TrustCommand::Enroll => {
+            crate::cli::TrustCommand::Enroll { .. } => {
                 let (key, made) = crate::devtrust::load_or_create(&key_path)?;
                 let enrolled = remote.call(tilo_vm_protocol::TrustEnroll {
                     name: tilo_vm_protocol::DEV_AUTHORITY.into(),
@@ -5389,18 +5486,48 @@ impl App {
                 })?;
                 let endorsed = remote.endorse(None, Vec::new(), true)?;
                 let signed = endorsed.as_ref().map_or(0, |result| result.endorsed.len());
+                let merged = endorsed.as_ref().is_some_and(|result| result.merged);
+                let pending = remote.call(tilo_vm_protocol::LayerEndorsePending {
+                    slot: None,
+                    layers: Vec::new(),
+                })?;
                 let mut text = String::new();
                 if made {
-                    let _ = writeln!(text, "made this host's development key {}", key_path.display());
+                    let _ = writeln!(
+                        text,
+                        "made this host's development key {}",
+                        key_path.display()
+                    );
                 }
                 let _ = write!(
                     text,
-                    "{} {} this host's key as the extension authority {} ({})\nsigned {signed} layers of the vm and device slots and merged them into its /usr",
+                    "{} {} this host's key as the extension authority {} ({})\nsigned {signed} layers of the vm and device slots; {}",
                     vm.name,
-                    if enrolled.changed { "enrolled" } else { "already trusts" },
+                    if enrolled.changed {
+                        "enrolled"
+                    } else {
+                        "already trusts"
+                    },
                     enrolled.authority.name,
                     enrolled.authority.fingerprint,
+                    if merged {
+                        "they are merged into its /usr"
+                    } else {
+                        "its image merges them unsigned until it moves onto one that verifies them, which then merges them at its first boot"
+                    },
                 );
+                for layer in &pending.unsigned_mergers {
+                    let _ = write!(
+                        text,
+                        "\nlayer {} carries a tilo-vmd from before signed layers: it would merge layers behind the activation; bring a current one first: tilo-vm rollback --slot vm --to 0, or swap vmd once the machine runs a current image",
+                        short(layer)
+                    );
+                }
+                let next = if merged {
+                    "tilo-vm slot restart device   (the desktop restarts in place on its layers)"
+                } else {
+                    "tilo-vm vm upgrade   (onto an image that verifies them; it checks they are signed first)"
+                };
                 Ok(Outcome::new(
                     text,
                     json!({
@@ -5408,9 +5535,11 @@ impl App {
                         "authority": enrolled.authority,
                         "changed": enrolled.changed,
                         "signed": endorsed.map(|result| result.endorsed).unwrap_or_default(),
+                        "merged": merged,
+                        "unsigned_mergers": pending.unsigned_mergers,
                     }),
                 )
-                .next(&["tilo-vm slot restart device   (the desktop restarts in place on its layers)"]))
+                .next(&[next]))
             }
         }
     }
@@ -5465,6 +5594,35 @@ impl App {
         }
         Ok(outcome)
     }
+}
+
+/// What `vm upgrade` found of the layers merged into `vm`'s `/usr`: every
+/// one signed by an enrolled key, and none carrying a tilo-vmd that would
+/// merge behind the activation, or the error that names them.
+///
+/// # Errors
+/// [`CliError::UnsignedLayers`] naming each unsigned or unverified layer.
+pub fn signed_layers_report(
+    vm: &str,
+    pending: &tilo_vm_protocol::EndorsementsPending,
+) -> Result<Value, CliError> {
+    let unsigned: Vec<String> = pending
+        .pending
+        .iter()
+        .filter(|layer| pending.current.contains(&layer.layer))
+        .map(|layer| layer.layer.clone())
+        .collect();
+    if !unsigned.is_empty() || !pending.unsigned_mergers.is_empty() {
+        return Err(CliError::UnsignedLayers {
+            vm: vm.to_owned(),
+            unsigned,
+            mergers: pending.unsigned_mergers.clone(),
+        });
+    }
+    Ok(json!({
+        "merged": pending.current,
+        "authorities": pending.authorities,
+    }))
 }
 
 /// How `stage_and_boot` stages: bootc's transport and reference, and the
@@ -9145,6 +9303,58 @@ mod tests {
                 PathBuf::from("/w/main/target"),
                 PathBuf::from("/w/wt/bar/target")
             ]
+        );
+    }
+
+    // USER REQUIREMENT (2026-10-19): "Migration must never put the person on the
+    // base image, not even between steps ... Make `tilo-vm vm upgrade` refuse to
+    // move to an image whose verifier would reject the current layers, unless
+    // they're signed."
+    #[test]
+    fn vm_upgrade_refuses_while_a_merged_layer_is_unsigned_or_merges_behind_the_activation() {
+        use tilo_vm_protocol::{AuthorityInfo, EndorsementsPending, PendingEndorsement};
+        let shell = "a".repeat(64);
+        let old_shell = "b".repeat(64);
+        let vmd = "c".repeat(64);
+        let pending = |unsigned: &[&str], mergers: &[&str]| EndorsementsPending {
+            authorities: vec![AuthorityInfo {
+                name: "dev".into(),
+                fingerprint: "sha256:00".into(),
+            }],
+            pending: unsigned
+                .iter()
+                .map(|layer| PendingEndorsement {
+                    layer: (*layer).to_owned(),
+                    manifest: String::new(),
+                })
+                .collect(),
+            current: vec![shell.clone(), vmd.clone()],
+            unsigned_mergers: mergers.iter().map(|m| (*m).to_owned()).collect(),
+            activation_takes_signed_layers: false,
+        };
+        // Every merged layer signed: the upgrade goes ahead.
+        let report = signed_layers_report("yoga", &pending(&[], &[])).unwrap();
+        assert_eq!(report["merged"][0], shell);
+        // An older generation's unsigned layer does not hold it up.
+        assert!(signed_layers_report("yoga", &pending(&[&old_shell], &[])).is_ok());
+        // A merged layer unsigned: the new image would leave it out.
+        match signed_layers_report("yoga", &pending(&[&shell], &[])).unwrap_err() {
+            error @ CliError::UnsignedLayers { .. } => {
+                assert!(
+                    error.hint().contains("tilo-vm --target yoga trust enroll"),
+                    "{}",
+                    error.hint()
+                );
+                assert!(error.hint().contains("--allow-unsigned-layers"));
+            }
+            other => panic!("{other}"),
+        }
+        // A merged tilo-vmd from before signed layers would merge behind it.
+        let error = signed_layers_report("yoga", &pending(&[], &[&vmd])).unwrap_err();
+        assert!(
+            error.hint().contains("rollback --slot vm --to 0"),
+            "{}",
+            error.hint()
         );
     }
 }

@@ -178,6 +178,16 @@ pub trait Apply {
     /// # Errors
     /// [`DaemonError::LayerRefused`] for a layer the activation refused.
     fn activate_system_layers(&mut self) -> Result<(), DaemonError>;
+    /// Whether this image's system extension activation verifies and merges
+    /// signed layers. An image from before them (a machine not yet moved
+    /// onto a current dev image) does not: its layers are signed and staged
+    /// for the next boot of one that does, and nothing is taken off `/usr`.
+    fn activation_takes_signed_layers(&mut self) -> bool;
+    /// Remove what an older tilo-vmd linked into `/var/lib/extensions` for
+    /// its own merge, on an image whose activation verifies signed layers
+    /// (it merges nothing while those links are there); `true` when one was
+    /// removed. Run at boot before the activation.
+    fn drop_unverified_merge(&mut self) -> Result<bool, DaemonError>;
     /// Put the notice `name` where the owner's desktop reads it
     /// (`/run/tilo-vm/<name>`, world-readable), or take it away (`None`).
     fn publish_notice(&mut self, name: &str, contents: Option<&str>) -> Result<(), DaemonError>;
@@ -842,6 +852,8 @@ pub struct RecordingApply {
     pub device: Option<DeviceSession>,
     /// Notices published for the owner's desktop, by name.
     pub notices: BTreeMap<String, String>,
+    /// An image whose activation predates signed layers.
+    pub unverified_image: bool,
     /// Every call is copied here too, for a test that hands this to a daemon.
     pub mirror: Option<std::sync::Arc<std::sync::Mutex<Vec<String>>>>,
 }
@@ -1008,6 +1020,16 @@ impl Apply for RecordingApply {
     fn activate_system_layers(&mut self) -> Result<(), DaemonError> {
         self.call("activate_system_layers".into());
         Ok(())
+    }
+    fn activation_takes_signed_layers(&mut self) -> bool {
+        !self.unverified_image
+    }
+    fn drop_unverified_merge(&mut self) -> Result<bool, DaemonError> {
+        if self.unverified_image {
+            return Ok(false);
+        }
+        self.call("drop_unverified_merge".into());
+        Ok(false)
     }
     fn publish_notice(&mut self, name: &str, contents: Option<&str>) -> Result<(), DaemonError> {
         match contents {

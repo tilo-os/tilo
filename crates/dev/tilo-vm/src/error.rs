@@ -322,6 +322,16 @@ pub enum CliError {
     DevKeyNotEnrolled { vm: String, fingerprint: String },
     #[error("development trust: {0}")]
     Trust(String),
+    #[error(
+        "{vm} has layers in its /usr that the new image would not merge ({} unsigned, {} with a tilo-vmd from before signed layers)",
+        unsigned.len(),
+        mergers.len()
+    )]
+    UnsignedLayers {
+        vm: String,
+        unsigned: Vec<String>,
+        mergers: Vec<String>,
+    },
 }
 
 impl CliError {
@@ -567,6 +577,16 @@ impl CliError {
                 "enrolling a key is the owner's decision, made once per machine: tilo-vm --target {vm} trust enroll   (it also signs the layers the machine already has)"
             ),
             Self::Trust(_) => "tilo-vm trust status   (this host's key, and what the machine has enrolled)".into(),
+            Self::UnsignedLayers { vm, unsigned, mergers } => {
+                let mut steps = Vec::new();
+                if !unsigned.is_empty() {
+                    steps.push(format!("sign them first, on the image it runs now: tilo-vm --target {vm} trust enroll"));
+                }
+                if !mergers.is_empty() {
+                    steps.push(format!("take the old tilo-vmd off the vm slot: tilo-vm --target {vm} rollback --slot vm --to 0"));
+                }
+                format!("{}; then upgrade again   (--allow-unsigned-layers moves anyway, onto the image as installed)", steps.join(", then "))
+            }
         }
     }
 
@@ -613,7 +633,9 @@ impl CliError {
             Self::ScenarioMedium { .. } | Self::Scenario { .. } | Self::NeedsWorktree { .. } => {
                 "scenarios"
             }
-            Self::DevKeyNotEnrolled { .. } | Self::Trust(_) => "trust",
+            Self::DevKeyNotEnrolled { .. } | Self::Trust(_) | Self::UnsignedLayers { .. } => {
+                "trust"
+            }
             Self::Unreachable { .. }
             | Self::DaemonMissing { .. }
             | Self::ProtocolMismatch { .. }
@@ -1009,6 +1031,11 @@ mod tests {
                 fingerprint: "sha256:00".into(),
             },
             CliError::Trust("the manifest for layer a names layer b".into()),
+            CliError::UnsignedLayers {
+                vm: "yoga".into(),
+                unsigned: vec!["a".repeat(64)],
+                mergers: vec!["b".repeat(64)],
+            },
         ];
         for error in &all {
             match error {
@@ -1017,6 +1044,7 @@ mod tests {
                 | CliError::NeedsWorktree { .. }
                 | CliError::DevKeyNotEnrolled { .. }
                 | CliError::Trust(_)
+                | CliError::UnsignedLayers { .. }
                 | CliError::NoVm { .. }
                 | CliError::KernelBuild { .. }
                 | CliError::KernelNotRunning { .. }

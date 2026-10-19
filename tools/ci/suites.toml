@@ -1036,10 +1036,12 @@ inputs = [
   "os/usr/libexec/tilo-seat-session", "os/usr/libexec/tilo-session",
   "os/usr/share/tilo/system-interfaces.toml", "tools/font-catalog.py",
   "crates/sdk/ui-core/assets/fonts/**",
+  # Whether an image's activation takes signed layers is read from its unit.
+  "os/usr/lib/systemd/system/tilo-extension-activate.service",
 ]
 readers = [
   "crates/dev/tilo-vmd/tests/jobs.rs", "crates/dev/tilo-vmd/src/systemd.rs",
-  "crates/dev/tilo-vmd/src/daemon/userspace.rs",
+  "crates/dev/tilo-vmd/src/daemon/userspace.rs", "crates/dev/tilo-vmd/src/signed_layers.rs",
 ]
 
 [[cargo]]

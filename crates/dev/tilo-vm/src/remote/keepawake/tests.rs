@@ -46,6 +46,7 @@ for line in sys.stdin:
         client: Some(client),
         hello,
         peer: false,
+        trust: None,
     }
 }
 

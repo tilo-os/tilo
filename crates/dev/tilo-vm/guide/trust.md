@@ -71,19 +71,31 @@ next activation on.
 ## Moving a machine from unsigned layers
 
 A dev image from before signed layers merged tilo-vm's layers with
-`systemd-sysext` directly. Moving such a machine needs no reinstall and keeps
-every slot and layer:
+`systemd-sysext` directly. Moving such a machine needs no reinstall, keeps
+every slot and layer, and never puts the person on the image as installed,
+not even between the steps: the layers are signed on the image the machine
+runs now, and the new image merges them at its first boot.
 
 1. Update tilo-vm on this host (`cargo build -p tilo-vm`).
-2. Move the machine onto a current dev image:
-   `tilo-vm vm upgrade yoga --from sha:<commit>`. It reboots. Until step 3 its
-   `vm` and `device` slots run the image as installed: their layers are not
-   signed yet, and nothing merges what is not.
-3. `tilo-vm --target yoga trust enroll`. tilo-vmd removes the links the old
-   merge left in `/var/lib/extensions` (the activation refuses to merge while
-   anything it did not verify is in the search path), and the layers come
-   back, signed.
-4. `tilo-vm slot restart device`.
+2. `tilo-vm --target yoga trust enroll`, on the image the machine runs now. Its
+   tilo-vmd predates signing, so tilo-vm brings a current one for this command
+   only (`--vmd-from`, this worktree's by default; `sha:<commit>` takes CI's),
+   imported into the layer store and run from there: nothing is swapped and
+   `/usr` stays as it is. It enrolls this host's key, signs every layer of the
+   `vm` and `device` slots and stages them for the next boot.
+3. `tilo-vm vm upgrade yoga --from sha:<commit>`. Before it switches it checks
+   that every layer merged now is signed by a key the machine enrolled; it
+   refuses otherwise and names them (`--allow-unsigned-layers` moves anyway,
+   onto the image as installed). At the first boot, `tilo-vm-reconcile-image`
+   removes the links the old merge left in `/var/lib/extensions`, before the
+   activation, which then verifies the signed layers and merges them before
+   the greeter.
+
+A `vm` slot that carries a tilo-vmd from before signed layers (`trust status`
+and `trust enroll` name it) would merge layers itself, behind the activation,
+once merged; `vm upgrade` refuses until it is gone: `tilo-vm rollback --slot vm
+--to 0` (the new image brings a current tilo-vmd), or move with
+`--allow-unsigned-layers` and swap `vmd` afterwards.
 
 ## When a layer is refused
 

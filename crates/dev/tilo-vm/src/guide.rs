@@ -124,6 +124,9 @@ mod tests {
                 "/etc/tilo/extension-authorities.d/dev.pub",
                 "## Moving a machine from unsigned layers",
                 "no reinstall",
+                "never puts the person on the image as installed",
+                "--allow-unsigned-layers",
+                "--vmd-from",
                 "/run/tilo/signed-layers.json",
             ] {
                 assert!(trust.contains(needle), "trust guide lacks {needle}");

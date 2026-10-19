@@ -210,13 +210,32 @@ pub fn merge_system_layers(
     layers: &LayerStore,
     apply: &mut dyn Apply,
 ) -> Result<(), DaemonError> {
-    let vm = slots.load(VM_SLOT)?;
-    let own = layer_paths(layers, &slots.generation(VM_SLOT, vm.current)?)?;
-    let paths = system_layers(slots, layers, &vm, own)?;
-    if apply.stage_system_layers(&paths)? {
+    let paths = machine_layers(slots, layers)?;
+    // An image whose activation predates signed layers only gets them staged,
+    // for the next boot of one that verifies them; its /usr stays as it is.
+    if apply.stage_system_layers(&paths)? && apply.activation_takes_signed_layers() {
         apply.activate_system_layers()?;
     }
     Ok(())
+}
+
+/// The layers merged into the machine's `/usr`: the `vm` slot's and the
+/// owner's login's, as their current generations name them.
+fn machine_layers(slots: &SlotStore, layers: &LayerStore) -> Result<Vec<PathBuf>, DaemonError> {
+    let vm = slots.load(VM_SLOT)?;
+    let own = layer_paths(layers, &slots.generation(VM_SLOT, vm.current)?)?;
+    system_layers(slots, layers, &vm, own)
+}
+
+/// Whether the `tilo-vmd` a layer carries predates signed layers: it would
+/// merge layers itself, behind the activation.
+fn carries_unsigned_merger(layer: &Path) -> bool {
+    let binary = layer.join("usr/libexec/tilo-vmd");
+    let Ok(bytes) = fs::read(&binary) else {
+        return false;
+    };
+    let needle = tilo_vm_protocol::ENDORSE_CAPABILITY.as_bytes();
+    !bytes.windows(needle.len()).any(|window| window == needle)
 }
 
 /// Bring every slot back after the VM boots: re-create headful slots' vkms
@@ -505,6 +524,9 @@ impl Daemon {
                 return Ok(tilo_vm_protocol::EndorsementsPending {
                     authorities: info,
                     pending: Vec::new(),
+                    current: Vec::new(),
+                    unsigned_mergers: Vec::new(),
+                    activation_takes_signed_layers: self.apply.activation_takes_signed_layers(),
                 });
             }
             Some(name) => {
@@ -548,9 +570,27 @@ impl Daemon {
                 manifest,
             });
         }
+        // Asked for the whole machine (trust status and enroll, vm upgrade's
+        // check): what is merged now, and whether it would stay verified.
+        let current = if slot.is_none() && self.slots.stored(VM_SLOT)?.is_some() {
+            machine_layers(&self.slots, &self.layers)?
+        } else {
+            Vec::new()
+        };
+        let unsigned_mergers = current
+            .iter()
+            .filter(|path| carries_unsigned_merger(path))
+            .filter_map(|path| path.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .collect();
         Ok(tilo_vm_protocol::EndorsementsPending {
             authorities: info,
             pending,
+            current: current
+                .iter()
+                .filter_map(|path| path.file_name().map(|n| n.to_string_lossy().into_owned()))
+                .collect(),
+            unsigned_mergers,
+            activation_takes_signed_layers: self.apply.activation_takes_signed_layers(),
         })
     }
 
@@ -573,8 +613,10 @@ impl Daemon {
             endorsed.push(endorsement.layer.clone());
             signer = Some(authority);
         }
+        let mut merged = false;
         if merge && self.slots.stored(VM_SLOT)?.is_some() {
             merge_system_layers(&self.slots, &self.layers, self.apply.as_mut())?;
+            merged = self.apply.activation_takes_signed_layers();
         }
         let authority = match signer {
             Some(authority) => authority,
@@ -585,6 +627,7 @@ impl Daemon {
         Ok(tilo_vm_protocol::LayerEndorseResult {
             endorsed,
             authority: endorse::info(&authority),
+            merged,
         })
     }
 
@@ -726,6 +769,9 @@ impl Daemon {
     pub fn reconcile_image(&mut self, booted: &str) -> Result<Option<ImageChange>, DaemonError> {
         image::ensure_root(&self.root)?;
         let _vm = self.locks.vm_exclusive()?;
+        // Before the activation at boot: an older tilo-vmd's links in
+        // /var/lib/extensions would keep it from merging anything.
+        self.apply.drop_unverified_merge()?;
         let booted = image::BootedImage::read(
             booted,
             self.base.image_digest.clone(),
@@ -3531,5 +3577,107 @@ mod tests {
         let again = pending(&mut daemon, VM_SLOT);
         assert!(again.pending.is_empty(), "endorsed once, kept");
         assert_eq!(again.authorities[0].name, "dev");
+    }
+
+    // USER REQUIREMENT (2026-10-19): "Migration must never put the person on the
+    // base image, not even between steps. Reorder it so `trust enroll` (key,
+    // enrolment and signing every vm and device layer) happens *before* the
+    // image switch, on the current image."
+    #[test]
+    fn enrolling_on_an_image_from_before_signed_layers_signs_and_stages_without_touching_usr() {
+        use tilo_layer_trust::SecretKey;
+        use tilo_vm_protocol::{Endorsement, LayerEndorse, LayerEndorsePending, TrustEnroll};
+
+        let root = tempfile::tempdir().unwrap();
+        let owner = std::os::unix::fs::MetadataExt::uid(&fs::metadata(root.path()).unwrap());
+        let payload = tempfile::tempdir().unwrap();
+        fs::create_dir_all(payload.path().join("usr/libexec")).unwrap();
+        // A tilo-vmd from before signed layers: it would merge on its own.
+        fs::write(
+            payload.path().join("usr/libexec/tilo-vmd"),
+            "an older daemon",
+        )
+        .unwrap();
+        let layers = LayerStore::new(root.path());
+        let (vmd, _) = layers
+            .import_path(payload.path(), &Provenance::local("vmd"), &mut |_| Ok(()))
+            .unwrap();
+        let slots = SlotStore::new(root.path());
+        let mut record = slots.load(VM_SLOT).unwrap();
+        slots.save(&record).unwrap();
+        let (_, generation) = slots
+            .prepare_swap(
+                &record,
+                "vmd",
+                &vmd,
+                ComponentInfo::new(Scope::Vm, Vec::new()),
+            )
+            .unwrap()
+            .unwrap();
+        slots.set_current(&mut record, generation.number).unwrap();
+
+        let mirror = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut apply = RecordingApply::default();
+        apply.unverified_image = true;
+        apply.mirror = Some(mirror.clone());
+        let mut daemon = Daemon::new(root.path(), Box::new(apply), None, BaseInfo::default())
+            .with_authorities(root.path().join("extension-authorities.d"), owner);
+        daemon
+            .handle(Request::Hello(tilo_vm_protocol::Hello {
+                protocol: PROTOCOL_VERSION,
+                client_version: String::new(),
+            }))
+            .unwrap();
+        let dev = SecretKey::from_seed(&[3; 32]);
+        daemon
+            .handle(Request::TrustEnroll(TrustEnroll {
+                name: "dev".into(),
+                public_key: dev.public().to_pem(),
+            }))
+            .unwrap();
+        let pending: tilo_vm_protocol::EndorsementsPending = serde_json::from_value(
+            daemon
+                .handle(Request::LayerEndorsePending(LayerEndorsePending {
+                    slot: None,
+                    layers: Vec::new(),
+                }))
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(!pending.activation_takes_signed_layers);
+        assert_eq!(pending.current, [vmd.clone()]);
+        assert_eq!(
+            pending.unsigned_mergers,
+            [vmd.clone()],
+            "the old daemon is named"
+        );
+        assert_eq!(pending.pending.len(), 1);
+        let result: tilo_vm_protocol::LayerEndorseResult = serde_json::from_value(
+            daemon
+                .handle(Request::LayerEndorse(LayerEndorse {
+                    endorsements: vec![Endorsement {
+                        layer: vmd.clone(),
+                        signature: dev.sign(pending.pending[0].manifest.as_bytes()),
+                    }],
+                    merge: true,
+                }))
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            !result.merged,
+            "this image's activation does not verify; staged only"
+        );
+        let calls = mirror.lock().unwrap().clone();
+        assert!(
+            calls.contains(&"stage_system_layers 1".to_owned()),
+            "{calls:?}"
+        );
+        assert!(
+            !calls
+                .iter()
+                .any(|c| c == "activate_system_layers" || c == "drop_unverified_merge"),
+            "/usr is left as the running image merged it: {calls:?}"
+        );
     }
 }

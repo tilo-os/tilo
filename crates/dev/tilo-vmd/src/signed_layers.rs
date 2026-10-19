@@ -54,6 +54,16 @@ pub fn remove_legacy_links(dir: &Path, layers_dir: &Path) -> Result<bool, Daemon
     Ok(removed)
 }
 
+/// Whether the activation unit at `unit` (the image's) merges signed
+/// layers: it starts for a desired one. An image from before them has no
+/// such condition, and its activation ignores the desired set.
+pub fn activation_takes_signed_layers(unit: &Path) -> bool {
+    fs::read_to_string(unit).is_ok_and(|text| {
+        text.lines()
+            .any(|line| line.trim() == "ConditionDirectoryNotEmpty=|/var/lib/tilo/signed-layers")
+    })
+}
+
 /// Whether `entry` already names `layer` with exactly these files.
 fn current(entry: &Path, layer: &Path, manifest: &[u8], signature: &[u8]) -> bool {
     fs::read_link(entry.join(PAYLOAD_LINK)).is_ok_and(|target| target == layer)
@@ -271,6 +281,22 @@ mod tests {
         assert!(fs::symlink_metadata(extensions.join(&a)).is_err());
         assert!(fs::symlink_metadata(extensions.join("foreign")).is_ok());
         assert!(!remove_legacy_links(&extensions, &layers_dir).unwrap());
+    }
+
+    #[test]
+    fn the_shipped_activation_unit_takes_signed_layers() {
+        let unit = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../os/usr/lib/systemd/system/tilo-extension-activate.service");
+        assert!(activation_takes_signed_layers(&unit));
+        let dir = tempfile::tempdir().unwrap();
+        let older = dir.path().join("tilo-extension-activate.service");
+        fs::write(
+            &older,
+            "[Unit]\nConditionDirectoryNotEmpty=|/var/lib/extensions\n",
+        )
+        .unwrap();
+        assert!(!activation_takes_signed_layers(&older));
+        assert!(!activation_takes_signed_layers(&dir.path().join("missing")));
     }
 
     #[test]

@@ -411,6 +411,18 @@ pub struct PendingEndorsement {
 pub struct EndorsementsPending {
     pub authorities: Vec<AuthorityInfo>,
     pub pending: Vec<PendingEndorsement>,
+    /// The layers merged into the machine's `/usr` now (the `vm` slot's and
+    /// the owner's login's current generations).
+    #[serde(default)]
+    pub current: Vec<String>,
+    /// Of those, the layers whose `tilo-vmd` predates signed layers: once
+    /// merged it would merge layers itself, behind the activation.
+    #[serde(default)]
+    pub unsigned_mergers: Vec<String>,
+    /// Whether the running image's activation verifies signed layers; an
+    /// older image's gets them staged for its next boot of one that does.
+    #[serde(default)]
+    pub activation_takes_signed_layers: bool,
 }
 
 /// Signatures for pending manifests: base64 Ed25519, as a `.sig` holds it.
@@ -433,6 +445,11 @@ pub struct Endorsement {
 pub struct LayerEndorseResult {
     pub endorsed: Vec<String>,
     pub authority: AuthorityInfo,
+    /// The merge ran (`merge` asked for, on an image whose activation
+    /// verifies signed layers); otherwise the layers are staged for the next
+    /// boot of one that does.
+    #[serde(default)]
+    pub merged: bool,
 }
 
 /// Enroll `public_key` (PEM) as the extension authority `name`. An owner

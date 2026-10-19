@@ -1170,6 +1170,11 @@ pub struct UpgradeArgs {
     /// Stage the image for the next boot instead of rebooting now.
     #[arg(long)]
     pub no_reboot: bool,
+    /// Go ahead although layers merged into the machine's /usr are not signed
+    /// by a key it enrolled: the new image's activation leaves them out, so
+    /// the vm and device slots come up on the image as installed.
+    #[arg(long)]
+    pub allow_unsigned_layers: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1296,7 +1301,13 @@ pub enum TrustCommand {
     #[command(
         after_help = "Examples:\n  tilo-vm trust enroll\n  tilo-vm --target yoga trust enroll\n\nEnrolling is the owner's decision: whoever holds this host's key can then put\nlayers into the machine's /usr. It writes /etc/tilo/extension-authorities.d/dev.pub,\nwhich tilo-security-audit lists under development posture. Run it again at any\ntime: it changes nothing that is already in place. A VM tilo-vm runs itself takes\nthe key at its first swap; see tilo-vm guide trust."
     )]
-    Enroll,
+    Enroll {
+        /// Where a tilo-vmd that signs comes from when the machine's own is
+        /// older: worktree, sha:<commit> or ci:<tag>. It runs for this command
+        /// only; nothing is swapped.
+        #[arg(long, default_value = "worktree")]
+        vmd_from: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
