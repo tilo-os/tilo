@@ -67,17 +67,22 @@ pub struct ControlInvocation {
 }
 
 impl ControlInvocation {
-    /// An invocation of `action` on `resource`, with its arguments.
+    /// An invocation of `action` on `resource`, with its arguments, or `None`
+    /// when either half is empty or contains the address separator.
+    ///
+    /// This checks the format only. The host resolves the address against its
+    /// fresh resource tree and revalidates the arguments; constructing a value
+    /// grants no authority.
     #[must_use]
     pub fn from_parts(
-        resource: impl Into<String>,
-        action: impl Into<String>,
+        resource: impl AsRef<str>,
+        action: impl AsRef<str>,
         arguments: serde_json::Map<String, serde_json::Value>,
-    ) -> Self {
-        Self {
-            address: ActionAddress::new(resource, action),
+    ) -> Option<Self> {
+        Some(Self {
+            address: ActionAddress::checked(resource, action)?,
             arguments,
-        }
+        })
     }
 }
 
@@ -2464,7 +2469,8 @@ mod tests {
             .unwrap()
             .clone();
         let invocation =
-            ControlInvocation::from_parts("notes.note:1", "edit-title", arguments.clone());
+            ControlInvocation::from_parts("notes.note:1", "edit-title", arguments.clone())
+                .expect("a stable address");
         assert_eq!(
             invocation.address,
             ActionAddress::new("notes.note:1", "edit-title")
@@ -2473,6 +2479,13 @@ mod tests {
         assert_eq!(
             ActionAddress::parse(&invocation.address.encode()),
             Some(invocation.address)
+        );
+        assert!(
+            ControlInvocation::from_parts("notes\u{1f}note", "edit-title", arguments.clone())
+                .is_none()
+        );
+        assert!(
+            ControlInvocation::from_parts("notes.note:1", "edit\u{1f}title", arguments).is_none()
         );
     }
 

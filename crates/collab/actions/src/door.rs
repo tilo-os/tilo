@@ -48,6 +48,19 @@ impl ActionAddress {
         }
     }
 
+    /// The address of `resource` and `action`, or `None` when either half
+    /// cannot survive [`Self::encode`]: an empty id or one containing
+    /// [`KEY_SEP`] would let two different pairs name one string.
+    #[must_use]
+    pub fn checked(resource: impl AsRef<str>, action: impl AsRef<str>) -> Option<Self> {
+        let (resource, action) = (resource.as_ref(), action.as_ref());
+        (!resource.is_empty()
+            && !action.is_empty()
+            && !resource.contains(KEY_SEP)
+            && !action.contains(KEY_SEP))
+        .then(|| Self::new(resource, action))
+    }
+
     /// The single-string form, for transports that carry one id. [`KEY_SEP`]
     /// never appears in either half, so [`parse`](Self::parse) is unambiguous.
     pub fn encode(&self) -> String {
@@ -1669,5 +1682,19 @@ mod tests {
         assert_eq!(ActionAddress::parse(&address.encode()), Some(address));
         assert_eq!(ActionAddress::parse("notes.note:1"), None);
         assert_eq!(ActionAddress::parse(&format!("{KEY_SEP}star")), None);
+        assert_eq!(
+            ActionAddress::checked("notes.note:1", "edit"),
+            Some(ActionAddress::new("notes.note:1", "edit"))
+        );
+        assert_eq!(ActionAddress::checked("", "edit"), None);
+        assert_eq!(ActionAddress::checked("notes.note:1", ""), None);
+        assert_eq!(
+            ActionAddress::checked(&format!("notes{KEY_SEP}note"), "edit"),
+            None
+        );
+        assert_eq!(
+            ActionAddress::checked("notes.note:1", format!("edit{KEY_SEP}title")),
+            None
+        );
     }
 }

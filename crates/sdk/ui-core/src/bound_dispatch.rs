@@ -110,17 +110,22 @@ pub struct BoundActionAddress {
 }
 
 impl BoundActionAddress {
-    /// The address of `action` on `resource` as `instance` publishes it.
+    /// The address of `action` on `resource` as `instance` publishes it, or
+    /// `None` when either half is empty or contains the address separator.
+    ///
+    /// This checks the format only. The host still resolves the instance
+    /// against its fresh resource tree and revalidates arguments before the
+    /// action door opens; constructing a value grants no authority.
     #[must_use]
     pub fn new(
         instance_id: crate::application::InstanceId,
-        resource: impl Into<String>,
-        action: impl Into<String>,
-    ) -> Self {
-        Self {
+        resource: impl AsRef<str>,
+        action: impl AsRef<str>,
+    ) -> Option<Self> {
+        Some(Self {
             instance_id,
-            address: tilo_actions::ActionAddress::new(resource, action),
-        }
+            address: tilo_actions::ActionAddress::checked(resource, action)?,
+        })
     }
 }
 
@@ -5472,7 +5477,8 @@ mod bound_action_address_tests {
     #[test]
     fn a_bound_action_address_names_one_instance_and_round_trips_its_address() {
         let instance: crate::application::InstanceId = 42;
-        let bound = BoundActionAddress::new(instance, "notes.note:1", "edit-title");
+        let bound = BoundActionAddress::new(instance, "notes.note:1", "edit-title")
+            .expect("a stable address");
         assert_eq!(bound.instance_id, instance);
         assert_eq!(
             bound.address,
@@ -5482,6 +5488,8 @@ mod bound_action_address_tests {
             tilo_actions::ActionAddress::parse(&bound.address.encode()),
             Some(bound.address)
         );
+        assert!(BoundActionAddress::new(instance, "notes\u{1f}note", "edit-title").is_none());
+        assert!(BoundActionAddress::new(instance, "notes.note:1", "").is_none());
     }
 }
 
