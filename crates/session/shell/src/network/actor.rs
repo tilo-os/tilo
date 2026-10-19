@@ -493,6 +493,13 @@ pub enum NetEvent {
         cause: PeerDepartureCause,
         membership_epoch: Option<MembershipEpoch>,
     },
+    /// The host of the joined room on topic `ws` admits this device's
+    /// person no longer: they were removed (a public room prunes guests it
+    /// has not seen for long). The shell joins again through the room's
+    /// door, where it has one.
+    NotAdmitted {
+        ws: WorkspaceId,
+    },
     /// An authenticated durable host finished subscribing to this workspace.
     /// Distinct from a direct peer arrival: the shell uses this edge to seed
     /// transport-level checkpoints for future first-time/offline devices.
@@ -2326,8 +2333,17 @@ impl ActorState {
     /// The host at `peer` subscribed this device to `ws`: refresh what its
     /// native session holds and send the requests that waited for it.
     fn host_ready(&mut self, ws: WorkspaceId, peer: EndpointId) -> NetEvent {
-        // The host caught this device up: the room holds what it holds.
-        crate::shell::room_sync::synced(ws);
+        // The room's own host caught this device up: the room holds what it
+        // holds. Another host on the topic (a personal relay, a peer) says
+        // nothing about the room's host.
+        if !self.native_routes.contains(ws)
+            || self
+                .host_sessions
+                .get(&(ws, peer))
+                .is_some_and(|runtime| runtime.native_scope.is_some())
+        {
+            crate::shell::room_sync::synced(ws);
+        }
         self.request_native_refresh(ws);
         for request in self.room_governance.ready_for(ws, peer) {
             self.send_to_host(request, peer);

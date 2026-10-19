@@ -908,6 +908,67 @@ mod door_tests {
         relay.shutdown().await;
     }
 
+    /// A public room prunes the guests it has not seen for long; a Tilo
+    /// computer that holds the room comes back through the door as the same
+    /// person, with the same device, and is a member again (the shell's
+    /// `readmit_site_room`).
+    #[tokio::test]
+    async fn a_pruned_guest_comes_back_through_the_door_with_the_same_device() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, owner) = governor();
+        let relay = view_read_relay(dir.path(), &key, &owner).await;
+        let rooms = relay.rooms().unwrap();
+        let room = rooms.create("Lounge").await.unwrap().room;
+        rooms
+            .publish(
+                &room,
+                &owner,
+                Listing {
+                    description: String::new(),
+                    default_role: RoomRole::Editor,
+                },
+            )
+            .await
+            .unwrap();
+        let (guest_key, guest) = guest_device();
+        let join = DoorJoin {
+            user_public_key: hex::encode(guest.user_public_key),
+            display_name: "Cy".into(),
+        };
+        let member = |members: &[tilo_peer_state::GovernedMember]| {
+            members
+                .iter()
+                .any(|member| member.user_public_key == guest.user_public_key && !member.removed)
+        };
+        assert!(matches!(
+            walk_in_as(rooms, &room, &join, &guest_key, &guest).await,
+            Ok(JoinReply::Admitted { .. })
+        ));
+        rooms
+            .prune_members(
+                &room,
+                &owner,
+                [9; 32],
+                &std::collections::BTreeSet::from([guest.user_public_key]),
+            )
+            .await
+            .unwrap();
+        assert!(!member(&rooms.summary(&room).await.unwrap().members));
+
+        assert!(
+            matches!(
+                walk_in_as(rooms, &room, &join, &guest_key, &guest).await,
+                Ok(JoinReply::Admitted {
+                    role: RoomRole::Editor,
+                    ..
+                })
+            ),
+            "the same person and device are let in again"
+        );
+        assert!(member(&rooms.summary(&room).await.unwrap().members));
+        relay.shutdown().await;
+    }
+
     #[tokio::test]
     async fn a_private_workspace_has_no_door_and_is_not_listed() {
         let dir = tempfile::tempdir().unwrap();

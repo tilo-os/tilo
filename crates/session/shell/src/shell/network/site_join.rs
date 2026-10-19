@@ -531,12 +531,140 @@ impl ShellNetwork {
         self.join_site(site)
     }
 
+    /// The host of `room`, a site's workspace this computer holds, admits
+    /// this device's person no longer: a public room prunes the guests it
+    /// has not seen for long (the room service's `TILO_ROOMS_PRUNE_AFTER_MINS`),
+    /// and they join again through its door as the same person. Ask the
+    /// site's door to admit the person again and redeem that admission with
+    /// this device's own certificate, which the room's enrollment here
+    /// already holds, then dial the room again. Nothing here changes: the
+    /// workspace, its enrollment and what it holds stay as they are; the
+    /// host adds the person back to the room, at its door's role.
+    ///
+    /// Not for a site the person left, and not again within ten minutes of
+    /// the last time while the room keeps turning this device away. Runs in
+    /// the background; what happened is logged.
+    pub(super) fn readmit_site_room(&self, room: RoomId) {
+        let Some(entry) = self.site_of_room(room) else {
+            return;
+        };
+        if self.hosted_sites.left(&entry) || !self.hosted_sites.begin_readmit(room) {
+            return;
+        }
+        let prepared = (|| -> Result<_, String> {
+            let runtime = self.runtime_handle()?;
+            let (user, name) = self.site_person().map_err(|error| error.to_string())?;
+            let identity = self
+                .host_identity
+                .as_ref()
+                .ok_or("this computer has no identity yet")?;
+            let owner = self.native_owner()?;
+            let device = owner.with_current(room, |view| Ok(view.device().clone()))?;
+            let key = identity.device_signing_key.clone();
+            if key.verifying_key().to_bytes() != device.device_public_key {
+                return Err("the room's enrollment names another device".into());
+            }
+            let connect = crate::network::actor::native_ingress::Connect::new(owner, room)?;
+            let origin = self
+                .hosted_sites
+                .origin(room)
+                .ok_or("the workspace's host is unknown")?;
+            let https = crate::network::actor::HttpsRoute(HostHttp::new(&origin)?);
+            Ok((runtime, user, name, device, key, connect, https))
+        })();
+        let (runtime, user, name, device, key, connect, https) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                tracing::warn!(%room, %error, "a site's workspace was not joined again");
+                return;
+            }
+        };
+        let readmits = self.hosted_sites.readmits();
+        let cmd_tx = self.cmd_tx.clone();
+        runtime.spawn(async move {
+            let readmitted = readmit(&entry, room, (user, name), device, &key).await;
+            match readmitted {
+                Ok(()) => {
+                    tracing::info!(%room, "joined a site's workspace again after its host let the person go");
+                    hosted_sites::State::readmitted(&readmits, room);
+                    let _ = cmd_tx.try_send(crate::network::actor::NetCmd::NativeConnect(
+                        connect,
+                        Some(https),
+                    ));
+                }
+                Err(error) => {
+                    tracing::warn!(%room, %error, "a site's workspace was not joined again");
+                }
+            }
+        });
+    }
+
     /// The slot and enrollment an enrollment into `room` still runs for.
     fn enrolling_site_room(&self, room: RoomId) -> Option<(WorkspaceId, u64)> {
         let id = self.enrolling_into(room)?;
         let attempts = self.native_enrollment.attempts.lock().ok()?;
         attempts.get(&id).map(|attempt| (attempt.local(), id))
     }
+}
+
+/// Ask the door of the site at `entry` to admit `person` (their key and
+/// name) to `room` again, and redeem that admission with `device`, the
+/// certificate the room's enrollment here holds, signing with `key`.
+async fn readmit(
+    entry: &url::Url,
+    room: RoomId,
+    (user, name): ([u8; 32], String),
+    device: tilo_user_identity::DeviceCert,
+    key: &ed25519_dalek::SigningKey,
+) -> Result<(), SiteError> {
+    use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
+    let site = hosted_sites::resolve_site(entry).await?;
+    let answer = hosted_sites::admit(&site, user, &name).await?;
+    let invitation = tilo_peer_state::join::decode_and_verify_invitation_text(
+        &answer.invitation,
+        Some(user),
+        &tilo_user_identity::RevocationList::new(),
+        tilo_clock::unix_now_ns(),
+    )
+    .map_err(SiteError::Refused)?;
+    if RoomId::parse(&invitation.grant().room) != Some(room) {
+        return Err(SiteError::Refused(
+            "the site's door admits to another workspace now".into(),
+        ));
+    }
+    let host = invitation
+        .grant()
+        .transport
+        .iter()
+        .find_map(|hint| {
+            IrohWorkspaceHostHintV1::authenticate_transport_hint(hint)
+                .ok()
+                .map(|(host, _)| host.endpoint_addr)
+        })
+        .ok_or_else(|| SiteError::Refused("the invitation names no host".into()))?;
+    let client = tilo_relay_session::workspace_join::WorkspaceJoinClient::https(
+        HostHttp::new(&answer.origin).map_err(SiteError::Unreachable)?,
+        Some(tilo_relay_session::workspace_join::DoorAdmission {
+            token: answer.admission_token.into_bytes(),
+            name,
+        }),
+    );
+    let mut request_id = [0; 32];
+    rand_core::Rng::fill_bytes(
+        &mut getrandom::rand_core::UnwrapErr(getrandom::SysRng),
+        &mut request_id,
+    );
+    client
+        .redeem(
+            host,
+            invitation.signed_invitation().to_vec(),
+            device,
+            key,
+            request_id,
+        )
+        .await
+        .map_err(|error| SiteError::Refused(error.to_string()))?;
+    Ok(())
 }
 
 /// The first window of `app` in `workspace`, whoever opened it: its strip,

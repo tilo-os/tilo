@@ -353,26 +353,8 @@ impl ActorState {
         };
         let session = match *result {
             Ok(session) => session,
-            // The room's host speaks another peer protocol version: the
-            // room cannot sync until one side updates, which the person
-            // is told, rather than holding a room that silently stays empty.
-            Err(tilo_joined_room::session::DialError::PeerVersion { theirs }) => {
-                tracing::warn!(
-                    ws,
-                    theirs,
-                    ours = neighbour_wire::PEER_PROTOCOL_VERSION,
-                    "the room's host speaks another peer protocol version"
-                );
-                crate::shell::collaborator_versions::note(
-                    payload.endpoint_addr.id.to_string(),
-                    String::new(),
-                    theirs,
-                );
-                crate::shell::room_sync::other_version(ws, theirs);
-                return;
-            }
             Err(error) => {
-                tracing::debug!(%error, ws, "native host dial failed; retrying");
+                dial_refused(&self.subscribers, ws, payload.endpoint_addr.id, error);
                 return;
             }
         };
@@ -422,6 +404,41 @@ impl ActorState {
             },
         );
         self.drive_native_publication(ws);
+    }
+}
+
+/// What a failed dial of the joined room on topic `ws`, whose host is
+/// `host`, tells the person and the shell.
+fn dial_refused(
+    subscribers: &HashMap<u64, tokio::sync::mpsc::Sender<super::NetEvent>>,
+    ws: u64,
+    host: iroh::EndpointId,
+    error: tilo_joined_room::session::DialError,
+) {
+    match error {
+        // The room's host speaks another peer protocol version: the room
+        // cannot sync until one side updates, which the person is told,
+        // rather than holding a room that silently stays empty.
+        tilo_joined_room::session::DialError::PeerVersion { theirs } => {
+            tracing::warn!(
+                ws,
+                theirs,
+                ours = neighbour_wire::PEER_PROTOCOL_VERSION,
+                "the room's host speaks another peer protocol version"
+            );
+            crate::shell::collaborator_versions::note(host.to_string(), String::new(), theirs);
+            crate::shell::room_sync::other_version(ws, theirs);
+        }
+        // The room removed this device's person: dialing again changes
+        // nothing until they join again, which the shell does through the
+        // room's door where it has one.
+        tilo_joined_room::session::DialError::NotAdmitted => {
+            tracing::warn!(ws, "the room's host admits this device's person no longer");
+            if let Some(subscriber) = subscribers.get(&ws) {
+                let _ = subscriber.try_send(super::NetEvent::NotAdmitted { ws });
+            }
+        }
+        error => tracing::debug!(%error, ws, "native host dial failed; retrying"),
     }
 }
 
