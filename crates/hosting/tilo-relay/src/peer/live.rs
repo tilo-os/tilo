@@ -54,6 +54,10 @@ pub(super) async fn handle_live_join(
 /// The room authority `peer` takes part in calls of `workspace_id` through:
 /// none unless they subscribed to it and this relay governs its room, and
 /// none for a spectator, who takes no part in the room's calls.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the registry guard only lives for the lookup and the workspace guard for the answer read from it"
+)]
 async fn call_authority(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
