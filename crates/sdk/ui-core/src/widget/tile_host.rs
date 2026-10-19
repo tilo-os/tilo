@@ -584,6 +584,39 @@ impl TileHost {
         Ok(())
     }
 
+    /// Run `visit` on the root of this tile's app, where the window's search
+    /// finds a document or a list ([`crate::widget::WindowSearch`]); `visit`
+    /// says whether it changed what the app shows. `None` for a tile with no
+    /// app (a placeholder, a notice).
+    pub fn visit_search_root(
+        &mut self,
+        visit: &mut dyn FnMut(&mut dyn Widget) -> bool,
+    ) -> Option<bool> {
+        let TileContent::App(app) = &mut self.content else {
+            return None;
+        };
+        let app = app.as_mut() as &mut dyn Widget;
+        let runtime =
+            super::capability::capability::<dyn crate::widget::SearchableWindow>(&*app).is_some();
+        let changed = if runtime {
+            super::capability::capability_mut::<dyn crate::widget::SearchableWindow>(app)
+                .is_some_and(|window| window.visit_search_root(visit))
+        } else {
+            visit(app)
+        };
+        Some(changed)
+    }
+
+    /// What the window's search can act on in this tile's app.
+    pub fn in_place_search(&mut self) -> crate::widget::InPlace {
+        let mut found = crate::widget::InPlace::Nothing;
+        let _ = self.visit_search_root(&mut |root| {
+            found = crate::widget::InPlace::of(root);
+            false
+        });
+        found
+    }
+
     /// Inactive retained tiles have no nodes in the current Taffy tree.
     pub(crate) fn discard_layout_nodes(&mut self) {
         self.live_callback_node = None;

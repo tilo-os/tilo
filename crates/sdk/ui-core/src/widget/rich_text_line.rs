@@ -957,6 +957,13 @@ impl RichTextLine {
         // drops the RTL run or makes an unmarked visual gap clickable.
         self.inner.selection_rects(theme, range.start, range.end)
     }
+
+    /// [`Self::mark_rects`] under the theme the line was last laid out in,
+    /// for a host that scrolls a range into view between frames.
+    #[must_use]
+    pub fn prepared_range_rects(&self, range: std::ops::Range<usize>) -> Vec<Rect> {
+        self.mark_rects(&self.measurement_theme, range)
+    }
 }
 
 impl RichTextLine {

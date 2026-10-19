@@ -6911,23 +6911,87 @@ impl ShellOverlayHost {
         if self.group_row_ptrs.is_empty() {
             return;
         }
-        let mut requested = false;
+        let mut requested = None;
         for &ptr in self.group_row_ptrs.values() {
             // SAFETY: see field doc on `group_row_ptrs`.
             let row: &mut GroupRow = unsafe { &mut *ptr };
             for g in &mut row.groups {
-                if g.take_pending_search_open().is_some() {
-                    requested = true;
+                if let Some(handoff) = g.take_pending_search_open() {
+                    requested = Some(handoff);
                 }
             }
         }
-        if !requested {
+        let Some(handoff) = requested else {
             return;
-        }
+        };
         // Mirror the widget-side active tab into the tree first so the scope
         // resolves to the app whose chip was clicked, not a stale pointer.
         self.harvest_active_tab_writeback();
-        self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::ActiveApp);
+        let scope = match handoff.reach {
+            ui::widget::SearchReach::App => crate::shell::chrome_state::SearchScope::ActiveApp,
+            ui::widget::SearchReach::Everywhere => crate::shell::chrome_state::SearchScope::All,
+        };
+        if handoff.query.is_empty() {
+            // The control of a window with nothing to search in place: the
+            // palette narrowed to its app, toggled as the chip always was.
+            self.open_palette_with_scope(scope);
+            return;
+        }
+        // A search widened from a window carries its query on; the palette
+        // opens (never toggles closed) in the wider scope.
+        let current = self
+            .chrome
+            .as_ref()
+            .map(|c| c.borrow().search_scope)
+            .unwrap_or_default();
+        if !self.palette_visible || current != scope {
+            self.open_palette_with_scope(scope);
+        }
+        self.palette.set_query(&handoff.query);
+        self.palette_visible = true;
+    }
+
+    /// Whether a window's search field holds the keyboard
+    /// ([`ui::widget::WindowSearch::has_keyboard`]).
+    pub(crate) fn window_search_has_keyboard(&self) -> bool {
+        self.group_row_ptrs.values().any(|&ptr| {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &GroupRow = unsafe { &*ptr };
+            row.groups
+                .iter()
+                .any(|group| group.window_search().has_keyboard())
+        })
+    }
+
+    /// Give a keyboard or input-method event to the window whose search
+    /// field holds the keyboard, ahead of every chord and focused control
+    /// but the desktop's own (Super) ones: the field is a text field like
+    /// any other. Whether it took it.
+    fn route_window_search_input(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        if !matches!(
+            event,
+            WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
+        ) || ctx.modifiers.state().super_key()
+            || self.palette_visible
+        {
+            return false;
+        }
+        let mut taken = false;
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            for group in &mut row.groups {
+                taken |= group.route_search_input(event, &mut ctx.reborrow(ctx.path, ctx.node_id));
+            }
+        }
+        if taken {
+            self.harvest_pending_search_open();
+        }
+        taken
     }
 
     /// Sibling of [`Self::harvest_pending_search_open`] for the "+" chip:
@@ -22115,6 +22179,10 @@ impl Widget for ShellOverlayHost {
         if !Self::is_pointer_event(event)
             && self.route_collaborators_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id))
         {
+            return;
+        }
+        if self.route_window_search_input(event, &mut ctx.reborrow(ctx.path, ctx.node_id)) {
+            *ctx.handled = true;
             return;
         }
         if let WindowEvent::Ime(winit::event::Ime::Commit(text)) = event

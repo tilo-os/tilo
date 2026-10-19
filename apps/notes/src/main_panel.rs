@@ -1767,15 +1767,22 @@ impl Widget for MainPanel {
                     .iter()
                     .any(|b| b.line.get_rect().height() > 0.0);
             if measured {
-                if self.follow_caret
-                    && let Some(caret) = self.editor.editor().document_caret_rect()
-                {
+                // A match the window's search made current is revealed the
+                // way a caret is; the caret stays where the person left it.
+                let found = self.editor.editor_mut().take_find_reveal();
+                let target = found.or_else(|| {
+                    self.follow_caret
+                        .then(|| self.editor.editor().document_caret_rect())
+                        .flatten()
+                });
+                if let Some(caret) = target {
                     let viewport_top = self.rect.y0 + self.scroll_top_inset();
                     let viewport_bottom = viewport_top + viewport_h;
                     // The first caret starts below the editor's own top padding.
                     // Revealing the document start must retain that padding,
                     // rather than scrolling it away to pin the glyph to the clip.
-                    let at_document_start = self.editor.editor().focused_index() == Some(0)
+                    let at_document_start = found.is_none()
+                        && self.editor.editor().focused_index() == Some(0)
                         && self
                             .editor
                             .editor()

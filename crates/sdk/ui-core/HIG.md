@@ -290,6 +290,19 @@ answer:
 | **narrow the list already on screen** | `Filterable` on the list | `SearchField::filter()` in the navigation shell's filter slot (or `Filtered`), with a "3 of 120" count; Enter or "Search everywhere" escalates to the platform search |
 | **find in the document on screen** | `Findable` on the document view | the `FindBar` band at the top of the content region (`FindScope`), opened by Ctrl+F |
 
+- **In a Tilo window, the window bar searches in place.** The bar's search
+  control, right after the window's place, expands into a field where it
+  stands (also Ctrl+F); what is typed reaches the app's own `Findable`
+  document (every match painted, "3 of 12", Enter and Shift+Enter step) or
+  its `Filterable` list ("12 of 40"), through `widget::WindowSearch`. It
+  widens step by step: this view, then the whole app ("Search Notes", or
+  Ctrl+F again), then everywhere, both handing the query to the platform
+  palette. An app gets this by providing the capability it already has; it
+  draws nothing. The `FindBar` band and the filter slot stay for windows the
+  shell does not frame.
+- **Typing in a focused list jumps.** A `TreeView` (and so a `NavList`) moves
+  to the first row whose name begins with what was typed; a `VirtualList`
+  does when its model names its rows (`ListModel::label`).
 - **The launcher is a button, not a field.** The toolbar's magnifier is
   `search::search_button(SearchRequest::this_app())`; a part of the app gets
   its own (`SearchRequest::within(ScopeDecl::new(anchor, "Inbox"))`, the scope

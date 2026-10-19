@@ -234,6 +234,142 @@ fn tr(key: &str) -> String {
     crate::i18n::widget_format(key, &[])
 }
 
+/// What a find over one [`Findable`] has found: how many matches, which is
+/// current, and the query and content they were found for. The [`FindBar`]
+/// keeps one, and so does the window bar's search
+/// ([`crate::widget::WindowSearch`]): one engine, whatever draws the field.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FindSession {
+    matches: usize,
+    current: Option<usize>,
+    /// The query and options the matches were last found for.
+    searched: Option<(String, FindOptions)>,
+    /// The findable's [`Findable::content_revision`] the matches were found in.
+    searched_revision: u64,
+    /// The view reports its own results ([`Self::set_results`]).
+    engine_results: bool,
+}
+
+impl FindSession {
+    /// How many matches the last find found.
+    #[must_use]
+    pub fn matches(&self) -> usize {
+        self.matches
+    }
+
+    /// `(current, total)`, 1-based current; `None` with no current match.
+    #[must_use]
+    pub fn position(&self) -> Option<(usize, usize)> {
+        self.current
+            .map(|current| (current.saturating_add(1), self.matches))
+    }
+
+    /// The results of a view whose engine finds on its own: `total`
+    /// matches, `current` the 0-based one shown.
+    pub fn set_results(&mut self, total: usize, current: Option<usize>) {
+        self.engine_results = true;
+        self.matches = total;
+        self.current = current.filter(|&c| c < total);
+    }
+
+    /// Whether `query` under `options` is not what the matches were found for.
+    #[must_use]
+    pub fn is_stale(&self, query: &str, options: FindOptions) -> bool {
+        self.searched
+            .as_ref()
+            .is_none_or(|(searched, with)| searched != query || *with != options)
+    }
+
+    /// Whether the content under the find changed since it last ran.
+    #[must_use]
+    pub fn content_moved(&self, target: &dyn Findable) -> bool {
+        self.searched.is_some() && self.searched_revision != target.content_revision()
+    }
+
+    /// Find `query` again and show the match nearest `keep` (the first
+    /// with `None`): the query or an option changed.
+    pub fn search(
+        &mut self,
+        target: &mut dyn Findable,
+        query: &str,
+        options: FindOptions,
+        keep: Option<usize>,
+    ) {
+        if self.find(target, query, options, keep)
+            && let Some(current) = self.current
+        {
+            target.reveal(current);
+        }
+    }
+
+    /// Find `query` again without moving the view, keeping the current
+    /// match: the content changed under the find.
+    pub fn refresh(&mut self, target: &mut dyn Findable, query: &str, options: FindOptions) {
+        let keep = self.current;
+        let _ = self.find(target, query, options, keep);
+    }
+
+    /// Run the find; whether it produced results to show (an engine that
+    /// answers later reports through [`Self::set_results`]).
+    fn find(
+        &mut self,
+        target: &mut dyn Findable,
+        query: &str,
+        options: FindOptions,
+        keep: Option<usize>,
+    ) -> bool {
+        let found = target.find(query, options);
+        self.searched = Some((query.to_owned(), options));
+        self.searched_revision = target.content_revision();
+        if self.engine_results && found.is_empty() && !query.is_empty() {
+            return false;
+        }
+        self.matches = found.len();
+        self.current =
+            (self.matches > 0).then(|| keep.unwrap_or(0).min(self.matches.saturating_sub(1)));
+        true
+    }
+
+    /// Make the next (or previous) match current, wrapping, and show it.
+    pub fn step(&mut self, target: &mut dyn Findable, forward: bool) {
+        if target.step(forward) {
+            // The view's engine steps and reports where it landed.
+            return;
+        }
+        if self.matches == 0 {
+            return;
+        }
+        let current = self.current.unwrap_or(0);
+        let next = if forward {
+            current
+                .saturating_add(1)
+                .checked_rem(self.matches)
+                .unwrap_or(0)
+        } else {
+            current
+                .checked_sub(1)
+                .unwrap_or_else(|| self.matches.saturating_sub(1))
+        };
+        self.current = Some(next);
+        target.reveal(next);
+    }
+
+    /// The find ended: the view stops painting matches.
+    pub fn clear(&mut self, target: &mut dyn Findable) {
+        target.clear_find();
+        self.matches = 0;
+        self.current = None;
+        self.searched = None;
+    }
+
+    /// Forget the matches without telling a view (it is gone).
+    pub fn forget(&mut self) {
+        self.matches = 0;
+        self.current = None;
+        self.searched = None;
+    }
+}
+
 /// The find bar: a query field with a match counter, option chips,
 /// previous/next and close, and an optional replace row.
 pub struct FindBar {
@@ -246,10 +382,8 @@ pub struct FindBar {
     /// The band's leading and trailing inset: the host's content edge, so
     /// the field lines up with the text it finds in.
     inset: Option<(f64, f64)>,
-    /// The view reports its own results ([`Self::set_results`]).
-    engine_results: bool,
-    matches: usize,
-    current: Option<usize>,
+    /// What the find found.
+    session: FindSession,
     pending: Pending,
     rect: Rect,
     parts: Vec<(Part, Rect)>,
@@ -259,10 +393,6 @@ pub struct FindBar {
     /// Which field types: the query (`false`) or the replacement.
     replace_focused: bool,
     focused: bool,
-    /// The query and options the matches were last found for.
-    searched: Option<(String, FindOptions)>,
-    /// The findable's [`Findable::content_revision`] the matches were found in.
-    searched_revision: u64,
 }
 
 impl Default for FindBar {
@@ -292,9 +422,7 @@ impl FindBar {
             hex_mode: false,
             regex: false,
             inset: None,
-            engine_results: false,
-            matches: 0,
-            current: None,
+            session: FindSession::default(),
             pending: Pending::default(),
             rect: Rect::ZERO,
             parts: Vec::new(),
@@ -303,8 +431,6 @@ impl FindBar {
             platform: PlatformConventions::default(),
             replace_focused: false,
             focused: false,
-            searched: None,
-            searched_revision: 0,
         }
     }
 
@@ -378,9 +504,7 @@ impl FindBar {
     /// The results of a view whose engine finds on its own: `total`
     /// matches, `current` the 0-based one shown. The counter follows.
     pub fn set_results(&mut self, total: usize, current: Option<usize>) {
-        self.engine_results = true;
-        self.matches = total;
-        self.current = current.filter(|&c| c < total);
+        self.session.set_results(total, current);
         self.update_count();
     }
 
@@ -415,8 +539,7 @@ impl FindBar {
     /// `(current, total)` — the counter's numbers, 1-based current.
     #[must_use]
     pub fn position(&self) -> Option<(usize, usize)> {
-        self.current
-            .map(|current| (current.saturating_add(1), self.matches))
+        self.session.position()
     }
 
     /// Focus the query and select it, as Ctrl+F on an open bar does.
@@ -476,22 +599,21 @@ impl FindBar {
         let _ = self.field.take_dirty();
         let pending = std::mem::take(&mut self.pending);
         if pending.closed {
-            target.clear_find();
-            self.matches = 0;
-            self.current = None;
-            self.searched = None;
+            self.session.clear(target);
             self.pending.closed = true;
             return;
         }
-        let stale = self
-            .searched
-            .as_ref()
-            .is_none_or(|(query, options)| query != self.field.value() || *options != self.options);
+        let query = self.field.value().to_owned();
+        let stale = self.session.is_stale(&query, self.options);
         if let Some(request) = pending.replace {
             let with = self.replace_field.value().to_owned();
+            let current = self
+                .session
+                .position()
+                .map(|(current, _)| current.saturating_sub(1));
             match request {
                 ReplaceRequest::One => {
-                    if let Some(current) = self.current {
+                    if let Some(current) = current {
                         target.replace(current, &with);
                     }
                 }
@@ -499,78 +621,29 @@ impl FindBar {
                     target.replace_all(&with);
                 }
             }
-            self.research(target, self.current);
+            self.session.search(target, &query, self.options, current);
         } else if pending.search || stale {
-            self.research(target, Some(0));
-        } else if pending.refresh
-            || (self.searched.is_some() && self.searched_revision != target.content_revision())
-        {
+            self.session.search(target, &query, self.options, Some(0));
+        } else if pending.refresh || self.session.content_moved(target) {
             // Content changed under the bar: the counter follows, the view
             // stays where the person is reading.
-            self.research_quietly(target, self.current);
+            self.session.refresh(target, &query, self.options);
         }
-        if let Some(step) = pending.step
-            && target.step(step == Step::Next)
-        {
-            // The view's engine steps and reports where it landed.
-        } else if let Some(step) = pending.step
-            && self.matches > 0
-        {
-            let current = self.current.unwrap_or(0);
-            let next = match step {
-                Step::Next => current
-                    .saturating_add(1)
-                    .checked_rem(self.matches)
-                    .unwrap_or(0),
-                Step::Previous => current
-                    .checked_sub(1)
-                    .unwrap_or_else(|| self.matches.saturating_sub(1)),
-            };
-            self.current = Some(next);
-            target.reveal(next);
+        if let Some(step) = pending.step {
+            self.session.step(target, step == Step::Next);
         }
         self.update_count();
     }
 
     fn update_count(&mut self) {
-        self.field
-            .set_count((!self.field.value().is_empty()).then(|| {
-                FilterCount::new(
-                    self.current.map_or(0, |c| c.saturating_add(1)),
-                    self.matches,
-                )
-            }));
-    }
-
-    /// Run the query again without moving the view, keeping the current
-    /// match near `keep`.
-    fn research_quietly(&mut self, target: &mut dyn Findable, keep: Option<usize>) {
-        let found = target.find(self.field.value(), self.options);
-        self.searched = Some((self.field.value().to_owned(), self.options));
-        self.searched_revision = target.content_revision();
-        if self.engine_results && found.is_empty() && !self.field.value().is_empty() {
-            return;
-        }
-        self.matches = found.len();
-        self.current =
-            (self.matches > 0).then(|| keep.unwrap_or(0).min(self.matches.saturating_sub(1)));
-    }
-
-    /// Run the query again, keeping the current match near `keep`.
-    fn research(&mut self, target: &mut dyn Findable, keep: Option<usize>) {
-        let found = target.find(self.field.value(), self.options);
-        self.searched = Some((self.field.value().to_owned(), self.options));
-        self.searched_revision = target.content_revision();
-        if self.engine_results && found.is_empty() && !self.field.value().is_empty() {
-            // The engine answers later, through `set_results`.
-            return;
-        }
-        self.matches = found.len();
-        self.current =
-            (self.matches > 0).then(|| keep.unwrap_or(0).min(self.matches.saturating_sub(1)));
-        if let Some(current) = self.current {
-            target.reveal(current);
-        }
+        let count = (!self.field.value().is_empty()).then(|| {
+            let (current, total) = self
+                .session
+                .position()
+                .unwrap_or((0, self.session.matches()));
+            FilterCount::new(current, total)
+        });
+        self.field.set_count(count);
     }
 
     fn toggle(&mut self, part: Part) {
@@ -775,14 +848,15 @@ impl FindBar {
                         Part::Next => Icon::ChevronDown,
                         _ => Icon::X,
                     };
-                    let disabled = matches!(part, Part::Previous | Part::Next) && self.matches == 0;
+                    let disabled =
+                        matches!(part, Part::Previous | Part::Next) && self.session.matches() == 0;
                     let face = ButtonFace::icon_only(rect, icon, &label)
                         .hovered(hovered)
                         .disabled(disabled);
                     Button::paint(scene, transform, text, theme, &face);
                 }
                 Part::Replace | Part::ReplaceAll => {
-                    let disabled = self.matches == 0;
+                    let disabled = self.session.matches() == 0;
                     let face = ButtonFace::new(rect, &label)
                         .hovered(hovered)
                         .disabled(disabled);

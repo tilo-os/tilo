@@ -5448,6 +5448,8 @@ impl FrameBuilder {
                     // process can edit or submit its original shell line.
                     && !self.host.dictation_owns_key(&key.logical_key)
         ) || !self.active_tile_is_terminal()
+            // A window's search field holding the keyboard takes its Enter.
+            || self.host.window_search_has_keyboard()
         {
             return false;
         }

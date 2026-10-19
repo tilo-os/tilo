@@ -970,8 +970,9 @@ fn drops_and_the_tab_search_chip_open_the_right_app() {
     }
 
     // Phase `tab_search_chip_opens_palette_scoped_to_that_app`.
-    // The magnifier chip in a tab's window decoration must open the search
-    // bar *scoped to that app* — the same thing Ctrl+K does.
+    // The window bar's search control, right after the window's place, must
+    // open the search bar *scoped to that app* — the same thing Ctrl+K does —
+    // when the app has nothing to search in place.
     {
         use shell::shell::chrome_state::SearchScope;
 
@@ -981,17 +982,20 @@ fn drops_and_the_tab_search_chip_open_the_right_app() {
 
         assert!(!host.palette_visible(), "palette starts closed");
 
-        // Hover the pill so the per-tab chips get hit rects, then click search.
-        let layout = reveal_tab_chips(&mut host, &layout, strip_id);
-        let chip = host
+        let group = host
             .group_at_for_tests(strip_id, 0)
-            .expect("group after layout")
-            .bar_for_tests()
-            .search_rects()
-            .first()
-            .copied()
+            .expect("group after layout");
+        assert!(
+            group
+                .bar_for_tests()
+                .search_rects()
+                .iter()
+                .all(|r| r.area() <= 0.0),
+            "the window carries one search control, not one per tab"
+        );
+        let chip = Some(group.window_search().anchor())
             .filter(|r| r.area() > 0.0)
-            .expect("search chip rect once its reveal has run");
+            .expect("the window's search control is placed after its title");
         cursor(&mut host, &layout, chip.center());
         press(&mut host, &layout);
         release(&mut host, &layout);

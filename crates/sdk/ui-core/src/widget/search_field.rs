@@ -93,6 +93,15 @@ pub fn apply_filter(widget: &mut dyn Widget, query: &str) -> Option<FilterCount>
 
 /// Run `visit` on the first [`Filterable`] in `widget`'s subtree; whether
 /// there was one.
+pub fn with_filterable(
+    widget: &mut dyn Widget,
+    visit: &mut dyn FnMut(&mut dyn Filterable),
+) -> bool {
+    visit_filterable(widget, visit)
+}
+
+/// Run `visit` on the first [`Filterable`] in `widget`'s subtree; whether
+/// there was one.
 fn visit_filterable(widget: &mut dyn Widget, visit: &mut dyn FnMut(&mut dyn Filterable)) -> bool {
     if let Some(target) = capability_mut::<dyn Filterable>(&mut *widget) {
         visit(target);
