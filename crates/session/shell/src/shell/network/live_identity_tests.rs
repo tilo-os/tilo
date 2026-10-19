@@ -96,3 +96,21 @@ fn presence_published_on_the_brokers_runtime_names_the_person_without_the_secret
     drop(network);
     drop(home);
 }
+
+/// A person is called by their own name in the rooms they are in; without
+/// one, "Guest", which the people there tell apart by number and colour.
+/// Never by a device's name ("Primary device") nor by a key: the name is
+/// all a room, a public one above all, learns of the person.
+#[test]
+fn a_person_without_a_name_is_a_guest_never_their_device() {
+    assert_eq!(super::shared_person_name(Some("Ada".into())), "Ada");
+    assert_eq!(super::shared_person_name(Some("  Ada  ".into())), "Ada");
+    let guest = crate::shell::i18n::t("presence-guest-name");
+    assert_eq!(guest, "Guest");
+    assert_eq!(super::shared_person_name(None), guest);
+    assert_eq!(super::shared_person_name(Some("   ".into())), guest);
+    // Two guests in one room are told apart by number, as any shared name.
+    let labels =
+        ui::presence::ParticipantLabels::new([("a", guest.as_str()), ("b", guest.as_str())]);
+    assert_ne!(labels.label("a", &guest), labels.label("b", &guest));
+}
