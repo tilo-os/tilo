@@ -359,9 +359,9 @@ fn body(setup: &Setup, step: &Step) -> Element {
         )
     };
     match step {
-        Step::Closed => Box::new(Column::new()),
+        Step::Closed => Box::new(Column::new().with_no_padding()),
         Step::Token => Box::new(
-            Column::new()
+            Column::new().with_no_padding()
                 .push(Box::new(Text::new(&CATALOG.t("discord-setup-token-explanation")).dimmed()))
                 .push(Box::new(
                     TextInput::from_state(&setup.token)
@@ -385,7 +385,7 @@ fn body(setup: &Setup, step: &Step) -> Element {
                     .collect(),
             );
             Box::new(
-                Column::new()
+                Column::new().with_no_padding()
                     .push(Box::new(Text::new(&CATALOG.t("discord-setup-choose")).dimmed()))
                     .push(Box::new(choice)),
             )
