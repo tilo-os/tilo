@@ -529,6 +529,24 @@ pub enum Action {
         frames: u32,
         every_ms: u64,
     },
+    /// Open `app` as a window of its own, `width` per mille of the display
+    /// wide, as every app runs on a device: its surface shows the frames it
+    /// draws in a frame of its own, and the window's bar reaches it only over
+    /// its shell-ui connection. Needs the shell's `test-support` feature.
+    OwnProcessWindow {
+        app: OwnApp,
+        width: u32,
+    },
+}
+
+/// An app [`Action::OwnProcessWindow`] runs as a window of its own.
+#[derive(Debug, Clone, Copy)]
+pub enum OwnApp {
+    /// Notes on the long note [`Action::SeedLongNotes`] writes, with
+    /// changes Ada and her agent made to it.
+    Notes,
+    /// Files at the shell's starting place, with a few files in it.
+    Files,
 }
 
 /// What starts the motion a [`Action::MotionFrames`] captures. Only a build
@@ -557,6 +575,8 @@ pub enum MotionCue {
         open: bool,
         source: ui::tokens::MotionSource,
     },
+    /// Click the named target ([`ShellDriver::resolve_named_centre`]).
+    ClickNamed(&'static str),
 }
 
 /// A named, ordered list of actions.
@@ -663,6 +683,125 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
     apply_seed_window_bar(driver, action);
     apply_desk(driver, action);
     apply_motion_frames(driver, action, sink);
+    apply_own_process_window(driver, action);
+}
+
+/// The long note [`Action::SeedLongNotes`] writes: more than a window shows.
+fn long_note_body() -> String {
+    (1..=52)
+        .map(|line| {
+            format!(
+                "Complete capture {line:02} — the document continues beyond the physical display while the live Notes window stays exactly where it is."
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// The window [`Action::OwnProcessWindow`] opens for Notes.
+const OWN_NOTES: BarTab = BarTab {
+    app_id: "so.tilo.notes",
+    title: "Complete capture",
+    surface_id: 9_301,
+    slots: None,
+};
+
+/// The window [`Action::OwnProcessWindow`] opens for Files.
+const OWN_FILES: BarTab = BarTab {
+    app_id: "so.tilo.file-explorer",
+    title: "Files",
+    surface_id: 9_302,
+    slots: None,
+};
+
+/// `Action::OwnProcessWindow` — split out of [`apply`] to keep that
+/// dispatcher short.
+fn apply_own_process_window(driver: &mut ShellDriver, action: &Action) {
+    let Action::OwnProcessWindow { app, width } = action else {
+        return;
+    };
+    let window: &'static [BarTab] = match app {
+        OwnApp::Notes => &[OWN_NOTES],
+        OwnApp::Files => &[OWN_FILES],
+    };
+    // The window is placed and adopted as a client's toplevel is.
+    apply_seed_window_bar(
+        driver,
+        &Action::SeedWindowBar {
+            tabs: window,
+            active: 0,
+            width: *width,
+        },
+    );
+    #[cfg(not(feature = "test-support"))]
+    {
+        let _ = app;
+        eprintln!(
+            "scenario: a window of its own connects over shell-ui, which needs              `--features test-support`; it shows a plain frame"
+        );
+    }
+    #[cfg(feature = "test-support")]
+    if let Err(error) = run_own_process_app(driver, *app, &window[0]) {
+        eprintln!("scenario: {app:?} did not run as a window of its own: {error}");
+    }
+}
+
+/// Mount `app` for the tab `window` opened and run it behind its own
+/// connection.
+#[cfg(feature = "test-support")]
+fn run_own_process_app(
+    driver: &mut ShellDriver,
+    app: OwnApp,
+    window: &BarTab,
+) -> Result<(), String> {
+    use shell::shell::state::TileContent;
+    let target = {
+        let chrome = driver.chrome();
+        let tree = chrome.tree();
+        tree.desktop.active_workspace().and_then(|workspace| {
+            workspace
+                .strips
+                .iter()
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .find(|tab| {
+                    matches!(tab.tile, TileContent::Foreign { surface_id, .. } if surface_id == window.surface_id)
+                })
+                .map(|tab| (workspace.room.to_string(), tab.id))
+        })
+    };
+    let (room, tab) = target.ok_or("its window did not open")?;
+    let inputs = driver.chrome().hosted_inputs().clone();
+    let component = match app {
+        OwnApp::Notes => inputs.mount_note(&room, tab, "Complete capture.md", &long_note_body()),
+        OwnApp::Files => {
+            if let Some(directory) = inputs.files_directory() {
+                for name in [
+                    "Quarterly report.txt",
+                    "Release notes.md",
+                    "Recipes.md",
+                    "Receipts 2026.csv",
+                    "Travel plans.md",
+                ] {
+                    let _ = std::fs::write(directory.join(name), name);
+                }
+            }
+            inputs.mount_files(&room, tab)
+        }
+    }
+    .ok_or("this host mounts no apps")?
+    .map_err(|error| error.to_string())?;
+    let runtime = ui::App::from_component(
+        component,
+        ui::application::ComponentRunnerInputs::from_native_process(),
+    )
+    .map_err(|error| error.to_string())?;
+    driver.add_own_process_app(runtime, window.app_id, window.surface_id)?;
+    if matches!(app, OwnApp::Notes) {
+        seed_note_history_of_tab(driver, &room, tab);
+    }
+    driver.relayout();
+    Ok(())
 }
 
 /// `Action::MotionFrames` — split out of [`apply`] to keep that dispatcher
@@ -727,6 +866,10 @@ fn apply_motion_cue(driver: &mut ShellDriver, cue: &MotionCue) {
             });
             driver.host_mut().latch_overview_transition_from(*source);
         }
+        MotionCue::ClickNamed(name) => match driver.resolve_named_centre(name) {
+            Some(point) => driver.click_at(point),
+            None => eprintln!("scenario: could not resolve named target '{name}'"),
+        },
     }
 }
 
@@ -1001,11 +1144,17 @@ fn seed_note_history(driver: &mut ShellDriver, group_idx: usize) {
         eprintln!("scenario: no window to seed History in");
         return;
     };
+    seed_note_history_of_tab(driver, &room, tab);
+}
+
+/// An afternoon of work by Ada and her agent on the note tab `tab` of
+/// `room` shows, merged as their replicas send it.
+fn seed_note_history_of_tab(driver: &mut ShellDriver, room: &str, tab: u64) {
     // The agent writes as its own device key, which the session verified as
     // delegated by Ada: its changes read as the agent's, for Ada.
     let agent_device = [0x5a_u8; 32];
     ui::history_source::set_room_agents(
-        &room,
+        room,
         vec![ui::history_source::RosterAgent {
             device: agent_device,
             person: [0xad_u8; 32],
@@ -1039,7 +1188,7 @@ fn seed_note_history(driver: &mut ShellDriver, group_idx: usize) {
         },
     ];
     let inputs = driver.chrome().hosted_inputs().clone();
-    match inputs.merge_note_edits(&room, tab, &edits) {
+    match inputs.merge_note_edits(room, tab, &edits) {
         Ok(merged) if merged == edits.len() => {}
         Ok(merged) => eprintln!("scenario: only {merged} of the note's changes merged"),
         Err(error) => eprintln!("scenario: the note's history was not seeded: {error}"),
@@ -1871,14 +2020,7 @@ fn apply_window_and_workspace_actions(driver: &mut ShellDriver, action: &Action)
             };
             let inputs = driver.chrome().hosted_inputs().clone();
             if let Some((strip_id, room, tab)) = target {
-                let body = (1..=52)
-                    .map(|line| {
-                        format!(
-                            "Complete capture {line:02} — the document continues beyond the physical display while the live Notes window stays exactly where it is."
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n\n");
+                let body = long_note_body();
                 match inputs.mount_note(&room, tab, "Complete capture.md", &body) {
                     Some(Ok(component)) => {
                         match tilo_desktop::resolver::app_tile(component, None, |_| {}) {
@@ -4053,6 +4195,108 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Key(Key::Named(NamedKey::Enter)),
                 Action::Wait(8),
                 Action::Snapshot("02-third-match"),
+            ],
+        },
+        Scenario {
+            name: "own_process_notes_search",
+            description: "Notes as a window of its own, as on a device: the window bar's search opens on it over its shell-ui connection, the long note highlights every match with n of m, and Enter steps on. Notes draws no search control of its own.",
+            actions: vec![
+                Action::OwnProcessWindow {
+                    app: OwnApp::Notes,
+                    width: 700,
+                },
+                Action::Wait(4),
+                Action::Relayout,
+                Action::Snapshot("00-control-at-rest"),
+                Action::ClickNamed("window-search-open"),
+                Action::Wait(24),
+                Action::Type("capture 1"),
+                Action::Wait(8),
+                Action::Relayout,
+                Action::Snapshot("01-search-in-place"),
+                Action::Key(Key::Named(NamedKey::Enter)),
+                Action::Key(Key::Named(NamedKey::Enter)),
+                Action::Wait(8),
+                Action::Relayout,
+                Action::Snapshot("02-third-match"),
+            ],
+        },
+        Scenario {
+            name: "own_process_notes_history",
+            description: "Notes as a window of its own: the window bar's History control opens Notes' History panel over its shell-ui connection, with the changes Ada and her agent made.",
+            actions: vec![
+                Action::OwnProcessWindow {
+                    app: OwnApp::Notes,
+                    width: 700,
+                },
+                Action::Wait(4),
+                Action::Relayout,
+                Action::ClickNamed("window-history"),
+                Action::Wait(30),
+                Action::Relayout,
+                Action::Snapshot("01-history-panel"),
+            ],
+        },
+        Scenario {
+            name: "own_process_files_search",
+            description: "Files as a window of its own: the window bar's search narrows its list over its shell-ui connection, with the count it answers.",
+            actions: vec![
+                Action::OwnProcessWindow {
+                    app: OwnApp::Files,
+                    width: 700,
+                },
+                Action::Wait(4),
+                Action::Relayout,
+                Action::Snapshot("00-control-at-rest"),
+                Action::ClickNamed("window-search-open"),
+                Action::Wait(24),
+                Action::Type("re"),
+                Action::Wait(8),
+                Action::Relayout,
+                Action::Snapshot("01-search-in-place"),
+            ],
+        },
+        Scenario {
+            name: "own_process_files_history",
+            description: "Files as a window of its own: the window bar's History control opens its History panel over its shell-ui connection.",
+            actions: vec![
+                Action::OwnProcessWindow {
+                    app: OwnApp::Files,
+                    width: 700,
+                },
+                Action::Wait(4),
+                Action::Relayout,
+                Action::ClickNamed("window-history"),
+                Action::Wait(30),
+                Action::Relayout,
+                Action::Snapshot("01-history-panel"),
+            ],
+        },
+        Scenario {
+            name: "own_process_notes_motion",
+            description: "Mid-motion frames of Notes as a window of its own: the window bar's search expanding into its field, and History's panel sliding in.",
+            actions: vec![
+                Action::OwnProcessWindow {
+                    app: OwnApp::Notes,
+                    width: 700,
+                },
+                Action::Wait(4),
+                Action::Relayout,
+                Action::MotionFrames {
+                    prefix: "search-open",
+                    cue: MotionCue::ClickNamed("window-search-open"),
+                    frames: 10,
+                    every_ms: 30,
+                },
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::Wait(24),
+                Action::Relayout,
+                Action::MotionFrames {
+                    prefix: "history-open",
+                    cue: MotionCue::ClickNamed("window-history"),
+                    frames: 12,
+                    every_ms: 30,
+                },
             ],
         },
         Scenario {
