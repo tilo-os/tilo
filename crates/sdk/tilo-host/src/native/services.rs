@@ -133,6 +133,7 @@ pub fn process_environment() -> crate::host::HostEnvironment {
             config_home: path("XDG_CONFIG_HOME"),
             cache_home: path("XDG_CACHE_HOME"),
             pipeline_seed: path("TILO_PIPELINE_SEED_DIR"),
+            font_index: path("TILO_FONT_INDEX"),
         },
         accessibility: crate::host::AccessibilityInputs {
             screen_reader: flag(&["TILO_A11Y_SCREEN_READER", "TILO_SCREEN_READER"]),

@@ -84,6 +84,10 @@ pub struct HostPaths {
     /// The session's read-only pipeline cache directory
     /// (`TILO_PIPELINE_SEED_DIR`), bound in by the launcher.
     pub pipeline_seed: Option<PathBuf>,
+    /// Where this process reads and records its font index
+    /// (`TILO_FONT_INDEX`), when the host names one; else it is kept in
+    /// [`Self::cache_dir`].
+    pub font_index: Option<PathBuf>,
 }
 
 impl HostPaths {
