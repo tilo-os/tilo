@@ -1481,6 +1481,14 @@ impl VelloDrmBridge {
         self.target.last_sparse_render_attempts
     }
 
+    /// Forget every retained frame, as a new bridge has none: the next versioned paint renders
+    /// dense. Lets a test reuse one bridge (and its compiled pipelines) for scenes that share
+    /// no history.
+    #[cfg(test)]
+    pub(crate) fn forget_retained_for_test(&mut self) {
+        self.invalidate_retained();
+    }
+
     /// The image atlas and the CPU pixels its residents keep alive.
     pub fn image_cache_stats(&self) -> vello::ImageCacheStats {
         self.target.vello().image_cache_stats()

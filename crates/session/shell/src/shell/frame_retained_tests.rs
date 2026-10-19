@@ -38,6 +38,24 @@ fn bridge() -> VelloDrmBridge {
     bridge
 }
 
+/// The retained bridge and the dense oracle [`assert_change_repaints_under`] compares, made
+/// once per test: making a bridge compiles every Vello pipeline on the software adapter, seconds
+/// each time, and a test asserts several changes in each of three themes. A test owns it and
+/// drops it before its thread ends (wgpu's own thread-locals are gone by then).
+struct ChangeOracle {
+    retained: VelloDrmBridge,
+    dense: VelloDrmBridge,
+}
+
+impl ChangeOracle {
+    fn new() -> Self {
+        Self {
+            retained: bridge(),
+            dense: bridge(),
+        }
+    }
+}
+
 fn render_dense(bridge: &mut VelloDrmBridge, scene: &Scene) -> Vec<u8> {
     let mut pixels = vec![0; xrgb_pitch() * NATIVE_HEIGHT as usize];
     bridge
@@ -2169,6 +2187,11 @@ fn assert_pan_composites_like_full_renders(desktop: PanDesktop) {
     let _ambient = DenyAmbientStarts::new();
     clock.set("TILO_CLOCK", "09:41");
     let output = u64::from(size.0) * u64::from(size.1);
+    // Whole renders keep no history (`render_whole` names no previous
+    // frame), so one oracle serves every theme: making a target compiles
+    // every Vello pipeline on the software adapter again.
+    let mut dense = gpu_target(size);
+    let mut strips_only = gpu_target(size);
     for (theme_name, theme) in [
         ("dark", Theme::dark()),
         ("light", Theme::light()),
@@ -2179,10 +2202,8 @@ fn assert_pan_composites_like_full_renders(desktop: PanDesktop) {
         frame.set_strip_pan_presenter(false, true);
         let _ = acknowledged_notes_canvas_of(&mut frame, desktop.notes());
         let mut layered = gpu_target(size);
-        let mut dense = gpu_target(size);
         // The strips alone, rendered whole at each frame's pan: what a pan's
         // band copies move, and what vello draws at the new offset instead.
-        let mut strips_only = gpu_target(size);
         let mut composited = 0;
         let mut thin = 0;
         let mut worst = 0;
@@ -2589,6 +2610,10 @@ fn assert_pan_from_warmed_rest(desktop: PanDesktop) {
     let _ambient = DenyAmbientStarts::new();
     clock.set("TILO_CLOCK", "09:41");
     let output = u64::from(size.0) * u64::from(size.1);
+    // Whole renders keep no history (`render_whole` names no previous
+    // frame), so one oracle serves every theme: making a target compiles
+    // every Vello pipeline on the software adapter again.
+    let mut dense = gpu_target(size);
     for (theme_name, theme) in [
         ("dark", Theme::dark()),
         ("light", Theme::light()),
@@ -2605,7 +2630,6 @@ fn assert_pan_from_warmed_rest(desktop: PanDesktop) {
             let _ = acknowledged_notes_canvas_of(&mut frame, desktop.notes());
             rest_as_the_session_does(&mut frame);
             let mut layered = gpu_target(size);
-            let mut dense = gpu_target(size);
             for _ in 0..4 {
                 frame.relayout();
                 let painted = frame.paint_with_damage();
@@ -2747,6 +2771,10 @@ fn a_warm_after_the_chrome_changed_rasterises_only_the_tiles_that_changed() {
     let _ambient = DenyAmbientStarts::new();
     clock.set("TILO_CLOCK", "09:41");
     let output = u64::from(SIZE.0) * u64::from(SIZE.1);
+    // Whole renders keep no history (`render_whole` names no previous
+    // frame), so one oracle serves every theme: making a target compiles
+    // every Vello pipeline on the software adapter again.
+    let mut dense = gpu_target(SIZE);
     for (theme_name, theme) in [
         ("dark", Theme::dark()),
         ("light", Theme::light()),
@@ -2757,7 +2785,6 @@ fn a_warm_after_the_chrome_changed_rasterises_only_the_tiles_that_changed() {
         let _ = acknowledged_notes_canvas_of(&mut frame, desktop.notes());
         rest_as_the_session_does(&mut frame);
         let mut layered = gpu_target(SIZE);
-        let mut dense = gpu_target(SIZE);
         let (first, _) = warm_at_rest(&mut frame, &mut layered, &|| true, theme_name);
         assert!(
             first >= 3 * output,
@@ -2828,6 +2855,10 @@ fn the_desktop_comes_to_rest_after_a_pan_without_a_dense_frame() {
     let _ambient = DenyAmbientStarts::new();
     clock.set("TILO_CLOCK", "09:41");
     let output = u64::from(SIZE.0) * u64::from(SIZE.1);
+    // Whole renders keep no history (`render_whole` names no previous
+    // frame), so one oracle serves every theme: making a target compiles
+    // every Vello pipeline on the software adapter again.
+    let mut dense = gpu_target(SIZE);
     for (theme_name, theme) in [
         ("dark", Theme::dark()),
         ("light", Theme::light()),
@@ -2837,7 +2868,6 @@ fn the_desktop_comes_to_rest_after_a_pan_without_a_dense_frame() {
         frame.set_strip_pan_presenter(false, true);
         let _ = acknowledged_notes_canvas_of(&mut frame, desktop.notes());
         let mut layered = gpu_target(SIZE);
-        let mut dense = gpu_target(SIZE);
         frame.relayout();
         let rest = frame.paint_with_damage();
         let _ = present_or_keep(&mut layered, &rest, theme_name);
@@ -3142,6 +3172,11 @@ fn a_peer_pointer_move_repaints_under_one_percent_of_a_4k_output_in_every_theme(
 fn overview_fade_repaints_one_display_and_matches_dense_in_every_theme() {
     use crate::shell::output_scene::OutputGeometry;
 
+    // One retained bridge and one dense oracle for every theme, the retained
+    // one holding no frame at each theme's start, as a new one would: making
+    // a bridge compiles every Vello pipeline on the software adapter again.
+    let mut retained = bridge();
+    let mut dense = bridge();
     for (name, theme) in [
         ("dark", Theme::dark()),
         ("light", Theme::light()),
@@ -3168,8 +3203,7 @@ fn overview_fade_repaints_one_display_and_matches_dense_in_every_theme() {
             std::thread::sleep(std::time::Duration::from_millis(120));
         }
         frames.push(frame.paint_with_damage());
-        let mut retained = bridge();
-        let mut dense = bridge();
+        retained.forget_retained_for_test();
         let mut repainted = false;
         for (index, painted) in frames.iter().enumerate() {
             let label = format!("overview fade, {name}, frame {index}");
@@ -3433,19 +3467,32 @@ fn raster_pixels(paint: &FramePaint) -> u64 {
 /// as the issue's evidence and returns the damage.
 fn assert_change_repaints_under(
     frame: &mut FrameBuilder,
+    oracle: &mut ChangeOracle,
     label: &str,
     max_percent: u64,
     change: impl FnOnce(&mut FrameBuilder),
 ) -> Vec<FineDamageRect> {
-    let mut retained = bridge();
-    let mut dense = bridge();
+    // The retained bridge holds no frame now, exactly as a new one: the next
+    // scene shares no history with the last one it drew.
+    oracle.retained.forget_retained_for_test();
+    assert_change_repaints_with(
+        frame,
+        label,
+        max_percent,
+        change,
+        (&mut oracle.retained, &mut oracle.dense),
+    )
+}
+
+fn assert_change_repaints_with(
+    frame: &mut FrameBuilder,
+    label: &str,
+    max_percent: u64,
+    change: impl FnOnce(&mut FrameBuilder),
+    (retained, dense): (&mut VelloDrmBridge, &mut VelloDrmBridge),
+) -> Vec<FineDamageRect> {
     let settled = frame.paint_with_damage();
-    paint_retained_and_compare(
-        &mut retained,
-        &mut dense,
-        &settled,
-        &format!("{label}: before"),
-    );
+    paint_retained_and_compare(retained, dense, &settled, &format!("{label}: before"));
     let previous = frame.last_produced_sections.clone();
     change(frame);
     let changed = frame.paint_with_damage();
@@ -3471,7 +3518,7 @@ fn assert_change_repaints_under(
         part_refusals(previous.as_ref(), frame),
         embedded_damage(frame)
     );
-    paint_retained_and_compare(&mut retained, &mut dense, &changed, label);
+    paint_retained_and_compare(retained, dense, &changed, label);
     // Damage the presenter finds unprofitable renders whole.
     assert!(
         !crate::shell::render::paint::damage_is_profitable(pixels, output)
@@ -3483,9 +3530,13 @@ fn assert_change_repaints_under(
 
 #[test]
 fn typing_in_the_open_palette_repaints_the_palette_not_the_output() {
+    let mut oracle = ChangeOracle::new();
     for (name, theme) in THEMES {
         let (mut frame, _clock) = desktop_in(theme());
         frame.host_mut().open_palette_for_test();
+        // The palette is open and still, not mid-way through appearing: the
+        // change under test is the typing, never the open motion.
+        frame.host_mut().force_palette_settled();
         for _ in 0..3 {
             frame.relayout();
             let _ = frame.paint_with_damage();
@@ -3499,7 +3550,7 @@ fn typing_in_the_open_palette_repaints_the_palette_not_the_output() {
         let label = format!("typing in the open palette, {name}");
         // The card grows with its results: at 4K a 720 px card's old and
         // new extent with its shadow is about 5.4 % of the output.
-        let damage = assert_change_repaints_under(&mut frame, &label, 6, |frame| {
+        let damage = assert_change_repaints_under(&mut frame, &mut oracle, &label, 6, |frame| {
             type_text(frame, "f");
             frame.relayout();
         });
@@ -3530,10 +3581,11 @@ fn nested_damage_regions_are_rasterised_once() {
 
 #[test]
 fn a_notification_appearing_repaints_its_card() {
+    let mut oracle = ChangeOracle::new();
     for (name, theme) in THEMES {
         let (mut frame, _clock) = desktop_in(theme());
         let label = format!("a notification appearing, {name}");
-        let _ = assert_change_repaints_under(&mut frame, &label, 5, |frame| {
+        let _ = assert_change_repaints_under(&mut frame, &mut oracle, &label, 5, |frame| {
             frame.with_chrome(|chrome| {
                 chrome.push_notification("Build finished", "tilo-ui passed its tests");
                 chrome.bump();
@@ -3545,12 +3597,13 @@ fn a_notification_appearing_repaints_its_card() {
 
 #[test]
 fn opening_a_tab_menu_repaints_the_menu() {
+    let mut oracle = ChangeOracle::new();
     for (name, theme) in THEMES {
         let (mut frame, _clock) = desktop_in(theme());
         let label = format!("opening a tab menu, {name}");
         // The menu key on the focused tab: the menu, and nothing a pointer
         // does to the bar on its way there.
-        let _ = assert_change_repaints_under(&mut frame, &label, 5, |frame| {
+        let _ = assert_change_repaints_under(&mut frame, &mut oracle, &label, 5, |frame| {
             assert!(
                 frame.host_mut().open_focused_tab_context_menu(),
                 "the focused tab has a menu"
@@ -3676,6 +3729,7 @@ fn open_a_note(frame: &mut FrameBuilder, label: &str) -> Point {
 #[cfg(target_os = "linux")]
 #[test]
 fn typing_in_notes_repaints_what_changed_not_the_tile() {
+    let mut oracle = ChangeOracle::new();
     for (name, theme) in THEMES {
         let (mut frame, _clock) = desktop_in(theme());
         let label = format!("naming a note, {name}");
@@ -3693,7 +3747,7 @@ fn typing_in_notes_repaints_what_changed_not_the_tile() {
         settle(&mut frame, 3);
         // The title is a part of the page of its own: a letter
         // repaints the title's band, not the page panel or the tile.
-        let _ = assert_change_repaints_under(&mut frame, &label, 5, |frame| {
+        let _ = assert_change_repaints_under(&mut frame, &mut oracle, &label, 5, |frame| {
             type_text(frame, "s");
             frame.relayout();
         });
@@ -3715,7 +3769,7 @@ fn typing_in_notes_repaints_what_changed_not_the_tile() {
         settle(&mut frame, 3);
         let before = with_notes_on_screen(&frame, |_, notes| notes.editor_text_for_test());
         for letter in ["j", "u", "m", "p", "s"] {
-            let _ = assert_change_repaints_under(&mut frame, &label, 5, |frame| {
+            let _ = assert_change_repaints_under(&mut frame, &mut oracle, &label, 5, |frame| {
                 type_text(frame, letter);
                 frame.relayout();
             });
@@ -3731,6 +3785,7 @@ fn typing_in_notes_repaints_what_changed_not_the_tile() {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_typing_update_in_one_window_is_bounded_by_the_window_and_admitted_sparse() {
+    let mut oracle = ChangeOracle::new();
     let (mut frame, _clock) = desktop_in(Theme::dark());
     let label = "typing in a note, bounded by its window";
     let title = open_a_note(&mut frame, label);
@@ -3754,7 +3809,7 @@ fn a_typing_update_in_one_window_is_bounded_by_the_window_and_admitted_sparse() 
     let window_rect = frame
         .layout_rect_to_scene(layout_rect)
         .expect("the window is on the output");
-    let damage = assert_change_repaints_under(&mut frame, label, 100, |frame| {
+    let damage = assert_change_repaints_under(&mut frame, &mut oracle, label, 100, |frame| {
         type_text(frame, "j");
         frame.relayout();
     });
@@ -3833,6 +3888,7 @@ fn a_blurred_surface_joins_only_the_damage_its_blur_can_see() {
 #[cfg(target_os = "linux")]
 #[test]
 fn moving_to_another_strip_repaints_the_focus_and_the_strip_chrome() {
+    let mut oracle = ChangeOracle::new();
     for (name, theme) in THEMES {
         let mut clock = tilo_test_env::ScopedEnv::new();
         clock.set("TILO_CLOCK", "09:41");
@@ -3857,12 +3913,13 @@ fn moving_to_another_strip_repaints_the_focus_and_the_strip_chrome() {
             // of a 4K output. Edge bands as deep as the corners made it
             // about 7.6 % (strip_pan_bench), and the whole stretch between
             // the ribbon and the rail was another 26 %.
-            let damage = assert_change_repaints_under(&mut frame, &label, 7, |frame| {
-                let mut moved = false;
-                frame.with_chrome(|chrome| moved = chrome.switch_strip(direction));
-                assert!(moved, "{label}: the desktop has another strip to move to");
-                frame.relayout();
-            });
+            let damage =
+                assert_change_repaints_under(&mut frame, &mut oracle, &label, 7, |frame| {
+                    let mut moved = false;
+                    frame.with_chrome(|chrome| moved = chrome.switch_strip(direction));
+                    assert!(moved, "{label}: the desktop has another strip to move to");
+                    frame.relayout();
+                });
             eprintln!("{label}: damage {damage:?}");
         }
     }
