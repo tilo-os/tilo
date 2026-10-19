@@ -297,7 +297,8 @@ struct Fake {
 
 impl Host for Fake {
     fn sysext_refresh(&self, _layout: &Layout) -> Result<()> {
-        *self.merges.borrow_mut() += 1;
+        let mut merges = self.merges.borrow_mut();
+        *merges = merges.saturating_add(1);
         Ok(())
     }
 

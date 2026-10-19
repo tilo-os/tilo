@@ -57,8 +57,9 @@ pub fn identity_hello_version(bytes: &[u8]) -> Option<u32> {
         return None;
     }
     let mut version: u32 = 0;
-    for (shift, byte) in rest.iter().take(5).enumerate() {
-        version |= u32::from(byte & 0x7f) << (7 * shift);
+    // A postcard varint: up to five 7-bit groups, least significant first.
+    for (shift, byte) in (0_u32..35).step_by(7).zip(rest) {
+        version |= u32::from(byte & 0x7f).checked_shl(shift)?;
         if byte & 0x80 == 0 {
             return Some(version);
         }
