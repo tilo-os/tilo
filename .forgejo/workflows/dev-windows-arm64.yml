@@ -68,8 +68,8 @@ jobs:
           SH
           chmod +x "$RUNNER_TEMP/tilo-clang/clang"
           export PATH="$RUNNER_TEMP/tilo-clang:$PATH"
-          cargo xwin test -p imager --lib --locked --release --target aarch64-pc-windows-msvc --no-run
-          cargo xwin build -p imager --bin imager --locked --release --target aarch64-pc-windows-msvc
+          cargo xwin test -p imager --lib --locked --release --features installation --target aarch64-pc-windows-msvc --no-run
+          cargo xwin build -p imager --bin imager --locked --release --features installation --target aarch64-pc-windows-msvc
           mkdir -p out
           cp target/aarch64-pc-windows-msvc/release/imager.exe out/imager.exe
           mapfile -t tests < <(find target/aarch64-pc-windows-msvc/release/deps -maxdepth 1 -name 'imager-*.exe' | sort)

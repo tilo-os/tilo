@@ -48,8 +48,8 @@ esac
 SH
     chmod +x "$wrapper/clang"
     export PATH="$wrapper:$PATH"
-    cargo xwin test -p imager --lib --locked --release --target aarch64-pc-windows-msvc --no-run
-    cargo xwin build -p imager --bin imager --locked --release --target aarch64-pc-windows-msvc
+    cargo xwin test -p imager --lib --locked --release --features installation --target aarch64-pc-windows-msvc --no-run
+    cargo xwin build -p imager --bin imager --locked --release --features installation --target aarch64-pc-windows-msvc
     cp "$target/imager.exe" "$out/imager.exe"
     mapfile -t tests < <(find "$target/deps" -maxdepth 1 -name 'imager-*.exe' | sort)
     [[ ${#tests[@]} == 1 ]] || { printf 'expected one imager test executable, found %s\n' "${#tests[@]}" >&2; exit 1; }

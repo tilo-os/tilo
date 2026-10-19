@@ -223,18 +223,24 @@ pub enum ImagerEffect {
 
 /// The imager: one binary, three flows over the one resource. A plain
 /// launch is the write wizard; `--setup` the guided Tilo setup;
-/// `--import-folders` the later folder imports.
+/// `--import-folders` the later folder imports. The setup and the imports
+/// belong to the installation (`installation`); without it, as in the Tilo
+/// app, the imager is the write wizard alone.
 pub struct ImagerShell;
 
 /// The device-local guided preparation over the same Imager resource.
+#[cfg(feature = "installation")]
 pub struct GuidedInstallerShell;
 
 /// Which flow a window shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Flow {
     Wizard,
+    #[cfg(feature = "installation")]
     Setup,
+    #[cfg(feature = "installation")]
     Imports,
+    #[cfg(feature = "installation")]
     InstallerPreview,
 }
 
@@ -242,11 +248,36 @@ impl Flow {
     /// The flow a screenshot scenario shows.
     fn of_scenario(scenario: Option<&str>) -> Self {
         match scenario {
+            #[cfg(feature = "installation")]
             Some(name) if name.starts_with("installer-") => Self::InstallerPreview,
+            #[cfg(feature = "installation")]
             Some(name) if name.starts_with("setup-") => Self::Setup,
+            #[cfg(feature = "installation")]
             Some(name) if name.starts_with("import-") => Self::Imports,
             _ => Self::Wizard,
         }
+    }
+
+    /// The flow a launch's command line asks for.
+    fn launched(cx: &ViewCx<Imager>) -> Self {
+        #[cfg(feature = "installation")]
+        {
+            if cx.launch_flag("--installer")
+                || cx.launch_flag("--installer-preview")
+                || cx.launch_flag("--demo")
+            {
+                return Self::InstallerPreview;
+            }
+            if cx.launch_flag("--import-folders") {
+                return Self::Imports;
+            }
+            if cx.launch_flag("--setup") {
+                return Self::Setup;
+            }
+        }
+        #[cfg(not(feature = "installation"))]
+        let _ = cx;
+        Self::Wizard
     }
 }
 
@@ -269,13 +300,13 @@ const WIZARD_SCENARIOS: &[&str] = &[
 /// Every screenshot scenario: the wizard's, then the setup's and the
 /// imports', so the gallery reads top to bottom.
 static SCENARIOS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(|| {
-    WIZARD_SCENARIOS
-        .iter()
+    let scenarios = WIZARD_SCENARIOS.iter();
+    #[cfg(feature = "installation")]
+    let scenarios = scenarios
         .chain(crate::setup::journey::SCENARIOS)
         .chain(crate::setup::view::SCENARIOS)
-        .chain(crate::setup::import_view::SCENARIOS)
-        .copied()
-        .collect()
+        .chain(crate::setup::import_view::SCENARIOS);
+    scenarios.copied().collect()
 });
 
 /// The plain ISO the drive scenarios review.
@@ -305,6 +336,7 @@ impl ResourceApp for ImagerShell {
     const ID: &'static str = "so.tilo.imager";
     const TITLE: &'static str = "Tilo Installer";
     const ICON: Option<&'static str> = Some("imager");
+    #[cfg(feature = "installation")]
     const FLAGS: &'static [&'static str] = &[
         "--setup",
         "--import-folders",
@@ -312,6 +344,8 @@ impl ResourceApp for ImagerShell {
         "--installer-preview",
         "--demo",
     ];
+    #[cfg(not(feature = "installation"))]
+    const FLAGS: &'static [&'static str] = &[];
     // Only hosts with a local workspace runtime can attach the imager.
     const ATTACHES_RUNTIME: bool = ui::collaboration::SESSION_RUNTIME_SUPPORTED;
 
@@ -319,7 +353,7 @@ impl ResourceApp for ImagerShell {
     /// its packaging probes: each is started with its own command line and
     /// runs before anything of the app does.
     fn helpers() -> &'static [Helper] {
-        &crate::helpers::HELPERS
+        crate::helpers::HELPERS
     }
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
@@ -362,32 +396,22 @@ impl ResourceApp for ImagerShell {
     }
 
     fn view(cx: &mut ViewCx<Imager>) -> Element {
-        let flow = cx.fixture::<Flow>().map_or_else(
-            || {
-                if cx.launch_flag("--installer")
-                    || cx.launch_flag("--installer-preview")
-                    || cx.launch_flag("--demo")
-                {
-                    Flow::InstallerPreview
-                } else if cx.launch_flag("--import-folders") {
-                    Flow::Imports
-                } else if cx.launch_flag("--setup") {
-                    Flow::Setup
-                } else {
-                    Flow::Wizard
-                }
-            },
-            |flow| *flow,
-        );
+        let flow = cx
+            .fixture::<Flow>()
+            .map_or_else(|| Flow::launched(cx), |flow| *flow);
         match flow {
+            #[cfg(feature = "installation")]
             Flow::InstallerPreview => crate::setup::journey::view(cx),
             Flow::Wizard => cx.surface(ImagerApp::new()),
+            #[cfg(feature = "installation")]
             Flow::Setup => crate::setup::view::view(cx),
+            #[cfg(feature = "installation")]
             Flow::Imports => crate::setup::import_view::view(cx),
         }
     }
 }
 
+#[cfg(feature = "installation")]
 impl ResourceApp for GuidedInstallerShell {
     type Resource = Imager;
     const ID: &'static str = ImagerShell::ID;
@@ -963,6 +987,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "installation")]
     fn launch_switches_choose_the_flow() {
         let mut setup =
             ui::framework::testing::TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
@@ -980,6 +1005,16 @@ mod tests {
             find(&resources, "imager.import").is_some(),
             "the folder imports"
         );
+    }
+
+    /// Without the installation the imager is the write wizard alone: it
+    /// takes no installation switch and offers only the wizard's scenarios.
+    #[test]
+    #[cfg(not(feature = "installation"))]
+    fn without_the_installation_the_imager_is_the_write_wizard() {
+        assert!(<ImagerShell as ResourceApp>::FLAGS.is_empty());
+        assert_eq!(<ImagerShell as ResourceApp>::scenarios(), WIZARD_SCENARIOS);
+        assert_eq!(Flow::of_scenario(Some("installer-welcome")), Flow::Wizard);
     }
 
     #[test]

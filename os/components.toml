@@ -436,6 +436,8 @@ kind = "userspace"
 scope = "session"
 packages = ["imager"]
 bins = ["tilo-prepared-setup", "tilo-installer-prepared-setup-extract"]
+# The installation's consumer side; the Imager app (apps+runtime) leaves it out.
+features = ["imager/installation"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-prepared-setup", to = "/usr/libexec/tilo-prepared-setup", mode = "0755" },

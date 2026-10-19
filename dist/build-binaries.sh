@@ -12,7 +12,8 @@ fi
 
 cd "$repo_root"
 cargo build "${cargo_args[@]}" -p launcher -p tilo-unlock-helper -p tilo-session-record
-cargo build "${cargo_args[@]}" -p imager --bin imager
+# The host package installs Tilo and imports the old folders: the installation.
+cargo build "${cargo_args[@]}" -p imager --bin imager --features installation
 # The host package deliberately excludes the test-control socket. Video
 # codecs come from the distribution's GStreamer at runtime.
 # Package only the production compositor. Building the package without an

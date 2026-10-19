@@ -30,7 +30,7 @@ build() {
   cd "tilo-$pkgver"
   export CARGO_HOME="$srcdir/cargo-home"
   cargo build --release --locked -p launcher -p tilo-unlock-helper -p tilo-session-record
-  cargo build --release --locked -p imager --bin imager
+  cargo build --release --locked -p imager --bin imager --features installation
   export TILO_UNLOCK_HELPER_PATH=/usr/lib/tilo/tilo-unlock-helper
   cargo build --release --locked -p shell --bin shell --no-default-features
   ./dist/stage-payload.sh target/release "$srcdir/payload"

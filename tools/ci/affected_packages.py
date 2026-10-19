@@ -916,8 +916,10 @@ def make_plan(
         if suite_manifest is not None else ()) if name in packages}
     # A verification recipe change must run its subject, not just contract tests.
     # No client reverse closure: these inputs change CI features, not app code.
-    if "tools/ci/package_features.py" in changes and "tilo-model-gateway" in packages:
-        reader_scopes["tilo-model-gateway"] = None
+    if "tools/ci/package_features.py" in changes:
+        for subject in ("tilo-model-gateway", "imager"):
+            if subject in packages:
+                reader_scopes[subject] = None
     readers = set(reader_scopes)
     # Readers reached only through scoped inputs run just the tests that read them.
     whole_readers = {name for name, scope in reader_scopes.items() if scope is None}

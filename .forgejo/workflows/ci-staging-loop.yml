@@ -98,7 +98,7 @@ jobs:
           echo "first free loop device: $loop"
 
       - name: Build the debug imager (test seams enabled)
-        run: cargo build --locked -p imager --bin imager
+        run: cargo build --locked -p imager --bin imager --features installation
 
       - name: Staging helper loopback proof
         env:
