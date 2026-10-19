@@ -58,8 +58,8 @@ pub use query::{Facet, FacetFilter, FacetValue, SearchQuery};
 pub use rank::{FieldWeight, MatchTier, result_relevance};
 pub use registry::{FnProvider, SearchGroup, SearchRegistry};
 pub use request::{
-    ScopeDecl, SearchOffer, SearchOpener, SearchRequest, SearchRequestScope, open_search_binding,
-    open_search_invocation, scope_contains, search_button,
+    APP_SEARCH_BUTTON_ID, ScopeDecl, SearchOffer, SearchOpener, SearchRequest, SearchRequestScope,
+    open_search_binding, open_search_invocation, scope_contains, search_button,
 };
 pub(crate) use request::{search_address, search_resource};
 pub use row::SearchRow;

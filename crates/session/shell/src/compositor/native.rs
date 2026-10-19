@@ -1908,6 +1908,10 @@ fn apply_app_cycle_tab(
 #[path = "native_app_tab_tests.rs"]
 mod app_tab_tests;
 
+#[cfg(test)]
+#[path = "native_window_bar_tests.rs"]
+mod window_bar_tests;
+
 // This is the ordered protocol event pump; its branches share authentication
 // and handoff state that is clearer when kept in a single state-machine tick.
 #[allow(
@@ -2407,20 +2411,24 @@ fn pump_floating_surface_service(
                         .host_mut()
                         .receive_ask_agent(&app_id, selection, area);
                 }
-                ui::floating_surface::FloatingSurfaceClientMessage::Toolbar {
-                    toolbar,
-                    instance,
-                } => {
-                    // The app id is the launcher's: an app only ever puts
-                    // slots in the bar of a tab that shows it.
-                    changed |= frame_builder
-                        .host_mut()
-                        .declare_app_toolbar(connection, &app_id, instance, toolbar);
+                message @ (ui::floating_surface::FloatingSurfaceClientMessage::Toolbar {
+                    ..
                 }
-                ui::floating_surface::FloatingSurfaceClientMessage::EditLocation { instance } => {
+                | ui::floating_surface::FloatingSurfaceClientMessage::EditLocation {
+                    ..
+                }
+                | ui::floating_surface::FloatingSurfaceClientMessage::WindowOffer {
+                    ..
+                }
+                | ui::floating_surface::FloatingSurfaceClientMessage::OpenSearch {
+                    ..
+                }) => {
+                    // The app id is the launcher's: an app only ever reaches
+                    // the bar of a tab that shows it.
                     changed |= frame_builder
                         .host_mut()
-                        .edit_app_location(&app_id, instance);
+                        .receive_window_bar_message(connection, &app_id, &message)
+                        .unwrap_or(false);
                 }
                 ui::floating_surface::FloatingSurfaceClientMessage::PaintCapable => {
                     // The app id is the launcher's, so an app can only ever

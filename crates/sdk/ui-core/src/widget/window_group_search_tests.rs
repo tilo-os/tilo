@@ -208,3 +208,97 @@ fn a_window_with_nothing_to_search_in_place_opens_the_platform_search_for_its_ap
         Some(SearchReach::App)
     );
 }
+
+fn app_window_in_its_own_process() -> WindowGroup {
+    let mut group = WindowGroup::new(
+        10,
+        vec![(
+            TabDescriptor::new(1, "Files"),
+            TileContent::Stub {
+                kind: crate::widget::AppKind::Files,
+                label: "Files".into(),
+            },
+        )],
+        1,
+        WindowWidth::Normal,
+    );
+    group.focused = true;
+    group
+}
+
+// USER REQUIREMENT (2026-10-19): "In place: it acts on this window or app.
+// Lists filter" -- for an app that runs as its own window, whose list the
+// window cannot look into: it goes by what the app offers over its
+// connection.
+#[test]
+fn an_app_in_its_own_process_gets_the_query_and_the_bar_shows_its_count() {
+    use crate::window_toolbar::{SearchCount, SearchOffer, ToolbarEvent, WindowOffer};
+    let mut group = app_window_in_its_own_process();
+    let list = WindowOffer {
+        search: SearchOffer::List,
+        ..WindowOffer::default()
+    };
+    assert!(group.set_tab_window_offer(1, Some(list)));
+    assert!(!group.set_tab_window_offer(1, Some(list)), "nothing new");
+
+    group.open_search(crate::tokens::MotionSource::Pointer);
+    assert!(group.window_search().is_open() && group.window_search().is_remote());
+    assert_eq!(group.window_search().in_place(), InPlace::List);
+    assert_eq!(
+        group.take_toolbar_events(),
+        vec![(
+            1,
+            ToolbarEvent::Search {
+                query: String::new()
+            }
+        )],
+        "opening tells the app"
+    );
+    let mut typing = Dispatch::new();
+    for key in ["r", "e"] {
+        typing.send(&mut group, &char_key(key));
+    }
+    assert_eq!(
+        group.take_toolbar_events(),
+        vec![
+            (1, ToolbarEvent::Search { query: "r".into() }),
+            (1, ToolbarEvent::Search { query: "re".into() }),
+        ]
+    );
+    group.set_tab_window_offer(
+        1,
+        Some(WindowOffer {
+            count: Some(SearchCount {
+                shown: 12,
+                total: 40,
+            }),
+            ..list
+        }),
+    );
+    assert_eq!(
+        group.window_search().count(),
+        Some(crate::widget::FilterCount::new(12, 40)),
+        "12 of 40"
+    );
+
+    // The app's window went away under its search: nothing is sent to it.
+    assert!(group.set_tab_window_offer(1, None));
+    assert!(!group.window_search().is_open());
+    assert!(group.take_toolbar_events().is_empty());
+}
+
+#[test]
+fn an_app_in_its_own_process_with_nothing_to_search_in_place_opens_the_platform_search() {
+    use crate::window_toolbar::WindowOffer;
+    let mut group = app_window_in_its_own_process();
+    group.set_tab_window_offer(1, Some(WindowOffer::default()));
+    group.open_search(crate::tokens::MotionSource::Pointer);
+    assert!(!group.window_search().is_open());
+    assert_eq!(
+        group
+            .take_pending_search_open()
+            .map(|handoff| handoff.reach),
+        Some(SearchReach::App)
+    );
+    assert!(group.take_toolbar_events().is_empty());
+}

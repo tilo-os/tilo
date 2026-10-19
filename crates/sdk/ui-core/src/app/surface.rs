@@ -379,6 +379,16 @@ impl App {
             } = event
         {
             let shift = app.input.modifiers.state().shift_key();
+            // Find opens the window bar's search, which acts on this app in
+            // place, ahead of any find of the app's own.
+            if c.eq_ignore_ascii_case("f")
+                && !shift
+                && !app.input.modifiers.state().alt_key()
+                && app.window_bar_takes_find()
+            {
+                crate::window_toolbar::open_search();
+                handled = true;
+            }
             match crate::platform::HostShortcut::resolve(app.input.platform, c, shift) {
                 Some(crate::platform::HostShortcut::Undo) => {
                     app.perform_undo_request(crate::undo::UndoRequest::Undo);
@@ -1073,6 +1083,11 @@ impl App {
             || self.needs_sync
             || self.layout.layout_dirty
             || self.history_needs_redraw()
+            // History's panel moves outside the app's root (it slides in).
+            || self
+                .history
+                .as_deref()
+                .is_some_and(|history| history.needs_animation_frame())
             || self
                 .root_widget
                 .next_wake_deadline()

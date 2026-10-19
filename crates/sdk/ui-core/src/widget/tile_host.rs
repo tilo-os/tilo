@@ -1442,6 +1442,14 @@ impl TileHost {
             Ok(None) => {}
         }
         self.install_declared_history();
+        // An app with a History of its own learns where the window presents
+        // its controls, as the content it replaces did: an app that replaced
+        // its opening card drew its own History and search beside the bar's.
+        if let Some(tab_presents) = self.window_history
+            && let Some(app) = self.app_history_mut()
+        {
+            app.set_window_presents_history(tab_presents);
+        }
         self.content_was_presented.set(false);
         self.opening_shown = false;
         self.handed_over_at = None;
@@ -4622,6 +4630,74 @@ mod tests {
         fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
             crate::widget::app_widget::IconDescriptor::Glyph("E")
         }
+    }
+
+    /// An app with a History of its own (as an embedded App is): records
+    /// where the window told it its controls are.
+    struct OwnHistoryProbe(std::rc::Rc<std::cell::Cell<Option<bool>>>);
+
+    impl Widget for OwnHistoryProbe {
+        crate::provides!(dyn crate::widget::WindowHistory);
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            taffy.widget_leaf(Style::default(), node_map, self)
+        }
+        fn name(&self) -> &'static str {
+            "OwnHistoryProbe"
+        }
+    }
+
+    impl crate::widget::WindowHistory for OwnHistoryProbe {
+        fn set_window_presents_history(&mut self, tab_presents: bool) {
+            self.0.set(Some(tab_presents));
+        }
+        fn window_history_control(&self) -> Option<crate::widget::HistoryControl> {
+            Some(crate::widget::HistoryControl::Closed)
+        }
+        fn invoke_window_history_control(
+            &mut self,
+            _control: crate::widget::HistoryControl,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    impl crate::widget::app_widget::AppWidget for OwnHistoryProbe {
+        fn app_kind(&self) -> AppKind {
+            AppKind::Editor
+        }
+        fn app_title(&self) -> &'static str {
+            "Own history probe"
+        }
+        fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
+            crate::widget::app_widget::IconDescriptor::Glyph("H")
+        }
+    }
+
+    // An app that replaces a tile's content (its opening card, an earlier
+    // app) hears where the window presents its History and search, so it
+    // draws neither beside the bar's.
+    #[test]
+    fn an_app_that_replaces_a_tiles_content_hears_the_window_presents_its_controls() {
+        let first = std::rc::Rc::new(std::cell::Cell::new(None));
+        let mut host = TileHost::new(TileContent::App(Box::new(OwnHistoryProbe(
+            std::rc::Rc::clone(&first),
+        ))));
+        host.set_window_presents_history(true);
+        assert_eq!(first.get(), Some(true));
+        let second = std::rc::Rc::new(std::cell::Cell::new(None));
+        host.replace_content(TileContent::App(Box::new(OwnHistoryProbe(
+            std::rc::Rc::clone(&second),
+        ))));
+        assert_eq!(
+            second.get(),
+            Some(true),
+            "the new app is told what the old one was"
+        );
     }
 
     /// Records the window a panic hook would name while it lays out.

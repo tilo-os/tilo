@@ -298,8 +298,13 @@ answer:
   widens step by step: this view, then the whole app ("Search Notes", or
   Ctrl+F again), then everywhere, both handing the query to the platform
   palette. An app gets this by providing the capability it already has; it
-  draws nothing. The `FindBar` band and the filter slot stay for windows the
-  shell does not frame.
+  draws nothing. An app running as its own window (every app on a device)
+  gets the same over its shell-ui connection: the framework tells the bar
+  what the window offers (`window_toolbar::WindowOffer`) and runs the bar's
+  query, steps and History presses on the app's widgets; the app's header
+  drops its own whole-app search button (`search::APP_SEARCH_BUTTON_ID`) while
+  the bar presents search. The `FindBar` band and the filter slot stay for
+  windows the shell does not frame.
 - **Typing in a focused list jumps.** A `TreeView` (and so a `NavList`) moves
   to the first row whose name begins with what was typed; a `VirtualList`
   does when its model names its rows (`ListModel::label`).

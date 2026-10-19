@@ -38,9 +38,9 @@ impl AppSurface for Region {
     }
 }
 
-/// How many frames an embedded app may run in one host frame to settle a
-/// sync or layout its previous frame left.
-const SETTLE_FRAMES: usize = 3;
+// How many frames an embedded app may run in one host frame to settle a
+// sync or layout its previous frame left.
+use crate::widget::SETTLE_FRAMES;
 
 /// An app a host shows in a region of its own scene.
 pub struct EmbeddedApp {
@@ -209,6 +209,21 @@ impl EmbeddedApp {
     pub fn input_for_test(&mut self, event: WindowEvent) {
         self.app.surface_input(&self.region, event, false);
         self.wants_frame.set(true);
+    }
+
+    /// Serve the app's shell-ui connection as its native runner does
+    /// between frames, and draw it again when that changed what it shows:
+    /// for a host that runs the app as a window of its own and draws it in
+    /// a frame of its own (the screenshot harness). Returns whether it
+    /// changed.
+    #[cfg(feature = "test-support")]
+    pub fn pump_shell_connection_for_test(&mut self) -> bool {
+        let changed = self.app.test_pump_floating_service();
+        if changed {
+            self.app.layout.layout_dirty = true;
+            self.wants_frame.set(true);
+        }
+        changed
     }
 
     /// The app shown, to drive it.

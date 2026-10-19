@@ -35,6 +35,8 @@ pub struct FrozenRootPreview {
     label: String,
     bounds: Rect,
     view: PreviewView,
+    /// The live window's bar presents search: the root's header is told so.
+    window_search: bool,
 }
 
 impl FrozenRootPreview {
@@ -47,6 +49,7 @@ impl FrozenRootPreview {
             label: label.into(),
             bounds: Rect::ZERO,
             view: PreviewView::default(),
+            window_search: false,
         }
     }
 
@@ -88,8 +91,22 @@ impl HistoryPreview for FrozenRootPreview {
         // window's, with its fonts and text scale — or a label laid out by
         // another renderer can come out too narrow and collapse to "…".
         std::mem::swap(&mut frame.text, text);
-        frame.sync(self.root.as_mut());
-        let laid_out = frame.layout(self.root.as_mut());
+        // A layout that leaves more to settle runs again at once, as the
+        // live app's frame does: Notes centres its column on the width its
+        // first pass was given and insets the body by the header that pass
+        // measured, so one pass alone draws the text wider than the live
+        // note and its first paragraph under the "Created" line.
+        if self.window_search {
+            crate::widget::window_header::offer_window_search(self.root.as_mut(), true);
+        }
+        let mut laid_out = Ok(());
+        for _ in 0..crate::widget::SETTLE_FRAMES {
+            frame.sync(self.root.as_mut());
+            laid_out = frame.layout(self.root.as_mut());
+            if laid_out.is_err() || !self.root.take_structure_dirty() {
+                break;
+            }
+        }
         std::mem::swap(&mut frame.text, text);
         self.doc = Some(std::mem::take(&mut frame.state.doc));
         laid_out.map_err(|error| error.to_string())
@@ -121,6 +138,10 @@ impl HistoryPreview for FrozenRootPreview {
 
     fn view(&self) -> PreviewView {
         self.view.clone()
+    }
+
+    fn set_window_presents_search(&mut self, presents: bool) {
+        self.window_search = presents;
     }
 
     fn accessibility(&self) -> PreviewAccessibility {
@@ -175,4 +196,95 @@ pub(crate) fn outline_root(doc: &AutoCommit) -> Box<dyn Widget> {
     walk(doc, &automerge::ROOT, "", &mut lines);
     let outline = lines.join("\n");
     Box::new(crate::widget::Text::dynamic(move || outline.clone()).with_id("history-outline"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::widget::TaffyTreeExt;
+    use std::collections::HashMap;
+    use taffy::{NodeId, TaffyTree};
+
+    /// A page that, like Notes, centres its column on the width its last
+    /// layout gave it: the first pass builds at no width and asks to be
+    /// built again.
+    #[derive(Default)]
+    struct Page {
+        rect: Rect,
+        /// The width the column was built for.
+        built_for: f64,
+        /// The width the last layout gave it.
+        given: f64,
+        rebuild: bool,
+    }
+
+    impl Widget for Page {
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            self.built_for = self.given;
+            taffy.widget_leaf(
+                taffy::Style {
+                    size: taffy::Size {
+                        width: taffy::Dimension::percent(1.0),
+                        height: taffy::Dimension::percent(1.0),
+                    },
+                    ..Default::default()
+                },
+                node_map,
+                self,
+            )
+        }
+        fn apply_layout(
+            &mut self,
+            taffy: &TaffyTree<()>,
+            node: NodeId,
+            origin: vello::kurbo::Point,
+        ) {
+            self.rect = crate::widget::layout_rect(taffy, node, origin);
+            if (self.rect.width() - self.given).abs() > 0.5 {
+                self.given = self.rect.width();
+                self.rebuild = true;
+            }
+        }
+        fn take_structure_dirty(&mut self) -> bool {
+            std::mem::take(&mut self.rebuild)
+        }
+        fn get_rect(&self) -> Rect {
+            self.rect
+        }
+        fn name(&self) -> &'static str {
+            "Page"
+        }
+        fn as_any(&self) -> Option<&dyn std::any::Any> {
+            Some(self)
+        }
+    }
+
+    // The preview of a version lays out exactly like the live view: a root
+    // that settles over a second pass is shown settled, not as its first
+    // pass left it (Notes drew its text wider than the live note and its
+    // first paragraph under the "Created" line).
+    #[test]
+    fn a_version_is_laid_out_settled_as_the_live_view_is() {
+        let mut preview =
+            FrozenRootPreview::new(Box::new(Page::default()), AutoCommit::new(), "Document");
+        let mut text = crate::font_catalog::fixture_renderer();
+        preview
+            .layout(Rect::new(0.0, 0.0, 640.0, 480.0), &mut text, &Theme::dark())
+            .unwrap();
+        let page = preview
+            .root()
+            .as_any()
+            .and_then(|any| any.downcast_ref::<Page>())
+            .unwrap();
+        assert!(
+            (page.built_for - 640.0).abs() < 0.5,
+            "the column is built for the width the version is shown at, got {}",
+            page.built_for
+        );
+    }
 }

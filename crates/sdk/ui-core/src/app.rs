@@ -60,6 +60,7 @@ mod retirement_lifecycle_tests;
 pub use document_history::DocumentHistorySnapshot;
 include!("app/floating.rs");
 mod runtime;
+mod window_bar;
 use runtime::{
     AccessibilityRuntime, ActionRuntime, BrokerReply, CollaborationRuntime, ContinuationRuntime,
     HistoryRuntime, InputRuntime, LayoutRuntime, PersistenceRuntime, PresenceRuntime,
@@ -2479,6 +2480,9 @@ impl App {
     #[doc(hidden)]
     pub fn rebuild_structure(&mut self) {
         let _entry = self.enter_wake_scope();
+        // The header the rebuild builds hears whether the window's bar
+        // presents search, so it never shows a second search control.
+        self.offer_window_bar_to_header();
         // A reported mutation can already have invalidated old widget pointers.
         // Always take the widgets' report, so it is not mistaken later for a
         // change after the map this rebuild makes.

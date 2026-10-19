@@ -225,12 +225,42 @@ enum FocusedRow {
     Entry(HistoryEntryId),
 }
 
+impl RowGroup {
+    /// What the band's second line shows: where the work happened while
+    /// the band is collapsed (its members do not say), then its facts, the
+    /// first ones kept longest.
+    fn meta_facts(&self) -> Vec<crate::widget::primitives::Fact> {
+        let scope = self.scope_label.as_ref().filter(|_| !self.expanded);
+        let count = self.facts.len();
+        scope
+            .into_iter()
+            .chain(self.facts.iter())
+            .enumerate()
+            .map(|(i, text)| {
+                let priority = u8::try_from(count.saturating_add(1).saturating_sub(i)).unwrap_or(0);
+                crate::widget::primitives::Fact::text(text.clone()).priority(priority)
+            })
+            .collect()
+    }
+
+    /// The second line as a screen reader says it: each fact, in order.
+    fn spoken_facts(&self) -> String {
+        self.meta_facts()
+            .into_iter()
+            .map(|fact| fact.text)
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
 /// A group, flattened and pre-measured for painting.
 #[derive(Clone, Debug)]
 struct RowGroup {
     key: String,
     title: String,
-    subtitle: String,
+    /// The second line's facts (who, how much moved, how many shown),
+    /// drawn apart, never joined into one string.
+    facts: Vec<String>,
     /// Compact cross-app/workspace provenance, shown on a collapsed band so
     /// its hidden members do not erase where the work happened.
     scope_label: Option<String>,
@@ -756,9 +786,10 @@ impl ActivityTimeline {
         }
     }
 
-    pub fn group_subtitle_at_row(&self, i: usize) -> Option<&str> {
+    /// A band's second line as it is spoken: its facts in order.
+    pub fn group_subtitle_at_row(&self, i: usize) -> Option<String> {
         match self.rows.get(i)? {
-            VisualRow::Group(g) => Some(self.row_groups.get(*g)?.subtitle.as_str()),
+            VisualRow::Group(g) => Some(self.row_groups.get(*g)?.spoken_facts()),
             VisualRow::Entry(..) => None,
         }
     }
@@ -1640,20 +1671,20 @@ impl ActivityTimeline {
         let total_count = g.len();
         let restorable =
             (g.start..g.end).any(|i| self.entries.get(i).is_some_and(HistoryEntry::is_revertible));
-        let mut subtitle = g.subtitle(&self.entries);
+        let mut facts = g.subtitle_facts(&self.entries);
         if visible_count < total_count {
             // Saying "12 changes" over three visible rows would be a lie the
             // reader cannot catch.
-            subtitle = format!("{visible_count} of {total_count} shown \u{00b7} {subtitle}");
+            facts.insert(0, format!("{visible_count} of {total_count} shown"));
         }
         if g.open {
-            subtitle = format!("still open \u{00b7} {subtitle}");
+            facts.insert(0, "still open".to_owned());
         }
         let gi = row_groups.len();
         row_groups.push(RowGroup {
             key: g.key.clone(),
             title: g.title(&self.entries),
-            subtitle,
+            facts,
             scope_label: self.group_scope_label(g.start, g.end),
             name: g.name.clone(),
             record_id: g.record_id.clone(),
@@ -1958,7 +1989,7 @@ impl ActivityTimeline {
         row_groups.push(RowGroup {
             key: section.key().to_string(),
             title: section.title(),
-            subtitle: String::new(),
+            facts: Vec::new(),
             scope_label: None,
             name: None,
             record_id: None,
@@ -2671,23 +2702,17 @@ impl ActivityTimeline {
         };
         let sub_budget =
             (row.x1 - title_x - f64::from(rel_w) - dots_w - TRAILING_INSET - 16.0).max(0.0);
-        let subtitle = if rg.expanded {
-            rg.subtitle.clone()
-        } else {
-            rg.scope_label.as_ref().map_or_else(
-                || rg.subtitle.clone(),
-                |scope| format!("{scope} · {}", rg.subtitle),
-            )
-        };
-        let sub = fit_text(tr, &subtitle, &meta_style, sub_budget);
-        tr.draw_style(
-            scene,
-            &sub,
-            colors.text_dim,
-            transform.pre_translate((title_x, meta_y).into()),
-            None,
-            &meta_style,
+        // Who, how much moved, how many shown: separate facts, the
+        // least telling given up first when the row is narrow.
+        let facts = rg.meta_facts();
+        let facts_rect = Rect::new(
+            title_x,
+            meta_y,
+            title_x + sub_budget,
+            meta_y + f64::from(rel_h),
         );
+        crate::widget::primitives::FactsFace::new(&facts)
+            .paint(&mut PaintCtx::new(scene, transform, tr, theme), facts_rect);
         // Right-aligned to the same gutter as the rows' time column, so the
         // band header's "2 hr ago" and the rows' "1 hr ago" share one edge.
         tr.draw_style(
@@ -3238,14 +3263,7 @@ impl Widget for ActivityTimeline {
                 match row {
                     VisualRow::Group(group) => {
                         let item = self.row_groups.get(*group)?;
-                        let description = if item.expanded {
-                            item.subtitle.clone()
-                        } else {
-                            item.scope_label.as_ref().map_or_else(
-                                || item.subtitle.clone(),
-                                |scope| format!("{scope} · {}", item.subtitle),
-                            )
-                        };
+                        let description = item.spoken_facts();
                         Some(
                             AccessNode::new(Role::TreeItem)
                                 .with_action_target(format!("timeline-group:{}", item.key))

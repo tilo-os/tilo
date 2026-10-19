@@ -13,7 +13,11 @@
 //! The app draws no field and keeps no find state of its own: it provides
 //! the [`Findable`] document or the [`Filterable`] list it already has, and
 //! the window reaches them through its tile ([`SearchableWindow`] for an app
-//! that runs inside its own runtime). An app with neither opens the platform
+//! that runs inside its own runtime). An app in a process of its own is
+//! reached over its shell connection instead: the search sends it the query,
+//! the steps and the close ([`WindowSearch::take_remote_events`]) and shows
+//! the count it answers with, and the app's runtime runs the same
+//! [`SearchDriver`] on its widgets. An app with neither opens the platform
 //! search narrowed to itself, as the control always did.
 
 use vello::Scene;
@@ -83,6 +87,122 @@ pub struct SearchHandoff {
     pub tab: u64,
     pub reach: SearchReach,
     pub query: String,
+}
+
+/// The find engine behind a window's search, run where the app's widgets
+/// are: by the window for an app in its process, by the app's own runtime
+/// for an app in a process of its own. It finds or narrows when the query
+/// changed, follows the content when it changed under the search, steps, and
+/// stops when the search closed.
+#[derive(Debug, Default)]
+pub struct SearchDriver {
+    in_place: InPlace,
+    session: FindSession,
+    /// The query a list was last narrowed to.
+    applied: Option<String>,
+    count: Option<FilterCount>,
+}
+
+impl SearchDriver {
+    /// Start a search on what the app offers: the query runs afresh on what
+    /// it shows now.
+    pub fn open(&mut self, in_place: InPlace) {
+        self.in_place = in_place;
+        self.forget();
+    }
+
+    /// What the search acts on; [`InPlace::Nothing`] while none is open.
+    #[must_use]
+    pub fn in_place(&self) -> InPlace {
+        self.in_place
+    }
+
+    /// How many matches a document's search found.
+    #[must_use]
+    pub fn matches(&self) -> usize {
+        self.session.matches()
+    }
+
+    /// `(current, total)` in a document, 1-based; `None` with no match.
+    #[must_use]
+    pub fn position(&self) -> Option<(usize, usize)> {
+        self.session.position()
+    }
+
+    /// What the field's counter shows: the current match of all of them in
+    /// a document, the rows shown of all rows in a list; none before
+    /// anything is typed.
+    #[must_use]
+    pub fn count(&self) -> Option<FilterCount> {
+        self.count
+    }
+
+    /// Forget what was found without telling the app (it went away).
+    pub fn forget(&mut self) {
+        self.session.forget();
+        self.applied = None;
+        self.count = None;
+    }
+
+    /// Carry `query` to the app's `root`, step when asked, or stop when
+    /// `finishing` (after which the driver is closed). Returns whether
+    /// anything the app shows changed.
+    pub fn drive(
+        &mut self,
+        root: &mut dyn Widget,
+        query: &str,
+        step: Option<bool>,
+        finishing: bool,
+    ) -> bool {
+        let options = FindOptions::default();
+        let mut touched = false;
+        match self.in_place {
+            InPlace::Nothing => {}
+            InPlace::Document => {
+                let session = &mut self.session;
+                with_findable(root, &mut |target: &mut dyn Findable| {
+                    if finishing {
+                        session.clear(target);
+                        touched = true;
+                        return;
+                    }
+                    if session.is_stale(query, options) {
+                        session.search(target, query, options, Some(0));
+                        touched = true;
+                    } else if session.content_moved(target) {
+                        session.refresh(target, query, options);
+                        touched = true;
+                    }
+                    if let Some(forward) = step {
+                        session.step(target, forward);
+                        touched = true;
+                    }
+                });
+                self.count = (!query.is_empty() && !finishing).then(|| {
+                    let (current, total) = session.position().unwrap_or((0, session.matches()));
+                    FilterCount::new(current, total)
+                });
+            }
+            InPlace::List => {
+                if finishing {
+                    let _ = apply_filter(root, "");
+                    self.applied = None;
+                    self.count = None;
+                    touched = true;
+                } else if self.applied.as_deref() != Some(query) {
+                    let count = apply_filter(root, query);
+                    self.count = count.filter(|_| !query.is_empty());
+                    self.applied = Some(query.to_owned());
+                    touched = true;
+                }
+            }
+        }
+        if finishing {
+            self.in_place = InPlace::Nothing;
+            self.forget();
+        }
+        touched
+    }
 }
 
 /// An app that runs inside a runtime of its own (an embedded app) and lets
@@ -162,9 +282,12 @@ pub struct WindowSearch {
     in_place: InPlace,
     /// The app's name, which "Search Notes" names.
     app_name: String,
-    session: FindSession,
-    /// The query a list was last narrowed to.
-    applied: Option<String>,
+    driver: SearchDriver,
+    /// The app runs in a process of its own: the search is carried to it as
+    /// events ([`Self::take_remote_events`]) instead of driven here.
+    remote: bool,
+    /// The query the app in its own process was last sent.
+    sent: Option<String>,
     /// A step through a document's matches asked for since the last drive.
     step: Option<bool>,
     /// The search closed and the app has not yet been told.
@@ -205,8 +328,9 @@ impl WindowSearch {
             keyboard: false,
             in_place: InPlace::Nothing,
             app_name: String::new(),
-            session: FindSession::default(),
-            applied: None,
+            driver: SearchDriver::default(),
+            remote: false,
+            sent: None,
             step: None,
             finishing: false,
             requests: Vec::new(),
@@ -242,7 +366,31 @@ impl WindowSearch {
     /// `(current, total)` in a document, 1-based; `None` with no match.
     #[must_use]
     pub fn position(&self) -> Option<(usize, usize)> {
-        self.session.position()
+        if !self.remote {
+            return self.driver.position();
+        }
+        self.field
+            .count()
+            .filter(|count| self.in_place == InPlace::Document && count.shown > 0)
+            .map(|count| (count.shown, count.total))
+    }
+
+    /// How many matches the document's search found, here or (for an app in
+    /// its own process) by the count it answered with.
+    fn matches(&self) -> usize {
+        if !self.remote {
+            return self.driver.matches();
+        }
+        self.field
+            .count()
+            .filter(|_| self.in_place == InPlace::Document)
+            .map_or(0, |count| count.total)
+    }
+
+    /// Whether the search is carried to an app in a process of its own.
+    #[must_use]
+    pub fn is_remote(&self) -> bool {
+        self.remote
     }
 
     /// What the field's counter shows.
@@ -304,12 +452,13 @@ impl WindowSearch {
     pub fn open(&mut self, in_place: InPlace, source: MotionSource) {
         self.in_place = in_place;
         self.finishing = false;
+        self.remote = false;
+        self.sent = None;
         self.keyboard = true;
         self.field.set_focused(true);
         self.field.select_all();
         // The query runs again on what the app shows now.
-        self.session.forget();
-        self.applied = None;
+        self.driver.open(in_place);
         self.presence.show(
             true,
             Disclose::SPEC,
@@ -317,6 +466,60 @@ impl WindowSearch {
             source,
             crate::time::now(),
         );
+    }
+
+    /// Open in place on an app that runs in a process of its own and offers
+    /// `in_place`: what is typed goes to it as events
+    /// ([`Self::take_remote_events`]), and it answers with the count
+    /// ([`Self::set_remote_count`]).
+    pub fn open_remote(&mut self, in_place: InPlace, source: MotionSource) {
+        self.open(in_place, source);
+        self.remote = true;
+        self.field.set_count(None);
+    }
+
+    /// What the search asks of an app in its own process since the last
+    /// call: the query when it changed (the first time on opening), a step,
+    /// or the close.
+    pub fn take_remote_events(&mut self) -> Vec<crate::window_toolbar::ToolbarEvent> {
+        use crate::window_toolbar::ToolbarEvent;
+        let mut events = Vec::new();
+        if !self.remote {
+            return events;
+        }
+        if std::mem::take(&mut self.finishing) {
+            events.push(ToolbarEvent::SearchClose);
+            self.remote = false;
+            self.sent = None;
+            self.step = None;
+            self.in_place = InPlace::Nothing;
+            self.field.set_count(None);
+            return events;
+        }
+        if !self.is_open() || self.in_place == InPlace::Nothing {
+            return events;
+        }
+        let query = self.field.value();
+        if self.sent.as_deref() != Some(query) {
+            events.push(ToolbarEvent::Search {
+                query: query.to_owned(),
+            });
+            self.sent = Some(query.to_owned());
+        }
+        if let Some(forward) = self.step.take() {
+            events.push(ToolbarEvent::SearchStep { forward });
+        }
+        events
+    }
+
+    /// The count an app in its own process answered with.
+    pub fn set_remote_count(&mut self, count: Option<FilterCount>) {
+        if self.remote && self.is_open() {
+            let count = count.filter(|_| !self.field.value().is_empty());
+            if self.field.count() != count {
+                self.field.set_count(count);
+            }
+        }
     }
 
     /// Close: the field gives up the keyboard and the app is told on the
@@ -379,52 +582,17 @@ impl WindowSearch {
     /// or stop when the search closed. Returns whether anything the app
     /// shows changed.
     pub fn drive(&mut self, root: &mut dyn Widget) -> bool {
+        if self.remote {
+            // An app in its own process is driven by its own runtime.
+            return false;
+        }
         let query = self.field.value().to_owned();
-        let options = FindOptions::default();
         let step = self.step.take();
         let finishing = std::mem::take(&mut self.finishing);
-        let mut touched = false;
-        match self.in_place {
-            InPlace::Nothing => {}
-            InPlace::Document => {
-                let session = &mut self.session;
-                with_findable(root, &mut |target: &mut dyn Findable| {
-                    if finishing {
-                        session.clear(target);
-                        touched = true;
-                        return;
-                    }
-                    if session.is_stale(&query, options) {
-                        session.search(target, &query, options, Some(0));
-                        touched = true;
-                    } else if session.content_moved(target) {
-                        session.refresh(target, &query, options);
-                        touched = true;
-                    }
-                    if let Some(forward) = step {
-                        session.step(target, forward);
-                        touched = true;
-                    }
-                });
-                let count = (!query.is_empty() && !finishing).then(|| {
-                    let (current, total) = session.position().unwrap_or((0, session.matches()));
-                    FilterCount::new(current, total)
-                });
-                self.field.set_count(count);
-            }
-            InPlace::List => {
-                if finishing {
-                    let _ = apply_filter(root, "");
-                    self.applied = None;
-                    self.field.set_count(None);
-                    touched = true;
-                } else if self.applied.as_deref() != Some(query.as_str()) {
-                    let count = apply_filter(root, &query);
-                    self.field.set_count(count.filter(|_| !query.is_empty()));
-                    self.applied = Some(query);
-                    touched = true;
-                }
-            }
+        let touched = self.driver.drive(root, &query, step, finishing);
+        let count = self.driver.count();
+        if self.field.count() != count {
+            self.field.set_count(count);
         }
         if finishing {
             self.in_place = InPlace::Nothing;
@@ -435,10 +603,11 @@ impl WindowSearch {
     /// The app went away under an open search (its tab closed or another
     /// became active): forget what was found without telling it.
     pub fn detach(&mut self) {
-        self.session.forget();
-        self.applied = None;
+        self.driver.forget();
         self.finishing = false;
         self.step = None;
+        self.sent = None;
+        self.remote = false;
         self.field.set_count(None);
     }
 
@@ -545,7 +714,7 @@ impl WindowSearch {
         match key {
             Key::Named(NamedKey::Escape) => self.requests.push(WindowSearchRequest::Close),
             Key::Named(NamedKey::Enter | NamedKey::F3)
-                if self.in_place == InPlace::Document && self.session.matches() > 0 =>
+                if self.in_place == InPlace::Document && self.matches() > 0 =>
             {
                 self.step(!modifiers.shift_key());
             }
@@ -700,7 +869,7 @@ impl WindowSearch {
                     Part::Next => (Icon::ChevronDown, tr("find-bar-next")),
                     _ => (Icon::X, tr("window-search-close")),
                 };
-                let disabled = part != Part::Close && self.session.matches() == 0;
+                let disabled = part != Part::Close && self.matches() == 0;
                 let face = ButtonFace::icon_only(rect, icon, &name)
                     .control_size(ControlSize::Small)
                     .hovered(hovered)

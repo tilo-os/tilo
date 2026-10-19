@@ -82,6 +82,16 @@ pub trait WindowHeader {
     /// presents it).
     fn set_history_control(&mut self, control: Option<HistoryControl>);
 
+    /// The window's bar presents search for the window, in place
+    /// ([`crate::widget::WindowSearch`]), or stops (`false`). While it does,
+    /// the row drops its own button that opens the app's search
+    /// ([`crate::search::APP_SEARCH_BUTTON_ID`]): one search control per
+    /// window. Returns whether the row took it.
+    fn set_window_presents_search(&mut self, presents: bool) -> bool {
+        let _ = presents;
+        false
+    }
+
     /// Show the window's sync status ("Working offline…") as quiet text in
     /// the row, before its trailing controls, or none. Returns whether the
     /// row shows it; a row that does not leaves the host to present it.
@@ -287,6 +297,18 @@ pub(crate) fn offer_history_control(
     root.children_mut()
         .into_iter()
         .any(|child| offer_history_control(child, control))
+}
+
+/// Tell the first header row in `root`'s tree whether the window's bar
+/// presents search ([`WindowHeader::set_window_presents_search`]). Returns
+/// whether a row took it.
+pub(crate) fn offer_window_search(root: &mut dyn Widget, presents: bool) -> bool {
+    if let Some(header) = capability_mut::<dyn WindowHeader>(root) {
+        return header.set_window_presents_search(presents);
+    }
+    root.children_mut()
+        .into_iter()
+        .any(|child| offer_window_search(child, presents))
 }
 
 /// The window's History control in a painted header row: what the host

@@ -43,7 +43,7 @@ secrets = "via-host"
 [sandbox.services]
 tilo-fs = "optional@2"
 # The window's bar shows the app's toolbar (ui::window_toolbar).
-shell-ui = "optional@9"
+shell-ui = "optional@10"
 
 [entrypoint]
 bin = "bin/passwords"

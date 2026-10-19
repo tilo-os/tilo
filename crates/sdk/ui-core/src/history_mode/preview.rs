@@ -79,6 +79,12 @@ pub trait HistoryPreview {
     fn navigate(&mut self, command: PreviewNavigation) -> bool;
     fn view(&self) -> PreviewView;
     fn accessibility(&self) -> PreviewAccessibility;
+    /// The live window's bar presents search and History for the app, so
+    /// the version is drawn as the live view is: its header without a
+    /// button of its own that opens the app's search.
+    fn set_window_presents_search(&mut self, presents: bool) {
+        let _ = presents;
+    }
 }
 
 pub type PreviewFactory = fn(PreviewInput) -> Result<Box<dyn HistoryPreview>, String>;

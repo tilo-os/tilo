@@ -182,7 +182,7 @@ pub fn paint_app_owned_content(
 /// Geometry is encoded as plain logical-pixel arrays rather than renderer
 /// types so sandbox services, Wayland protocol shims, and test transports
 /// can all carry the same messages.
-pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 9;
+pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 10;
 pub const FLOATING_SURFACE_SERVICE: &str = "shell-ui";
 pub const FLOATING_SURFACE_APP_ID_PREFIX: &str = "so.tilo.shell-float.";
 #[cfg(unix)]
@@ -393,6 +393,19 @@ pub enum FloatingSurfaceClientMessage {
     EditLocation {
         instance: Option<u64>,
     },
+    /// What this app's window offers its bar's own controls: what the
+    /// search acts on in place and the open search's count, and the History
+    /// control ([`crate::window_toolbar::WindowOffer`]). Sent whenever it
+    /// changes; the bar answers with [`FloatingSurfaceHostMessage::ToolbarEvent`].
+    WindowOffer {
+        offer: crate::window_toolbar::WindowOffer,
+        instance: Option<u64>,
+    },
+    /// Open the search in this app's window's bar, as a click on its control
+    /// does (the app's Ctrl+F).
+    OpenSearch {
+        instance: Option<u64>,
+    },
     /// This app answers [`FloatingSurfaceHostMessage::ShareSelection`]
     /// (sent once). An app that never says so is never asked, so an older
     /// one does not receive a message it cannot read.
@@ -479,7 +492,8 @@ pub enum FloatingSurfaceHostMessage {
     /// [`FloatingSurfaceClientMessage::SelectionCapable`].
     ShareSelection,
     /// The person used this app's slots in its window's bar
-    /// ([`FloatingSurfaceClientMessage::Toolbar`]).
+    /// ([`FloatingSurfaceClientMessage::Toolbar`]), or the bar's search or
+    /// History control on its window ([`FloatingSurfaceClientMessage::WindowOffer`]).
     ToolbarEvent {
         event: crate::window_toolbar::ToolbarEvent,
     },
