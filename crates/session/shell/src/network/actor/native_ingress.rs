@@ -248,7 +248,7 @@ impl ActorState {
             {
                 continue;
             }
-            let Ok((hint, cert, revocations, continuity)) = material else {
+            let Ok((hint, cert, revocations, _)) = material else {
                 continue;
             };
             let expected_device = cert.clone();
@@ -302,7 +302,6 @@ impl ActorState {
                         serial,
                         hint: Box::new(hint),
                         certificate: expected_device,
-                        continuity,
                         result: Box::new(result),
                     })
                     .await;
@@ -315,7 +314,6 @@ impl ActorState {
         serial: u64,
         hint: TransportHint,
         certificate: DeviceCert,
-        continuity: u64,
         result: Box<Result<RelayCoeditSession, tilo_joined_room::session::DialError>>,
     ) {
         let Some(route) = self
@@ -330,15 +328,20 @@ impl ActorState {
         let Some(identity) = self.host_identity.as_ref() else {
             return;
         };
-        if !route
-            .connect
-            .material(identity)
-            .is_ok_and(|(current, device, _, generation)| {
-                current == hint && device == certificate && generation == continuity
-            })
-        {
+        // The room's security may have moved on while dialling (another
+        // member joined): the session is still this device's as long as its
+        // host and certificate are, and its standing checks out now.
+        let Some(continuity) =
+            route
+                .connect
+                .material(identity)
+                .ok()
+                .and_then(|(current, device, _, generation)| {
+                    (current == hint && device == certificate).then_some(generation)
+                })
+        else {
             return;
-        }
+        };
         let Ok((payload, _)) = IrohWorkspaceHostHintV1::authenticate_transport_hint(&hint) else {
             return;
         };

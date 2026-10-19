@@ -77,11 +77,18 @@ impl Connect {
     }
 }
 /// A live session's pin; closed when the session ends.
+///
+/// The pin is the host it reached and the certificate it authenticated
+/// with. The owner's continuity moves with any security change of the room,
+/// another member joining included; the session follows it in place once
+/// this device's own standing was checked again ([`Connect::material`]),
+/// rather than ending and redialling every member for one person's join.
 pub struct Scope {
     connect: Connect,
     hint: TransportHint,
     device: DeviceCert,
-    continuity: u64,
+    /// The owner continuity the session last validated against.
+    continuity: std::sync::atomic::AtomicU64,
     live: Mutex<bool>,
     cursor: Mutex<cursor::Cursor>,
     refresh_sent: Mutex<Option<std::time::Instant>>,
@@ -93,7 +100,7 @@ impl Scope {
             connect,
             hint,
             device,
-            continuity,
+            continuity: std::sync::atomic::AtomicU64::new(continuity),
             live: Mutex::new(true),
             cursor: Mutex::new(cursor::Cursor::default()),
             refresh_sent: Mutex::new(None),
@@ -103,10 +110,23 @@ impl Scope {
     pub fn room(&self) -> RoomId {
         self.connect.room
     }
-    /// Whether this session is still pinned to exactly this material.
+    /// Whether this session is still pinned to this material: the same host
+    /// and certificate. `continuity` is the owner's current one, which the
+    /// caller read with the material that re-validated this device's standing
+    /// ([`Connect::material`] refuses a device no longer admitted, permitted
+    /// or behind an unrevoked host); the session adopts it.
     #[must_use]
     pub fn pinned_to(&self, hint: &TransportHint, device: &DeviceCert, continuity: u64) -> bool {
-        hint == &self.hint && device == &self.device && continuity == self.continuity
+        let pinned = hint == &self.hint && device == &self.device;
+        if pinned {
+            self.continuity
+                .store(continuity, std::sync::atomic::Ordering::SeqCst);
+        }
+        pinned
+    }
+    /// The owner continuity this session last validated against.
+    fn continuity(&self) -> u64 {
+        self.continuity.load(std::sync::atomic::Ordering::SeqCst)
     }
     pub fn close(&self) {
         if let Ok(mut live) = self.live.lock() {
@@ -155,7 +175,7 @@ impl Scope {
         self.connect.owner.with_current(self.connect.room, |view| {
             if view.device() != &self.device
                 || view.transport_hint() != &self.hint
-                || view.continuity() != self.continuity
+                || view.continuity() != self.continuity()
             {
                 return Err("native refresh current owner changed".into());
             }
@@ -252,7 +272,7 @@ impl Scope {
             |view, outgoing| {
                 if view.device() != &self.device
                     || view.transport_hint() != &self.hint
-                    || view.continuity() != self.continuity
+                    || view.continuity() != self.continuity()
                 {
                     return Err("native publication authority changed".into());
                 }

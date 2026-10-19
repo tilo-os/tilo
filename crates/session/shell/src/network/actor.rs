@@ -577,7 +577,6 @@ enum InternalEvent {
         serial: u64,
         hint: Box<tilo_peer_state::join::TransportHint>,
         certificate: DeviceCert,
-        continuity: u64,
         result: Box<Result<RelayCoeditSession, tilo_joined_room::session::DialError>>,
     },
     ActionClosed {
@@ -2625,9 +2624,8 @@ impl ActorState {
                 serial,
                 hint,
                 certificate,
-                continuity,
                 result,
-            }) => self.native_host_connected(ws, serial, *hint, certificate, continuity, result),
+            }) => self.native_host_connected(ws, serial, *hint, certificate, result),
             Some(InternalEvent::Host {
                 ws,
                 peer,
