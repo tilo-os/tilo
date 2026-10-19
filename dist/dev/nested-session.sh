@@ -25,6 +25,12 @@
 #   --fresh-desktop    forget workspaces and open windows; keep identity and apps
 #   --headless         run without a window on the offscreen backend, for
 #                      scripted runs driven only through tilo-control
+#   --join FILE        redeem the workspace invitation in FILE at startup: the
+#                      session's active workspace becomes that workspace (one
+#                      another nested session shares; see nested-pair.sh)
+#   --invite-guest FILE  enrol a new Home workspace and write to FILE an
+#                      invitation another nested session can join it with
+#                      (--join); valid for an hour while this session runs
 #
 # The window opens at 1280x800 logical pixels; set TILO_WINIT_SIZE=WxH
 # (physical pixels) to choose another size. A headless session renders a
@@ -48,6 +54,8 @@ prepare_only=0
 reset_identity=0
 fresh_desktop=0
 headless=0
+join_invitation=
+guest_invitation=
 shell_args=()
 
 die() { printf 'nested-session: %s\n' "$*" >&2; exit 1; }
@@ -62,6 +70,9 @@ while (($#)); do
         --reset-identity) reset_identity=1; shift ;;
         --fresh-desktop) fresh_desktop=1; shift ;;
         --headless) headless=1; shift ;;
+        --join) join_invitation=$(realpath -e "${2:?--join needs an invitation file}") \
+                    || die "no invitation file $2"; shift 2 ;;
+        --invite-guest) guest_invitation=$(realpath -m "${2:?--invite-guest needs a file}"); shift 2 ;;
         -h|--help) sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p}' "$0"; exit 0 ;;
         --) shift; shell_args=("$@"); break ;;
         *) die "unknown option: $1 (see --help)" ;;
@@ -71,7 +82,7 @@ done
 if ((build)); then
     command -v t >/dev/null || die "t is required on PATH to build (docs/t.md), or pass --no-build"
 fi
-for tool in jq bwrap dbus-run-session readelf python3 sha256sum; do
+for tool in jq bwrap readelf python3 sha256sum; do
     command -v "$tool" >/dev/null || die "$tool is required on PATH"
 done
 host_runtime=${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR is unset}
@@ -83,6 +94,15 @@ if ((!headless)); then
         *) host_display=$host_runtime/$WAYLAND_DISPLAY ;;
     esac
     [[ -S $host_display ]] || die "host Wayland socket $host_display does not exist"
+    # A Tilo desktop admits a Wayland client that it did not launch only
+    # when the client shares its user and mount namespaces: anything else
+    # could be a sandboxed app reaching past its launch. A toolbox or other
+    # container is such a namespace, and the host compositor drops the
+    # connection ("Connection reset by peer"). The session needs no
+    # toolchain, so it runs on the host itself.
+    if [[ -e /run/.containerenv || -e /.dockerenv ]]; then
+        die "run the windowed session on the host, not inside a container (toolbox): the host desktop refuses Wayland clients from other namespaces; --headless works anywhere"
+    fi
 fi
 
 selected=()
@@ -131,6 +151,14 @@ for name in shell tilo-launcher tilo-install tilo-app-package tilo-runtime-bundl
 done
 [[ -f $thin/libruntime_dylib.so && -f $thin/runtime-engines ]] \
     || die "no thin-app build in $thin (run without --no-build)"
+# Each shell gets a private session bus (dist/dev/session-bus.sh). Tilo OS
+# hosts have no dbus-daemon of their own; the build carries one.
+session_bus=$repo_root/dist/dev/session-bus.sh
+if ! dbus_daemon=$(command -v dbus-daemon); then
+    dbus_daemon=$bin/dbus-daemon
+    [[ -f $dbus_daemon ]] || die "no dbus-daemon on PATH or in $bin (run without --no-build)"
+    chmod +x "$dbus_daemon"
+fi
 
 # The product fonts: the shell sets text in them from a `fonts/` directory
 # beside its executable, and the runtime bundle carries the same catalog. They
@@ -307,7 +335,7 @@ if [[ ! -f $marker ]]; then
     # Nobody completes first-login setup here; a headless pass mints the
     # development identity a dev image would, then exits.
     say "minting a throwaway identity"
-    env -u WAYLAND_DISPLAY -u DISPLAY TILO_TEST_CONTROL="$control" setsid dbus-run-session -- \
+    env -u WAYLAND_DISPLAY -u DISPLAY TILO_TEST_CONTROL="$control" setsid "$session_bus" "$dbus_daemon" \
         "$bin/shell" --backend headless > "$logs/identity.log" 2>&1 &
     pid=$!
     children+=("$pid")
@@ -332,12 +360,24 @@ fi
 # later start restores it from the saved desktop.
 native_marker=$state/native-workspace
 [[ -f $XDG_CONFIG_HOME/tilo/state.json ]] || rm -f "$native_marker"
+[[ -z $join_invitation || -z $guest_invitation ]] || die "--join and --invite-guest exclude each other"
+# A guest joins through the governor that admits this session, so the Home
+# workspace is enrolled anew, with the guest's invitation beside its own.
+[[ -z $guest_invitation ]] || rm -f "$native_marker"
 join_file=
-if [[ ! -f $native_marker ]]; then
+if [[ -n $join_invitation ]]; then
+    # Joining another person's workspace: the active workspace takes that
+    # room, governed by its owner, so this session enrols no room of its own.
+    say "joining the workspace the invitation names"
+    join_file=$runtime/join-invitation
+    (umask 077 && cp "$join_invitation" "$join_file")
+elif [[ ! -f $native_marker ]]; then
     say "enrolling the Home workspace into a native room"
     invitation=$state/native-invitation.json
-    rm -f "$invitation"
-    setsid "$bin/examples/packaged_native_governor" "$state" "$invitation" \
+    guest_output=()
+    rm -f "$invitation" "$state/guest-invitation"
+    [[ -n $guest_invitation ]] && guest_output=("$state/guest-invitation")
+    setsid "$bin/examples/packaged_native_governor" "$state" "$invitation" "${guest_output[@]}" \
         > "$logs/governor.log" 2>&1 &
     governor_pid=$!
     children+=("$governor_pid")
@@ -352,6 +392,15 @@ if [[ ! -f $native_marker ]]; then
     join_file=$runtime/join-invitation
     (umask 077 && jq -er .invitation "$invitation" > "$join_file")
     rm -f "$invitation"
+    if [[ -n $guest_invitation ]]; then
+        tries=300
+        until [[ -s $state/guest-invitation ]]; do
+            ((tries--)) && kill -0 "$governor_pid" 2>/dev/null \
+                || die "the governor fixture issued no guest invitation (see $logs/governor.log)"
+            sleep 0.1
+        done
+        (umask 077 && mv "$state/guest-invitation" "$guest_invitation")
+    fi
 fi
 
 mkdir -p "$runtime/tilo/services"
@@ -381,13 +430,19 @@ elif [[ -z ${TILO_WINIT_SIZE:-} ]]; then
         'BEGIN { if (s + 0 <= 0) s = 1; printf "%dx%d", 1280 * s, 800 * s }')
 fi
 
+# The host desktop reads a Wayland client's namespaces to admit it, which
+# the kernel hides once the nested shell makes itself non-dumpable (it does
+# as it loads its device key, before its window connects): a dumpable helper
+# connects for it and hands the connection over as WAYLAND_SOCKET.
+host_client=()
 if ((headless)); then
     backend=(--backend headless)
     display_env=(-u WAYLAND_DISPLAY -u DISPLAY)
     say "starting the shell headless at ${TILO_HEADLESS_SIZE} (log: $logs/shell.log)"
 else
     backend=(--backend winit)
-    display_env=(-u DISPLAY "WAYLAND_DISPLAY=$host_display")
+    display_env=(-u DISPLAY -u WAYLAND_DISPLAY)
+    host_client=(python3 -I "$repo_root/dist/dev/host-wayland.py" "$host_display")
     say "starting the nested shell at ${TILO_WINIT_SIZE} (log: $logs/shell.log)"
 fi
 cat >&2 <<EOF
@@ -395,8 +450,8 @@ cat >&2 <<EOF
 EOF
 join_env=()
 [[ -n $join_file ]] && join_env=("TILO_SHELL_JOIN_INVITATION_FILE=$join_file")
-env "${display_env[@]}" TILO_TEST_CONTROL="$control" "${join_env[@]}" setsid dbus-run-session -- \
-    "$bin/shell" "${backend[@]}" "${shell_args[@]}" > "$logs/shell.log" 2>&1 &
+env "${display_env[@]}" TILO_TEST_CONTROL="$control" "${join_env[@]}" setsid "$session_bus" "$dbus_daemon" \
+    "${host_client[@]}" "$bin/shell" "${backend[@]}" "${shell_args[@]}" > "$logs/shell.log" 2>&1 &
 shell_pid=$!
 children+=("$shell_pid")
 
@@ -418,7 +473,7 @@ confirm_native() {
     echo "the Home workspace did not become native; see governor.log and shell.log"
     return 1
 }
-if [[ -n $join_file ]]; then
+if [[ -n $join_file && -z $join_invitation ]]; then
     TILO_TEST_CONTROL=$control confirm_native > "$logs/native.log" 2>&1 &
 fi
 status=0
