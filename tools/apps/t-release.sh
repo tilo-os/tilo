@@ -7,6 +7,11 @@
 #                        aarch64), package them with throwaway keys, run the release smoke
 #                        tests and the reproducibility check, and keep what signing needs in
 #                        OUT/compiled
+#   sizes ARCH           no credentials: the size gate on main. Compile every app of the default
+#                        collection as `build` does, package them with throwaway keys, and fail
+#                        when a tapp or the runtime is over its budget
+#                        (tools/perf/tapp-size-budget/, tools/perf/runtime-size-budget/). It runs
+#                        on every commit of main, so the commit that took an app over is named.
 #   sign ARCH BUILT OUT  TAPP_PUBLISHER_IDENTITY and RUNTIME_BUNDLE_SIGNING_KEY: package and sign
 #                        BUILT/compiled without compiling anything, into OUT
 #   publish OUT SIGNED.. REGISTRY_TOKEN: upload the signed tapps, collections, registry media and
@@ -83,6 +88,20 @@ case $command in
     # apps that did not change.
     tools/apps/check-reproducible-tapp.sh calculator
     ;;
+  sizes)
+    arch=${1:?usage: t-release.sh sizes ARCH}
+    os/dev/assert-native-arch.sh "$arch"
+    target=$(realpath -m "${CARGO_TARGET_DIR:-target}")
+    apps=$(default_apps)
+    export TILO_TEST_ASSET_CACHE=${TILO_TEST_ASSET_CACHE:-$target/test-assets}
+    export CARGO_INCREMENTAL=0
+    export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-$(cargo_jobs)}
+    # The thin graph compiles as a release's does (build-thin-apps.sh drops the release
+    # profile's overrides); the packing tools need no optimisation to pack the same bytes.
+    export TILO_RELEASE_APPS=$apps TILO_APP_RELEASE_OUT=$scratch/app-sizes TILO_APP_TOOLS_PROFILE=dev
+    dist/apps/package-apps.sh
+    RELEASE_SMOKE_STEPS="tapp_size runtime_size" tools/apps/release-smoke.sh "$arch"
+    ;;
   sign)
     arch=${1:?usage: t-release.sh sign ARCH BUILT OUT} built=${2:?} out=$(realpath -m "${3:?}")
     release_only
@@ -127,6 +146,6 @@ case $command in
     printf 'Submitted the apps of %s to %s\n' "$T_COMMIT" "$registry_url"
     ;;
   *)
-    die "usage: t-release.sh build|sign|publish|submit ..."
+    die "usage: t-release.sh build|sizes|sign|publish|submit ..."
     ;;
 esac

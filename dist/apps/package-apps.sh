@@ -39,7 +39,16 @@ if [[ -n $prebuilt ]]; then
         || { printf 'TILO_APP_PREBUILT and TILO_APP_COMPILE_ONLY exclude each other\n' >&2; exit 2; }
     target_dir=$(realpath -e "$prebuilt")
 fi
-release_dir=$target_dir/release
+# The profile the packing tools (tilo-app-package, tilo-runtime-bundle) are built with. A release
+# builds them optimised; the size gate on main (tools/apps/t-release.sh sizes) takes `dev`, which
+# packs the same bytes and builds in seconds where an optimised link takes minutes.
+tools_profile=${TILO_APP_TOOLS_PROFILE:-release}
+case $tools_profile in
+    release) tools_dir=release ;;
+    dev) tools_dir=debug ;;
+    *) printf 'TILO_APP_TOOLS_PROFILE must be release or dev\n' >&2; exit 2 ;;
+esac
+release_dir=$target_dir/$tools_dir
 thin_app_dir=$target_dir/thin-app
 
 out=$(realpath -m "$out")
@@ -79,7 +88,7 @@ python3 "$repo_root/tools/apps/app_release.py" --collection default > "$runtime_
 mapfile -t runtime_packages < <(jq -r '.packages[]' "$runtime_plan")
 features=$(jq -r '.features | join(",")' "$runtime_plan")
 if [[ -z $prebuilt ]]; then
-(cd "$repo_root" && cargo build --release --locked -p tilo-app-package-cli -p runtime-bundle)
+(cd "$repo_root" && cargo build --profile "$tools_profile" --locked -p tilo-app-package-cli -p runtime-bundle)
 # The Rust dylib ABI includes dependency crate hashes and Cargo unifies
 # features across the selected graph.  Always resolve the shared runtime against
 # the complete default collection, even when only a few changed tapps will be

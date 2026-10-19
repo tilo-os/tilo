@@ -559,7 +559,7 @@ nothing), upload the tapps, collections and runtime objects with the package tok
 `reads_pointers = ["stable:app-collection"]`) and submit
 the publisher-signed registry entries (submit-apps). Main publishes no apps."""
 each = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
-fields = { inputs = ["apps/**", "crates/**", "vendor/**", "examples/apps/**", "dist/apps/**", "os/scripts/build-thin-apps.sh", "os/scripts/bake-runtime-bundle.sh", "os/scripts/collect-runtime-dependencies.py", "os/scripts/verify-runtime-bundle-closure.sh", "os/scripts/stamp-runtime.sh", "os/scripts/verify-elf-hardening.sh", "os/dev/assert-native-arch.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "tools/apps/**", "tools/perf/**", "tools/font-catalog.py", "tools/ci/__init__.py", "tools/ci/python.py", "tools/ci/workspace_graph.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/publish/lib.sh", "tools/upload_immutable_packages.sh", "tools/reuse_prior_app_collection.sh", "Cargo.toml", "Cargo.lock"] }
+fields = { inputs = ["apps/**", "crates/**", "vendor/**", "examples/apps/**", "dist/apps/**", "os/scripts/build-thin-apps.sh", "os/scripts/bake-runtime-bundle.sh", "os/scripts/collect-runtime-dependencies.py", "os/scripts/verify-runtime-bundle-closure.sh", "os/scripts/stamp-runtime.sh", "os/scripts/verify-elf-hardening.sh", "os/dev/assert-native-arch.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "tools/apps/**", "tools/perf/**", "tools/font-catalog.py", "tools/ci/__init__.py", "tools/ci/python.py", "tools/ci/workspace_graph.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/**", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/publish/lib.sh", "tools/upload_immutable_packages.sh", "tools/reuse_prior_app_collection.sh", "Cargo.toml", "Cargo.lock"] }
 
 [[matrix.check]]
 name = "apps-build-{arch}"
@@ -569,6 +569,21 @@ requires = ["{node}"]
 timeout_secs = 10800
 cost = "heavy"
 default = false
+
+# The size gate: every commit of main that changes what an app is built from packages the default
+# collection as apps-build does and holds each tapp and the runtime to its budget
+# (tools/perf/tapp-size-budget/, tools/perf/runtime-size-budget/). Without it nothing measured
+# apps between releases, and they outgrew their budgets by the day; failing here names the commit
+# that took an app over.
+[[matrix.check]]
+name = "app-sizes-{arch}"
+run = "bash tools/apps/t-release.sh sizes {arch}"
+requires = ["{node}"]
+# The runtime library's link and the apps' one-unit codegen run side by side.
+requirement = { cores = 16, memory = "32GiB" }
+timeout_secs = 5400
+cost = "heavy"
+default = true
 
 [[matrix.check]]
 name = "sign-apps-{arch}"

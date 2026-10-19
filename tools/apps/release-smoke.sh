@@ -258,7 +258,13 @@ engines() (
 )
 
 failed=()
-for step in tapp_size runtime_size loader_cost first_frame media typst spotify engines; do
+# RELEASE_SMOKE_STEPS narrows the run to some of the steps (the size gate on main takes the two
+# size budgets); a release runs them all.
+for step in ${RELEASE_SMOKE_STEPS:-tapp_size runtime_size loader_cost first_frame media typst spotify engines}; do
+  case $step in
+    tapp_size|runtime_size|loader_cost|first_frame|media|typst|spotify|engines) ;;
+    *) printf 'unknown release smoke step: %s\n' "$step" >&2; exit 2 ;;
+  esac
   printf '==> %s\n' "$step"
   "$step" || failed+=("$step")
 done
