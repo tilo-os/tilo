@@ -1655,29 +1655,56 @@ tasks for it.
 
 ### Two people in one workspace: a nested pair
 
-To try collaboration on one machine (presence, shared apps, roles), start two
-nested sessions with two throwaway identities in one shared workspace:
+To try collaboration on one machine (presence, shared apps, calls), start two
+nested sessions with two throwaway identities, together in a community
+workspace the way two computers are in tilo.coffee's Lounge:
 
 ```bash
 dist/dev/nested-pair.sh                          # two windows, side by side
-dist/dev/nested-pair.sh --apps "notes chat"      # fewer apps, faster to package
+dist/dev/nested-pair.sh --apps "chat notes"      # fewer apps, faster to package
 dist/dev/nested-pair.sh --headless               # no windows; tilo-control only
-dist/dev/nested-pair.sh --fresh                  # new identities
+dist/dev/nested-pair.sh --fresh                  # two new people
+dist/dev/nested-pair.sh --fresh-site             # a new Lounge, nothing kept
 ```
 
-Session A (`~/.local/state/tilo-nested-pair/a`) starts as `nested-session.sh`
-does and enrols a new Home workspace through the governor fixture, which also
-issues an invitation into it (`nested-session.sh --invite-guest FILE`) and
-keeps answering joins while A runs. Session B (`.../b`) redeems it at startup
-(`nested-session.sh --join FILE`): B's active workspace is A's Home workspace,
-B an editor in it. The script prints a `tilo-control` line for each session;
-closing either window or Ctrl-C stops both. Identities persist between runs;
-each run shares a new workspace.
+It runs a local site the way tilo.coffee runs: the room service in
+persistent mode with its workspace host (`tilo-relay`), and an `entry.json`
+naming that host's room as the site's home workspace, "Lounge", which opens
+in Chat, with the room service's door admitting people
+(`crates/hosting/tilo-room-service/dev/run.py --no-bundle`, on ports 8680 and
+up; `--ports BASE` moves them). Both binaries come with the nested-session
+build. Each session's community site is that local site (`nested-session.sh
+--community SITE`, which stands in for `/etc/tilo/community.toml`), so each
+joins the Lounge through the door exactly as a Tilo computer joins
+tilo.coffee's, and holds it over the host's routes. Once both are in, the
+script takes each person to the Lounge and has them show where they are (a
+public workspace starts at "that I'm here", which shares no pointer); the
+avatar menu changes it back.
 
-What works today: both sessions' active workspace is the same room, and B is
-a member of it (B lists A as its owner). Live sync and presence between the
-two do not flow yet: the invitations carry the governor fixture's address,
-which answers joins only, so neither session reaches the other's replica.
+State lives in `~/.local/state/tilo-nested-pair` (`--state DIR`): A in `a/`,
+B in `b/`, the site in `site/` (its log is `site/site.log`). Identities and
+the Lounge persist between runs. The script prints a `tilo-control` line for
+each session; closing either window or Ctrl-C stops both and the site.
+`--ready FILE` writes both control sockets, the site and the room as JSON
+once both people are in the Lounge.
+
+The presence acceptance drives such a pair headless and checks, through each
+session's control socket and the actions people and agents use, that each
+roster shows the other person, that a Chat message A posts is read on B,
+that A's pointer lands on B's tile for the same window at the same offset,
+that following A moves B's view to A's window and with A, and that A's
+cursor chat shows beside A's pointer on B:
+
+```bash
+dist/dev/nested-pair-check.py                    # build, start a fresh pair, check, stop
+dist/dev/nested-pair-check.py --no-build         # from the last build
+dist/dev/nested-pair-check.py --attach READY     # a pair started with --ready READY
+```
+
+It prints one line per check and keeps both sessions' state dumps and
+snapshots in `--out` (a temporary directory by default). The network half of
+the pointer check also runs on t, without a compositor:
+`shell::network::site_join_tests::two_computers_in_a_sites_workspace_see_each_others_pointer`.
 
 ### Edit → build → log into your own build
 

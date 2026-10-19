@@ -57,6 +57,13 @@ What it starts (each piece is the production one; only TLS and origins differ):
                 with "about" from TILO_WEB_ABOUT_NOTIFY, _SOURCE and
                 _COMMUNITY, as the image writes it.
 
+Without the browser (--no-bundle):
+  Serves only entry.json (and /healthz) on the web entry: a site for Tilo
+  computers, which join its home workspace through the door as they join
+  tilo.coffee's (dist/dev/nested-pair.sh runs two nested sessions on one). No
+  bundle is built and the web toolchain is not needed. --ready-file FILE
+  writes {"site", "relay", "api", "room"} as JSON once the room answers.
+
 Building:
   Without --relay-bin/--room-service-bin it builds both release binaries with
   `$CARGO build` (else `cargo build`; see --cargo, which may name any cargo
@@ -131,6 +138,10 @@ def parse_args():
     parser.add_argument('--relay-bin', type=pathlib.Path, help='a prebuilt tilo-relay (built with --features agents)')
     parser.add_argument('--room-service-bin', type=pathlib.Path, help='a prebuilt tilo-room-service')
     parser.add_argument('--bundle', type=pathlib.Path, help='a prebuilt desktop bundle (build.sh DIR --bundle desktop)')
+    parser.add_argument('--no-bundle', action='store_true',
+                        help='no browser bundle: the web entry serves only entry.json (see "Without the browser")')
+    parser.add_argument('--ready-file', type=pathlib.Path,
+                        help='write the site, relay and API origins and the room as JSON here once the room answers')
     parser.add_argument('--bundle-profile', choices=['release', 'dev'], default='release',
                         help='build.sh --profile when building the bundle (default: release)')
     parser.add_argument('--cargo', default=os.environ.get('CARGO', 'cargo'),
@@ -141,6 +152,8 @@ def parse_args():
                         help='TILO_ROOMS_PORT_BASE: the relay listens on it (TLS) and on it + 64 (plain; default: 9700)')
     args = parser.parse_args()
     args.scratch = args.scratch.resolve()
+    if args.no_bundle and args.bundle is not None:
+        parser.error('--bundle and --no-bundle exclude each other')
     for name in ('relay_bin', 'room_service_bin', 'bundle'):
         path = getattr(args, name)
         if path is not None:
@@ -319,9 +332,19 @@ def main():
             sys.exit(f'run.py: port {port} is in use (another run.py? see --web-port, --api-port, --port-base)')
     build_binaries(args)
     bin_dir = assemble_bin(args)
-    bundle = build_bundle(args)
     site = args.scratch / 'site'
-    version = lay_out(bundle, site)
+    if args.no_bundle:
+        # Nothing but entry.json: the service's /app/ serves an empty
+        # directory, and the site's own routes answer 404 past entry.json.
+        bundle = args.scratch / 'no-bundle'
+        bundle.mkdir(parents=True, exist_ok=True)
+        if site.exists():
+            shutil.rmtree(site)
+        site.mkdir(parents=True)
+        version = 'none'
+    else:
+        bundle = build_bundle(args)
+        version = lay_out(bundle, site)
 
     state = args.scratch / 'state'
     if args.fresh:
@@ -395,6 +418,11 @@ def main():
         time.sleep(0.2)
     room = room_id.read_text().strip()
     host = urllib.parse.urlsplit(relay_origin).netloc
+    if args.ready_file is not None:
+        ready = json.dumps({'site': f'{web_origin}/', 'relay': relay_origin, 'api': api_origin, 'room': room})
+        partial = args.ready_file.with_name(args.ready_file.name + '.partial')
+        partial.write_text(ready + '\n')
+        partial.replace(args.ready_file)
     print(f"""
 Tilo is up in {time.monotonic() - started:.1f}s, room {args.name!r} ({room}), bundle {version}
 

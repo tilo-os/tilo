@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Build everything dist/dev/nested-session.sh runs, into one directory: the
 # host programs (shell, launcher, installer, packager, runtime-bundle tool,
-# model gateway, tilo-control, the native-room governor fixture), the thin
+# model gateway, tilo-control, the native-room governor fixture), the
+# workspace host and room service a local site runs (nested-pair.sh), the thin
 # apps, the shared runtime library they link and its engines, the Rust
 # standard library that runtime was linked against, and a dbus-daemon for
 # hosts that have none.
@@ -50,6 +51,17 @@ cargo build --locked --profile "$profile" \
     -p runtime-bundle --bin tilo-runtime-bundle \
     -p tilo-model-gateway --bin tilo-model-gateway \
     -p tilo-control --bin tilo-control
+# The workspace host and the room service in front of it, as the room
+# service's image builds them (tilo-relay with its agents): the local site
+# dist/dev/nested-pair.sh runs, so two nested sessions meet in its home
+# workspace the way two computers meet in a community's. A second build, so
+# the relay's features never unify into the shell's dependencies.
+site_bins=(tilo-relay tilo-room-service)
+cargo build --locked --profile "$profile" \
+    --config "profile.$profile.inherits=\"release\"" --config "profile.$profile.lto=false" \
+    --config "profile.$profile.codegen-units=16" --config "profile.$profile.incremental=true" \
+    -p tilo-relay --bin tilo-relay --features tilo-relay/agents \
+    -p tilo-room-service --bin tilo-room-service
 
 # --- Thin apps and the shared runtime -----------------------------------------
 # Resolved against the default collection's runtime, so the runtime is the one
@@ -67,7 +79,7 @@ INCLUDE_PACKAGES=$(jq -r '.packages | join(" ")' <<<"$runtime_plan") \
 # --- Stage ----------------------------------------------------------------------
 rm -rf "$out"
 mkdir -p "$out/bin/examples" "$out/thin-app"
-for name in "${host_bins[@]}"; do cp -p "$target/$profile/$name" "$out/bin/"; done
+for name in "${host_bins[@]}" "${site_bins[@]}"; do cp -p "$target/$profile/$name" "$out/bin/"; done
 cp -p "$target/$profile/examples/packaged_native_governor" "$out/bin/examples/"
 cp -p "$target/thin-app/libruntime_dylib.so" "$target/thin-app/runtime-engines" "$out/thin-app/"
 while IFS= read -r file; do
