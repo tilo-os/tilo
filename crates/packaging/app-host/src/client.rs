@@ -40,6 +40,11 @@ pub struct PackageAbout {
     pub names: std::collections::BTreeMap<String, String>,
     /// `[package].category`, when declared.
     pub category: Option<String>,
+    /// `[package.taglines]`: what the app does in one phrase, by BCP 47 tag.
+    pub taglines: std::collections::BTreeMap<String, String>,
+    /// `[capabilities]`, required and optional together: what the app's
+    /// code may ask the sandbox for (`network.http`, `files.open`, ...).
+    pub capabilities: Vec<String>,
 }
 
 impl PackageAbout {
@@ -55,7 +60,38 @@ impl PackageAbout {
                 .category
                 .clone()
                 .filter(|category| !category.trim().is_empty()),
+            taglines: package.taglines.clone(),
+            capabilities: Vec::new(),
         }
+    }
+
+    /// What the whole manifest says to show a person: its `[package]`
+    /// metadata and the capabilities it declares.
+    pub(crate) fn from_full_manifest(manifest: &tilo_app_package::Manifest) -> Self {
+        let mut about = Self::from_manifest(&manifest.package);
+        about.capabilities = manifest
+            .capabilities
+            .required
+            .iter()
+            .chain(&manifest.capabilities.optional)
+            .cloned()
+            .collect();
+        about
+    }
+
+    /// The tag line to show in `locale` (BCP 47): its exact tag, else its
+    /// language, else English; empty when the app declares none.
+    #[must_use]
+    pub fn tagline_for(&self, locale: &str) -> &str {
+        let language = locale.split(['-', '_']).next().unwrap_or(locale);
+        [locale, language, "en"]
+            .into_iter()
+            .find_map(|wanted| {
+                self.taglines
+                    .iter()
+                    .find(|(tag, _)| tag.eq_ignore_ascii_case(wanted))
+            })
+            .map_or("", |(_, tagline)| tagline.as_str())
     }
 
     /// The name to show in `locale` (BCP 47): its exact tag, else its

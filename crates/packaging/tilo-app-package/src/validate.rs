@@ -49,6 +49,15 @@ pub enum ManifestError {
     UnneededPlatformReason,
     #[error("package.platform-reason must be one non-empty line")]
     BadPlatformReason,
+    #[error("package.taglines.{0} must be one non-empty line of at most 80 characters")]
+    BadTagline(String),
+    #[error(
+        "package.screenshots entry {0:?} must be a PNG, JPEG or WebP file directly under \
+         `screenshots/`, listed once"
+    )]
+    BadScreenshot(String),
+    #[error("package.screenshots lists more than {MAX_SCREENSHOTS} screenshots")]
+    TooManyScreenshots,
     #[error("capabilities.{list} has an empty or padded capability name {name:?}")]
     BadCapabilityName { list: &'static str, name: String },
     #[error("capabilities lists {0:?} more than once")]
@@ -185,6 +194,8 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
     validate_filesystem_policy(m)?;
 
     validate_platforms(m).and_then(|()| validate_capabilities(m))?;
+
+    validate_store_listing(m)?;
 
     validate_continuity(m)?;
 
@@ -510,6 +521,53 @@ fn validate_platforms(m: &Manifest) -> Result<(), ManifestError> {
     }
 }
 
+/// Most screenshots a package lists; the Store shows them in one gallery.
+pub const MAX_SCREENSHOTS: usize = 8;
+
+/// The longest tag line, in characters: one phrase under the app's name.
+pub const MAX_TAGLINE_CHARS: usize = 80;
+
+/// Tag lines are one short line each; screenshots are image files directly
+/// under the package's `screenshots/` directory, each listed once.
+fn validate_store_listing(m: &Manifest) -> Result<(), ManifestError> {
+    for (tag, tagline) in &m.package.taglines {
+        let trimmed = tagline.trim();
+        if trimmed.is_empty()
+            || trimmed.len() != tagline.len()
+            || tagline.contains('\n')
+            || tagline.chars().count() > MAX_TAGLINE_CHARS
+        {
+            return Err(ManifestError::BadTagline(tag.clone()));
+        }
+    }
+    if m.package.screenshots.len() > MAX_SCREENSHOTS {
+        return Err(ManifestError::TooManyScreenshots);
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for shot in &m.package.screenshots {
+        let valid = shot.strip_prefix("screenshots/").is_some_and(|name| {
+            !name.is_empty()
+                && !name.starts_with('.')
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+                && std::path::Path::new(name)
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| {
+                        matches!(
+                            ext.to_ascii_lowercase().as_str(),
+                            "png" | "jpg" | "jpeg" | "webp"
+                        )
+                    })
+        });
+        if !valid || !seen.insert(shot.as_str()) {
+            return Err(ManifestError::BadScreenshot(shot.clone()));
+        }
+    }
+    Ok(())
+}
+
 fn validate_capabilities(m: &Manifest) -> Result<(), ManifestError> {
     let mut seen = std::collections::BTreeSet::new();
     for (list, names) in [
@@ -823,12 +881,74 @@ pub fn validate_manifest_with_payload(
     {
         return Err(ManifestError::TargetModuleMissing(target.module.clone()));
     }
+    if let Some(missing) = m.package.screenshots.iter().find(|shot| {
+        !payload_files.iter().any(|path| {
+            path.to_str()
+                .is_some_and(|path| path.replace('\\', "/") == shot.as_str())
+        })
+    }) {
+        return Err(ManifestError::BadScreenshot(missing.clone()));
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn app_with_listing(listing: &str) -> Manifest {
+        let src = format!(
+            r#"
+[package]
+id = "so.tilo.example"
+version = "0.1.0"
+kind = "app"
+runtime = "tilo-runtime/2026.07"
+{listing}
+
+[publisher]
+identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[entrypoint]
+bin = "bin/example"
+"#
+        );
+        Manifest::from_toml_str(&src).unwrap()
+    }
+
+    #[test]
+    fn taglines_are_one_short_line_and_screenshots_live_under_their_directory() {
+        let fine = app_with_listing(
+            "screenshots = [\"screenshots/home.png\", \"screenshots/detail.webp\"]\n\
+             [package.taglines]\nen = \"Notes you write alone or together\"\n",
+        );
+        assert!(validate_store_listing(&fine).is_ok());
+        assert_eq!(
+            fine.package.tagline_for("de-DE"),
+            Some("Notes you write alone or together"),
+            "a language without its own tag line falls back to English"
+        );
+        for bad in [
+            "screenshots = [\"home.png\"]",
+            "screenshots = [\"screenshots/../secret.png\"]",
+            "screenshots = [\"screenshots/notes.txt\"]",
+            "screenshots = [\"screenshots/a.png\", \"screenshots/a.png\"]",
+        ] {
+            assert!(
+                matches!(
+                    validate_store_listing(&app_with_listing(bad)),
+                    Err(ManifestError::BadScreenshot(_))
+                ),
+                "{bad}"
+            );
+        }
+        let long = format!("[package.taglines]\nen = \"{}\"", "x".repeat(81));
+        assert!(matches!(
+            validate_store_listing(&app_with_listing(&long)),
+            Err(ManifestError::BadTagline(_))
+        ));
+    }
 
     fn minimal_runtime_manifest() -> Manifest {
         let src = r#"

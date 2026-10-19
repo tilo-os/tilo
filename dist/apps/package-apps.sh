@@ -175,8 +175,24 @@ while IFS=$'\t' read -r name package binary id version manifest; do
     built="$thin_app_dir/$binary"
     [[ -x $built ]] || { printf 'missing app binary: %s\n' "$built" >&2; exit 1; }
     payload="$out/work/payload-$name"
-    staged_manifest="$out/work/manifest-$name.toml"
-    mkdir -p "$payload/bin"
+    # The manifest is staged in a directory of its own with the app's
+    # search/*.ftl beside it: the packer joins their keywords and tag line
+    # into the signed manifest from the directory the manifest is in.
+    staged_dir="$out/work/manifest-$name"
+    staged_manifest="$staged_dir/tilo-app.toml"
+    mkdir -p "$payload/bin" "$staged_dir"
+    app_dir="$repo_root/$(dirname "$manifest")"
+    if [[ -d $app_dir/search ]]; then
+        rm -rf "$staged_dir/search"
+        cp -R "$app_dir/search" "$staged_dir/search"
+    fi
+    # The Store's gallery shows the screenshots the package carries.
+    if [[ -d $app_dir/screenshots ]]; then
+        mkdir -p "$payload/screenshots"
+        find "$app_dir/screenshots" -maxdepth 1 -type f \
+            \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.webp' \) \
+            -exec install -pm 0644 -t "$payload/screenshots" {} +
+    fi
     install -pm 0755 "$built" "$payload/bin/$binary"
     # The app's public surface ships at the payload root, as `tilo-app package`
     # stages it: the launcher names that file to the app, which reads it from
