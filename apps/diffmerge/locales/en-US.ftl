@@ -83,12 +83,12 @@ history-page-originals = Original inputs unavailable and recorded choices
 ## Opposite-only aligned source lines
 
 diff-gap-added-right = { $count ->
-    [one] 1 added line on Right
-   *[other] { $count } added lines on Right
+    [one] 1 line added on the right
+   *[other] { $count } lines added on the right
 }
 diff-gap-removed-left = { $count ->
-    [one] 1 removed line on Left
-   *[other] { $count } removed lines on Left
+    [one] 1 line removed on the left
+   *[other] { $count } lines removed on the left
 }
 
 ## History: what each change did, by field and by verb
