@@ -265,13 +265,38 @@ impl Binding {
     }
 }
 
-/// What the tile shows while its record cannot be opened. A document the
-/// store is still opening on its own thread is not a failure.
+/// Why the tile's record cannot be opened, as the store said it: the
+/// technical detail behind the card's "Details". A document the store is
+/// still opening on its own thread is not a failure ([`OPENING`]).
 fn record_unavailable(error: &crate::record::RecordOpenError) -> String {
     match error {
-        crate::record::RecordOpenError::Opening => "Opening the document".to_owned(),
-        other => format!("Document storage unavailable: {other}"),
+        crate::record::RecordOpenError::Opening => OPENING.to_owned(),
+        other => other.to_string(),
     }
+}
+
+/// What the tile says while the store opens its record.
+const OPENING: &str = "Opening the document";
+
+/// The name of the card a tile shows while its record cannot be opened.
+#[must_use]
+pub fn record_unavailable_title() -> String {
+    crate::i18n::I18nManager::lookup_plain("record-unavailable-title")
+}
+
+/// The card a tile shows while its record cannot be opened: what happened
+/// and what to do, in the person's words, with the store's reason (`detail`)
+/// behind "Details". While the store is still opening it, the tile says so.
+fn record_unavailable_card(detail: &str) -> super::EmptyState {
+    if detail == OPENING {
+        return super::EmptyState::new(OPENING).busy();
+    }
+    super::EmptyState::new(record_unavailable_title())
+        .with_icon(crate::icons::Icon::File)
+        .with_message(crate::i18n::I18nManager::lookup_plain(
+            "record-unavailable-hint",
+        ))
+        .with_details(detail)
 }
 
 fn admit_record(
@@ -326,6 +351,8 @@ pub struct TileHost {
     custody_renewal: Option<crate::control_custody::CustodyAttachment>,
     pending_binding: Option<PendingBinding>,
     record_error: Option<String>,
+    /// The card shown for `record_error`, with the detail it was made for.
+    error_card: Option<(String, super::EmptyState)>,
     record_transition_error: Option<String>,
     record_intent_transition_blocked: bool,
     record_creation_refused: bool,
@@ -694,6 +721,7 @@ impl TileHost {
             custody_renewal: None,
             pending_binding: None,
             record_error: None,
+            error_card: None,
             record_transition_error: None,
             record_intent_transition_blocked: false,
             record_creation_refused: false,
@@ -848,7 +876,7 @@ impl TileHost {
             return;
         }
         self.replace_content(TileContent::Notice {
-            title: "Document unavailable".into(),
+            title: record_unavailable_title(),
             detail: reason.clone(),
         });
         self.binding = None;
@@ -2505,6 +2533,15 @@ impl Widget for TileHost {
                 position.y / ctx.scale_factor,
             ));
         }
+        // The card of a record that cannot be opened opens its "Details".
+        if self.record_error.is_some()
+            && let Some((_, card)) = &mut self.error_card
+        {
+            card.handle_event(event, ctx);
+            if *ctx.handled {
+                return;
+            }
+        }
         let typing = matches!(
             event,
             WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
@@ -2626,12 +2663,11 @@ impl Widget for TileHost {
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         let _running = self.running();
         if let Some(detail) = &self.record_error {
-            return Some(
-                crate::a11y::AccessNode::new(crate::a11y::Role::Group)
-                    .with_name("Document unavailable")
-                    .with_description(detail.clone())
-                    .with_bounds(self.rect),
-            );
+            let card = record_unavailable_card(detail);
+            let node = card
+                .accessibility()
+                .unwrap_or_else(|| crate::a11y::AccessNode::new(crate::a11y::Role::Group));
+            return Some(node.with_bounds(self.rect));
         }
         if let Some(detail) = &self.record_transition_error {
             return Some(
@@ -3165,16 +3201,19 @@ impl TileHost {
             if self.opening_shown && self.handed_over_at.is_none() {
                 self.handed_over_at = Some(crate::time::now());
             }
-            if let Some(detail) = &self.record_error {
-                draw_card_text(
-                    scene,
-                    transform,
-                    tr,
-                    theme,
-                    self.rect,
-                    "Document unavailable",
-                    detail,
-                );
+            if let Some(detail) = self.record_error.clone() {
+                if self
+                    .error_card
+                    .as_ref()
+                    .is_none_or(|(shown, _)| *shown != detail)
+                {
+                    self.error_card = Some((detail.clone(), record_unavailable_card(&detail)));
+                }
+                let rect = self.rect;
+                if let Some((_, card)) = &mut self.error_card {
+                    card.apply_layout_external(rect);
+                    card.draw(scene, transform, tr, theme, presence);
+                }
             } else {
                 // The app and its history were laid out where the tile
                 // was; a moved tile draws them moved with it.
@@ -3983,7 +4022,7 @@ mod tests {
             }
             assert_eq!(
                 host.accessibility().and_then(|node| node.name),
-                Some("Document unavailable".into())
+                Some(record_unavailable_title())
             );
         }
 
@@ -4525,7 +4564,7 @@ mod tests {
             );
             assert_eq!(
                 host.accessibility().and_then(|node| node.name),
-                Some("Document unavailable".into())
+                Some(record_unavailable_title())
             );
             assert_ne!(
                 seen_by("kept off another kind"),
@@ -4537,7 +4576,7 @@ mod tests {
             let inspection = driver.inspection();
             assert!(inspection_has_semantic(
                 &inspection.root,
-                "Document unavailable"
+                &record_unavailable_title()
             ));
             assert!(
                 !inspection_has_semantic(&inspection.root, "Seeded hidden document"),
@@ -4562,7 +4601,7 @@ mod tests {
             assert!(host.record_error.is_some());
             assert_eq!(
                 host.accessibility().and_then(|node| node.name),
-                Some("Document unavailable".into())
+                Some(record_unavailable_title())
             );
 
             std::fs::remove_file(&root).unwrap();

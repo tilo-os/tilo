@@ -17,6 +17,10 @@
 //! status colour and bounds its message to one elided line; assistive
 //! technology still reads the whole message.
 //!
+//! What went wrong technically (an error code, what a service answered) is
+//! not the person's message: [`EmptyState::with_details`] keeps it behind a
+//! "Details" disclosure under the stack, closed until someone opens it.
+//!
 //! The content is centered on both axes inside whatever space the parent
 //! gives the widget, so dropping it as the sole child of a content pane
 //! "just works". The action is surfaced through the toolkit's drain channel
@@ -138,6 +142,12 @@ struct StackStyle {
     pad_y: f64,
     min_button: f64,
     glyph: f64,
+    /// The technical detail's text, under its disclosure.
+    details: TextStyle,
+    /// The height of the "Details" disclosure control.
+    details_toggle: f64,
+    /// The gap between the disclosure and the text it opens.
+    details_gap: f64,
 }
 
 impl StackStyle {
@@ -159,7 +169,38 @@ impl StackStyle {
             pad_y: f64::from(theme.tokens.spacing.s2),
             min_button: f64::from(theme.tokens.metrics.min_pointer_target),
             glyph: if inline { glyph } else { glyph * 2.0 },
+            details: wrapped(TextRole::Caption),
+            details_toggle: crate::widget::ButtonFace::height(
+                crate::widget::ControlSize::Small,
+                theme,
+            ),
+            details_gap: f64::from(theme.tokens.spacing.s2),
         }
+    }
+
+    /// How tall the "Details" disclosure is under the stack at `width`:
+    /// nothing without details, the control while closed, and the control
+    /// with the wrapped detail while open.
+    fn details_height(
+        &self,
+        text_renderer: &mut TextRenderer,
+        width: f64,
+        details: Option<&str>,
+        open: bool,
+    ) -> f64 {
+        let Some(details) = details else {
+            return 0.0;
+        };
+        let mut height = self.gap + self.details_toggle;
+        if open {
+            let (_, text_h) = text_renderer.measure_style(
+                details,
+                Some(details_width(width, self.gap)),
+                &self.details,
+            );
+            height += self.details_gap + f64::from(text_h);
+        }
+        height
     }
 
     /// The same roles centred, for painting.
@@ -170,6 +211,7 @@ impl StackStyle {
             title: centered(layout.title),
             message: centered(layout.message),
             action: centered(layout.action),
+            details: centered(layout.details),
             ..layout
         }
     }
@@ -221,6 +263,17 @@ impl StackStyle {
             },
         }
     }
+}
+
+/// The measure the technical detail wraps at: the stack's inner width,
+/// kept to a readable line.
+fn details_width(width: f64, gap: f64) -> f32 {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "window widths are logical pixels well within f32 range"
+    )]
+    let width = (width - gap * 2.0).clamp(1.0, 520.0) as f32;
+    width
 }
 
 impl Fit {
@@ -281,6 +334,8 @@ struct Placed {
     message_y: Option<f64>,
     action: Option<Rect>,
     natural: f64,
+    /// Where the stack ends: under the action, else under the text.
+    bottom: f64,
 }
 
 /// Lay the stack out centred in `rect`, shedding the hero and then the
@@ -355,6 +410,11 @@ fn place(
         let action_rect = Rect::new(x0, y, x0 + bw, y + metrics.btn_h);
         (action_rect.y1 > rect.y0 && action_rect.y0 < rect.y1).then_some(action_rect)
     });
+    let bottom = if content.action_label.is_some() {
+        y + metrics.btn_h
+    } else {
+        y
+    };
     Placed {
         style,
         metrics,
@@ -363,6 +423,7 @@ fn place(
         message_y,
         action,
         natural,
+        bottom,
     }
 }
 
@@ -514,9 +575,31 @@ pub struct EmptyState {
     resolved: (String, Option<String>, Option<String>),
     i18n_revision: u64,
     layout_dirty: bool,
-    /// What the last draw showed (rect, action hovered, focused, enabled);
-    /// while it still holds there is nothing to redraw.
-    drawn: Option<(Rect, bool, bool, bool)>,
+    /// The technical detail behind the "Details" disclosure.
+    details: Option<String>,
+    /// Whether the disclosure is open.
+    details_open: bool,
+    /// Where the disclosure control was drawn (empty without details).
+    details_rect: Rect,
+    /// Keyboard focus is on the disclosure: the state has no action.
+    details_focused: bool,
+    /// What a state without an action is addressed and tested by.
+    id: Option<String>,
+    /// What the last draw showed; while it still holds there is nothing to
+    /// redraw.
+    drawn: Option<Painted>,
+}
+
+/// What one draw of an empty state showed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Painted {
+    rect: Rect,
+    action_hovered: bool,
+    action_focused: bool,
+    enabled: bool,
+    details_hovered: bool,
+    details_open: bool,
+    details_focused: bool,
 }
 
 impl EmptyState {
@@ -550,21 +633,125 @@ impl EmptyState {
             resolved: (String::new(), None, None),
             i18n_revision: crate::i18n::I18nManager::revision(),
             layout_dirty: true,
+            details: None,
+            details_open: false,
+            details_rect: Rect::ZERO,
+            details_focused: false,
+            id: None,
             drawn: None,
         };
         state.resolve();
         state
     }
 
-    /// The state a draw paints: where, whether the action is hovered or
-    /// focused, and whether it is enabled.
-    fn painted_state(&self) -> (Rect, bool, bool, bool) {
-        (
-            self.rect,
-            self.action_label.is_some() && self.action_rect.contains(self.last_cursor),
-            self.action_focused,
-            self.is_enabled(),
-        )
+    /// The state a draw paints: where, whether the action and the details
+    /// disclosure are hovered or focused, and whether they are on.
+    fn painted_state(&self) -> Painted {
+        Painted {
+            rect: self.rect,
+            action_hovered: self.action_label.is_some()
+                && self.action_rect.contains(self.last_cursor),
+            action_focused: self.action_focused,
+            enabled: self.is_enabled(),
+            details_hovered: self.details.is_some() && self.details_rect.contains(self.last_cursor),
+            details_open: self.details_open,
+            details_focused: self.details_focused,
+        }
+    }
+
+    /// Keep `details`, the technical side of a failure (what a service
+    /// answered, an error code), behind a "Details" disclosure under the
+    /// stack. The title and message say what happened and what to do in
+    /// the person's words; the disclosure is closed until someone opens it.
+    #[must_use]
+    pub fn with_details(mut self, details: impl Into<String>) -> Self {
+        self.set_details(Some(details.into()));
+        self
+    }
+
+    /// Replace the technical detail; an empty one removes the disclosure.
+    pub fn set_details(&mut self, details: Option<String>) {
+        let details = details.filter(|details| !details.trim().is_empty());
+        if details != self.details {
+            if details.is_none() {
+                self.details_open = false;
+                self.details_focused = false;
+            }
+            self.details = details;
+            self.layout_dirty = true;
+            self.drawn = None;
+        }
+    }
+
+    /// Whether the "Details" disclosure is open.
+    #[must_use]
+    pub fn details_open(&self) -> bool {
+        self.details_open
+    }
+
+    /// Open or close the "Details" disclosure.
+    pub fn toggle_details(&mut self) {
+        if self.details.is_some() {
+            self.details_open = !self.details_open;
+            self.layout_dirty = true;
+            self.drawn = None;
+        }
+    }
+
+    /// The disclosure's control id: the action's, with `:details`.
+    fn details_control_id(&self) -> String {
+        format!("{}:details", self.action_control_id())
+    }
+
+    /// Paint the "Details" disclosure under a stack that ends at `bottom`,
+    /// and answer the control's rect.
+    fn paint_details(&self, ctx: &mut PaintCtx<'_>, rect: Rect, bottom: f64) -> Rect {
+        let Some(details) = self.details.as_deref() else {
+            return Rect::ZERO;
+        };
+        let theme = ctx.theme;
+        let style = StackStyle::resolved(theme, self.inline);
+        let icon = if self.details_open {
+            Icon::ChevronDown
+        } else {
+            Icon::ChevronRight
+        };
+        let probe = crate::widget::ButtonFace::new(Rect::ZERO, "empty-state-details")
+            .role(crate::widget::ButtonRole::Plain)
+            .control_size(crate::widget::ControlSize::Small)
+            .icon(icon);
+        let width = probe.intrinsic_width(ctx.text, theme).min(rect.width());
+        let x0 = rect.center().x - width / 2.0;
+        let y0 = bottom + style.gap;
+        let toggle = Rect::new(x0, y0, x0 + width, y0 + style.details_toggle);
+        let face = crate::widget::ButtonFace::new(toggle, "empty-state-details")
+            .role(crate::widget::ButtonRole::Plain)
+            .control_size(crate::widget::ControlSize::Small)
+            .icon(icon)
+            .hovered(toggle.contains(self.last_cursor))
+            .focused(self.details_focused);
+        crate::widget::Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
+        if self.details_focused {
+            crate::widget::paint_focus_ring(
+                ctx.scene,
+                ctx.transform,
+                toggle,
+                f64::from(theme.tokens.radii.control),
+                theme,
+            );
+        }
+        if self.details_open {
+            let width = details_width(rect.width(), style.gap);
+            let x = rect.center().x - f64::from(width) / 2.0;
+            ctx.text(
+                details,
+                &style.details,
+                theme.text_dim,
+                Point::new(x, toggle.y1 + style.details_gap),
+                Some(width),
+            );
+        }
+        toggle
     }
 
     /// Something failed to load or open: `title` says what, `detail` says
@@ -638,6 +825,14 @@ impl EmptyState {
             engine.set_enabled(enabled);
         }
         self.layout_dirty = true;
+        self
+    }
+
+    /// What a state without an action is addressed by (a scenario's
+    /// expectation, a test); a state with one is addressed by its action.
+    #[must_use]
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
         self
     }
 
@@ -909,7 +1104,14 @@ impl Widget for EmptyState {
                 .action_label
                 .as_ref()
                 .map_or(0.0, |_| metrics.gap + metrics.btn_h);
-        let natural = Fit::choose(f64::INFINITY, self.content().parts(), metrics).total;
+        let details = self.layout_style.details_height(
+            text_renderer,
+            f64::from(measured_width),
+            self.details.as_deref(),
+            self.details_open,
+        );
+        let essential_height = essential_height + details;
+        let natural = Fit::choose(f64::INFINITY, self.content().parts(), metrics).total + details;
         let intrinsic_height = if self.inline {
             natural
         } else if self.scroll_content {
@@ -955,10 +1157,25 @@ impl Widget for EmptyState {
         let hover = self.last_cursor;
         let focused = self.action_focused;
         let inline = self.inline;
+        // The disclosure sits under the stack, and the two are centred
+        // together: the stack is laid out in what the disclosure leaves.
+        let details_h = StackStyle::resolved(theme, inline).details_height(
+            text_renderer,
+            rect.width(),
+            self.details.as_deref(),
+            self.details_open,
+        );
+        let stack = Rect::new(
+            rect.x0,
+            rect.y0,
+            rect.x1,
+            (rect.y1 - details_h).max(rect.y0),
+        );
         let mut spinner = self.spinner.take();
+        let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
         self.action_rect = paint_empty_state(
-            &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            rect,
+            &mut ctx,
+            stack,
             &self.content(),
             hover,
             focused,
@@ -967,6 +1184,12 @@ impl Widget for EmptyState {
         )
         .unwrap_or(Rect::ZERO);
         self.spinner = spinner;
+        self.details_rect = if self.details.is_some() && stack.width() > 0.0 {
+            let bottom = place(ctx.text, theme, stack, &self.content(), inline).bottom;
+            self.paint_details(&mut ctx, rect, bottom)
+        } else {
+            Rect::ZERO
+        };
         if let Some(engine) = &mut self.engine {
             engine.apply_layout_external(self.action_rect);
         }
@@ -988,12 +1211,22 @@ impl Widget for EmptyState {
                 self.fire_action(&mut ctx.state, ctx.path);
                 *ctx.handled = true;
             }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } if self.details.is_some() && self.details_rect.contains(self.last_cursor) => {
+                self.toggle_details();
+                *ctx.handled = true;
+            }
             _ => {}
         }
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        if self.action_label.is_some() && self.action_rect.contains(point) {
+        if (self.action_label.is_some() && self.action_rect.contains(point))
+            || (self.details.is_some() && self.details_rect.contains(point))
+        {
             Some(winit::window::CursorIcon::Pointer)
         } else {
             None
@@ -1001,7 +1234,8 @@ impl Widget for EmptyState {
     }
 
     fn is_focusable(&self) -> bool {
-        self.action_label.is_some() && self.is_enabled()
+        (self.action_label.is_some() && self.is_enabled())
+            || (self.action_label.is_none() && self.details.is_some())
     }
 
     fn is_enabled(&self) -> bool {
@@ -1010,10 +1244,12 @@ impl Widget for EmptyState {
 
     fn set_focus(&mut self, focused: bool) {
         self.action_focused = focused && self.action_label.is_some();
+        // Without an action the keyboard lands on the disclosure.
+        self.details_focused = focused && self.action_label.is_none() && self.details.is_some();
     }
 
     fn is_focused(&self) -> bool {
-        self.action_focused
+        self.action_focused || self.details_focused
     }
 
     fn needs_redraw(&self) -> bool {
@@ -1041,6 +1277,12 @@ impl Widget for EmptyState {
         {
             self.fire_action(state, path);
             true
+        } else if self.action_label.is_none()
+            && self.details.is_some()
+            && matches!(action, crate::a11y::Action::Activate)
+        {
+            self.toggle_details();
+            true
         } else {
             false
         }
@@ -1053,6 +1295,13 @@ impl Widget for EmptyState {
         state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
+        if self.details.is_some()
+            && self.details_control_id() == target
+            && matches!(action, crate::a11y::Action::Activate)
+        {
+            self.toggle_details();
+            return true;
+        }
         self.action_label.is_some()
             && self.action_control_id() == target
             && self.perform_action(action, &[], state, path)
@@ -1084,7 +1333,10 @@ impl Widget for EmptyState {
     /// The action's id, when it has one: the empty state is addressed by
     /// the control it holds.
     fn test_id(&self) -> Option<&str> {
-        self.action_label.as_ref().and(self.action_id.as_deref())
+        match &self.action_label {
+            Some(_) => self.action_id.as_deref(),
+            None => self.id.as_deref(),
+        }
     }
 
     fn get_rect(&self) -> Rect {
@@ -1103,36 +1355,62 @@ impl Widget for EmptyState {
         if self.spinner.is_some() {
             node = node.with_state(AccessState::new().busy(true));
         }
+        let mut children = Vec::new();
         if let Some(action) = &self.resolved.2 {
-            node = node
-                .with_state(
-                    AccessState::new()
-                        .focusable(true)
-                        .focused(self.action_focused)
-                        .busy(self.spinner.is_some()),
-                )
-                .with_children(vec![
-                    AccessNode::new(Role::Button)
-                        .with_name(action.clone())
-                        .with_state(
-                            AccessState::new()
-                                .focusable(true)
-                                .focused(self.action_focused)
-                                .disabled(!self.is_enabled()),
-                        )
-                        .with_action_target(self.action_control_id()),
-                ]);
+            node = node.with_state(
+                AccessState::new()
+                    .focusable(true)
+                    .focused(self.action_focused)
+                    .busy(self.spinner.is_some()),
+            );
+            children.push(
+                AccessNode::new(Role::Button)
+                    .with_name(action.clone())
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.action_focused)
+                            .disabled(!self.is_enabled()),
+                    )
+                    .with_action_target(self.action_control_id()),
+            );
+        }
+        if let Some(details) = &self.details {
+            // The detail is the disclosure's description, so it is read
+            // whether or not the disclosure is open.
+            children.push(
+                AccessNode::new(Role::Button)
+                    .with_name(crate::i18n!("empty-state-details"))
+                    .with_description(details.clone())
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.details_focused)
+                            .expanded(self.details_open),
+                    )
+                    .with_action_target(self.details_control_id()),
+            );
+        }
+        if !children.is_empty() {
+            node = node.with_children(children);
         }
         Some(node)
     }
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
-        matches!(path, [0]).then_some(self.action_rect)
+        match (path, self.action_label.is_some()) {
+            ([0], true) => Some(self.action_rect),
+            ([0], false) | ([1], true) if self.details.is_some() => Some(self.details_rect),
+            _ => None,
+        }
     }
 
     fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
         if matches!(path, [0]) && self.action_label.is_some() && self.is_enabled() {
             self.action_focused = true;
+            true
+        } else if matches!(path, [0]) && self.action_label.is_none() && self.details.is_some() {
+            self.details_focused = true;
             true
         } else {
             false
@@ -2003,5 +2281,52 @@ mod tests {
         );
         assert_eq!(layout.action, painted);
         assert!(layout.natural_height > 0.0 && layout.natural_height < rect.height());
+    }
+
+    /// A failure's technical side (what a service answered) is not the
+    /// person's message: it waits behind a closed "Details" disclosure under
+    /// the action, opens in place with a click, and is always spoken.
+    #[test]
+    fn technical_details_wait_behind_a_closed_disclosure_under_the_action() {
+        let detail = "command process failed: No such file or directory (os error 2)";
+        let mut es = EmptyState::new("Podman isn't available")
+            .with_message("Install Podman to manage containers here.")
+            .with_action("Try again")
+            .with_details(detail);
+        lay_out(&mut es, 600.0, 400.0);
+        let _ = draw(&mut es);
+        let toggle = es.details_rect;
+        assert!(!es.details_open(), "details start closed");
+        assert!(
+            toggle.y0 >= es.action_rect().y1,
+            "the disclosure sits under the action: {toggle:?} {:?}",
+            es.action_rect()
+        );
+        let node = Widget::accessibility(&es).unwrap();
+        assert!(
+            !node
+                .description
+                .clone()
+                .unwrap_or_default()
+                .contains("os error"),
+            "the message stays the person's"
+        );
+        let disclosure = node
+            .children
+            .iter()
+            .find(|child| child.description.as_deref() == Some(detail))
+            .expect("the detail is spoken from the disclosure");
+        assert_eq!(disclosure.state.expanded, Some(false));
+
+        dispatch(&mut es, &cursor(toggle.center()));
+        assert!(dispatch(&mut es, &mouse_press()), "the click opens it");
+        assert!(es.details_open());
+        assert!(!es.take_action(), "opening details is not the action");
+        let node = Widget::accessibility(&es).unwrap();
+        assert!(
+            node.children
+                .iter()
+                .any(|child| child.state.expanded == Some(true))
+        );
     }
 }

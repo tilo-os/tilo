@@ -1005,10 +1005,7 @@ impl ResourceRoot {
         }
         self.dispatch.set_unreadable(reason.clone());
         self.unreadable = reason.map(|reason| {
-            let shown: Element = Box::new(ui_core::widget::EmptyState::error(
-                ui_core::i18n::I18nManager::lookup_plain("framework-unreadable"),
-                reason.clone(),
-            ));
+            let shown: Element = Box::new(unreadable_state(&reason));
             (reason, shown)
         });
         self.swapped = true;
@@ -3385,6 +3382,21 @@ mod search_tests {
     }
 }
 
+/// What a window shows instead of the app's view while its record does not
+/// read as the resource: what happened and what to do, in the person's
+/// words, with the reason the record was refused (a path and a missing
+/// value) behind the state's "Details".
+fn unreadable_state(reason: &str) -> ui_core::widget::EmptyState {
+    ui_core::widget::EmptyState::new(ui_core::i18n::I18nManager::lookup_plain(
+        "framework-unreadable",
+    ))
+    .with_icon(ui_core::icons::Icon::CircleAlert)
+    .with_message(ui_core::i18n::I18nManager::lookup_plain(
+        "framework-unreadable-hint",
+    ))
+    .with_details(reason)
+}
+
 /// The window of a record that did not read as the resource when it was
 /// opened: why, instead of the app's view, and the resource's actions
 /// published as unavailable for that reason.
@@ -3415,10 +3427,7 @@ impl Unopened {
         Self {
             title,
             icon,
-            shown: ui_core::widget::EmptyState::error(
-                ui_core::i18n::I18nManager::lookup_plain("framework-unreadable"),
-                reason,
-            ),
+            shown: unreadable_state(&reason),
             resource,
         }
     }

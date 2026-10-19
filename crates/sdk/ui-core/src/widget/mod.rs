@@ -3262,6 +3262,7 @@ pub mod panic_scope;
 mod tile_host;
 pub use tile_host::{
     AppKind, OpeningCardText, TileContent, TileHost, opening_card_spinner, paint_opening_card,
+    record_unavailable_title,
 };
 mod app_widget;
 pub(crate) use app_widget::BoundAppWidget;
