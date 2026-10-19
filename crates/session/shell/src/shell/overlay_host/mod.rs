@@ -57,6 +57,7 @@ mod emoji_layer;
 mod history;
 pub(crate) mod layers;
 mod now_playing;
+mod overview_grid;
 mod palette_flow;
 mod parked_workspaces;
 mod peer_sync_dispatch;
@@ -736,14 +737,17 @@ pub struct ShellOverlayHost {
     chrome: Option<Chrome>,
     /// Last known cursor position, for hit-testing overlay clicks.
     last_cursor: Option<Point>,
-    /// Overview crossfade: `overview_t` ∈ [0, 1], animating toward
-    /// `overview_target` (latched on toggle). `transition_started`/
-    /// `transition_from` let a re-toggle mid-fade continue from the
-    /// current alpha instead of popping to 0 or 1.
-    overview_t: f32,
-    overview_target: f32,
-    transition_started: Option<Instant>,
-    transition_from: f32,
+    /// The overview's zoom (`ui::motion::Zoom::OVERVIEW`): how far every
+    /// window has flown from its place on its strip into the overview's
+    /// picture of the workspace. A re-toggle mid-flight reverses from where
+    /// the windows are drawn.
+    overview_zoom: ui::motion::Presence,
+    /// A strip's name being typed in the overview.
+    overview_naming: Option<overview_grid::OverviewNaming>,
+    /// The overview's live pictures of shell-drawn windows, painted once and
+    /// kept while nothing they show changes, so every frame of the zoom
+    /// draws the same paint instead of painting each window again.
+    overview_thumbnails: Option<(u64, crate::shell::window_previews::LiveThumbnails)>,
     /// Scroll offset (px) for the overview's room list, clamped each
     /// frame so a workspace deletion can't strand it past the tail.
     overview_scroll_y: f64,
@@ -1492,18 +1496,6 @@ fn instant_capture(
 // value. Convention: name the conversion, scope the `#[allow]` to it alone, and
 // use the named function everywhere instead of a bare `as`.
 
-/// Same rationale as [`f64_of_usize`], for the millisecond
-/// durations `Instant::elapsed().as_millis()` and this file's transition
-/// constants use.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "transition durations are always tiny millisecond counts"
-)]
-fn millis_to_f32_lossy(ms: u128) -> f32 {
-    ms as f32
-}
-
-const OVERVIEW_TRANSITION_MS: u64 = 400;
 /// W16 wants ≥ 8 painted frames per open/close. Host demand still
 /// clears when the crossfade settles; the compositor consumes this
 /// many paints on its own.
@@ -1962,7 +1954,7 @@ impl ShellOverlayHost {
                     .as_ref()
                     .is_some_and(Widget::needs_animation_frame),
                 capture_studio: self.capture_studio.needs_animation_frame(),
-                root_transition: self.transition_started.is_some(),
+                root_transition: self.overview_zoom_moving(now),
                 workspace_switch: self.workspace_switch_holding_at(now),
                 quick_settings: self.qs_motion.is_animating(now)
                     || self.qs_root.is_animating(now)
@@ -2726,8 +2718,9 @@ impl ShellOverlayHost {
             palette_node: None,
             chrome: None,
             last_cursor: None,
-            overview_t: 0.0,
-            overview_target: 0.0,
+            overview_zoom: ui::motion::Presence::closed(),
+            overview_naming: None,
+            overview_thumbnails: None,
             overview_scroll_y: 0.0,
             overview_selection: None,
             overview_window_selection: None,
@@ -2739,8 +2732,6 @@ impl ShellOverlayHost {
             overview_layout_theme: Theme::default(),
             shortcut_navigation_step: shortcut_navigation_step(&Theme::default()),
             overview_layout_viewport: Rect::ZERO,
-            transition_started: None,
-            transition_from: 0.0,
             qs_motion: qs_motion::QsMotion::closed(),
             input_source: ui::tokens::MotionSource::default(),
             workspace_switch_source: ui::tokens::MotionSource::default(),
@@ -4171,68 +4162,55 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Advance the overview crossfade toward `overview_target`, latching a
-    /// new transition if the target changed. Returns *linear* progress —
-    /// the draw path splits it into its own two-phase, smoothstep-eased
-    /// animation, so this must stay linear.
-    fn tick_overview_transition(&mut self, target: f32, reduce_motion: bool) -> f32 {
-        if reduce_motion {
-            let changed = (target - self.overview_target).abs() > f32::EPSILON;
-            self.overview_target = target;
-            self.overview_t = target;
-            self.transition_from = target;
-            self.transition_started = None;
-            if changed {
-                self.reseed_overview_selection(target > 0.5);
-                self.overview_scroll_y = 0.0;
-            }
-            return target;
-        }
-        if (target - self.overview_target).abs() > f32::EPSILON {
-            self.transition_from = self.overview_t;
-            self.overview_target = target;
-            self.transition_started = Some(Instant::now());
+    /// Bring the overview's zoom in line with `open`: a change of
+    /// intent starts the windows flying from where they are drawn, timed for
+    /// `source` (a key keeps the flight as `fast` spatial context, a click
+    /// or a pinch is a whole-view change). Returns the zoom's progress now.
+    fn sync_overview_zoom(
+        &mut self,
+        open: bool,
+        source: ui::tokens::MotionSource,
+        motion: ui::tokens::EffectiveMotion,
+    ) -> f64 {
+        let now = ui::time::now();
+        if open != self.overview_zoom.is_open() {
+            self.overview_zoom
+                .show(open, ui::motion::Zoom::OVERVIEW, motion, source, now);
             self.request_compositor_transition_paints();
             // Reseed from the current room so the first arrow press moves
             // one step from here, not from a stale previous visit.
-            self.reseed_overview_selection(target > 0.5);
+            self.reseed_overview_selection(open);
             self.overview_scroll_y = 0.0;
+            self.overview_naming = None;
         }
-        if let Some(started) = self.transition_started {
-            // A start that was deferred past `now` has not begun. `elapsed`
-            // would panic there; the wait is not progress.
-            let elapsed = millis_to_f32_lossy(
-                Instant::now()
-                    .saturating_duration_since(started)
-                    .as_millis(),
-            );
-            let duration = millis_to_f32_lossy(u128::from(OVERVIEW_TRANSITION_MS));
-            if elapsed >= duration {
-                self.overview_t = self.overview_target;
-                self.transition_started = None;
-            } else {
-                let p = (elapsed / duration).clamp(0.0, 1.0);
-                // Linear progress; `overview_panel_curve` does the
-                // easing, so the shape of the motion lives in one place.
-                self.overview_t =
-                    self.transition_from + (self.overview_target - self.transition_from) * p;
-            }
-        }
-        self.overview_t
+        self.overview_zoom.progress(now)
     }
 
-    /// Latch overview progress on the chord itself, before the compositor
-    /// samples animation demand. Starting only in `update` left Super+Tab
-    /// as a timer the loop parks past (W16).
+    /// Latch the overview's zoom on the change that asked for it, before the
+    /// compositor samples animation demand. Starting only in `update` left
+    /// Super+Tab as a timer the loop parks past (W16). The input the toolkit
+    /// handled last says how it moves.
     pub(crate) fn latch_overview_transition(&mut self) {
+        self.latch_overview_transition_from(ui::motion::input_source());
+    }
+
+    /// [`Self::latch_overview_transition`] for a change whose input is known:
+    /// Super+Tab, a pinch, a click on "Overview".
+    pub fn latch_overview_transition_from(&mut self, source: ui::tokens::MotionSource) {
+        // Do not read `ui::host::environment()` here: that is a process
+        // input, and fixture pumps forbid ambient starts. The motion the
+        // overview was last laid out for says whether motion is reduced.
         let open = self
             .chrome
             .as_ref()
             .is_some_and(|chrome| chrome.borrow().overlays.overview);
-        // Do not read `ui::host::environment()` here: that is a process
-        // input, and fixture pumps forbid ambient starts. Draw snaps
-        // with `theme.reduce_motion`.
-        let _ = self.tick_overview_transition(if open { 1.0 } else { 0.0 }, false);
+        let motion = self.overview_layout_theme.motion();
+        let _ = self.sync_overview_zoom(open, source, motion);
+    }
+
+    /// The overview's zoom is flying.
+    fn overview_zoom_moving(&self, now: Instant) -> bool {
+        self.overview_zoom.is_moving(now)
     }
 
     /// Whether the workspace-switch frame run is still in flight.
@@ -4245,13 +4223,10 @@ impl ShellOverlayHost {
         self.workspace_switch_until.is_some_and(|until| now < until)
     }
 
-    /// Keyboard overview navigation lands in the requested state before the
-    /// next input or animation-demand sample. Pointer transitions still use
-    /// `latch_overview_transition`; this reuses the reduced-motion settle path
-    /// without changing the user's motion preference.
-    fn settle_keyboard_overview(&mut self) {
-        let open = self.overlay_flags().overview;
-        let _ = self.tick_overview_transition(if open { 1.0 } else { 0.0 }, true);
+    /// A key opened or closed the overview: the windows fly at `fast`, as
+    /// spatial context, and input acts on the new state at once.
+    fn latch_keyboard_overview(&mut self) {
+        self.latch_overview_transition_from(ui::tokens::MotionSource::Keyboard);
     }
 
     /// Keep the compositor painting for the switch's duration. The
@@ -4283,7 +4258,7 @@ impl ShellOverlayHost {
     /// Whether a transition still owes a present. The clock may have been
     /// deferred; this is the signal that keeps the frame run alive.
     pub(crate) fn transition_present_pending(&self) -> bool {
-        self.transition_started.is_some() || self.workspace_switch_holding()
+        self.overview_zoom_moving(ui::time::now()) || self.workspace_switch_holding()
     }
 
     /// Give `by` back to a running overview or workspace switch. Call with
@@ -4292,9 +4267,7 @@ impl ShellOverlayHost {
         if by.is_zero() {
             return;
         }
-        if let Some(started) = self.transition_started.as_mut() {
-            *started = started.checked_add(by).unwrap_or(*started);
-        }
+        self.overview_zoom.defer(by);
         if let Some(until) = self.workspace_switch_until.as_mut() {
             *until = until.checked_add(by).unwrap_or(*until);
         }
@@ -8394,20 +8367,6 @@ impl ShellOverlayHost {
             .state_json(&self.window_previews, Instant::now())
     }
 
-    /// The current room's windows as the overview lists them: most
-    /// recently used first, as many as its preview row holds.
-    fn overview_windows(
-        &self,
-        tree: &crate::shell::state::WorkspaceTree,
-    ) -> Vec<tilo_desktop::window_switcher::SwitcherWindow> {
-        let mut windows = self
-            .layers
-            .window_switcher
-            .ordered_windows(&tree.desktop, &crate::shell::window_previews::ShellWindows);
-        windows.truncate(OVERVIEW_WINDOWS_MAX);
-        windows
-    }
-
     /// Record the focused window as the most recently used one.
     fn observe_window_focus(&mut self) {
         let Some(chrome) = self.chrome.as_ref() else {
@@ -11864,11 +11823,8 @@ impl ShellOverlayHost {
     /// Fast-forwards the overview crossfade so a headless single-frame
     /// render sees the settled layer, not the alpha-zero start.
     pub fn force_overview_settled(&mut self, target: bool) {
-        let t = if target { 1.0 } else { 0.0 };
-        self.overview_target = t;
-        self.overview_t = t;
-        self.transition_from = t;
-        self.transition_started = None;
+        self.overview_zoom.snap(target);
+        self.overview_naming = None;
         // Same seeding the animated open does, so a single-frame paint
         // matches what a real open leaves behind.
         self.reseed_overview_selection(target);
@@ -13798,30 +13754,6 @@ impl ShellOverlayHost {
             + self.overview_shares_height()
     }
 
-    /// The current room's windows get a row of live previews from the
-    /// overview's first frame: each is drawn from what the compositor
-    /// already holds, so the row is laid out at its final size at once and
-    /// nothing fills in later. A room whose windows all hold secrets gets
-    /// no row; the app marks beside the room's name say what is open.
-    fn overview_shows_windows(&self) -> bool {
-        if self.layers.window_switcher.is_active() {
-            return false;
-        }
-        let Some(chrome) = self.chrome.as_ref() else {
-            return false;
-        };
-        let Ok(state) = chrome.try_borrow() else {
-            return false;
-        };
-        let tree = state.tree();
-        self.overview_windows(&tree).iter().any(|window| {
-            !matches!(
-                window.preview,
-                tilo_desktop::window_switcher::PreviewSource::Withheld
-            )
-        })
-    }
-
     /// Every window in the overview's row, drawn live for this frame: a
     /// client from its current buffer, a shell-drawn window from a live
     /// paint of it made now (the same path a screenshot of it takes).
@@ -13877,48 +13809,12 @@ impl ShellOverlayHost {
         live
     }
 
-    /// Identity of what the overview row draws from: each client window's
-    /// current frame, so the cached panel redraws when one commits and
-    /// stays put while none does.
-    fn overview_row_fingerprint(&self) -> u64 {
-        self.overview_row_windows()
-            .iter()
-            .fold(0_u64, |fingerprint, window| {
-                let seq = match &window.preview {
-                    tilo_desktop::window_switcher::PreviewSource::Client { surface } => {
-                        crate::shell::window_previews::client_frame_seq(*surface)
-                    }
-                    _ => 0,
-                };
-                fingerprint.rotate_left(7)
-                    ^ window.address.tab.wrapping_mul(0x9E37_79B9_7F4A_7C15)
-                    ^ seq
-            })
-    }
-
-    /// One preview tile of the overview's window row: `OVERVIEW_WINDOWS_MAX`
-    /// across the content width, each a 16:10 well over a title line.
-    fn overview_window_tile_size(&self) -> (f64, f64) {
-        let m = self.overview_metrics;
-        let panel_w = self.overview_panel_width();
-        let content_w = (panel_w - m.pad * 2.0).max(0.0);
-        let columns = f64_of_usize(OVERVIEW_WINDOWS_MAX);
-        let tile_w = ((content_w - (columns - 1.0) * m.window_gap) / columns).max(0.0);
-        (tile_w, tile_w * 10.0 / 16.0)
-    }
-
-    fn overview_window_list_rect(&self) -> Option<Rect> {
-        (0..self.overview_row_windows().len())
-            .map(|index| self.overview_window_tile_rect(index))
-            .reduce(|left, right| left.union(right))
-    }
-
     fn overview_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
         let count = self.overview_cards().len();
         let windows = self.overview_row_windows().len();
         let create = count.saturating_add(usize::from(windows > 0));
         match path {
-            [] => Some(self.overview_panel_rect()),
+            [] => Some(self.overview_bounds()),
             [index] if *index < count => Some(self.overview_row_rect(*index)),
             [index] if *index == count && windows > 0 => self.overview_window_list_rect(),
             [index, window] if *index == count && *window < windows => {
@@ -13950,68 +13846,6 @@ impl ShellOverlayHost {
         self.scroll_overview_selection_into_view();
         self.bump_chrome();
         true
-    }
-
-    /// Height the window row adds to the "you are here" block.
-    fn overview_windows_row_height(&self) -> f64 {
-        if !self.overview_shows_windows() {
-            return 0.0;
-        }
-        let m = self.overview_metrics;
-        let (_, well_h) = self.overview_window_tile_size();
-        m.window_gap + well_h + m.window_title_gap + m.window_title_lh
-    }
-
-    /// Bounds of tile `index` in the current room's preview row: its well
-    /// over its title line. Paint, hit-testing and the semantic tree all
-    /// read it.
-    fn overview_window_tile_rect(&self, index: usize) -> Rect {
-        let m = self.overview_metrics;
-        let content = self.overview_content_rect();
-        let (tile_w, well_h) = self.overview_window_tile_size();
-        let top = self.overview_here_rect().y0 + m.here_h - m.here_air + m.window_gap;
-        let x0 = content.x0 + f64_of_usize(index) * (tile_w + m.window_gap);
-        Rect::new(
-            x0,
-            top,
-            x0 + tile_w,
-            top + well_h + m.window_title_gap + m.window_title_lh,
-        )
-    }
-
-    /// The windows the preview row shows, in order; empty while the
-    /// overview shows no row.
-    fn overview_row_windows(&self) -> Vec<tilo_desktop::window_switcher::SwitcherWindow> {
-        if self.overview_here_index().is_none() || !self.overview_shows_windows() {
-            return Vec::new();
-        }
-        match self.chrome.as_ref() {
-            Some(chrome) => {
-                let state = chrome.borrow();
-                let tree = state.tree();
-                self.overview_windows(&tree)
-            }
-            None => Vec::new(),
-        }
-    }
-
-    /// The preview tile under `p`, by its place in the row.
-    fn hit_test_overview_window(&self, p: Point) -> Option<usize> {
-        if !self.overview_content_rect().contains(p) {
-            return None;
-        }
-        let count = self.overview_row_windows().len();
-        (0..count).find(|index| self.overview_window_tile_rect(*index).contains(p))
-    }
-
-    /// The room a carried preview would land in: any room but the one
-    /// you are in, under the pointer or finger.
-    fn overview_drop_target(&self) -> Option<usize> {
-        let press = self
-            .overview_press
-            .filter(tilo_desktop::overview::OverviewPress::is_dragging)?;
-        self.hit_test_overview(press.at)
-            .filter(|room| Some(*room) != self.overview_here_index())
     }
 
     /// Go to a window from the overview: focus it and close the overview.
@@ -14102,6 +13936,8 @@ impl ShellOverlayHost {
         let area = self.overlay_area();
         if self.overview_uses_full_window() {
             area.width().max(0.0)
+        } else if self.overview_beside_picture() {
+            overview_grid::COLUMN_WIDTH_PX
         } else {
             OVERVIEW_PANEL_WIDTH_PX
                 .min(area.width() - self.overview_metrics.margin * 2.0)
@@ -14164,8 +14000,14 @@ impl ShellOverlayHost {
             + self.overview_content_height();
         let max_h = area.height() - m.margin * 2.0;
         let h = natural.min(max_h).max(0.0);
-        let cx = f64::midpoint(area.x0, area.x1);
         let cy = f64::midpoint(area.y0, area.y1);
+        // Beside the picture of this workspace it keeps to the display's
+        // trailing edge; alone, it is centred like any modal panel.
+        let cx = if self.overview_beside_picture() {
+            area.x1 - m.margin - w / 2.0
+        } else {
+            f64::midpoint(area.x0, area.x1)
+        };
         Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0)
     }
 
@@ -15745,6 +15587,13 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
+        // A strip's name being typed in the overview takes every key, for the
+        // same reason.
+        if !self.palette_visible && self.overview_naming.is_some() {
+            self.overview_naming_key(logical_key, mstate);
+            *handled = true;
+            return true;
+        }
         // The usual host event path handles this ahead of modal routing.
         // Keep the same arbitration here for direct widget dispatch and any
         // future backend that enters through this keyboard-only helper.
@@ -15905,7 +15754,7 @@ impl ShellOverlayHost {
                 st.overlays.overview = !st.overlays.overview;
                 st.bump();
                 drop(st);
-                self.settle_keyboard_overview();
+                self.latch_keyboard_overview();
             }
             *handled = true;
             return true;
@@ -16102,6 +15951,9 @@ impl ShellOverlayHost {
             );
             self.run_navigation_shortcut(action, repeat, ui::tokens::MotionSource::Keyboard);
             *handled = true;
+            return true;
+        }
+        if self.handle_overview_strip_keys(logical_key, mstate, handled) {
             return true;
         }
         if self.handle_overview_keyboard_nav(logical_key, shift_down, handled) {
@@ -16669,64 +16521,6 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Left and Right walk the current room's preview row, a ring like
-    /// the room list; Enter on a selected window goes there. Returns
-    /// whether the key was taken.
-    fn handle_overview_window_keys(&mut self, logical_key: &Key) -> bool {
-        let windows = self.overview_row_windows();
-        let count = windows.len();
-        if count == 0 {
-            self.overview_window_selection = None;
-            self.overview_window_interrupted = false;
-            return false;
-        }
-        let current = self
-            .overview_window_selection
-            .and_then(|tab| windows.iter().position(|window| window.address.tab == tab));
-        match logical_key {
-            Key::Named(NamedKey::Enter | NamedKey::Space) => {
-                let Some(window) = current.and_then(|index| windows.get(index)) else {
-                    return false;
-                };
-                let tab = window.address.tab;
-                self.activate_overview_window(tab);
-                self.settle_keyboard_overview();
-                true
-            }
-            Key::Named(NamedKey::ArrowRight) => {
-                let next = current.map_or(0, |index| {
-                    index.saturating_add(1).checked_rem(count).unwrap_or(0)
-                });
-                self.select_overview_window(next);
-                true
-            }
-            Key::Named(NamedKey::ArrowLeft) => {
-                let last = count.saturating_sub(1);
-                let next = current.map_or(last, |index| index.checked_sub(1).unwrap_or(last));
-                self.select_overview_window(next);
-                true
-            }
-            _ => false,
-        }
-    }
-
-    /// Put the keyboard on window `index` of the preview row; the row is
-    /// part of the current room's block, so the room is selected with it.
-    fn select_overview_window(&mut self, index: usize) {
-        let Some(tab) = self
-            .overview_row_windows()
-            .get(index)
-            .map(|window| window.address.tab)
-        else {
-            return;
-        };
-        self.overview_window_selection = Some(tab);
-        self.overview_window_interrupted = false;
-        self.overview_selection = self.overview_here_index();
-        self.scroll_overview_selection_into_view();
-        self.bump_chrome();
-    }
-
     /// Navigate the overview before input reaches content. Arrows keep the
     /// workspace ring; Tab includes creation, and Home/End reach its ends.
     fn handle_overview_keyboard_nav(
@@ -16815,12 +16609,12 @@ impl ShellOverlayHost {
             .or_else(|| self.overview_here_index());
         if target == Some(count) {
             self.create_overview_workspace();
-            self.settle_keyboard_overview();
+            self.latch_keyboard_overview();
             return;
         }
         if target == Some(count.saturating_add(1)) {
             self.open_join_sheet();
-            self.settle_keyboard_overview();
+            self.latch_keyboard_overview();
             return;
         }
         if let (Some(index), Some(chrome)) = (target, self.chrome.clone()) {
@@ -16835,7 +16629,7 @@ impl ShellOverlayHost {
             state.overlays.overview = false;
             state.bump();
             drop(state);
-            self.settle_keyboard_overview();
+            self.latch_keyboard_overview();
         }
     }
 
@@ -17123,6 +16917,13 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
+        // A strip's name being typed in the overview: Escape keeps the old
+        // name and leaves the overview open.
+        if self.overview_naming.take().is_some() {
+            self.bump_chrome();
+            *handled = true;
+            return true;
+        }
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
@@ -17137,7 +16938,7 @@ impl ShellOverlayHost {
             st.overlays.overview = false;
             st.bump();
             drop(st);
-            self.settle_keyboard_overview();
+            self.latch_keyboard_overview();
             *handled = true;
             return true;
         }
@@ -17313,6 +17114,10 @@ impl ShellOverlayHost {
             }
         }
         if !self.palette_visible && self.strip_switcher.commit_text(text) {
+            self.bump_chrome();
+            return true;
+        }
+        if !self.palette_visible && self.overview_naming_commit_text(text) {
             self.bump_chrome();
             return true;
         }
@@ -20004,6 +19809,10 @@ impl ShellOverlayHost {
             self.overview_press = None;
             return false;
         }
+        if self.overview_naming_takes_press(event) {
+            *handled = true;
+            return true;
+        }
         if self.handle_overview_press_event(event, scale_factor) {
             *handled = true;
             return true;
@@ -20043,7 +19852,11 @@ impl ShellOverlayHost {
     /// A click or tap on the overview away from the window previews:
     /// create a room on the "New room" slot, else go to the room under it;
     /// either way the overview closes.
-    fn overview_click_at(&self, p: Point) {
+    fn overview_click_at(&mut self, p: Point) {
+        // A strip's controls and name in the picture of this workspace.
+        if self.overview_strip_click(p) {
+            return;
+        }
         // Wins the hit-test before the row-card scan so a
         // click on it doesn't fall through to "missed". Geometry, not the
         // painted cache: the open's first sample is still alpha 0 and
@@ -20855,9 +20668,6 @@ const OVERVIEW_PANEL_WIDTH_PX: f64 = 720.0;
 /// panel says whether things leave this room, the permissions pane has
 /// the full list.
 const OVERVIEW_SHARES_MAX_ROWS: usize = 4;
-/// Windows of the current room pictured in the overview's preview row.
-/// A fixed count keeps each tile one size whatever the room holds.
-const OVERVIEW_WINDOWS_MAX: usize = 4;
 
 /// Overview panel density, resolved from the theme once per layout pass
 /// (`ShellOverlayHost::build_layout`) and cached on the host, so the
@@ -22202,10 +22012,12 @@ impl Widget for ShellOverlayHost {
                         scale,
                         ..
                     } if scale <= 0.8 => {
-                        if let Some(chrome) = self.chrome.as_ref() {
+                        if let Some(chrome) = self.chrome.clone() {
                             let mut state = chrome.borrow_mut();
                             state.overlays.overview = true;
                             state.bump();
+                            drop(state);
+                            self.latch_overview_transition_from(ui::tokens::MotionSource::Gesture);
                             claimed = true;
                         }
                     }
@@ -22214,10 +22026,12 @@ impl Widget for ShellOverlayHost {
                         scale,
                         ..
                     } if scale >= 1.25 => {
-                        if let Some(chrome) = self.chrome.as_ref() {
+                        if let Some(chrome) = self.chrome.clone() {
                             let mut state = chrome.borrow_mut();
                             state.overlays.overview = false;
                             state.bump();
+                            drop(state);
+                            self.latch_overview_transition_from(ui::tokens::MotionSource::Gesture);
                             claimed = true;
                         }
                     }
@@ -22599,7 +22413,7 @@ impl Widget for ShellOverlayHost {
                     let cards = self.overview_cards();
                     let mut overview = AccessNode::new(Role::Dialog)
                         .with_name(t("a11y-overview"))
-                        .with_bounds(self.overview_panel_rect())
+                        .with_bounds(self.overview_bounds())
                         .with_state(AccessState::new().modal(true));
                     overview
                         .children
@@ -22678,6 +22492,9 @@ impl Widget for ShellOverlayHost {
                                     .with_bounds(leave),
                             );
                         }
+                    }
+                    if let Some(strips) = self.overview_strips_accessibility() {
+                        overview.children.push(strips);
                     }
                     root.children.push(overview);
                 }
@@ -23569,7 +23386,7 @@ impl ShellOverlayHost {
             self.current_acknowledgement(now)
                 .is_some_and(|ack| ack.fading_at(now, self.acknowledgement_reduce_motion.get()))
         };
-        self.transition_started.is_some()
+        self.overview_zoom_moving(now)
             || self.desk_animating(now)
             || self.strip_indicators.needs_animation_frame_at(now)
             || self.strip_ribbon_focus.is_moving(now)
@@ -23602,17 +23419,12 @@ impl ShellOverlayHost {
     }
 }
 
-/// `(alpha, dy, scale)` for the rooms panel at linear progress `t`. Rises
-/// the last 20px and settles from 0.97 on the zoom's curve; since `t` runs
-/// both ways, the exit is the same curve in reverse. The desktop stays
-/// on screen, dimmed by the scrim, for the whole gesture.
-fn overview_panel_curve(t: f32) -> (f32, f64, f64) {
-    // The overview is one thing becoming another (`ui::motion::Zoom`); its
-    // own linear clock drives the zoom's curve.
-    let o = ui::motion::Zoom::SPEC.eased(
-        ui::tokens::EffectiveMotion::default(),
-        f64::from(t.clamp(0.0, 1.0)),
-    );
+/// `(alpha, dy, scale)` for the panel of workspaces at the overview zoom's
+/// `progress` (already on the zoom's spring, so the exit is the same motion
+/// reversed): it rises the last 20px and settles from 0.97 as the windows
+/// arrive in the picture beside it.
+fn overview_panel_curve(progress: f32) -> (f32, f64, f64) {
+    let o = f64::from(progress.clamp(0.0, 1.0));
     let alpha = f32_of_f64(o);
     let dy = OVERVIEW_PANEL_RISE_PX * (1.0 - o);
     let scale = OVERVIEW_PANEL_START_SCALE + (1.0 - OVERVIEW_PANEL_START_SCALE) * o;
@@ -24024,7 +23836,6 @@ struct OverviewPanelCacheKey {
     press: Option<(u64, u8, u64, u64)>,
     panel: (u64, u64, u64, u64),
     chrome_revision: u64,
-    preview_fingerprint: u64,
     reduce_motion: bool,
 }
 
@@ -24361,7 +24172,6 @@ impl ShellOverlayHost {
                 .chrome
                 .as_ref()
                 .map_or(0, |chrome| chrome.borrow().revision),
-            preview_fingerprint: self.overview_row_fingerprint(),
             reduce_motion,
         }
     }
@@ -24376,7 +24186,7 @@ impl ShellOverlayHost {
             return;
         }
         let mut recorded = Scene::new();
-        self.draw_overview(&mut recorded, Affine::IDENTITY, text_renderer, theme);
+        self.draw_overview_panel(&mut recorded, Affine::IDENTITY, text_renderer, theme);
         self.overview_panel_cache = Some(OverviewPanelCache {
             scene: recorded,
             key,
@@ -24435,18 +24245,19 @@ impl ShellOverlayHost {
         overview_open: bool,
     ) {
         self.reconcile_overview_window_selection();
-        let target = if overview_open { 1.0 } else { 0.0 };
-        let t = self.tick_overview_transition(target, theme.reduce_motion);
-        // The overview is a panel over the desk, not a place you travel
-        // to: the desktop stays drawn and the scrim dims it as the panel
-        // rises, the same enter/exit the ws-settings modal plays.
-        let (overview_alpha, overview_dy, overview_scale) = overview_panel_curve(t);
+        let progress =
+            self.sync_overview_zoom(overview_open, ui::motion::input_source(), theme.motion());
+        // The workspace's windows fly between their strips and the picture
+        // (`draw_overview_tiles`) over a ground that hides the desktop they
+        // came from; the panel of workspaces arrives with them, the same
+        // enter and exit the ws-settings modal plays.
+        let (overview_alpha, overview_dy, overview_scale) =
+            overview_panel_curve(f32_of_f64(progress));
 
-        // Scale pivot is the scene centre, so the zoom anchors to the
-        // viewport rather than the origin.
-        let area = self.overlay_area();
-        let cx = f64::midpoint(area.x0, area.x1);
-        let pivot_y = f64::midpoint(area.y0, area.y1);
+        // Scale pivot is the panel's centre, so it settles in place
+        // wherever the layout put it (beside the picture, or centred).
+        let pivot = self.overview_panel_rect().center();
+        let (cx, pivot_y) = (pivot.x, pivot.y);
         let scaled = |s: f64| -> Affine {
             Affine::translate((cx, pivot_y))
                 .pre_scale(s)
@@ -24469,11 +24280,15 @@ impl ShellOverlayHost {
         // frame of every display.
         let key = ui::scene_parts::PartKey::new("shell.overview", ());
         ui::scene_parts::part_drawn(scene, key, |scene| {
-            if overview_alpha <= 0.0 {
+            if progress <= 0.0 {
                 return Vec::new();
             }
             let output = self.overview_output_rect();
-            draw_modal_scrim_at(scene, transform, output, overview_alpha, theme);
+            // The overview is the display's: nothing of it (the panel's
+            // shadow at the display's edge, a window flying in from the next
+            // display) is drawn on another one.
+            scene.push_clip_layer(Fill::NonZero, transform, &output);
+            ui::overlay::scrim::whole_view(scene, transform, output, f32_of_f64(progress), theme);
             let panel_xform = if (overview_scale - 1.0).abs() > f64::EPSILON
                 || overview_dy.abs() > f64::EPSILON
             {
@@ -24503,16 +24318,9 @@ impl ShellOverlayHost {
                 theme,
                 overview_alpha,
             );
-            // The scrim covers the display. A fading panel is clipped to the
-            // stable clip, inside it; an opaque one is drawn unclipped, so
-            // its shadow and rise may reach past the display.
-            let panel = if overview_alpha < 0.999 {
-                self.overview_stable_clip(theme)
-            } else {
-                let outset = Self::overview_shadow_outset(theme) + OVERVIEW_PANEL_RISE_PX;
-                self.overview_panel_rect().inflate(outset, outset)
-            };
-            vec![transform.transform_rect_bbox(output.union(panel))]
+            self.draw_overview_tiles(scene, transform, text_renderer, theme, progress);
+            scene.pop_layer();
+            vec![transform.transform_rect_bbox(output)]
         });
     }
 
@@ -26782,11 +26590,27 @@ impl ShellOverlayHost {
         if left < right { left + gap } else { right }
     }
 
-    /// The workspace overview: a switcher for rooms, so it's a floating
-    /// panel like the palette and workspace-settings modal, filling a
-    /// constrained window as a compact page. Reading order follows: where
-    /// you are, what's shared, where else to go.
+    /// The whole overview at rest: the panel of workspaces and the picture
+    /// of this workspace's strips and windows, as a settled frame shows it.
+    #[cfg(test)]
     fn draw_overview(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        self.draw_overview_panel(scene, transform, text_renderer, theme);
+        self.draw_overview_tiles(scene, transform, text_renderer, theme, 1.0);
+    }
+
+    /// The panel of workspaces: a floating panel like the palette and the
+    /// workspace-settings modal, beside the picture of this workspace on a
+    /// wide display and holding it on a constrained one, where it fills the
+    /// window as a compact page. Reading order follows: where you are,
+    /// what's shared, where else to go. Recorded once and reused while it
+    /// shows the same thing; the windows are drawn over it, per window.
+    fn draw_overview_panel(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
@@ -26829,7 +26653,6 @@ impl ShellOverlayHost {
             here_idx,
             &cards,
         );
-        self.draw_overview_window_row(scene, transform, text_renderer, theme);
         self.draw_overview_shares_section(
             scene,
             transform,
@@ -26879,7 +26702,6 @@ impl ShellOverlayHost {
         if whole {
             scene.pop_layer();
         }
-        self.draw_overview_carried_window(scene, transform, text_renderer, theme);
     }
 
     fn draw_overview_backdrop(
@@ -26920,179 +26742,6 @@ impl ShellOverlayHost {
                 &ui::surface::edge_outline(panel, m.panel_radius),
             );
         }
-    }
-
-    /// The current room's windows, most recently used first: each one's
-    /// live preview in a well over its title, or its app mark when it has
-    /// no preview (an app that holds secrets never has one). The window the
-    /// keyboard or the pointer is on wears the shared selection tier; one
-    /// being carried is left faint in its place.
-    fn draw_overview_window_row(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let windows = self.overview_row_windows();
-        let mut thumbnails = self.overview_live_thumbnails(&windows, text_renderer, theme);
-        self.overview_row_drawn.clear();
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let m = self.overview_metrics;
-        let title_style = tokens.typography.style(TextRole::Caption);
-        let mark = f64::from(tokens.metrics.icon_lg);
-        let s1 = f64::from(tokens.spacing.s1);
-        let carried = self
-            .overview_press
-            .filter(tilo_desktop::overview::OverviewPress::is_dragging)
-            .and_then(|press| press.tab);
-        let pressed = self.overview_press.and_then(|press| press.tab);
-        for (index, window) in windows.iter().enumerate() {
-            let bounds = self.overview_window_tile_rect(index);
-            let well = Rect::new(
-                bounds.x0,
-                bounds.y0,
-                bounds.x1,
-                bounds.y0 + bounds.width() * 10.0 / 16.0,
-            );
-            let is_carried = carried == Some(window.address.tab);
-            let state = ui::chrome::SelectionState::new(
-                self.overview_window_selection == Some(window.address.tab),
-                self.last_cursor.is_some_and(|c| bounds.contains(c)),
-                pressed == Some(window.address.tab),
-            );
-            if !is_carried && (state.active || state.hover || state.pressed) {
-                let frame = RoundedRect::from_rect(bounds.inflate(s1, s1), m.window_radius + s1);
-                let tier = ui::chrome::selection_tier(theme, state);
-                if tier.fill.components[3] > 0.0 {
-                    scene.fill(Fill::NonZero, transform, tier.fill, None, &frame);
-                }
-                if let Some(border) = tier.border {
-                    scene.stroke(
-                        &vello::kurbo::Stroke::new(1.0),
-                        transform,
-                        border,
-                        None,
-                        &frame,
-                    );
-                }
-            }
-            if state.active && !is_carried {
-                ui::widget::paint_focus_ring(
-                    scene,
-                    transform,
-                    bounds.inflate(s1, s1),
-                    m.window_radius + s1,
-                    theme,
-                );
-            }
-            if is_carried {
-                scene.push_layer(
-                    Fill::NonZero,
-                    vello::peniko::BlendMode::default(),
-                    0.35,
-                    transform,
-                    &bounds,
-                );
-            }
-            let live = tilo_desktop::window_switcher::draw_preview_well(
-                scene,
-                transform,
-                theme,
-                tilo_desktop::window_switcher::PreviewWell {
-                    rect: well,
-                    radius: m.window_radius,
-                    icon: mark,
-                },
-                window,
-                &mut thumbnails,
-            );
-            self.overview_row_drawn.push((
-                window.address.tab,
-                if live {
-                    tilo_desktop::window_switcher::PreviewState::Live
-                } else {
-                    tilo_desktop::window_switcher::WindowSwitcher::preview_state(
-                        window,
-                        &thumbnails,
-                    )
-                },
-            ));
-            let title = text_renderer.elide_to_width_style(
-                &window.title,
-                f32_of_f64(bounds.width()),
-                &title_style,
-            );
-            text_renderer.draw_style(
-                scene,
-                &title,
-                if state.active {
-                    colors.text_primary
-                } else {
-                    colors.text_dim
-                },
-                transform.pre_translate((well.x0, well.y1 + m.window_title_gap).into()),
-                None,
-                &title_style,
-            );
-            if is_carried {
-                scene.pop_layer();
-            }
-        }
-    }
-
-    /// The preview being carried, under the pointer or finger, over
-    /// everything else in the panel.
-    fn draw_overview_carried_window(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let Some(press) = self
-            .overview_press
-            .filter(tilo_desktop::overview::OverviewPress::is_dragging)
-        else {
-            return;
-        };
-        let Some((index, window)) = self
-            .overview_row_windows()
-            .into_iter()
-            .enumerate()
-            .find(|(_, window)| Some(window.address.tab) == press.tab)
-        else {
-            return;
-        };
-        let m = self.overview_metrics;
-        let tile = self.overview_window_tile_rect(index);
-        let (w, h) = (tile.width(), tile.width() * 10.0 / 16.0);
-        let well = Rect::new(
-            press.at.x - w / 2.0,
-            press.at.y - h / 2.0,
-            press.at.x + w / 2.0,
-            press.at.y + h / 2.0,
-        );
-        ui::surface::shadow(
-            scene,
-            transform,
-            well,
-            m.window_radius,
-            &theme.tokens.elevation.floating,
-        );
-        let _ = tilo_desktop::window_switcher::draw_preview_well(
-            scene,
-            transform,
-            theme,
-            tilo_desktop::window_switcher::PreviewWell {
-                rect: well,
-                radius: m.window_radius,
-                icon: f64::from(theme.tokens.metrics.icon_lg),
-            },
-            &window,
-            &mut self.overview_live_thumbnails(std::slice::from_ref(&window), text_renderer, theme),
-        );
     }
 
     /// "Where you are": the current room's face stack, name, "You are

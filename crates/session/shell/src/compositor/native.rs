@@ -20664,7 +20664,9 @@ fn apply_shell_gesture(
                     st.bump();
                 }
             });
-            frame_builder.host_mut().latch_overview_transition();
+            frame_builder
+                .host_mut()
+                .latch_overview_transition_from(ui::tokens::MotionSource::Gesture);
         }
         GestureAction::HideOverview => {
             frame_builder.with_chrome(|st| {
@@ -20673,7 +20675,9 @@ fn apply_shell_gesture(
                     st.bump();
                 }
             });
-            frame_builder.host_mut().latch_overview_transition();
+            frame_builder
+                .host_mut()
+                .latch_overview_transition_from(ui::tokens::MotionSource::Gesture);
         }
         // Handled (and returned on) above; a panic here would take down the
         // whole session for a gesture that already did its job.

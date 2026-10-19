@@ -277,6 +277,72 @@ fn the_first_overview_frame_after_super_tab_already_shows_every_window() {
     }
 }
 
+/// The overview's open latency on the production path: Super+Tab handled,
+/// then the very next frame drawn at the real clock (not a settled frame).
+/// The key does no work of its own, and that first frame is already the
+/// overview with every window pictured live, its windows flying from their
+/// strips: there is no frame in between that is still the desktop, and none
+/// that waits for a picture.
+#[test]
+fn super_tab_draws_the_flying_overview_on_the_next_frame_with_no_work_in_the_key() {
+    let clients = [
+        (0x9E_0031_u64, "org.example.first"),
+        (0x9E_0032, "org.example.second"),
+        (0x9E_0033, "org.example.third"),
+    ];
+    let mut fb = desktop(&clients);
+    for (surface, _) in &clients {
+        store().publish_rgba(*surface, &solid(1280, 800, (0x40, 0x70, 0xA0)), 1280, 800);
+    }
+    let tabs: Vec<u64> = clients
+        .iter()
+        .map(|(surface, _)| tab_of(&fb, *surface))
+        .collect();
+    // A warm desktop frame first, as on a running session.
+    let _ = fb.paint_with_damage();
+
+    let pressed = Instant::now();
+    press_super_tab(&mut fb);
+    let key = pressed.elapsed();
+    let frame = fb.paint_with_damage();
+    let first_frame = pressed.elapsed();
+    eprintln!(
+        "OVERVIEW-OPEN key_us={} first_frame_us={} windows={}",
+        key.as_micros(),
+        first_frame.as_micros(),
+        fb.host().overview_row_drawn().len()
+    );
+    assert!(
+        fb.chrome().overlays.overview,
+        "Super+Tab opens the overview"
+    );
+    assert!(
+        !frame.scene.encoding().is_empty(),
+        "the first frame draws the overview"
+    );
+    let drawn = fb.host().overview_row_drawn().to_vec();
+    for tab in &tabs {
+        assert_eq!(
+            drawn
+                .iter()
+                .find(|(drawn, _)| drawn == tab)
+                .map(|(_, state)| *state),
+            Some(PreviewState::Live),
+            "window {tab} is pictured live in the first frame: {drawn:?}"
+        );
+    }
+    // Handling the key captures, renders and lays out nothing: well inside
+    // one display frame even in a debug build on a shared test machine.
+    assert!(
+        key < std::time::Duration::from_millis(16),
+        "the key itself must not work: {key:?}"
+    );
+    drop(fb);
+    for (surface, _) in &clients {
+        store().forget(*surface);
+    }
+}
+
 /// A window that has never presented shows its app mark in the first frame,
 /// at the card's final size; the row does not wait for it.
 #[test]
