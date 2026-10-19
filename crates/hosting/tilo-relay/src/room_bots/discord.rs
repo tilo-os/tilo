@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 
 use tilo_agent_participant::AppCatalogue;
-use tilo_resource::{Replica, Resource as _};
+use tilo_resource::Replica;
 use tilo_user_identity::DeviceCert;
 
 use super::room_record;
@@ -122,9 +122,12 @@ pub async fn connect(
         .record_document(room, APP, &guild_record)
         .await
         .map_err(|error| error.to_string())?
-        .and_then(|bytes| automerge::AutoCommit::load(&bytes).ok())
-        .and_then(|doc| discord::Guild::read(&doc).ok())
-        .ok_or("the Discord record does not read")?;
+        .ok_or("the Discord record is missing")?;
+    // A record an older relay or older devices wrote reads once migrated.
+    let guild = automerge::AutoCommit::load(&guild)
+        .map_err(|error| format!("the Discord record does not load: {error}"))
+        .and_then(|mut doc| super::opened::<discord::Guild>(&mut doc))
+        .map_err(|error| format!("the Discord record does not read: {error}"))?;
     if !guild.guild_id.is_empty() {
         let connected = DiscordLink {
             guild_id: guild.guild_id.clone(),
@@ -218,6 +221,7 @@ pub async fn link_bridge(
 )]
 mod tests {
     use super::*;
+    use tilo_resource::Resource as _;
 
     fn inputs(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs

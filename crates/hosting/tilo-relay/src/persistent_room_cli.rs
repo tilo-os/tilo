@@ -1196,7 +1196,11 @@ async fn start_bots(
         return Ok(Vec::new());
     }
     let blobs = connector_host.blobs(rooms);
-    let started = installed::start_connectors(
+    // The room serves without its bots rather than not at all: a connector
+    // whose worker does not start (a missing binary, an unreachable service)
+    // leaves the bots that need it out, said in the log, as a bridge that
+    // does not link does.
+    let started = match installed::start_connectors(
         &connectors,
         state,
         &connector_host.workers,
@@ -1204,7 +1208,13 @@ async fn start_bots(
         &blobs,
     )
     .await
-    .map_err(|error| anyhow::anyhow!("{error}"))?;
+    {
+        Ok(started) => started,
+        Err(error) => {
+            tracing::error!(%error, "not running the room's bots: a connector did not start");
+            return Ok(Vec::new());
+        }
+    };
     let mut runners = Vec::new();
     for (dir, bot) in installed_bots {
         let wanted =
