@@ -3018,16 +3018,25 @@ impl MusicApp {
                     .iter()
                     .map(|tk| tk.id.clone())
                     .collect();
+                if ids.is_empty() {
+                    return self.empty_library_page(ctx, body, y, "No songs yet");
+                }
                 let rows = self.gather_tracks(&ids);
                 let y = y + look.section;
                 self.draw_track_table(ctx, look, body, y, &TrackTable::new(&rows, &ids))
             }
             View::Albums => {
                 let albums = self.gather_albums(None);
+                if albums.is_empty() {
+                    return self.empty_library_page(ctx, body, y, "No albums yet");
+                }
                 self.draw_album_grid(ctx, look, body, y + look.gutter, &albums)
             }
             View::Artists => {
                 let artists = self.gather_artists();
+                if artists.is_empty() {
+                    return self.empty_library_page(ctx, body, y, "No artists yet");
+                }
                 self.draw_artist_grid(ctx, look, body, y + look.gutter, &artists)
             }
             View::Playlists => {
@@ -4351,6 +4360,24 @@ impl MusicApp {
             y += row_h;
         }
         y
+    }
+
+    /// A library page with nothing in it yet (Songs, Albums, Artists): what
+    /// fills it, and the way to find something to play.
+    fn empty_library_page(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        body: Rect,
+        y: f64,
+        title: &str,
+    ) -> f64 {
+        let content = EmptyStateContent {
+            icon: Some(Icon::Music),
+            message: Some("Music you play, like or save builds your library."),
+            action_label: Some("Search music"),
+            ..EmptyStateContent::new(title)
+        };
+        self.empty_page(ctx, body, y, &content, Some(Action::OpenSearch))
     }
 
     /// An honest error for a live detail page whose fetch failed (offline,
