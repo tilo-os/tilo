@@ -67,3 +67,6 @@ splash-budget   = 250
 [providers]
 mime = []
 ext  = []
+# `tube:search?q=<query>` opens on the results for a query, as desktop
+# search's "Search YouTube for …" does.
+schemes = ["tube"]

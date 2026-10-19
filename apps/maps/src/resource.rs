@@ -76,6 +76,8 @@ impl ResourceApp for MapsShell {
     const ID: &'static str = "so.tilo.maps";
     const TITLE: &'static str = "Maps";
     const ICON: Option<&'static str> = Some("maps");
+    /// A launch may name a search (`geo:0,0?q=cafe`).
+    const ARGUMENTS: usize = 1;
 
     fn scenarios() -> &'static [&'static str] {
         crate::scenario::SCENARIOS
@@ -101,7 +103,7 @@ impl ResourceApp for MapsShell {
     fn view(cx: &mut ViewCx<Workspace>) -> Element {
         // Only a live window fetches tiles, places and routes; a capture
         // draws its sample, and a past version draws what it held.
-        let app = match cx.mode() {
+        let mut app = match cx.mode() {
             // The tiles are kept in the app's own cache area on this device.
             RunMode::Live => match cx.storage().files().paths().cache().native_path() {
                 Ok(cache) => MapsApp::new_with_cache_dir(cache.join("tiles")),
@@ -113,6 +115,13 @@ impl ResourceApp for MapsShell {
             ),
             RunMode::Past => MapsApp::past(),
         };
+        // A live window launched to search ("Search Maps for cafe" in
+        // desktop search) opens on the places it finds.
+        if cx.mode() == RunMode::Live
+            && let Some(query) = launch_search(cx.launch_arguments())
+        {
+            app.search_for(query);
+        }
         // A search hit, or an agent's `open`, opens the place, point of
         // interest or recent search it names.
         let dispatcher = cx.dispatcher();
@@ -178,9 +187,61 @@ impl ResourceSurface<Workspace, MapsEffect> for MapsApp {
     }
 }
 
+/// The search a launch names: a `geo:` URI's `q` (`geo:0,0?q=cafe%20berlin`),
+/// decoded; `None` for any other launch, and for an empty query.
+fn launch_search(arguments: &[String]) -> Option<String> {
+    arguments.iter().find_map(|arg| {
+        let (scheme, rest) = arg.split_once(':')?;
+        if !scheme.eq_ignore_ascii_case("geo") || arg.len() > 8 * 1024 {
+            return None;
+        }
+        let (_, parameters) = rest.split_once('?')?;
+        let query = parameters.split('&').find_map(|pair| {
+            let (key, value) = pair.split_once('=')?;
+            (key == "q").then(|| percent_decode(value)).flatten()
+        })?;
+        let query = query.trim();
+        (!query.is_empty() && !query.chars().any(char::is_control)).then(|| query.to_owned())
+    })
+}
+
+/// `text` with `+` as a space and `%XX` as its byte; `None` when an escape
+/// is malformed or the bytes are not UTF-8.
+fn percent_decode(text: &str) -> Option<String> {
+    let mut bytes = Vec::with_capacity(text.len());
+    let mut rest = text.bytes();
+    while let Some(byte) = rest.next() {
+        match byte {
+            b'+' => bytes.push(b' '),
+            b'%' => {
+                let high = char::from(rest.next()?).to_digit(16)?;
+                let low = char::from(rest.next()?).to_digit(16)?;
+                bytes.push(u8::try_from(high * 16 + low).ok()?);
+            }
+            _ => bytes.push(byte),
+        }
+    }
+    String::from_utf8(bytes).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_geo_launch_names_its_search() {
+        assert_eq!(
+            launch_search(&["geo:0,0?q=caf%C3%A9+berlin".into()]).as_deref(),
+            Some("café berlin")
+        );
+        assert_eq!(
+            launch_search(&["geo:48.1,11.5?z=12&q=Marienplatz".into()]).as_deref(),
+            Some("Marienplatz")
+        );
+        for value in ["geo:0,0", "geo:0,0?q=", "https://example.test/?q=a", "cafe"] {
+            assert_eq!(launch_search(&[value.into()]), None, "{value}");
+        }
+    }
     use crate::model::{Category, LatLon, Place, TravelMode};
     use crate::offline_areas::OfflineAreas;
     use ui::framework::testing::TestApp;

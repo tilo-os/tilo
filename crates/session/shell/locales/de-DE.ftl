@@ -1253,7 +1253,12 @@ search-answer-copied = Kopiert
 search-answer-money-stale = { $amount } = · Kurse { $age }
 search-matches = Passt zu „{ $word }“
 search-answer-open-address = { $address } öffnen
-search-answer-web = Im Web nach „{ $query }“ suchen
+search-provider-web = Web
+search-kind-web = Web
+search-kind-websites = Websites
+search-web-for = Im Web nach { $query } suchen
+search-web-service-for = { $service } nach { $query } durchsuchen
+search-web-subtitle = Web
 search-answer-no-browser = Keine App auf diesem Desktop öffnet Webadressen.
 search-answer-bad-address = Diese Adresse lässt sich nicht öffnen.
 search-people-invited = Eingeladen

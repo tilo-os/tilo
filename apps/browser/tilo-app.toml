@@ -89,4 +89,6 @@ ext  = [
     "html",
     "htm",
 ]
-schemes = ["http", "https"]
+# `web+search:` is a web search desktop search hands over; the browser runs
+# it on the search engine the person chose.
+schemes = ["http", "https", "web+search"]
