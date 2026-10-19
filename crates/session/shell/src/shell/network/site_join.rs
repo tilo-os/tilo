@@ -323,6 +323,12 @@ impl ShellNetwork {
     /// Open the app `arrival`'s site names in the workspace its join
     /// installed: where the person arrives, once. Waits on the launch.
     ///
+    /// The workspace's windows are everyone's: when someone already has the
+    /// app open there, the person arrives at that window (their own copy of
+    /// it runs, as for every window someone else opened) rather than adding
+    /// another, so a community with fifty people in it has one Chat, not
+    /// fifty.
+    ///
     /// # Errors
     ///
     /// When the workspace is gone or the app did not open.
@@ -344,6 +350,23 @@ impl ShellNetwork {
             .find(|workspace| workspace.room == arrival.room)
             .cloned()
             .ok_or("the joined workspace is gone")?;
+        if let Some((strip, group, tab)) = window_of(&workspace, app) {
+            let mut tree = tree.write();
+            tree.desktop.active_strip.insert(workspace.id, strip);
+            tree.desktop.set_active_group(strip, group);
+            if let Some(group) = tree
+                .desktop
+                .workspaces
+                .iter_mut()
+                .find(|candidate| candidate.id == workspace.id)
+                .and_then(|workspace| workspace.strips.iter_mut().find(|s| s.id == strip))
+                .and_then(|strip| strip.window_groups.iter_mut().find(|g| g.id == group))
+            {
+                group.activate_tab(tab);
+            }
+            tree.queue_save();
+            return Ok(());
+        }
         let launcher = crate::shell::broker_services::NativeLauncher(Some(tree), None);
         tilo_action_broker::services::LauncherServices::launch(
             &launcher,
@@ -516,4 +539,30 @@ impl ShellNetwork {
         let attempts = self.native_enrollment.attempts.lock().ok()?;
         attempts.get(&id).map(|attempt| (attempt.local(), id))
     }
+}
+
+/// The first window of `app` in `workspace`, whoever opened it: its strip,
+/// group and tab.
+fn window_of(
+    workspace: &crate::shell::state::Workspace,
+    app: &str,
+) -> Option<(
+    crate::shell::state::StripId,
+    crate::shell::state::GroupId,
+    crate::shell::state::TabId,
+)> {
+    use crate::shell::state::TileContent;
+    workspace.strips.iter().find_map(|strip| {
+        strip.window_groups.iter().find_map(|group| {
+            group.tabs.iter().find_map(|tab| {
+                let shows = match &tab.tile {
+                    TileContent::Foreign { app_id, .. }
+                    | TileContent::LocalApp { app_id, .. }
+                    | TileContent::PeerWindow { app_id, .. } => app_id == app,
+                    _ => false,
+                };
+                shows.then_some((strip.id, group.id, tab.id))
+            })
+        })
+    })
 }
