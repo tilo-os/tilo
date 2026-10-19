@@ -744,7 +744,7 @@ impl App {
                 _ => break (endpoint, connected),
             }
         };
-        let remote = match connected {
+        let mut remote = match connected {
             Ok(remote) => remote,
             // SSH works; whether vm upgrade can fix it depends on bootc.
             Err(CliError::ProtocolMismatch { client, daemon, .. }) => {
@@ -769,8 +769,20 @@ impl App {
                 issue.slot, issue.problem, issue.hint
             ));
         }
+        remote.set_trust(self.trust(vm));
         self.receipt.set("vm", &vm.name);
         Ok(remote)
+    }
+
+    /// How a session to `vm` signs the layers it brings into `/usr`: with
+    /// this host's development key, which a VM tilo-vm runs itself takes at
+    /// its first swap and a real machine only through `tilo-vm trust enroll`.
+    fn trust(&self, vm: &Resolved) -> crate::devtrust::Trust {
+        crate::devtrust::Trust {
+            key: crate::devtrust::key_path(&self.registry_path),
+            vm: vm.name.clone(),
+            auto_enroll: vm.entry.hypervisor != hypervisor::DEVICE,
+        }
     }
 
     /// Open tilo-vmd's RPC over the peer network, as this machine's admin
@@ -783,7 +795,8 @@ impl App {
     ) -> Result<Remote, CliError> {
         let identity = config::admin_identity_root(&self.registry_path);
         let line = remote::peer_dial(route, &identity);
-        let (remote, session) = Remote::over_peer(&vm.name, &line)?;
+        let (mut remote, session) = Remote::over_peer(&vm.name, &line)?;
+        remote.set_trust(self.trust(vm));
         let note = format!(
             "{} is not on this network ({lan}); reached it over the peer network: {} (session {} in its journal)",
             vm.name,
@@ -957,6 +970,7 @@ impl App {
                 Ok(Outcome::new(result.text.clone(), json!(result)))
             }
             Some(Command::Seat(command)) => self.seat(command),
+            Some(Command::Trust(command)) => self.trust_command(&command),
             Some(Command::Shot { slot, output, .. }) => self.shot(slot, &output),
             Some(Command::Control { slot, args }) => self.control(slot, &args),
             Some(Command::Flight(command)) => self.flight(command),
@@ -5292,6 +5306,113 @@ impl App {
             json!(result),
         )
         .next(&["tilo-vm shot", "tilo-vm control state-dump --pretty"]))
+    }
+
+    fn trust_command(&mut self, command: &crate::cli::TrustCommand) -> Result<Outcome, CliError> {
+        let vm = self.resolve_vm(None)?;
+        let key_path = crate::devtrust::key_path(&self.registry_path);
+        let mut remote = self.connect(&vm)?;
+        if !remote.takes_endorsements() {
+            return Err(CliError::Unsupported {
+                what: format!("signed layers on {}", vm.name),
+                alternative: format!(
+                    "its tilo-vmd merges layers unsigned; move it to a current dev image first: tilo-vm vm upgrade {}",
+                    vm.name
+                ),
+            });
+        }
+        match command {
+            crate::cli::TrustCommand::Status => {
+                let key = crate::devtrust::load(&key_path)?;
+                let fingerprint = key.as_ref().map(|key| key.public().fingerprint());
+                let pending = remote.call(tilo_vm_protocol::LayerEndorsePending {
+                    slot: None,
+                    layers: Vec::new(),
+                })?;
+                let enrolled = fingerprint.as_ref().is_some_and(|fingerprint| {
+                    pending
+                        .authorities
+                        .iter()
+                        .any(|authority| authority.fingerprint == *fingerprint)
+                });
+                let mut text = match &fingerprint {
+                    Some(fingerprint) => {
+                        format!("this host's key: {} ({fingerprint})", key_path.display())
+                    }
+                    None => format!(
+                        "this host has no development key yet ({} is made at the first enroll)",
+                        key_path.display()
+                    ),
+                };
+                if pending.authorities.is_empty() {
+                    let _ = write!(text, "\n{} has enrolled no extension authority", vm.name);
+                }
+                for authority in &pending.authorities {
+                    let _ = write!(
+                        text,
+                        "\n{} trusts {} {}{}",
+                        vm.name,
+                        authority.name,
+                        authority.fingerprint,
+                        if fingerprint.as_deref() == Some(authority.fingerprint.as_str()) {
+                            " (this host)"
+                        } else {
+                            ""
+                        }
+                    );
+                }
+                let _ = write!(
+                    text,
+                    "\n{} layers of the vm and device slots wait for a signature",
+                    pending.pending.len()
+                );
+                let mut outcome = Outcome::new(
+                    text,
+                    json!({
+                        "key": key_path,
+                        "fingerprint": fingerprint,
+                        "enrolled": enrolled,
+                        "authorities": pending.authorities,
+                        "unsigned_layers": pending.pending.iter().map(|p| &p.layer).collect::<Vec<_>>(),
+                    }),
+                );
+                if !enrolled || !pending.pending.is_empty() {
+                    outcome = outcome.next(&["tilo-vm trust enroll"]);
+                }
+                Ok(outcome)
+            }
+            crate::cli::TrustCommand::Enroll => {
+                let (key, made) = crate::devtrust::load_or_create(&key_path)?;
+                let enrolled = remote.call(tilo_vm_protocol::TrustEnroll {
+                    name: tilo_vm_protocol::DEV_AUTHORITY.into(),
+                    public_key: key.public().to_pem(),
+                })?;
+                let endorsed = remote.endorse(None, Vec::new(), true)?;
+                let signed = endorsed.as_ref().map_or(0, |result| result.endorsed.len());
+                let mut text = String::new();
+                if made {
+                    let _ = writeln!(text, "made this host's development key {}", key_path.display());
+                }
+                let _ = write!(
+                    text,
+                    "{} {} this host's key as the extension authority {} ({})\nsigned {signed} layers of the vm and device slots and merged them into its /usr",
+                    vm.name,
+                    if enrolled.changed { "enrolled" } else { "already trusts" },
+                    enrolled.authority.name,
+                    enrolled.authority.fingerprint,
+                );
+                Ok(Outcome::new(
+                    text,
+                    json!({
+                        "key": key_path,
+                        "authority": enrolled.authority,
+                        "changed": enrolled.changed,
+                        "signed": endorsed.map(|result| result.endorsed).unwrap_or_default(),
+                    }),
+                )
+                .next(&["tilo-vm slot restart device   (the desktop restarts in place on its layers)"]))
+            }
+        }
     }
 
     fn gc(

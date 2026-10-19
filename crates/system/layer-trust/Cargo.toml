@@ -1,0 +1,32 @@
+[package]
+name = "tilo-layer-trust"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Owner-enrolled extension authorities and signed layers: Ed25519 keys, layer manifests, payload checks by fs-verity."
+
+[lib]
+name = "tilo_layer_trust"
+path = "src/lib.rs"
+
+[dependencies]
+base64.workspace = true
+ed25519-dalek.workspace = true
+# The signing key's seed.
+getrandom.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+workspace-hack = { version = "0.1" }
+
+[target.'cfg(unix)'.dependencies]
+# FS_IOC_ENABLE_VERITY and FS_IOC_MEASURE_VERITY.
+libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

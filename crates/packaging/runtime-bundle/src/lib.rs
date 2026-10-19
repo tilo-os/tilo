@@ -12,7 +12,9 @@
 
 pub mod component_pins;
 pub mod gc;
-pub mod verity;
+/// fs-verity lives with the signed-layer trust code, which the system
+/// extension activation and tilo-vmd share; bundles use the same digests.
+pub use tilo_layer_trust::verity;
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use std::collections::{BTreeMap, BTreeSet};

@@ -19,6 +19,8 @@ base64.workspace = true
 chrono = { workspace = true, features = ["clock", "std"] }
 clap.workspace = true
 tilo-files = { path = "../../platform/tilo-files" }
+# The development trust key and the signed-layer manifests it signs.
+tilo-layer-trust = { path = "../../system/layer-trust" }
 tilo-paths.workspace = true
 hex.workspace = true
 serde.workspace = true

@@ -2,7 +2,8 @@
 //!
 //! A kernel layer carries `usr/lib/modules/<release>/` with `vmlinuz` and the
 //! signed modules. The modules merge into `/usr` with the rest of the VM-wide
-//! layers (systemd-sysext), but the boot loader starts the kernel before any
+//! layers (as signed layers, through the system extension activation), but
+//! the boot loader starts the kernel before any
 //! extension merges, so `vmlinuz` and an initramfs also go to `/boot` with a
 //! boot loader entry of their own (`tilo-vm-<release>-<layer>.conf`):
 //!
@@ -67,11 +68,15 @@ pub const IMAGE_INITRAMFS_MARKER: &str = "/usr/lib/tilo/initramfs-modules.txt";
 /// Makes udev and modules-load look again once the VM-wide layers (and so
 /// the swapped kernel's modules) have merged: until then, `/usr/lib/modules/
 /// <release>` does not exist, and a driver requested earlier in boot (the
-/// virtio NIC, vkms, uinput) would stay unloaded.
+/// virtio NIC, vkms, uinput) would stay unloaded. The activation is the one
+/// merger; `systemd-sysext.service` stays masked as on a production image.
 pub const SYSEXT_DROPIN: &str =
+    "/etc/systemd/system/tilo-extension-activate.service.d/50-tilo-vm-kernel.conf";
+/// Where an older tilo-vmd wrote that drop-in, for systemd-sysext.service.
+const LEGACY_SYSEXT_DROPIN: &str =
     "/etc/systemd/system/systemd-sysext.service.d/50-tilo-vm-kernel.conf";
 const SYSEXT_DROPIN_TEXT: &str = "# Written by tilo-vmd: the vm slot carries a kernel whose modules merge with\n\
-# systemd-sysext. Load what was requested before they were there. Do not edit.\n\
+# the signed layers. Load what was requested before they were there. Do not edit.\n\
 [Service]\n\
 ExecStartPost=-/usr/bin/udevadm trigger --action=add\n\
 ExecStartPost=-/usr/bin/systemctl restart --no-block systemd-modules-load.service\n";
@@ -442,7 +447,7 @@ impl Boot {
         let merged = Path::new("/usr/lib/modules").join(&kver);
         if !merged.join("modules.dep").is_file() {
             return Err(DaemonError::KernelLayer(format!(
-                "{} is not in /usr after systemd-sysext refresh",
+                "{} is not in /usr after the signed layers merged",
                 merged.display()
             )));
         }
@@ -490,6 +495,7 @@ impl Boot {
             text.as_bytes(),
         )?;
         write_atomic(Path::new(SYSEXT_DROPIN), SYSEXT_DROPIN_TEXT.as_bytes())?;
+        remove_legacy_dropin()?;
         let _ = Command::new("systemctl").arg("daemon-reload").status();
         Self::set_oneshot(loader, &id)?;
 
@@ -580,6 +586,7 @@ impl Boot {
                 self.remove_entry(stem)?;
             }
         }
+        remove_legacy_dropin()?;
         match fs::remove_file(SYSEXT_DROPIN) {
             Ok(()) => {
                 let _ = Command::new("systemctl").arg("daemon-reload").status();
@@ -657,6 +664,17 @@ impl Boot {
     }
 }
 
+/// The drop-in an older tilo-vmd wrote for `systemd-sysext.service`, which no
+/// longer merges anything.
+fn remove_legacy_dropin() -> Result<(), DaemonError> {
+    match fs::remove_file(LEGACY_SYSEXT_DROPIN) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            Err(DaemonError::io(format!("remove {LEGACY_SYSEXT_DROPIN}"))(e))
+        }
+        _ => Ok(()),
+    }
+}
+
 /// What can keep an installed kernel from booting as intended.
 fn install_warnings(loader: Loader) -> Vec<String> {
     let mut warnings = Vec::new();
@@ -666,14 +684,14 @@ fn install_warnings(loader: Loader) -> Vec<String> {
         );
     }
     let enabled = Command::new("systemctl")
-        .args(["is-enabled", "systemd-sysext.service"])
+        .args(["is-enabled", crate::systemd::ACTIVATION_UNIT])
         .output()
         .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "enabled");
     if !enabled {
-        warnings.push(
-            "systemd-sysext.service is not enabled, so the kernel's modules will not merge at boot: systemctl enable systemd-sysext.service"
-                .into(),
-        );
+        warnings.push(format!(
+            "{unit} is not enabled, so the kernel's modules will not merge at boot: systemctl enable {unit}",
+            unit = crate::systemd::ACTIVATION_UNIT
+        ));
     }
     warnings
 }

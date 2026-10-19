@@ -29,6 +29,8 @@ tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
 # `font-index`: the faces of the font catalog a bundle carries.
 tilo-font-catalog = { path = "../../sdk/font-catalog", features = ["faces"] }
+# fs-verity (enable, measure, the digest itself).
+tilo-layer-trust = { path = "../../system/layer-trust" }
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true

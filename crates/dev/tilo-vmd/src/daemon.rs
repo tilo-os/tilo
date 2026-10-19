@@ -20,6 +20,7 @@ use tilo_vm_protocol::{
 
 use crate::apply::{self, Apply, GREETER_UNIT, Restarts, Session, SessionChange};
 use crate::awake;
+use crate::endorse::{self, Endorsements};
 use crate::error::DaemonError;
 use crate::image;
 use crate::layers::LayerStore;
@@ -58,6 +59,11 @@ pub struct Daemon {
     expected_domain: String,
     /// Problems found re-creating vkms seats when this process started.
     seat_issues: Option<Vec<Issue>>,
+    endorsements: Endorsements,
+    /// The owner-enrolled extension authorities, and the account their keys
+    /// must belong to (root).
+    authorities_dir: PathBuf,
+    authority_owner: u32,
 }
 
 /// Is `tool` on `PATH` (or in `/usr/local/bin`, which a non-login SSH
@@ -187,17 +193,18 @@ fn prepare_slot_session(
     apply.reload()
 }
 
-/// Link and merge the VM-wide sysext set, the `vm` slot's layers and the
+/// Stage and merge the machine-wide set, the `vm` slot's layers and the
 /// owner's login's (the `device` slot), as their current generations name
-/// them. `systemd-sysext.service` merges at boot whatever links
-/// `/var/lib/extensions` holds; when those are not exactly this set (a
-/// transition cut short, a link lost or left behind) they are put right and
-/// `/usr` is refreshed, so the device slot always comes up on its current
-/// generation. A set that is already linked is left merged as it is.
+/// them. `tilo-extension-activate.service` verifies and merges at boot the
+/// signed layers `/var/lib/tilo/signed-layers` names; when those are not
+/// exactly this set (a transition cut short, an entry lost or left behind)
+/// they are put right and activated again, so the device slot always comes
+/// up on its current generation. A set already staged is left merged as the
+/// boot's activation merged it.
 ///
 /// # Errors
-/// A layer the generations name that is missing, and I/O failures; the
-/// links stay as they were.
+/// A layer the generations name that is missing or unsigned, a layer the
+/// activation refused, and I/O failures.
 pub fn merge_system_layers(
     slots: &SlotStore,
     layers: &LayerStore,
@@ -206,8 +213,8 @@ pub fn merge_system_layers(
     let vm = slots.load(VM_SLOT)?;
     let own = layer_paths(layers, &slots.generation(VM_SLOT, vm.current)?)?;
     let paths = system_layers(slots, layers, &vm, own)?;
-    if apply.link_sysext(&paths)? {
-        apply.sysext_refresh()?;
+    if apply.stage_system_layers(&paths)? {
+        apply.activate_system_layers()?;
     }
     Ok(())
 }
@@ -242,7 +249,7 @@ pub fn restore_slots(
             continue;
         };
         // The owner starts a login at the greeter; its layers merged at boot
-        // with systemd-sysext.
+        // through the system extension activation.
         if failed.contains(&record.name) || session.login.is_some() {
             continue;
         }
@@ -455,7 +462,130 @@ impl Daemon {
             client_protocol: None,
             root: root.to_owned(),
             expected_domain: DEFAULT_DOMAIN.into(),
+            endorsements: Endorsements::new(root),
+            authorities_dir: PathBuf::from(tilo_layer_trust::AUTHORITIES_DIR),
+            authority_owner: 0,
         }
+    }
+
+    /// Where extension authorities are enrolled, and whose their keys must
+    /// be; `/etc/tilo/extension-authorities.d` and root on a machine.
+    #[must_use]
+    pub fn with_authorities(mut self, dir: impl Into<PathBuf>, owner: u32) -> Self {
+        self.authorities_dir = dir.into();
+        self.authority_owner = owner;
+        self
+    }
+
+    fn authorities(&self) -> Vec<tilo_layer_trust::Authority> {
+        let (authorities, problems) =
+            tilo_layer_trust::load_authorities(&self.authorities_dir, self.authority_owner);
+        for problem in problems {
+            eprintln!("tilo-vmd: extension authority not taken: {problem}");
+        }
+        authorities
+    }
+
+    /// The layers that merge into `/usr` and need a signature: `incoming`
+    /// (headed for `slot`) and every layer a generation of the `vm` or
+    /// `device` slot names, less those an enrolled authority already
+    /// signed. Each gets a fresh manifest, which seals its files.
+    fn endorse_pending(
+        &mut self,
+        slot: Option<&str>,
+        incoming: &[String],
+    ) -> Result<tilo_vm_protocol::EndorsementsPending, DaemonError> {
+        let authorities = self.authorities();
+        let info = authorities.iter().map(endorse::info).collect();
+        // By layer: the generation it is endorsed for, and whether it was
+        // asked for (rather than found in a generation).
+        let mut wanted: BTreeMap<String, (u64, bool)> = BTreeMap::new();
+        match slot {
+            Some(name) if name != VM_SLOT && name != DEVICE_SLOT => {
+                return Ok(tilo_vm_protocol::EndorsementsPending {
+                    authorities: info,
+                    pending: Vec::new(),
+                });
+            }
+            Some(name) => {
+                let next = self
+                    .slots
+                    .stored(name)?
+                    .map_or(1, |record| record.current.saturating_add(1));
+                for hash in incoming {
+                    wanted.insert(hash.clone(), (next, true));
+                }
+            }
+            None => {
+                for hash in incoming {
+                    wanted.insert(hash.clone(), (0, true));
+                }
+            }
+        }
+        for name in [VM_SLOT, DEVICE_SLOT] {
+            if self.slots.stored(name)?.is_none() {
+                continue;
+            }
+            for number in self.slots.generations(name) {
+                for hash in self.slots.generation(name, number)?.layers {
+                    wanted.entry(hash).or_insert((number, false));
+                }
+            }
+        }
+        let mut pending = Vec::new();
+        for (hash, (generation, asked)) in wanted {
+            if self.endorsements.signer(&hash, &authorities).is_some() {
+                continue;
+            }
+            // A generation may name a layer gc already took (it can never be
+            // current again); only a layer asked for must exist.
+            if !asked && self.layers.require(&hash).is_err() {
+                continue;
+            }
+            let manifest = self.endorsements.prepare(&self.layers, &hash, generation)?;
+            pending.push(tilo_vm_protocol::PendingEndorsement {
+                layer: hash,
+                manifest,
+            });
+        }
+        Ok(tilo_vm_protocol::EndorsementsPending {
+            authorities: info,
+            pending,
+        })
+    }
+
+    /// Keep the signatures; with `merge`, then merge the `vm` and `device`
+    /// slots' current layers again (an enrollment's first endorsement).
+    fn endorse(
+        &mut self,
+        endorsements: &[tilo_vm_protocol::Endorsement],
+        merge: bool,
+    ) -> Result<tilo_vm_protocol::LayerEndorseResult, DaemonError> {
+        let authorities = self.authorities();
+        let mut endorsed = Vec::new();
+        let mut signer = None;
+        for endorsement in endorsements {
+            let authority = self.endorsements.accept(
+                &endorsement.layer,
+                &endorsement.signature,
+                &authorities,
+            )?;
+            endorsed.push(endorsement.layer.clone());
+            signer = Some(authority);
+        }
+        if merge && self.slots.stored(VM_SLOT)?.is_some() {
+            merge_system_layers(&self.slots, &self.layers, self.apply.as_mut())?;
+        }
+        let authority = match signer {
+            Some(authority) => authority,
+            None => authorities.first().cloned().ok_or_else(|| {
+                DaemonError::Authority("this machine has enrolled no extension authority".into())
+            })?,
+        };
+        Ok(tilo_vm_protocol::LayerEndorseResult {
+            endorsed,
+            authority: endorse::info(&authority),
+        })
     }
 
     /// The `SELinux` domain a greetd session runs in on this image.
@@ -637,12 +767,18 @@ impl Daemon {
             .vm_exclusive()
             .and_then(|_vm| merge_system_layers(&self.slots, &self.layers, self.apply.as_mut()));
         if let Err(error) = merged {
+            let hint = match error {
+                DaemonError::Unendorsed { .. }
+                | DaemonError::LayerRefused { .. }
+                | DaemonError::Authority(_) => error.hint(),
+                _ => "tilo-vm doctor; then tilo-vm rollback --slot device to a generation whose layers are all present".into(),
+            };
             issues.push(Issue {
                 slot: DEVICE_SLOT.into(),
                 problem: format!(
                     "the vm and device slots' layers could not be merged at boot: {error}"
                 ),
-                hint: "tilo-vm doctor; then tilo-vm rollback --slot device to a generation whose layers are all present".into(),
+                hint,
             });
         }
         issues.extend(restore_slots(
@@ -682,7 +818,10 @@ impl Daemon {
                 issues: self.issues()?,
                 tools: detect_tools(),
                 awake: Some(self.renew_awake(awake::Change::Request)),
-                capabilities: vec!["userspace.apply".into()],
+                capabilities: vec![
+                    "userspace.apply".into(),
+                    tilo_vm_protocol::ENDORSE_CAPABILITY.into(),
+                ],
             });
         }
         match self.client_protocol {
@@ -753,6 +892,31 @@ impl Daemon {
             Request::LayerVerify(p) => {
                 let _vm = self.locks.vm_shared()?;
                 to_value(&self.layers.verify(&p.hash)?)
+            }
+            Request::LayerEndorsePending(p) => {
+                let _vm = self.locks.vm_shared()?;
+                to_value(&self.endorse_pending(p.slot.as_deref(), &p.layers)?)
+            }
+            Request::LayerEndorse(p) => {
+                // Merging changes the machine's /usr, as a vm slot swap does.
+                let _vm = if p.merge {
+                    self.locks.vm_exclusive()?
+                } else {
+                    self.locks.vm_shared()?
+                };
+                to_value(&self.endorse(&p.endorsements, p.merge)?)
+            }
+            Request::TrustEnroll(p) => {
+                let _vm = self.locks.vm_exclusive()?;
+                let (key, changed) =
+                    endorse::enroll(&self.authorities_dir, &p.name, &p.public_key)?;
+                to_value(&tilo_vm_protocol::TrustEnrollResult {
+                    authority: tilo_vm_protocol::AuthorityInfo {
+                        name: p.name.clone(),
+                        fingerprint: key.fingerprint(),
+                    },
+                    changed,
+                })
             }
             Request::Swap(p) => {
                 let _locks = self.slot_locks(&p.slot)?;
@@ -2638,12 +2802,16 @@ mod tests {
         let calls = mirror.lock().unwrap().clone();
         let linked: Vec<&str> = calls
             .iter()
-            .filter(|c| c.starts_with("link_sysext"))
+            .filter(|c| c.starts_with("stage_system_layers"))
             .map(String::as_str)
             .collect();
         assert_eq!(
             linked,
-            ["link_sysext 1", "link_sysext 2", "link_sysext 1"],
+            [
+                "stage_system_layers 1",
+                "stage_system_layers 2",
+                "stage_system_layers 1"
+            ],
             "{calls:?}"
         );
         assert!(
@@ -3052,12 +3220,15 @@ mod tests {
         // The boot merged no links: they are put back and /usr refreshed.
         merge_system_layers(&slots, &layers, &mut apply).unwrap();
         assert_eq!(apply.sysext, expected);
-        assert_eq!(apply.calls, ["link_sysext 2", "sysext_refresh"]);
+        assert_eq!(
+            apply.calls,
+            ["stage_system_layers 2", "activate_system_layers"]
+        );
 
         // Already merged: nothing is refreshed.
         apply.calls.clear();
         merge_system_layers(&slots, &layers, &mut apply).unwrap();
-        assert_eq!(apply.calls, ["link_sysext 2"]);
+        assert_eq!(apply.calls, ["stage_system_layers 2"]);
 
         // The daemon's boot restore does the same.
         let mirror = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -3069,9 +3240,10 @@ mod tests {
         assert_eq!(
             calls
                 .iter()
-                .filter(|c| c.starts_with("link_sysext") || c.as_str() == "sysext_refresh")
+                .filter(|c| c.starts_with("stage_system_layers")
+                    || c.as_str() == "activate_system_layers")
                 .collect::<Vec<_>>(),
-            ["link_sysext 2", "sysext_refresh"],
+            ["stage_system_layers 2", "activate_system_layers"],
             "a fresh boot's links are relinked and merged"
         );
 
@@ -3267,5 +3439,97 @@ mod tests {
             target: Some("x86_64-unknown-linux-gnu".into()),
             cargo_lock_hash: Some("0123456789abcdef0123".into()),
         }
+    }
+
+    #[test]
+    fn layers_for_the_machines_usr_are_endorsed_only_by_an_enrolled_key() {
+        use tilo_layer_trust::SecretKey;
+        use tilo_vm_protocol::{Endorsement, LayerEndorsePending, TrustEnroll};
+
+        let root = tempfile::tempdir().unwrap();
+        let authorities = root.path().join("extension-authorities.d");
+        let owner = std::os::unix::fs::MetadataExt::uid(&fs::metadata(root.path()).unwrap());
+        let payload = tempfile::tempdir().unwrap();
+        fs::create_dir_all(payload.path().join("usr/bin")).unwrap();
+        fs::write(payload.path().join("usr/bin/fs"), "v1").unwrap();
+        let (layer, _) = LayerStore::new(root.path())
+            .import_path(payload.path(), &Provenance::local("fs"), &mut |_| Ok(()))
+            .unwrap();
+        let mut daemon = Daemon::new(
+            root.path(),
+            Box::new(RecordingApply::default()),
+            None,
+            BaseInfo::default(),
+        )
+        .with_authorities(&authorities, owner);
+        let hello = daemon
+            .handle(Request::Hello(tilo_vm_protocol::Hello {
+                protocol: PROTOCOL_VERSION,
+                client_version: String::new(),
+            }))
+            .unwrap();
+        assert!(
+            hello["capabilities"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!(tilo_vm_protocol::ENDORSE_CAPABILITY))
+        );
+        let pending = |daemon: &mut Daemon, slot: &str| {
+            let value = daemon
+                .handle(Request::LayerEndorsePending(LayerEndorsePending {
+                    slot: Some(slot.into()),
+                    layers: vec![layer.clone()],
+                }))
+                .unwrap();
+            serde_json::from_value::<tilo_vm_protocol::EndorsementsPending>(value).unwrap()
+        };
+
+        // A session slot's layers never reach the machine's /usr.
+        assert!(pending(&mut daemon, "proof").pending.is_empty());
+        // Headed for the vm slot: a manifest that names the layer.
+        let asked = pending(&mut daemon, VM_SLOT);
+        assert!(asked.authorities.is_empty());
+        assert_eq!(asked.pending.len(), 1);
+        let manifest = &asked.pending[0].manifest;
+        let parsed = tilo_layer_trust::LayerManifest::parse(manifest.as_bytes()).unwrap();
+        assert_eq!(parsed.content_sha256, layer);
+        assert_eq!(parsed.component, "fs");
+
+        let dev = SecretKey::from_seed(&[1; 32]);
+        let endorse = |daemon: &mut Daemon, key: &SecretKey| {
+            daemon.handle(Request::LayerEndorse(tilo_vm_protocol::LayerEndorse {
+                endorsements: vec![Endorsement {
+                    layer: layer.clone(),
+                    signature: key.sign(manifest.as_bytes()),
+                }],
+                merge: false,
+            }))
+        };
+        // Nothing enrolled: no signature is taken.
+        assert!(matches!(
+            endorse(&mut daemon, &dev),
+            Err(DaemonError::Authority(_))
+        ));
+        let enrolled = daemon
+            .handle(Request::TrustEnroll(TrustEnroll {
+                name: "dev".into(),
+                public_key: dev.public().to_pem(),
+            }))
+            .unwrap();
+        assert_eq!(
+            enrolled["authority"]["fingerprint"],
+            dev.public().fingerprint()
+        );
+        assert_eq!(enrolled["changed"], true);
+        // A key the machine has not enrolled is still refused.
+        assert!(matches!(
+            endorse(&mut daemon, &SecretKey::from_seed(&[2; 32])),
+            Err(DaemonError::Authority(_))
+        ));
+        let endorsed = endorse(&mut daemon, &dev).unwrap();
+        assert_eq!(endorsed["authority"]["name"], "dev");
+        let again = pending(&mut daemon, VM_SLOT);
+        assert!(again.pending.is_empty(), "endorsed once, kept");
+        assert_eq!(again.authorities[0].name, "dev");
     }
 }

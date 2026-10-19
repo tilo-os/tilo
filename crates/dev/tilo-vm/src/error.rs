@@ -316,6 +316,12 @@ pub enum CliError {
     },
     #[error("{what} runs from a Tilo worktree (it drives os/dev/vm.sh)")]
     NeedsWorktree { what: String },
+    #[error(
+        "'{vm}' has not enrolled this host's development key ({fingerprint}), so it cannot take this host's layers into /usr"
+    )]
+    DevKeyNotEnrolled { vm: String, fingerprint: String },
+    #[error("development trust: {0}")]
+    Trust(String),
 }
 
 impl CliError {
@@ -557,6 +563,10 @@ impl CliError {
             Self::NeedsWorktree { what } => format!(
                 "run {what} from a checkout of the Tilo repository, where os/dev/vm.sh lives"
             ),
+            Self::DevKeyNotEnrolled { vm, .. } => format!(
+                "enrolling a key is the owner's decision, made once per machine: tilo-vm --target {vm} trust enroll   (it also signs the layers the machine already has)"
+            ),
+            Self::Trust(_) => "tilo-vm trust status   (this host's key, and what the machine has enrolled)".into(),
         }
     }
 
@@ -603,6 +613,7 @@ impl CliError {
             Self::ScenarioMedium { .. } | Self::Scenario { .. } | Self::NeedsWorktree { .. } => {
                 "scenarios"
             }
+            Self::DevKeyNotEnrolled { .. } | Self::Trust(_) => "trust",
             Self::Unreachable { .. }
             | Self::DaemonMissing { .. }
             | Self::ProtocolMismatch { .. }
@@ -993,12 +1004,19 @@ mod tests {
             CliError::NeedsWorktree {
                 what: "tilo-vm scenario install".into(),
             },
+            CliError::DevKeyNotEnrolled {
+                vm: "yoga".into(),
+                fingerprint: "sha256:00".into(),
+            },
+            CliError::Trust("the manifest for layer a names layer b".into()),
         ];
         for error in &all {
             match error {
                 CliError::ScenarioMedium { .. }
                 | CliError::Scenario { .. }
                 | CliError::NeedsWorktree { .. }
+                | CliError::DevKeyNotEnrolled { .. }
+                | CliError::Trust(_)
                 | CliError::NoVm { .. }
                 | CliError::KernelBuild { .. }
                 | CliError::KernelNotRunning { .. }

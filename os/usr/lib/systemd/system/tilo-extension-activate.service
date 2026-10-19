@@ -6,9 +6,10 @@ Documentation=file:///usr/share/tilo/system-extensions/README.md
 # purpose, at every boot and after every install, refresh or removal: it checks
 # each kept manifest's signature against the extension-manifest key again, checks
 # every kept artifact against the manifest, rebuilds each part for the booted
-# base from those bytes alone, refuses to merge if anything else is in the
-# sysext search path, and then runs `systemd-sysext refresh`. Nothing written to
-# /var since the last activation survives it unverified.
+# base from those bytes alone, checks every signed layer against the authorities
+# the owner enrolled, refuses to merge if anything else is in the sysext search
+# path, and then runs `systemd-sysext refresh`. Nothing written to /var since
+# the last activation survives it unverified.
 #
 # It runs offline, before the greeter and the graphical target.
 # A part needing a new download for an updated base waits for
@@ -26,6 +27,12 @@ Before=graphical.target display-manager.service greetd.service
 # unit, which still finds the parts and unmerges them).
 ConditionPathExistsGlob=|/var/lib/tilo/extensions/*/enabled
 ConditionDirectoryNotEmpty=|/var/lib/extensions
+# Signed layers (a development machine's tilo-vm layers, signed by an
+# extension authority the owner enrolled in /etc/tilo/extension-authorities.d):
+# verified and merged while any is desired, and unmerged from /run/extensions
+# once none is.
+ConditionDirectoryNotEmpty=|/var/lib/tilo/signed-layers
+ConditionDirectoryNotEmpty=|/run/extensions
 
 [Service]
 Type=oneshot

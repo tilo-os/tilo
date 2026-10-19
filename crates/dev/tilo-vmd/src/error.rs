@@ -112,6 +112,14 @@ pub enum DaemonError {
     BootLoader { detail: String },
     #[error("dracut could not build the initramfs for {kver}: {detail}")]
     Initramfs { kver: String, detail: String },
+    #[error(
+        "layer {layer} ({component}) is not signed by an extension authority this machine has enrolled, so it cannot merge into /usr"
+    )]
+    Unendorsed { layer: String, component: String },
+    #[error("the system extension activation refused layer {layer}: {reason}")]
+    LayerRefused { layer: String, reason: String },
+    #[error("extension authority: {0}")]
+    Authority(String),
     #[error("{context}: {source}")]
     Io {
         context: String,
@@ -170,6 +178,7 @@ impl DaemonError {
             Self::Job { .. } => code::JOB,
             Self::ToolMissing { .. } => code::TOOL,
             Self::RegistryAuth { .. } => code::AUTH,
+            Self::Unendorsed { .. } | Self::LayerRefused { .. } | Self::Authority(_) => code::TRUST,
         }
     }
 
@@ -313,6 +322,11 @@ impl DaemonError {
                 "reproduce it in the VM: tilo-vm vm ssh -- dracut --force --kver {kver} /var/tmp/initramfs.img   (the vm slot already carries the modules; tilo-vm rollback --slot vm drops them)"
             ),
             Self::Io { .. } => "tilo-vm doctor   (checks the VM's disk and daemon state)".into(),
+            Self::Unendorsed { .. } => "a current tilo-vm signs every layer of the vm and device slots before it changes them; on a machine that does not trust your key yet: tilo-vm trust enroll   (once; it also signs the layers already there)".into(),
+            Self::LayerRefused { layer, .. } => format!(
+                "the layer changed on disk after it was signed, or its signer is no longer enrolled: swap the component again (a fresh layer is signed), or tilo-vm trust enroll; tilo-vm vm ssh -- cat /run/tilo/signed-layers.json names every refusal   (layer {layer})"
+            ),
+            Self::Authority(_) => "tilo-vm trust status   (shows this host's key and what the machine has enrolled)".into(),
         }
     }
 
@@ -351,6 +365,9 @@ impl DaemonError {
             }
             Self::NoDeviceSession | Self::DeviceSlot(_) | Self::LoggedOut(_) => {
                 Some("tilo-vm guide devices")
+            }
+            Self::Unendorsed { .. } | Self::LayerRefused { .. } | Self::Authority(_) => {
+                Some("tilo-vm guide trust")
             }
             Self::VersionMismatch { .. }
             | Self::HelloRequired
@@ -526,6 +543,15 @@ mod tests {
                 context: "c".into(),
                 source: std::io::Error::other("e"),
             },
+            DaemonError::Unendorsed {
+                layer: "h".into(),
+                component: "shell".into(),
+            },
+            DaemonError::LayerRefused {
+                layer: "h".into(),
+                reason: "usr/bin/shell has other bytes than the signed ones".into(),
+            },
+            DaemonError::Authority("not an Ed25519 public key".into()),
         ];
         for error in &all {
             match error {
@@ -572,6 +598,9 @@ mod tests {
                 | DaemonError::KernelLayer(_)
                 | DaemonError::BootLoader { .. }
                 | DaemonError::Initramfs { .. }
+                | DaemonError::Unendorsed { .. }
+                | DaemonError::LayerRefused { .. }
+                | DaemonError::Authority(_)
                 | DaemonError::Io { .. } => {}
             }
         }
