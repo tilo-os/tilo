@@ -14,6 +14,7 @@
 //! | [`IconButton`] | a square icon button whose name is required |
 //! | [`DisclosureRow`] | a row whose body opens in place |
 //! | [`DensityRegion`] | a region laid out at compact (or comfortable) density |
+//! | [`QuickTileFace`] / [`paint_level_gauge`] | a Quick Settings tile's ground, ink and chevron rule; a charge gauge |
 //!
 //! The rest of the set is the existing shared widgets, restyled on the
 //! tokens: [`crate::widget::Button`] (primary, secondary, quiet =
@@ -30,6 +31,7 @@ mod disclosure_row;
 mod facts;
 mod floating_panel;
 mod key_hint;
+mod quick_tile;
 mod surface;
 mod text_stack;
 
@@ -38,5 +40,6 @@ pub use disclosure_row::{DisclosureGroup, DisclosureRow, DisclosureState};
 pub use facts::{Fact, Facts, FactsFace};
 pub use floating_panel::{FloatingPanel, FloatingPanelFace, FloatingPanelLayout};
 pub use key_hint::{KeyHint, KeyHints, KeyHintsFace};
+pub use quick_tile::{QuickTileFace, paint_level_gauge};
 pub use surface::{DensityRegion, Surface, SurfaceLevel, paint_surface};
 pub use text_stack::{StackSize, TextStack, TextStackFace};
