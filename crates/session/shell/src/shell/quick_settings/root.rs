@@ -852,13 +852,15 @@ impl QuickSettingsRoot {
             tracing::warn!(%error, "could not persist Quick Settings layout");
         }
     }
-    /// Top of the action tiles: one section gap under the title band.
+    /// Top of the destination tiles (Settings, Privacy, History, Power): the
+    /// panel's footer. What people change every day comes first; where they
+    /// go to leave the panel comes last.
     fn actions_top(&self, panel: Rect) -> f64 {
-        self.header_bottom(panel) + self.scaled(SECTION_GAP)
+        panel.y1 - self.scaled(PANEL_PAD) - self.action_height()
     }
-    /// Top of the slider block: one section gap under the tiles.
+    /// Top of the slider block: one section gap under the title band.
     fn sliders_top(&self, panel: Rect) -> f64 {
-        self.actions_top(panel) + self.action_height() + self.scaled(SECTION_GAP)
+        self.header_bottom(panel) + self.scaled(SECTION_GAP)
     }
     /// The slider block: both bands on the panel padding.
     fn sliders_rect(&self, panel: Rect) -> Rect {
@@ -2192,6 +2194,23 @@ impl QuickSettingsRoot {
             cursor.is_some_and(|p| r.contains(p)),
             self.is_focused(s, RootStop::Control(i, c)),
         );
+        // A control that is on is filled with the on colour: the whole card
+        // says it, at a glance, not a switch in its corner.
+        if on {
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                ui::tokens::colors::active_fill(colors),
+                None,
+                &vello::kurbo::RoundedRect::from_rect(r, f64::from(theme.tokens.radii.control)),
+            );
+        }
+        let (ink, ink_dim) = if on {
+            let knob = ui::tokens::colors::ACTIVE_KNOB;
+            (knob, knob.with_alpha_factor(0.82))
+        } else {
+            (colors.text_primary, colors.text_dim)
+        };
         let inset = self.scaled(CONTROL_INSET);
         let glyph = Self::glyph_at(self.layout_scale);
         // Glyph and switch (or chevron) share the icon row's centre line;
@@ -2202,11 +2221,7 @@ impl QuickSettingsRoot {
             transform,
             leading_glyph(icon_row, inset, glyph),
             Self::icon(c, s),
-            if on {
-                colors.intent.inverted
-            } else {
-                colors.text_primary
-            },
+            ink,
             1.5,
         );
         let label_style = theme.text(TextRole::Caption);
@@ -2232,7 +2247,7 @@ impl QuickSettingsRoot {
         text.draw_style(
             scene,
             &label,
-            colors.text_primary,
+            ink,
             transform.pre_translate((r.x0 + inset, label_y).into()),
             None,
             &label_style.clone().with_weight(TextWeight::Semibold),
@@ -2242,7 +2257,7 @@ impl QuickSettingsRoot {
         text.draw_style(
             scene,
             &sub,
-            colors.text_dim,
+            ink_dim,
             transform.pre_translate((r.x0 + inset, label_y + f64::from(label_h)).into()),
             None,
             &sub_style,
@@ -2263,22 +2278,6 @@ impl QuickSettingsRoot {
                 &ButtonFace::icon_only(details, ui::icons::Icon::ChevronRight, &name)
                     .hovered(cursor.is_some_and(|point| details.contains(point)))
                     .focused(self.is_focused(s, RootStop::Details(i, c))),
-            );
-        } else {
-            Toggle::paint(
-                scene,
-                transform,
-                theme,
-                &ToggleFace::new(
-                    trailing_toggle(
-                        icon_row,
-                        inset,
-                        self.scaled(TOGGLE_W),
-                        self.scaled(TOGGLE_H),
-                    ),
-                    on,
-                )
-                .disabled(s.radio_change_pending && c == QuickSettingsControl::AirplaneMode),
             );
         }
     }
