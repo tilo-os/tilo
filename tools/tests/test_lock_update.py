@@ -222,6 +222,19 @@ class LockUpdateAllowanceTests(unittest.TestCase):
         self.assertIn("Cargo.lock changed with no Cargo.toml beside it", problems[0])
         self.assertIn("TILO_CARGO_UPDATE=", problems[0])
 
+    def test_relock_after_a_merge_is_admitted_without_intent(self) -> None:
+        # A rebase took main's lock over a commit's manifest change (.githooks/merge-generated):
+        # the committed manifest needs dep-z, which the committed lock lacks.
+        manifest = self.root / "app/Cargo.toml"
+        manifest.write_text(manifest.read_text(encoding="utf-8") + 'dep-z = "1"\n', encoding="utf-8")
+        self._run("git", "commit", "-q", "--no-verify", "-am", "add dep-z, lock taken from main")
+        self._cargo("metadata", "--format-version", "1")
+        self._run("git", "add", "Cargo.lock")
+
+        lock = (self.root / "Cargo.lock").read_text(encoding="utf-8")
+        self.assertIn('name = "dep-z"', lock)
+        self.assertEqual(self._check(None), [])
+
     def test_broad_intent_is_refused(self) -> None:
         self._stage_update("-p", "dep-x", "--precise", "1.0.1")
 

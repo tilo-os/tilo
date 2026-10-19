@@ -127,9 +127,10 @@ if grep -qE '^\+\s*(assert|assert_eq|assert_ne|debug_assert|println|eprintln|wri
 fi
 
 # Require a manifest change alongside Cargo.lock changes; see AGENTS.md. The
-# one lock-only change admitted is a declared single-crate update,
+# lock-only changes admitted are a declared single-crate update,
 #   TILO_CARGO_UPDATE='-p <crate> --precise <version>' git commit
-# that cargo metadata --locked accepts and that moves nothing else
+# that cargo metadata --locked accepts and that moves nothing else, and a
+# relock that moves no version, such as `t fix lockfile` writes after a rebase
 # (tools/ci/check_lock_update.py).
 if grep -qx 'Cargo.lock' <<< "$staged_names" \
    && ! grep -qE '(^|/)Cargo\.toml$' <<< "$lock_staged_names"; then

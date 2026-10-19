@@ -22,6 +22,13 @@ Several updates are separated by ``;``. The staged lock is admitted when
 - every other entry is unchanged, apart from dependency references to the
   packages above.
 
+A lock-only change with no declared update is admitted as a relock: what cargo
+writes when manifests that are already committed need entries the lock lacks,
+as after a rebase took main's side of a conflicting Cargo.lock
+(.githooks/merge-generated) and `t fix lockfile` put back what the rebased
+commit added. ``cargo metadata --locked`` must accept it, and it may add and
+drop entries and dependency references but move no package's version.
+
 Anything else stays refused, with the reason.
 """
 
@@ -131,10 +138,7 @@ def _reachable(entries: dict[Key, dict], roots: set[Key]) -> set[str]:
     return {key[0] for key in seen}
 
 
-def lock_violations(old_text: str, new_text: str, updates: list[Update]) -> list[str]:
-    """Why the change from ``old_text`` to ``new_text`` is not the declared update."""
-    old_lock = tomllib.loads(old_text)
-    new_lock = tomllib.loads(new_text)
+def _shape_problems(old_lock: dict, new_lock: dict) -> list[str]:
     problems: list[str] = []
     if old_lock.get("version") != new_lock.get("version"):
         problems.append(
@@ -143,6 +147,58 @@ def lock_violations(old_text: str, new_text: str, updates: list[Update]) -> list
     for table in set(old_lock) | set(new_lock):
         if table not in ("version", "package") and old_lock.get(table) != new_lock.get(table):
             problems.append(f"the lock's [{table}] table changed")
+    return problems
+
+
+def _kept_entry_problems(
+    old: dict[Key, dict], new: dict[Key, dict], changed_names: set[str], why: str
+) -> list[str]:
+    """Entries on both sides may change only their references to ``changed_names``."""
+    problems: list[str] = []
+    for key in sorted(set(old) & set(new)):
+        before, after = old[key], new[key]
+        if {k: v for k, v in before.items() if k != "dependencies"} != {
+            k: v for k, v in after.items() if k != "dependencies"
+        }:
+            problems.append(f"{key[0]} {key[1]} changed beyond its dependencies")
+            continue
+        stable_before = {
+            dep for dep in before.get("dependencies", []) if dep.split(" ", 1)[0] not in changed_names
+        }
+        stable_after = {
+            dep for dep in after.get("dependencies", []) if dep.split(" ", 1)[0] not in changed_names
+        }
+        if stable_before != stable_after:
+            problems.append(f"{key[0]} {key[1]} changed dependencies {why}")
+    return problems
+
+
+def relock_violations(old_text: str, new_text: str) -> list[str]:
+    """Why the change from ``old_text`` to ``new_text`` is more than a relock."""
+    old_lock = tomllib.loads(old_text)
+    new_lock = tomllib.loads(new_text)
+    problems = _shape_problems(old_lock, new_lock)
+    old = _entries(old_lock)
+    new = _entries(new_lock)
+    removed = set(old) - set(new)
+    added = set(new) - set(old)
+    removed_names = {key[0] for key in removed}
+    added_names = {key[0] for key in added}
+    for name in sorted(removed_names & added_names):
+        before = sorted(key[1] for key in removed if key[0] == name)
+        after = sorted(key[1] for key in added if key[0] == name)
+        problems.append(f"{name} moved {', '.join(before)} -> {', '.join(after)}")
+    problems += _kept_entry_problems(
+        old, new, removed_names | added_names, "beyond the entries that came and went"
+    )
+    return problems
+
+
+def lock_violations(old_text: str, new_text: str, updates: list[Update]) -> list[str]:
+    """Why the change from ``old_text`` to ``new_text`` is not the declared update."""
+    old_lock = tomllib.loads(old_text)
+    new_lock = tomllib.loads(new_text)
+    problems = _shape_problems(old_lock, new_lock)
 
     old = _entries(old_lock)
     new = _entries(new_lock)
@@ -184,24 +240,9 @@ def lock_violations(old_text: str, new_text: str, updates: list[Update]) -> list
         if key[0] not in moved and key[0] not in declared and key[0] not in old_reach:
             problems.append(f"{key[0]} {key[1]} was removed but no declared update dropped it")
 
-    changed_names = removed_names | added_names
-    for key in sorted(set(old) & set(new)):
-        before, after = old[key], new[key]
-        if {k: v for k, v in before.items() if k != "dependencies"} != {
-            k: v for k, v in after.items() if k != "dependencies"
-        }:
-            problems.append(f"{key[0]} {key[1]} changed beyond its dependencies")
-            continue
-        stable_before = {
-            dep for dep in before.get("dependencies", []) if dep.split(" ", 1)[0] not in changed_names
-        }
-        stable_after = {
-            dep for dep in after.get("dependencies", []) if dep.split(" ", 1)[0] not in changed_names
-        }
-        if stable_before != stable_after:
-            problems.append(
-                f"{key[0]} {key[1]} changed dependencies no declared update touches"
-            )
+    problems += _kept_entry_problems(
+        old, new, removed_names | added_names, "no declared update touches"
+    )
     return problems
 
 
@@ -213,16 +254,12 @@ def _git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
 
 def check(root: Path, intent: str | None) -> list[str]:
     """Problems with the staged lock-only change under ``root``."""
-    if not intent:
-        return [
-            "Cargo.lock changed with no Cargo.toml beside it — regenerating it is not "
-            "supported here. For a single-crate `cargo update -p <crate> --precise "
-            f"<version>`, declare it: {INTENT_VARIABLE}='-p <crate> --precise <version>' git commit"
-        ]
-    try:
-        updates = parse_intent(intent)
-    except IntentError as error:
-        return [f"{INTENT_VARIABLE}: {error}"]
+    updates: list[Update] = []
+    if intent:
+        try:
+            updates = parse_intent(intent)
+        except IntentError as error:
+            return [f"{INTENT_VARIABLE}: {error}"]
 
     unstaged = _git(root, "diff", "--name-only", "--", "Cargo.lock", ":(glob)**/Cargo.toml")
     if unstaged.returncode != 0:
@@ -252,6 +289,15 @@ def check(root: Path, intent: str | None) -> list[str]:
         tail = "\n    ".join(metadata.stderr.strip().splitlines()[-6:])
         return [f"cargo metadata --locked rejects the staged lock:\n    {tail}"]
 
+    if not intent:
+        relock = relock_violations(old.stdout, new.stdout)
+        if not relock:
+            return []
+        return [
+            "Cargo.lock changed with no Cargo.toml beside it, and more than a relock does "
+            f"({'; '.join(relock)}). For a single-crate `cargo update -p <crate> --precise "
+            f"<version>`, declare it: {INTENT_VARIABLE}='-p <crate> --precise <version>' git commit"
+        ]
     return [
         f"{problem} ({INTENT_VARIABLE}={intent!r})"
         for problem in lock_violations(old.stdout, new.stdout, updates)

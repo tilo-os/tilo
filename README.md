@@ -97,12 +97,13 @@ The required application-facing resource/action contract is documented in
 Turn on the repository's git hooks once in your clone:
 
 ```bash
-git config core.hooksPath .githooks
+python3 tools/dev/install-git-hooks.py
 ```
 
-The pre-commit hook checks your staged change the way CI's quality job does
-(rustfmt, workspace membership, lint `#[allow]` reasons, secrets and more), so a
-formatting slip fails in a second on your machine instead of minutes later in CI.
+The pre-commit hook checks your staged change (rustfmt, workspace membership,
+lint `#[allow]` reasons, secrets and more), so a formatting slip fails in a
+second on your machine. The pre-push hook runs the fast checks on
+[t](docs/t.md) before a push to `main`.
 
 ## Where to read first
 

@@ -1,4 +1,4 @@
-# Avoid putting conflict markers in the generated Cargo.toml file, since their presence breaks
-# Cargo.
-# Also do not check out the file as CRLF on Windows, as that's what hakari needs.
-Cargo.toml merge=binary -crlf
+# hakari owns the part of Cargo.toml between its section markers: a conflict there takes main's
+# side and hakari regenerates it (.githooks/merge-generated). A conflict elsewhere stays one.
+# Do not check out the file as CRLF on Windows, as that's what hakari needs.
+Cargo.toml merge=generated-blocks -crlf

@@ -18,7 +18,7 @@ class CommitHookTests(unittest.TestCase):
         self.git("init", "-q", "-b", "main")
         for key, value in (("user.name", "Test"), ("user.email", "test@example.org"), ("commit.gpgsign", "false")):
             self.git("config", key, value)
-        paths = ["tools/policy/check_source_content.py", "tools/policy/check_public_references.py", "tools/policy/check_commit_message.py", "tools/policy/check_commit_policy.py", "tools/policy/added_line_policy.py", "tools/policy/rust_source.py", "tools/ci/check_changed_rust_allows.py", "tools/dev/install-git-hooks.py", ".githooks/commit-msg"]
+        paths = ["tools/policy/check_source_content.py", "tools/policy/check_public_references.py", "tools/policy/check_commit_message.py", "tools/policy/check_commit_policy.py", "tools/policy/added_line_policy.py", "tools/policy/rust_source.py", "tools/ci/check_changed_rust_allows.py", "tools/dev/install-git-hooks.py", ".githooks/commit-msg", ".githooks/pre-push", ".githooks/merge-generated"]
         for name in paths:
             dest = self.root / name
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -301,6 +301,11 @@ class CommitHookTests(unittest.TestCase):
         self.assertNotEqual(self.ci().returncode, 0)
 
     def test_installer_preserves_unrelated_hooks_and_is_idempotent(self):
+        self.assertIn("verified", self.run_installer().stdout)
+        self.assertEqual(self.git("config", "--get", "merge.generated.driver").stdout.strip(),
+                         ".githooks/merge-generated whole %O %A %B %P %L")
+        self.assertEqual(self.git("config", "--get", "merge.generated-blocks.driver").stdout.strip(),
+                         ".githooks/merge-generated blocks %O %A %B %P %L")
         self.assertIn("verified", self.run_installer().stdout)
         self.git("config", "--local", "core.hooksPath", "custom-hooks")
         custom = self.root / "custom-hooks"

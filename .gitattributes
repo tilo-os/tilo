@@ -25,3 +25,19 @@ tools/release/fixtures/nemo_descriptor.patch whitespace=-blank-at-eol,-blank-at-
 # Cargo checks vendor/git against the checksums `cargo vendor` recorded.
 vendor/git/** -text
 
+
+# Generated files merge by taking main's side where both sides changed them, then their
+# generator regenerates them: each one's verifying check declares a `fix`, which the pre-push
+# hook runs (.githooks/merge-generated, docs/t.md). `generated-blocks` files are generated only
+# between their generator's markers; a conflict elsewhere in them stays a conflict.
+# tools/dev/install-git-hooks.py sets the drivers up.
+/Cargo.lock merge=generated
+/crates/workspace-hack/** merge=generated
+/t.toml merge=generated-blocks
+/docs/codemap.md merge=generated
+/crates/browser/tilo-web-desktop/Cargo.toml merge=generated-blocks
+/crates/browser/tilo-web-desktop/apps.json merge=generated
+/crates/browser/tilo-web-desktop/src/apps.rs merge=generated
+/crates/agent/agent-participant/Cargo.toml merge=generated-blocks
+/crates/agent/agent-participant/src/web_apps.rs merge=generated
+/crates/session/desktop-search/src/catalog.rs merge=generated

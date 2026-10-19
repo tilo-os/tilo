@@ -20,21 +20,40 @@ token = "…"
 Ask a maintainer for a token. `T_SERVER` and `T_TOKEN` override the file. Nothing else is needed
 locally: checks run on the server, in the builder image.
 
+Once per clone, turn on the git hooks and merge drivers; every worktree of the clone has them:
+
+```
+python3 tools/dev/install-git-hooks.py
+```
+
 ## How changes reach a release
 
-- **`main`:** push straight to it; no pull request is needed. Rebase on `main` and push; a push
-  that isn't a fast-forward is refused. Nothing is gated and nothing is reverted.
-- **CI on `main`:** t runs every default check on each new commit of `main`, finds the commit a
-  failure began with and tells its author. `main` is sometimes red; that is expected.
-- **`stable`:** releases are cut from it. The stabilizer (usually an agent) picks a recent `main`
-  commit, runs the checks a release needs, and for each failure commits a fix (brought back to
-  `main`) or an exclusion of unfinished work (with an issue saying what and why). It never weakens
-  a check to make it pass. When everything passes it moves `stable` there. Only the stabilizer
+- **`main`** is where changes integrate: push straight to it, no pull request, no queue. A push
+  that isn't a fast-forward is refused; rebase on `main` and push again.
+- **The push gate.** The pre-push hook runs t on exactly the commit being pushed: the fast checks
+  that verify formatting and generated files (`fmt`, `lockfile`, `hakari`, `t-toml`, `codemap`,
+  `sdk-policy`, `deny`). A failure the change causes refuses the push; one that `main` has too
+  doesn't. A failure that a check's `fix` repairs is fixed into your working tree for you to
+  commit. Inputs the change doesn't touch are cached, so a push after a rebase costs little.
+  `git push --no-verify` skips the gate.
+- **CI on `main`** runs every default check on each new commit, finds the commit a failure began
+  with and tells whoever is behind it (`t inbox`). `main` is sometimes red; whoever broke it fixes
+  it forward. Nothing is reverted.
+- **`stable`** is the release branch. The stabilizer (usually an agent) picks a recent `main`
+  commit and runs the heavy checks there too (images, VM and FUSE suites, size budgets, the goldens:
+  `on = ["stable"]` in `t.toml`). For each failure it commits a fix (brought back to `main`) or an
+  exclusion of unfinished work. It never weakens a check to make it pass. Only the stabilizer
   pushes to `stable`.
 
-Many people and agents change Tilo at once. Gating every change on a full CI round trip
-serialized them, and automatic reverts fought the fixes that followed; this way landing is fast,
-and releasability is the stabilizer's job instead of something every push has to prove.
+Many people and agents change Tilo at once, about a commit a minute. Gating every change on the
+full suite would serialize them; this way landing takes minutes, a slip that takes seconds to
+find never reaches `main`, and releasability is the stabilizer's job.
+
+Generated files (`Cargo.lock`, `crates/workspace-hack`, the generated parts of `t.toml`, the code
+map, the web desktop's app registry) are regenerated, not merged: where a rebase finds both sides
+changed one, the merge driver takes `main`'s side (`.gitattributes`, `.githooks/merge-generated`),
+and the gate's `t fix` puts back what your commit needs. `Cargo.lock` is only relocked: what the
+merged manifests require is added, and no locked version moves.
 
 ## Testing a change
 
@@ -42,11 +61,14 @@ and releasability is the stabilizer's job instead of something every push has to
 t test <check|package|family|glob>      # exactly that, on your working tree
 t test test/tilo-fs --test parser::empty   # one test
 t test                                  # what failed for you last time
+t suggest                               # what your change reaches, with estimates
+t fix                                   # apply the `fix` of what fails (fmt, hakari, lockfile, …)
 ```
 
-What you test before pushing is up to you; t runs exactly what you name. Results that nobody's
-change could have affected come back at once from the cache. Everything else is tested on `main`
-after you push.
+Test what you changed before pushing: the packages you touched (`t test clippy/<package>
+test/<package>`) and anything heavy your change reaches. Heavy checks run only when named: `t test
+<check>`, as `t suggest` proposes them. Results nobody's change could have affected come back at
+once from the cache.
 
 Exit codes: `0` passed; `1` something failed that may be yours; `3` everything that failed also
 fails on `main`; `2` t couldn't do what was asked. Each failure comes with its relevant output and
@@ -76,6 +98,7 @@ A check is a shell command, or a cargo family that becomes one check per package
 [[check]]
 name = "codemap"
 run = "python3 tools/docs/codemap.py --check"
+fix = "python3 tools/docs/codemap.py"    # what `t fix codemap` runs, and t itself on main
 inputs = ["docs/codemap.md", "tools/docs/codemap.py", "**/Cargo.toml"]
 ```
 
@@ -126,7 +149,8 @@ requires = ["arch=arm64", "/dev/kvm"]   # also "os=macos", or a label a node was
 Some of `t.toml` is generated: the `package_inputs` of the cargo families and the `suite-*`
 checks from [`tools/ci/suites.toml`](../tools/ci/suites.toml), and the `goldens` family from
 `.config/nextest-filters.toml` and `.config/visual-goldens-image`. After changing those, run
-`python3 tools/ci/t_toml.py write`; the policy tests fail while `t.toml` is out of date.
+`t fix t-toml` (or `python3 tools/ci/t_toml.py write`); `t-toml` fails while `t.toml` is out of
+date.
 
 ## Publishing
 
