@@ -25,13 +25,13 @@
 extern crate runtime_dylib;
 
 #[cfg(feature = "thin")]
+pub use ntfs_mount;
+#[cfg(feature = "thin")]
 pub use pc_keyboard_geometry;
 #[cfg(feature = "thin")]
 pub use provider_settings_ui;
 #[cfg(feature = "thin")]
 pub use tilo_accessibility_settings;
-#[cfg(feature = "thin")]
-pub use ntfs_mount;
 #[cfg(feature = "thin")]
 pub use tilo_wallpapers;
 #[cfg(feature = "thin")]

@@ -53,7 +53,12 @@ mod tests {
     #[test]
     fn every_model_reads_with_its_keys() {
         let models = models().unwrap();
-        for (model, keys) in [("pc104", 104), ("pc105", 105), ("jp106", 106), ("kr106", 106)] {
+        for (model, keys) in [
+            ("pc104", 104),
+            ("pc105", 105),
+            ("jp106", 106),
+            ("kr106", 106),
+        ] {
             assert_eq!(models[model].keys.len(), keys, "{model}");
         }
     }

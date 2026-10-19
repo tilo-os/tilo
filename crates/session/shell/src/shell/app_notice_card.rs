@@ -233,7 +233,8 @@ impl Widget for AppNoticeCard {
             && let Some((_, targets)) = &mut self.close
         {
             let mut handled = false;
-            self.close_changed |= targets.handle_pointer_event(event, ctx.scale_factor, &mut handled);
+            self.close_changed |=
+                targets.handle_pointer_event(event, ctx.scale_factor, &mut handled);
             *ctx.handled |= handled;
         }
         self.forward_action();

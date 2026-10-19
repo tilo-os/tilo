@@ -1969,8 +1969,12 @@ mod tests {
     fn a_new_file_opens_over_a_blank_one_but_never_over_work() {
         let mut app = ui::framework::testing::TestApp::<TypstEditorShell>::new().unwrap();
         app.settle();
-        app.invoke(crate::resource::new_file("letter.typ", None, "= Dear Dr Raman"))
-            .unwrap();
+        app.invoke(crate::resource::new_file(
+            "letter.typ",
+            None,
+            "= Dear Dr Raman",
+        ))
+        .unwrap();
         app.settle();
         app.with_surface::<TypstApp, _>(|view| {
             assert_eq!(view.current_file().unwrap().name.0, "letter.typ");

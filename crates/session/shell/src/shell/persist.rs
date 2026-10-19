@@ -1220,8 +1220,18 @@ mod tests {
                 WindowGroup {
                     id: 92_099,
                     tabs: vec![
-                        local(92_101, "anon-1524713390118", "tilo", "Not installed on this machine"),
-                        local(92_102, "org.example.Missing", "Missing", "Not installed on this machine"),
+                        local(
+                            92_101,
+                            "anon-1524713390118",
+                            "tilo",
+                            "Not installed on this machine",
+                        ),
+                        local(
+                            92_102,
+                            "org.example.Missing",
+                            "Missing",
+                            "Not installed on this machine",
+                        ),
                     ],
                     active_tab: 92_101,
                     width: WindowWidth::Normal,
@@ -1258,7 +1268,11 @@ mod tests {
             "the unidentifiable windows go; every named app stays"
         );
         let strip = &loaded.desktop.workspaces[0].strips[0];
-        assert_eq!(strip.window_groups.len(), 2, "a group left empty goes with it");
+        assert_eq!(
+            strip.window_groups.len(),
+            2,
+            "a group left empty goes with it"
+        );
         assert_eq!(strip.window_groups[0].active_tab, 92_102);
         // The document agrees, so the next save and every peer see the same.
         let mut reread = loaded.desktop.clone();

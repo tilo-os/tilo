@@ -56,8 +56,8 @@ mod value;
 mod tests;
 
 pub use appearing::Appearing;
-pub use clock::{frame_now, frames_until, frames_wanted, testing, want_frames_until};
 pub(crate) use clock::pin_frame;
+pub use clock::{frame_now, frames_until, frames_wanted, testing, want_frames_until};
 pub use named::{
     Ambient, Appear, Attention, Breathe, CROSS_FADE, CrossFade, Disclose, Drill, DrillDepth,
     Extent, Feedback, Float, Follow, ListChange, PanelSlide, Reveal, Snap, Speaking, Transient,

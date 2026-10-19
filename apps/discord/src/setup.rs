@@ -171,7 +171,10 @@ pub fn bridge_requests(room: &str, token: &str, server: &Server) -> [InvokeReque
         "inputs".into(),
         serde_json::json!({ "guild": server.id, "server": server.name }),
     );
-    [invoke(SET_CONNECTOR_SECRET, secret), invoke(REQUEST_BOT, bridge)]
+    [
+        invoke(SET_CONNECTOR_SECRET, secret),
+        invoke(REQUEST_BOT, bridge),
+    ]
 }
 
 /// What the view keeps for the sheet: where it stands, the token and server
@@ -252,18 +255,16 @@ impl Setup {
         let Step::Asking(server) = self.step.get() else {
             return false;
         };
-        let answers: Vec<InvocationCall> = self.asked.borrow().iter().map(LocalState::get).collect();
+        let answers: Vec<InvocationCall> =
+            self.asked.borrow().iter().map(LocalState::get).collect();
         if let Some(failure) = answers.iter().find_map(failure) {
             self.asked.borrow_mut().clear();
             self.step.set(Step::Failed(failure));
             return true;
         }
-        let done = answers.iter().all(|answer| {
-            matches!(
-                answer,
-                RemoteCall::Done(InvocationUpdate::Succeeded { .. })
-            )
-        });
+        let done = answers
+            .iter()
+            .all(|answer| matches!(answer, RemoteCall::Done(InvocationUpdate::Succeeded { .. })));
         if done {
             self.asked.borrow_mut().clear();
             self.step.set(Step::Asked(server));
@@ -361,8 +362,11 @@ fn body(setup: &Setup, step: &Step) -> Element {
     match step {
         Step::Closed => Box::new(Column::new().with_no_padding()),
         Step::Token => Box::new(
-            Column::new().with_no_padding()
-                .push(Box::new(Text::new(&CATALOG.t("discord-setup-token-explanation")).dimmed()))
+            Column::new()
+                .with_no_padding()
+                .push(Box::new(
+                    Text::new(&CATALOG.t("discord-setup-token-explanation")).dimmed(),
+                ))
                 .push(Box::new(
                     TextInput::from_state(&setup.token)
                         .with_id("discord-setup-token")
@@ -385,16 +389,17 @@ fn body(setup: &Setup, step: &Step) -> Element {
                     .collect(),
             );
             Box::new(
-                Column::new().with_no_padding()
-                    .push(Box::new(Text::new(&CATALOG.t("discord-setup-choose")).dimmed()))
+                Column::new()
+                    .with_no_padding()
+                    .push(Box::new(
+                        Text::new(&CATALOG.t("discord-setup-choose")).dimmed(),
+                    ))
                     .push(Box::new(choice)),
             )
         }
         Step::Asking(server) => named("discord-setup-asking", server),
         Step::Asked(server) => named("discord-setup-asked", server),
-        Step::Failed(why) => Box::new(
-            Text::new(why).with_live(ui::a11y::Politeness::Assertive),
-        ),
+        Step::Failed(why) => Box::new(Text::new(why).with_live(ui::a11y::Politeness::Assertive)),
     }
 }
 
@@ -610,6 +615,10 @@ mod tests {
         assert_eq!(bridge["entry"], BRIDGE_ENTRY);
         assert_eq!(bridge["inputs"]["guild"], "123456789012345678");
         assert_eq!(bridge["inputs"]["server"], "Garden club");
-        assert!(!bridge.values().any(|value| value.to_string().contains("a.b.c")));
+        assert!(
+            !bridge
+                .values()
+                .any(|value| value.to_string().contains("a.b.c"))
+        );
     }
 }

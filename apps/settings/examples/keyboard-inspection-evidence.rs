@@ -13,8 +13,7 @@ fn main() -> Result<(), String> {
         return Err("usage: keyboard-inspection-evidence [output directory]".into());
     }
     let geometry: serde_json::Value =
-        serde_json::from_str(pc_keyboard_geometry::SOURCE)
-            .map_err(|error| error.to_string())?;
+        serde_json::from_str(pc_keyboard_geometry::SOURCE).map_err(|error| error.to_string())?;
     let names = geometry
         .get("pc105")
         .and_then(|value| value.get("keys"))

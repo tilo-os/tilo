@@ -39,13 +39,12 @@ use crate::i18n::{t, t_args};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{Item, block, error_row, note, rows, section, setting_row, value_row};
-pub use zone_globe::TimeZonePoint;
-use zone_globe::{SharedGlobe, TimeZoneGlobe, degrees_apart};
 use tilo_locale::Locale;
 use ui::clock::TimeStyle;
 use ui::i18n::ArgValue;
 use ui::lock::MutexRecover as _;
-
+pub use zone_globe::TimeZonePoint;
+use zone_globe::{SharedGlobe, TimeZoneGlobe, degrees_apart};
 
 /// A map-friendly model over the exact IANA ids accepted by timedated.
 /// Coordinates come from the same installed tzdata package; this deliberately
@@ -756,8 +755,7 @@ impl TimeDatePane {
         // the globe. `sync` builds again when either moves on, globe shown
         // or not.
         self.minute.set(self.clock.unix_now().div_euclid(60));
-        self.globe_revision
-            .set(self.globe.borrow().focus_revision);
+        self.globe_revision.set(self.globe.borrow().focus_revision);
         let (now, today) = self.clock.now(self.h24);
         let now = value_row(&t("time-current-time"), &now);
         let today = value_row(&t("time-current-date"), &today);
@@ -929,10 +927,7 @@ impl Widget for TimeDatePane {
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
-        let children = self
-            .composed
-            .element()
-            .and_then(Widget::next_wake_deadline);
+        let children = self.composed.element().and_then(Widget::next_wake_deadline);
         if !self.cx.reaches_devices() {
             // A capture's clock stands still.
             return children;

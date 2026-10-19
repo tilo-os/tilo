@@ -604,14 +604,7 @@ impl PdfMarkup {
             .ok_or("there is no such comment")?;
         let id = Id::from_raw(id);
         if !thread.replies.contains(&id) {
-            thread.replies.push(
-                id,
-                StoredReply {
-                    author,
-                    text,
-                    rich,
-                },
-            );
+            thread.replies.push(id, StoredReply { author, text, rich });
         }
         Ok(())
     }

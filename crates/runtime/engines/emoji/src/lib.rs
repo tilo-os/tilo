@@ -36,13 +36,17 @@ pub fn self_check() -> Result<String, String> {
     let english = emoji::Catalogue::english();
     let count = english.emoji().len();
     if count == 0 || english.search("smile", 1).is_empty() {
-        return Err(format!("the English catalogue of {count} emoji finds no smile"));
+        return Err(format!(
+            "the English catalogue of {count} emoji finds no smile"
+        ));
     }
     let mut locales = 0_usize;
     for tag in emoji::Catalogue::locales() {
         let translated = emoji::Catalogue::for_locale(tag).emoji().len();
         if translated != count {
-            return Err(format!("the {tag} catalogue names {translated} emoji, not {count}"));
+            return Err(format!(
+                "the {tag} catalogue names {translated} emoji, not {count}"
+            ));
         }
         locales = locales.saturating_add(1);
     }

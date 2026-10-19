@@ -1494,7 +1494,10 @@ mod tests {
         assert!(says("Missing isn't on this computer"), "{text:#?}");
         assert!(says("Get Missing"), "{text:#?}");
         assert!(says("Close"), "{text:#?}");
-        assert!(!says(&crate::shell::i18n::t("shell-window-retry")), "{text:#?}");
+        assert!(
+            !says(&crate::shell::i18n::t("shell-window-retry")),
+            "{text:#?}"
+        );
 
         let mut card = crate::shell::app_notice_card::AppNoticeCard::get(tab, app, "Missing");
         card.press_for_test();

@@ -579,10 +579,7 @@ impl TimeZoneGlobe {
     }
 
     #[must_use]
-    pub fn on_action(
-        mut self,
-        binding: Option<tilo_actions::ActionBinding<String>>,
-    ) -> Self {
+    pub fn on_action(mut self, binding: Option<tilo_actions::ActionBinding<String>>) -> Self {
         self.action = binding.map(ui::widget::ActionEmitter::new);
         self
     }

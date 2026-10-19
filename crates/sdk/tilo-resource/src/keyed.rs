@@ -243,11 +243,12 @@ fn settle_with_ids<T: Identified>(items: &mut [T], ids: &mut [Arc<str>]) -> bool
     }
     let swaps = {
         let (held, held_ids): (&[T], &[Arc<str>]) = (items, ids);
-        crate::sort::swaps_to_sort(held.len(), &mut |a, b| {
-            match (held.get(a).zip(held_ids.get(a)), held.get(b).zip(held_ids.get(b))) {
-                (Some((a, a_id)), Some((b, b_id))) => in_order((a, &**a_id), (b, &**b_id)),
-                _ => Ordering::Equal,
-            }
+        crate::sort::swaps_to_sort(held.len(), &mut |a, b| match (
+            held.get(a).zip(held_ids.get(a)),
+            held.get(b).zip(held_ids.get(b)),
+        ) {
+            (Some((a, a_id)), Some((b, b_id))) => in_order((a, &**a_id), (b, &**b_id)),
+            _ => Ordering::Equal,
         })
     };
     for (a, b) in swaps {
