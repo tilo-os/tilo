@@ -917,7 +917,7 @@ def make_plan(
     # A verification recipe change must run its subject, not just contract tests.
     # No client reverse closure: these inputs change CI features, not app code.
     if "tools/ci/package_features.py" in changes:
-        for subject in ("tilo-model-gateway", "imager"):
+        for subject in ("tilo-model-gateway", "imager", "imager-backend"):
             if subject in packages:
                 reader_scopes[subject] = None
     readers = set(reader_scopes)

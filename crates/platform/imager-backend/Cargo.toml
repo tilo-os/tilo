@@ -10,10 +10,16 @@ license.workspace = true
 capture-worker = []
 capture-worker-applications = ["capture-worker"]
 host-media-writer = []
-native-slack-qualification = ["dep:zbus"]
-native-capture-qualification = ["flatpak-media-writer", "launcher/native-home-alias-qualification"]
+native-slack-qualification = ["installation", "dep:zbus"]
+native-capture-qualification = ["installation", "flatpak-media-writer", "launcher/native-home-alias-qualification"]
 test-support = ["dep:tilo-install-helpers", "dep:tilo-test-env"]
 flatpak-media-writer = ["block-devices/udisks", "dep:zbus"]
+# The guided installation's capture of the old system's Discord session from
+# its Chromium Local Storage, the only reader of LevelDB. LevelDB is C++, so it
+# links libstdc++, which the signed app runtime does not carry: the Tilo app
+# (the image writer, imager's default build) must not link it. imager's
+# `installation` feature enables this one.
+installation = ["dep:leveldb-sys"]
 
 [dependencies]
 ed25519-dalek.workspace = true
@@ -71,7 +77,7 @@ tilo-advisory-lock = { path = "../../system/advisory-lock" }
 block-devices = { path = "../../system/block-devices", features = ["udisks"] }
 glib = "=0.21.5"
 rusqlite = { version = "0.37.0", features = ["bundled"] }
-leveldb-sys = { version = "=2.0.9", features = ["snappy"] }
+leveldb-sys = { version = "=2.0.9", features = ["snappy"], optional = true }
 desktop-entry = { package = "tilo-desktop-entry", path = "../../system/desktop-entry" }
 tilo-install-helpers = { path = "../../system/install-helpers", optional = true }
 tilo-paths = { path = "../../platform/tilo-paths" }

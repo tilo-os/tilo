@@ -39,7 +39,7 @@ thin = ["dep:runtime-dylib"]
 # (tilo-prepared-setup) build it. The Tilo app (`.tapp`, the release
 # collection) does not: on Tilo it is the image writer, and the default build
 # is that app. tools/ci/package_features.py tests and lints with it.
-installation = ["dep:launcher"]
+installation = ["dep:launcher", "imager-backend/installation"]
 # Reach account custody with the WebDAV client, and the FUSE presentation the
 # projection worker serves, through their engine libraries in the runtime
 # bundle (libtilo_accounts_engine.so and libtilo_fuse_engine.so, under

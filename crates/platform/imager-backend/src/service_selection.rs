@@ -7,6 +7,7 @@ use std::{io, path::Path, sync::Arc};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Material {
     Cookies,
+    #[cfg(feature = "installation")]
     DiscordOrigin,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -116,6 +117,7 @@ fn wrap(native: crate::setup::browser_profiles::service_profiles::Discovery) -> 
                 _private: (),
                 material: match source.material {
                     Native::Cookies => Material::Cookies,
+                    #[cfg(feature = "installation")]
                     Native::DiscordOrigin => Material::DiscordOrigin,
                 },
                 native: Arc::clone(source),
@@ -142,6 +144,7 @@ pub fn capture_selected(
             use crate::setup::browser_profiles::service_profiles::Material as Native;
             grants.push(match source.native.material {
                 Native::Cookies => SelectedSource::Cookies(source.native.grant()?, *service),
+                #[cfg(feature = "installation")]
                 Native::DiscordOrigin => {
                     SelectedSource::DiscordOrigin(source.native.origin_grant()?)
                 }
