@@ -231,9 +231,10 @@ those network media paths), the now-unusable WebRTC/ICE/SRTP companion
 plugins, and the offline ARM compatibility frontend's Qt OpenSSL TLS backend.
 The orphaned `libshout` package is erased after its plugin is removed, so its
 unused direct `libssl` dependency is absent from the finished RPM database too.
-Fedora's x86 package closure may also pull in Intel `qatlib` and its service;
-Tilo does not use QuickAssist, so the build erases both packages and rejects
-their presence in the finished rootfs.
+Fedora's x86 QEMU links Intel's QATzip compression library, which links
+`qatlib`, so `qatlib` stays as a reviewed `libcrypto` consumer. Tilo does not
+use QuickAssist hardware, so the build erases the `qatlib-service` daemon and
+rejects its presence in the finished rootfs.
 The projector's required RTP/H.264 and HLS plugins remain installed.
 Foundational Fedora consumers retain only the built-in provider surface they
 require; the recurring security audit fails if any removed module reappears.

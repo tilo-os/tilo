@@ -69,6 +69,7 @@ pipewire-libs
 pkcs11-provider
 podman-sequoia
 python3-libs
+qatlib
 rpm-ostree
 rpm-sequoia
 socat
@@ -142,7 +143,6 @@ perl-Net-SSLeay
 pesign
 python3-dbus-next
 python3-gobject
-qatlib
 qatlib-service
 yt-dlp
 sbsigntools

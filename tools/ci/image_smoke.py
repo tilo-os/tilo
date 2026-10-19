@@ -200,7 +200,7 @@ def check_interpreters() -> None:
 # The rootfs stage removes these with `rpm -e --nodeps` on purpose (os/Containerfile, the
 # OpenSSL-backed plugins and Perl's HTTPS backend no Tilo path uses), so what required them
 # is knowingly left without.
-REMOVED_ON_PURPOSE = re.compile(r"^(libshout|perl\(IO::Socket::SSL\)|perl\(Net::SSLeay\)|perl-IO-Socket-SSL|perl-Net-SSLeay|libqat|libusdm|qatlib)")
+REMOVED_ON_PURPOSE = re.compile(r"^(libshout|perl\(IO::Socket::SSL\)|perl\(Net::SSLeay\)|perl-IO-Socket-SSL|perl-Net-SSLeay)")
 
 
 def check_rpm_dependencies() -> None:
@@ -367,6 +367,7 @@ PROGRAMS = [
     ["bootc", "--version"],
     ["gst-launch-1.0", "--version"],
     ["swtpm", "--version"],
+    [f"qemu-system-{os.uname().machine}", "--version"],
     ["tesseract", "--version"],
 ]
 

@@ -306,10 +306,9 @@ grep -Fq -- "-o -name 'libshout.so*'" "$repo/os/Containerfile" \
 forbidden_list=$(sed -n "/^forbidden_packages='/,/^'/p" \
   "$repo/os/scripts/verify-runtime-crypto-packages.sh")
 grep -Fq -- '--exclude=dosbox-staging' "$repo/os/Containerfile" \
-  && grep -Fq "rpm -qa --qf '%{NAME}\n' perl-IO-Socket-SSL perl-Net-SSLeay qatlib-service qatlib" "$repo/os/Containerfile" \
+  && grep -Fq "rpm -qa --qf '%{NAME}\n' perl-IO-Socket-SSL perl-Net-SSLeay qatlib-service \\" "$repo/os/Containerfile" \
   && grep -Fxq 'perl-Net-SSLeay' <<<"$forbidden_list" \
   && grep -Fxq 'perl-IO-Socket-SSL' <<<"$forbidden_list" \
-  && grep -Fxq 'qatlib' <<<"$forbidden_list" \
   && grep -Fxq 'qatlib-service' <<<"$forbidden_list" \
   && ok "wine's DOS emulator and Perl's OpenSSL binding stay out of the rootfs" \
   || bad "wine's DOS emulator or Perl's OpenSSL binding can reach the rootfs"
