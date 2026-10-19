@@ -132,14 +132,16 @@ pub(crate) fn sidebar(
     } else {
         StatusLine::warning("Not connected")
     };
-    let footer = Column::new()
-        .with_intrinsic_height()
-        .push(Box::new(status))
-        .push(Box::new(
+    let mut footer = Column::new().with_intrinsic_height().push(Box::new(status));
+    // Which Podman answered is worth a line; why none did is the page's
+    // to explain, with the error behind its "Details".
+    if engine.live {
+        footer = footer.push(Box::new(
             Text::new(&engine.connection)
                 .with_role(TextRole::Caption)
                 .dimmed(),
         ));
+    }
     Box::new(
         Column::new()
             .with_no_padding()
@@ -283,7 +285,7 @@ pub(crate) fn container_list(
 ) -> Element {
     let listed = listed_containers(engine);
     if listed.is_empty() {
-        return containers_empty(engine.live, intents);
+        return containers_empty(engine, intents);
     }
     let rows: Vec<ContainerRow> = listed
         .iter()
@@ -352,8 +354,8 @@ fn list_column(list: Element) -> Element {
     Box::new(Stack::new(SpacingStep::S0, vec![list]).on_column_edge())
 }
 
-fn containers_empty(live: bool, intents: &Intents) -> Element {
-    if live {
+fn containers_empty(engine: &Engine, intents: &Intents) -> Element {
+    if engine.live {
         Box::new(
             EmptyState::new("No containers")
                 .with_icon(Icon::Box)
@@ -362,19 +364,24 @@ fn containers_empty(live: bool, intents: &Intents) -> Element {
                 .on_view(intents.sender(Intent::NewContainer)),
         )
     } else {
-        engine_missing(intents)
+        engine_missing(engine, intents)
     }
 }
 
-/// Podman did not answer: say so, once, and offer to ask again.
-pub(crate) fn engine_missing(intents: &Intents) -> Element {
-    Box::new(
-        EmptyState::new("Podman isn't available")
-            .with_icon(Icon::Box)
-            .with_message("Install Podman or start its user service to manage containers here.")
-            .with_action("Try again")
-            .on_effect(intents.sender(Intent::Reconnect)),
-    )
+/// Podman did not answer: say so, once, and offer to ask again. What the
+/// attempt failed with is behind "Details".
+pub(crate) fn engine_missing(engine: &Engine, intents: &Intents) -> Element {
+    let mut state = EmptyState::new("Podman isn't available")
+        .with_icon(Icon::Box)
+        .with_message("Install Podman or start its user service to manage containers here.")
+        .with_action("Try again")
+        .on_effect(intents.sender(Intent::Reconnect));
+    if !engine.live
+        && let Some(detail) = crate::podman::unreachable_detail(&engine.connection)
+    {
+        state = state.with_details(detail);
+    }
+    Box::new(state)
 }
 
 /// The content beside the list while nothing is chosen.
@@ -883,7 +890,7 @@ fn page(summary: Option<String>, rows: Vec<Element>) -> Element {
 pub(crate) fn images_page(engine: &Engine, controls: bool, intents: &Intents) -> Element {
     if engine.images.is_empty() {
         if !engine.live && !controls {
-            return engine_missing(intents);
+            return engine_missing(engine, intents);
         }
         return Box::new(
             EmptyState::new("No images")
@@ -946,7 +953,7 @@ pub(crate) fn images_page(engine: &Engine, controls: bool, intents: &Intents) ->
 pub(crate) fn volumes_page(engine: &Engine, controls: bool, intents: &Intents) -> Element {
     if engine.volumes.is_empty() {
         if !engine.live && !controls {
-            return engine_missing(intents);
+            return engine_missing(engine, intents);
         }
         return Box::new(
             EmptyState::new("No volumes")
@@ -985,7 +992,7 @@ pub(crate) fn volumes_page(engine: &Engine, controls: bool, intents: &Intents) -
 pub(crate) fn distrobox_page(engine: &Engine, controls: bool, intents: &Intents) -> Element {
     if engine.distroboxes.is_empty() {
         if !engine.live && !controls {
-            return engine_missing(intents);
+            return engine_missing(engine, intents);
         }
         return Box::new(
             EmptyState::new("No distroboxes")
@@ -1246,11 +1253,12 @@ fn list_view(parts: &Parts) -> Element {
                 m.view.selected.clone(),
                 m.controls,
                 m.missing,
+                m.engine.connection.clone(),
             )
         },
         move |m: &Model| {
             if m.missing {
-                return engine_missing(&intents);
+                return engine_missing(&m.engine, &intents);
             }
             container_list(&m.engine, m.view.selected.as_deref(), &sort, &intents)
         },
@@ -1290,7 +1298,7 @@ fn page_view(parts: &Parts) -> Element {
         |m: &Model| (m.view.section, m.page_digest, m.controls, m.missing),
         move |m: &Model| {
             if m.missing {
-                return engine_missing(&intents);
+                return engine_missing(&m.engine, &intents);
             }
             match m.view.section {
                 Place::Images => images_page(&m.engine, m.controls, &intents),
@@ -1326,5 +1334,42 @@ mod tests {
         container.logs_error = None;
         let empty = logs(&container).accessibility().unwrap().name.unwrap();
         assert!(empty.contains("hasn't written"), "{empty}");
+    }
+
+    /// What the probe failed with is technical: the page says Podman isn't
+    /// available and what to do, and keeps the error behind "Details".
+    #[test]
+    fn a_podman_that_did_not_answer_is_explained_with_its_error_behind_details() {
+        let engine = Engine {
+            connection: format!(
+                "{}: command process failed: No such file or directory (os error 2)",
+                crate::podman::UNREACHABLE
+            ),
+            live: false,
+            ..Engine::default()
+        };
+        let page = engine_missing(&engine, &Intents::default())
+            .accessibility()
+            .unwrap();
+        assert_eq!(page.name.as_deref(), Some("Podman isn't available"));
+        assert!(
+            !page
+                .description
+                .clone()
+                .unwrap_or_default()
+                .contains("os error"),
+            "{page:?}"
+        );
+        assert!(
+            page.children.iter().any(|child| child
+                .description
+                .as_deref()
+                .is_some_and(|detail| detail.contains("os error 2"))),
+            "the error is behind Details: {page:?}"
+        );
+        assert_eq!(
+            crate::podman::unreachable_detail("Podman 5.4, rootless"),
+            None
+        );
     }
 }
