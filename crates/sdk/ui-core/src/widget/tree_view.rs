@@ -829,6 +829,9 @@ pub struct TreeView<T, M = TreeNode<T>> {
     selection: crate::selection::KeySelection<NodeId>,
     multi_select: bool,
     focused: Option<TreeRowKey>,
+    /// What has been typed into the focused list: typing a name's first
+    /// letters moves to it ([`crate::type_ahead`]).
+    typing: crate::type_ahead::TypeAhead,
     /// Current exported button target, distinct from the row owning it.
     focused_affordance: Option<String>,
     affordance_focus_valid: bool,
@@ -1090,6 +1093,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
             selection: crate::selection::KeySelection::new(),
             multi_select: false,
             focused: None,
+            typing: crate::type_ahead::TypeAhead::default(),
             focused_affordance: None,
             affordance_focus_valid: false,
             on_select: None,
@@ -2585,7 +2589,9 @@ impl<T, M: TreeModel> TreeView<T, M> {
                 .checked_sub(1)
                 .is_some_and(|index| self.focus_at(index)),
             Key::Named(NamedKey::Enter) => self.activate_focus(true),
-            Key::Character(text) if text == " " => self.activate_focus(false),
+            Key::Character(text) if text == " " && !self.typing.is_typing(crate::time::now()) => {
+                self.activate_focus(false)
+            }
             Key::Character(text)
                 if self.multi_select
                     && toggle
@@ -2594,8 +2600,46 @@ impl<T, M: TreeModel> TreeView<T, M> {
                 self.select_all();
                 true
             }
+            Key::Character(text) if !toggle && self.types_ahead(text) => self.type_ahead(text),
             _ => false,
         }
+    }
+
+    /// Whether `text` continues or starts a name being typed: printable
+    /// characters, and a space only inside a name (alone it selects).
+    fn types_ahead(&self, text: &str) -> bool {
+        let printable = !text.is_empty() && text.chars().all(|c| !c.is_control());
+        printable && (text != " " || self.typing.is_typing(crate::time::now()))
+    }
+
+    /// Typing in the focused list: move to the first row whose name begins
+    /// with what was typed, as a person scanning a list expects.
+    fn type_ahead(&mut self, text: &str) -> bool {
+        self.typing.type_text(text, crate::time::now());
+        let len = self.index.len();
+        let labels: Vec<String> = (0..len)
+            .map(|index| match self.index.row_at(&self.model, index) {
+                Some((TreeRowKey::Node(id), _)) if self.model.is_selectable(id) => {
+                    self.model.label(id).map(str::to_owned).unwrap_or_default()
+                }
+                _ => String::new(),
+            })
+            .collect();
+        let current = self
+            .focused
+            .and_then(|key| self.index.index_of_key(&self.model, key));
+        let Some(target) = self
+            .typing
+            .target(labels.iter().map(String::as_str), current)
+        else {
+            // Nothing begins so: the keystroke is still the list's.
+            return true;
+        };
+        let moved = self.focus_at(target);
+        if moved {
+            self.follow_focus();
+        }
+        true
     }
 
     /// `Enter` (`activate`) selects and activates the focused node; `Space`
@@ -5421,6 +5465,33 @@ mod tests {
                 vec![3]
             );
         }
+    }
+
+    // USER REQUIREMENT (2026-10-19): "Typing in a focused list jumps to
+    // matches." Letters typed into a focused list move to the first row whose
+    // name begins with them; the same letter again steps to the next one.
+    #[test]
+    fn typing_in_a_focused_list_jumps_to_the_row_it_names() {
+        let names = ["Apple", "apricot", "Banana", "berry", "Cherry"];
+        let children = names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| TreeNode::leaf(index as u64 + 2, (*name).to_owned(), ()))
+            .collect();
+        let mut view = TreeView::new(TreeNode::branch(1, "root", (), children))
+            .hide_root()
+            .selection_follows_focus(true);
+        view.set_focus(true);
+        view.focused = Some(TreeRowKey::Node(2));
+
+        dispatch(&mut view, &key_press(Key::Character("c".into())));
+        assert_eq!(view.focused(), Some(6), "c moves to Cherry");
+        assert_eq!(view.selected(), Some(6), "a navigation list selects it too");
+
+        dispatch(&mut view, &key_press(Key::Character("b".into())));
+        // Within the pause the letters spell "cb", which names nothing; the
+        // list stays where it is rather than jumping somewhere unexpected.
+        assert_eq!(view.focused(), Some(6));
     }
 
     #[test]

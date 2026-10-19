@@ -814,9 +814,27 @@ pub struct BlockEditor {
     find_previous_rect: Rect,
     find_next_rect: Rect,
     find_close_rect: Rect,
+    /// The window's search finds in this document ([`Findable`]): every
+    /// match is painted, the current one stronger.
+    ///
+    /// [`Findable`]: super::find_bar::Findable
+    window_find: bool,
+    /// The window's search made a match current; the host scrolls it into
+    /// view ([`Self::take_find_reveal`]).
+    find_reveal: bool,
     /// Presence keys from the host whose model owns the blocks
     /// ([`Self::set_presence_key`]); the editor's own block-id keys otherwise.
     presence_key: Option<present::PresenceKeyFn>,
+}
+
+/// Whether `text[start..end]` stands as a whole word: no letter or digit
+/// touches it on either side.
+fn is_whole_word(text: &str, start: usize, end: usize) -> bool {
+    let apart = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric());
+    apart(
+        text.get(..start)
+            .and_then(|before| before.chars().next_back()),
+    ) && apart(text.get(end..).and_then(|after| after.chars().next()))
 }
 
 /// Structural command membership, invalidated until a local editing gesture.
@@ -1005,6 +1023,8 @@ impl BlockEditor {
             find_previous_rect: Rect::ZERO,
             find_next_rect: Rect::ZERO,
             find_close_rect: Rect::ZERO,
+            window_find: false,
+            find_reveal: false,
             presence_key: None,
         };
         s.blocks.push(Block::paragraph(""));
@@ -2024,16 +2044,7 @@ impl BlockEditor {
             self.find_snapshot = self.blocks.iter().map(Block::content).collect();
         }
         self.clear_find_document_selection();
-        for (block, item) in self.blocks.iter().enumerate() {
-            if !item.kind.is_editable() {
-                continue;
-            }
-            self.find_matches.extend(
-                case_folded_match_ranges(item.text(), &query)
-                    .into_iter()
-                    .map(|(start, end)| FindMatch { block, start, end }),
-            );
-        }
+        self.find_matches = self.find_ranges(&query, super::find_bar::FindOptions::default());
         if select_first && !self.find_matches.is_empty() {
             let current_block = self.focused.unwrap_or(0);
             let current_byte = self
@@ -2104,6 +2115,65 @@ impl BlockEditor {
             (Some(_) | None, false) => 0,
         };
         self.activate_find_match(next);
+    }
+
+    /// Every match of `query` in the editable blocks, in reading order.
+    fn find_ranges(&self, query: &str, options: super::find_bar::FindOptions) -> Vec<FindMatch> {
+        let mut found = Vec::new();
+        if query.is_empty() {
+            return found;
+        }
+        for (block, item) in self.blocks.iter().enumerate() {
+            if !item.kind.is_editable() {
+                continue;
+            }
+            let text = item.text();
+            let ranges: Vec<(usize, usize)> = if options.match_case {
+                text.match_indices(query)
+                    .map(|(start, matched)| (start, start + matched.len()))
+                    .collect()
+            } else {
+                case_folded_match_ranges(text, query)
+            };
+            found.extend(
+                ranges
+                    .into_iter()
+                    .filter(|&(start, end)| !options.whole_word || is_whole_word(text, start, end))
+                    .map(|(start, end)| FindMatch { block, start, end }),
+            );
+        }
+        found
+    }
+
+    /// Where the window's search last made a match current, once, for the
+    /// host to scroll into view; `None` when nothing moved since.
+    pub fn take_find_reveal(&mut self) -> Option<Rect> {
+        if !std::mem::take(&mut self.find_reveal) {
+            return None;
+        }
+        let found = self.find_matches.get(self.find_active?)?;
+        let block = self.blocks.get(found.block)?;
+        block
+            .line
+            .prepared_range_rects(found.start..found.end)
+            .into_iter()
+            .reduce(|all, rect| all.union(rect))
+            .or_else(|| Some(block.line.get_rect()))
+    }
+
+    /// The window's search matches by block: `(start, end, current)` spans
+    /// each block paints.
+    fn window_find_spans(&self) -> Vec<Vec<(usize, usize, bool)>> {
+        let mut spans = vec![Vec::new(); self.blocks.len()];
+        if !self.window_find {
+            return spans;
+        }
+        for (index, found) in self.find_matches.iter().enumerate() {
+            if let Some(block) = spans.get_mut(found.block) {
+                block.push((found.start, found.end, self.find_active == Some(index)));
+            }
+        }
+        spans
     }
 
     fn focus_find_input(&mut self, replacement: bool) {
@@ -9094,8 +9164,78 @@ impl BlockEditor {
     }
 }
 
+/// The window's search finds in the document in place: every match is
+/// painted, and the current one is scrolled into view by the host
+/// ([`BlockEditor::take_find_reveal`]). The person's caret, selection and the
+/// document stay as they are.
+impl super::find_bar::Findable for BlockEditor {
+    fn find(
+        &mut self,
+        query: &str,
+        options: super::find_bar::FindOptions,
+    ) -> Vec<super::find_bar::FindMatch> {
+        self.window_find = !query.is_empty();
+        self.find_matches = self.find_ranges(query, options);
+        self.find_active = None;
+        self.dirty = true;
+        // One span per match in the document's own reading order: the
+        // offset of its block's text, as if the blocks were one text with a
+        // line break between each two.
+        let mut offsets = Vec::with_capacity(self.blocks.len());
+        let mut at = 0usize;
+        for block in &self.blocks {
+            offsets.push(at);
+            at = at.saturating_add(block.text().len()).saturating_add(1);
+        }
+        self.find_matches
+            .iter()
+            .map(|found| {
+                let base = offsets.get(found.block).copied().unwrap_or(0);
+                super::find_bar::FindMatch::new(
+                    base.saturating_add(found.start),
+                    base.saturating_add(found.end),
+                )
+            })
+            .collect()
+    }
+
+    fn reveal(&mut self, index: usize) {
+        if index < self.find_matches.len() {
+            self.find_active = Some(index);
+            self.find_reveal = true;
+            self.dirty = true;
+        }
+    }
+
+    fn clear_find(&mut self) {
+        if !self.window_find {
+            return;
+        }
+        self.window_find = false;
+        self.find_reveal = false;
+        self.find_active = None;
+        if !self.find_visible {
+            self.find_matches.clear();
+        }
+        self.dirty = true;
+    }
+
+    fn content_revision(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.blocks.len().hash(&mut hasher);
+        for block in &self.blocks {
+            block.text().hash(&mut hasher);
+        }
+        hasher.finish()
+    }
+}
+
 impl Widget for BlockEditor {
-    crate::provides!(dyn crate::presence::capability::PublishesPresence);
+    crate::provides!(
+        dyn crate::presence::capability::PublishesPresence,
+        dyn super::find_bar::Findable
+    );
 
     /// The editor's popovers, in the window's top layer — unless its owner
     /// painted them itself this frame, inside its own scroll and clip.
@@ -9631,6 +9771,7 @@ impl Widget for BlockEditor {
         let paint_rects: Vec<_> = (0..self.blocks.len())
             .map(|index| self.block_paint_rect(index))
             .collect();
+        let find_spans = self.window_find_spans();
         let active_drag = self.block_drag.filter(|drag| drag.active);
         let dragged_group = active_drag.map(|drag| self.movable_group(drag.source));
         // Paint only what the host's viewport can show. The focused block and
@@ -9820,6 +9961,19 @@ impl Widget for BlockEditor {
                 ctx.collect_code_ground = track_paragraphs;
                 draw_block(b, idx, &mut ctx, &mut formulas);
                 ctx.collect_code_ground = false;
+                // The window's search: every match in this block, washed
+                // over its glyphs, the current one stronger.
+                for &(start, end, current) in find_spans.get(idx).into_iter().flatten() {
+                    for rect in b.line.mark_rects(ctx.theme, start..end) {
+                        crate::widget::paint_find_match(
+                            ctx.scene,
+                            ctx.transform,
+                            rect,
+                            current,
+                            ctx.theme,
+                        );
+                    }
+                }
             }
             let code_ground = ctx.code_ground.take();
             b.line.inner_mut().suppress_caret_paint(false);

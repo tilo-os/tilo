@@ -460,6 +460,9 @@ pub struct TabBar {
     /// own controls stand at its trailing end, and a window showing one tab
     /// shows it as its title rather than as a tab.
     window_controls: bool,
+    /// Room after the tabs that the window keeps for its search control
+    /// ([`TabBar::set_search_control`]); the tabs then carry no search chip.
+    search_control: Option<f64>,
     controls: super::window_controls::WindowControls,
     hover_control: Option<super::window_controls::WindowControl>,
     pressed_control: Option<super::window_controls::WindowControl>,
@@ -606,6 +609,7 @@ impl TabBar {
             drag_overlay_owned_by_parent: false,
             min_pointer_target: f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
             window_controls: false,
+            search_control: None,
             controls: super::window_controls::WindowControls::default(),
             hover_control: None,
             pressed_control: None,
@@ -626,6 +630,58 @@ impl TabBar {
         self.window_controls = on;
         if on {
             self.show_maximize = false;
+        }
+    }
+
+    /// The window carries its own search control after the tabs, `width`
+    /// wide with its gap: the tabs leave it that room and carry no search
+    /// chip of their own. `None` gives the room back.
+    pub fn set_search_control(&mut self, width: Option<f64>) {
+        self.search_control = width;
+    }
+
+    /// Where the window's search control stands when the active tab put
+    /// its slots in the bar: the row the slots stand in, which ends before
+    /// the control's room, and how far left the open search may reach (the
+    /// location's leading edge, so back and forward stay). `None` without
+    /// slots: the control then follows the tabs ([`Self::tabs_end`]).
+    #[must_use]
+    pub fn toolbar_search_slot(&self) -> Option<(Rect, f64)> {
+        self.active_toolbar()?;
+        let row = self.toolbar_row_rect();
+        let location = self.toolbar_row.slots().location;
+        let reach = if location.area() > 0.0 {
+            location.x0
+        } else {
+            row.x0
+        };
+        Some((row, reach))
+    }
+
+    /// The colour the bar stands on, for what covers part of it.
+    #[must_use]
+    pub fn ground_color(&self, theme: &Theme) -> vello::peniko::Color {
+        self.ground(theme)
+    }
+
+    /// Where the tabs end: past the last pill, or past the "+" after them;
+    /// the window's search control stands here.
+    #[must_use]
+    pub fn tabs_end(&self) -> f64 {
+        let pills = self
+            .tab_rects
+            .iter()
+            .filter(|r| r.area() > 0.0)
+            .map(|r| r.x1)
+            .fold(None, |end: Option<f64>, x| {
+                Some(end.map_or(x, |e| e.max(x)))
+            });
+        let plus = (self.new_tab_rect.area() > 0.0).then_some(self.new_tab_rect.x1);
+        match (pills, plus) {
+            (Some(p), Some(n)) => p.max(n),
+            (Some(p), None) => p,
+            (None, Some(n)) => n,
+            (None, None) => self.pill_row().x0,
         }
     }
 
@@ -782,7 +838,8 @@ impl TabBar {
             } else {
                 self.pill_row().x0
             };
-            let x1 = self.controls.content_limit(tab_row).max(x0);
+            let x1 =
+                (self.controls.content_limit(tab_row) - self.search_control.unwrap_or(0.0)).max(x0);
             Rect::new(x0, tab_row.y0, x1, tab_row.y1)
         };
         // The back button's glyph sits under the tabs' leading glyph.
@@ -791,7 +848,10 @@ impl TabBar {
         let below = Rect::new(
             lead,
             tab_row.y1,
-            (self.rect.x1 - super::window_controls::EDGE_INSET).max(lead),
+            (self.rect.x1
+                - super::window_controls::EDGE_INSET
+                - self.search_control.unwrap_or(0.0))
+            .max(lead),
             tab_row.y1 + TOOLBAR_ROW_HEIGHT,
         );
         let p = self.tabbed_progress();
@@ -3008,7 +3068,7 @@ impl TabBar {
         // leading edge as the close glyph keeps from its trailing edge.
         let lead = WINDOW_BAR_LEAD_PX;
         let x0 = row.x0 + lead;
-        let x1 = self.controls.content_limit(row).max(x0);
+        let x1 = (self.controls.content_limit(row) - self.search_control.unwrap_or(0.0)).max(x0);
         Rect::new(x0, row.y0, x1, row.y1)
     }
 
@@ -3747,6 +3807,12 @@ impl Widget for TabBar {
             if let Some(slot) = self.max_rects.get_mut(i) {
                 *slot = max_rect;
             }
+            // A window with a search control of its own shows no chip for it.
+            let search_rect = if self.search_control.is_some() {
+                Rect::ZERO
+            } else {
+                search_rect
+            };
             if let Some(slot) = self.search_rects.get_mut(i) {
                 *slot = search_rect;
             }
@@ -3960,6 +4026,12 @@ impl Widget for TabBar {
             out.push(("window_forward".to_string(), slots.forward));
             out.push(("window_location".to_string(), slots.location));
         }
+        // The window's own controls, by what they do.
+        out.extend([
+            (WINDOW_HISTORY_TARGET.to_string(), self.controls.history),
+            (WINDOW_MAXIMIZE_TARGET.to_string(), self.controls.maximize),
+            (WINDOW_CLOSE_TARGET.to_string(), self.controls.close),
+        ]);
         out
     }
 

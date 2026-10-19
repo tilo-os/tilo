@@ -107,6 +107,13 @@ pub trait ListModel {
     fn needs_poll(&self) -> bool {
         false
     }
+
+    /// The name a person reads row `index` by, which typing its first
+    /// letters in the focused list moves to ([`crate::type_ahead`]). `None`
+    /// for a row without one, or a model that names no rows.
+    fn label(&self, _index: usize) -> Option<String> {
+        None
+    }
 }
 
 /// State of one stable row in a paged or asynchronously populated list.
@@ -352,6 +359,8 @@ pub struct VirtualList<M: ListModel> {
     /// selects it.
     follow_focus: bool,
     focused_key: Option<M::Key>,
+    /// What has been typed into the focused list ([`ListModel::label`]).
+    typing: crate::type_ahead::TypeAhead,
     on_select: Option<SelectCallback<M::Key>>,
     on_activate: Option<KeyCallback<M::Key>>,
     on_context: Option<ContextCallback<M::Key>>,
@@ -487,6 +496,7 @@ impl<M: ListModel> VirtualList<M> {
             multi_select: false,
             follow_focus: false,
             focused_key: None,
+            typing: crate::type_ahead::TypeAhead::default(),
             on_select: None,
             on_activate: None,
             on_context: None,
@@ -1322,8 +1332,37 @@ impl<M: ListModel> VirtualList<M> {
                 self.selection.select_all();
                 true
             }
+            Key::Character(text)
+                if !toggle && !text.is_empty() && text.chars().all(|c| !c.is_control()) =>
+            {
+                self.type_ahead(text.as_str(), current)
+            }
             _ => false,
         }
+    }
+
+    /// Typing in the focused list: move to the first row whose name begins
+    /// with what was typed. A list whose model names no rows lets the key go.
+    fn type_ahead(&mut self, text: &str, current: Option<usize>) -> bool {
+        let count = self.model.len();
+        let labels: Vec<Option<String>> = (0..count).map(|index| self.model.label(index)).collect();
+        if labels.iter().all(Option::is_none) {
+            return false;
+        }
+        if text == " " && !self.typing.is_typing(crate::time::now()) {
+            return false;
+        }
+        self.typing.type_text(text, crate::time::now());
+        let target = self.typing.target(
+            labels.iter().map(|label| label.as_deref().unwrap_or("")),
+            current,
+        );
+        if let Some(index) = target {
+            // Typing moves to a row; it never extends a selection, whatever
+            // case the letters were typed in.
+            self.focus_index(index, false);
+        }
+        true
     }
 
     fn scroll_by(&mut self, delta: f64) -> bool {

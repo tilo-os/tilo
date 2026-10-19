@@ -45,6 +45,17 @@ impl TypeAhead {
         &self.typed
     }
 
+    /// Whether a name is being typed at `now`: something was typed and the
+    /// pause that starts over has not passed. A space continues such a name;
+    /// otherwise it is the list's own key.
+    #[must_use]
+    pub fn is_typing(&self, now: Instant) -> bool {
+        !self.typed.is_empty()
+            && self
+                .last
+                .is_some_and(|last| now.saturating_duration_since(last) <= PAUSE)
+    }
+
     /// The row to move to among `labels`, given the row the cursor is on.
     ///
     /// A longer name refines from the current row, which stays put while it
@@ -102,6 +113,11 @@ mod tests {
         assert_eq!(typing.target(NAMES, Some(1)), Some(4));
         typing.type_text("x", t0 + PAUSE + Duration::from_millis(2));
         assert_eq!(typing.target(NAMES, Some(4)), None);
+        assert!(typing.is_typing(t0 + PAUSE + Duration::from_millis(3)));
+        assert!(
+            !typing.is_typing(t0 + PAUSE + PAUSE + Duration::from_millis(3)),
+            "after a pause nothing is being typed"
+        );
     }
 
     #[test]

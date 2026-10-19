@@ -290,11 +290,26 @@ impl crate::widget::WindowHistory for EmbeddedApp {
     }
 }
 
+impl crate::widget::SearchableWindow for EmbeddedApp {
+    fn visit_search_root(&mut self, visit: &mut dyn FnMut(&mut dyn Widget) -> bool) -> bool {
+        let changed = visit(self.app.root_widget.as_mut());
+        if changed {
+            // What the search found shows on the app's next frame: matches
+            // painted, a match scrolled into view, a list narrowed.
+            self.app.mark_semantic_tree_stale();
+            self.app.layout.layout_dirty = true;
+            self.wants_frame.set(true);
+        }
+        changed
+    }
+}
+
 impl Widget for EmbeddedApp {
     crate::provides!(
         dyn crate::component_lifecycle::ComponentLifecycle,
         dyn crate::widget::CompleteContentProvider,
-        dyn crate::widget::WindowHistory
+        dyn crate::widget::WindowHistory,
+        dyn crate::widget::SearchableWindow
     );
 
     fn build_layout(

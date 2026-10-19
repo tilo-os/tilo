@@ -190,6 +190,7 @@ impl WindowGroup {
         self.fullscreen_rect = self.fullscreen_rect + shift;
         self.close_rect = self.close_rect + shift;
         self.bar.offset_layout(dx);
+        self.search.offset_layout(dx);
         for (_, host) in &mut self.hosts {
             host.offset_layout(dx);
         }
@@ -215,6 +216,11 @@ impl WindowGroup {
             .map(|spring| f32_of_f64(spring.velocity().width()))
     }
 }
+
+/// The room the window's search control takes after its tabs: the control
+/// and the gap before it.
+const SEARCH_CONTROL_ROOM: f64 =
+    super::window_controls::CONTROL_PX + super::window_controls::CONTROL_GAP;
 
 const RESTORE_TARGET: &str = "window.restore";
 const CLOSE_TARGET: &str = "window.close";
@@ -324,7 +330,13 @@ pub struct WindowGroup {
     pending_maximize_change: Option<bool>,
     /// Per-mille, not px — a peer's output may be a different size.
     pending_width_change: Option<u32>,
-    pending_search_open: Option<u64>,
+    /// A search the window hands to the platform search
+    /// ([`Self::take_pending_search_open`]).
+    pending_search_open: Option<super::SearchHandoff>,
+    /// The search control after the window's place, expanding into a field
+    /// in place ([`super::WindowSearch`]), and the tab whose app it is on.
+    search: super::WindowSearch,
+    search_tab: Option<u64>,
     pending_new_tab: Option<u64>,
     pending_tab_reorder: Option<(usize, usize)>,
     /// Close-button requests still awaiting the shell's durable workspace
@@ -477,6 +489,7 @@ impl WindowGroup {
         let mut bar = TabBar::new(&format!("g{id}"), descs, active_id);
         bar.set_drag_overlay_owned_by_parent(true);
         bar.set_window_controls(true);
+        bar.set_search_control(Some(SEARCH_CONTROL_ROOM));
         Self {
             id,
             close_reports: vec![],
@@ -531,6 +544,8 @@ impl WindowGroup {
             pending_width_change: None,
             pending_tab_reorder: None,
             pending_search_open: None,
+            search: super::WindowSearch::new(),
+            search_tab: None,
             pending_new_tab: None,
             pending_close_commit: Vec::new(),
         }
@@ -1000,9 +1015,12 @@ impl WindowGroup {
     /// Returns whether one ran.
     fn drain_chip_presses(&mut self) -> bool {
         let mut pressed = false;
-        if let Some(id) = self.bar.take_search() {
-            self.search_active = !self.search_active;
-            self.pending_search_open = Some(id);
+        if self.bar.take_search().is_some() {
+            if self.search.is_open() {
+                self.close_search(crate::tokens::MotionSource::Pointer);
+            } else {
+                self.open_search(crate::tokens::MotionSource::Pointer);
+            }
             pressed = true;
         }
         if let Some((id, control)) = self.bar.take_history()
@@ -1230,8 +1248,199 @@ impl WindowGroup {
         self.pending_tab_reorder.take()
     }
 
-    pub fn take_pending_search_open(&mut self) -> Option<u64> {
+    pub fn take_pending_search_open(&mut self) -> Option<super::SearchHandoff> {
         self.pending_search_open.take()
+    }
+
+    /// The window's search, as it stands.
+    #[must_use]
+    pub fn window_search(&self) -> &super::WindowSearch {
+        &self.search
+    }
+
+    /// Open the window's search on the active tab: in place where its app
+    /// offers a document or a list, else the platform search narrowed to
+    /// the app (what the control always did).
+    pub fn open_search(&mut self, source: crate::tokens::MotionSource) {
+        let active = self.bar.active_id();
+        let Some((_, host)) = self.hosts.iter_mut().find(|(id, _)| *id == active) else {
+            return;
+        };
+        let in_place = host.in_place_search();
+        if let TileContent::App(app) = host.content() {
+            self.search.set_app_name(app.app_title());
+        }
+        if in_place == super::InPlace::Nothing {
+            self.pending_search_open = Some(super::SearchHandoff {
+                tab: active,
+                reach: super::SearchReach::App,
+                query: String::new(),
+            });
+            return;
+        }
+        self.search.open(in_place, source);
+        self.search_tab = Some(active);
+        self.search_active = true;
+        self.drive_search();
+    }
+
+    /// Close the window's search: its app stops highlighting or narrowing.
+    pub fn close_search(&mut self, source: crate::tokens::MotionSource) {
+        self.search.close(source);
+        self.search_active = false;
+        self.drive_search();
+        self.search_tab = None;
+    }
+
+    /// Carry the window's search to its tab's app ([`super::WindowSearch::drive`]).
+    fn drive_search(&mut self) {
+        if !self.search.wants_drive() {
+            return;
+        }
+        let Some(tab) = self.search_tab else {
+            return;
+        };
+        let search = &mut self.search;
+        let driven = self
+            .hosts
+            .iter_mut()
+            .find(|(id, _)| *id == tab)
+            .and_then(|(_, host)| host.visit_search_root(&mut |root| search.drive(root)));
+        if driven.is_none() {
+            // The tab's app is gone: nothing is left to tell.
+            self.search.detach();
+        }
+    }
+
+    /// Carry out what the person asked of the window's search.
+    fn service_search(&mut self) -> bool {
+        let requests = self.search.take_requests();
+        let acted = !requests.is_empty();
+        for request in requests {
+            match request {
+                super::WindowSearchRequest::Open => {
+                    self.open_search(crate::tokens::MotionSource::Pointer);
+                }
+                super::WindowSearchRequest::Close => {
+                    self.close_search(crate::motion::input_source());
+                }
+                super::WindowSearchRequest::Widen(reach) => {
+                    // The platform search takes the query on from here.
+                    self.pending_search_open = Some(super::SearchHandoff {
+                        tab: self.bar.active_id(),
+                        reach,
+                        query: self.search.query().to_owned(),
+                    });
+                    self.close_search(crate::motion::input_source());
+                }
+            }
+        }
+        self.drive_search();
+        acted
+    }
+
+    /// The search follows the window's active tab: switching tabs ends it on
+    /// the tab it was on.
+    fn follow_search_tab(&mut self) {
+        if let Some(tab) = self.search_tab
+            && tab != self.bar.active_id()
+        {
+            self.close_search(crate::tokens::MotionSource::Pointer);
+        }
+    }
+
+    /// Whether `event` is Find (Ctrl+F, ⌘F) and this window can search in
+    /// place: the window opens its search, or gives the open one the
+    /// keyboard, instead of the app opening a find of its own.
+    fn takes_find(&mut self, event: &WindowEvent, modifiers: winit::event::Modifiers) -> bool {
+        let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key: Key::Character(key),
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        else {
+            return false;
+        };
+        let state = modifiers.state();
+        if !key.eq_ignore_ascii_case("f")
+            || state.shift_key()
+            || state.alt_key()
+            || !crate::platform::PlatformConventions::default().command_modifier_down(state)
+            || !self.focused
+            || !self.navigation_bar_visible()
+        {
+            return false;
+        }
+        if self.search.is_open() {
+            if self.search.has_keyboard() {
+                // Find again widens: the search's own key handling.
+                return false;
+            }
+            self.search.take_keyboard();
+            return true;
+        }
+        let in_place = self
+            .active_host_mut()
+            .map_or(super::InPlace::Nothing, TileHost::in_place_search);
+        if in_place == super::InPlace::Nothing {
+            return false;
+        }
+        self.open_search(crate::tokens::MotionSource::Keyboard);
+        true
+    }
+
+    /// Route a keyboard or input-method event to the window's search while
+    /// its field holds the keyboard, for a host whose own chords and focus
+    /// would otherwise see the key first. Whether the search took it; an
+    /// event it did not take is the host's to dispatch as usual.
+    pub fn route_search_input(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut crate::widget::EventCtx<'_>,
+    ) -> bool {
+        if !self.search.has_keyboard()
+            || !matches!(
+                event,
+                WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
+            )
+        {
+            return false;
+        }
+        let routed = self.search.route(event, ctx);
+        if routed {
+            self.service_search();
+            self.drive_search();
+        }
+        routed
+    }
+
+    /// Place the search control after the tabs, and let it reach up to the
+    /// window's own controls.
+    fn place_search(&mut self) {
+        if !self.navigation_bar_visible() {
+            self.search.place(Rect::ZERO, 0.0);
+            return;
+        }
+        let px = super::window_controls::CONTROL_PX;
+        if let Some((row, reach)) = self.bar.toolbar_search_slot() {
+            // The app put its slots in the bar: the control ends their row,
+            // and the open search grows back over the location.
+            let x0 = row.x1 + super::window_controls::CONTROL_GAP;
+            let y0 = row.center().y - px / 2.0;
+            self.search
+                .place_trailing(Rect::new(x0, y0, x0 + px, y0 + px), reach.min(x0));
+            return;
+        }
+        let row = self.bar.get_rect();
+        let x0 = self.bar.tabs_end() + super::window_controls::CONTROL_GAP;
+        let y0 = row.center().y - px / 2.0;
+        let limit = self.bar.window_controls().content_limit(row);
+        self.search
+            .place(Rect::new(x0, y0, x0 + px, y0 + px), limit.max(x0 + px));
     }
 
     pub fn take_pending_new_tab(&mut self) -> Option<u64> {
@@ -1523,6 +1732,7 @@ impl WindowGroup {
         let mut bar = TabBar::new(&format!("g{id}"), vec![desc], active_id);
         bar.set_drag_overlay_owned_by_parent(true);
         bar.set_window_controls(true);
+        bar.set_search_control(Some(SEARCH_CONTROL_ROOM));
         Self {
             id,
             close_reports: vec![],
@@ -1577,6 +1787,8 @@ impl WindowGroup {
             pending_width_change: None,
             pending_tab_reorder: None,
             pending_search_open: None,
+            search: super::WindowSearch::new(),
+            search_tab: None,
             pending_new_tab: None,
             pending_close_commit: Vec::new(),
         }
@@ -2836,6 +3048,7 @@ impl Widget for WindowGroup {
         let mut children: Vec<&dyn Widget> = Vec::new();
         if !self.maximized && self.navigation_bar_visible() {
             children.push(&self.bar);
+            children.push(&self.search);
         }
         let active = self.bar.active_id();
         if let Some((id, host)) = self.hosts.iter().find(|(id, _)| *id == active) {
@@ -2850,6 +3063,7 @@ impl Widget for WindowGroup {
         let mut children: Vec<&mut dyn Widget> = Vec::new();
         if !self.maximized && self.navigation_bar_visible() {
             children.push(&mut self.bar);
+            children.push(&mut self.search);
         }
         if let Some((id, host)) = self.hosts.iter_mut().find(|(id, _)| *id == active) {
             host.set_panic_scope(*id);
@@ -2886,10 +3100,15 @@ impl Widget for WindowGroup {
         // A chip pressed from assistive technology arrives outside
         // `handle_event`: run it here, before the frame lays out.
         let pressed = self.drain_chip_presses();
+        // The search follows the active tab, and the content under it: a
+        // match count that follows edits, a list that follows its rows.
+        self.follow_search_tab();
+        let searched = self.service_search();
+        self.drive_search();
         // The bar's hover dwell or aim hold that came due (its wake
         // deadline) opens its pill here, before the frame lays out.
         let bar = self.bar.update(s, p);
-        self.active_host_mut().is_some_and(|h| h.update(s, p)) || pressed || bar
+        self.active_host_mut().is_some_and(|h| h.update(s, p)) || pressed || searched || bar
     }
     fn build_layout(
         &mut self,
@@ -2963,6 +3182,7 @@ impl Widget for WindowGroup {
                 self.bar.apply_layout(taffy, bar_child, new_origin);
             }
         }
+        self.place_search();
         let active_id = self.bar.active_id();
         let tile_index = usize::from(self.navigation_bar_visible());
         if let (Some((_, h)), Some(&tile_child)) = (
@@ -3048,6 +3268,8 @@ impl Widget for WindowGroup {
             self.bar
                 .set_group_focused(self.focused || self.search_active);
             self.bar.draw(scene, transform, tr, theme, presence);
+            self.search.set_ground(self.bar.ground_color(theme));
+            self.search.draw(scene, transform, tr, theme, presence);
         }
         let active_id = self.bar.active_id();
         // A tile holding a place for an app that has not arrived takes
@@ -3126,6 +3348,20 @@ impl Widget for WindowGroup {
             return;
         }
         if self.handle_edge_input(event, ctx.scale_factor, *ctx.modifiers) {
+            *ctx.handled = true;
+            return;
+        }
+        // The window's search: Find opens it, and while open it takes what
+        // is typed into its field before the bar or the app sees it.
+        let found = self.takes_find(event, *ctx.modifiers);
+        let routed = !found
+            && self.navigation_bar_visible()
+            && self
+                .search
+                .route(event, &mut ctx.reborrow(ctx.path, ctx.node_id));
+        if found || routed {
+            self.service_search();
+            self.drive_search();
             *ctx.handled = true;
             return;
         }
@@ -3424,7 +3660,8 @@ mod tests {
     #[test]
     fn external_navigation_omits_bar_from_layout_and_semantics_but_retains_tabs() {
         let mut group = make_group();
-        assert_eq!(group.children().len(), 2);
+        // The bar, its search control and the active tab.
+        assert_eq!(group.children().len(), 3);
         group.set_external_navigation(true);
         let mut tree = TaffyTree::new();
         let node = group.build_layout(&mut tree, &Theme::default(), &mut Default::default());
@@ -6216,3 +6453,7 @@ mod window_bar_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "window_group_search_tests.rs"]
+mod search_tests;
