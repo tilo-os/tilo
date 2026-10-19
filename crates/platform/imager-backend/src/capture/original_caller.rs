@@ -135,6 +135,11 @@ mod tests {
             // Run the entire existing peer scenario as an actual non-root
             // user in a nested user namespace, rather than forging facts or
             // treating that sandbox's UID 0 as an original-source owner.
+            tilo_test_env::require_capability!(
+                UserNamespace,
+                tilo_test_env::user_namespace(),
+                "capability-free root runs the peer scenario in a user namespace"
+            );
             let output = std::process::Command::new("unshare")
                 .args(["--user", "--map-user=1000", "--map-group=1001", "--"])
                 .arg(std::env::current_exe().unwrap())

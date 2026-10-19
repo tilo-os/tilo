@@ -733,6 +733,15 @@ mod tests {
     fn writable_original_projection_refuses_before_inventory_and_preserves_source() {
         let source = tempfile::tempdir().unwrap();
         std::fs::write(source.path().join("document"), b"unchanged-source").unwrap();
+        // An original Home belongs to a non-root user: as root, give it to one.
+        if rustix::process::geteuid().is_root() {
+            tilo_test_env::require_capability!(
+                Chown,
+                tilo_test_env::chown_to(1000),
+                "as root the fixture gives the original Home to a non-root owner"
+            );
+            std::os::unix::fs::chown(source.path(), Some(1000), Some(1000)).unwrap();
+        }
         let held = File::open(source.path()).unwrap();
         let facts = held.metadata().unwrap();
         // Non-root UID is a source-owner claim, never a credential change.

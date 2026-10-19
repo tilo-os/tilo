@@ -2316,6 +2316,13 @@ mod tests {
     }
     #[test]
     fn awaiting_offline_export_public_state_never_becomes_completed_delivery() {
+        if rustix::process::geteuid().is_root() {
+            tilo_test_env::require_capability!(
+                Chown,
+                tilo_test_env::chown_to(1),
+                "as root the fixture gives the original Home to a non-root owner"
+            );
+        }
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(runtime_identity::FILE_SECRETS_ENV, "1");
         let temp = tempfile::tempdir().unwrap();

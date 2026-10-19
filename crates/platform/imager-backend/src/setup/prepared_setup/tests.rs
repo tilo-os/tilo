@@ -911,6 +911,13 @@ fn assert_offline_declaration_cannot_split(manifest: &Manifest, staging: &Path) 
 }
 #[test]
 fn offline_home_crypto_reopen_preserves_exact_selection_and_refuses_split_declaration() {
+    if rustix::process::geteuid().is_root() {
+        tilo_test_env::require_capability!(
+            Chown,
+            tilo_test_env::chown_to(1),
+            "as root the fixture gives the original Home to a non-root owner"
+        );
+    }
     let mut env = tilo_test_env::ScopedEnv::new();
     env.set(runtime_identity::FILE_SECRETS_ENV, "1");
     let temp = tempfile::tempdir().unwrap();
@@ -993,6 +1000,13 @@ fn offline_home_crypto_reopen_preserves_exact_selection_and_refuses_split_declar
 
 #[test]
 fn pending_home_without_account_consent_refuses_selected_service_sessions() {
+    if rustix::process::geteuid().is_root() {
+        tilo_test_env::require_capability!(
+            Chown,
+            tilo_test_env::chown_to(1),
+            "as root the fixture gives the original Home to a non-root owner"
+        );
+    }
     use crate::setup::service_sessions::{PreparedSessions, source::SourceGrant};
     use browser_continuity::{Provider, sessions::Service};
     let mut env = tilo_test_env::ScopedEnv::new();
@@ -1034,6 +1048,13 @@ fn pending_home_without_account_consent_refuses_selected_service_sessions() {
 #[test]
 #[cfg(target_os = "linux")]
 fn authenticated_geometry_keeps_home_only_shape_and_refuses_unadmitted_inventory_marker() {
+    if rustix::process::geteuid().is_root() {
+        tilo_test_env::require_capability!(
+            Chown,
+            tilo_test_env::chown_to(1),
+            "as root the fixture gives the original Home to a non-root owner"
+        );
+    }
     use crate::setup::migration_handoff::{self, Categories};
     let temp = tempfile::Builder::new()
         .permissions(fs::Permissions::from_mode(0o700))
