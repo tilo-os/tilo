@@ -67,7 +67,8 @@ pub use secure_store::{
 };
 
 use crate::{
-    BrokerSigningIdentity, IDENTITY_SERVICE, NotAvailable, collaboration_join_signing_bytes,
+    BrokerSigningIdentity, IDENTITY_SERVICE, IdentityMetadata, NotAvailable,
+    collaboration_join_signing_bytes,
 };
 #[cfg(test)]
 use crate::{
@@ -204,22 +205,6 @@ mod public_key_hex {
         hex::decode_to_slice(text, &mut key).map_err(serde::de::Error::custom)?;
         Ok(key)
     }
-}
-
-/// Public fields from an identity record. Reading these never unlocks or
-/// materializes the account signing share; app-facing brokers use the
-/// certified device key for signatures.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct IdentityMetadata {
-    pub profile_photo: Option<crate::ProfilePhoto>,
-    pub display_name: String,
-    pub avatar_color: [u8; 3],
-    pub group_public_key: [u8; 32],
-    pub threshold: u16,
-    pub total_shares: u16,
-    pub share_index: u16,
-    /// Whether the record is a 1-of-1 identity holding a local share.
-    pub single_device: bool,
 }
 
 const ACTIVE_FILE: &str = "active";

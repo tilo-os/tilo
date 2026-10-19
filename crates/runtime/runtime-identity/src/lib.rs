@@ -67,6 +67,48 @@ pub fn load() -> Result<BrokerSigningIdentity, NotAvailable> {
     Err(NotAvailable::ServiceFdMissing)
 }
 
+/// Outside Unix no identity service is handed to an app.
+///
+/// # Errors
+///
+/// Always [`NotAvailable::ServiceFdMissing`].
+#[cfg(not(unix))]
+pub fn load_metadata() -> Result<IdentityMetadata, NotAvailable> {
+    Err(NotAvailable::ServiceFdMissing)
+}
+
+/// Outside Unix no identity record is kept on disk.
+///
+/// # Errors
+///
+/// Always [`NotAvailable::ServiceFdMissing`].
+#[cfg(not(unix))]
+pub fn load_metadata_from_path(_path: &std::path::Path) -> Result<IdentityMetadata, NotAvailable> {
+    Err(NotAvailable::ServiceFdMissing)
+}
+
+/// Outside Unix no identity record is kept on disk.
+#[cfg(not(unix))]
+pub fn resolve_active_identity(_dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    None
+}
+
+/// Public fields from an identity record. Reading these never unlocks or
+/// materializes the account signing share; app-facing brokers use the
+/// certified device key for signatures.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IdentityMetadata {
+    pub profile_photo: Option<ProfilePhoto>,
+    pub display_name: String,
+    pub avatar_color: [u8; 3],
+    pub group_public_key: [u8; 32],
+    pub threshold: u16,
+    pub total_shares: u16,
+    pub share_index: u16,
+    /// Whether the record is a 1-of-1 identity holding a local share.
+    pub single_device: bool,
+}
+
 /// Public avatar from the launcher's authenticated identity broker only.
 ///
 /// Never reads a config record, resolves an account name, or unlocks a signing

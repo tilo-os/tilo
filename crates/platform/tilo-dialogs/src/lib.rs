@@ -33,6 +33,10 @@ pub mod conformance;
 pub mod portal;
 #[cfg(unix)]
 pub mod shell;
+/// Where no session shell launches apps, its link is never inherited.
+#[cfg(not(unix))]
+#[path = "shell_absent.rs"]
+pub mod shell;
 #[cfg(not(target_arch = "wasm32"))]
 mod unattended;
 pub mod web_policy;
@@ -139,13 +143,7 @@ pub fn unattended_picker(
 pub fn inherited_shell_picker(
     unattended: Option<Arc<dyn FilePicker>>,
 ) -> Option<Arc<dyn FilePicker>> {
-    #[cfg(unix)]
-    return shell::inherited_picker(unattended);
-    #[cfg(not(unix))]
-    {
-        drop(unattended);
-        None
-    }
+    shell::inherited_picker(unattended)
 }
 
 /// Links opened by the session shell when the launcher handed this process a
@@ -153,13 +151,7 @@ pub fn inherited_shell_picker(
 /// the ones no app the shell knows claims; `None` otherwise.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn inherited_shell_opener(elsewhere: Arc<dyn UriOpener>) -> Option<Arc<dyn UriOpener>> {
-    #[cfg(unix)]
-    return shell::inherited_opener(elsewhere);
-    #[cfg(not(unix))]
-    {
-        drop(elsewhere);
-        None
-    }
+    shell::inherited_opener(elsewhere)
 }
 
 /// This target's file choosers.

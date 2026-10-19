@@ -146,6 +146,10 @@ tilo-test-env = { version = "0.1.0", path = "../../dev/test-env", optional = tru
 tilo-advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock" }
 # Browser processes on one profile meet at one Chromium host (`webview::chromium`).
 tilo-presentation = { version = "0.1.0", path = "../../platform/tilo-presentation", features = ["gpu-damage"] }
+# Frames drawn by the room's render service instead of a GPU in the app
+# (`render_thread::remote`); its transport exists only on Linux, its vocabulary
+# everywhere.
+tilo-render-protocol = { version = "0.1.0", path = "../../platform/tilo-render-protocol" }
 tilo-process = { version = "0.1.0", path = "../../platform/tilo-process" }
 # The content store a host lends a component (`HostContext::content`), in every
 # build.
@@ -157,7 +161,7 @@ tilo-ui-graph = { version = "0.1.0", path = "../../dev/ui-graph" }
 tilo-font-catalog = { version = "0.1.0", path = "../font-catalog", features = ["faces"] }
 settings-store = { version = "0.1.0", path = "../../system/settings-store" }
 # `storage`: app files through tilo-files in tilo-paths' per-app locations.
-tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", features = ["json"] }
 tilo-paths.workspace = true
 # Parses the portal's returned file URIs. Non-optional:
 # `portal::to_local_path` is the file-access rule — a URI naming a remote
@@ -329,11 +333,6 @@ tilo-tts = { version = "0.1.0", path = "../../system/tts" }
 [target.'cfg(unix)'.dependencies]
 # Session-bus client for `priority-contacts`; runs on the workspace's tokio.
 zbus = { workspace = true, optional = true, features = ["p2p", "tokio"] }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-# Frames drawn by the room's render service instead of a GPU in the app
-# (`render_thread::remote`).
-tilo-render-protocol = { version = "0.1.0", path = "../../platform/tilo-render-protocol" }
 
 [target.'cfg(windows)'.dependencies]
 # The menu bar and Jump List History and Search live in (`host_chrome/windows.rs`).

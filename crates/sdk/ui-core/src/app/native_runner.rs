@@ -1208,7 +1208,6 @@ fn create_window_render(
     proxy: EventLoopProxy<UserEvent>,
 ) -> Result<RenderThreadHandle, String> {
     // Drawn by the room's render service: no device in this process.
-    #[cfg(target_os = "linux")]
     if crate::render_thread::remote::requested() {
         match crate::render_thread::remote::spawn(
             window.clone(),
@@ -1660,18 +1659,6 @@ impl AppHandler {
     /// initial focus events. `Err` is returned, not panicked, since every step here can
     /// fail when the compositor exits mid-open.
     fn init_render(&mut self, window: &Arc<Window>) -> Result<(), String> {
-        // Drawn by the room's render service: the launch prepared its
-        // connection, not a device (`startup::prepare_native_renderer`).
-        #[cfg(target_os = "linux")]
-        if crate::render_thread::remote::requested() {
-            self.app.startup_renderer = None;
-            self.render = Some(create_window_render(
-                window,
-                false,
-                self.a11y_proxy.clone(),
-            )?);
-            return Ok(());
-        }
         if let Some(retained) = self.suspended_renderer.take()
             && !retained.device_lost()
         {
@@ -1698,6 +1685,17 @@ impl AppHandler {
         // after the wait.
         #[cfg(any(windows, target_os = "linux"))]
         {
+            // Drawn by the room's render service: the launch prepared its
+            // connection, not a device (`startup::prepare_native_renderer`).
+            if crate::render_thread::remote::requested() {
+                self.app.startup_renderer = None;
+                self.render = Some(create_window_render(
+                    window,
+                    false,
+                    self.a11y_proxy.clone(),
+                )?);
+                return Ok(());
+            }
             if let Some(preparation) = self
                 .app
                 .startup_renderer
@@ -5206,16 +5204,14 @@ impl App {
             _settings_watch: settings_watch,
             handing_over: false,
         };
-        // Run on demand where a window may give its place to the next one
-        // (`hand_over`): the loop is kept for that window to run on.
-        #[cfg(target_os = "linux")]
+        // Run on demand, so a window that gives its place to the next one
+        // (`hand_over`) keeps the loop for that window to run on. On every
+        // target winit's `run_app` is this same loop, consuming it.
         let (ended, event_loop) = {
             use winit::platform::run_on_demand::EventLoopExtRunOnDemand as _;
             let mut event_loop = event_loop;
             (event_loop.run_app_on_demand(&mut handler), event_loop)
         };
-        #[cfg(not(target_os = "linux"))]
-        let ended = event_loop.run_app(&mut handler);
         match ended {
             Ok(()) => {}
             Err(winit::error::EventLoopError::ExitFailure(status)) => {
@@ -5226,7 +5222,6 @@ impl App {
             }
         }
         let handing_over = handler.handing_over;
-        #[cfg(target_os = "linux")]
         if handing_over {
             hand_over(&mut handler, event_loop);
         }
@@ -5245,7 +5240,6 @@ impl App {
 /// it never leaves the screen) and the shell-ui connection, which the
 /// launcher hands each process once. What the window drew with was shut
 /// down when the loop exited; the next window draws anew.
-#[cfg(target_os = "linux")]
 fn hand_over(handler: &mut AppHandler, event_loop: EventLoop<UserEvent>) {
     // A window the platform says is shown (X11) cannot take a new
     // accessibility adapter: the next window is made afresh there. A Wayland

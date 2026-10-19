@@ -339,18 +339,12 @@ fn prepared() -> &'static Mutex<Option<Receiver<Result<Session, String>>>> {
 
 /// Connect to the service on a thread of its own from process start, so the
 /// first window's first frame finds the channel open.
-#[allow(
-    clippy::disallowed_methods,
-    reason = "native host runner: the render connection is made beside app construction"
-)]
 pub(crate) fn prepare() {
     let (sender, receiver) = mpsc::channel();
-    if std::thread::Builder::new()
-        .name("remote-render-connect".into())
-        .spawn(move || {
-            let _ = sender.send(Session::connect());
-        })
-        .is_ok()
+    if tilo_rt::spawn_thread("remote-render-connect", move || {
+        let _ = sender.send(Session::connect());
+    })
+    .is_ok()
     {
         *prepared().lock_recover() = Some(receiver);
     }
@@ -443,15 +437,13 @@ pub(crate) fn spawn(
     // in-process renderer (`create_window_render`); the launch connected
     // while the app constructed, so this rarely waits.
     let session = worker.open()?;
-    let join = std::thread::Builder::new()
-        .name("ui-render-remote".into())
-        .spawn(move || {
-            tilo_startup_metrics::mark("render-worker-start");
-            tilo_rt::mark_ui_thread();
-            worker.run(session, &rx);
-            None
-        })
-        .map_err(|error| format!("could not spawn the remote render thread: {error}"))?;
+    let join = tilo_rt::spawn_thread("ui-render-remote", move || {
+        tilo_startup_metrics::mark("render-worker-start");
+        tilo_rt::mark_ui_thread();
+        worker.run(session, &rx);
+        None
+    })
+    .map_err(|error| format!("could not spawn the remote render thread: {error}"))?;
     Ok(RenderThreadHandle {
         render_tx: req_tx,
         buffers,

@@ -15,7 +15,6 @@ pub use tilo_font_catalog::checkout_root;
 mod android;
 mod faces;
 mod fallback;
-#[cfg(unix)]
 pub(crate) mod index;
 pub(crate) mod matched;
 pub(crate) mod optical;
@@ -42,9 +41,7 @@ pub(crate) fn bundled_font_system(locale: String) -> Option<FontSystem> {
     static DATABASE: OnceLock<Option<fontdb::Database>> = OnceLock::new();
     let database = DATABASE.get_or_init(|| {
         let roots = catalog_roots();
-        #[cfg(unix)]
         let recorded = index::location();
-        #[cfg(unix)]
         if let Some(db) = recorded.as_deref().and_then(|path| {
             tilo_startup_metrics::span("font-index-read", || index::load(path, &roots))
         }) {
@@ -53,12 +50,9 @@ pub(crate) fn bundled_font_system(locale: String) -> Option<FontSystem> {
         match load_first_catalog_at(&roots, &locale, fontdb::Database::load_system_fonts) {
             Ok((root, font_system)) => {
                 let db = font_system.into_locale_and_db().1;
-                #[cfg(unix)]
                 if let Some(path) = recorded.as_deref() {
                     index::store(path, &roots, &root, &db);
                 }
-                #[cfg(not(unix))]
-                let _ = root;
                 Some(db)
             }
             Err(errors) => {

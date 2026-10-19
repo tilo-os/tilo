@@ -694,8 +694,8 @@ impl FloatingSurfaceServiceClient {
     /// (`crate::workspace_identity`) gives it its connection too.
     #[cfg(feature = "local-daemons")]
     #[cfg_attr(
-        not(all(target_os = "linux", feature = "native")),
-        expect(dead_code, reason = "only a Linux window gives its place to the next")
+        not(feature = "native"),
+        expect(dead_code, reason = "only a native window gives its place to the next")
     )]
     pub(crate) fn hand_over(self) {
         HANDED_OVER.with(|slot| *slot.borrow_mut() = Some(self));
@@ -955,6 +955,13 @@ impl FloatingSurfaceServiceClient {
     pub(crate) fn for_window() -> Option<Self> {
         None
     }
+
+    /// No connection exists to keep for the next window.
+    #[cfg_attr(
+        not(feature = "native"),
+        expect(dead_code, reason = "only a native window gives its place to the next")
+    )]
+    pub(crate) fn hand_over(self) {}
 
     /// # Errors
     /// Always returns an error because this host has no session-service transport.

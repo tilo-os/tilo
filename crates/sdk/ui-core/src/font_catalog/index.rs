@@ -26,10 +26,15 @@ use std::sync::Arc;
 
 use cosmic_text::fontdb;
 use serde::{Deserialize, Serialize};
+use tilo_files::native::checked::Identity;
+use tilo_files::native::mapped::MappedFile;
 
 /// Bumped whenever what an index records, or how a database is made from
 /// it, changes.
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
+
+/// An index larger than this is not one this build wrote.
+const MAX_INDEX_BYTES: u64 = 64 << 20;
 
 /// The system font directories and configuration a build reads besides the
 /// directories that hold a font: a font added to a new directory under one
@@ -76,29 +81,16 @@ pub(crate) fn location() -> Option<PathBuf> {
     )
 }
 
-/// What identifies one file or directory's content and listing.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct Identity {
-    dev: u64,
-    ino: u64,
-    size: u64,
-    mtime: (i64, i64),
-    ctime: (i64, i64),
-}
+/// This platform cannot identify files: no index is recorded or trusted.
+struct Unidentifiable;
 
-impl Identity {
-    /// `path`'s identity now, following links as fontdb does; `None` when
-    /// it does not exist.
-    fn of(path: &Path) -> Option<Self> {
-        use std::os::unix::fs::MetadataExt as _;
-        let meta = std::fs::metadata(path).ok()?;
-        Some(Self {
-            dev: meta.dev(),
-            ino: meta.ino(),
-            size: if meta.is_dir() { 0 } else { meta.size() },
-            mtime: (meta.mtime(), meta.mtime_nsec()),
-            ctime: (meta.ctime(), meta.ctime_nsec()),
-        })
+/// `path`'s identity now, following links as fontdb does; `None` when
+/// nothing readable is there.
+fn identify(path: &Path) -> Result<Option<Identity>, Unidentifiable> {
+    match Identity::of_path(path) {
+        Ok(identity) => Ok(identity),
+        Err(error) if error.kind() == std::io::ErrorKind::Unsupported => Err(Unidentifiable),
+        Err(_) => Ok(None),
     }
 }
 
@@ -110,13 +102,13 @@ struct Input {
 }
 
 impl Input {
-    fn now(path: PathBuf) -> Self {
-        let identity = Identity::of(&path);
-        Self { path, identity }
+    fn now(path: PathBuf) -> Result<Self, Unidentifiable> {
+        let identity = identify(&path)?;
+        Ok(Self { path, identity })
     }
 
     fn holds(&self) -> bool {
-        Identity::of(&self.path) == self.identity
+        identify(&self.path).is_ok_and(|identity| identity == self.identity)
     }
 }
 
@@ -180,7 +172,7 @@ fn existing_roots(roots: &[PathBuf], chosen: &Path) -> Vec<PathBuf> {
 /// it was built from is as it was: the catalog roots, every font file, every
 /// directory holding one and the system's font directories.
 pub(crate) fn load(path: &Path, roots: &[PathBuf]) -> Option<fontdb::Database> {
-    let bytes = std::fs::read(path).ok()?;
+    let bytes = tilo_files::native::bounded::read(path, MAX_INDEX_BYTES).ok()??;
     let index: Index = serde_json::from_slice(&bytes).ok()?;
     if index.version != VERSION || index.build != tilo_font_catalog::manifest_sha256() {
         return None;
@@ -258,9 +250,10 @@ fn stretch(number: u16) -> fontdb::Stretch {
 }
 
 /// Record `db`, built from the catalog at `root` (canonical) and `roots`,
-/// at `path`, replacing what was there in one rename. A database with a
-/// face that is not in a file is not recorded. Failing to write leaves the
-/// next launch to build it again.
+/// at `path`, replacing what was there atomically. A database with a face
+/// that is not in a file is not recorded, nor one on a platform that cannot
+/// identify files. Failing to write leaves the next launch to build it
+/// again.
 pub(crate) fn store(path: &Path, roots: &[PathBuf], root: &Path, db: &fontdb::Database) {
     let Some(index) = index_of(roots, root, db) else {
         return;
@@ -268,21 +261,8 @@ pub(crate) fn store(path: &Path, roots: &[PathBuf], root: &Path, db: &fontdb::Da
     let Ok(bytes) = serde_json::to_vec(&index) else {
         return;
     };
-    let Some(directory) = path.parent() else {
-        return;
-    };
-    if std::fs::create_dir_all(directory).is_err() {
-        return;
-    }
-    let temporary = directory.join(format!(
-        ".{}.{}",
-        path.file_name()
-            .map(|name| name.to_string_lossy())
-            .unwrap_or_default(),
-        std::process::id()
-    ));
-    if std::fs::write(&temporary, bytes).is_err() || std::fs::rename(&temporary, path).is_err() {
-        let _ = std::fs::remove_file(&temporary);
+    if let Err(error) = tilo_files::native::atomic::write_creating_parent(path, &bytes) {
+        tracing::debug!(%error, path = %path.display(), "font index not recorded");
     }
 }
 
@@ -294,13 +274,12 @@ fn index_of(roots: &[PathBuf], root: &Path, db: &fontdb::Database) -> Option<Ind
         else {
             return None;
         };
-        let file = files
-            .iter()
-            .position(|file| file.path == *path)
-            .unwrap_or_else(|| {
-                files.push(Input::now(path.clone()));
-                files.len() - 1
-            });
+        let file = if let Some(file) = files.iter().position(|file| file.path == *path) {
+            file
+        } else {
+            files.push(Input::now(path.clone()).ok()?);
+            files.len() - 1
+        };
         faces.push(Face {
             file,
             index: face.index,
@@ -317,14 +296,15 @@ fn index_of(roots: &[PathBuf], root: &Path, db: &fontdb::Database) -> Option<Ind
         });
     }
     let mut inputs: Vec<Input> = Vec::new();
-    for directory in files
+    let directories: Vec<PathBuf> = files
         .iter()
         .filter_map(|file| file.path.parent())
         .map(Path::to_path_buf)
         .chain(system_inputs())
-    {
+        .collect();
+    for directory in directories {
         if !inputs.iter().any(|known| known.path == directory) {
-            inputs.push(Input::now(directory));
+            inputs.push(Input::now(directory).ok()?);
         }
     }
     Some(Index {
@@ -340,10 +320,11 @@ fn index_of(roots: &[PathBuf], root: &Path, db: &fontdb::Database) -> Option<Ind
 
 /// A font file's bytes, mapped the first time they are read: a database
 /// made from an index holds hundreds of files, of which a launch shapes
-/// with a handful.
+/// with a handful. A file that cannot be mapped reads as empty (a face of
+/// it then fails to load, as an unreadable file does).
 struct LazyMap {
     path: PathBuf,
-    map: std::sync::OnceLock<Mapping>,
+    map: std::sync::OnceLock<Option<MappedFile>>,
 }
 
 impl LazyMap {
@@ -357,76 +338,10 @@ impl LazyMap {
 
 impl AsRef<[u8]> for LazyMap {
     fn as_ref(&self) -> &[u8] {
-        self.map.get_or_init(|| Mapping::of(&self.path)).bytes()
-    }
-}
-
-/// A read-only private mapping of a whole file, or nothing when it cannot
-/// be mapped (a face of it then fails to load, as an unreadable file does).
-struct Mapping {
-    ptr: *mut libc::c_void,
-    len: usize,
-}
-
-// SAFETY: the mapping is read-only and owned by this value until it drops;
-// nothing writes through `ptr`.
-unsafe impl Send for Mapping {}
-// SAFETY: as above; shared reads of immutable memory.
-unsafe impl Sync for Mapping {}
-
-impl Mapping {
-    fn of(path: &Path) -> Self {
-        use std::os::fd::AsRawFd as _;
-        let empty = Self {
-            ptr: std::ptr::null_mut(),
-            len: 0,
-        };
-        let Ok(file) = std::fs::File::open(path) else {
-            return empty;
-        };
-        let Some(len) = file
-            .metadata()
-            .ok()
-            .and_then(|meta| usize::try_from(meta.len()).ok())
-            .filter(|len| *len > 0)
-        else {
-            return empty;
-        };
-        // SAFETY: a fresh read-only private mapping of a whole open file;
-        // the descriptor may close once mapped.
-        let ptr = unsafe {
-            libc::mmap(
-                std::ptr::null_mut(),
-                len,
-                libc::PROT_READ,
-                libc::MAP_PRIVATE,
-                file.as_raw_fd(),
-                0,
-            )
-        };
-        if ptr == libc::MAP_FAILED {
-            return empty;
-        }
-        Self { ptr, len }
-    }
-
-    fn bytes(&self) -> &[u8] {
-        if self.ptr.is_null() {
-            return &[];
-        }
-        // SAFETY: `ptr` maps `len` readable bytes for as long as `self`.
-        unsafe { std::slice::from_raw_parts(self.ptr.cast::<u8>(), self.len) }
-    }
-}
-
-impl Drop for Mapping {
-    fn drop(&mut self) {
-        if !self.ptr.is_null() {
-            // SAFETY: unmapping exactly the mapping this value owns.
-            unsafe {
-                libc::munmap(self.ptr, self.len);
-            }
-        }
+        self.map
+            .get_or_init(|| MappedFile::open(&self.path).ok())
+            .as_ref()
+            .map_or(&[], AsRef::as_ref)
     }
 }
 

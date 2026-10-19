@@ -54,6 +54,18 @@ impl std::fmt::Debug for RealtimeDecoder {
     }
 }
 
+// SAFETY: a page build without the `atomics` target feature has exactly one
+// thread, so the browser handle is never reached from another one. Being
+// `Send` lets portable callers keep the decoder beside the native one, behind
+// the same background job (which a page runs on its one thread).
+#[cfg(not(target_feature = "atomics"))]
+#[allow(
+    unsafe_code,
+    clippy::non_send_fields_in_send_ty,
+    reason = "single-threaded page build: no second thread exists to send it to"
+)]
+unsafe impl Send for RealtimeDecoder {}
+
 impl Drop for RealtimeDecoder {
     fn drop(&mut self) {
         self.inner.close();
