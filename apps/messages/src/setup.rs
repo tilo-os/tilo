@@ -5,7 +5,10 @@ use tilo_messaging::{AccountState, MessagingClient, Pairing, ServiceAccount, Set
 use ui::{
     LocalState,
     framework::{Actions, EffectAnswer, EffectCx, Effected},
-    widget::{Button, Column, Container, Element, QrWidget, Scrollable, Text},
+    widget::{
+        Button, ButtonRole, Column, Container, Element, ListRow, QrWidget, Scrollable, Section,
+        Text,
+    },
 };
 #[derive(Clone, Default)]
 struct Projection {
@@ -277,45 +280,43 @@ impl SetupView {
             self.close();
         }
         let state = self.state.get();
-        let mut content = Column::new()
-            .with_intrinsic_height()
-            .push(Box::new(Text::new(&CATALOG.t("messages-setup-select"))));
+        let mut content = Column::new().with_intrinsic_height();
+        // The accounts set up in Settings, one row each: the service is
+        // the row's title, the account its second line.
+        let mut rows: Vec<Element> = Vec::new();
         for (id, account) in sources.accounts().accounts.iter().filter(|(_, row)| {
             row.enabled && matches!(row.type_id.as_str(), "tilo" | "signal" | "whatsapp" | "sms")
         }) {
-            let label = CATALOG.t_args(
-                "messages-account-label",
-                &[
-                    (
-                        "service",
-                        ui::i18n::ArgValue::Text(
-                            CATALOG.t(&format!("messages-{}", account.type_id)),
-                        ),
-                    ),
-                    (
-                        "account",
-                        ui::i18n::ArgValue::Text(format!("{} ({id})", account.display_name)),
-                    ),
-                ],
-            );
-            content = content.push(Box::new(actions.bind_effect_invocation(
-                Button::new(&format!("messages.setup-account:{id}"), &label),
-                &MessagesEffect::SelectSetupAccount {
-                    service: account.type_id.clone(),
-                    account: id.as_str().into(),
-                },
+            let selected = state.selected.as_ref().is_some_and(|chosen| {
+                chosen.service == account.type_id && chosen.account == id.as_str()
+            });
+            rows.push(Box::new(
+                actions.bind_effect_invocation(
+                    ListRow::new(
+                        format!("messages.setup-account:{id}"),
+                        CATALOG.t(&format!("messages-{}", account.type_id)),
+                    )
+                    .secondary(account.display_name.clone())
+                    .selected(selected),
+                    &MessagesEffect::SelectSetupAccount {
+                        service: account.type_id.clone(),
+                        account: id.as_str().into(),
+                    },
+                ),
+            ));
+        }
+        if !rows.is_empty() {
+            content = content.push(Box::new(Section::titled(
+                CATALOG.t("messages-setup-your-accounts"),
+                rows,
             )));
         }
         if let Some(account) = &state.selected {
             content = self.account_panel(content, actions, &state, account);
-        } else if sources.accounts().accounts.is_empty() {
-            content = content.push(Box::new(Text::new(
-                &CATALOG.t("messages-account-unconfigured"),
-            )));
         }
         content = self.first.panel(content, actions);
         let close = actions.bind_effect_invocation(
-            Button::new("messages.setup-cancel", "messages-cancel-link"),
+            Button::new("messages.setup-cancel", "messages-cancel-link").role(ButtonRole::Plain),
             &MessagesEffect::CancelLink,
         );
         content = content.push(Box::new(close));
@@ -332,16 +333,6 @@ impl SetupView {
         state: &Projection,
         account: &ServiceAccount,
     ) -> Column {
-        content = content.push(Box::new(Text::new(&CATALOG.t_args(
-            "messages-setup-selected",
-            &[
-                (
-                    "service",
-                    ui::i18n::ArgValue::Text(CATALOG.t(&format!("messages-{}", account.service))),
-                ),
-                ("account", ui::i18n::ArgValue::Text(account.account.clone())),
-            ],
-        ))));
         let native = self.current(Some(account));
         let lifecycle = self.account_state(Some(account));
         if state.completed {

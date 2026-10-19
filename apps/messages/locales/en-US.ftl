@@ -17,8 +17,8 @@ messages-history-unavailable = This service's message history is unavailable.
 messages-transport-unavailable = Messaging connection unavailable
 messages-compose = Write a message
 messages-send = Send
-messages-route-label = { $service } · { $account } · { $recipient }
-messages-account-label = { $service } · { $account }
+messages-route-label = { $service } from { $account } to { $recipient }
+messages-account-label = { $service } from { $account }
 messages-native-account = Your Tilo identity
 messages-not-selected = Choose a service and account before writing a message.
 messages-contact-missing = This contact is unavailable.
@@ -73,7 +73,6 @@ messages-setup-interrupted = Linking stopped. Return to account selection to sta
 messages-first-reset = Return to account selection
 messages-setup-linked = Device linked. Messaging resumes after its connection and inbox are ready.
 
-messages-setup-selected = { $service } · { $account }
 
 messages-first-signal = Link a Signal account
 messages-first-self-review = Verify the selected service identity: { $identity }
@@ -91,6 +90,12 @@ messages-whatsapp-review-storage = Review protected storage access
 messages-whatsapp-refresh-code = Refresh private linking code
 messages-whatsapp-storage-explanation = Review private encrypted storage access before linking. After linking, confirm the identity reported by WhatsApp. This version supports direct text and ordinary private group text, with reviewed membership changes. Community, disappearing-message, media and call features are unavailable.
 messages-first-tilo = Use my Tilo identity
+messages-setup-link-heading = Link an account
+messages-setup-your-accounts = Your accounts
+messages-setup-service-missing = Messaging isn't running on this device, so no account can be linked right now.
+messages-first-whatsapp-hint = Scan a code with WhatsApp on your phone
+messages-first-signal-hint = Scan a code with Signal on your phone
+messages-first-tilo-hint = Message people who use Tilo, with no other account
 messages-first-account-prepare = Set up a private Messages account
 
 messages-list-groups = List private groups
