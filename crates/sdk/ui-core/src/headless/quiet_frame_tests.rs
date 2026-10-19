@@ -233,6 +233,22 @@ fn a_document_change_no_entry_point_made_syncs_and_publishes_on_its_frame() {
     assert_eq!(polled(&mut frame, &seen), Quiet::Yes);
 }
 
+/// A wheel nothing takes (past the end of a list; the probe scrolls
+/// nothing) activates nothing, as the live App reads it: the frame it runs
+/// and the one after are quiet. Each such notch synced and republished.
+#[test]
+fn a_wheel_nothing_takes_leaves_frames_quiet() {
+    let (mut frame, seen) = probe();
+    assert_eq!(polled(&mut frame, &seen), Quiet::Yes);
+    let quiet = frame.quiet_frames();
+    frame.scroll(0.0, -1.0);
+    assert!(
+        frame.quiet_frames() > quiet,
+        "the wheel's own frame was quiet"
+    );
+    assert_eq!(polled(&mut frame, &seen), Quiet::Yes);
+}
+
 #[test]
 fn an_uncommitted_document_keeps_every_frame_loud() {
     let (mut frame, seen) = probe();
