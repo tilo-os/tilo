@@ -1,5 +1,6 @@
 use super::*;
 use automerge::transaction::Transactable;
+use tilo_actions::ActionContract;
 
 #[test]
 fn semantic_read_action_continuation_stays_with_its_real_channel() {

@@ -7,6 +7,7 @@
 
 use crate::SettingsApp;
 use crate::categories::Category;
+use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ChangeHash};
 use ui::headless::Framed;
 use ui::widget::Widget;

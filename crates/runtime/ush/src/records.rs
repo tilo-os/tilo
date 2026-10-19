@@ -391,7 +391,7 @@ mod tests {
 
         let stored = records.load(DEFAULT_RECORD).unwrap().unwrap();
         assert_eq!(stored.tools[0].packages, vec!["pandoc".to_string()]);
-        assert_eq!(stored.grants.0.len(), 1);
+        assert_eq!(stored.grants.len(), 1);
         assert!(matches!(
             records.apply("absent", Environment::RENAME.with("x")),
             Err(RecordError::Missing(_))

@@ -259,21 +259,25 @@ mod tests {
 
         // Case `submission_receipt_cannot_forge_case_id_package_or_status`.
         {
-            let key = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
-            let request = registry_types::sign_moderation_mutation(
-                "request-one".into(),
-                10,
-                20,
-                registry_types::ModerationActorRole::Reporter,
-                ModerationMutation::FileReport {
+            // Only the request id and the mutation are read here; signing is
+            // the registry's concern and tested there.
+            let request = registry_types::SignedModerationMutation {
+                protocol: registry_types::MODERATION_PROTOCOL,
+                request_id: "request-one".into(),
+                issued_at_unix: 10,
+                expires_at_unix: 20,
+                actor_role: registry_types::ModerationActorRole::Reporter,
+                actor_pubkey_hex: String::new(),
+                mutation: ModerationMutation::FileReport {
                     package_id: "so.tilo.notes".into(),
                     category: "policy".into(),
                     summary: "misleading listing".into(),
                     evidence_digest_hex: "aa".repeat(32),
                 },
-                &key,
-            )
-            .unwrap();
+                signature_hex: String::new(),
+                destination: None,
+                credential: None,
+            };
             let short_hash = blake3::hash(b"so.tilo.notes:request-one")
                 .to_hex()
                 .chars()

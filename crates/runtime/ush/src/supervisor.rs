@@ -289,7 +289,7 @@ impl Session {
         broker_socket: PathBuf,
         seccomp_blob: PathBuf,
     ) -> std::io::Result<GuestPlan> {
-        let policy = Policy::new(resolved.environment.grants.0.clone());
+        let policy = Policy::new(resolved.environment.grants.clone());
         let now = Some(unix_now());
         let session_dir = self.store.session_dir(&self.session_id);
         let guest_home = match resolved.environment.home {
@@ -349,7 +349,7 @@ impl Session {
     pub fn network(&self, resolved: &Resolved) -> anyhow::Result<(Netns, Egress)> {
         let netns = Netns::create()
             .map_err(|e| anyhow::anyhow!("{NOT_STARTED}:\nush: its network namespace: {e}"))?;
-        let policy = Policy::new(resolved.environment.grants.0.clone()).egress(Some(unix_now()));
+        let policy = Policy::new(resolved.environment.grants.clone()).egress(Some(unix_now()));
         if self.opts.verbose {
             eprintln!("ush: network: {}", describe_policy(&policy));
         }
@@ -606,7 +606,7 @@ pub struct EnvironmentEntry {
 
 impl EnvironmentEntry {
     fn of(key: &str, env: &Environment) -> Self {
-        let policy = Policy::new(env.grants.0.clone());
+        let policy = Policy::new(env.grants.clone());
         let now = Some(unix_now());
         let writable = policy.trusted_dirs(now);
         let mut grants: Vec<(String, bool)> = writable

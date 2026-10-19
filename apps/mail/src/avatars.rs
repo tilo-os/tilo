@@ -82,7 +82,7 @@ impl Avatars {
                     continue;
                 }
                 let held = self.pictures.hold_text(&person.photo);
-                for email in &person.emails.0 {
+                for email in &person.emails {
                     let key = email.trim().to_ascii_lowercase();
                     if let Some(previous) = by_address.insert(key.clone(), held.clone())
                         && previous != held

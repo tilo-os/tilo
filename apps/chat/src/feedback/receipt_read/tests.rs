@@ -1,5 +1,6 @@
 use super::*;
 use automerge::{ObjType, ROOT, transaction::Transactable};
+use tilo_actions::EncodedAction;
 use ui::feedback::{Destination, Receipt, ReviewedFeedback, Submission};
 
 fn submitted() -> (automerge::AutoCommit, Submission, Resource) {

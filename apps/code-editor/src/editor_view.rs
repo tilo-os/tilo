@@ -3007,6 +3007,7 @@ impl EditorView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::transaction::Transactable as _;
     use crate::doc::EditorDoc;
     use crate::model::Language;
 
