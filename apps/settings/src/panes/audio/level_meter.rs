@@ -1,13 +1,17 @@
 //! A live level meter: how loud a device is right now, as a bar that rises
 //! with the sound and falls back smoothly, with the recent peak marked.
 //!
-//! The level comes from the model through a shared cell, read between
-//! frames, so a moving meter repaints itself alone and never rebuilds the
-//! page around it.
+//! The level comes from the model, or straight from a capture thread,
+//! through a shared atomic read between frames, so a moving meter repaints
+//! itself alone and never rebuilds the page around it. A meter asks for
+//! frames only while there is something to show: a silent output costs
+//! nothing.
 
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::theme::Theme;
@@ -20,26 +24,51 @@ use vello::peniko::Fill;
 /// being measured at all.
 #[derive(Clone, Default)]
 pub struct Level {
-    value: Rc<Cell<f32>>,
+    value: Arc<AtomicU32>,
     live: Rc<Cell<bool>>,
 }
 
 impl Level {
     pub fn set(&self, value: f32) {
-        self.value.set(value.clamp(0.0, 1.0));
+        store(&self.value, value);
     }
 
     pub fn set_live(&self, live: bool) {
         self.live.set(live);
         if !live {
-            self.value.set(0.0);
+            store(&self.value, 0.0);
         }
     }
 
     pub fn is_live(&self) -> bool {
         self.live.get()
     }
+
+    /// The level as it is now.
+    pub fn get(&self) -> f32 {
+        f32::from_bits(self.value.load(Ordering::Relaxed))
+    }
+
+    /// A writer for a capture thread: it publishes each level and wakes the
+    /// window only while there is sound, or when it falls silent.
+    pub fn publisher(&self, wake: ui::WakeHandle) -> impl Fn(f32) + Send + 'static {
+        let value = Arc::clone(&self.value);
+        move |level: f32| {
+            let before = f32::from_bits(value.load(Ordering::Relaxed));
+            store(&value, level);
+            if level > SILENT || before > SILENT {
+                wake.wake();
+            }
+        }
+    }
 }
+
+fn store(value: &AtomicU32, level: f32) {
+    value.store(level.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+}
+
+/// Below this a level shows as nothing.
+const SILENT: f32 = 0.002;
 
 /// The bar's height at the default text size.
 const HEIGHT: f32 = 6.0;
@@ -54,30 +83,33 @@ pub struct LevelMeter {
     peak: f32,
     name: String,
     rect: Rect,
+    /// The bar moved, or has not been drawn yet.
+    dirty: bool,
 }
 
 impl LevelMeter {
     pub fn new(level: &Level, name: impl Into<String>) -> Self {
-        let now = level.value.get();
+        let now = level.get();
         Self {
             level: level.clone(),
             shown: now,
             peak: now,
             name: name.into(),
             rect: Rect::ZERO,
+            dirty: true,
         }
     }
 
     /// Follow the published level one frame: up at once, down smoothly.
     fn step(&mut self) -> bool {
-        let target = self.level.value.get();
+        let target = self.level.get();
         let (shown, peak) = (self.shown, self.peak);
         self.shown = if target >= self.shown {
             target
         } else {
             self.shown + (target - self.shown) * FALL
         };
-        if self.shown < 0.002 {
+        if self.shown < SILENT {
             self.shown = 0.0;
         }
         self.peak = self.shown.max(self.peak - PEAK_FALL).max(0.0);
@@ -113,11 +145,29 @@ impl Widget for LevelMeter {
     ui::rect_geometry!();
 
     fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
-        self.step()
+        let moved = self.step();
+        self.dirty |= moved;
+        moved
+    }
+
+    // One fixed size; it repaints only while the bar moves.
+    fn is_layout_dirty(&self) -> bool {
+        false
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.dirty
+    }
+
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.level.is_live() || self.shown > 0.0 || self.peak > 0.0
+        // Frames only while the bar or its peak still moves: a steady level
+        // or silence is still. A new level wakes the window itself.
+        (self.shown - self.level.get()).abs() > f32::EPSILON
+            || self.peak > self.shown + f32::EPSILON
     }
 
     fn draw(
@@ -203,5 +253,25 @@ mod tests {
         assert!(meter.shown.abs() < f32::EPSILON);
         level.set_live(false);
         assert!(!meter.needs_animation_frame());
+    }
+
+    /// A live meter over silence asks for no frames: an output that plays
+    /// nothing costs nothing while the page is open.
+    #[test]
+    fn a_meter_over_silence_asks_for_no_frames() {
+        let level = Level::default();
+        level.set_live(true);
+        let mut meter = LevelMeter::new(&level, "Speakers");
+        assert!(!meter.needs_animation_frame());
+        level.set(0.5);
+        assert!(meter.needs_animation_frame());
+        meter.step();
+        assert!(!meter.needs_animation_frame(), "a steady level is still");
+        level.set(0.0);
+        assert!(meter.needs_animation_frame());
+        for _ in 0..400 {
+            meter.step();
+        }
+        assert!(!meter.needs_animation_frame(), "it settles and stops");
     }
 }

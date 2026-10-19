@@ -35,7 +35,7 @@ use crate::resource::Settings;
 use crate::row::Row;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    Item, SettingsSection, block, card, error_caption, note, row, rows, untitled, value_row,
+    Item, SettingsSection, block, error_caption, note, row, rows, section, untitled, value_row,
 };
 use ui::i18n::ArgValue;
 use ui::lock::MutexRecover as _;
@@ -751,19 +751,19 @@ impl PowerPane {
                 cards.push(self.profile_card(state));
                 cards
             }
-            None => vec![card(
+            None => vec![section(
                 &t("power-battery-title"),
                 rows(vec![note(&t("power-reading"))]),
             )],
         };
         cards.extend(self.idle_card());
         cards.push(self.actions_card());
-        crate::widgets::cards(cards)
+        crate::widgets::page(cards)
     }
 
     fn battery_card(&self, state: &PowerState) -> Vec<SettingsSection> {
         if !state.battery.present {
-            return vec![card(
+            return vec![section(
                 &t("power-source-title"),
                 rows(vec![
                     value_row(&t("power-source"), &t("power-source-ac")),
@@ -829,7 +829,7 @@ impl PowerPane {
         if let Some(notice) = &self.notices.charge {
             battery_rows.push(note(notice));
         }
-        vec![card(&t("power-battery-title"), rows(battery_rows))]
+        vec![section(&t("power-battery-title"), rows(battery_rows))]
     }
 
     /// The charge in large type, what the battery is doing and for how long,
@@ -914,7 +914,7 @@ impl PowerPane {
                 note(unavailable)
             });
         }
-        card(&t("power-profile-title"), rows(profile_rows))
+        section(&t("power-profile-title"), rows(profile_rows))
     }
 
     /// `row` choosing a timeout among `options`, showing `current`.
@@ -955,7 +955,7 @@ impl PowerPane {
     fn idle_card(&self) -> [SettingsSection; 2] {
         let prefs = *self.prefs();
         [
-            card(
+            section(
                 &t("power-idle-title"),
                 rows(vec![
                     self.cx
@@ -1034,7 +1034,7 @@ impl PowerPane {
                 ),
             ],
         );
-        card(
+        section(
             &t("power-behaviour-title"),
             rows(vec![
                 Self::action_choice(
@@ -1077,7 +1077,7 @@ impl PowerPane {
             );
             entries.push(value_row(d.model.as_deref().unwrap_or(&d.id), &line));
         }
-        Some(card(&t("power-devices-title"), rows(entries)))
+        Some(section(&t("power-devices-title"), rows(entries)))
     }
 }
 

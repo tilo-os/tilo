@@ -16,7 +16,7 @@ use ui::widget::{AppModel, Dropdown, ModelPath, Widget};
 
 use crate::host::{Followed, PaneCx};
 use crate::i18n::t;
-use crate::widgets::{Item, card, choice_row, note, rows};
+use crate::widgets::{Item, choice_row, note, rows, section};
 use tilo_locale::{Currency, DateStyle, FirstDayOfWeek, Locale, Measurement, NumberStyle};
 use ui::clock::TimeStyle;
 
@@ -154,7 +154,6 @@ impl RegionPane {
             Dropdown::from_state(options, state)
                 .with_id(id)
                 .with_placeholder(&placeholder)
-                .fill()
         };
 
         // Currency dropdown — options are ISO codes (the stored form).
@@ -245,7 +244,7 @@ impl RegionPane {
         let measure_title = t("settings-region-measurement");
         let number_title = t("settings-region-number-format");
         let first_title = t("settings-region-first-day");
-        let formats = card(
+        let formats = section(
             &t("settings-region-formats-card"),
             rows(vec![
                 choice_row(&currency_title, Box::new(currency)),
@@ -263,7 +262,7 @@ impl RegionPane {
             Measurement::Imperial => "settings-region-preview-f",
         });
         let week_starts = weekday_label(loc.first_day_of_week);
-        let preview = card(
+        let preview = section(
             &t("settings-region-preview-card"),
             rows(vec![
                 preview_line(&t("settings-region-preview-amount"), &amount),
@@ -280,12 +279,12 @@ impl RegionPane {
             ]),
         );
 
-        let explainer = card(
+        let explainer = section(
             &t("settings-region-shared-card"),
             rows(vec![note(&t("settings-region-shared-body"))]),
         );
 
-        crate::widgets::cards(vec![formats, preview, explainer])
+        crate::widgets::page(vec![formats, preview, explainer])
     }
 }
 

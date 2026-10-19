@@ -892,6 +892,19 @@ fn icloud_rows_are_marked_best_effort_and_offer_reauthentication() {
             texts.extend(node.name);
             texts.extend(node.value);
         }
+        // A row's marks after its name, and its menu's entries.
+        if let Some(row) = widget
+            .as_any()
+            .and_then(|any| any.downcast_ref::<ui::widget::ListRow>())
+        {
+            texts.extend(row.tag_labels().into_iter().map(str::to_owned));
+        }
+        if let Some(menu) = widget
+            .as_any()
+            .and_then(|any| any.downcast_ref::<ui::widget::RowMenu>())
+        {
+            texts.extend(menu.labels().into_iter().map(str::to_owned));
+        }
         for child in widget.children() {
             collect(child, texts);
         }

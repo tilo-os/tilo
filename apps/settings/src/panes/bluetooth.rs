@@ -6,16 +6,18 @@
 //! effects are published unavailable with the reason, and the pane says so.
 
 use std::cell::OnceCell;
-use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use tilo_bluez::{DeviceInfo, PairOutcome};
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow};
 use ui::i18n::ArgValue;
 use ui::tilo_resource::{self, ActionRef, Effect};
-use ui::widget::{Button, Row, TextInput, Toggle, Widget};
+use ui::widget::{
+    Button, ButtonRole, Column, DisclosureGroup, DisclosureRow, EditableLabel, ListRow, Row,
+    Toggle, Widget,
+};
 
 use crate::effects::{SettingsEffect, effect};
 use crate::host::PaneCx;
@@ -24,7 +26,7 @@ use crate::panes::model::{PaneModel, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    Item, card_with_action, error_caption, note, row, rows, setting_row, value_row,
+    Item, block, error_caption, note, row, rows, section, section_action, untitled,
 };
 
 fn token(path: &str) -> String {
@@ -586,8 +588,9 @@ pub struct BluetoothModel {
     notice: Option<String>,
     /// The device being paired, by object path.
     pairing: Option<String>,
-    /// The name typed for each paired device, by object path.
-    aliases: HashMap<String, Arc<Mutex<String>>>,
+    /// Which device's details are open, by address: kept by the model so a
+    /// read of the devices never closes them.
+    details: DisclosureGroup,
     /// When the adapter was last read, so discovery's finds are read in
     /// as they come.
     last_read: ui::time::Instant,
@@ -626,7 +629,7 @@ impl BluetoothModel {
             read_error: None,
             notice: None,
             pairing: None,
-            aliases: HashMap::new(),
+            details: DisclosureGroup::new(),
             last_read: ui::time::now(),
             changed: false,
         };
@@ -793,166 +796,232 @@ impl BluetoothModel {
         }
     }
 
-    fn device_detail_rows(&self, d: &DeviceInfo) -> Vec<Item> {
-        let mut block: Vec<Item> = Vec::new();
-        block.push(value_row(&t("settings-bluetooth-address"), &d.address));
+    /// What opens under a paired device: its name, which can be changed in
+    /// place, whether it may reconnect on its own, its address and signal,
+    /// and forgetting it.
+    fn device_details(&self, d: &DeviceInfo) -> Box<dyn Widget> {
+        let path = d.path.clone();
+        let mut items: Vec<Box<dyn Widget>> = vec![Box::new(
+            ListRow::new(
+                format!("settings.bluetooth.name.{}", token(&d.path)),
+                t("settings-bluetooth-name"),
+            )
+            .trailing(Box::new(
+                self.on_row(
+                    d,
+                    EditableLabel::new(&d.name)
+                        .with_id(&format!("bluetooth.alias.{}", token(&d.path)))
+                        .with_accessible_name(t("settings-bluetooth-name"))
+                        .edits_on_click(),
+                    effect(BluetoothEffect::RENAME_DEVICE)
+                        .map(move |name: String| (path.clone(), name.trim().to_owned())),
+                ),
+            )),
+        )];
+        let path = d.path.clone();
+        items.push(Box::new(
+            ListRow::new(
+                format!("settings.bluetooth.trust.{}", token(&d.path)),
+                t("settings-bluetooth-trust"),
+            )
+            .secondary(t("settings-bluetooth-trust-caption"))
+            .trailing(Box::new(
+                self.on_row(
+                    d,
+                    Toggle::from_state(&LocalState::new(d.trusted))
+                        .with_id(&format!("settings.bluetooth.trusted.{}", token(&d.path))),
+                    effect(BluetoothEffect::SET_DEVICE_TRUSTED)
+                        .map(move |trusted: bool| (path.clone(), trusted)),
+                ),
+            )),
+        ));
+        items.push(Box::new(
+            ListRow::new(
+                format!("settings.bluetooth.address.{}", token(&d.path)),
+                t("settings-bluetooth-address"),
+            )
+            .value(d.address.clone()),
+        ));
         if let Some(rssi) = d.rssi {
-            block.push(value_row(
-                &t("settings-bluetooth-signal"),
-                &t_args(
+            items.push(Box::new(
+                ListRow::new(
+                    format!("settings.bluetooth.signal.{}", token(&d.path)),
+                    t("settings-bluetooth-signal"),
+                )
+                .value(t_args(
                     "settings-bluetooth-signal-dbm",
                     &[("rssi", ArgValue::Number(f64::from(rssi)))],
-                ),
+                )),
             ));
-        }
-        if d.paired {
-            let path = d.path.clone();
-            block.push(setting_row(
-                &t("settings-bluetooth-trust"),
-                Box::new(
-                    self.on_row(
-                        d,
-                        Toggle::from_state(&LocalState::new(d.trusted))
-                            .with_id(&format!("settings.bluetooth.trusted.{}", token(&d.path))),
-                        effect(BluetoothEffect::SET_DEVICE_TRUSTED)
-                            .map(move |trusted: bool| (path.clone(), trusted)),
-                    ),
-                ),
-            ));
-            block.push(note(&t("settings-bluetooth-trust-caption")));
-            let alias = self.aliases.get(&d.path).cloned().unwrap_or_default();
-            // A name field has no label of its own: a free row, not a labelled one.
-            block.push(row(Box::new(
-                TextInput::local()
-                    .with_id(&format!("bluetooth.alias.{}", token(&d.path)))
-                    .with_external_buffer(Arc::clone(&alias))
-                    .with_placeholder(&d.name),
-            )));
-            let path = d.path.clone();
-            block.push(row(Box::new(
-                Row::new()
-                    .push(Box::new(self.on_row(
-                        d,
-                        Button::new(
-                            &format!("settings.bluetooth.rename.{}", token(&d.path)),
-                            &t("settings-bluetooth-rename"),
-                        ),
-                        effect(BluetoothEffect::RENAME_DEVICE).map(move |()| {
-                            (
-                                path.clone(),
-                                alias
-                                    .lock()
-                                    .map(|name| name.trim().to_owned())
-                                    .unwrap_or_default(),
-                            )
-                        }),
-                    )))
-                    .push(Box::new({
-                        let path = d.path.clone();
-                        self.on_row(
-                            d,
-                            Button::new(
-                                &format!("settings.bluetooth.forget.{}", token(&d.path)),
-                                &t("settings-bluetooth-forget"),
-                            ),
-                            effect(BluetoothEffect::FORGET_DEVICE).map(move |()| path.clone()),
-                        )
-                    })),
-            )));
         }
         if d.icon.starts_with("audio-") {
-            block.push(note(&t("settings-bluetooth-audio-caption")));
+            items.push(crate::widgets::caption(&t(
+                "settings-bluetooth-audio-caption",
+            )));
         }
-        block
+        let path = d.path.clone();
+        items.push(Box::new(
+            Row::new().push(Box::new(
+                self.on_row(
+                    d,
+                    Button::new(
+                        &format!("settings.bluetooth.forget.{}", token(&d.path)),
+                        &t("settings-bluetooth-forget"),
+                    )
+                    .role(ButtonRole::Destructive),
+                    effect(BluetoothEffect::FORGET_DEVICE).map(move |()| path.clone()),
+                ),
+            )),
+        ));
+        Box::new(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_extra_bottom_padding(crate::widgets::spacing().rhythm.sibling)
+                .push(Box::new(ui::widget::Section::new(items))),
+        )
     }
 
-    fn device_row(&self, d: &DeviceInfo) -> Vec<Item> {
+    /// The device's main button (pair, connect, disconnect), acting on its
+    /// row of the published surface.
+    fn primary_button(&self, d: &DeviceInfo) -> Button {
         let (label, primary) = self.primary_action(d);
         let path = d.path.clone();
-        let mut items = vec![row(Box::new(
-            ui::widget::ListRow::new(
+        self.on_row(
+            d,
+            Button::new(
+                &format!("settings.bluetooth.primary.{}", token(&d.path)),
+                &label,
+            )
+            .control_size(ui::widget::ControlSize::Small),
+            effect(primary).map(move |()| path.clone()),
+        )
+    }
+
+    /// A paired device: its name and state, its main button, and its
+    /// details opening in place. The row is keyed by the device's address,
+    /// so it stays open while discovery reads the devices again.
+    fn paired_row(&self, d: &DeviceInfo) -> Box<dyn Widget> {
+        Box::new(
+            DisclosureRow::keyed(
+                d.name.clone(),
+                self.device_details(d),
+                &self.details,
+                &d.address,
+            )
+            .icon(device_icon(&d.icon))
+            .secondary(Self::device_status_line(d))
+            .trailing(Box::new(self.primary_button(d))),
+        )
+    }
+
+    /// A device nearby, not paired: its name and Pair.
+    fn nearby_row(&self, d: &DeviceInfo) -> Box<dyn Widget> {
+        Box::new(
+            ListRow::new(
                 format!("settings.bluetooth.device.{}", token(&d.path)),
                 d.name.clone(),
             )
             .icon(device_icon(&d.icon))
             .secondary(Self::device_status_line(d))
-            .trailing(Box::new(self.on_row(
-                d,
-                Button::new(
-                    &format!("settings.bluetooth.primary.{}", token(&d.path)),
-                    &label,
-                ),
-                effect(primary).map(move |()| path.clone()),
-            ))),
-        ))];
-        if d.paired {
-            items.extend(self.device_detail_rows(d));
-        }
-        items
+            .trailing(Box::new(self.primary_button(d))),
+        )
     }
 
-    /// The pane of a device without an adapter: the card, its switch off
-    /// and disabled, and why.
-    fn without_adapter(&self) -> Box<dyn Widget> {
-        crate::widgets::cards(vec![card_with_action(
-            &t("settings-bluetooth-card"),
-            Box::new(
+    /// The radio's switch: on, off, or unavailable while it cannot be read
+    /// or there is no adapter.
+    fn radio_row(&self, on: bool, enabled: bool, detail: Option<&str>) -> Item {
+        let mut radio = ListRow::new("settings.bluetooth.radio", t("settings-bluetooth-card"))
+            .trailing(Box::new(
                 self.cx.bind(
-                    Toggle::from_state(&LocalState::new(false))
+                    Toggle::from_state(&LocalState::new(on))
                         .with_id("bluetooth.toggle")
-                        .with_enabled(false),
+                        .with_enabled(enabled),
                     effect(BluetoothEffect::SET_BLUETOOTH),
                 ),
-            ),
-            rows(vec![note(&t("settings-bluetooth-no-adapter"))]),
-        )])
+            ));
+        if let Some(detail) = detail {
+            radio = radio.secondary(detail);
+        }
+        row(Box::new(radio))
+    }
+
+    /// The pane of a device without an adapter: the switch off and
+    /// disabled, and why.
+    fn without_adapter(&self) -> Box<dyn Widget> {
+        crate::widgets::page(vec![untitled(rows(vec![self.radio_row(
+            false,
+            false,
+            Some(&t("settings-bluetooth-no-adapter")),
+        )]))])
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
         if adapter_absent(&self.cx) {
             return self.without_adapter();
         }
+        // An unread power state is not offered as a switch position.
+        let mut radio = vec![self.radio_row(self.powered, self.read_error.is_none(), None)];
+        if let Some(notice) = &self.notice {
+            radio.push(note(notice));
+        }
+        if let Some(error) = &self.read_error {
+            radio.push(block(error_caption(&t_args(
+                "settings-bluetooth-read-error",
+                &[("error", error.as_str().into())],
+            ))));
+            return crate::widgets::page(vec![untitled(rows(radio))]);
+        }
+        let mut sections = vec![untitled(rows(radio))];
+        let addresses: Vec<&str> = self
+            .devices
+            .iter()
+            .filter(|d| d.paired)
+            .map(|d| d.address.as_str())
+            .collect();
+        self.details.retain(&addresses);
+        let paired: Vec<Item> = self
+            .devices
+            .iter()
+            .filter(|d| d.paired)
+            .map(|d| row(self.paired_row(d)))
+            .collect();
+        // The person's devices stay listed while the radio is off; what is
+        // nearby is only known while it is on.
+        if !paired.is_empty() {
+            sections.push(section(&t("settings-bluetooth-my-devices"), rows(paired)));
+        }
+        if !self.powered {
+            return crate::widgets::page(sections);
+        }
+        let mut nearby: Vec<Item> = self
+            .devices
+            .iter()
+            .filter(|d| !d.paired)
+            .map(|d| row(self.nearby_row(d)))
+            .collect();
+        if nearby.is_empty() {
+            nearby.push(note(&t(if self.scanning {
+                "settings-bluetooth-looking"
+            } else {
+                "settings-bluetooth-empty"
+            })));
+        }
+        // What discovery finds is read in as it comes: no refresh.
         let scan = t(if self.scanning {
             "settings-bluetooth-stop"
         } else {
             "settings-bluetooth-find"
         });
-        // What discovery finds is read in as it comes: no refresh.
-        let mut body: Vec<Item> = vec![row(Box::new(self.cx.bind_invocation(
-            Button::new("settings.bluetooth.scan", &scan),
-            BluetoothEffect::SetDiscovering { on: !self.scanning },
-        )))];
-        if let Some(notice) = &self.notice {
-            body.push(note(notice));
-        }
-        if let Some(error) = &self.read_error {
-            body.push(row(error_caption(&t_args(
-                "settings-bluetooth-read-error",
-                &[("error", error.as_str().into())],
-            ))));
-        } else {
-            body.extend(self.devices.iter().flat_map(|d| self.device_row(d)));
-            if self.devices.is_empty() {
-                body.push(note(&t(if self.scanning {
-                    "settings-bluetooth-looking"
-                } else {
-                    "settings-bluetooth-empty"
-                })));
-            }
-        }
-        crate::widgets::cards(vec![card_with_action(
-            &t("settings-bluetooth-card"),
-            Box::new(
-                self.cx.bind(
-                    Toggle::from_state(&LocalState::new(self.powered))
-                        .with_id("bluetooth.toggle")
-                        // An unread power state is not offered as a switch position.
-                        .with_enabled(self.read_error.is_none()),
-                    effect(BluetoothEffect::SET_BLUETOOTH),
-                ),
+        sections.push(section_action(
+            &t("settings-bluetooth-nearby-devices"),
+            self.cx.bind_invocation(
+                Button::new("settings.bluetooth.scan", &scan),
+                BluetoothEffect::SetDiscovering { on: !self.scanning },
             ),
-            rows(body),
-        )])
+            rows(nearby),
+        ));
+        crate::widgets::page(sections)
     }
 }
 
@@ -966,16 +1035,6 @@ impl PaneModel for BluetoothModel {
         if self.scanning && ui::time::now() >= self.last_read + DISCOVERY_READ_INTERVAL {
             self.last_read = ui::time::now();
             self.read_again();
-        }
-        let paired: Vec<String> = self
-            .devices
-            .iter()
-            .filter(|device| device.paired)
-            .map(|device| device.path.clone())
-            .collect();
-        self.aliases.retain(|path, _| paired.contains(path));
-        for path in paired {
-            self.aliases.entry(path).or_default();
         }
         std::mem::take(&mut self.changed)
     }
@@ -1090,6 +1149,7 @@ impl BluetoothControl for SampleBluetooth {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
 
     struct Mock {
         calls: Mutex<Vec<String>>,
@@ -1209,6 +1269,50 @@ mod tests {
             !text.iter().any(|line| line.contains("Headphones")),
             "{text:#?}"
         );
+    }
+
+    /// The open disclosure rows in `widget`'s tree, by title.
+    fn open_rows(widget: &dyn Widget, out: &mut Vec<String>) {
+        if let Some(row) = widget
+            .as_any()
+            .and_then(|any| any.downcast_ref::<DisclosureRow>())
+            && row.is_open()
+        {
+            out.extend(widget.accessibility().and_then(|node| node.name));
+        }
+        for child in widget.children() {
+            open_rows(child, out);
+        }
+    }
+
+    /// A paired device's details open in place, and stay open while
+    /// discovery reads the devices again every two seconds and the page is
+    /// rebuilt from the new reading.
+    #[test]
+    fn a_devices_details_stay_open_while_discovery_reads_the_devices_again() {
+        let _settled = ui::motion::testing::settled();
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let control: Arc<dyn BluetoothControl> = Arc::new(Mock {
+            calls: Mutex::new(vec![]),
+            devices: vec![dev()],
+        });
+        let read = read_adapter_of(control.as_ref());
+        let mut model = BluetoothModel::with_read(cx, control, read);
+        let mut opened = Vec::new();
+        open_rows(model.build_composition().as_ref(), &mut opened);
+        assert!(opened.is_empty(), "closed until opened: {opened:?}");
+
+        // The person opens Headphones' details.
+        DisclosureRow::keyed("Headphones", Box::new(Row::new()), &model.details, "AA")
+            .set_open(true);
+        for _ in 0..3 {
+            model.refresh();
+            let mut opened = Vec::new();
+            open_rows(model.build_composition().as_ref(), &mut opened);
+            assert_eq!(opened.len(), 1, "still open after a read: {opened:?}");
+            assert!(opened[0].starts_with("Headphones"), "{opened:?}");
+        }
     }
 
     fn dev() -> DeviceInfo {

@@ -994,7 +994,7 @@ impl MouseKeyboardPane {
                 ),
             ));
         }
-        card(&t("input-layouts-title"), rows(content))
+        section(&t("input-layouts-title"), rows(content))
     }
 
     /// What the page needs of the catalogue to offer layouts to add.
@@ -1023,7 +1023,7 @@ impl MouseKeyboardPane {
                     .with_placeholder(t("input-test-typing-placeholder")),
             ),
         ));
-        card(&t("input-keyboard-title"), rows(items))
+        section(&t("input-keyboard-title"), rows(items))
     }
 
     /// One row per attached keyboard whose own list overrides the shared

@@ -39,7 +39,7 @@ use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{Item, block, card, error_row, note, rows, setting_row, value_row};
+use crate::widgets::{Item, block, error_row, note, rows, section, setting_row, value_row};
 use globe::{SharedGlobe, TimeZoneGlobe, degrees_apart};
 use tilo_locale::Locale;
 use ui::clock::TimeStyle;
@@ -798,7 +798,7 @@ impl TimeDatePane {
             None
         };
 
-        let clock = card(
+        let clock = section(
             &t("time-clock-title"),
             rows(vec![
                 auto_row,
@@ -818,9 +818,9 @@ impl TimeDatePane {
 
         let mut map_rows = vec![block(self.zone_picker())];
         map_rows.extend(map_note.as_deref().map(note));
-        let map = card(&t("time-map-title"), rows(map_rows));
+        let map = section(&t("time-map-title"), rows(map_rows));
 
-        let source = card(
+        let source = section(
             &t("time-source-title"),
             rows(match &self.status_error {
                 _ if !self.read => vec![value_row(&t("time-sync"), &t("time-reading"))],
@@ -837,9 +837,12 @@ impl TimeDatePane {
 
         let mut cards = vec![clock, map, source];
         if let Some(notice) = &self.notice_shown {
-            cards.insert(0, card(&t("time-notice-title"), rows(vec![note(notice)])));
+            cards.insert(
+                0,
+                section(&t("time-notice-title"), rows(vec![note(notice)])),
+            );
         }
-        crate::widgets::cards(cards)
+        crate::widgets::page(cards)
     }
 }
 

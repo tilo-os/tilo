@@ -51,7 +51,7 @@ use crate::prefs::AudioPrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    Item, SettingsSection, block, card, error_caption, error_row, note, row, rows, setting_row,
+    Item, SettingsSection, block, error_caption, error_row, note, row, rows, section, setting_row,
     setting_row_described,
 };
 
@@ -148,9 +148,6 @@ pub enum AudioEffect {
     /// Mute or unmute one app.
     #[effect(row, job, idempotent)]
     SetStreamMuted { stream: u32, muted: bool },
-    /// Show or hide the speaker tests.
-    #[effect(view)]
-    ShowSoundTests { show: bool },
     /// Play a test tone on the left or right speaker.
     #[effect(label = "Test speaker")]
     TestSpeaker {
@@ -323,13 +320,16 @@ fn device_is_headphones(name: &str) -> bool {
         .any(|word| name.contains(word))
 }
 
-/// The narrowest an app's volume slider gets, and its name beside the
-/// controls before they move under it.
-const STREAM_SLIDER_WIDTH: f32 = 220.0;
+/// How wide an app's volume slider is, and the narrowest it gets.
+const STREAM_SLIDER_WIDTH: f32 = 172.0;
 const STREAM_SLIDER_MIN_WIDTH: f32 = 88.0;
-const STREAM_LABEL_MIN_WIDTH: f32 = 160.0;
+/// How wide an app's route chooser is.
+const STREAM_ROUTE_WIDTH: f32 = 132.0;
 /// How wide the output volume slider is, with its value beside it.
-const OUTPUT_SLIDER_WIDTH: f32 = 172.0;
+const OUTPUT_SLIDER_WIDTH: f32 = 184.0;
+/// What follows the volume slider on its row (the gap and the mute
+/// button): the meter under the slider leaves the same room.
+const OUTPUT_METER_TRAIL: f32 = 36.0;
 
 struct NoopAudioRuntime;
 impl AudioRuntimeControl for NoopAudioRuntime {
@@ -786,7 +786,6 @@ pub struct AudioModel {
     sound_themes: Vec<SoundTheme>,
     /// Whether this machine can play event sounds at all.
     event_sounds_available: bool,
-    tests_shown: bool,
     /// Why the output volume could not be read; the slider and mute switch
     /// are then not offered at a made-up level.
     volume_error: Option<String>,
@@ -810,6 +809,23 @@ pub struct AudioModel {
     /// While a pane shows the area: `PipeWire`'s own change stream, which
     /// says when to re-read the graph.
     following: std::rc::Weak<GraphMonitor>,
+    /// What the output in use plays, for its meter.
+    output_meter: level_meter::Level,
+    /// While a pane shows the area: the capture behind the output's meter.
+    /// Held by the pane, so it ends when the page is left.
+    metering: std::rc::Weak<OutputMetering>,
+}
+
+/// The capture behind the output meter, owned by the pane that shows it:
+/// dropping it (leaving the page) ends the capture, so the meter costs
+/// nothing while the page is not shown.
+#[derive(Default)]
+struct OutputMetering {
+    /// The output being metered and its capture.
+    session: std::cell::RefCell<Option<(String, Box<dyn BoundedSession>)>>,
+    /// An output whose capture could not start or ended: not tried again
+    /// until the output in use changes.
+    refused: std::cell::RefCell<Option<String>>,
 }
 
 /// `pw-dump --monitor`, held open while a pane shows the Sound area. It
@@ -1059,7 +1075,6 @@ impl AudioModel {
             prefs: cx.follow::<AudioPrefs>(),
             sound_themes,
             event_sounds_available,
-            tests_shown: false,
             volume_error,
             input_error,
             devices_error,
@@ -1074,6 +1089,8 @@ impl AudioModel {
             changes: DeviceChanges::default(),
             rescan: crate::device_read::DeviceRead::default(),
             following: std::rc::Weak::new(),
+            output_meter: level_meter::Level::default(),
+            metering: std::rc::Weak::new(),
             cx,
         }
     }
@@ -1096,7 +1113,6 @@ impl AudioModel {
             prefs: cx.follow::<AudioPrefs>(),
             sound_themes: Vec::new(),
             event_sounds_available: false,
-            tests_shown: false,
             volume_error: None,
             input_error: None,
             devices_error: None,
@@ -1111,6 +1127,8 @@ impl AudioModel {
             changes: DeviceChanges::default(),
             rescan: crate::device_read::DeviceRead::default(),
             following: std::rc::Weak::new(),
+            output_meter: level_meter::Level::default(),
+            metering: std::rc::Weak::new(),
             cx,
         }
     }
@@ -1158,6 +1176,9 @@ impl AudioModel {
         let mut model = Self::detached(cx);
         model.volume = 0.65;
         model.input_volume = 0.7;
+        // Music plays on the speakers: their meter shows it.
+        model.output_meter.set(0.46);
+        model.output_meter.set_live(true);
         model.with_graph(graph, Arc::new(NoopGraphControl))
     }
 
@@ -1449,17 +1470,6 @@ impl AudioModel {
                     .ok_or_else(|| t("sound-notice-theme-missing"))?;
                 self.save_sounds(|sounds| sounds.theme = Some(id))
             }
-            AudioEffect::ShowSoundTests { show } => {
-                self.tests_shown = *show;
-                if !show {
-                    self.channel_test = None;
-                }
-                Ok(t(if *show {
-                    "sound-notice-diag-on"
-                } else {
-                    "sound-notice-diag-off"
-                }))
-            }
             AudioEffect::TestSpeaker { channel } => {
                 let left = match channel.as_str() {
                     "left" => true,
@@ -1612,7 +1622,7 @@ impl AudioModel {
             self.speakers_card(),
             self.build_system_sounds_card(),
         ]);
-        crate::widgets::cards(cards)
+        crate::widgets::page(cards)
     }
 
     /// The way into Speakers: several of your devices as one set.
@@ -1624,7 +1634,7 @@ impl AudioModel {
                 pane: crate::categories::Category::Speakers.slug().to_owned(),
             },
         );
-        crate::widgets::card(
+        crate::widgets::section(
             &t("sound-speakers-title"),
             rows(vec![setting_row_described(
                 &t("sound-speakers-row"),
@@ -1701,12 +1711,35 @@ impl AudioModel {
                         .push(Box::new(mute)),
                 ),
             ));
+            // What the output in use plays, while the page is open.
+            // It sits under the volume slider, as wide as it.
+            if self.output_meter.is_live() {
+                output_rows.push(block(Box::new(
+                    Row::new()
+                        .no_wrap()
+                        .with_justify(taffy::JustifyContent::FlexEnd)
+                        .push(Box::new(
+                            ui::widget::Container::new()
+                                .with_no_padding()
+                                .with_width(OUTPUT_SLIDER_WIDTH)
+                                .with_child(Box::new(level_meter::LevelMeter::new(
+                                    &self.output_meter,
+                                    t("sound-output-level"),
+                                ))),
+                        ))
+                        .push(Box::new(
+                            ui::widget::Container::new()
+                                .with_no_padding()
+                                .with_width(OUTPUT_METER_TRAIL),
+                        )),
+                )));
+            }
         }
         let stereo_sink = self.graph.default_sink().filter(|sink| sink.channels == 2);
         if self.runtime_caps.balance && stereo_sink.is_some() {
             output_rows.push(setting_row(
                 &t("sound-balance"),
-                Box::new(
+                crate::widgets::trailing_slider(Box::new(
                     self.cx.bind_field_with(
                         Slider::from_state(&LocalState::new(f64::from(
                             self.prefs.get().balance.clamp(0.0, 1.0),
@@ -1719,7 +1752,7 @@ impl AudioModel {
                         )]
                         |balance: f64| Ok(balance as f32),
                     ),
-                ),
+                )),
             ));
         }
         if self.runtime_caps.mono_output && stereo_sink.is_some() {
@@ -1730,44 +1763,40 @@ impl AudioModel {
             output_rows.push(note(&t("sound-mono-caption")));
         }
         if self.runtime_caps.channel_test && stereo_sink.is_some() {
-            output_rows.push(row(Box::new(Row::new().push(Box::new(
+            // A tone on one side, then the other: one row, its two buttons
+            // the row's control.
+            let side = |id: &str, label: &str, channel: &str| {
                 self.cx.bind_invocation(
-                    Button::new(
-                        "settings.audio.advanced",
-                        &if self.tests_shown {
-                            t("sound-test-hide")
-                        } else {
-                            t("sound-test-show")
-                        },
-                    ),
-                    AudioEffect::ShowSoundTests {
-                        show: !self.tests_shown,
+                    Button::new(id, label).control_size(ui::widget::ControlSize::Small),
+                    AudioEffect::TestSpeaker {
+                        channel: channel.into(),
                     },
-                ),
-            )))));
-            if self.tests_shown {
-                output_rows.push(row(Box::new(
+                )
+            };
+            output_rows.push(setting_row_described(
+                &t("sound-test-row"),
+                &t("sound-test-caption"),
+                Box::new(
                     Row::new()
-                        .push(Box::new(self.cx.bind_invocation(
-                            Button::new("settings.audio.test.left", &t("sound-test-left")),
-                            AudioEffect::TestSpeaker {
-                                channel: "left".into(),
-                            },
+                        .no_wrap()
+                        .with_rhythm(ui::tokens::Rhythm::Related)
+                        .push(Box::new(side(
+                            "settings.audio.test.left",
+                            &t("sound-test-left"),
+                            "left",
                         )))
-                        .push(Box::new(self.cx.bind_invocation(
-                            Button::new("settings.audio.test.right", &t("sound-test-right")),
-                            AudioEffect::TestSpeaker {
-                                channel: "right".into(),
-                            },
+                        .push(Box::new(side(
+                            "settings.audio.test.right",
+                            &t("sound-test-right"),
+                            "right",
                         ))),
-                )));
-                output_rows.push(note(&t("sound-test-caption")));
-            }
+                ),
+            ));
         }
         if let Some(notice) = &self.runtime_notice {
             output_rows.push(note(notice));
         }
-        card(&t("sound-output"), rows(output_rows))
+        section(&t("sound-output"), rows(output_rows))
     }
 
     /// The "Input" card: an optional source picker, then the mic level and
@@ -1834,7 +1863,7 @@ impl AudioModel {
             );
             input_rows.push(note(&t("sound-echo-caption")));
         }
-        card(&t("sound-input"), rows(input_rows))
+        section(&t("sound-input"), rows(input_rows))
     }
 
     /// The "Device capabilities" card: per-hardware profile pickers (only for
@@ -1877,7 +1906,7 @@ impl AudioModel {
                 ));
             }
         }
-        (!hardware_rows.is_empty()).then(|| card(&t("sound-hardware"), rows(hardware_rows)))
+        (!hardware_rows.is_empty()).then(|| section(&t("sound-hardware"), rows(hardware_rows)))
     }
 
     /// Build one streams card (Applications or Recording). Each stream becomes
@@ -1893,7 +1922,7 @@ impl AudioModel {
         empty_note: &str,
     ) -> SettingsSection {
         if streams.is_empty() {
-            return card(title, rows(vec![note(empty_note)]));
+            return section(title, rows(vec![note(empty_note)]));
         }
         // Picker options: every device label, plus a leading "follow default".
         let mut options = vec![follow_shown()];
@@ -1903,7 +1932,7 @@ impl AudioModel {
         for s in streams {
             items.push(row(self.stream_row(s, &options, devices.len() >= 2)));
         }
-        card(title, rows(items))
+        section(title, rows(items))
     }
 
     /// Outputs or inputs as rows to choose from, the one in use checked;
@@ -1954,18 +1983,6 @@ impl AudioModel {
     fn stream_row(&self, s: &AudioStream, options: &[String], routable: bool) -> Box<dyn Widget> {
         let id = s.id;
         let muted = s.muted.unwrap_or(false);
-        let mut label = ui::widget::Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_rhythm(ui::tokens::Rhythm::Tight)
-            .push(Box::new(ui::widget::Text::new(&s.app)));
-        if let Some(media) = s.media_name.as_deref().filter(|media| !media.is_empty()) {
-            label = label.push(Box::new(
-                ui::widget::Text::new(media)
-                    .with_role(ui::TextRole::Caption)
-                    .dimmed(),
-            ));
-        }
         // The stream's controls act on its row of the published surface,
         // where its volume, mute and route are operations.
         let resource = stream_live_row(s).into_resource();
@@ -1997,10 +2014,9 @@ impl AudioModel {
                 effect(AudioEffect::SET_STREAM_MUTED).map(move |()| (id, !muted)),
             ),
         );
-        // The volume and its mute button stay together; in a narrow window
-        // they, and then the route, move under the name.
-        let controls = Row::new()
-            .no_wrap()
+        // The volume and its mute button stay together, then the route; in
+        // a narrow window they move under the name.
+        let mut controls = Row::new()
             .with_align_items(taffy::AlignItems::Center)
             .with_rhythm(ui::tokens::Rhythm::Related)
             .push(Box::new(
@@ -2013,17 +2029,6 @@ impl AudioModel {
                     .with_child(Box::new(volume)),
             ))
             .push(Box::new(mute));
-        let mut line = Row::new()
-            .with_align_items(taffy::AlignItems::Center)
-            .with_rhythm(ui::tokens::Rhythm::Sibling)
-            .push(Box::new(
-                ui::widget::Container::new()
-                    .with_no_padding()
-                    .with_flex_grow()
-                    .with_min_width(STREAM_LABEL_MIN_WIDTH)
-                    .with_child(Box::new(label)),
-            ))
-            .push(Box::new(controls));
         if routable {
             let current = self.stream_target_label(s);
             let route = Dropdown::from_state(options.to_vec(), &LocalState::new(current.clone()))
@@ -2036,7 +2041,17 @@ impl AudioModel {
                     effect(AudioEffect::ROUTE_STREAM).map(move |device: String| (id, device)),
                 ),
             );
-            line = line.push(Box::new(route));
+            controls = controls.push(Box::new(
+                ui::widget::Container::new()
+                    .with_no_padding()
+                    .with_width(STREAM_ROUTE_WIDTH)
+                    .with_child(Box::new(route)),
+            ));
+        }
+        let mut line = ui::widget::ListRow::new(format!("audio.stream.{id}"), s.app.clone())
+            .trailing(Box::new(controls));
+        if let Some(media) = s.media_name.as_deref().filter(|media| !media.is_empty()) {
+            line = line.secondary(media);
         }
         Box::new(line)
     }
@@ -2072,7 +2087,7 @@ impl AudioModel {
                 ))),
                 None => note(&t("sound-system-missing")),
             };
-            return card(&t("sound-system"), rows(vec![reason]));
+            return section(&t("sound-system"), rows(vec![reason]));
         }
         let mut sound_rows = vec![
             self.cx
@@ -2084,7 +2099,7 @@ impl AudioModel {
                 ),
         ];
         if !sounds.enabled {
-            return card(&t("sound-system"), rows(sound_rows));
+            return section(&t("sound-system"), rows(sound_rows));
         }
         sound_rows.push(
             self.cx
@@ -2130,7 +2145,7 @@ impl AudioModel {
             );
         }
         sound_rows.push(note(&t("sound-system-caption")));
-        card(&t("sound-system"), rows(sound_rows))
+        section(&t("sound-system"), rows(sound_rows))
     }
 
     /// Re-enumerate the graph on the hotplug throttle. When the topology
@@ -2213,6 +2228,57 @@ impl AudioModel {
         if self.poll_hotplug() {
             self.changed = true;
         }
+        self.follow_output_meter();
+    }
+
+    /// Keep the output meter on the output in use while a pane shows it:
+    /// start its capture, move it when the default output changes, and let
+    /// it go when it ends. Without a pane nothing is captured.
+    fn follow_output_meter(&mut self) {
+        if !self.cx.reaches_devices() {
+            // A capture or a test shows the level it was given.
+            return;
+        }
+        let Some(metering) = self.metering.upgrade() else {
+            self.output_meter.set_live(false);
+            return;
+        };
+        let sink = self
+            .graph
+            .default_sink()
+            .map(|sink| sink.name.clone())
+            .filter(|_| self.runtime_caps.microphone_meter);
+        let mut session = metering.session.borrow_mut();
+        if let Some((name, running)) = session.as_mut() {
+            if Some(&*name) == sink.as_ref() && running.running() {
+                return;
+            }
+            if running.running() {
+                // The output in use changed: meter the new one.
+                *session = None;
+            } else {
+                *metering.refused.borrow_mut() = Some(name.clone());
+                *session = None;
+            }
+        }
+        self.output_meter.set_live(false);
+        let Some(sink) = sink else {
+            return;
+        };
+        if metering.refused.borrow().as_ref() == Some(&sink) {
+            return;
+        }
+        let publish = self.output_meter.publisher(ui::WakeHandle::new());
+        match self.runtime.start_output_meter(&sink, Box::new(publish)) {
+            Ok(started) => {
+                *session = Some((sink, started));
+                self.output_meter.set_live(true);
+            }
+            Err(error) => {
+                tracing::debug!(target: "tilo::settings", %error, "the output meter could not start");
+                *metering.refused.borrow_mut() = Some(sink);
+            }
+        }
     }
 }
 
@@ -2255,12 +2321,18 @@ impl PaneModel for AudioModel {
         if !self.cx.reaches_devices() {
             return None;
         }
-        if let Some(monitor) = self.following.upgrade() {
-            return Some(monitor);
-        }
-        let monitor = Rc::new(GraphMonitor::start()?);
-        self.following = Rc::downgrade(&monitor);
-        Some(monitor)
+        let metering = self.metering.upgrade().unwrap_or_else(|| {
+            let metering = Rc::new(OutputMetering::default());
+            self.metering = Rc::downgrade(&metering);
+            metering
+        });
+        let monitor = self.following.upgrade().or_else(|| {
+            let monitor = Rc::new(GraphMonitor::start()?);
+            self.following = Rc::downgrade(&monitor);
+            Some(monitor)
+        });
+        self.follow_output_meter();
+        Some(Rc::new((monitor, metering)))
     }
 }
 

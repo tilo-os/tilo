@@ -33,7 +33,7 @@ use crate::prefs::AppearancePrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    El, Item, SettingsSection, card, error_row, note, rows, setting_row, value_row,
+    El, Item, SettingsSection, error_row, note, rows, section, setting_row, value_row,
 };
 
 fn executable_available(name: &str) -> bool {
@@ -399,7 +399,7 @@ impl AccessibilityPane {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        crate::widgets::cards(vec![
+        crate::widgets::page(vec![
             self.build_vision_card(),
             self.build_pointer_card(),
             self.build_typing_card(),
@@ -411,7 +411,7 @@ impl AccessibilityPane {
     // --- Vision: high contrast, reduce motion, text size.
     fn build_vision_card(&self) -> SettingsSection {
         let shown = &self.shown;
-        card(
+        section(
             &t("a11y-vision-title"),
             rows(vec![
                 self.cx
@@ -467,7 +467,7 @@ impl AccessibilityPane {
     // --- Pointer: mouse keys, large cursor + size.
     fn build_pointer_card(&self) -> SettingsSection {
         let shown = &self.shown;
-        card(
+        section(
             &t("a11y-pointer-title"),
             rows(vec![
                 self.cx
@@ -527,7 +527,7 @@ impl AccessibilityPane {
                 AccessibilitySettings::paths().on_screen_keyboard,
                 |label: String| osk_mode(&label),
             );
-        card(
+        section(
             &t("a11y-typing-title"),
             rows(vec![
                 self.cx
@@ -643,7 +643,7 @@ impl AccessibilityPane {
                 &t("a11y-screen-reader-missing"),
             )]
         };
-        card(
+        section(
             &t("a11y-advanced-title"),
             rows(
                 reader_rows
@@ -682,7 +682,7 @@ impl AccessibilityPane {
     }
 
     fn build_explainer_card() -> SettingsSection {
-        card(
+        section(
             &t("a11y-shared-title"),
             rows(vec![note(&t("a11y-shared-caption"))]),
         )

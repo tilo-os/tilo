@@ -1,23 +1,23 @@
-//! Small composition helpers shared across the settings panels.
+//! The settings pages' vocabulary, on the design system's primitives
+//! (`docs/design-language.md`, "Primitives").
 //!
-//! These build on `ui`'s widgets — they don't reimplement rendering, they
-//! just bundle the recurring shapes (a titled section, a label/value row, a
-//! status badge) so every panel reads consistently and the panels stay
-//! short. Nothing here is settings-specific beyond the visual grammar.
-//!
-//! A pane is a stack of sections on the window ground, separated by space
-//! and type weight rather than boxes (design language, "Edges"): a section
-//! is a [`ui::widget::Section`] with a `Heading` title over its rows.
+//! A page is a stack of groups on the window ground, separated by space and
+//! type weight rather than boxes: each group is a [`ui::widget::Section`]
+//! with a `Heading` title over its rows. A setting is a
+//! [`ui::widget::ListRow`]: its label, an optional one-line explanation
+//! under it, and its control on the trailing edge. Consecutive rows are one
+//! list, edge to edge with an inset separator between them. A reading is a
+//! row whose value trails; a thing you act on is a row of its own (a
+//! device, an account), its secondary actions in its [`ui::widget::RowMenu`].
 //!
 //! ## Spacing vocabulary
 //!
 //! Every gap here is a relationship ([`Rhythm`]), resolved against the live
-//! theme at layout time, so a pane reads as groups rather than as a wall of
-//! equally spaced lines:
+//! theme at layout time:
 //!
 //! - **tight** — a description hugs the label it explains;
-//! - **sibling** — related rows inside one section;
-//! - **group** — one section to the next.
+//! - **sibling** — a note under a group's rows, a block among them;
+//! - **group** — one group to the next.
 
 use std::cell::Cell;
 
@@ -25,8 +25,8 @@ use ui::icons::Icon;
 use ui::tokens::{Metrics, Rhythm, Spacing, SpacingStep, TextRole};
 pub use ui::widget::Tone as StatusTone;
 use ui::widget::{
-    Badge, Button, ChipStyle, Column, Container, ControlSize, Field, Form, FormSection, IconSize,
-    IconWidget, LabelPlacement, Row, Spacer, Text, Widget,
+    Badge, Button, ChipStyle, Column, Container, ControlSize, IconSize, IconWidget, ListRow, Row,
+    Section, SectionHeader, Spacer, Text, TextStack, Widget,
 };
 
 /// Type alias for the boxed-widget currency the `ui` tree speaks.
@@ -50,27 +50,22 @@ pub fn gap(step: SpacingStep) -> El {
     Box::new(Spacer::token(step))
 }
 
-/// One entry of a settings section. A section's layout (label column, row
-/// height, dividers, responsive stacking) belongs to the toolkit's
-/// [`FormSection`], which only understands rows; so a pane can only hand a
-/// section the things a section knows how to lay out, never a bare widget:
+/// One entry of a group:
 ///
-/// - a labelled row ([`setting_row`], [`choice_row`], [`value_row`], ...);
-/// - a free row ([`row`]): a line of buttons, a list entry, a status line;
-/// - a block ([`block`]): content that is not a row (a chart, a preview);
+/// - a row ([`setting_row`], [`value_row`], [`thing_row`], or any list row
+///   handed to [`row`]): consecutive rows are one list;
+/// - a block ([`block`], [`field_row`]): content that is not a row (a chart,
+///   a preview, a field with its label above it);
 /// - a [`note`]: the sentence under the group that explains it.
-///
-/// `row` and `block` are the explicit, greppable escape hatches.
 pub struct Item(ItemKind);
 
 enum ItemKind {
-    Field(Field),
     Row(El),
     Block(El),
     Note(String),
 }
 
-/// The entries of one section: what [`rows`] collects.
+/// The entries of one group: what [`rows`] collects.
 pub struct Body(Vec<Item>);
 
 impl Body {
@@ -88,9 +83,9 @@ impl From<Vec<Item>> for Body {
 }
 
 /// One group of a settings page: an optional heading (with an optional
-/// action on its trailing edge) over its entries. Built by [`card`],
-/// [`card_with_action`] and [`block_section`], assembled into a page by
-/// [`cards`].
+/// element on its trailing edge) over its entries. Built by [`section`],
+/// [`section_with`], [`block_section`] and [`untitled`], assembled into a
+/// page by [`page`].
 pub struct SettingsSection {
     heading: Heading,
     body: Vec<Item>,
@@ -99,19 +94,18 @@ pub struct SettingsSection {
 enum Heading {
     None,
     Title(String),
-    Action(String, El),
+    Trailing(String, El),
+    Action(String, Button),
 }
 
 impl SettingsSection {
-    fn into_form_section(self) -> FormSection {
-        let mut section = match self.heading {
-            Heading::None => FormSection::untitled(),
-            Heading::Title(title) => FormSection::new(title),
-            Heading::Action(title, action) => FormSection::with_action(title, action),
-        }
-        .grouped();
+    /// The group as the toolkit's [`Section`]. Notes that open the group
+    /// read under its heading, before the rows; every other note stands
+    /// under the group, after its last row.
+    #[must_use]
+    pub fn into_section(self) -> Section {
         let mut body = self.body.into_iter().peekable();
-        // An opening note reads straight under the heading, before the rows.
+        let mut items: Vec<El> = Vec::new();
         let mut intro = Vec::new();
         while let Some(Item(ItemKind::Note(_))) = body.peek() {
             if let Some(Item(ItemKind::Note(text))) = body.next() {
@@ -119,40 +113,35 @@ impl SettingsSection {
             }
         }
         if !intro.is_empty() {
-            section = section.content(notes_block(&intro));
+            items.push(notes_block(&intro));
         }
-        // Every other note stands under the group, after its last row.
         let mut notes = Vec::new();
         for item in body {
             match item.0 {
                 ItemKind::Note(text) => notes.push(text),
-                ItemKind::Field(field) => section = section.field(field),
-                ItemKind::Row(control) => section = section.control_row(padded(control)),
-                ItemKind::Block(content) => section = section.content(padded(content)),
+                ItemKind::Row(content) | ItemKind::Block(content) => items.push(content),
             }
         }
         if !notes.is_empty() {
-            section = section.content(notes_block(&notes));
+            items.push(notes_block(&notes));
         }
-        section
+        let section = Section::new(items);
+        match self.heading {
+            Heading::None => section,
+            Heading::Title(title) => section.with_header(SectionHeader::heading(title)),
+            Heading::Trailing(title, trailing) => {
+                section.with_header(SectionHeader::heading(title).trailing(trailing))
+            }
+            Heading::Action(title, action) => {
+                section.with_header(SectionHeader::heading(title).action(action))
+            }
+        }
     }
-}
-
-/// A block's own vertical breathing room inside a grouped (zero-gap) list.
-fn padded(content: El) -> El {
-    Box::new(
-        Column::new()
-            .with_no_padding()
-            .with_vertical_padding(spacing().s2)
-            .with_intrinsic_height()
-            .push(content),
-    )
 }
 
 fn notes_block(notes: &[String]) -> El {
     let mut column = Column::new()
         .with_no_padding()
-        .with_vertical_padding(spacing().s2)
         .with_intrinsic_height()
         .with_rhythm(Rhythm::Tight);
     for note in notes {
@@ -161,70 +150,79 @@ fn notes_block(notes: &[String]) -> El {
     Box::new(column)
 }
 
-/// The whole page: sections one group apart in a single [`Form`], so every
-/// section shares one label column and one beside/stacked decision, and the
-/// frame (readable width, scrolling, gutters) is the shell's.
-pub fn cards(sections: Vec<SettingsSection>) -> El {
-    Box::new(form(sections))
-}
-
-/// The same form inside either an existing Settings page or a standalone SDK `FormPage`.
-pub fn form(sections: Vec<SettingsSection>) -> Form {
-    sections.into_iter().fold(
-        Form::new().with_section_spacing(Some(spacing().rhythm.group)),
-        |form, section| form.section(section.into_form_section()),
+/// The whole page: its groups one `group` apart. The frame (readable width,
+/// scrolling, gutters) is the shell's.
+pub fn page(sections: Vec<SettingsSection>) -> El {
+    Box::new(
+        sections.into_iter().fold(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_rhythm(Rhythm::Group),
+            |page, section| page.push(Box::new(section.into_section())),
+        ),
     )
 }
 
-/// The entries of a section, in order.
+/// The entries of a group, in order.
 pub fn rows(items: Vec<Item>) -> Body {
     Body(items)
 }
 
-/// A free row of a section: it spans the label and control columns and has
-/// the height and dividers of the rows around it (a line of buttons, a
-/// list entry, a status line).
+/// A row of a group: a [`ListRow`] (or a [`ui::widget::DisclosureRow`])
+/// built by the page, which joins the rows around it into one list.
 pub fn row(content: El) -> Item {
     Item(ItemKind::Row(content))
 }
 
-/// A block of a section that is not a row (a chart, a preview, a table):
-/// full width, spaced from the rows around it.
+/// A block of a group that is not a row (a chart, a preview, a status
+/// line): full width, `sibling` apart from the rows around it.
 pub fn block(content: El) -> Item {
     Item(ItemKind::Block(content))
 }
 
-/// The sentence under a section that explains it: dim, wrapped, after the
-/// last row (or before the first when it opens the section).
+/// The sentence under a group that explains it: dim, wrapped, after the
+/// last row (or before the first when it opens the group).
 pub fn note(text: &str) -> Item {
     Item(ItemKind::Note(text.to_owned()))
 }
 
-/// A titled section: a `Heading` line over `body`, sitting on the ground.
-/// Groups are separated by space, never boxed.
-pub fn card(title: &str, body: Body) -> SettingsSection {
+/// A titled group: a `Heading` line over `body`, on the ground. Groups are
+/// separated by space, never boxed.
+pub fn section(title: &str, body: Body) -> SettingsSection {
     SettingsSection {
         heading: Heading::Title(title.to_owned()),
         body: body.0,
     }
 }
 
-/// A section whose title row also carries a trailing element (a master
-/// switch, a status badge or an "Add" button) on the same line as the title.
-pub fn card_with_action(title: &str, action: El, body: Body) -> SettingsSection {
+/// A group whose heading also carries one element on its trailing edge:
+/// the switch for the whole group, its status as a badge, or the one
+/// action that adds to it.
+pub fn section_with(title: &str, trailing: El, body: Body) -> SettingsSection {
+    SettingsSection {
+        heading: Heading::Trailing(title.to_owned(), trailing),
+        body: body.0,
+    }
+}
+
+/// A group whose heading carries the one text action that acts on the
+/// whole group ("Look for devices", "Add printer"), its label on the
+/// trailing edge.
+pub fn section_action(title: &str, action: Button, body: Body) -> SettingsSection {
     SettingsSection {
         heading: Heading::Action(title.to_owned(), action),
         body: body.0,
     }
 }
 
-/// A section holding one free-standing block (a pane's identity header, a
+/// A group holding one free-standing block (a pane's identity header, a
 /// preview), with no heading.
 pub fn block_section(content: El) -> SettingsSection {
     untitled(rows(vec![block(content)]))
 }
 
-/// A section without a heading: the opening group of a pane whose title
+/// A group without a heading: the opening group of a pane whose title
 /// already says what it is.
 pub fn untitled(body: Body) -> SettingsSection {
     SettingsSection {
@@ -233,142 +231,136 @@ pub fn untitled(body: Body) -> SettingsSection {
     }
 }
 
-/// The label of a row: it takes the width its control leaves over and wraps
-/// there, so a long label never pushes the control off the row.
-fn row_label(label: &str) -> El {
-    Box::new(
-        Container::new()
-            .with_no_padding()
-            .with_flex_grow()
-            .with_child(Box::new(Text::new(label))),
-    )
+/// The list row of a setting labelled `label`: the label, `description`
+/// under it, `control` on the trailing edge (under the text when the row is
+/// too narrow for both).
+fn setting_list_row(label: &str, description: Option<&str>, control: El) -> ListRow {
+    let row = ListRow::new(format!("setting/{label}"), label).trailing(control);
+    match description {
+        Some(description) => row.secondary(description).two_line_secondary(),
+        None => row,
+    }
 }
 
-/// One line of a settings list: `lead` takes the room, `control` keeps its
-/// own size at the trailing edge and is centred on the line, which is at
-/// least a control high so every row of a list keeps one rhythm.
-fn trailing_row(lead: El, control: El) -> El {
-    Box::new(
-        Row::new()
-            .no_wrap()
-            .with_min_height(ControlSize::Regular)
-            .with_align_items(taffy::AlignItems::Center)
-            .push(lead)
-            .push(control),
-    )
-}
-
-/// A labelled row of a settings section: a [`Field`] whose control keeps its
-/// own width at the trailing edge beside the label, and takes the full width
-/// beneath it once the section is too narrow for the pair.
-fn labelled_row(label: &str, description: Option<&str>, control: El) -> Item {
-    let field = Field::custom(label, control).with_trailing_control();
-    Item(ItemKind::Field(match description {
-        Some(description) => field.with_help(description),
-        None => field,
-    }))
-}
-
-/// A label-on-the-left, control-on-the-right row — the workhorse settings
-/// line. The label grows to the control and the control stays at the
-/// trailing edge, centred on the line whatever its height.
+/// A setting: its label, its control on the trailing edge. The workhorse
+/// settings line.
 pub fn setting_row(label: &str, control: El) -> Item {
-    labelled_row(label, None, control)
+    row(Box::new(setting_list_row(label, None, control)))
 }
 
-/// A label/value row where the value is plain read-only text.
+/// A reading: a label with its value trailing, in secondary ink.
 pub fn value_row(label: &str, value: &str) -> Item {
-    // A reading takes the room the label leaves, flush with the trailing
-    // edge, instead of the narrow column a chooser gets, so a long value
-    // wraps only when the row is really full.
-    Item(ItemKind::Field(Field::value(label, value)))
-}
-
-/// A label with a short helper line beneath it, paired with a trailing
-/// control. The helper line is part of the label block and the control is
-/// centred on the pair, so the description groups with its own row.
-pub fn setting_row_described(label: &str, description: &str, control: El) -> Item {
-    labelled_row(label, Some(description), control)
-}
-
-/// A row for a continuous control (a slider) that wants the whole measure:
-/// the label on its own line and the control spanning the section.
-pub fn slider_row(label: &str, control: El) -> Item {
-    choice_row_stacked(label, control)
-}
-
-/// A row for a text field: the label on its own line and the field beneath
-/// it spanning the section, as every form in Settings lays its fields out.
-pub fn field_row(label: &str, control: El) -> Item {
-    choice_row_stacked(label, control)
-}
-
-/// One entry of a list of things (a printer, a user, a device): its name with
-/// any status marks on the top line, what is worth knowing about it hugging
-/// the name below, and the actions that apply to it under the text. Every
-/// such list reads the same way, whether or not an entry has actions.
-pub fn item_row(title: &str, status: Vec<El>, details: &[String], actions: Vec<Button>) -> Item {
-    let mut top = Row::new()
-        .no_wrap()
-        .with_align_items(taffy::AlignItems::Center)
-        .push(row_label(title));
-    for mark in status {
-        top = top.push(mark);
-    }
-    let mut block = Column::new()
-        .with_no_padding()
-        .with_intrinsic_height()
-        .with_rhythm(Rhythm::Tight)
-        .push(Box::new(top));
-    for detail in details {
-        block = block.push(caption(detail));
-    }
-    if actions.is_empty() {
-        return row(Box::new(block));
-    }
-    let mut buttons = Row::new().with_rhythm(Rhythm::Related);
-    for action in actions {
-        buttons = buttons.push(Box::new(action.control_size(ControlSize::Small)));
-    }
     row(Box::new(
+        ListRow::new(format!("setting/{label}"), label).value(value),
+    ))
+}
+
+/// A setting with one line explaining it under its label, its control on
+/// the trailing edge.
+pub fn setting_row_described(label: &str, description: &str, control: El) -> Item {
+    row(Box::new(setting_list_row(
+        label,
+        Some(description),
+        control,
+    )))
+}
+
+/// A setting whose control wants the whole measure (a slider, a text
+/// field): the label (and its explanation) over the control.
+fn stacked(label: &str, description: Option<&str>, control: El) -> Item {
+    let text = match description {
+        Some(description) => TextStack::new(label).secondary(description),
+        None => TextStack::new(label),
+    };
+    block(Box::new(
         Column::new()
             .with_no_padding()
             .with_intrinsic_height()
             .with_rhythm(Rhythm::Related)
-            .push(Box::new(block))
-            .push(Box::new(buttons)),
+            .push(Box::new(text))
+            .push(control),
     ))
 }
 
-/// A row for a thing with an icon (a network, a device): the icon, its name
-/// with a line of detail hugging it, and a trailing control. The control
-/// keeps its place however narrow the window gets.
-pub fn icon_row(icon: Icon, title: &str, detail: &str, control: El) -> Item {
-    let text = Column::new()
-        .with_no_padding()
-        .with_intrinsic_height()
-        .with_rhythm(Rhythm::Tight)
-        .push(Box::new(Text::new(title)))
-        .push(caption(detail));
-    let lead = Row::new()
+/// A slider that wants the whole measure: the label over it.
+pub fn slider_row(label: &str, control: El) -> Item {
+    stacked(label, None, control)
+}
+
+/// A text field: the label over it, the field spanning the group.
+pub fn field_row(label: &str, control: El) -> Item {
+    stacked(label, None, control)
+}
+
+/// A thing you act on (a printer, a user, a device): its name, what is
+/// worth knowing about it under the name, its status marks, and one
+/// control on the trailing edge (its main action, or the [`ui::widget::RowMenu`]
+/// of its secondary ones). `id` names the row across rebuilds.
+pub fn thing_row(id: &str, title: &str, details: &[String], trailing: Option<El>) -> ListRow {
+    let mut row = ListRow::new(id, title);
+    match details {
+        [] => {}
+        [only] => row = row.secondary(only.as_str()),
+        // Each fact on a line of its own, never joined into one string.
+        lines => {
+            row = row
+                .secondary(lines.join("\n"))
+                .secondary_lines(u8::try_from(lines.len()).unwrap_or(u8::MAX));
+        }
+    }
+    match trailing {
+        Some(control) => row.trailing(control),
+        None => row,
+    }
+}
+
+/// One entry of a list of things, with its status marks and the buttons
+/// that act on it. Pages built on the primitives use [`thing_row`] with a
+/// [`ui::widget::RowMenu`] instead; this stays for the pages that still hand
+/// over a line of buttons.
+pub fn item_row(title: &str, status: Vec<El>, details: &[String], actions: Vec<Button>) -> Item {
+    let mut text = TextStack::new(title);
+    if let Some(first) = details.first() {
+        text = text.secondary(first.as_str());
+    }
+    if let Some(second) = details.get(1) {
+        text = text.tertiary(second.as_str());
+    }
+    let mut line = Row::new()
         .no_wrap()
         .with_align_items(taffy::AlignItems::Center)
-        .with_rhythm(Rhythm::Sibling)
-        .push(Box::new(IconWidget::new(icon)))
+        .with_rhythm(Rhythm::Related)
         .push(Box::new(
             Container::new()
                 .with_no_padding()
                 .with_flex_grow()
                 .with_child(Box::new(text)),
         ));
-    row(trailing_row(
-        Box::new(
-            Container::new()
-                .with_no_padding()
-                .with_flex_grow()
-                .with_child(Box::new(lead)),
-        ),
-        control,
+    for mark in status {
+        line = line.push(mark);
+    }
+    for action in actions {
+        line = line.push(Box::new(action.control_size(ControlSize::Small)));
+    }
+    let mut column = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .with_rhythm(Rhythm::Tight)
+        .push(Box::new(line));
+    for detail in details.iter().skip(2) {
+        column = column.push(caption(detail));
+    }
+    block(Box::new(column))
+}
+
+/// A row for a thing with an icon (a network, a device): the icon, its name
+/// with a line of detail under it, and a trailing control.
+pub fn icon_row(icon: Icon, title: &str, detail: &str, control: El) -> Item {
+    row(Box::new(
+        ListRow::new(format!("setting/{title}"), title)
+            .icon(icon)
+            .secondary(detail)
+            .trailing(control),
     ))
 }
 
@@ -392,19 +384,20 @@ pub fn error_caption(message: &str) -> El {
 }
 
 /// A label whose value could not be read: the label keeps its place in the
-/// card and the failure stands where the value would be.
+/// group, "Can't read" stands where the value would be, and why under it,
+/// said to assistive technology as it appears.
 pub fn error_row(label: &str, message: &str) -> Item {
-    Item(ItemKind::Field(
-        Field::custom(
-            label,
-            Box::new(
-                Text::new(&crate::i18n::t("settings-read-error"))
-                    .with_role(TextRole::Label)
-                    .with_weight(ui::text_render::TextWeight::Semibold),
-            ),
-        )
-        .with_trailing_control()
-        .with_error(message),
+    block(Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_rhythm(Rhythm::Tight)
+            .push(Box::new(
+                ListRow::new(format!("setting/{label}"), label)
+                    .value(crate::i18n::t("settings-read-error"))
+                    .error(),
+            ))
+            .push(error_caption(message)),
     ))
 }
 
@@ -437,9 +430,7 @@ pub fn compact_chooser_width() -> f32 {
 }
 
 /// Pin a trailing control to the compact chooser width so it aligns to the
-/// row's right edge instead of stretching across the whole section. `ui`'s
-/// `Dropdown` fills its parent; wrapping it here gives every settings
-/// chooser the same compact, right-aligned footprint.
+/// row's right edge instead of stretching across the whole group.
 pub fn compact_control(control: El) -> El {
     compact_control_w(compact_chooser_width(), control)
 }
@@ -461,35 +452,43 @@ pub fn compact_control_w(width: f32, control: El) -> El {
     )
 }
 
-/// A settings row whose trailing control is a compact chooser (dropdown,
-/// segmented picker): at least the compact chooser width at the row's right
-/// edge beside the label. When the section is too narrow for its labels and
-/// choosers, every row of it puts its chooser beneath the label, full width.
+/// The width of a slider on a row's trailing edge: one for every slider of
+/// a page, so they line up.
+pub const TRAILING_SLIDER_WIDTH: f32 = 220.0;
+/// The least a trailing slider shrinks to in a narrow window.
+const TRAILING_SLIDER_MIN_WIDTH: f32 = 120.0;
+
+/// A slider (or a slider with its value and a button beside it) on a row's
+/// trailing edge, at [`TRAILING_SLIDER_WIDTH`].
+pub fn trailing_slider(control: El) -> El {
+    Box::new(
+        Container::new()
+            .with_no_padding()
+            .with_width(TRAILING_SLIDER_WIDTH)
+            .with_min_width(TRAILING_SLIDER_MIN_WIDTH)
+            .with_child(control),
+    )
+}
+
+/// A setting whose control is a chooser (dropdown, segmented picker).
 pub fn choice_row(label: &str, control: El) -> Item {
-    labelled_row(label, None, control)
+    setting_row(label, control)
 }
 
-/// [`choice_row`] with a helper line under the label.
+/// [`choice_row`] with a line explaining it under the label.
 pub fn choice_row_described(label: &str, description: &str, control: El) -> Item {
-    labelled_row(label, Some(description), control)
+    setting_row_described(label, description, control)
 }
 
-/// A labelled row whose control takes the full width beneath its label, at
+/// A setting whose control takes the full width beneath its label, at
 /// every width: a slider, a text field.
 pub fn choice_row_stacked(label: &str, control: El) -> Item {
-    Item(ItemKind::Field(
-        Field::custom(label, control).with_label_placement(Some(LabelPlacement::Above)),
-    ))
+    stacked(label, None, control)
 }
 
-/// [`choice_row_stacked`] with a helper line under the label: the sentence
-/// belongs to this row, not to the group.
+/// [`choice_row_stacked`] with a line explaining it under the label.
 pub fn field_row_described(label: &str, description: &str, control: El) -> Item {
-    Item(ItemKind::Field(
-        Field::custom(label, control)
-            .with_label_placement(Some(LabelPlacement::Above))
-            .with_help(description),
-    ))
+    stacked(label, Some(description), control)
 }
 
 /// A small status badge (e.g. "Connected", "Paired", "Offline"). The tone
@@ -503,7 +502,7 @@ pub fn semantic_status_pill(label: &str, tone: StatusTone) -> El {
     status_pill(label, tone)
 }
 
-/// A prominent identity block for a pane's first section: a large icon
+/// A prominent identity block for a pane's first group: a large icon
 /// beside a `Title` (About's device name).
 pub fn hero(icon: Icon, title: &str) -> El {
     let row = Row::new()
@@ -529,6 +528,13 @@ pub fn announced_text(widget: &dyn Widget) -> Vec<String> {
             out.extend(node.name);
             out.extend(node.value);
         }
+        // A row's menu says its entries when it opens.
+        if let Some(menu) = widget
+            .as_any()
+            .and_then(|any| any.downcast_ref::<ui::widget::RowMenu>())
+        {
+            out.extend(menu.labels().into_iter().map(str::to_owned));
+        }
         for child in widget.children() {
             walk(child, out);
         }
@@ -536,4 +542,21 @@ pub fn announced_text(widget: &dyn Widget) -> Vec<String> {
     let mut out = Vec::new();
     walk(widget, &mut out);
     out
+}
+
+// The names the Network page still uses while it moves with its owner.
+
+/// [`section`], by its old name.
+pub fn card(title: &str, body: Body) -> SettingsSection {
+    section(title, body)
+}
+
+/// [`section_with`], by its old name.
+pub fn card_with_action(title: &str, action: El, body: Body) -> SettingsSection {
+    section_with(title, action, body)
+}
+
+/// [`page`], by its old name.
+pub fn cards(sections: Vec<SettingsSection>) -> El {
+    page(sections)
 }

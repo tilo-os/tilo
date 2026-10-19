@@ -683,7 +683,7 @@ impl SettingsApp {
         self.keyboard_partial
             .set(self.selected == Category::Keyboard && self.input.catalog_pending());
         if reading {
-            return crate::widgets::cards(vec![crate::widgets::untitled(crate::widgets::rows(
+            return crate::widgets::page(vec![crate::widgets::untitled(crate::widgets::rows(
                 vec![crate::widgets::note(&crate::i18n::t(
                     "settings-pane-reading",
                 ))],

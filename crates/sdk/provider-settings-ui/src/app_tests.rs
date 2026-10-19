@@ -95,7 +95,7 @@ fn assert_private(app: &mut TestApp<ProviderSettingsApp>) {
                 .contains("private-key-draft")
         );
         assert!(
-            !widgets::announced_text(widgets::cards(panel.sections()).as_ref())
+            !widgets::announced_text(widgets::page(panel.sections()).as_ref())
                 .join(" ")
                 .contains("private-key-draft")
         );

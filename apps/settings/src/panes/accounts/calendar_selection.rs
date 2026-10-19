@@ -6,7 +6,7 @@ mod lane_tests;
 mod tests;
 use super::{
     AccountKind, AccountsEffect, AccountsPane, Button, Effect, LiveRow, ProbeJob, Row,
-    SettingsEffect, SettingsSection, Step, card, merge_config, note, row, rows,
+    SettingsEffect, SettingsSection, Step, merge_config, note, row, rows, section,
     setting_row_described, t, value_row,
 };
 
@@ -237,7 +237,7 @@ impl AccountsPane {
                     AccountsEffect::CancelAccountForm,
                 ))),
         )));
-        card(&t("accounts-calendars-title"), rows(body))
+        section(&t("accounts-calendars-title"), rows(body))
     }
 
     pub(super) fn save_calendar_selection(&mut self) {

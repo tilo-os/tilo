@@ -21,7 +21,7 @@ use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{card, note, row, rows, setting_row_described, value_row};
+use crate::widgets::{note, rows, section, setting_row, setting_row_described, untitled};
 
 /// The most kinds of file and link the published tree lists.
 const MAX_KIND_ROWS: usize = 256;
@@ -371,8 +371,9 @@ impl PersonalAppsPane {
         }
     }
 
+    /// What a chooser stores for `app`: its package, shown by its name.
     fn option(app: &AppCandidate) -> String {
-        format!("{} — {}", app.display_name, app.package_id)
+        app.package_id.clone()
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
@@ -386,55 +387,46 @@ impl PersonalAppsPane {
                 continue;
             }
             let options: Vec<String> = apps.iter().map(|a| Self::option(a)).collect();
-            let by_option: Vec<(String, String)> = apps
+            let named_options: Vec<(String, String)> = apps
                 .iter()
-                .map(|app| (Self::option(app), app.package_id.clone()))
+                .map(|app| (Self::option(app), app.display_name.clone()))
                 .collect();
-            let placeholder = state.get();
+            let shown_name = named_options
+                .iter()
+                .find(|(package, _)| *package == state.get())
+                .map_or_else(|| state.get(), |(_, name)| name.clone());
             let named = kind.as_str().to_owned();
+            let mut chooser = Dropdown::from_state(options, state)
+                .with_id(&format!("personal-default.{}", kind.as_str()))
+                .with_placeholder(&shown_name);
+            chooser.set_value_options(named_options);
             let picker = self.cx.bind(
-                Dropdown::from_state(options, state)
-                    .with_id(&format!("personal-default.{}", kind.as_str()))
-                    .with_placeholder(&placeholder),
-                effect(DefaultAppsEffect::SET_DEFAULT_APP).map(move |shown: String| {
-                    let app = by_option
-                        .iter()
-                        .find(|(option, _)| *option == shown)
-                        .map_or_else(|| shown.clone(), |(_, package)| package.clone());
-                    (named.clone(), app)
-                }),
+                chooser,
+                effect(DefaultAppsEffect::SET_DEFAULT_APP)
+                    .map(move |package: String| (named.clone(), package)),
             );
-            file_rows.push(setting_row_described(
-                &Self::resource_label(&kind),
-                &t("settings-personal-apps-choice-follows"),
-                Box::new(picker),
-            ));
+            file_rows.push(setting_row(&Self::resource_label(&kind), Box::new(picker)));
         }
-        let body = if file_rows.is_empty() {
-            rows(vec![note(&t("settings-personal-apps-empty"))])
+        if file_rows.is_empty() {
+            file_rows.push(note(&t("settings-personal-apps-empty")));
         } else {
-            rows(file_rows)
-        };
-        let scope = card(
-            &t("settings-personal-apps-scope"),
-            rows(vec![
-                value_row(
-                    &t("settings-personal-apps-applies-to"),
-                    &t("settings-personal-apps-applies-value"),
+            file_rows.push(note(&t("settings-personal-apps-choice-follows")));
+        }
+        // A workspace's own rules are that workspace's: one row opens them.
+        let workspace = untitled(rows(vec![setting_row_described(
+            &t("settings-personal-apps-workspace-rules"),
+            &t("settings-personal-apps-scope-caption"),
+            Box::new(self.cx.bind_invocation(
+                Button::new(
+                    "open-workspace-app-defaults",
+                    &t("settings-personal-apps-open"),
                 ),
-                note(&t("settings-personal-apps-scope-caption")),
-                row(Box::new(self.cx.bind_invocation(
-                    Button::new(
-                        "open-workspace-app-defaults",
-                        &t("settings-personal-apps-open-workspace"),
-                    ),
-                    DefaultAppsEffect::OpenWorkspaceDefaults,
-                ))),
-            ]),
-        );
-        crate::widgets::cards(vec![
-            scope,
-            card(&t("settings-personal-apps-files-title"), body),
+                DefaultAppsEffect::OpenWorkspaceDefaults,
+            )),
+        )]));
+        crate::widgets::page(vec![
+            section(&t("settings-personal-apps-files-title"), rows(file_rows)),
+            workspace,
         ])
     }
 }
@@ -640,7 +632,7 @@ mod tests {
         };
         let pdf = ResourceKind::extension("pdf").unwrap();
         let mut pane = PersonalAppsPane::new(cx.clone(), &area);
-        assert_eq!(pane.shown[&pdf].get(), "so.tilo.a — so.tilo.a");
+        assert_eq!(pane.shown[&pdf].get(), "so.tilo.a");
         cx.settings::<DefaultApps>()
             .update(|apps| {
                 apps.handlers
@@ -649,6 +641,6 @@ mod tests {
             .unwrap();
         let doc = ui::automerge::AutoCommit::new();
         pane.sync(&doc, &ui::automerge::ROOT);
-        assert_eq!(pane.shown[&pdf].get(), "so.tilo.b — so.tilo.b");
+        assert_eq!(pane.shown[&pdf].get(), "so.tilo.b");
     }
 }

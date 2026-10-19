@@ -32,7 +32,7 @@ use crate::host::{Followed, PaneCx};
 use crate::i18n::{english, t, t_args};
 use crate::prefs::NotificationPrefs;
 use crate::widgets::{
-    Item, SettingsSection, StatusTone, card, error_row, note, rows, semantic_status_pill,
+    Item, SettingsSection, StatusTone, error_row, note, row, rows, section, semantic_status_pill,
     setting_row, value_row,
 };
 
@@ -573,6 +573,8 @@ pub struct NotificationsPane {
     prefs: Followed<NotificationPrefs>,
     apps: Vec<InstalledNotificationApp>,
     shown: Shown,
+    /// Which app's rules are open, kept while the page is rebuilt.
+    app_rules: ui::widget::DisclosureGroup,
     composed: ui::widget::Composed,
 }
 
@@ -588,6 +590,7 @@ impl NotificationsPane {
             prefs,
             apps,
             shown,
+            app_rules: ui::widget::DisclosureGroup::new(),
             composed: ui::widget::Composed::default(),
         }
     }
@@ -618,14 +621,14 @@ impl NotificationsPane {
         ];
         // The apps' own cards follow; with none yet, one line says why.
         if app_cards.is_empty() {
-            cards.push(card(
+            cards.push(section(
                 &t("notif-apps-title"),
                 rows(vec![note(&t("notif-apps-empty"))]),
             ));
         }
         cards.extend(app_cards);
         cards.push(Self::build_priority_contacts_card());
-        crate::widgets::cards(cards)
+        crate::widgets::page(cards)
     }
 
     fn build_dnd_card(&self) -> SettingsSection {
@@ -651,11 +654,11 @@ impl NotificationsPane {
         );
         // Quiet hours sit with it: the same silence, on a schedule.
         content.extend(self.focus_rows());
-        card(&t("notif-dnd-title"), rows(content))
+        section(&t("notif-dnd-title"), rows(content))
     }
 
     fn build_banners_card(&self) -> SettingsSection {
-        card(
+        section(
             &t("notif-banners-title"),
             rows(vec![
                 self.cx
@@ -715,7 +718,7 @@ impl NotificationsPane {
                 .id("notifications.badges")
                 .toggle(&self.shown.badges, NotificationPrefs::paths().show_badges),
         );
-        card(&t("notif-delivery-title"), rows(content))
+        section(&t("notif-delivery-title"), rows(content))
     }
 
     /// Quiet hours: the switch, and while it is on, when they start and
@@ -766,9 +769,11 @@ impl NotificationsPane {
         content
     }
 
+    /// One row per app that opens its own rules in place, under one
+    /// heading: what it may show, and for how long it is muted.
     fn build_app_cards(&self) -> Vec<SettingsSection> {
         let prefs = self.prefs();
-        let mut app_cards = Vec::new();
+        let mut app_rows = Vec::new();
         for app in &self.apps {
             let Some(shown) = self.shown.apps.get(&app.id) else {
                 continue;
@@ -804,62 +809,77 @@ impl NotificationsPane {
                         choice.edit(&app, on)
                     })
             };
-            app_cards.push(card(
-                &app.name,
-                rows(vec![
-                    value_row(&t("notif-app-verified"), &app.id),
-                    toggle(
-                        "banners",
-                        "notif-app-banners-desc",
-                        "notif-app-banners",
-                        &shown.banners,
-                        AppChoice::Banners,
+            let rules = crate::widgets::page(vec![crate::widgets::untitled(rows(vec![
+                toggle(
+                    "banners",
+                    "notif-app-banners-desc",
+                    "notif-app-banners",
+                    &shown.banners,
+                    AppChoice::Banners,
+                ),
+                toggle(
+                    "previews",
+                    "notif-app-previews-desc",
+                    "notif-app-previews",
+                    &shown.previews,
+                    AppChoice::Previews,
+                ),
+                toggle(
+                    "sounds",
+                    "notif-app-sounds-desc",
+                    "notif-app-sounds",
+                    &shown.sounds,
+                    AppChoice::Sounds,
+                ),
+                toggle(
+                    "badges",
+                    "notif-app-badges-desc",
+                    "notif-app-badges",
+                    &shown.badges,
+                    AppChoice::Badges,
+                ),
+                toggle(
+                    "priority",
+                    "notif-app-priority-desc",
+                    "notif-app-priority",
+                    &shown.priority,
+                    AppChoice::Priority,
+                ),
+                toggle(
+                    "priority_contacts",
+                    "notif-app-contacts-desc",
+                    "notif-app-contacts",
+                    &shown.priority_contacts,
+                    AppChoice::PriorityContacts,
+                ),
+                mute,
+                value_row(&t("notif-app-verified"), &app.id),
+            ]))]);
+            app_rows.push(row(Box::new(
+                ui::widget::DisclosureRow::keyed(
+                    app.name.clone(),
+                    Box::new(
+                        ui::widget::Column::new()
+                            .with_no_padding()
+                            .with_intrinsic_height()
+                            .with_extra_bottom_padding(crate::widgets::spacing().rhythm.sibling)
+                            .push(rules),
                     ),
-                    toggle(
-                        "previews",
-                        "notif-app-previews-desc",
-                        "notif-app-previews",
-                        &shown.previews,
-                        AppChoice::Previews,
-                    ),
-                    toggle(
-                        "sounds",
-                        "notif-app-sounds-desc",
-                        "notif-app-sounds",
-                        &shown.sounds,
-                        AppChoice::Sounds,
-                    ),
-                    toggle(
-                        "badges",
-                        "notif-app-badges-desc",
-                        "notif-app-badges",
-                        &shown.badges,
-                        AppChoice::Badges,
-                    ),
-                    toggle(
-                        "priority",
-                        "notif-app-priority-desc",
-                        "notif-app-priority",
-                        &shown.priority,
-                        AppChoice::Priority,
-                    ),
-                    toggle(
-                        "priority_contacts",
-                        "notif-app-contacts-desc",
-                        "notif-app-contacts",
-                        &shown.priority_contacts,
-                        AppChoice::PriorityContacts,
-                    ),
-                    mute,
-                    note(&app_caption),
-                ]),
-            ));
+                    &self.app_rules,
+                    &app.id,
+                )
+                .icon(ui::icons::Icon::AppWindow)
+                .secondary(app_caption),
+            )));
         }
-        app_cards
+        if app_rows.is_empty() {
+            return Vec::new();
+        }
+        vec![section(&t("notif-apps-title"), rows(app_rows))]
     }
 
     fn build_priority_contacts_card() -> SettingsSection {
-        card(
+        section(
             &t("notif-priority-title"),
             rows(vec![
                 value_row(

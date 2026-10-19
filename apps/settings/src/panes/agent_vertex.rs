@@ -35,7 +35,7 @@ use crate::effects::effect;
 use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
 use crate::panes::accounts::BrowserOpener;
-use crate::widgets::{Item, SettingsSection, card, field_row, note, row, rows};
+use crate::widgets::{Item, SettingsSection, field_row, note, row, rows, section};
 
 /// The use a Vertex AI grant is signed in and refreshed through.
 pub(crate) const GOOGLE_MODELS: OAuthUse = OAuthUse::new(OAuthIssuer::Google, Capability::Models);
@@ -288,7 +288,7 @@ impl VertexSetup {
     }
 
     /// The setup card of a provider being added.
-    pub(crate) fn card(&self, cx: &PaneCx) -> SettingsSection {
+    pub(crate) fn section(&self, cx: &PaneCx) -> SettingsSection {
         let mut body: Vec<Item> = Vec::new();
         let cancel = || {
             Box::new(cx.bind_invocation(
@@ -343,7 +343,7 @@ impl VertexSetup {
         if let Some(message) = &self.message {
             body.push(row(crate::widgets::error_caption(message)));
         }
-        card(&t("agent-vertex-title"), rows(body))
+        section(&t("agent-vertex-title"), rows(body))
     }
 
     fn push_projects(&self, cx: &PaneCx, body: &mut Vec<Item>) {

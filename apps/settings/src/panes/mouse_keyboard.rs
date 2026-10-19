@@ -41,7 +41,7 @@ use crate::prefs::InputPrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    Item, caption, card, error_caption, field_row, rows, setting_row, setting_row_described,
+    Item, caption, error_caption, field_row, rows, section, setting_row, setting_row_described,
 };
 
 /// The compose-key choice that turns it off.
@@ -1803,10 +1803,10 @@ impl MouseKeyboardPane {
             InputPage::Keyboard => {
                 let mut page = self.keyboard_page();
                 page.push(self.paste_shortcut_card());
-                crate::widgets::cards(page)
+                crate::widgets::page(page)
             }
             InputPage::Spelling => {
-                crate::widgets::cards(vec![self.spell_checker_card(), self.dictionary_card()])
+                crate::widgets::page(vec![self.spell_checker_card(), self.dictionary_card()])
             }
             InputPage::Pointing => {
                 let mut cards = Vec::new();
@@ -1824,7 +1824,7 @@ impl MouseKeyboardPane {
                     cards.extend(self.tablet_cards());
                     cards.extend(self.pad_cards());
                 }
-                crate::widgets::cards(cards)
+                crate::widgets::page(cards)
             }
         }
     }
@@ -1991,7 +1991,7 @@ impl MouseKeyboardPane {
     /// saved setting.
     fn touchpad_card(&self) -> crate::widgets::SettingsSection {
         let last = &self.last;
-        card(
+        section(
             &t("input-touchpad-title"),
             rows(vec![
                 self.field_row(
@@ -2069,7 +2069,7 @@ impl MouseKeyboardPane {
     /// scrolling. Each choice is applied only to devices whose libinput
     /// driver offers it.
     fn touchpad_click_scroll_card(&self) -> crate::widgets::SettingsSection {
-        card(
+        section(
             &t("input-clicking-title"),
             rows(vec![
                 self.cx
@@ -2104,7 +2104,7 @@ impl MouseKeyboardPane {
     /// Mice, trackballs and pointing sticks.
     fn mouse_card(&self) -> crate::widgets::SettingsSection {
         let last = &self.last;
-        card(
+        section(
             &t("input-mouse-title"),
             rows(vec![
                 self.cx
@@ -2134,7 +2134,7 @@ impl MouseKeyboardPane {
     /// "Advanced" bucket: people and assistive agents can tell what will be
     /// changed before opening the card.
     fn pointer_options_card(&self) -> crate::widgets::SettingsSection {
-        card(
+        section(
             &t("input-pointer-title"),
             rows(vec![
                 self.field_row(
@@ -2227,7 +2227,7 @@ impl MouseKeyboardPane {
     }
 
     fn spell_checker_card(&self) -> crate::widgets::SettingsSection {
-        card(
+        section(
             &t("input-spell-title"),
             rows(vec![
                 self.cx
@@ -2270,7 +2270,7 @@ impl MouseKeyboardPane {
 
     fn dictionary_card(&self) -> crate::widgets::SettingsSection {
         let Some(snapshot) = &self.dictionary else {
-            return card(
+            return section(
                 &t("input-dictionary-title"),
                 rows(vec![crate::widgets::note(&t(
                     "input-dictionary-unavailable",
@@ -2322,7 +2322,7 @@ impl MouseKeyboardPane {
                 InputEffect::ResetDictionary { revision },
             ),
         )));
-        card(&t("input-dictionary-title"), rows(children))
+        section(&t("input-dictionary-title"), rows(children))
     }
 
     /// Which shortcut pastes in an app when the shell pastes for the person
@@ -2388,7 +2388,7 @@ impl MouseKeyboardPane {
                 )),
             ));
         }
-        card(&t("input-paste-title"), rows(children))
+        section(&t("input-paste-title"), rows(children))
     }
 
     fn dictionary_word_row(
@@ -2491,7 +2491,7 @@ impl MouseKeyboardPane {
                     .clone()
                     .filter(|output| outputs.iter().any(|(id, _)| id == output))
                     .unwrap_or_else(|| WHOLE_DESKTOP.to_string());
-                card(
+                section(
                     &device_title(device),
                     rows(vec![
                         setting_row(
@@ -2528,14 +2528,14 @@ impl MouseKeyboardPane {
                         setting_row_described(
                             &t("input-tablet-tip-feel"),
                             &t("input-tablet-tip-feel-description"),
-                            Box::new(self.device_slider(
+                            crate::widgets::trailing_slider(Box::new(self.device_slider(
                                 &resource,
                                 &device.key,
                                 "tip-feel",
                                 settings_store::hardware::feel_for_pressure_curve(
                                     config.pressure_curve,
                                 ),
-                            )),
+                            ))),
                         ),
                         setting_row(
                             &t("input-tablet-lower-button"),
@@ -2646,7 +2646,7 @@ impl MouseKeyboardPane {
                 if !pad_dials(device).is_empty() {
                     items.push(crate::widgets::note(&t("input-pad-dials-caption")));
                 }
-                card(&device_title(device), rows(items))
+                section(&device_title(device), rows(items))
             })
             .collect()
     }
@@ -2880,7 +2880,7 @@ mod tests {
         pane.dictionary = Some(reader.snapshot().unwrap());
         let frame = ui::headless::FrameHarness::new(
             ui::State::new(),
-            crate::widgets::cards(vec![pane.dictionary_card()]),
+            crate::widgets::page(vec![pane.dictionary_card()]),
             (1100, 760),
         );
         for control in [

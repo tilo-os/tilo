@@ -1,7 +1,7 @@
 //! Portable provider administration shared by Settings and standalone hosts.
 use crate::i18n::{t, t_args};
 use crate::widgets::{
-    Item, SettingsSection, StatusTone, card, field_row, note, row, rows, semantic_status_pill,
+    Item, SettingsSection, StatusTone, field_row, note, row, rows, section, semantic_status_pill,
     value_row,
 };
 use agent_provider_config::management::{CredentialStatus, ProviderAdmin, ProviderSnapshot};
@@ -455,7 +455,7 @@ impl<H: PanelBindings> ProviderPanel<H> {
     fn sections_with_sign_in(&self, include_sign_in: bool) -> Vec<SettingsSection> {
         let mut sections = Vec::new();
         if let Some(notice) = &self.notice {
-            sections.push(card(&t("agent-service-title"), rows(vec![note(notice)])));
+            sections.push(section(&t("agent-service-title"), rows(vec![note(notice)])));
         }
         sections.push(self.hosted_profiles_with_sign_in(include_sign_in));
         sections.push(self.request_limits_card());
@@ -745,7 +745,7 @@ impl<H: PanelBindings> ProviderPanel<H> {
                 &[("message", issue.message.as_str().into())],
             )));
         }
-        card(&t("agent-hosted-title"), rows(body))
+        section(&t("agent-hosted-title"), rows(body))
     }
 
     fn profile_fields(&self, body: &mut Vec<Item>, profile: &ProviderProfile) {
@@ -1148,7 +1148,7 @@ impl<H: PanelBindings> ProviderPanel<H> {
                 )));
             }
         }
-        card(&t("agent-request-limits-title"), rows(body))
+        section(&t("agent-request-limits-title"), rows(body))
     }
 }
 /// Change only the selected model's policy, retaining other profile metadata.
