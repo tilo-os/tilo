@@ -453,19 +453,6 @@ pub fn refresh_shared() {
     }
 }
 
-/// Make the shared catalogue `catalogue`, as a fresh read would, and keep
-/// it from being read again for this test.
-#[cfg(test)]
-pub(crate) fn replace_shared_for_test(catalogue: SharedCatalogue) {
-    *SHARED.lock_recover() = Some(SharedState {
-        catalogue,
-        flathub_read: Some((u64::MAX, String::new())),
-        blocks_stamp: Some(u64::MAX),
-        checked_at: Some(Instant::now()),
-    });
-    SHARED_REVISION.fetch_add(1, Ordering::Release);
-}
-
 /// A failure caches an *empty* list rather than leaving the cache cold
 /// (which would mean a new HTTP attempt per character typed), and
 /// expires under [`FAILED_REFRESH_BACKOFF`] so a registry that comes
