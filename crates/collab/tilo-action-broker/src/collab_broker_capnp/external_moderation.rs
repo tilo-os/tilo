@@ -28,6 +28,10 @@ struct Context {
     document: super::NativeDocumentReadContext,
 }
 impl Context {
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the upgraded broker state is read until the last frontier check, which ends the function"
+    )]
     fn recheck(&self) -> Result<(), String> {
         let state = self
             .state
@@ -302,6 +306,10 @@ pub(super) fn is_envelope(bytes: &[u8]) -> bool {
     })
 }
 
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the context moves into the worker thread and the state is a borrow; no guard outlives its use"
+)]
 pub(super) fn start(
     channel: &CapnpChannelHandle,
     bytes: &[u8],

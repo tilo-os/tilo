@@ -92,7 +92,7 @@ impl CapnpBrokerState {
             resource_label: "Device".into(),
             action_label: "Invoke".into(),
             description: None,
-            locus: Default::default(),
+            locus: tilo_actions::ExecutionLocus::default(),
             kind: tilo_actions::OperationKind::Effect,
             contract: tilo_actions::ActionContract {
                 kind: tilo_actions::ActionKind::Outside,

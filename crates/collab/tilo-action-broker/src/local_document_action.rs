@@ -47,6 +47,10 @@ impl std::fmt::Debug for Request {
 impl Request {
     /// Content-address the complete immutable capture, except the address itself.
     /// Callers generate `capture_id` once and preserve it on every retry.
+    ///
+    /// # Errors
+    ///
+    /// When the capture cannot be encoded or digested.
     pub fn bound_invocation(&self) -> Result<uuid::Uuid, String> {
         let mut value = serde_json::to_value(self).map_err(|_| "local report encoding failed")?;
         value
@@ -76,10 +80,10 @@ impl Request {
             Some(argument) => {
                 if let Some(json) = argument.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX) {
                     serde_json::from_str(json).map_err(|_| "invalid typed action arguments")?
-                } else if params.len() == 1 {
+                } else if let [param] = params {
                     let mut values = serde_json::Map::new();
                     values.insert(
-                        params[0].name.to_string(),
+                        param.name.to_string(),
                         serde_json::Value::String(argument.into()),
                     );
                     values
@@ -95,6 +99,10 @@ impl Request {
 
     /// Parse a closed, bounded intent; head/hash sets must be canonical, so
     /// reordering or duplicate entries cannot create ambiguous commitments.
+    ///
+    /// # Errors
+    ///
+    /// When the report is too large, malformed, or not canonical.
     pub fn decode(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() > MAX_REQUEST_BYTES {
             return Err("local document report exceeds byte budget".into());
@@ -110,7 +118,9 @@ impl Request {
             }
         }
         for hashes in [&value.original_heads, &value.mutation_hashes] {
-            if hashes.len() > MAX_HASHES || hashes.windows(2).any(|pair| pair[0] >= pair[1]) {
+            if hashes.len() > MAX_HASHES
+                || hashes.windows(2).any(|pair| pair.first() >= pair.last())
+            {
                 return Err("local document report hashes must be bounded sorted sets".into());
             }
         }

@@ -207,6 +207,10 @@ impl NativeLaunch {
         host_activation_key(state, &self.run, self.invocation)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the launch's authorization, journal intent and admission run inside one host launch callback, in order"
+    )]
     pub(super) fn launch(
         &self,
         state: &CapnpBrokerState,

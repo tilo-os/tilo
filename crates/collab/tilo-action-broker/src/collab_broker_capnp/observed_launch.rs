@@ -228,6 +228,7 @@ impl CapnpChannelHandle {
                 .as_ref()
                 .ok_or("original certified launch caller unavailable")?
                 .launch_child_caller(invocation);
+            drop(pending);
             (caller, origin)
         } else {
             let route = self.route();
@@ -347,7 +348,9 @@ impl CapnpChannelHandle {
             Ok(adoption)
         });
         let invocation = admitted.invocation;
-        let uncertain = outcome.as_ref().is_err_and(|error| error.is_uncertain());
+        let uncertain = outcome
+            .as_ref()
+            .is_err_and(crate::services::LaunchReadinessError::is_uncertain);
         let update = match outcome {
             Ok(adoption) => tilo_actions::InvocationUpdate::Succeeded {
                 invocation,

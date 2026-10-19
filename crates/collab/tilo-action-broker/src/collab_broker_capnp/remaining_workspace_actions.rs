@@ -266,6 +266,10 @@ impl CapnpBrokerState {
         Ok(())
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ordered admission of a shortcut library operation: descriptor, witness, decode, catalogue and run"
+    )]
     fn admitted_shortcut_library(
         &self,
         caller: &Caller,
@@ -446,6 +450,10 @@ impl CapnpBrokerState {
         self.finish_framework_action(admitted, result)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ordered admission of a governance action: descriptor, owner confirmation floor, witness and run"
+    )]
     fn admitted_workspace_governance(
         self: &Arc<Self>,
         caller: &Caller,
@@ -567,17 +575,15 @@ impl CapnpBrokerState {
             Ok(started) => {
                 let state = Arc::clone(self);
                 started.then(move |outcome| {
-                    let uncertain = outcome.is_none();
-                    let result = outcome.unwrap_or_else(|| Err(Box::new(ActionFailure {
-                        code: "host_step_stopped".into(), message: "the host step stopped without an answer".into(),
-                        details: None, retryable: false,
-                    })));
-                    let completed = if uncertain {
-                        let update = InvocationUpdate::Failed { invocation: admitted.invocation,
-                            error: *result.expect_err("missing service answer") };
-                        state.complete_uncertain_host_action(&admitted, update).map(|()| admitted.id)
-                    } else {
+                    let completed = if let Some(result) = outcome {
                         state.finish_framework_action(admitted, result)
+                    } else {
+                        let update = InvocationUpdate::Failed { invocation: admitted.invocation,
+                            error: ActionFailure {
+                                code: "host_step_stopped".into(), message: "the host step stopped without an answer".into(),
+                                details: None, retryable: false,
+                            } };
+                        state.complete_uncertain_host_action(&admitted, update).map(|()| admitted.id)
                     };
                     if let Err(error) = completed {
                         tracing::warn!(%error, "workspace service completion could not be retained");
@@ -620,6 +626,10 @@ impl CapnpBrokerState {
         })
     }
 
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "the dispatch permit is spent here: taken by value, a caller cannot complete it twice"
+    )]
     fn finish_framework_action(
         &self,
         admitted: AdmittedHostAction,

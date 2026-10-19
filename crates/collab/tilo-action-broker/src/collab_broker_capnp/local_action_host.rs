@@ -242,6 +242,10 @@ impl CapnpBrokerState {
     ///
     /// # Errors
     /// Refuses missing or replaced protected seat custody and invalid admission.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the checked host is a value moved into the answer, not a guard"
+    )]
     pub fn certified_native_action_host(
         self: &Arc<Self>,
         caller: &Caller,

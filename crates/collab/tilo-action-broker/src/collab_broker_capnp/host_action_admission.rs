@@ -15,6 +15,7 @@ use tilo_actions::{ActionDescriptor, InvocationId, InvocationUpdate};
 #[path = "host_action_admission_tests.rs"]
 mod tests;
 
+#[derive(Clone, Copy)]
 pub(super) struct HostActionAdmission<'a> {
     pub room: &'a str,
     pub app_id: &'a str,
@@ -83,6 +84,10 @@ impl CapnpBrokerState {
         self.retain_host_action(&actor, owner, admission, start)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "each origin's owner is revalidated against current policy, certificate and room in one ordered match"
+    )]
     fn host_action_owner(
         &self,
         caller: &Caller,
@@ -150,9 +155,7 @@ impl CapnpBrokerState {
                     {
                         return Err(ActionHostError::NotPermitted);
                     }
-                    return Ok(InvocationOwner::Local {
-                        actor: actor.id.clone(),
-                    });
+                    return Ok(InvocationOwner::Local { actor: actor.id });
                 };
                 let expected = current.agent_id.as_ref().map_or_else(
                     || principal_id_for_root(certificate.user_public_key),
@@ -204,9 +207,7 @@ impl CapnpBrokerState {
                         "action_evidence_unavailable: original caller missing",
                     ));
                 }
-                InvocationOwner::Local {
-                    actor: actor.id.clone(),
-                }
+                InvocationOwner::Local { actor: actor.id }
             }
         };
         Ok(owner)
@@ -272,8 +273,8 @@ impl CapnpBrokerState {
                 "resource_kind": descriptor.resource_kind,
                 "action": descriptor.address.action,
             });
-            if let Some(start) = start {
-                intent["host_start"] = start;
+            if let (Some(start), Some(fields)) = (start, intent.as_object_mut()) {
+                fields.insert("host_start".into(), start);
             }
             let evidence = if owner.verified_actor().is_some() {
                 let facts =
@@ -383,14 +384,14 @@ impl CapnpBrokerState {
             let Some(journal) = guard.as_ref().map_err(|e| unavailable(e.clone()))?.as_ref() else {
                 return Ok(None);
             };
-            journal
-                .lookup(&InvocationKey {
-                    room: room.into(),
-                    host: journal.host(),
-                    owner,
-                    invocation: request.invocation,
-                })
-                .map_err(unavailable)?
+            let looked = journal.lookup(&InvocationKey {
+                room: room.into(),
+                host: journal.host(),
+                owner,
+                invocation: request.invocation,
+            });
+            drop(guard);
+            looked.map_err(unavailable)?
         };
         let Some(record) = record.filter(|record| {
             record.intent.get("host_action") == Some(&serde_json::Value::Bool(true))

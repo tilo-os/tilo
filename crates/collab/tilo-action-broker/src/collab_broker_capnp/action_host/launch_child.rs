@@ -1,7 +1,10 @@
 //! A retained app's launch is a separate host effect, not admission of the
 //! application action that will only become authoritative after publication.
 
-use super::*;
+use super::{
+    ActionDescriptor, ActionHostError, Caller, CapnpBrokerState, InvokeRequest, LaunchDestination,
+    LaunchPlace, app_open_descriptor, refusal, workspace_provider,
+};
 use crate::collab_broker_capnp::{InvocationCaller, host_action_admission::HostActionAdmission};
 use tilo_actions::remote::{InvokeArgument, RemoteActionTarget};
 use tilo_actions::{InvocationId, InvocationUpdate};
@@ -123,7 +126,7 @@ impl CapnpBrokerState {
         let update = match &result {
             Ok(()) => InvocationUpdate::Succeeded {
                 invocation: request.invocation,
-                output: Default::default(),
+                output: tilo_actions::ActionOutput::default(),
             },
             Err(reason) => InvocationUpdate::Failed {
                 invocation: request.invocation,
