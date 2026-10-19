@@ -939,7 +939,8 @@ mod tests {
                     }
                     let step = contrast_ratio(c.intent.selection, ground);
                     assert!(step >= 1.15, "{} {region:?}: lift {step:.3}:1", t.name);
-                    assert_eq!(c.surfaces.raised, t.tokens.colors.surfaces.raised);
+                    // A region's raised face is re-derived so it stands off
+                    // the region (`a_raised_face_stands_off_every_ground`).
                     assert_eq!(c.intent.accent, t.tokens.colors.intent.accent);
                 }
                 assert_eq!(
@@ -980,17 +981,6 @@ mod tests {
                     t.name
                 );
             }
-            // The window's regions keep the raised tier itself.
-            assert_eq!(
-                t.in_region(crate::surface::Region::Sidebar)
-                    .tokens
-                    .colors
-                    .surfaces
-                    .raised,
-                colors.surfaces.raised,
-                "{}",
-                t.name
-            );
         }
     }
 
@@ -1015,23 +1005,36 @@ mod tests {
                 "a NaN hue is ignored"
             );
         }
-        // phase: the_neutral_default_shows_no_temperature
+        // phase: a_temperature_moves_the_hue_never_the_lightness_or_chroma
+        // The stock material is hue 260 at chroma 0.006; a workspace's hue
+        // replaces the hue only (design language, "Workspace temperature").
         {
             let dark = Theme::dark().with_neutral_hue(60.0);
-            assert_eq!(
-                dark.tokens.colors.surfaces.base,
-                Theme::dark().tokens.colors.surfaces.base
-            );
-            assert_eq!(
-                dark.tokens.colors.surfaces.content,
-                Theme::dark().tokens.colors.surfaces.content
-            );
+            let stock = Theme::dark();
+            for (warm, cool) in [
+                (
+                    dark.tokens.colors.surfaces.base,
+                    stock.tokens.colors.surfaces.base,
+                ),
+                (
+                    dark.tokens.colors.surfaces.content,
+                    stock.tokens.colors.surfaces.content,
+                ),
+            ] {
+                let (w, c) = (Oklch::from_color(warm), Oklch::from_color(cool));
+                assert!((w.l - c.l).abs() <= 0.005, "lightness {} vs {}", w.l, c.l);
+                assert!(w.c <= 0.010 + 0.004, "chroma {}", w.c);
+            }
         }
         // phase: your_colour_is_the_focus_ring_and_survives_every_track
         {
             let mine = Theme::dark().with_your_colour(PresenceHue::Magenta);
             let you = mine.tokens.colors.intent.you;
-            assert_eq!(mine.border_focus, you);
+            // The ring is the accent's ink: your hue at its contrast floor.
+            assert_eq!(mine.border_focus, mine.tokens.colors.intent.accent_ink);
+            let ring = (Oklch::from_color(mine.border_focus).h - Oklch::from_color(you).h)
+                .rem_euclid(360.0);
+            assert!(ring.min(360.0 - ring) < 15.0, "the ring is your hue");
             assert_ne!(you, Theme::dark().tokens.colors.intent.you);
             let warm = mine.clone().with_neutral_hue(40.0);
             assert_eq!(warm.tokens.colors.you, PresenceHue::Magenta);
@@ -1058,7 +1061,9 @@ mod tests {
             assert_eq!(workspace_hue(&grey), None);
             assert_eq!(workspace_hue(&[]), None);
         }
-        // phase: light_without_a_workspace_is_pure_neutral_in_every_region
+        // phase: light_without_a_workspace_is_the_stock_temperature_in_every_region
+        // Cool, not grey-blue: chroma never past 0.010 (8-bit quantisation
+        // adds a few thousandths).
         {
             let light = Theme::light();
             for region in [
@@ -1066,15 +1071,11 @@ mod tests {
                 crate::surface::Region::Sidebar,
                 crate::surface::Region::Inspector,
             ] {
-                let ground = light.region(region);
-                assert!(
-                    ground.r() == ground.g() && ground.g() == ground.b(),
-                    "{region:?} has no cast: {:?}",
-                    [ground.r(), ground.g(), ground.b()]
-                );
+                let ground = Oklch::from_color(light.region(region));
+                assert!(ground.c <= 0.014, "{region:?} chroma {}", ground.c);
             }
-            let base = light.tokens.colors.surfaces.base;
-            assert!(base.r() == base.g() && base.g() == base.b());
+            let base = Oklch::from_color(light.tokens.colors.surfaces.base);
+            assert!(base.c <= 0.014, "base chroma {}", base.c);
         }
     }
 

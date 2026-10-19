@@ -163,7 +163,15 @@ mod tests {
         });
         let accent = Color::from_rgb8(0xE0, 0x40, 0x80);
         let you = theme.tokens.colors.intent.you;
-        assert_eq!(theme.border_focus, you);
+        // The focus ring is the accent's ink: your colour at the lightness
+        // its contrast floor needs (design language, "Colour roles").
+        assert_eq!(theme.border_focus, theme.tokens.colors.intent.accent_ink);
+        let ring = Oklch::from_color(theme.border_focus);
+        let ring_d = (ring.h - Oklch::from_color(you).h).rem_euclid(360.0);
+        assert!(
+            ring_d.min(360.0 - ring_d) <= 15.0,
+            "the ring is your colour's hue"
+        );
         let (a, y) = (Oklch::from_color(accent), Oklch::from_color(you));
         let d = (a.h - y.h).rem_euclid(360.0);
         assert!(

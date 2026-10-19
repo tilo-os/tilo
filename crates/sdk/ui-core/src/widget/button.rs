@@ -2733,10 +2733,12 @@ mod tests {
             assert_eq!(press_ink, ink);
             assert!(contrast_ratio(press_ink, press_fill) >= ON_FILL_MIN_CONTRAST);
 
-            // Secondary is the raised control with its derived edge.
+            // Secondary is the raised control; the raised level has no edge,
+            // its step off the ground separates it (design language,
+            // "Surfaces").
             let (fill, edge, ink) = face_colors(&theme, ButtonRole::Secondary, rest);
             assert_eq!(fill, raised);
-            assert_eq!(edge, Some(crate::surface::edge_on(raised)));
+            assert_eq!(edge, None);
             assert!(contrast_ratio(ink, fill) >= ON_FILL_MIN_CONTRAST);
             assert_eq!(
                 face_colors(&theme, ButtonRole::Secondary, hover).0,
@@ -2751,7 +2753,7 @@ mod tests {
             for interact in [rest, hover, press] {
                 let (fill, edge, ink) = face_colors(&theme, ButtonRole::Destructive, interact);
                 assert_eq!(fill, face_colors(&theme, ButtonRole::Secondary, interact).0);
-                assert_eq!(edge, Some(crate::surface::edge_on(raised)));
+                assert_eq!(edge, face_colors(&theme, ButtonRole::Secondary, interact).1);
                 assert!(
                     contrast_ratio(ink, fill) >= ON_FILL_MIN_CONTRAST,
                     "{}: danger ink on the neutral face",
@@ -2773,9 +2775,10 @@ mod tests {
                 face_colors(&theme, ButtonRole::Plain, hover).0,
                 colors.intent.selection_hover
             );
+            // Press is the neutral lift; only a selection is tinted.
             assert_eq!(
                 face_colors(&theme, ButtonRole::Plain, press).0,
-                colors.intent.selection
+                colors.lift_on(colors.surfaces.content, 1.0)
             );
         }
     }

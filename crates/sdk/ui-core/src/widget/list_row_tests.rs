@@ -97,10 +97,11 @@ fn row_height_comes_from_measured_line_boxes_and_grows_with_text() {
         .secondary("The analytical engine weaves algebraic patterns")
         .two_line_secondary();
     let theme = Theme::dark();
-    let floor = f64::from(theme.tokens.metrics.min_pointer_target + theme.tokens.spacing.s2);
+    // Rows are 36 / 52 / 64 (design language, "Space and density").
+    let single_row = f64::from(theme.tokens.metrics.row_single);
     assert!(
-        (face_height(&single, 1.0) - floor).abs() < 0.5,
-        "a one-line row is 40"
+        (face_height(&single, 1.0) - single_row).abs() < 0.5,
+        "a one-line row is the single-row height, {single_row}"
     );
     assert!(face_height(&two, 1.0) > face_height(&single, 1.0));
     assert!(face_height(&three, 1.0) > face_height(&two, 1.0));
