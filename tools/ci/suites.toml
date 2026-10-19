@@ -148,6 +148,7 @@ suites = [
   "os/tests/test_oci_archive_layer_report.py",
   "os/tests/test_local_image_epoch.py",
   "os/tests/security_audit_kconfig.sh",
+  "os/tests/security_audit_posture.sh",
   "os/tests/boot_chain_source.sh",
   "os/tests/installer_target_artifacts.py",
   "os/tests/installer_target_modes.py",

@@ -579,3 +579,64 @@ fn the_audit_runs_the_compiled_check() {
         audit.contains(r#"if ! policy_report="$("$image_policy_check" "$policy" 2>&1)"; then"#)
     );
 }
+
+/// The development posture reads the live policy for what it enforces: on a
+/// laptop whose /etc policy accepts anything by default and whose dev image
+/// repository accepts unsigned updates, both are reported, and the shipped
+/// production policy reports nothing.
+#[test]
+fn unsigned_admissions_are_what_the_live_policy_enforces() {
+    use tilo_image_policy_check::unsigned_admissions;
+    let shipped = fs::read_to_string(SHIPPED).unwrap();
+    assert!(
+        unsigned_admissions(&shipped, Some("registry.tilo.so/tilo/tilo:main-1a2b3c4"))
+            .unwrap()
+            .is_empty()
+    );
+    let mut laptop: Value = serde_json::from_str(&shipped).unwrap();
+    laptop["default"] = json!([{"type": "insecureAcceptAnything"}]);
+    laptop["transports"]["docker"]["registry.tilo.so/tilo/tilo-vm"] =
+        json!([{"type": "insecureAcceptAnything"}]);
+    let text = serde_json::to_string(&laptop).unwrap();
+    let facts = unsigned_admissions(
+        &text,
+        Some("registry.tilo.so/tilo/tilo-vm:pr-4433-d7d1575-lenovo-83ed"),
+    )
+    .unwrap();
+    assert!(
+        facts.iter().any(|f| f.starts_with("the default rule is")),
+        "{facts:?}"
+    );
+    assert!(
+        facts
+            .iter()
+            .any(|f| f.contains("'registry.tilo.so/tilo/tilo-vm' accepts unsigned images")),
+        "{facts:?}"
+    );
+    assert!(
+        facts.iter().any(|f| f.contains(
+            "the booted image's repository registry.tilo.so/tilo/tilo-vm accepts unsigned updates"
+        )),
+        "{facts:?}"
+    );
+    // The command line prints one fact per line and exits 0 either way.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("policy.json");
+    fs::write(&path, &text).unwrap();
+    let status = dir.path().join("bootc.json");
+    fs::write(
+        &status,
+        r#"{"status":{"booted":{"image":{"image":{"image":"registry.tilo.so/tilo/tilo-vm@sha256:00","transport":"registry"}}}}}"#,
+    )
+    .unwrap();
+    let output = Command::new(BINARY)
+        .args([
+            "--unsigned",
+            path.to_str().unwrap(),
+            status.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8(output.stdout).unwrap().lines().count(), 3);
+}

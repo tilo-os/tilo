@@ -13258,6 +13258,7 @@ dependencies = [
  "tilo-advisory-lock",
  "tilo-clock",
  "tilo-files",
+ "tilo-layer-trust",
  "tilo-lock",
  "tilo-paths",
  "tilo-test-env",
@@ -17462,6 +17463,7 @@ dependencies = [
  "tar",
  "tempfile",
  "tilo-advisory-lock",
+ "tilo-layer-trust",
  "tilo-net",
  "tilo-pycompat",
  "toml 1.0.6+spec-1.1.0",
@@ -17956,6 +17958,22 @@ dependencies = [
  "tilo-winit",
  "workspace-hack",
  "xkbcommon",
+]
+
+[[package]]
+name = "tilo-layer-trust"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
+ "hex",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -19842,6 +19860,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tilo-app-package",
  "tilo-files",
+ "tilo-layer-trust",
  "tilo-paths",
  "tilo-vm-protocol",
  "toml 1.0.6+spec-1.1.0",
@@ -19890,6 +19909,7 @@ dependencies = [
  "tilo-clock",
  "tilo-files",
  "tilo-identity-host",
+ "tilo-layer-trust",
  "tilo-test-env",
  "tilo-user-identity",
  "tilo-vm",

@@ -11,7 +11,11 @@ Type=oneshot
 # snapshot: net.core.bpf_jit_harden reads back only with CAP_SYS_ADMIN, and
 # rpm cannot run under NoNewPrivileges= (SELinux refuses its rpm_t transition).
 ExecStartPre=+/usr/bin/sh -c 'umask 077 && sysctl -n net.core.bpf_jit_harden > /run/tilo-security-audit.net.core.bpf_jit_harden && rpm -qa --qf "%%{NAME}\n" > /run/tilo-security-audit.packages'
-ExecStopPost=+/usr/bin/rm -f /run/tilo-security-audit.net.core.bpf_jit_harden /run/tilo-security-audit.packages
+# The development posture's facts the observer cannot read itself: listening
+# sockets with their processes (netlink and other processes' fds), sudoers
+# files that grant NOPASSWD, and the booted image's reference (bootc).
+ExecStartPre=+/usr/bin/sh -c 'umask 077 && { ss -Hltnp | sed "s/^/listen /"; grep -lsE "^[^#]*NOPASSWD" /etc/sudoers /etc/sudoers.d/* | sed "s/^/nopasswd /"; } > /run/tilo-security-audit.posture; bootc status --json > /run/tilo-security-audit.bootc.json 2>/dev/null || true'
+ExecStopPost=+/usr/bin/rm -f /run/tilo-security-audit.net.core.bpf_jit_harden /run/tilo-security-audit.packages /run/tilo-security-audit.posture /run/tilo-security-audit.bootc.json
 ExecStart=/usr/libexec/tilo-security-audit
 TimeoutStartSec=2min
 # The audit is important but not latency-sensitive; its result remains loud

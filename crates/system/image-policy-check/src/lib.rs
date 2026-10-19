@@ -6,6 +6,10 @@
 //! tilo-image-policy-check [POLICY [TRUST_DIR]]
 //!     POLICY     default /etc/containers/policy.json
 //!     TRUST_DIR  default /usr/share/tilo/release (trust.env, root.crt)
+//! tilo-image-policy-check --unsigned POLICY [BOOTC_STATUS]
+//!     every way POLICY lets an image in unsigned, and whether the booted
+//!     image's repository (from `bootc status --json` saved at BOOTC_STATUS)
+//!     takes unsigned updates; one fact per line
 //! ```
 //!
 //! Exits 0 only when the parsed policy proves the requirement. Anything this
@@ -442,6 +446,20 @@ impl Failure {
 /// # Errors
 /// The first thing that keeps the policy from proving the requirement.
 pub fn check(text: &str, trust: &Trust) -> Result<(), Failure> {
+    match problems(text, trust)?.into_iter().next() {
+        Some(problem) => Err(Failure::Policy(problem)),
+        None => Ok(()),
+    }
+}
+
+/// Everything that keeps the policy from proving the requirement, in the
+/// order [`check`] meets them: what the live policy enforces, rather than
+/// what it was meant to. Empty when it proves it.
+///
+/// # Errors
+/// A policy this check cannot read at all (malformed, no transports), as
+/// [`Failure::Policy`]; a value it cannot compare as [`Failure::Crash`].
+pub fn problems(text: &str, trust: &Trust) -> Result<Vec<String>, Failure> {
     let policy = parse(text).map_err(Failure::Policy)?;
     let Json::Object(_) = policy else {
         return Err(Failure::Policy("policy is not a JSON object".to_owned()));
@@ -456,6 +474,7 @@ pub fn check(text: &str, trust: &Trust) -> Result<(), Failure> {
             "policy has no transports.docker object".to_owned(),
         ));
     };
+    let mut problems = Vec::new();
     let lookup = |scope: &str| {
         docker
             .iter()
@@ -464,14 +483,15 @@ pub fn check(text: &str, trust: &Trust) -> Result<(), Failure> {
     };
     for scope in REQUIRED_SCOPES {
         let Some(requirements) = lookup(scope) else {
-            return Err(Failure::Policy(format!(
+            problems.push(format!(
                 "{scope}: no docker scope, so the default rule applies"
-            )));
+            ));
+            continue;
         };
         if let Some(problem) =
             scope_problem(Some(requirements), false, trust).map_err(Failure::Crash)?
         {
-            return Err(Failure::Policy(format!("{scope}: {problem}")));
+            problems.push(format!("{scope}: {problem}"));
         }
     }
     for (scope, requirements) in docker {
@@ -488,42 +508,107 @@ pub fn check(text: &str, trust: &Trust) -> Result<(), Failure> {
         if let Some(problem) =
             scope_problem(Some(requirements), true, trust).map_err(Failure::Crash)?
         {
-            return Err(Failure::Policy(format!("{scope}: {problem}")));
+            problems.push(format!("{scope}: {problem}"));
         }
     }
     for repository in GUARDED_REPOSITORIES {
         let (scope, requirements) = effective_rule(&policy, docker, repository);
         if let Some(problem) = scope_problem(requirements, true, trust).map_err(Failure::Crash)? {
-            return Err(Failure::Policy(format!(
-                "{repository}: governed by {scope}: {problem}"
-            )));
+            let problem = format!("{repository}: governed by {scope}: {problem}");
+            if !problems
+                .iter()
+                .any(|known| problem.ends_with(known.as_str()))
+            {
+                problems.push(problem);
+            }
         }
     }
     let default_rejects = matches!(policy.get("default"),
         Some(Json::Array(items)) if items.len() == 1 && items.iter().all(is_reject));
     if !default_rejects {
-        return Err(Failure::Policy(format!(
+        problems.push(format!(
             "the default rule is {}, not a reject, so an image no scope names is not refused",
             json::repr(policy.get("default"))
-        )));
+        ));
     }
     for (transport, scopes) in transports {
         let Json::Object(scopes) = scopes else {
-            return Err(Failure::Policy(format!(
-                "transports.{transport} is not an object"
-            )));
+            problems.push(format!("transports.{transport} is not an object"));
+            continue;
         };
         for (scope, requirements) in scopes {
             let accepts = matches!(requirements, Json::Array(items) if items.iter().any(is_accept));
             if accepts && !may_accept(transport, scope) {
-                return Err(Failure::Policy(format!(
+                problems.push(format!(
                     "{transport} scope {}: insecureAcceptAnything, which only user-chosen public registries and local transports may use",
                     json::repr_str(scope)
-                )));
+                ));
             }
         }
     }
-    Ok(())
+    Ok(problems)
+}
+
+/// The repository of an image reference: without its tag or digest.
+fn repository_of(image: &str) -> &str {
+    let image = image.split('@').next().unwrap_or(image);
+    match image.rsplit_once(':') {
+        Some((head, tag)) if !tag.contains('/') => head,
+        _ => image,
+    }
+}
+
+/// Every way the policy lets an image in unsigned that a production device
+/// does not: a default that is not a reject, and each scope that accepts
+/// anything where only user-chosen public registries and local transports
+/// may. With `image` (the booted image's reference), also what the policy
+/// asks of the repository it updates from, when that is not a signature.
+/// One line per fact, for the boot audit's development posture.
+///
+/// # Errors
+/// A policy that cannot be parsed.
+pub fn unsigned_admissions(text: &str, image: Option<&str>) -> Result<Vec<String>, String> {
+    let policy = parse(text)?;
+    let mut facts = Vec::new();
+    let accepts = |requirements: Option<&Json>| matches!(requirements, Some(Json::Array(items)) if items.iter().any(is_accept));
+    let default_rejects = matches!(policy.get("default"),
+        Some(Json::Array(items)) if items.len() == 1 && items.iter().all(is_reject));
+    if !default_rejects {
+        facts.push(format!(
+            "the default rule is {}, so an image no scope names is not refused",
+            json::repr(policy.get("default"))
+        ));
+    }
+    if let Some(Json::Object(transports)) = policy.get("transports") {
+        for (transport, scopes) in transports {
+            let Json::Object(scopes) = scopes else {
+                continue;
+            };
+            for (scope, requirements) in scopes {
+                if accepts(Some(requirements)) && !may_accept(transport, scope) {
+                    facts.push(format!(
+                        "{transport} scope {} accepts unsigned images",
+                        json::repr_str(scope)
+                    ));
+                }
+            }
+        }
+    }
+    if let Some(image) = image.filter(|image| !image.is_empty()) {
+        let repository = repository_of(image);
+        let docker: &[(String, Json)] = match policy.get("transports").and_then(|t| t.get("docker"))
+        {
+            Some(Json::Object(docker)) => docker,
+            _ => &[],
+        };
+        let (scope, requirements) = effective_rule(&policy, docker, repository);
+        if accepts(requirements) {
+            facts.push(format!(
+                "the booted image's repository {repository} accepts unsigned updates ({scope})"
+            ));
+        }
+    }
+    Ok(facts)
 }
 
 /// `str(OSError)` as Python wrote it: `[Errno N] reason: 'path'`.
@@ -551,6 +636,9 @@ fn decode_message(bytes: &[u8], error: &std::str::Utf8Error) -> String {
 /// The command line, without the program name; writes the report to `out`
 /// and the usage to `err`, and returns the exit status.
 pub fn main(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
+    if args.first().map(String::as_str) == Some("--unsigned") {
+        return unsigned_main(args.get(1..).unwrap_or_default(), out, err);
+    }
     if args.len() > 2 {
         let _ = writeln!(err, "usage: tilo-image-policy-check [POLICY [TRUST_DIR]]");
         return 2;
@@ -604,4 +692,58 @@ pub fn main(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     };
     let _ = writeln!(out, "{report}");
     code
+}
+
+/// The booted image's reference in `bootc status --json` output at `path`
+/// (`status.booted.image.image.image`), when it has one.
+fn booted_image(path: &str) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let status = parse(&text).ok()?;
+    status
+        .get("status")?
+        .get("booted")?
+        .get("image")?
+        .get("image")?
+        .get("image")?
+        .as_str()
+        .map(str::to_owned)
+}
+
+/// `--unsigned POLICY [BOOTC_STATUS]`: [`unsigned_admissions`] for the image
+/// `bootc status --json` (saved at `BOOTC_STATUS`) says is booted, one per line. Exit 0
+/// whatever it found (these are facts the audit weighs), 1 when the policy
+/// cannot be read, 2 for a usage error.
+fn unsigned_main(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
+    if args.is_empty() || args.len() > 2 {
+        let _ = writeln!(
+            err,
+            "usage: tilo-image-policy-check --unsigned POLICY [IMAGE]"
+        );
+        return 2;
+    }
+    let path = args.first().map_or(DEFAULT_POLICY, String::as_str);
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) => {
+            let _ = writeln!(
+                out,
+                "{path}: cannot read policy: {}",
+                os_message(&error, path)
+            );
+            return 1;
+        }
+    };
+    let image = args.get(1).and_then(|status| booted_image(status));
+    match unsigned_admissions(&text, image.as_deref()) {
+        Ok(facts) => {
+            for fact in facts {
+                let _ = writeln!(out, "{fact}");
+            }
+            0
+        }
+        Err(message) => {
+            let _ = writeln!(out, "{path}: {message}");
+            1
+        }
+    }
 }
