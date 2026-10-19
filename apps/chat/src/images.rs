@@ -78,7 +78,7 @@ fn synth_demo_png(id: &str) -> Option<Vec<u8>> {
         "avatar-bo" => avatar_bo(),
         _ => return None,
     };
-    encode_png(w, h, buf)
+    encode_png(w, h, &buf)
 }
 
 /// A demo call picture for a capture scenario: `camera-<n>` a person in front
@@ -136,8 +136,8 @@ fn camera_frame(palette: usize) -> (u32, u32, Vec<u8>) {
     (w, h, c.px)
 }
 
-fn encode_png(w: u32, h: u32, rgba: Vec<u8>) -> Option<Vec<u8>> {
-    ui::png::encode_rgba8(w, h, &rgba).ok()
+fn encode_png(w: u32, h: u32, rgba: &[u8]) -> Option<Vec<u8>> {
+    ui::png::encode_rgba8(w, h, rgba).ok()
 }
 
 /// A tidy 2×2 call grid mockup: dark canvas, four participant tiles, the

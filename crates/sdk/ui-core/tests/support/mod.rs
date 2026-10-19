@@ -172,7 +172,7 @@ pub fn pump(relay: &mut MemoryRelay) {
             | CollabRequest::OpenSelectedV2 { .. }
             | CollabRequest::OpenSelected { .. }
             | CollabRequest::LocalFileClipboard { .. }) => {
-                refuse_local_request(&mut inboxes, &from, request);
+                refuse_local_request(&mut inboxes, &from, &request);
             }
             CollabRequest::WorkspaceControlInput { .. }
             | CollabRequest::OfferContent { .. }
@@ -210,6 +210,7 @@ pub fn pump(relay: &mut MemoryRelay) {
             }
         }
     }
+    drop(inboxes);
 }
 
 fn relay_mutation(
@@ -273,12 +274,12 @@ fn refuse_workspace_control(inboxes: &mut PeerInboxes, from: &str, session_id: u
 
 /// Answer a request this relay has no authority for with its refusal, to
 /// the requesting peer alone.
-fn refuse_local_request(inboxes: &mut PeerInboxes, from: &str, request: CollabRequest) {
+fn refuse_local_request(inboxes: &mut PeerInboxes, from: &str, request: &CollabRequest) {
     match request {
         CollabRequest::ReportLocalDocumentAction { request_id, .. } => {
             if let Some(inbox) = inboxes.get_mut(from) {
                 inbox.push_back(CollabEvent::LocalDocumentActionReported {
-                    request_id,
+                    request_id: *request_id,
                     result: Err(runtime_collab::LocalDocumentActionError::Rejected(
                         "memory relay has no authenticated admission authority".into(),
                     )),
@@ -288,7 +289,7 @@ fn refuse_local_request(inboxes: &mut PeerInboxes, from: &str, request: CollabRe
         CollabRequest::SelectedDiscovery { request_id, .. } => {
             if let Some(inbox) = inboxes.get_mut(from) {
                 inbox.push_back(CollabEvent::SelectedDiscoveryResult {
-                    request_id,
+                    request_id: *request_id,
                     result: Err("memory relay has no selected-file discovery".into()),
                 });
             }
@@ -296,7 +297,7 @@ fn refuse_local_request(inboxes: &mut PeerInboxes, from: &str, request: CollabRe
         CollabRequest::OpenSelectedV2 { request_id, .. } => {
             if let Some(inbox) = inboxes.get_mut(from) {
                 inbox.push_back(CollabEvent::OpenSelectedV2Result {
-                    request_id,
+                    request_id: *request_id,
                     result: Err("memory relay has no selected-file authority".into()),
                 });
             }
@@ -304,13 +305,13 @@ fn refuse_local_request(inboxes: &mut PeerInboxes, from: &str, request: CollabRe
         CollabRequest::OpenSelected { request_id, .. } => {
             if let Some(inbox) = inboxes.get_mut(from) {
                 inbox.push_back(CollabEvent::OpenSelectedResult {
-                    request_id,
+                    request_id: *request_id,
                     result: Err("memory relay has no selected-file authority".into()),
                 });
             }
         }
         CollabRequest::LocalFileClipboard { request_id, .. } => {
-            refuse_file_clipboard(inboxes, from, request_id);
+            refuse_file_clipboard(inboxes, from, *request_id);
         }
         _ => {}
     }

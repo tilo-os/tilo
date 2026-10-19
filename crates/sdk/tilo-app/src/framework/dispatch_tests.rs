@@ -68,7 +68,7 @@ fn framework_edits_finish_before_observation_drain_and_refuse_before_mutation() 
     );
     assert_eq!(queue.take_refusals().len(), 1);
     let captures = queue.drain();
-    assert_eq!(captures.len(), completed as usize);
+    assert_eq!(u64::try_from(captures.len()).ok(), Some(completed));
     for capture in captures {
         assert_eq!(capture.mutation_hashes.len(), 1);
         assert_eq!(capture.published.unwrap().resource, "body");
