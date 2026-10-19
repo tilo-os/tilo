@@ -45,6 +45,7 @@ fn adopted(kind: MappedKind, tilo: &str, discord: &str) -> Mapping {
 
 fn room_chat() -> RoomChat {
     RoomChat {
+        busy: Vec::new(),
         categories: vec![Category {
             id: "k_chat".into(),
             name: "chat".into(),

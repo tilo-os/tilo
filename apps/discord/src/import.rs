@@ -9,7 +9,10 @@
 //! `#general` becomes the server's `#general` whatever category it sits in.
 //! A channel joined that way moves into its Discord channel's category, and
 //! a category of Tilo's own those moves leave empty is removed, so the room
-//! is laid out as the server is. Once adopted, a channel made in Discord
+//! is laid out as the server is. Once every Discord channel is joined, the
+//! room's channels the server had no match for and nothing was written in
+//! (the `#chat` every room opens with) are removed too, with any category
+//! of Tilo's own they leave empty. Once adopted, a channel made in Discord
 //! later is imported the same way. The messages it already held come as
 //! the worker reads them the first time it meets the server (its newest
 //! messages per channel), at the time they were written.
@@ -66,8 +69,11 @@ pub struct ImportPlan {
     /// Joined channels moving to their Discord channel's category.
     pub file: Vec<FileItem>,
     /// Chat `delete-category`: categories of Tilo's own this round's moves
-    /// leave empty.
+    /// or dropped channels leave empty.
     pub drop_categories: Vec<String>,
+    /// Chat `delete-channel`: once every Discord channel is joined, the
+    /// room's channels the server had no match for that hold no message.
+    pub drop_channels: Vec<String>,
     /// One element while adopting, once every channel is mapped: run
     /// `finish-import` with the Tilo channels and categories left unmatched.
     pub finish: Vec<FinishItem>,
@@ -168,10 +174,38 @@ fn emptied(room: &RoomChat, file: &[FileItem], tilo_own: impl Fn(&String) -> boo
         .collect()
 }
 
+/// The room's channels no Discord channel joined that hold no message,
+/// and the categories of Tilo's own that removing them leaves empty: what
+/// adopting the server removes once every Discord channel is joined.
+fn unused(guild: &Guild, room: &RoomChat) -> (Vec<String>, Vec<String>) {
+    let channels: Vec<String> = room
+        .channels
+        .iter()
+        .filter(|c| guild.mapping(MappedKind::Channel, &c.id).is_none())
+        .filter(|c| !room.busy.contains(&c.id))
+        .map(|c| c.id.clone())
+        .collect();
+    let categories = room
+        .categories
+        .iter()
+        .filter(|category| guild.mapping(MappedKind::Category, &category.id).is_none())
+        .filter(|category| {
+            let mut listed = room
+                .channels
+                .iter()
+                .filter(|c| c.category.as_ref() == Some(&category.id))
+                .peekable();
+            listed.peek().is_some() && listed.all(|c| channels.contains(&c.id))
+        })
+        .map(|category| category.id.clone())
+        .collect();
+    (channels, categories)
+}
+
 /// The import done: the room's categories and channels no Discord one
-/// joined stay Tilo's own.
-fn finish(guild: &Guild, room: &RoomChat) -> FinishItem {
-    let unmatched = |kind, id: &String| guild.mapping(kind, id).is_none();
+/// joined, and that are not `dropped`, stay Tilo's own.
+fn finish(guild: &Guild, room: &RoomChat, dropped: &[String]) -> FinishItem {
+    let unmatched = |kind, id: &String| guild.mapping(kind, id).is_none() && !dropped.contains(id);
     FinishItem {
         tilo_only: room
             .categories
@@ -288,7 +322,15 @@ pub fn plan(guild: &Guild, room: &RoomChat) -> ImportPlan {
     }
     plan.drop_categories = emptied(room, &plan.file, tilo_own);
     if !pending && guild.ownership == Ownership::Importing {
-        plan.finish.push(finish(guild, room));
+        let (channels, categories) = unused(guild, room);
+        let dropped: Vec<String> = channels.iter().chain(&categories).cloned().collect();
+        plan.finish.push(finish(guild, room, &dropped));
+        plan.drop_channels = channels;
+        for category in categories {
+            if !plan.drop_categories.contains(&category) {
+                plan.drop_categories.push(category);
+            }
+        }
     }
     plan
 }
@@ -387,6 +429,7 @@ mod tests {
     #[test]
     fn existing_tilo_channels_are_adopted() {
         let ws = RoomChat {
+            busy: Vec::new(),
             categories: vec![],
             channels: vec![Channel {
                 id: "c_seed".into(),
@@ -486,6 +529,7 @@ mod tests {
             ..Channel::default()
         };
         RoomChat {
+            busy: vec!["c_help".into(), "c_show".into()],
             categories: vec![crate::tilo::Category {
                 id: "k_seeded".into(),
                 name: "Channels".into(),
@@ -580,6 +624,7 @@ mod tests {
     fn the_rooms_starting_channel_becomes_the_servers_of_that_name() {
         let mut guild = tilo_server();
         let ws = RoomChat {
+            busy: Vec::new(),
             categories: vec![crate::tilo::Category {
                 id: "k_seeded".into(),
                 name: "Channels".into(),
@@ -642,6 +687,7 @@ mod tests {
             .map
             .push(discord(MappedKind::Channel, "c_voice", "d_voice"));
         let filed = RoomChat {
+            busy: Vec::new(),
             categories: vec![crate::tilo::Category {
                 id: "k_chat".into(),
                 name: "chat".into(),
@@ -659,6 +705,70 @@ mod tests {
             last.finish,
             [FinishItem { tilo_only: vec![] }],
             "nothing is left Tilo's own"
+        );
+    }
+
+    /// The room as Chat opens it, `#chat` and `#voice`, its seeded
+    /// `#general` already joined and moved: once every Discord channel is
+    /// joined, `#chat`, empty and the server's nowhere, goes, while a
+    /// channel someone wrote in stays Tilo's own.
+    #[test]
+    fn the_rooms_unused_channels_go_once_the_server_is_joined() {
+        let mut guild = tilo_server();
+        for (kind, tilo, d) in [
+            (MappedKind::Category, "k_chat", "d_chat"),
+            (MappedKind::Channel, "c_goal", "d_goal"),
+            (MappedKind::Channel, "c_roadmap", "d_roadmap"),
+            (MappedKind::Channel, "c_progress", "d_progress"),
+            (MappedKind::Channel, "c_voice", "d_voice"),
+            (MappedKind::Channel, "c_general", "d_general"),
+        ] {
+            guild.map.push(discord(kind, tilo, d));
+        }
+        let channel = |id: &str, name: &str, category: Option<&str>| Channel {
+            id: id.into(),
+            name: name.into(),
+            category: category.map(Into::into),
+            ..Channel::default()
+        };
+        let room = RoomChat {
+            categories: vec![
+                crate::tilo::Category {
+                    id: "k_chat".into(),
+                    name: "chat".into(),
+                },
+                crate::tilo::Category {
+                    id: "k_mine".into(),
+                    name: "mine".into(),
+                },
+            ],
+            channels: vec![
+                channel("c_chat", "chat", None),
+                channel("c_onto", "onto", None),
+                channel("c_quiet", "quiet", Some("k_mine")),
+                channel("c_general", "general", Some("k_chat")),
+                Channel {
+                    voice: true,
+                    ..channel("c_voice", "voice", Some("k_chat"))
+                },
+            ],
+            busy: vec!["c_general".into(), "c_onto".into()],
+        };
+        let last = plan(&guild, &room);
+        assert_eq!(last.drop_channels, ["c_chat", "c_quiet"]);
+        assert_eq!(last.drop_categories, ["k_mine"], "mine would list nothing");
+        assert_eq!(
+            last.finish,
+            [FinishItem {
+                tilo_only: vec!["c_onto".into()]
+            }],
+            "what someone wrote in stays the room's own"
+        );
+
+        guild.ownership = Ownership::Adopted;
+        assert!(
+            plan(&guild, &room).drop_channels.is_empty(),
+            "an adopted room's channels are never removed for being empty"
         );
     }
 

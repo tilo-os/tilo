@@ -721,8 +721,9 @@ impl ChatApp {
 const READ_LATEST: usize = 20;
 
 /// The answer of [`ChatEffect::ReadRoom`]: the record's own JSON form of
-/// the room's categories and channels, every person, and `message` and the
-/// latest messages of `channel`, each with the message it answers.
+/// the room's categories and channels, every person, the channels holding
+/// any message (`busy`), and `message` and the latest messages of
+/// `channel`, each with the message it answers.
 pub(crate) fn read_room(
     chat: &Chat,
     held: &crate::messages::Messages,
@@ -759,10 +760,15 @@ pub(crate) fn read_room(
             messages.push(serde_json::json!({ "id": id.as_str(), "value": found.to_json() }));
         }
     }
+    let busy: std::collections::BTreeSet<&str> = held
+        .iter()
+        .map(|(_, found)| found.channel.as_str())
+        .collect();
     serde_json::json!({
         "categories": chat.categories.to_json(),
         "channels": chat.channels.to_json(),
         "people": chat.people.to_json(),
+        "busy": busy,
         "messages": messages,
     })
 }
