@@ -1,4 +1,10 @@
 //! Target-local call lifecycle. Wire intent never grants microphone authority.
+//!
+//! Joining a voice channel is being in its call with the microphone on, as in
+//! any voice chat, unless the person last chose to be muted: that choice is
+//! theirs and remembered ([`CallPreferences`]). The microphone itself is
+//! asked for through the normal permission prompt, once for as long as the
+//! person allows it there, and while it captures the system shows it.
 use super::collab_broker_capnp::{LocalSessionLifecycle, LocalSessionPermit};
 use super::realtime_session::VerifiedAppRegistration;
 use crate::portal::capture_broker::BorrowedCaptureHandle;
@@ -6,7 +12,9 @@ use crate::portal::{
     CaptureBroker, CaptureKind, CaptureLeaseId, CaptureSessionBinding, GrantStoreHandle,
     PortalCaller, PromptQueueHandle,
 };
-use runtime_collab::native_media::{Command, Input, Inventory, Issue, Request, Snapshot, State};
+use runtime_collab::native_media::{
+    Command, Input, Inventory, Issue, Request, Roster, Snapshot, State,
+};
 use std::collections::BTreeMap;
 use std::sync::{
     Arc, Mutex, OnceLock, Weak,
@@ -34,8 +42,59 @@ pub(crate) struct CallTarget {
 pub(crate) type Prepare = std::pin::Pin<
     Box<dyn std::future::Future<Output = Result<Box<dyn MediaSession>, Issue>> + Send>,
 >;
+/// Who is in the call of each voice channel of a target's record.
+pub(crate) type Rosters = std::pin::Pin<Box<dyn std::future::Future<Output = Vec<Roster>> + Send>>;
 pub(crate) trait MediaFactory: Send + Sync {
     fn prepare(&self, target: CallTarget) -> Prepare;
+    /// The calls of `target`'s record (its `channel` is unused) as last
+    /// heard from the room, sorted by channel. A factory without a room
+    /// knows none.
+    fn rosters(&self, _target: CallTarget) -> Rosters {
+        Box::pin(async { Vec::new() })
+    }
+}
+
+/// The person's own choice of joining calls muted: what they last chose
+/// with the microphone button, kept across calls and restarts. Kept in
+/// memory only until a file is installed (tests never touch a real one).
+#[derive(Default)]
+pub(crate) struct CallPreferences {
+    muted: AtomicBool,
+    path: OnceLock<std::path::PathBuf>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CallPreferencesFile {
+    join_muted: bool,
+}
+impl CallPreferences {
+    /// Where the choice lives for this person: their private state.
+    pub(crate) fn default_path() -> Option<std::path::PathBuf> {
+        crate::portal::private_state_root().map(|root| root.join("tilo/calls.json"))
+    }
+    fn install(&self, path: std::path::PathBuf) -> bool {
+        let muted = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<CallPreferencesFile>(&bytes).ok())
+            .is_some_and(|file| file.join_muted);
+        self.muted.store(muted, Ordering::Release);
+        self.path.set(path).is_ok()
+    }
+    pub(crate) fn join_muted(&self) -> bool {
+        self.muted.load(Ordering::Acquire)
+    }
+    pub(crate) fn remember(&self, muted: bool) {
+        if self.muted.swap(muted, Ordering::AcqRel) == muted {
+            return;
+        }
+        if let Some(path) = self.path.get()
+            && let Err(error) = tilo_files::native::atomic::json::write_private(
+                path,
+                &CallPreferencesFile { join_muted: muted },
+            )
+        {
+            tracing::warn!(%error, "the call mute choice was not saved");
+        }
+    }
 }
 /// The installed owner/client/codec adapter. Starting a session always listens
 /// muted. Stop methods synchronously fence capture/publication and cancel the
@@ -122,6 +181,10 @@ struct Entry {
     capture: Option<Capture>,
     pending: Option<Pending>,
     worker: Option<tokio::task::AbortHandle>,
+    /// The join turns the microphone on once the call is live.
+    microphone_on_join: bool,
+    /// The call went live with the microphone wanted: ask for it.
+    unmute_due: bool,
 }
 #[derive(Default)]
 struct Calls {
@@ -145,6 +208,9 @@ struct Shared {
     listener: OnceLock<Arc<dyn Fn() + Send + Sync>>,
     privacy_listener: OnceLock<PrivacyListener>,
     output_disabled: AtomicBool,
+    preferences: CallPreferences,
+    /// The rosters of each caller's record, as last heard.
+    rosters: Mutex<BTreeMap<(String, String, String), Vec<Roster>>>,
 }
 #[derive(Clone)]
 pub(crate) struct NativeMediaService(Arc<Shared>);
@@ -164,6 +230,8 @@ impl NativeMediaService {
             listener: OnceLock::new(),
             privacy_listener: OnceLock::new(),
             output_disabled: AtomicBool::new(false),
+            preferences: CallPreferences::default(),
+            rosters: Mutex::new(BTreeMap::new()),
         });
         let weak = Arc::downgrade(&shared);
         let listener: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
@@ -199,6 +267,15 @@ impl NativeMediaService {
     }
     pub(crate) fn install_factory(&self, factory: Arc<dyn MediaFactory>) -> bool {
         self.0.factory.set(factory).is_ok()
+    }
+    /// Keep the person's mute choice in `path` from now on, starting from
+    /// what it holds.
+    pub(crate) fn install_preferences(&self, path: std::path::PathBuf) -> bool {
+        self.0.preferences.install(path)
+    }
+    #[cfg(test)]
+    pub(crate) fn preferences(&self) -> &CallPreferences {
+        &self.0.preferences
     }
     pub(crate) fn capture_broker(&self) -> Arc<Mutex<CaptureBroker>> {
         Arc::clone(&self.0.capture)
@@ -256,10 +333,14 @@ impl NativeMediaService {
                 }
                 return Ok(ended());
             }
+            if let Command::SetMuted { muted } = command {
+                self.0.preferences.remember(muted);
+            }
             if matches!(command, Command::SetMuted { muted: true }) {
                 let Some(entry) = calls.entries.get_mut(&key) else {
                     return Ok(idle());
                 };
+                entry.microphone_on_join = false;
                 self.0.stop_capture(entry);
                 return Ok(self.0.snapshot(entry));
             }
@@ -391,6 +472,8 @@ impl NativeMediaService {
                 capture: None,
                 pending: None,
                 worker: None,
+                microphone_on_join: !self.0.preferences.join_muted(),
+                unmute_due: false,
             },
         );
         let weak = Arc::downgrade(&self.0);
@@ -451,25 +534,57 @@ impl NativeMediaService {
             .ok_or("local workspace unavailable")?;
         let caller = PortalCaller::new(workspace, entry.caller.app.clone());
         let token = format!("native-media-{}", uuid::Uuid::new_v4());
-        // Always require a fresh trusted local gesture. A saved platform grant
-        // cannot let an agent invoking the app's semantic action unmute it.
-        let reply = consent.prompts.enqueue_for_request(
-            caller,
-            super::state::Capability::Microphone {
-                scope: super::state::GRANT_ONCE,
-            },
-            token.clone(),
-        );
+        // The microphone is asked for once, through the normal permission
+        // prompt: an allowance the person gave this app in this room, for the
+        // session or always, covers every later join until they take it back.
+        let remembered = consent
+            .grants
+            .lookup(&caller, crate::portal::CapabilityKind::Microphone)
+            .is_some_and(|scope| {
+                matches!(
+                    scope,
+                    super::state::GRANT_ALWAYS | super::state::GRANT_SESSION
+                )
+            });
+        let reply = (!remembered).then(|| {
+            consent.prompts.enqueue_for_request(
+                caller.clone(),
+                super::state::Capability::Microphone {
+                    scope: super::state::GRANT_ONCE,
+                },
+                token.clone(),
+            )
+        });
+        let grants = consent.grants.clone();
         let weak = Arc::downgrade(&self.0);
         let task_key = key.clone();
         let task_token = token.clone();
         let generation = entry.generation;
         let task = tokio::spawn(async move {
-            let approved = tokio::time::timeout(CONSENT_TIMEOUT, reply)
-                .await
-                .ok()
-                .and_then(Result::ok)
-                .is_some_and(crate::portal::PromptOutcome::is_allowed);
+            let approved = match reply {
+                None => true,
+                Some(reply) => {
+                    let outcome = tokio::time::timeout(CONSENT_TIMEOUT, reply)
+                        .await
+                        .ok()
+                        .and_then(Result::ok);
+                    if let Some(scope) = outcome
+                        .and_then(crate::portal::PromptOutcome::to_scope)
+                        .filter(|scope| {
+                            matches!(
+                                *scope,
+                                super::state::GRANT_ALWAYS | super::state::GRANT_SESSION
+                            )
+                        })
+                    {
+                        grants.insert_portal_consent(
+                            &caller,
+                            &super::state::Capability::Microphone { scope },
+                        );
+                    }
+                    outcome.is_some_and(crate::portal::PromptOutcome::is_allowed)
+                }
+            };
             if let Some(shared) = weak.upgrade() {
                 shared.finish_consent(&task_key, generation, intent, &task_token, approved);
             }
@@ -494,11 +609,25 @@ impl NativeMediaServices for NativeMediaService {
             Command::SelectInput { .. } => "select_input",
             Command::Status => "status",
         };
+        let route = (
+            context.workspace_id().to_owned(),
+            context.app_id().to_owned(),
+            context.record_id().to_owned(),
+        );
         let result = if request.dispatch_valid() {
             self.command_for(context.into(), request)
         } else {
             Err("invalid native media command".into())
         };
+        // What a voice channel shows, joined or not: the rosters last heard
+        // for this record, refreshed for the next reply.
+        let result = result.map(|mut snapshot| {
+            if snapshot.state != State::Unavailable {
+                snapshot.rosters = self.0.rosters_of(&route);
+                self.0.refresh_rosters(route);
+            }
+            snapshot
+        });
         if let Err(error) = &result {
             let category = match error.as_str() {
                 "local call not ready" => "call_not_ready",
@@ -528,6 +657,34 @@ impl NativeMediaServices for NativeMediaService {
 }
 
 impl Shared {
+    fn rosters_of(&self, route: &(String, String, String)) -> Vec<Roster> {
+        self.rosters
+            .lock_recover()
+            .get(route)
+            .cloned()
+            .unwrap_or_default()
+    }
+    fn refresh_rosters(self: &Arc<Self>, route: (String, String, String)) {
+        let Some(factory) = self.factory.get().cloned() else {
+            return;
+        };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let rosters = factory.rosters(CallTarget {
+            workspace: route.0.clone(),
+            app: route.1.clone(),
+            record: route.2.clone(),
+            channel: String::new(),
+        });
+        let weak = Arc::downgrade(self);
+        runtime.spawn(async move {
+            let rosters = rosters.await;
+            if let Some(shared) = weak.upgrade() {
+                shared.rosters.lock_recover().insert(route, rosters);
+            }
+        });
+    }
     fn apply_privacy(&self, policy: &crate::portal::lockdown::LockdownPolicy) {
         self.output_disabled
             .store(policy.disable_sound_output, Ordering::Release);
@@ -836,6 +993,16 @@ impl Shared {
             }
         }
     }
+    /// The intent of a join that went live wanting the microphone, once.
+    fn take_due_unmute(&self, key: &Key, generation: u64) -> Option<u64> {
+        let mut calls = self.calls.lock().ok()?;
+        let entry = calls
+            .entries
+            .get_mut(key)
+            .filter(|entry| entry.generation == generation && entry.unmute_due)?;
+        entry.unmute_due = false;
+        Some(entry.intent)
+    }
     fn tick(&self, key: &Key, generation: u64) -> bool {
         // Expiry callbacks stop backend capture while the broker still owns
         // revocation. Never hold a backend mutex while resolving the broker.
@@ -907,7 +1074,16 @@ impl Shared {
             Ok(state) => {
                 match state {
                     State::Reconnecting => Self::pause_capture(entry),
-                    State::Live => self.resume_capture(entry),
+                    State::Live => {
+                        self.resume_capture(entry);
+                        if entry.microphone_on_join
+                            && entry.capture.is_none()
+                            && entry.pending.is_none()
+                        {
+                            entry.microphone_on_join = false;
+                            entry.unmute_due = true;
+                        }
+                    }
                     _ => self.stop_capture(entry),
                 }
                 entry.snapshot.state = state;
@@ -974,6 +1150,12 @@ async fn run_call(weak: Weak<Shared>, key: Key, generation: u64, intent: u64, pr
         };
         if !shared.tick(&key, generation) {
             return;
+        }
+        if let Some(intent) = shared.take_due_unmute(&key, generation)
+            && let Err(error) =
+                NativeMediaService(Arc::clone(&shared)).request_capture(&key, intent)
+        {
+            tracing::debug!(%error, "the call's microphone did not start on join");
         }
         drop(shared);
         tokio::time::sleep(Duration::from_millis(10)).await;

@@ -1324,6 +1324,11 @@ fn voice_event(
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 enum JsCallOperation {
+    Open {
+        app: String,
+        record: String,
+        channel: String,
+    },
     Start {
         app: String,
         record: String,
@@ -1344,6 +1349,15 @@ impl JsCallOperation {
     fn into_operation(self) -> Result<tilo_relay_protocol::voice::CallOperation, JsError> {
         use tilo_relay_protocol::voice::{CallOperation, Directions};
         Ok(match self {
+            Self::Open {
+                app,
+                record,
+                channel,
+            } => CallOperation::Open {
+                app_id: app,
+                record_id: record,
+                channel_id: channel,
+            },
             Self::Start {
                 app,
                 record,

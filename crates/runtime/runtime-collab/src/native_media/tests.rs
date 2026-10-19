@@ -124,8 +124,9 @@ fn publisher_inventory_is_current_bounded_and_canonical() {
         assert!(snapshot.encode().is_err());
     }
     snapshot.publication = None;
-    snapshot.publishers = (0..8).map(|n| format!("{call}/{n:064x}")).collect();
-    assert!(snapshot.encode().is_err());
+    // A call has no participant limit.
+    snapshot.publishers = (1..=200).map(|n| format!("{call}/{n:064x}")).collect();
+    assert!(snapshot.encode().is_ok());
     snapshot.publishers = vec![remote];
     for state in [
         State::Ended,
@@ -139,4 +140,41 @@ fn publisher_inventory_is_current_bounded_and_canonical() {
             "stale carrier inventory must be withdrawn"
         );
     }
+}
+
+#[test]
+fn rosters_name_people_once_per_channel() {
+    let person = |n: u8| hex_person(n);
+    let mut snapshot = Snapshot::unavailable();
+    snapshot.state = State::Idle;
+    snapshot.issue = None;
+    snapshot.rosters = vec![
+        Roster {
+            channel_id: "lounge".into(),
+            people: vec![person(1), person(2)],
+        },
+        Roster {
+            channel_id: "voice".into(),
+            people: (3..=120).map(person).collect(),
+        },
+    ];
+    let bytes = snapshot.encode().unwrap();
+    assert_eq!(Snapshot::decode(&bytes).unwrap(), snapshot);
+    for people in [
+        vec![person(2), person(1)],
+        vec![person(1), person(1)],
+        vec![person(10).to_uppercase()],
+        vec!["ana".to_owned()],
+    ] {
+        let mut invalid = snapshot.clone();
+        invalid.rosters[0].people = people;
+        assert!(invalid.encode().is_err());
+    }
+    let mut unordered = snapshot;
+    unordered.rosters.reverse();
+    assert!(unordered.encode().is_err());
+}
+
+fn hex_person(n: u8) -> String {
+    format!("{n:02x}").repeat(32)
 }

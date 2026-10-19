@@ -2305,6 +2305,12 @@ mod tests {
         snapshot.publishers = (1..=count)
             .map(|index| format!("{}/{index:064x}", "11".repeat(32)))
             .collect();
+        if count > 0 {
+            snapshot.rosters = vec![ui::native_media::Roster {
+                channel_id: channel.into(),
+                people: (1..=count).map(|index| format!("{index:064x}")).collect(),
+            }];
+        }
         assert!(snapshot.valid());
         app.native_voice.complete(id, &Ok(snapshot));
         app.project_native_voice();
@@ -3217,7 +3223,12 @@ mod tests {
         assert_eq!(app.voice_in("c_standup").len(), 2);
         app.on_hit(Hit::CallLeave, &mut ui::widget::Edits::lend(&mut doc));
         assert!(!app.call.active && app.call.muted);
-        assert!(app.voice_in("c_standup").is_empty());
+        assert!(!app.voice_people("c_standup").contains(&app.me.id));
+        assert_eq!(
+            app.voice_in("c_standup").len(),
+            2,
+            "the others stay in the room's call"
+        );
         assert_eq!(doc.save(), before);
     }
 
@@ -4964,20 +4975,19 @@ mod tests {
     // --- members roster (right flap "members" half was unimplemented) ---
 
     #[test]
-    fn roster_projects_people_without_guessing_stream_identity_or_legacy_presence() {
+    fn the_rooms_call_places_its_people_in_the_voice_channel_by_person() {
         let (mut app, _) = app_with_doc();
         let people = app.users.len();
         service_streams(&mut app, "c_huddle", 3);
-        let rows = app.roster_rows();
-        assert_eq!(rows.len(), people);
-        assert!(
-            rows.iter()
-                .filter(|(person, _)| !app.is_me(&person.id))
-                .all(|(_, channel)| channel.is_none()),
-            "an anonymous stream places nobody in the call"
-        );
-        for stream in app.voice_in("c_huddle") {
-            assert!(app.user_name(&stream.user).starts_with("Audio stream "));
+        assert_eq!(app.roster_rows().len(), people, "the roster lists the room's people");
+        let in_call = app.voice_people("c_huddle");
+        for index in 1..=3 {
+            let person = format!("{index:064x}");
+            assert!(in_call.contains(&person), "{person} is in the call");
+            assert!(
+                !app.user_name(&person).contains(&person),
+                "nobody is shown by their raw id"
+            );
         }
     }
 

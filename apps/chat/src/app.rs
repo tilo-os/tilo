@@ -1626,11 +1626,49 @@ impl ChatApp {
                 self.right_flap.open();
                 self.call.join("c_huddle");
                 self.stage_connected_call();
-                // Two audio streams in the room, so the sidebar shows the
-                // people under the voice channel.
-                self.native_voice.snapshot.publishers = (1..=2)
-                    .map(|index| format!("{}/{index:064x}", "11".repeat(32)))
-                    .collect();
+                // Two people in the room's call beside this one, so the
+                // sidebar shows them under the voice channel.
+                self.native_voice.snapshot.rosters = vec![ui::native_media::Roster {
+                    channel_id: "c_huddle".into(),
+                    people: vec!["u_aria".to_owned(), "u_milo".to_owned()],
+                }];
+                self.refresh_native_streams();
+            }
+            "lounge" | "lounge-call" => {
+                // A shared room with people in its voice channels: this
+                // person in the Design Huddle with their microphone on, three
+                // others beside them and two in the standup, as the room's
+                // call rosters report them before anyone opens a call.
+                self.thread_open = None;
+                self.call.join("c_huddle");
+                self.call.muted = false;
+                self.call.expanded = scenario == "lounge-call";
+                self.right_flap.snap(false);
+                self.stage_connected_call();
+                let me = self.me.id.clone();
+                let mut huddle = vec![
+                    me,
+                    "u_aria".to_owned(),
+                    "u_milo".to_owned(),
+                    "u_sora".to_owned(),
+                ];
+                if scenario == "lounge-call" {
+                    huddle.push("u_devon".to_owned());
+                }
+                self.native_voice.snapshot.rosters = vec![
+                    ui::native_media::Roster {
+                        channel_id: "c_huddle".into(),
+                        people: huddle,
+                    },
+                    ui::native_media::Roster {
+                        channel_id: "c_standup".into(),
+                        people: if scenario == "lounge" {
+                            vec!["u_devon".to_owned(), "u_iris".to_owned()]
+                        } else {
+                            Vec::new()
+                        },
+                    },
+                ];
                 self.refresh_native_streams();
             }
             "starter" => {
@@ -2569,16 +2607,6 @@ impl ChatApp {
     /// name like anyone else, and an honest placeholder for someone the room
     /// has not named yet — nobody is ever shown their raw routing id.
     pub(crate) fn user_name(&self, id: &str) -> String {
-        if self
-            .native_voice
-            .snapshot
-            .publishers
-            .iter()
-            .any(|namespace| namespace == id)
-        {
-            let tail = id.ceil_char_boundary(id.len().saturating_sub(6));
-            return format!("Audio stream {}", id.get(tail..).unwrap_or(id));
-        }
         // `is_me` rather than a bare comparison: a peer that has adopted the
         // room's address for itself still wrote its earlier lines under the
         // id it resolved at startup, and those are still its own. Their own
@@ -2799,7 +2827,10 @@ impl ChatApp {
         if self.call.active && self.call.channel == channel {
             people.push(self.me.id.clone());
         }
-        for person in self.room_voice.get(channel).into_iter().flatten() {
+        // What the room's presence says, and who the room's call counts in.
+        let present = self.room_voice.get(channel).into_iter().flatten();
+        let counted = self.voice_in(channel).iter().map(|member| &member.user);
+        for person in present.chain(counted) {
             if !self.is_me(person) && !people.contains(person) {
                 people.push(person.clone());
             }

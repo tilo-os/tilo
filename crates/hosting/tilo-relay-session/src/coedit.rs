@@ -505,6 +505,20 @@ impl RelayCoeditSession {
             .map_err(|_| CoeditError::Disconnected)
     }
 
+    /// Ask for the room's calls with who is in each; answered with
+    /// [`VoiceEvent::Calls`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoeditError::Disconnected`] if the connection is gone.
+    pub fn voice_calls(&self) -> Result<(), CoeditError> {
+        self.client
+            .send(Envelope::VoiceCalls {
+                workspace_id: self.workspace_id,
+            })
+            .map_err(|_| CoeditError::Disconnected)
+    }
+
     /// End `participation` in `call`.
     ///
     /// # Errors
@@ -614,6 +628,12 @@ impl RelayCoeditSession {
                     reason,
                 } if workspace_id == self.workspace_id => {
                     return Some(Inbound::Voice(VoiceEvent::Refused { call, reason }));
+                }
+                Envelope::VoiceCallList {
+                    workspace_id,
+                    result,
+                } if workspace_id == self.workspace_id => {
+                    return Some(Inbound::Voice(VoiceEvent::Calls(result)));
                 }
                 Envelope::NotAuthorised { .. } => return None,
                 // Keep-alives and federation chatter carry no co-edit

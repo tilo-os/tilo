@@ -77,16 +77,24 @@ impl LocalVoice {
         match &command {
             Command::Join { channel_id } => {
                 self.channel = Some(channel_id.clone());
+                let rosters = std::mem::take(&mut self.snapshot.rosters);
                 self.snapshot = Snapshot::unavailable();
                 self.snapshot.state = State::Preparing;
                 self.snapshot.issue = None;
-                self.unmute_requested = false;
+                self.snapshot.rosters = rosters;
+                // Joining is being in the call with the microphone on unless
+                // the person chose muted; the service holds that choice and
+                // the capture, and its status says which.
+                self.unmute_requested = true;
             }
             Command::Leave => {
                 self.channel = None;
+                // Who else is in the room's calls stays as heard.
+                let rosters = std::mem::take(&mut self.snapshot.rosters);
                 self.snapshot = Snapshot::unavailable();
                 self.snapshot.state = State::Ended;
                 self.snapshot.issue = None;
+                self.snapshot.rosters = rosters;
                 self.unmute_requested = false;
             }
             Command::SetMuted { muted } => {
@@ -134,7 +142,9 @@ impl LocalVoice {
         if self.channel.is_some() {
             Duration::from_millis(500)
         } else {
-            Duration::from_secs(5)
+            // Out of a call the status still says who is in each voice
+            // channel, which the sidebar shows.
+            Duration::from_secs(2)
         }
     }
 
@@ -283,30 +293,38 @@ impl crate::app::ChatApp {
         self.request_relayout();
     }
 
+    /// Who is in each voice channel, joined or not: the rosters the service
+    /// last heard from the room, by person (this person among them once the
+    /// room counts them in).
     pub(crate) fn refresh_native_streams(&mut self) {
         self.voice_members.clear();
         let snapshot = &self.native_voice.snapshot;
-        if snapshot.state != State::Live {
-            return;
-        }
-        let Some(channel) = &self.native_voice.channel else {
-            return;
+        let member = |user: &str, muted: bool| crate::model::VoiceMember {
+            user: user.to_owned(),
+            talking: false,
+            muted,
+            deafened: false,
+            audio_only: true,
+            sharing: false,
+            ticket: None,
+            video: None,
         };
-        let streams = snapshot
-            .publishers
-            .iter()
-            .map(|namespace| crate::model::VoiceMember {
-                user: namespace.clone(),
-                talking: false,
-                muted: false,
-                deafened: false,
-                audio_only: true,
-                sharing: false,
-                ticket: None,
-                video: None,
-            })
-            .collect();
-        self.voice_members.insert(channel.clone(), streams);
+        for roster in &snapshot.rosters {
+            let voice = self.channels.iter().any(|channel| {
+                channel.id == roster.channel_id && channel.kind == crate::model::ChannelKind::Voice
+            });
+            if voice {
+                let mut members: Vec<_> = roster
+                    .people
+                    .iter()
+                    .map(|person| member(person, false))
+                    .collect();
+                // A person's devices are one person; the service sorted them.
+                members.dedup_by(|a, b| a.user == b.user);
+                self.voice_members
+                    .insert(roster.channel_id.clone(), members);
+            }
+        }
     }
 }
 

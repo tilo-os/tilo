@@ -238,6 +238,8 @@ pub enum VoiceEvent {
         /// Why.
         reason: String,
     },
+    /// The room's calls with who is in each, or why the room listed none.
+    Calls(Result<Vec<tilo_relay_protocol::voice::CallSummary>, String>),
 }
 
 /// Failure modes for `RelayCoeditSession` operations.
