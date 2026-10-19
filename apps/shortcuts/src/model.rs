@@ -41,10 +41,8 @@ pub struct Program {
 ///
 /// Each unit (an input's declaration, an argument's binding, a step's head,
 /// the output, the triggers) is written whole and kept as the automation
-/// value the run engine reads, as one JSON string (`Json`): it carries JSON
-/// the draft does not shape — a binding's literal value, another app's
-/// parameter declaration with its JSON Schema — so it has no parts of the
-/// draft's own to merge.
+/// value the run engine reads; the record stores each as its maps, lists and
+/// scalars.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Draft {
     /// Name
@@ -53,15 +51,15 @@ pub struct Draft {
     /// The id the shortcut is saved under.
     pub shortcut_id: String,
     /// The shortcut's inputs, keyed by name.
-    pub inputs: Collection<Json<Option<ActionParam>>>,
+    pub inputs: Collection<ActionParam>,
     /// Every step at every depth, in program order; a step names the block
     /// it is in ([`StepNode::parent`], [`StepNode::branch`]).
     pub steps: Collection<StepNode>,
     /// What a finished run reports back.
-    pub output: Json<Option<Binding>>,
+    pub output: Option<Binding>,
     /// Carried unchanged from the saved shortcut, so editing its steps
     /// keeps when it runs on its own and what it may do then.
-    pub triggers: Json<Vec<TriggerSpec>>,
+    pub triggers: Vec<TriggerSpec>,
     /// Whether saving replaces a saved shortcut rather than creating one.
     pub replaces_saved: bool,
 }
@@ -78,14 +76,14 @@ pub struct StepNode {
     /// The step's own id, which bindings to its output name.
     pub id: Atom,
     /// What the step does, apart from its arguments and blocks.
-    pub head: Json<Option<Head>>,
+    pub head: Option<Head>,
     /// An action step's arguments, each bound on its own.
-    pub args: BTreeMap<String, Json<Option<Binding>>>,
+    pub args: BTreeMap<String, Binding>,
 }
 
 /// A [`StepKind`] without the parts a [`StepNode`] stores apart: an action's
 /// arguments and the steps inside a block.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Model, Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "step", rename_all = "snake_case")]
 pub enum Head {
     Invoke {
@@ -240,14 +238,10 @@ impl Draft {
     #[must_use]
     pub fn program(&self) -> Program {
         Program {
-            inputs: self
-                .inputs
-                .values()
-                .filter_map(|input| input.0.clone())
-                .collect(),
+            inputs: self.inputs.values().cloned().collect(),
             steps: self.block("", ""),
-            output: self.output.0.clone(),
-            triggers: self.triggers.0.clone(),
+            output: self.output.clone(),
+            triggers: self.triggers.clone(),
         }
     }
 
@@ -257,12 +251,8 @@ impl Draft {
             .iter()
             .filter(|(_, node)| node.parent.0 == parent && node.branch.0 == branch)
             .filter_map(|(key, node)| {
-                let head = node.head.0.clone()?;
-                let args = node
-                    .args
-                    .iter()
-                    .filter_map(|(name, binding)| Some((name.clone(), binding.0.clone()?)))
-                    .collect();
+                let head = node.head.clone()?;
+                let args = node.args.clone();
                 let kind = head.join(args, |branch| self.block(key.as_str(), branch));
                 Some(Step::new(node.id.0.clone(), kind))
             })
@@ -282,13 +272,12 @@ impl Draft {
         for (index, (name, input)) in names.iter().zip(&program.inputs).enumerate() {
             match self.inputs.get_mut(name) {
                 Some(stored) => {
-                    if stored.0.as_ref() != Some(input) {
-                        stored.0 = Some(input.clone());
+                    if stored != input {
+                        *stored = input.clone();
                     }
                 }
                 None => {
-                    self.inputs
-                        .insert(index, name.clone(), Json(Some(input.clone())));
+                    self.inputs.insert(index, name.clone(), input.clone());
                 }
             }
         }
@@ -299,11 +288,11 @@ impl Draft {
         self.steps.retain(|key, _| order.contains(key));
         place(&mut self.steps, &order);
 
-        if self.output.0 != program.output {
-            self.output = Json(program.output.clone());
+        if self.output != program.output {
+            self.output.clone_from(&program.output);
         }
-        if self.triggers.0 != program.triggers {
-            self.triggers = Json(program.triggers.clone());
+        if self.triggers != program.triggers {
+            self.triggers.clone_from(&program.triggers);
         }
     }
 
@@ -335,11 +324,8 @@ impl Draft {
                 parent: Atom(parent.to_owned()),
                 branch: Atom(branch.to_owned()),
                 id: Atom(step.id.clone()),
-                head: Json(Some(head)),
-                args: args
-                    .into_iter()
-                    .map(|(name, binding)| (name, Json(Some(binding))))
-                    .collect(),
+                head: Some(head),
+                args,
             };
             match self.steps.get_mut(&key) {
                 Some(stored) => {
@@ -412,7 +398,48 @@ fn edit_program(
     Ok(())
 }
 
-#[resource(kind = "shortcuts.workbench", label = "Shortcuts")]
+/// Bring a workbench of version 1 up to this one: a draft's inputs, output
+/// and triggers and each step's head and arguments were one JSON string
+/// each, and are stored as their values now. Every draft, step and binding
+/// is kept; a value that was JSON `null` (no input, no head, no binding) is
+/// left absent, as it read before.
+///
+/// # Errors
+/// Returns why a stored value does not read as its type.
+pub fn upgrade(
+    doc: &mut ui::tilo_resource::Doc,
+    from: u32,
+) -> Result<(), ui::tilo_resource::ModelError> {
+    use ui::automerge::{ObjType, ReadDoc as _, Value};
+    use ui::tilo_resource::evolution::{collection_items, retype_json, retype_json_items};
+    if from != 1 {
+        return Err(ui::tilo_resource::ModelError::invalid(format!(
+            "no Shortcuts workbench migration from {from}"
+        )));
+    }
+    for draft in collection_items(doc, &ui::automerge::ROOT, "drafts")? {
+        retype_json::<Option<Binding>>(doc, &draft, "output")?;
+        retype_json::<Vec<TriggerSpec>>(doc, &draft, "triggers")?;
+        retype_json_items::<Option<ActionParam>>(doc, &draft, "inputs")?;
+        for step in collection_items(doc, &draft, "steps")? {
+            retype_json::<Option<Head>>(doc, &step, "head")?;
+            let Some((Value::Object(ObjType::Map), args)) = doc.get(&step, "args")? else {
+                continue;
+            };
+            for name in doc.keys(&args).collect::<Vec<_>>() {
+                retype_json::<Option<Binding>>(doc, &args, &name)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[resource(
+    kind = "shortcuts.workbench",
+    label = "Shortcuts",
+    version = 2,
+    migrate = upgrade
+)]
 impl Workbench {
     /// Start a new shortcut.
     #[action]

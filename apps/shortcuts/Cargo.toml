@@ -21,7 +21,7 @@ tilo-action-policy = { path = "../../crates/collab/action-policy" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # The shortcut program, its checker and the least-authority grant vocabulary.
-tilo-automation = { path = "../../crates/collab/automation" }
+tilo-automation = { path = "../../crates/collab/automation", features = ["model"] }
 serde.workspace = true
 serde_json.workspace = true
 

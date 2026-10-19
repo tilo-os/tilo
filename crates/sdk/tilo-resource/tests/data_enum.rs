@@ -121,7 +121,7 @@ fn changing_the_variant_removes_the_fields_of_the_old_one() {
     );
 }
 
-/// The old shape: each field one JSON string, as `Json<T>` stored it.
+/// The old shape: each field one JSON string, as a field of JSON text stored it.
 fn old_document() -> tilo_resource::Doc {
     let mut doc = tilo_resource::Doc::new();
     let matcher = serde_json::to_string(&Some(Matcher::Host {

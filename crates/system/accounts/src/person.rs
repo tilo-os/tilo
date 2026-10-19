@@ -22,7 +22,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use tilo_resource::{Collection, Id, Invoke, Json, Model, Refusal, SharedRecord, resource};
+use tilo_resource::{Collection, Id, Invoke, Model, ModelError, Refusal, SharedRecord, resource};
 
 use crate::{Account, AccountId, AccountStore, AccountTypeId};
 
@@ -58,9 +58,9 @@ pub struct PersonAccount {
     /// The name shown for it ("Work — Fastmail").
     pub display_name: String,
     /// Type-specific connection settings. Never a secret. Each account type
-    /// shapes its own, so to this record they are one opaque value (`Json`),
-    /// written whole by the account's editor.
-    pub config: Json<serde_json::Value>,
+    /// shapes its own; the record keeps them as the JSON they are, a map of
+    /// settings, so two devices changing different settings both keep theirs.
+    pub config: serde_json::Value,
     /// Whether the person uses it now.
     pub enabled: bool,
     /// Tints the account's avatar so several read as distinct.
@@ -76,7 +76,26 @@ pub struct PersonAccounts {
     pub active: BTreeMap<String, String>,
 }
 
-#[resource(kind = "tilo.accounts", label = "Accounts")]
+/// Bring the person's accounts of version 1 up to this one: an account's
+/// connection settings were one JSON string, and are the JSON value itself
+/// now. Every account and every setting is kept.
+///
+/// # Errors
+/// Returns why a stored account's settings do not read as JSON.
+pub fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
+    use tilo_resource::evolution::{collection_items, retype_json};
+    if from != 1 {
+        return Err(ModelError::invalid(format!(
+            "no accounts migration from {from}"
+        )));
+    }
+    for account in collection_items(doc, &tilo_resource::__private::ROOT, "accounts")? {
+        retype_json::<serde_json::Value>(doc, &account, "config")?;
+    }
+    Ok(())
+}
+
+#[resource(kind = "tilo.accounts", label = "Accounts", version = 2, migrate = upgrade)]
 impl PersonAccounts {
     /// Project public browser choices from the existing typed account document.
     ///
@@ -111,13 +130,11 @@ impl PersonAccounts {
                     && account.type_id == TILO_IDENTITY_TYPE
                     && account
                         .config
-                        .0
                         .get("userPublicKey")
                         .and_then(serde_json::Value::as_str)
                         == Some(root)
                     && account
                         .config
-                        .0
                         .get("origin")
                         .and_then(serde_json::Value::as_str)
                         == Some(origin)
@@ -202,7 +219,7 @@ impl PersonAccounts {
         let account = PersonAccount {
             type_id: type_id.clone(),
             display_name,
-            config: Json(config),
+            config,
             enabled,
             tint,
         };
@@ -254,7 +271,6 @@ impl PersonAccounts {
                 account.type_id == "signal"
                     && account
                         .config
-                        .0
                         .get("messaging_scope")
                         .and_then(serde_json::Value::as_str)
                         == Some(scope.as_str())
@@ -344,7 +360,6 @@ impl PersonAccounts {
                 row.type_id == "whatsapp"
                     && row
                         .config
-                        .0
                         .get("whatsapp_jid")
                         .and_then(serde_json::Value::as_str)
                         == Some(jid.as_str())
@@ -494,7 +509,7 @@ impl PersonAccounts {
                 id: AccountId::new(id.as_str()),
                 type_id: AccountTypeId::new(account.type_id.clone()),
                 display_name: account.display_name.clone(),
-                config: account.config.0.clone(),
+                config: account.config.clone(),
                 enabled: account.enabled,
                 tint: account.tint,
                 owner: None,
@@ -550,6 +565,77 @@ mod tests {
     use super::*;
     use tilo_resource::Replica;
 
+    /// The person's accounts as version 1 kept them, each account's
+    /// connection settings one JSON string, open with every account and
+    /// every setting as it was.
+    #[test]
+    fn accounts_of_version_one_keep_every_account_and_setting() {
+        use tilo_resource::{Slot, evolution};
+        let root = tilo_resource::__private::ROOT;
+        let config = serde_json::json!({
+            "host": "imap.example",
+            "port": 993,
+            "tls": true,
+            "folders": ["INBOX", "Sent"],
+        });
+        let mut replica = Replica::<PersonAccounts>::new();
+        let doc = replica.doc_mut();
+        evolution::fixture(
+            doc,
+            &root,
+            &serde_json::json!({
+                "accounts": {
+                    "mail-1": {
+                        "k": "a",
+                        "v": {
+                            "type_id": {"$text": "email"},
+                            "display_name": {"$text": "Work"},
+                            "config": config.to_string(),
+                            "enabled": true,
+                            "tint": 3,
+                        },
+                    },
+                    "dav-1": {
+                        "k": "b",
+                        "v": {
+                            "type_id": {"$text": "caldav"},
+                            "display_name": {"$text": "Calendar"},
+                            "config": "null",
+                            "enabled": false,
+                            "tint": 0,
+                        },
+                    },
+                },
+                "active": {"email": {"$text": "mail-1"}},
+            }),
+        )
+        .unwrap();
+        Slot::Key(&root, evolution::VERSION_KEY)
+            .put_scalar(doc, tilo_resource::__private::ScalarValue::Uint(1))
+            .unwrap();
+        doc.commit();
+        let mut old = doc.fork();
+        assert!(evolution::migrate::<PersonAccounts>(&mut old).unwrap());
+        let accounts = evolution::read_checked::<PersonAccounts>(&old).unwrap();
+        assert_eq!(accounts.accounts.len(), 2);
+        let mail = accounts.accounts.get(&Id::from_raw("mail-1")).unwrap();
+        assert_eq!(mail.type_id, "email");
+        assert_eq!(mail.display_name, "Work");
+        assert_eq!(mail.config, config);
+        assert!(mail.enabled);
+        assert_eq!(mail.tint, 3);
+        let dav = accounts.accounts.get(&Id::from_raw("dav-1")).unwrap();
+        assert_eq!(dav.config, serde_json::Value::Null);
+        assert_eq!(
+            accounts.active.get("email").map(String::as_str),
+            Some("mail-1")
+        );
+        assert_eq!(
+            accounts.store().get(&"mail-1".into()).unwrap().config["port"],
+            993
+        );
+    }
+
     #[test]
     fn publish_signal_account_keeps_names_separate_and_scope_exact() {
         let mut record = Replica::<PersonAccounts>::new();
@@ -575,7 +661,7 @@ mod tests {
             let account = state.accounts.get(&Id::from_raw(id)).unwrap();
             assert_eq!(account.type_id, "signal");
             assert_eq!(
-                account.config.0,
+                account.config,
                 serde_json::json!({"messaging_scope":format!("signal:{aci}"),"linking_generation":7})
             );
         }

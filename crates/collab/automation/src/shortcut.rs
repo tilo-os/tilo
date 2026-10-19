@@ -265,6 +265,13 @@ impl AiTransform {
     }
 }
 
+// A Shortcuts draft stores a step's selector, bindings, condition and
+// transform and a shortcut's triggers as their JSON forms, as maps, lists and
+// scalars: a condition is made of conditions, which a derived model cannot
+// describe, and each is written whole by the editor.
+#[cfg(feature = "model")]
+tilo_resource::value_model!(Selector, Binding, Condition, AiTransform, TriggerSpec);
+
 /// What may start a shortcut. Data only: the session decides how to watch
 /// for each and starts an unattended run when one fires.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

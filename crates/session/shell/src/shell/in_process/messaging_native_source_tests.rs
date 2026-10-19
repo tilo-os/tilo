@@ -1221,7 +1221,7 @@ fn reviewed_first_enrollment_publishes_original_settings_action_without_credenti
         .unwrap();
     assert_eq!(new.display_name, "New Signal");
     assert_eq!(
-        new.config.0,
+        new.config,
         serde_json::json!({"messaging_scope":published.scope,"linking_generation":1})
     );
     assert_eq!(enrollment.state(), tilo_messaging::AccountState::Offline);

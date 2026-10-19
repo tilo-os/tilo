@@ -10,7 +10,7 @@ use automerge::transaction::{CommitOptions, Transactable};
 use automerge::{ObjId, ROOT, ReadDoc, ScalarValue, Value};
 use tilo_automerge::ApplyIncoming;
 
-use crate::model::{Doc, ModelError};
+use crate::model::{Doc, LocatedAt as _, ModelError};
 use crate::resource::Resource;
 
 /// The root key a record's schema version is stored under, when it is past
@@ -181,6 +181,32 @@ where
     doc.delete(obj, key)?;
     crate::model::write_key(doc, obj, key, &value)?;
     Ok(true)
+}
+
+/// [`retype_json`] for every item of the [`Collection`](crate::Collection)
+/// stored under `key` of the map `obj`: the migration of a collection whose
+/// item type was stored as one JSON string. Returns how many items it
+/// rewrote.
+///
+/// # Errors
+/// Returns why an item's text does not read as `T`, or the document's error.
+pub fn retype_json_items<T>(doc: &mut Doc, obj: &ObjId, key: &str) -> Result<usize, ModelError>
+where
+    T: crate::Model + serde::de::DeserializeOwned,
+{
+    let Some((Value::Object(automerge::ObjType::Map), items)) = doc.get(obj, key)? else {
+        return Ok(0);
+    };
+    let mut rewrote: usize = 0;
+    for id in doc.keys(&items).collect::<Vec<_>>() {
+        if let Some((Value::Object(automerge::ObjType::Map), entry)) =
+            doc.get(&items, id.as_str())?
+            && retype_json::<T>(doc, &entry, crate::collection::VALUE).located(&id)?
+        {
+            rewrote = rewrote.saturating_add(1);
+        }
+    }
+    Ok(rewrote)
 }
 
 /// Write the keys of the JSON object `shape` into the map `obj` as an older

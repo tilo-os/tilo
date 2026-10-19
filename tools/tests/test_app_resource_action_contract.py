@@ -755,6 +755,8 @@ class AppResourceActionContractTests(unittest.TestCase):
             " let t = args.text(\"title\");\n"
             " doc.put(automerge::ROOT, \"title\", t);\n"
             "}\n"
+            "pub struct Draft { pub filter: tilo_resource::Json<Vec<String>> }\n"
+            "tilo_resource::value_model!(Draft);\n"
         )
         with self.subTest(phase="each old API is refused, with no ceiling to raise"):
             self.assertEqual(
@@ -819,6 +821,9 @@ class AppResourceActionContractTests(unittest.TestCase):
                 "impl ResourceSurface<Notes, NotesView> for NotesApp {}\n"
                 "fn f(seeds: &mut Seeds) { seeds.put(id, secret); }\n"
                 "fn g() { let a = Notes::RENAME.on(\"notes\"); let b = resource.action_address(\"open\"); }\n"
+                "#[derive(Model)] pub struct Account { pub config: serde_json::Value }\n"
+                "fn h(input: PendingInput) { if let PendingInput::Json(text) = input {} }\n"
+                "// a field that was `Json<T>` moves with `evolution::retype_json`\n"
             )
             self.assertEqual(banned(new), [])
 

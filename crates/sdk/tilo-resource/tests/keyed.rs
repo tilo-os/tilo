@@ -335,13 +335,13 @@ pub struct Film {
     pub reels: Keyed<Reel>,
 }
 
-/// The same reel with its keyframes in [`Json`](tilo_resource::Json), which
-/// compares values only by their JSON forms.
+/// The same reel with its keyframes as a JSON value, which compares values
+/// only by their JSON forms.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct FormReel {
     pub id: String,
     pub opacity: f64,
-    pub keys: tilo_resource::Json<Vec<(f64, f64)>>,
+    pub keys: serde_json::Value,
 }
 
 impl Identified for FormReel {
@@ -378,7 +378,7 @@ fn form_film(film: &Film) -> FormFilm {
             .map(|reel| FormReel {
                 id: reel.id.clone(),
                 opacity: reel.opacity,
-                keys: tilo_resource::Json(reel.keys.0.clone()),
+                keys: serde_json::to_value(&reel.keys.0).unwrap(),
             })
             .collect(),
     }

@@ -287,11 +287,10 @@ impl super::super::InProcessApps {
 fn signal_identity(row: &accounts::person::PersonAccount) -> Option<(u64, String, String)> {
     let generation = row
         .config
-        .0
         .get("linking_generation")?
         .as_u64()
         .filter(|value| *value > 0)?;
-    let scope = row.config.0.get("messaging_scope")?.as_str()?;
+    let scope = row.config.get("messaging_scope")?.as_str()?;
     let aci = scope.strip_prefix("signal:")?;
     if uuid::Uuid::parse_str(aci).is_ok_and(|parsed| parsed.to_string() == aci) {
         Some((generation, scope.into(), aci.into()))

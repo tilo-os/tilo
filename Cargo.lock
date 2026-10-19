@@ -16563,6 +16563,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tilo-action-policy",
  "tilo-actions",
+ "tilo-resource",
  "uuid",
 ]
 

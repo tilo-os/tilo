@@ -408,7 +408,6 @@ impl Actor {
             }
             let Some(generation) = row
                 .config
-                .0
                 .get("linking_generation")
                 .and_then(serde_json::Value::as_u64)
                 .filter(|g| *g > 0)
@@ -418,7 +417,6 @@ impl Actor {
             let scope = format!("sms:{id}");
             if row
                 .config
-                .0
                 .get("messaging_scope")
                 .and_then(serde_json::Value::as_str)
                 != Some(scope.as_str())

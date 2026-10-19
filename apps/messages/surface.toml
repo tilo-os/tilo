@@ -125,13 +125,13 @@ params = [
 [[resources]]
 kind = "tilo.accounts"
 label = "Accounts"
-version = 1
+version = 2
 person = true
 fields = [
   { path = "accounts", type = "Collection<PersonAccount>", stored = "collection" },
   { path = "accounts.*.type_id", type = "String" },
   { path = "accounts.*.display_name", type = "String" },
-  { path = "accounts.*.config", type = "Json<serde_json::Value>" },
+  { path = "accounts.*.config", type = "serde_json::Value" },
   { path = "accounts.*.enabled", type = "bool" },
   { path = "accounts.*.tint", type = "u8" },
   { path = "active", type = "BTreeMap<String, String>" },

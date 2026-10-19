@@ -7,7 +7,7 @@ use ui::LocalState;
 use ui::framework::{Actions, Effected, Fixture, PersonRecord, ViewCx};
 use ui::i18n::ArgValue;
 use ui::icons::Icon;
-use ui::prelude::{Collection, Id, Json};
+use ui::prelude::{Collection, Id};
 use ui::widget::virtual_list::{VecListModel, VirtualList};
 use ui::widget::{
     Button, Column, Container, Dropdown, Element, ListRow, ModelView, NavPane, NavShell, Row,
@@ -131,7 +131,6 @@ pub(crate) fn choices(sources: &Sources, person: &str) -> Vec<Choice> {
                 enabled: account.enabled,
                 scope: account
                     .config
-                    .0
                     .get("messaging_scope")
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or_default()
@@ -291,7 +290,6 @@ fn confirm_account(
                 && account.type_id == choice.service
                 && account
                     .config
-                    .0
                     .get("messaging_scope")
                     .and_then(serde_json::Value::as_str)
                     == Some(choice.scope.as_str())
@@ -816,7 +814,7 @@ pub(super) fn fixture(fixture: &mut Fixture<Messages>) {
             tilo_messaging::PersonAccount {
                 type_id: service.into(),
                 display_name: label.into(),
-                config: Json(serde_json::json!({"messaging_scope":format!("{id}-scope")})),
+                config: serde_json::json!({"messaging_scope":format!("{id}-scope")}),
                 enabled: true,
                 tint: 0,
             },

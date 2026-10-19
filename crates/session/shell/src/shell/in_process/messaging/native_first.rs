@@ -394,7 +394,6 @@ impl Actor {
             let scope = format!("tilo:{id}");
             let Some(generation) = row
                 .config
-                .0
                 .get("linking_generation")
                 .and_then(serde_json::Value::as_u64)
                 .filter(|g| *g > 0)
@@ -403,7 +402,6 @@ impl Actor {
             };
             if row
                 .config
-                .0
                 .get("messaging_scope")
                 .and_then(serde_json::Value::as_str)
                 != Some(&scope)

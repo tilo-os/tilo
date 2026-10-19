@@ -2528,8 +2528,9 @@ pub fn set_variant<T: 'static>(variant: Option<T>, target: &mut dyn Any) -> Resu
 
 // --- Values stored whole as JSON text -----------------------------------------
 
-/// A type stored whole as one JSON string, last writer winning
-/// ([`Json`](crate::Json), [`json_model!`](crate::json_model)).
+/// A type stored whole through its serde form: as one JSON string, last
+/// writer winning ([`json_model!`](crate::json_model)), or as that form's
+/// maps, lists and scalars ([`value_model!`](crate::value_model)).
 #[allow(
     clippy::type_complexity,
     reason = "each field converts the value one way"
@@ -2555,6 +2556,9 @@ pub struct JsonDesc {
     pub default: fn(&mut dyn Any) -> Result<(), ModelError>,
     /// `null` reads as the default rather than through serde.
     pub null_default: bool,
+    /// Stored as its JSON form's maps, lists and scalars
+    /// ([`value_model!`](crate::value_model)) rather than as JSON text.
+    pub structural: bool,
     /// An empty `Option` of the type, the value in a filled one, and moving
     /// it out over another.
     pub staged: (fn() -> Box<dyn Any>, Unstage),
@@ -2604,8 +2608,7 @@ fn json_text(json: &JsonDesc, value: &dyn Any) -> Result<String, ModelError> {
     (json.try_value)(value).map(|value| value.to_string())
 }
 
-/// The serde functions of a type stored as JSON text, `json(value)` being
-/// how the type wraps its serde value (`Json(inner)`, or the value itself).
+/// The serde functions of a type stored as JSON text.
 pub struct JsonOf<T>(PhantomData<T>);
 
 impl<T: serde::Serialize + serde::de::DeserializeOwned + Default + 'static> JsonOf<T> {
@@ -2631,39 +2634,9 @@ impl<T: serde::Serialize + serde::de::DeserializeOwned + Default + 'static> Json
         },
         default: |out| put(out, T::default()),
         null_default: true,
+        structural: false,
         staged: (empty_of::<T>, unwrap_of::<T>),
         replace: replace_of::<T>,
-    };
-
-    /// [`Json`](crate::Json) of the type.
-    pub const WRAPPED: JsonDesc = JsonDesc {
-        to_value: |value| {
-            value
-                .downcast_ref::<crate::Json<T>>()
-                .and_then(|value| crate::__private::json_via_bytes(&value.0).ok())
-                .unwrap_or(serde_json::Value::Null)
-        },
-        try_value: |value| {
-            crate::__private::json_via_bytes(
-                &value
-                    .downcast_ref::<crate::Json<T>>()
-                    .ok_or_else(mismatch)?
-                    .0,
-            )
-            .map_err(serde_invalid)
-        },
-        bytes: |value| serde_json::to_vec(&value.downcast_ref::<crate::Json<T>>()?.0).ok(),
-        equal: None,
-        from_value: |value, out| {
-            put(
-                out,
-                crate::Json::<T>(serde_json::from_value(value.clone()).map_err(serde_invalid)?),
-            )
-        },
-        default: |out| put(out, crate::Json(T::default())),
-        null_default: false,
-        staged: (empty_of::<crate::Json<T>>, unwrap_of::<crate::Json<T>>),
-        replace: replace_of::<crate::Json<T>>,
     };
 }
 
@@ -2685,6 +2658,63 @@ where
     };
 }
 
+/// The serde functions of a [`value_model!`](crate::value_model) type,
+/// stored as its JSON form's maps, lists and scalars.
+pub struct ValueOf<T>(PhantomData<T>);
+
+impl<T> ValueOf<T>
+where
+    T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + 'static,
+{
+    /// A type with no value of its own for an absent slot.
+    pub const DESC: JsonDesc = JsonDesc {
+        to_value: |value| {
+            value
+                .downcast_ref::<T>()
+                .and_then(|value| crate::__private::json_via_bytes(value).ok())
+                .unwrap_or(serde_json::Value::Null)
+        },
+        try_value: |value| {
+            crate::__private::json_via_bytes(value.downcast_ref::<T>().ok_or_else(mismatch)?)
+                .map_err(serde_invalid)
+        },
+        bytes: |value| serde_json::to_vec(value.downcast_ref::<T>()?).ok(),
+        equal: Some(|value, other| {
+            matches!(
+                (value.downcast_ref::<T>(), other.downcast_ref::<T>()),
+                (Some(value), Some(other)) if value == other
+            )
+        }),
+        from_value: |value, out| {
+            put::<T>(
+                out,
+                serde_json::from_value(value.clone()).map_err(serde_invalid)?,
+            )
+        },
+        default: |_| {
+            Err(ModelError::Missing {
+                path: String::new(),
+            })
+        },
+        null_default: false,
+        structural: true,
+        staged: (empty_of::<T>, unwrap_of::<T>),
+        replace: replace_of::<T>,
+    };
+}
+
+impl<T> ValueOf<T>
+where
+    T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + Default + 'static,
+{
+    /// A type whose `Default` is the value of an absent slot.
+    pub const DEFAULTED: JsonDesc = JsonDesc {
+        default: |out| put(out, T::default()),
+        null_default: true,
+        ..Self::DESC
+    };
+}
+
 /// The functions of every type stored as JSON text.
 pub static JSON_OPS: ModelOps = ModelOps {
     without_absent: crate::shape::kept_whole,
@@ -2699,8 +2729,15 @@ pub static JSON_OPS: ModelOps = ModelOps {
         }
         (json.from_value)(value, out)
     },
-    load: |table, _, value, _, out| {
+    load: |table, doc, value, id, out| {
         let json = jsons(table)?;
+        if json.structural {
+            let read = <serde_json::Value as Model>::load(doc, value, id)?;
+            if read.is_null() && json.null_default {
+                return (json.default)(out);
+            }
+            return (json.from_value)(&read, out);
+        }
         match value {
             Value::Scalar(scalar) => match scalar.as_ref() {
                 automerge::ScalarValue::Str(text) => json_from_text(json, text, out),
@@ -2721,10 +2758,20 @@ pub static JSON_OPS: ModelOps = ModelOps {
         (json.replace)(target, staged.as_mut())
     },
     store: |table, value, doc, slot| {
-        let text = json_text(jsons(table)?, value)?;
+        let json = jsons(table)?;
+        if json.structural {
+            return (json.try_value)(value)?.store(doc, slot);
+        }
+        let text = json_text(json, value)?;
         slot.put_scalar(doc, automerge::ScalarValue::Str(text.into()))
     },
-    stores_as: |_, _, _| false,
+    // Equal values of a structural type store the same maps, lists and
+    // scalars; JSON text is written again, as it always was.
+    stores_as: |table, value, before| {
+        table.json().is_some_and(|json| {
+            json.structural && json.equal.is_some_and(|equal| equal(value, before))
+        })
+    },
     store_changed: |table, value, _, doc, slot, _| (JSON_OPS.store)(table, value, doc, slot),
     refresh: |table, target, doc, value, id, _| {
         (JSON_OPS.reload)(table, target, doc, Some((value, id)))
