@@ -7,7 +7,8 @@ use tilo_messaging::{
 use ui::{
     LocalState,
     framework::{Actions, EffectAnswer, EffectCx, Effected},
-    widget::{Button, Column, QrWidget, Text},
+    icons::Icon,
+    widget::{Button, Column, Element, ListRow, QrWidget, Section, Text},
 };
 #[derive(Clone, Default)]
 struct Projection {
@@ -377,34 +378,56 @@ impl EnrollmentView {
             return Self::review_panel(content, actions, &state, phase, review);
         }
         content = self.sim_panel(content, actions, &state);
-        content =
-            content.push(Box::new(actions.bind_effect_invocation(
-                Button::new("messages.first-whatsapp", "messages-first-whatsapp").with_enabled(
-                    self.client.is_some() && !state.pending && state.account.is_none(),
-                ),
-                &MessagesEffect::BeginFirstEnrollment {
-                    service: "whatsapp".into(),
-                },
-            )));
-        content =
-            content.push(Box::new(actions.bind_effect_invocation(
-                Button::new("messages.first-tilo", "messages-first-tilo").with_enabled(
-                    self.client.is_some() && !state.pending && state.account.is_none(),
-                ),
-                &MessagesEffect::BeginFirstEnrollment {
-                    service: "tilo".into(),
-                },
-            )));
-        content.push(Box::new(
-            actions.bind_effect_invocation(
-                Button::new("messages.first-account-start", "messages-first-signal").with_enabled(
-                    self.client.is_some() && !state.pending && state.account.is_none(),
-                ),
-                &MessagesEffect::BeginFirstEnrollment {
-                    service: "signal".into(),
-                },
+        // One row per service, each saying what linking it takes. Without
+        // the messaging service on this device none can start, and the
+        // section says so instead of offering rows that do nothing.
+        let available = self.client.is_some() && !state.pending && state.account.is_none();
+        let mut rows: Vec<Element> = Vec::new();
+        if self.client.is_none() {
+            rows.push(Box::new(
+                Text::new(&CATALOG.t("messages-setup-service-missing")).dimmed(),
+            ));
+        }
+        for (id, service, title, hint, icon) in [
+            (
+                "messages.first-whatsapp",
+                "whatsapp",
+                "messages-first-whatsapp",
+                "messages-first-whatsapp-hint",
+                Icon::Phone,
             ),
-        ))
+            (
+                "messages.first-account-start",
+                "signal",
+                "messages-first-signal",
+                "messages-first-signal-hint",
+                Icon::Lock,
+            ),
+            (
+                "messages.first-tilo",
+                "tilo",
+                "messages-first-tilo",
+                "messages-first-tilo-hint",
+                Icon::User,
+            ),
+        ] {
+            rows.push(Box::new(
+                actions.bind_effect_invocation(
+                    ListRow::new(id, CATALOG.t(title))
+                        .secondary(CATALOG.t(hint))
+                        .icon(icon)
+                        .disclosure()
+                        .with_enabled(available),
+                    &MessagesEffect::BeginFirstEnrollment {
+                        service: service.into(),
+                    },
+                ),
+            ));
+        }
+        content.push(Box::new(Section::titled(
+            CATALOG.t("messages-setup-link-heading"),
+            rows,
+        )))
     }
     fn review_panel(
         mut content: Column,
@@ -548,7 +571,9 @@ impl EnrollmentView {
         {
             content = content.push(Box::new(
                 actions.bind_effect_invocation(
-                    Button::new("messages.first-sms", "messages-first-sms")
+                    ListRow::new("messages.first-sms", CATALOG.t("messages-first-sms"))
+                        .icon(Icon::Phone)
+                        .disclosure()
                         .with_enabled(!state.pending && state.account.is_none()),
                     &MessagesEffect::ListSmsSims,
                 ),

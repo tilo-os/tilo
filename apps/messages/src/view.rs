@@ -10,8 +10,8 @@ use ui::icons::Icon;
 use ui::prelude::{Collection, Id};
 use ui::widget::virtual_list::{VecListModel, VirtualList};
 use ui::widget::{
-    Button, Column, Container, Dropdown, Element, ListRow, ModelView, NavPane, NavShell, Row,
-    Scrollable, Text, TextInput,
+    Button, Column, Container, Dropdown, Element, EmptyState, ListRow, ModelView, NavPane,
+    NavShell, Row, Scrollable, Text, TextInput,
 };
 
 use crate::{CATALOG, Messages, MessagesEffect};
@@ -672,6 +672,16 @@ fn detail(
     sending: &crate::sending::Sending,
 ) -> Element {
     if selected.person.is_empty() {
+        // With nobody to choose, the list beside says how to start, and
+        // "Choose a person" would point at nothing.
+        if sources
+            .contacts()
+            .people
+            .iter()
+            .all(|(_, person)| person.removed)
+        {
+            return Box::new(Column::new());
+        }
         return empty("messages-choose-heading", "messages-choose-hint");
     }
     let contacts = sources.contacts();
@@ -766,12 +776,9 @@ fn composer(
 
 pub(crate) fn empty(title: &str, hint: &str) -> Element {
     Box::new(
-        Container::new().with_child(Box::new(
-            Column::new()
-                .with_intrinsic_height()
-                .push(Box::new(Text::new(title).with_heading_level(2)))
-                .push(Box::new(Text::new(hint))),
-        )),
+        EmptyState::new(title)
+            .with_icon(Icon::MessageSquare)
+            .with_message(hint),
     )
 }
 
