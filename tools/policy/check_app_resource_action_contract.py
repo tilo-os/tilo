@@ -765,11 +765,132 @@ def component_launch_registry_wired(main_text: str, crate_text: str) -> bool:
 SHARED_DEFINITION = re.compile(
     r"\bfn\s+definition\s*\(\s*\)[^{]*\{\s*([A-Za-z_][A-Za-z0-9_]*)::definition\s*\(\s*\)"
 )
-SHARED_REEXPORT = re.compile(r"\bpub\s+use\s+([A-Za-z_][A-Za-z0-9_]*)::")
+SHARED_REEXPORT = re.compile(r"\bpub\s+use\s+([A-Za-z_][A-Za-z0-9_]*)::([^;]+);")
+DEFINITION_APP = re.compile(
+    r"\bbuilt_in_definition!\s*\(\s*"
+    r"((?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*[A-Za-z_][A-Za-z0-9_]*)\s*\)"
+    r"|\bframework\s*::\s*definition\s*::\s*<\s*"
+    r"((?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*[A-Za-z_][A-Za-z0-9_]*)\s*>"
+)
+DEFINITION_PLACEHOLDER = re.compile(r"\b(?:todo|unimplemented|unreachable|panic)!\s*\(")
+RESOURCE_APP_IMPL = re.compile(
+    r"\bimpl(?:\s*<[^>{}]*>)?\s+(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*ResourceApp\s+for\s+"
+    r"((?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*[A-Za-z_][A-Za-z0-9_]*)"
+)
+ASSOCIATED_RESOURCE = re.compile(
+    r"\btype\s+Resource\s*=\s*"
+    r"((?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*[A-Za-z_][A-Za-z0-9_]*)\s*;"
+)
+RESOURCE_ATTRIBUTE = re.compile(
+    r"#\[\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*resource\s*\([^\]]*\)\s*\]"
+    r"(?:\s*#\[[^\]]*\])*"
+    r"\s*(?:pub(?:\s*\([^)]*\))?\s+)?(?:struct|enum|impl)\s+"
+    r"((?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*[A-Za-z_][A-Za-z0-9_]*)"
+)
+RESOURCE_IMPL = re.compile(
+    r"\bimpl(?:\s*<[^>{}]*>)?\s+(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*Resource\s+for\s+"
+    r"((?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*[A-Za-z_][A-Za-z0-9_]*)"
+)
+
+
+def rust_type_name(path: str) -> str:
+    """The last segment of a Rust type path, without whitespace."""
+    return re.sub(r"\s+", "", path).rsplit("::", 1)[-1]
+
+
+def app_reexports(code: str) -> dict[str, tuple[set[str], bool]]:
+    """Items the app re-exports from each direct dependency alias."""
+    exported: dict[str, tuple[set[str], bool]] = {}
+    for match in SHARED_REEXPORT.finditer(code):
+        alias, rest = match.group(1), " ".join(match.group(2).split())
+        names, glob = exported.get(alias, (set(), False))
+        items = rest[1:-1].split(",") if rest.startswith("{") and rest.endswith("}") else [rest]
+        for item in items:
+            item = item.split(" as ", 1)[0].strip()
+            if item == "*":
+                glob = True
+            elif item and item != "self":
+                names.add(rust_type_name(item))
+        exported[alias] = (names, glob)
+    return exported
+
+
+MODULE_DECLARATION = re.compile(
+    r"(?P<attributes>(?:\s*#!?\[[^\]]*\]\s*)*)"
+    r"\b(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*;"
+)
+PATH_ATTRIBUTE = re.compile(r'#\[\s*path\s*=\s*"([^"]+)"\s*\]')
+TEST_MODULE_ATTRIBUTE = re.compile(r"cfg\s*\(\s*(?:test|all\s*\(\s*test\b)")
+
+
+def test_only_module_files(dependency: Path) -> set[Path]:
+    """Files a dependency declares only behind `#[cfg(test)] mod ...;`."""
+    excluded: set[Path] = set()
+    for source in sorted((dependency / "src").rglob("*.rs")):
+        raw = source.read_text(encoding="utf-8")
+        for match in MODULE_DECLARATION.finditer(raw):
+            attributes = match.group("attributes")
+            if not TEST_MODULE_ATTRIBUTE.search(attributes):
+                continue
+            name = match.group("name")
+            path = PATH_ATTRIBUTE.search(attributes)
+            if path is not None:
+                excluded.add((source.parent / path.group(1)).resolve())
+                continue
+            stem = source.stem
+            parent = source.parent if stem in {"lib", "main", "mod"} else source.parent / stem
+            excluded.add((parent / f"{name}.rs").resolve())
+            excluded.add((parent / name / "mod.rs").resolve())
+    return excluded
+
+
+def production_dependency_code(dependency: Path) -> str:
+    """The dependency's shipping sources, with test-only items blanked."""
+    excluded = test_only_module_files(dependency)
+    sources: list[str] = []
+    for source in sorted((dependency / "src").rglob("*.rs")):
+        relative = source.relative_to(dependency).as_posix()
+        if is_test_source(relative) or source.resolve() in excluded:
+            continue
+        sources.append(production_code(source.read_text(encoding="utf-8")))
+    return "\n".join(sources)
+
+
+def definition_app_type(body: str) -> str | None:
+    """The `ResourceApp` type a production `definition()` builds, if named."""
+    match = DEFINITION_APP.search(body)
+    if match is None:
+        return None
+    return rust_type_name(match.group(1) or match.group(2))
+
+
+def resource_app_resource(code: str, app_type: str) -> str | None:
+    """The associated resource type of the `ResourceApp` impl for `app_type`."""
+    for match in RESOURCE_APP_IMPL.finditer(code):
+        if rust_type_name(match.group(1)) != app_type:
+            continue
+        body = brace_body(code, match.start()) or ""
+        resource = ASSOCIATED_RESOURCE.search(body)
+        if resource is not None:
+            return rust_type_name(resource.group(1))
+    return None
+
+
+def declares_resource(code: str, resource: str) -> bool:
+    """Whether `resource` itself carries the framework's resource declaration."""
+    if any(
+        rust_type_name(match.group(1)) == resource
+        for match in RESOURCE_IMPL.finditer(code)
+    ):
+        return True
+    return any(
+        rust_type_name(match.group(1)) == resource
+        for match in RESOURCE_ATTRIBUTE.finditer(code)
+    )
 
 
 def shared_framework_host(
-    root: Path, app_dir: Path, manifest: dict, combined: str
+    root: Path, app_dir: Path, manifest: dict, code: str
 ) -> bool:
     """Whether the app hosts a framework app whose resource a re-exported
     workspace crate declares.
@@ -777,22 +898,24 @@ def shared_framework_host(
     A portable app can re-export a shared `ResourceApp` and return its
     `definition()`; the resource, its verbs and its surface live in that
     crate. The app then publishes through the shared app exactly as an app
-    that declares the same items locally. Only a direct path dependency the
-    app re-exports and delegates `definition()` to is followed, so an
-    unrelated library cannot satisfy the contract.
+    that declares the same items locally. Follow only a normal (runtime)
+    path dependency the app re-exports, and only when the dependency's own
+    production `definition()` builds the re-exported host, that host's
+    `ResourceApp` impl names a resource, and that resource carries the
+    resource declaration. `type Resource = Unrelated` and an unrelated
+    `#[resource]` elsewhere are not a connection, and a `todo!()` definition
+    or a test-only impl publishes nothing.
     """
-    delegated = set(SHARED_DEFINITION.findall(combined))
+    delegated = set(SHARED_DEFINITION.findall(code))
     if not delegated:
         return False
-    aliases = delegated & set(SHARED_REEXPORT.findall(combined))
-    if not aliases:
-        return False
-    for table in dependency_tables(manifest):
+    reexports = app_reexports(code)
+    for table in runtime_dependency_tables(manifest):
         for alias, specification in table.items():
-            if isinstance(specification, dict) and specification.get("package"):
-                alias = specification["package"]
-            if alias.replace("-", "_") not in aliases or not isinstance(specification, dict):
+            rust_alias = alias.replace("-", "_")
+            if rust_alias not in delegated or not isinstance(specification, dict):
                 continue
+            names, glob = reexports.get(rust_alias, (set(), False))
             path = specification.get("path")
             if not isinstance(path, str):
                 continue
@@ -804,11 +927,17 @@ def shared_framework_host(
             source = dependency / "src"
             if not source.is_dir():
                 continue
-            text = "\n".join(
-                item.read_text(encoding="utf-8") for item in sorted(source.rglob("*.rs"))
-            )
-            code = code_only(text)
-            if FRAMEWORK_APP.search(code) and FRAMEWORK_RESOURCE.search(code):
+            production = production_dependency_code(dependency)
+            for definition in re.finditer(r"\bfn\s+definition\s*\(\s*\)", production):
+                body = brace_body(production, definition.start())
+                if body is None or DEFINITION_PLACEHOLDER.search(body):
+                    continue
+                app_type = definition_app_type(body)
+                if app_type is None or (not glob and app_type not in names):
+                    continue
+                resource = resource_app_resource(production, app_type)
+                if resource is None or not declares_resource(production, resource):
+                    continue
                 return True
     return False
 
@@ -1087,7 +1216,7 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
             framework_host = (
                 FRAMEWORK_APP.search(combined) is not None
                 and FRAMEWORK_RESOURCE.search(combined) is not None
-            ) or shared_framework_host(root, manifest_path.parent, manifest, combined)
+            ) or shared_framework_host(root, manifest_path.parent, manifest, shipped)
             toolkit_host = TOOLKIT_ACTION_HOST.search(combined) is not None
             # A host with several operations builds its descriptor directly;
             # the toolkit helpers each describe a single operation.

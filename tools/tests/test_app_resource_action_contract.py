@@ -183,56 +183,208 @@ class AppResourceActionContractTests(unittest.TestCase):
             self.assertTrue(any("no toolkit resource descriptor" in item.reason for item in violations))
 
     def test_a_shared_framework_app_definition_publishes_its_resource(self):
-        source = (
-            "pub use shared_ui::SampleApp;\n"
-            "pub fn definition() -> &'static ui::application::ApplicationDefinition {\n"
-            "    shared_ui::definition()\n"
-            "}\n"
-        )
-        dependencies = (
-            'ui={package="tilo-app",path="../../crates/sdk/tilo-app"}\n'
-            'shared_ui={path="../../crates/shared-ui"}\n'
-        )
-        with self.subTest(phase='delegated definition passes'):
-            root = self.fixture(source, dependencies=dependencies)
-            shared = root / "crates" / "shared-ui" / "src"
-            shared.mkdir(parents=True)
-            (shared / "lib.rs").write_text(
+        def delegated(alias: str = "shared_ui", item: str = "SampleApp") -> str:
+            return (
+                f"pub use {alias}::{item};\n"
+                "pub fn definition() -> &'static ui::application::ApplicationDefinition {\n"
+                f"    {alias}::definition()\n"
+                "}\n"
+            )
+
+        def shared(definition: str = "ui::built_in_definition!(SampleApp)") -> str:
+            return (
                 "#[derive(Model, Default)] pub struct Note { pub body: String }\n"
-                "#[resource(kind = \"shared.note\", label = \"Note\")]\n"
+                '#[resource(kind = "shared.note", label = "Note")]\n'
                 "impl Note {}\n"
                 "pub struct SampleApp;\n"
                 "impl ResourceApp for SampleApp { type Resource = Note; }\n"
-                "pub fn definition() -> &'static ApplicationDefinition { todo!() }\n",
-                encoding="utf-8",
+                "pub fn definition() -> &'static ApplicationDefinition {\n"
+                f"    {definition}\n"
+                "}\n"
             )
-            violations, _ = contract.audit(root)
-            self.assertEqual(violations, [])
-        with self.subTest(phase='re-export without delegating definition still fails'):
-            root = self.fixture(
-                "pub use shared_ui::SampleApp;\n", dependencies=dependencies
-            )
-            shared = root / "crates" / "shared-ui" / "src"
-            shared.mkdir(parents=True)
-            (shared / "lib.rs").write_text(
-                "#[derive(Model, Default)] pub struct Note { pub body: String }\n"
-                "#[resource(kind = \"shared.note\", label = \"Note\")]\n"
-                "impl Note {}\n"
-                "impl ResourceApp for SampleApp { type Resource = Note; }\n",
-                encoding="utf-8",
-            )
-            violations, _ = contract.audit(root)
-            self.assertIn("Widget::resources", "\n".join(item.reason for item in violations))
-        with self.subTest(phase='delegation to a crate without a resource still fails'):
+
+        def fixture(
+            *,
+            source: str = delegated(),
+            dependencies: str = (
+                'ui={package="tilo-app",path="../../crates/sdk/tilo-app"}\n'
+                'shared_ui={path="../../crates/shared-ui"}\n'
+            ),
+            code: str = shared(),
+            shared_name: str = "shared-ui",
+            extra: dict[str, str] | None = None,
+        ) -> Path:
             root = self.fixture(source, dependencies=dependencies)
-            shared = root / "crates" / "shared-ui" / "src"
-            shared.mkdir(parents=True)
-            (shared / "lib.rs").write_text(
-                "pub fn definition() -> &'static ApplicationDefinition { todo!() }\n",
-                encoding="utf-8",
-            )
+            crate = root / "crates" / shared_name / "src"
+            crate.mkdir(parents=True)
+            (crate / "lib.rs").write_text(code, encoding="utf-8")
+            for relative, text in (extra or {}).items():
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(text, encoding="utf-8")
+            return root
+
+        def reasons(root: Path) -> str:
             violations, _ = contract.audit(root)
-            self.assertIn("Widget::resources", "\n".join(item.reason for item in violations))
+            return "\n".join(item.reason for item in violations)
+
+        with self.subTest(phase="delegated definition passes"):
+            violations, _ = contract.audit(fixture())
+            self.assertEqual(violations, [])
+        with self.subTest(phase="a renamed normal dependency keeps its Rust alias"):
+            renamed = (
+                'ui={package="tilo-app",path="../../crates/sdk/tilo-app"}\n'
+                'renamed={package="shared-ui",path="../../crates/shared-ui"}\n'
+            )
+            violations, _ = contract.audit(
+                fixture(source=delegated("renamed"), dependencies=renamed)
+            )
+            self.assertEqual(violations, [])
+        with self.subTest(phase="re-export without delegating definition still fails"):
+            self.assertIn("Widget::resources", reasons(fixture(source="pub use shared_ui::SampleApp;\n")))
+        with self.subTest(phase="delegation to a crate without a resource still fails"):
+            self.assertIn(
+                "Widget::resources",
+                reasons(
+                    fixture(
+                        code=(
+                            "pub struct SampleApp;\n"
+                            "pub fn definition() -> &'static ApplicationDefinition {\n"
+                            "    ui::built_in_definition!(SampleApp)\n"
+                            "}\n"
+                        )
+                    )
+                ),
+            )
+        with self.subTest(phase="another ResourceApp does not stand in for the host"):
+            self.assertIn(
+                "Widget::resources",
+                reasons(
+                    fixture(
+                        code=(
+                            "#[derive(Model, Default)] pub struct Note {}\n"
+                            '#[resource(kind = "shared.note", label = "Note")]\n'
+                            "impl Note {}\n"
+                            "pub struct SampleApp;\n"
+                            "pub struct Other;\n"
+                            "impl ResourceApp for Other { type Resource = Note; }\n"
+                            "pub fn definition() -> &'static ApplicationDefinition {\n"
+                            "    ui::built_in_definition!(SampleApp)\n"
+                            "}\n"
+                        )
+                    )
+                ),
+            )
+        with self.subTest(phase="the host's resource must be the declared one"):
+            self.assertIn(
+                "Widget::resources",
+                reasons(
+                    fixture(
+                        code=(
+                            "#[derive(Model, Default)] pub struct Note {}\n"
+                            '#[resource(kind = "shared.note", label = "Note")]\n'
+                            "impl Note {}\n"
+                            "pub struct Missing;\n"
+                            "pub struct SampleApp;\n"
+                            "impl ResourceApp for SampleApp { type Resource = Missing; }\n"
+                            "pub fn definition() -> &'static ApplicationDefinition {\n"
+                            "    ui::built_in_definition!(SampleApp)\n"
+                            "}\n"
+                        )
+                    )
+                ),
+            )
+        with self.subTest(phase="a cfg(test) host publishes nothing"):
+            self.assertIn(
+                "Widget::resources",
+                reasons(
+                    fixture(
+                        code=(
+                            "pub struct SampleApp;\n"
+                            "pub fn definition() -> &'static ApplicationDefinition {\n"
+                            "    ui::built_in_definition!(SampleApp)\n"
+                            "}\n"
+                            "#[cfg(test)]\n"
+                            "mod tests {\n"
+                            "    #[derive(Model, Default)] pub struct Note {}\n"
+                            '    #[resource(kind = "shared.note", label = "Note")]\n'
+                            "    impl Note {}\n"
+                            "    impl ResourceApp for SampleApp { type Resource = Note; }\n"
+                            "}\n"
+                        )
+                    )
+                ),
+            )
+        with self.subTest(phase="a _tests.rs host publishes nothing"):
+            self.assertIn(
+                "Widget::resources",
+                reasons(
+                    fixture(
+                        code=(
+                            "pub struct SampleApp;\n"
+                            "pub fn definition() -> &'static ApplicationDefinition {\n"
+                            "    ui::built_in_definition!(SampleApp)\n"
+                            "}\n"
+                        ),
+                        extra={
+                            "crates/shared-ui/src/app_tests.rs": (
+                                "pub struct SampleApp;\n"
+                                "impl ResourceApp for SampleApp { type Resource = Note; }\n"
+                                "#[resource(kind = \"shared.note\", label = \"Note\")]\n"
+                                "impl Note {}\n"
+                            )
+                        },
+                    )
+                ),
+            )
+        with self.subTest(phase="a cfg(test) module file publishes nothing"):
+            self.assertIn(
+                "Widget::resources",
+                reasons(
+                    fixture(
+                        code=(
+                            "pub struct SampleApp;\n"
+                            "pub fn definition() -> &'static ApplicationDefinition {\n"
+                            "    ui::built_in_definition!(SampleApp)\n"
+                            "}\n"
+                            "#[cfg(test)]\n"
+                            "mod support;\n"
+                        ),
+                        extra={
+                            "crates/shared-ui/src/support.rs": (
+                                "pub struct SampleApp;\n"
+                                "impl ResourceApp for SampleApp { type Resource = Note; }\n"
+                                "#[resource(kind = \"shared.note\", label = \"Note\")]\n"
+                                "impl Note {}\n"
+                            )
+                        },
+                    )
+                ),
+            )
+        for table in ("dev-dependencies", "build-dependencies"):
+            with self.subTest(phase=f"a {table} host publishes nothing"):
+                self.assertIn(
+                    "Widget::resources",
+                    reasons(
+                        fixture(
+                            dependencies=(
+                                'ui={package="tilo-app",path="../../crates/sdk/tilo-app"}\n'
+                                f"[{table}]\n"
+                                'shared_ui={path="../../crates/shared-ui"}\n'
+                            )
+                        )
+                    ),
+                )
+        with self.subTest(phase="a todo!() definition publishes nothing"):
+            self.assertIn(
+                "Widget::resources",
+                reasons(fixture(code=shared("todo!()"))),
+            )
+        with self.subTest(phase="re-exporting an unrelated item does not name the host"):
+            self.assertIn(
+                "Widget::resources",
+                reasons(fixture(source=delegated(item="Note"))),
+            )
 
     def test_only_a_compute_package_publishes_no_surface_of_its_own(self):
         compute_manifest = (
