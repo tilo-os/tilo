@@ -610,8 +610,16 @@ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-g
   python3 apps/browser/chromium/tests/privacy_defaults.py target/chromium/tilo-chromium-host
 HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- \
   python3 apps/browser/chromium/tests/page_actions.py target/chromium/tilo-chromium-host
+# The same page again with the engine started the way a Browser launch starts it: its
+# environment and the seccomp filters its sandbox stacks (launcher example web_engine_sandbox).
+cargo build --locked -p launcher --example web_engine_sandbox
+install -m 0755 "${CARGO_TARGET_DIR:-target}/debug/examples/web_engine_sandbox" /tmp/host-test/web_engine_sandbox
+printf '#!/bin/sh\\nexec /tmp/host-test/web_engine_sandbox %s/target/chromium/tilo-chromium-host "$@"\\n' "$PWD" > /tmp/host-test/sandboxed-host
+chmod a+rx /tmp/host-test/sandboxed-host
+HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- \
+  python3 apps/browser/chromium/tests/document_size.py /tmp/host-test/sandboxed-host
 """
-inputs = ["apps/browser/chromium/**", "scripts/browser/build-host.py", "scripts/browser/cef-lock.json", "crates/**", "vendor/**", "Cargo.toml", "Cargo.lock", "tools/ci/ensure-browser-dependencies.sh"]
+inputs = ["apps/browser/chromium/**", "apps/browser/tilo-app.toml", "scripts/browser/build-host.py", "scripts/browser/cef-lock.json", "crates/**", "vendor/**", "Cargo.toml", "Cargo.lock", "tools/ci/ensure-browser-dependencies.sh"]
 writable_sources = true
 cost = "heavy"
 timeout_secs = 5400
