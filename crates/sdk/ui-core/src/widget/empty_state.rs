@@ -2177,10 +2177,14 @@ mod tests {
         let style = StackStyle::resolved(&theme, false);
         let wide = style.measure(&mut text, 1600.0, &content);
         assert!(f64::from(wide.inner_width) <= f64::from(theme.tokens.metrics.message_measure));
-        let one_line = style.measure(&mut text, 1600.0, &EmptyStateContent {
-            message: Some("Ag"),
-            ..content
-        });
+        let one_line = style.measure(
+            &mut text,
+            1600.0,
+            &EmptyStateContent {
+                message: Some("Ag"),
+                ..content
+            },
+        );
         assert!(wide.msg_h > one_line.msg_h, "the message wraps");
         let narrow = style.measure(&mut text, 320.0, &content);
         assert!(
