@@ -2288,6 +2288,9 @@ screenshot-send-no-folder = { $path } has no folder
 # A window whose frames cannot be shown
 foreign-window-unshowable = This window can't be shown.
 foreign-window-not-responding = This app isn't responding.
+foreign-window-close = Close
+foreign-app-wait = Wait
+foreign-app-close = Close app
 
 # Why a speaker-group request failed, as Settings shows it
 speaker-error-too-many-groups = too many speaker groups

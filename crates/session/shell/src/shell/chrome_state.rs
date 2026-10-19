@@ -1511,6 +1511,12 @@ impl ChromeState {
         self.user_fullscreen_group.or(self.fullscreen_group)
     }
 
+    /// The group the person expanded to full screen (Super+F), apart from
+    /// any client's own full screen.
+    pub fn user_fullscreen_group(&self) -> Option<u64> {
+        self.user_fullscreen_group
+    }
+
     /// Either a client-requested fullscreen or a group the user
     /// expanded with the tab's Expand chip — both suppress the top bar.
     pub fn is_fullscreen(&self) -> bool {

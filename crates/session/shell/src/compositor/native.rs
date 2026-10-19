@@ -12406,10 +12406,21 @@ pub fn run() {
             frame_builder.with_chrome(|st| st.set_continuity_feed(feed));
         }
 
-        // Client fullscreen is a per-output overlay, never a combined-scene
-        // layout collapse.  Keep the chrome state's legacy group promotion
-        // clear so another monitor's desktop remains visible and interactive.
-        frame_builder.set_fullscreen(None);
+        // Client fullscreen is a per-output overlay drawn above everything,
+        // never a combined-scene layout collapse, so another monitor's
+        // desktop remains visible and interactive. Except while the shell
+        // takes the input over it (the search palette, a sheet): then the
+        // client is laid out full screen in the desktop itself, on its own
+        // display, beneath the shell's surfaces, which would otherwise draw
+        // under it unseen ([`client_fullscreen_beneath_shell`]).
+        let beneath_shell = client_fullscreen_beneath_shell(&state, &frame_builder);
+        frame_builder.set_fullscreen(beneath_shell);
+        // A window the person opened or went to ends a full screen: the
+        // full-screen window steps back into the strip, which scrolls to it.
+        let user_fullscreen = frame_builder.chrome().user_fullscreen_group();
+        if state.leave_fullscreen_when_focus_moved(user_fullscreen) {
+            frame_builder.with_chrome(|chrome| chrome.set_user_fullscreen_group(None));
+        }
 
         {
             // A close affordance mutates the rendered/persisted tree first, then
@@ -12459,6 +12470,11 @@ pub fn run() {
             });
             for surface_id in close_requests {
                 state.close_surface_on_request(surface_id);
+            }
+            // Apps that stopped answering, and what the person chose on
+            // their windows' cards.
+            if state.advance_app_liveness() {
+                frame_builder.with_chrome(super::super::shell::chrome_state::ChromeState::bump);
             }
             let mut fullscreen_toggle = false;
             frame_builder.with_chrome(|chrome| {
@@ -14775,6 +14791,7 @@ pub fn run() {
                     wayland_client_service_deadline(wayland_client_wake, park_now),
                 ),
                 ("text-commit", state.text_commit_deadline()),
+                ("app-liveness", state.app_liveness_deadline()),
                 ("super-hold", super_tap.deadline()),
                 (
                     "network-retry",
@@ -20721,6 +20738,19 @@ fn publish_output_colors(
     state.color_manager.set_preferred(preferred);
 }
 
+/// The group of the client in full screen when the shell takes the input
+/// over it: it is then drawn in the desktop's full-screen layout beneath the
+/// shell's surfaces rather than as the overlay above them. A presenter view
+/// the compositor placed is not a full screen of the person's.
+fn client_fullscreen_beneath_shell(state: &State, frame: &FrameBuilder) -> Option<u64> {
+    state
+        .fullscreen_target
+        .as_ref()
+        .filter(|target| target.pinned_output.is_none())
+        .and(state.fullscreen_group)
+        .filter(|_| client_input::chrome_captures_input(frame))
+}
+
 /// Place the fullscreen client, if any, and return the output it covers.
 fn reconcile_fullscreen_overlay(
     state: &mut State,
@@ -20764,7 +20794,16 @@ fn reconcile_fullscreen_overlay(
         crate::shell::foreign::store().note_fullscreen_extent(target.surface_id, size);
     }
     let rect = output.logical_rect();
-    frame.set_fullscreen_surface(Some((target.surface_id, "Fullscreen".to_string(), rect)));
+    if frame.chrome().fullscreen_group().is_some()
+        && frame.chrome().user_fullscreen_group().is_none()
+    {
+        // Laid out in the desktop beneath the shell's surfaces this frame
+        // ([`client_fullscreen_beneath_shell`]); nothing is drawn above
+        // them, and no frame of it goes straight to the display.
+        frame.set_fullscreen_surface(None);
+    } else {
+        frame.set_fullscreen_surface(Some((target.surface_id, "Fullscreen".to_string(), rect)));
+    }
     Some(output.id)
 }
 

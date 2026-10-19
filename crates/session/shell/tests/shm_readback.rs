@@ -505,3 +505,61 @@ fn padded_wayland_shm_buffers_reach_streaming_and_worker_capture_without_pixel_c
         h.roundtrip();
     }
 }
+
+/// A toplevel's first buffer, committed while its window has no tab yet
+/// (a restored window binding to its saved tab at session start), is filed
+/// all the same: the tab that arrives next shows it without the client
+/// drawing again. An idle terminal never draws again, and its window stayed
+/// empty behind "isn't responding".
+#[test]
+fn a_frame_committed_before_the_window_has_its_tab_is_kept_for_the_tab() {
+    let mut h = Harness::new();
+    let qh = h.queue.handle();
+    let surface = h.peer.compositor.as_ref().unwrap().create_surface(&qh, ());
+    let role = h
+        .peer
+        .desktop
+        .as_ref()
+        .unwrap()
+        .get_xdg_surface(&surface, &qh, ());
+    let toplevel = role.get_toplevel(&qh, ());
+    toplevel.set_app_id("restored-idle".into());
+    surface.commit();
+    h.roundtrip();
+    let server = h.client.object_from_protocol_id::<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>(
+        &h.display.handle(), surface.id().protocol_id()).unwrap();
+    let id = shell::compositor::state::surface_id(&server);
+    // Its tab is not there while the frame arrives.
+    assert!(shell::shell::tab_binding::close_tab_for_destroyed_surface(
+        &mut h.state.workspace_tree.write(),
+        id
+    ));
+    let (pool, buffer) = wire_buffer(&mut h, &[0, 0, 255, 255].repeat(4096));
+    surface.attach(Some(&buffer), 0, 0);
+    surface.damage_buffer(0, 0, 64, 64);
+    surface.commit();
+    let seq = h.wait_frame(id, 0);
+    // The tab arrives; the client commits nothing more.
+    shell::shell::tab_binding::adopt_toplevel(
+        &mut h.state.workspace_tree.write(),
+        id,
+        Some("restored-idle".into()),
+    );
+    h.roundtrip();
+    assert_eq!(
+        store().frame_seq(id),
+        seq,
+        "the frame it had is the one shown"
+    );
+    assert_eq!(
+        &store().snapshot(id).expect("a frame").rgba[..4],
+        &[255, 0, 0, 255]
+    );
+    store().forget(id);
+    toplevel.destroy();
+    role.destroy();
+    surface.destroy();
+    buffer.destroy();
+    pool.destroy();
+    h.roundtrip();
+}

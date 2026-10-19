@@ -966,6 +966,44 @@ pub fn group_id_for_surface(tree: &WorkspaceTree, surface_id: u64) -> Option<Gro
     None
 }
 
+/// Whether focus left the full-screen `group` for another window of its
+/// strip, so the full screen should end: the strip's active group is a
+/// different one. A window whose adoption is still provisional (no frame
+/// yet; it may turn out to be a dialog and be withdrawn, handing focus
+/// back) does not count yet. A group no strip holds any more has nothing
+/// to keep full screen.
+pub fn focus_left_fullscreen_group(
+    tree: &WorkspaceTree,
+    group: GroupId,
+    provisional: impl Fn(u64) -> bool,
+) -> bool {
+    let Some(strip) = tree
+        .desktop
+        .workspaces
+        .iter()
+        .flat_map(|workspace| workspace.strips.iter())
+        .find(|strip| strip.window_groups.iter().any(|g| g.id == group))
+    else {
+        return true;
+    };
+    let Some(active) = tree.desktop.active_group_for(strip.id) else {
+        return false;
+    };
+    if active == group {
+        return false;
+    }
+    let still_provisional = strip
+        .window_groups
+        .iter()
+        .find(|g| g.id == active)
+        .is_some_and(|g| {
+            g.tabs.iter().any(|tab| {
+                matches!(&tab.tile, TileContent::Foreign { surface_id, .. } if provisional(*surface_id))
+            })
+        });
+    !still_provisional
+}
+
 /// Bring the already-adopted foreign toplevel to the front, including a
 /// workspace/strip transition when it lives outside the current view.
 ///
