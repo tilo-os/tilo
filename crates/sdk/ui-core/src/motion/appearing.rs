@@ -68,8 +68,13 @@ impl Appearing {
         if open == self.presence.is_open() {
             return;
         }
-        self.presence
-            .show(open, Appear::SPEC, self.motion, source, crate::time::now());
+        self.presence.show(
+            open,
+            Appear::SPEC,
+            self.motion,
+            source,
+            crate::motion::frame_now(),
+        );
         if let Some(until) = self.presence.settles_at() {
             super::clock::want_frames_until(until);
         }
@@ -89,7 +94,7 @@ impl Appearing {
     /// Whether anything of it is drawn now: open, opening or still leaving.
     #[must_use]
     pub fn is_drawn(&self) -> bool {
-        self.presence.is_visible(crate::time::now())
+        self.presence.is_visible(crate::motion::frame_now())
     }
 
     /// Whether it is still moving now (its owner asks for frames).

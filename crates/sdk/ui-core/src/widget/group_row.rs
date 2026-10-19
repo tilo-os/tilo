@@ -4839,7 +4839,7 @@ impl Widget for GroupRow {
                 .and_then(|i| self.groups.get(i))
                 .is_some_and(|group| {
                     !shifted
-                        && !self.sibling_fade.is_visible(crate::time::now())
+                        && !self.sibling_fade.is_visible(crate::motion::frame_now())
                         && clip.contains_rect(group.drawn_rect())
                 });
             if clipped {
