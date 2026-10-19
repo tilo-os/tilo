@@ -122,12 +122,13 @@ pub struct PersistentArgs {
     /// content (not chat) and reset it to that content; 0 never resets.
     #[arg(long = "reset-every", value_name = "SECS", default_value_t = 0)]
     pub reset_every: u64,
-    /// Guests with no session for this many minutes are removed; they join
-    /// again as new guests. Every join costs the room time in proportion to
-    /// its members, so a public room keeps the people around now, not every
-    /// visitor: past about 800 members it admits fewer than three a second.
-    #[arg(long = "prune-after-mins", default_value_t = 60)]
-    pub prune_after_mins: u64,
+    /// A member with no session for this many days stops being one; they
+    /// join again through the door as the same person. Membership persists:
+    /// a person stays a member until they leave, the host removes them, or
+    /// they have been away this long. Being offline for an hour removes
+    /// nobody; who is here now is the room's presence, not its membership.
+    #[arg(long = "inactive-after-days", default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..=3650))]
+    pub inactive_after_days: u64,
     /// A bot directory entry and its inputs (`<entry> key=value …`) to
     /// install at the room's first start, approved by the room's root;
     /// repeatable.
@@ -1093,7 +1094,7 @@ pub(crate) async fn run(
         owners,
         moderators,
         roles_file: persistent.roles_file.clone(),
-        prune_after_mins: persistent.prune_after_mins,
+        inactive_after_mins: persistent.inactive_after_days.saturating_mul(24 * 60),
         state: state.clone(),
         seed_apps: persistent.seed_apps.clone(),
         reset_every: persistent.reset_every,
@@ -1269,7 +1270,7 @@ struct Governance {
     moderators: BTreeSet<[u8; 32]>,
     /// More owners and moderators, read again whenever the file changes.
     roles_file: Option<PathBuf>,
-    prune_after_mins: u64,
+    inactive_after_mins: u64,
     state: PathBuf,
     seed_apps: Vec<String>,
     /// Seconds between resets of seeded content; 0 never resets.
@@ -1421,7 +1422,13 @@ async fn prune_idle(
     let (owners, moderators) = governance.current();
     let mut keep: BTreeSet<[u8; 32]> = owners.union(&moderators).copied().collect();
     keep.insert(spectator);
-    let idle = idle_guests(&members, last_seen, &keep, now, governance.prune_after_mins);
+    let idle = idle_guests(
+        &members,
+        last_seen,
+        &keep,
+        now,
+        governance.inactive_after_mins,
+    );
     for batch in idle.chunks(PRUNE_BATCH) {
         let batch: BTreeSet<[u8; 32]> = batch.iter().copied().collect();
         // Into `removed` first: a pruned guest is not a removal the service
@@ -1481,7 +1488,7 @@ async fn serve_operator(
     // often than a minute.
     let mut prune_tick = tokio::time::interval(Duration::from_secs(
         governance
-            .prune_after_mins
+            .inactive_after_mins
             .saturating_mul(15)
             .clamp(60, 3600),
     ));
@@ -1792,6 +1799,43 @@ mod tests {
         let mut gone = member(1, false);
         gone.removed = true;
         assert!(newly_removed(&mut seen, &[gone]).is_empty());
+    }
+
+    // USER REQUIREMENT (2026-10-19): "Membership in a public room persists. A person who joined stays a member until they leave, are removed by the host, or have been inactive for 30 days (configurable on the host). Going offline for an hour must never remove anyone."
+    #[test]
+    fn a_member_away_for_an_hour_or_a_week_stays_one_and_thirty_days_away_does_not() {
+        use clap::Parser as _;
+        #[derive(clap::Parser)]
+        struct Args {
+            #[command(flatten)]
+            persistent: PersistentArgs,
+        }
+        let days = Args::parse_from(["relay"]).persistent.inactive_after_days;
+        assert_eq!(days, 30, "the host's default");
+        let horizon = days * 24 * 60;
+        let now = 400 * DAY_MS;
+        let last_seen = BTreeMap::from([
+            ([1; 32], now - 61 * MINUTE_MS),
+            ([2; 32], now - 7 * DAY_MS),
+            ([3; 32], now - 29 * DAY_MS),
+            ([4; 32], now - 31 * DAY_MS),
+        ]);
+        let members = [
+            member(1, false),
+            member(2, false),
+            member(3, false),
+            member(4, false),
+        ];
+        assert_eq!(
+            idle_guests(&members, &last_seen, &BTreeSet::new(), now, horizon),
+            vec![[4; 32]],
+            "only thirty days away ends a membership"
+        );
+        let shorter = Args::parse_from(["relay", "--inactive-after-days", "7"])
+            .persistent
+            .inactive_after_days;
+        assert_eq!(shorter, 7, "the host configures it");
+        assert!(Args::try_parse_from(["relay", "--inactive-after-days", "0"]).is_err());
     }
 
     #[test]

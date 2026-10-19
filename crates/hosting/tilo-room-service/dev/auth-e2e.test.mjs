@@ -3,8 +3,8 @@
 // the `Browser / authentication` workflow has.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {blake3, currentDevice, joinsTo, keptApart, keptNamespaces, membershipFor, parseArgs, parseBanner, PRUNE_AFTER_MINS,
-  PRUNE_WAIT_MS, REMOVE_MEMBER, revocationDigest, revocationEntry, SETTLED} from './auth-e2e.mjs';
+import {blake3, currentDevice, joinsTo, keptApart, keptNamespaces, membershipFor, parseArgs, parseBanner,
+  AWAY_MS, REMOVE_MEMBER, revocationDigest, revocationEntry, SETTLED} from './auth-e2e.mjs';
 
 test('the arguments name every input, absolute', () => {
   const options = parseArgs(['--bundle', 'b', '--relay-bin', 'r', '--room-service-bin', 's', '--out', 'o',
@@ -79,12 +79,11 @@ test('state kept apart means the old namespace untouched and a new one certified
   assert.equal(keptApart(before, {current: null, namespaces: {}, error: 'unreadable'}), false);
 });
 
-test('the pruned person is waited for past the horizon and two prune passes', () => {
-  // The relay prunes once a minute at most, and a guest it has no record of
-  // on a pass is recorded then and pruned on a later one.
-  const pass = Math.max(60, PRUNE_AFTER_MINS * 15) * 1000;
-  assert.ok(PRUNE_WAIT_MS > PRUNE_AFTER_MINS * 60_000 + pass);
-  assert.ok(PRUNE_WAIT_MS <= 5 * 60_000, 'the check stays a few minutes long');
+test('the kept member is away past two of the old minute-long prune passes', () => {
+  // A host on the hour-long rule pruned within two passes of a minute; a
+  // person away longer than that is kept now.
+  assert.ok(AWAY_MS > 2 * 60_000);
+  assert.ok(AWAY_MS <= 5 * 60_000, 'the check stays a few minutes long');
 });
 
 test("a moderator removes someone through the desktop's door, confirmed, and only a completed removal counts", async () => {

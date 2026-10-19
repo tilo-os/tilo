@@ -421,8 +421,8 @@ fn child_command(config: &Config, dir: &Path) -> Result<Command> {
     command
         .arg("--reset-every")
         .arg(persistent.reset_secs.to_string())
-        .arg("--prune-after-mins")
-        .arg(persistent.prune_after_mins.to_string());
+        .arg("--inactive-after-days")
+        .arg(persistent.inactive_after_days.to_string());
     size_sessions(&mut command, config, persistent);
     if !persistent.bots.is_empty() {
         for bot in &persistent.bots {
@@ -1617,14 +1617,14 @@ mod tests {
     }
 
     #[test]
-    fn the_relay_prunes_guests_after_the_horizon_the_operator_names() {
-        assert_eq!(relay_args("--prune-after-mins", &[]), ["60"]);
+    fn the_relay_ends_memberships_after_the_days_away_the_operator_names() {
+        assert_eq!(relay_args("--inactive-after-days", &[]), ["30"]);
         assert_eq!(
             relay_args(
-                "--prune-after-mins",
-                &[("TILO_ROOMS_PRUNE_AFTER_MINS", "1")]
+                "--inactive-after-days",
+                &[("TILO_ROOMS_INACTIVE_AFTER_DAYS", "7")]
             ),
-            ["1"]
+            ["7"]
         );
     }
 
