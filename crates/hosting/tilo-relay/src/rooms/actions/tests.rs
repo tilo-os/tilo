@@ -680,3 +680,32 @@ async fn a_member_who_may_install_bots_asks_the_rooms_host_for_one_and_takes_it_
     ));
     relay.shutdown().await;
 }
+
+/// A member gives the host only a secret a connector is known to take, and
+/// a request's inputs are text settings by name.
+#[test]
+fn connector_secrets_are_the_known_ones_and_request_inputs_are_text() {
+    let args = |value: Value| {
+        super::Args::of(&InvokeArgument::Json(value.as_object().unwrap().clone())).unwrap()
+    };
+    for wrong in [
+        json!({ "app": "so.tilo.mail", "purpose": "bot-token", "secret": "x" }),
+        json!({ "app": "so.tilo.discord", "purpose": "password", "secret": "x" }),
+        json!({ "app": "so.tilo.discord", "purpose": "bot-token", "secret": "  " }),
+    ] {
+        assert!(
+            super::connector_secret(&args(wrong.clone())).is_err(),
+            "{wrong}"
+        );
+    }
+    let inputs = args(json!({ "inputs": { "guild": "123", "server": "Garden club" } }))
+        .text_map("inputs")
+        .unwrap();
+    assert_eq!(inputs.get("guild").map(String::as_str), Some("123"));
+    assert!(
+        args(json!({ "inputs": { "guild": 123 } }))
+            .text_map("inputs")
+            .is_err()
+    );
+    assert!(args(json!({})).text_map("inputs").unwrap().is_empty());
+}

@@ -793,6 +793,7 @@ fn standup(version: &str) -> crate::workspace_membership::BotRequest {
     crate::workspace_membership::BotRequest {
         entry: "so.tilo.bots.standup".into(),
         version: version.into(),
+        inputs: std::collections::BTreeMap::new(),
     }
 }
 

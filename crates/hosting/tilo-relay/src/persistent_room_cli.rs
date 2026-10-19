@@ -1009,13 +1009,28 @@ pub(crate) async fn run(
             .run(),
         )
     });
+    // The connectors bots listen to, the operator's and those a member
+    // sets up for a bot they ask for, share one host and one blob store.
+    let public = match (&persistent.public_avatars, &persistent.public_avatars_url) {
+        (Some(dir), Some(url)) => Some(
+            tilo_relay::public_avatars::PublicAvatars::new(dir.clone(), url)
+                .with_context(|| format!("prepare {}", dir.display()))?,
+        ),
+        _ => None,
+    };
+    let connector_host = tilo_relay::room_bots::installed::ConnectorHost::new(
+        workers,
+        tilo_relay::room_bots::installed::FsBlobs::new(state.join("blobs"), public)
+            .context("prepare the blob store")?,
+        persistent.public_avatars_url.clone(),
+    );
     let runners = start_bots(
         &rooms,
         &room,
         &host_cert,
         &root,
         &bots,
-        &workers,
+        &connector_host,
         &persistent,
         &state,
     )
@@ -1029,6 +1044,7 @@ pub(crate) async fn run(
             root: root.clone(),
             state: state.clone(),
             operator: bots.iter().map(|spec| spec.entry.clone()).collect(),
+            connectors: Some(connector_host),
         });
     let context = PersistentRoom {
         rooms,
@@ -1063,10 +1079,8 @@ pub(crate) async fn run(
     result
 }
 
-/// Connect the room to the Discord server a bridge's inputs name, and keep
-/// that link with the host: the worker's settings come back, and the link
-/// inputs leave the program's. Without a server the bridge would act in
-/// whatever servers the bot is in, so it does not run.
+/// Connect the room to the Discord server a bridge's inputs name
+/// ([`discord::link_bridge`](tilo_relay::room_bots::discord::link_bridge)).
 async fn link_discord(
     rooms: &Rooms,
     room: &str,
@@ -1075,25 +1089,15 @@ async fn link_discord(
     bot: &mut tilo_relay::room_bots::installed::InstalledBot,
     persistent: &PersistentArgs,
 ) -> Result<Vec<(String, String)>, String> {
-    use tilo_relay::room_bots::discord;
-    let link = discord::DiscordLink::from_inputs(&spec.inputs)?
-        .ok_or("a Discord bridge needs guild=<server id>")?;
-    discord::connect(rooms, room, host_cert, &link).await?;
-    for key in discord::LINK_INPUTS {
-        bot.inputs.remove(key);
-    }
-    // Authors bridged out show the avatars this host publishes, unless the
-    // operator pointed them elsewhere.
-    if let (false, Some(url)) = (
-        bot.inputs.contains_key("context"),
-        &persistent.public_avatars_url,
-    ) {
-        bot.inputs.insert(
-            "context".to_owned(),
-            serde_json::json!({ "avatars": format!("{}/", url.trim_end_matches('/')) }),
-        );
-    }
-    Ok(link.worker_env())
+    tilo_relay::room_bots::discord::link_bridge(
+        rooms,
+        room,
+        host_cert,
+        &spec.inputs,
+        bot,
+        persistent.public_avatars_url.as_deref(),
+    )
+    .await
 }
 
 /// Install the bots the operator named (once: a restart finds the same
@@ -1106,7 +1110,7 @@ async fn start_bots(
     host_cert: &DeviceCert,
     root: &SigningKey,
     bots: &[BotSpec],
-    workers: &BTreeMap<String, PathBuf>,
+    connector_host: &tilo_relay::room_bots::installed::ConnectorHost,
     persistent: &PersistentArgs,
     state: &Path,
 ) -> anyhow::Result<Vec<tokio::task::JoinHandle<()>>> {
@@ -1116,8 +1120,12 @@ async fn start_bots(
         let token = std::fs::read_to_string(path)
             .with_context(|| format!("read the Discord token file {}", path.display()))?;
         // Never logged: only kept where the connector's worker asks for it.
-        installed::put_connector_secret(discord::APP, "bot-token", token.trim().as_bytes())
-            .map_err(|error| anyhow::anyhow!("keep the Discord token: {error}"))?;
+        installed::put_connector_secret(
+            discord::APP,
+            discord::TOKEN_PURPOSE,
+            token.trim().as_bytes(),
+        )
+        .map_err(|error| anyhow::anyhow!("keep the Discord token: {error}"))?;
     }
     let mut installed_bots = Vec::new();
     let mut connectors = BTreeSet::new();
@@ -1152,21 +1160,16 @@ async fn start_bots(
     if installed_bots.is_empty() {
         return Ok(Vec::new());
     }
-    let public = match (&persistent.public_avatars, &persistent.public_avatars_url) {
-        (Some(dir), Some(url)) => Some(
-            tilo_relay::public_avatars::PublicAvatars::new(dir.clone(), url)
-                .with_context(|| format!("prepare {}", dir.display()))?,
-        ),
-        _ => None,
-    };
-    let kept = Arc::new(
-        installed::FsBlobs::new(state.join("blobs"), public).context("prepare the blob store")?,
-    );
-    rooms.serve_content(kept.clone());
-    let blobs: Arc<dyn tilo_connector::BlobAccess> = kept;
-    let started = installed::start_connectors(&connectors, state, workers, &settings, &blobs)
-        .await
-        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    let blobs = connector_host.blobs(rooms);
+    let started = installed::start_connectors(
+        &connectors,
+        state,
+        &connector_host.workers,
+        &settings,
+        &blobs,
+    )
+    .await
+    .map_err(|error| anyhow::anyhow!("{error}"))?;
     let mut runners = Vec::new();
     for (dir, bot) in installed_bots {
         let wanted =

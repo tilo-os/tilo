@@ -58,10 +58,21 @@ pub struct BotRequest {
     pub entry: String,
     /// The listed version to install.
     pub version: String,
+    /// The bot's inputs the request gives its host (a bridge's
+    /// `guild=<server id>` and `server=<name>`): settings every member may
+    /// read, never a secret. A secret reaches the host on its own, through
+    /// the room's `set-connector-secret` action.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub inputs: std::collections::BTreeMap<String, String>,
 }
 
 /// Most bytes a requested entry or version takes.
 const MAX_BOT_REQUEST_ID: usize = 128;
+/// Most inputs a request gives, and the most bytes of one input's name and
+/// value.
+const MAX_BOT_INPUTS: usize = 8;
+const MAX_BOT_INPUT_NAME: usize = 32;
+const MAX_BOT_INPUT_VALUE: usize = 256;
 
 impl BotRequest {
     /// Validate the entry and version the request names.
@@ -78,6 +89,22 @@ impl BotRequest {
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+'))
         {
             return Err("invalid bot version".into());
+        }
+        if self.inputs.len() > MAX_BOT_INPUTS {
+            return Err("too many bot inputs".into());
+        }
+        for (name, value) in &self.inputs {
+            if name.is_empty()
+                || name.len() > MAX_BOT_INPUT_NAME
+                || !name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+            {
+                return Err("invalid bot input name".into());
+            }
+            if value.len() > MAX_BOT_INPUT_VALUE || value.chars().any(char::is_control) {
+                return Err(format!("invalid value for the bot input `{name}`"));
+            }
         }
         Ok(())
     }
@@ -353,9 +380,35 @@ mod tests {
             WorkspaceMembershipCommand::RequestBot(BotRequest {
                 entry: entry.into(),
                 version: version.into(),
+                inputs: std::collections::BTreeMap::new(),
             })
             .validate()
         };
+        let with_inputs = |inputs: &[(&str, &str)]| {
+            BotRequest {
+                entry: "so.tilo.bots.discord-bridge".into(),
+                version: "0.1.0".into(),
+                inputs: inputs
+                    .iter()
+                    .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+                    .collect(),
+            }
+            .validate()
+        };
+        with_inputs(&[("guild", "123456789012345678"), ("server", "Garden club")]).unwrap();
+        assert!(
+            with_inputs(&[("Guild", "1")]).is_err(),
+            "names are lowercase"
+        );
+        assert!(
+            with_inputs(&[("guild", "1\n2")]).is_err(),
+            "no control characters"
+        );
+        assert!(with_inputs(&[("server", &"x".repeat(257))]).is_err());
+        // An old request, without inputs, still reads.
+        let old: BotRequest =
+            serde_json::from_str(r#"{"entry":"so.tilo.bots.standup","version":"1.0.0"}"#).unwrap();
+        assert!(old.inputs.is_empty());
         request("so.tilo.bots.standup", "1.2.0").unwrap();
         request("so.tilo.bots.standup", "1.2.0-rc.1+build.7").unwrap();
         for (entry, version) in [

@@ -958,6 +958,55 @@ fn connector_secrets(app_id: &str) -> tilo_secrets::SecretStore {
     tilo_secrets::SecretStore::for_app(app_id)
 }
 
+/// Whether connector `app_id` has a secret under `purpose` on this host.
+#[must_use]
+pub fn has_connector_secret(app_id: &str, purpose: &'static str) -> bool {
+    connector_secrets(app_id)
+        .item(purpose, "default")
+        .get_blocking()
+        .is_ok_and(|secret| secret.is_some())
+}
+
+/// What a host gives the connectors its bots listen to: where each worker
+/// program is, the blobs they fetch and publish (served to the room's
+/// members once the first connector runs), and where avatars of authors a
+/// bot bridged out are published.
+#[derive(Clone)]
+pub struct ConnectorHost {
+    /// Worker programs by connector, where the default place is not used.
+    pub workers: BTreeMap<String, PathBuf>,
+    /// The public URL of the avatars a bridge publishes, if any.
+    pub avatars_url: Option<String>,
+    blobs: Arc<FsBlobs>,
+    served: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl ConnectorHost {
+    /// A host running workers from `workers` over the blob store `blobs`.
+    #[must_use]
+    pub fn new(
+        workers: BTreeMap<String, PathBuf>,
+        blobs: FsBlobs,
+        avatars_url: Option<String>,
+    ) -> Self {
+        Self {
+            workers,
+            avatars_url,
+            blobs: Arc::new(blobs),
+            served: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+
+    /// The blob store connectors use, served to `rooms` the first time.
+    #[must_use]
+    pub fn blobs(&self, rooms: &Rooms) -> Arc<dyn tilo_connector::BlobAccess> {
+        if !self.served.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            rooms.serve_content(self.blobs.clone());
+        }
+        self.blobs.clone()
+    }
+}
+
 /// Keep `secret` for connector `app_id` under `purpose`, where its worker
 /// asks for it.
 ///

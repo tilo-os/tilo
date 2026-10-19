@@ -98,6 +98,15 @@ pub(crate) const REQUEST_BOT: &str = "request-bot";
 /// Taking back the room's request for a bot: its host stops and
 /// uninstalls it.
 pub(crate) const WITHDRAW_BOT_REQUEST: &str = "withdraw-bot-request";
+/// Giving the host a secret a requested bot's connector needs (a Discord
+/// bot token): kept in the host's secret store for that connector, never in
+/// the room's governance, a record or a log.
+pub(crate) const SET_CONNECTOR_SECRET: &str = "set-connector-secret";
+/// The connector secrets a room member may give its host, by connector and
+/// purpose.
+const CONNECTOR_SECRETS: [(&str, &str); 1] = [("so.tilo.discord", "bot-token")];
+/// Most bytes a connector secret takes.
+const MAX_CONNECTOR_SECRET: usize = 512;
 /// The roles a public workspace hands out at its door.
 const DOOR_ROLES: [&str; 3] = ["viewer", "commenter", "editor"];
 
@@ -130,7 +139,7 @@ struct Verb {
 }
 
 /// What the rooms serve, in catalogue order.
-const VERBS: [Verb; 16] = [
+const VERBS: [Verb; 17] = [
     Verb {
         id: governance::INVITE,
         label: "Invite",
@@ -243,6 +252,13 @@ const VERBS: [Verb; 16] = [
         kind: roles::GOVERNANCE_KIND,
         params: bot_entry_params,
     },
+    Verb {
+        id: SET_CONNECTOR_SECRET,
+        label: "Give a bot's connector its secret",
+        gate: governance::INSTALL_BOT,
+        kind: ActionKind::Outside,
+        params: connector_secret_params,
+    },
 ];
 
 /// Destructive governance this provider names but does not run until the
@@ -348,6 +364,27 @@ fn bot_request_params() -> Vec<ActionParam> {
             ParamType::Text,
             "The listed version the room's host runs.",
         ),
+        ActionParam::optional(
+            "inputs",
+            ParamType::Object,
+            "The bot's settings, by name, such as a bridge's guild and server; never a secret.",
+        ),
+    ]
+}
+
+fn connector_secret_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required(
+            "app",
+            ParamType::Text,
+            "The connector the secret is for, such as so.tilo.discord.",
+        ),
+        ActionParam::required(
+            "purpose",
+            ParamType::Text,
+            "What the secret is, such as bot-token.",
+        ),
+        ActionParam::required("secret", ParamType::Secret, "The secret itself."),
     ]
 }
 
@@ -510,6 +547,35 @@ fn refused(error: &impl ToString) -> ActionHostError {
     }
 }
 
+/// Keep the secret a requested bot's connector needs in this host's store
+/// for that connector, where its worker asks for it. Only the secrets a
+/// connector is known to take are kept; the caller already holds the
+/// room's right to install bots (the verb's gate).
+fn connector_secret(args: &Args) -> Result<Value, ActionHostError> {
+    let app = args.required_text("app")?;
+    let purpose = args.required_text("purpose")?;
+    let secret = args.required_text("secret")?.trim();
+    let (_, purpose) = CONNECTOR_SECRETS
+        .iter()
+        .copied()
+        .find(|(known_app, known_purpose)| *known_app == app && *known_purpose == purpose)
+        .ok_or_else(|| invalid(format!("{app} takes no secret named {purpose}")))?;
+    if secret.is_empty() || secret.len() > MAX_CONNECTOR_SECRET {
+        return Err(invalid("the secret is empty or too long"));
+    }
+    #[cfg(feature = "agents")]
+    {
+        crate::room_bots::installed::put_connector_secret(app, purpose, secret.as_bytes())
+            .map_err(|error| refused(&format!("the host could not keep the secret: {error}")))?;
+        Ok(json!({ "kept": true }))
+    }
+    #[cfg(not(feature = "agents"))]
+    {
+        let _ = purpose;
+        Err(refused(&"this host runs no connectors"))
+    }
+}
+
 /// An invocation's typed arguments.
 struct Args(Map<String, Value>);
 
@@ -527,6 +593,24 @@ impl Args {
             None | Some(Value::Null) => Ok(None),
             Some(Value::String(text)) => Ok(Some(text)),
             Some(_) => Err(invalid(format!("`{name}` must be text"))),
+        }
+    }
+
+    /// An object of text values, by name; empty when absent.
+    fn text_map(
+        &self,
+        name: &str,
+    ) -> Result<std::collections::BTreeMap<String, String>, ActionHostError> {
+        match self.0.get(name) {
+            None | Some(Value::Null) => Ok(std::collections::BTreeMap::new()),
+            Some(Value::Object(object)) => object
+                .iter()
+                .map(|(key, value)| match value {
+                    Value::String(text) => Ok((key.clone(), text.clone())),
+                    _ => Err(invalid(format!("`{name}.{key}` must be text"))),
+                })
+                .collect(),
+            Some(_) => Err(invalid(format!("`{name}` must be an object of text"))),
         }
     }
 
@@ -875,6 +959,7 @@ impl Rooms {
             | DECLINE => self.governance_invitations(action, call).await,
             PUBLISH | UNPUBLISH | PUBLICATION => self.governance_listing(action, call).await,
             REQUEST_BOT | WITHDRAW_BOT_REQUEST => self.governance_bots(action, call).await,
+            SET_CONNECTOR_SECRET => connector_secret(call.args),
             _ => self.governance_members(action, call).await,
         }
     }
@@ -946,6 +1031,7 @@ impl Rooms {
             WorkspaceMembershipCommand::RequestBot(BotRequest {
                 entry,
                 version: args.required_text("version")?.to_owned(),
+                inputs: args.text_map("inputs")?,
             })
         } else {
             WorkspaceMembershipCommand::WithdrawBotRequest { entry }

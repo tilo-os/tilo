@@ -14,6 +14,8 @@ use crate::rooms::Rooms;
 
 /// The Discord connector's app id, whose records the bridge keeps.
 pub const APP: &str = "so.tilo.discord";
+/// The secret the connector's worker reads its bot token from.
+pub const TOKEN_PURPOSE: &str = "bot-token";
 const CHAT: &str = "so.tilo.chat";
 
 /// The bridge bot inputs that name its [`DiscordLink`]: read by the host,
@@ -172,6 +174,40 @@ fn apply_as_owner<R: tilo_resource::Resource>(
     let applied = replica.apply_confirmed(invoke).map(drop);
     std::mem::swap(doc, replica.doc_mut());
     applied.map_err(|error| error.to_string())
+}
+
+/// Connect the room to the Discord server `inputs` name (`guild=`, and
+/// `server=`, `channel=`, `mirror-channels=`, `map-roles=`), and keep that
+/// link with the host: the link inputs leave the bot's own (the program
+/// never reads them), the bot's posts point at `avatars_url` unless its
+/// inputs say otherwise, and the worker's settings come back. The room's
+/// operator naming the bridge on the command line and a member asking for
+/// it in the room both come here.
+///
+/// # Errors
+/// No server is named (a bridge without one would act in every server the
+/// bot is in), an input is malformed, or the room refused the link.
+pub async fn link_bridge(
+    rooms: &Rooms,
+    room: &str,
+    host: &DeviceCert,
+    inputs: &BTreeMap<String, String>,
+    bot: &mut super::installed::InstalledBot,
+    avatars_url: Option<&str>,
+) -> Result<Vec<(String, String)>, String> {
+    let link =
+        DiscordLink::from_inputs(inputs)?.ok_or("a Discord bridge needs guild=<server id>")?;
+    connect(rooms, room, host, &link).await?;
+    for key in LINK_INPUTS {
+        bot.inputs.remove(key);
+    }
+    if let (false, Some(url)) = (bot.inputs.contains_key("context"), avatars_url) {
+        bot.inputs.insert(
+            "context".to_owned(),
+            serde_json::json!({ "avatars": format!("{}/", url.trim_end_matches('/')) }),
+        );
+    }
+    Ok(link.worker_env())
 }
 
 #[cfg(test)]
