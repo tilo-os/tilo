@@ -192,6 +192,76 @@ pub struct Persistent {
     /// The current child; `None` while it restarts.
     child: Mutex<Option<Child>>,
     waiters: std::sync::Mutex<Waiters>,
+    /// Why the relay last stopped, for `/mode` while it is down.
+    failure: std::sync::Mutex<Option<RelayFailure>>,
+}
+
+/// Why the persistent relay last stopped, as `/mode` reports it from
+/// outside the cluster: the error, sanitized ([`sanitized`]), how many starts
+/// in a row failed, and when.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RelayFailure {
+    pub error: String,
+    pub failed_starts: u32,
+    pub at_ms: u64,
+}
+
+/// The most `/mode` says of an error.
+const MAX_REPORTED_ERROR: usize = 400;
+/// The relay's last stderr lines kept to explain why it stopped.
+const KEPT_STDERR_LINES: usize = 40;
+
+/// `text` fit to show to anyone who asks `/mode`: one line, no control
+/// characters, no long hex or base64 runs (keys, tokens, signatures), and
+/// at most [`MAX_REPORTED_ERROR`] characters.
+pub fn sanitized(text: &str) -> String {
+    let mut out = String::new();
+    for word in text.split_whitespace() {
+        let word: String = word.chars().filter(|c| !c.is_control()).collect();
+        // A room id (a UUID) is public and says which room failed.
+        let uuid = word.len() == 36 && word.matches('-').count() == 4;
+        let secretish = !uuid
+            && word.len() >= 32
+            && word
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=' | '-' | '_'));
+        if word.is_empty() {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(if secretish { "[redacted]" } else { &word });
+    }
+    if out.chars().count() > MAX_REPORTED_ERROR {
+        out = out.chars().take(MAX_REPORTED_ERROR).collect();
+        out.push('…');
+    }
+    out
+}
+
+/// What explains a relay's stop: the line its process printed its error on
+/// (`Error: …`, anyhow's report), else its last line, besides what this
+/// service saw (`seen`).
+fn explained(seen: &str, stderr: &std::collections::VecDeque<String>) -> String {
+    let printed = stderr
+        .iter()
+        .rposition(|line| line.trim_start().starts_with("Error:"))
+        .map(|at| {
+            // anyhow prints the causes on the lines after it.
+            stderr
+                .iter()
+                .skip(at)
+                .map(|line| line.trim())
+                .filter(|line| !line.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .or_else(|| stderr.back().cloned());
+    sanitized(&match printed {
+        Some(printed) => format!("{seen}: {printed}"),
+        None => seen.to_owned(),
+    })
 }
 
 fn token_digest(token: &str) -> String {
@@ -399,6 +469,7 @@ impl Persistent {
             shared,
             child: Mutex::new(None),
             waiters: std::sync::Mutex::default(),
+            failure: std::sync::Mutex::default(),
         })
     }
 
@@ -426,8 +497,25 @@ impl Persistent {
         let mut wait = Duration::from_secs(1);
         loop {
             let started = tokio::time::Instant::now();
-            if let Err(error) = self.run_child(&config).await {
-                eprintln!("tilo-room-service: the persistent room's relay stopped: {error:#}");
+            let stderr = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
+            let seen = match self.run_child(&config, &stderr).await {
+                Err(error) => {
+                    eprintln!("tilo-room-service: the persistent room's relay stopped: {error:#}");
+                    format!("{error:#}")
+                }
+                Ok(()) => "the relay exited".to_owned(),
+            };
+            let error = explained(&seen, &stderr.lock_recover());
+            if let Ok(mut failure) = self.failure.lock() {
+                let failed_starts = failure
+                    .as_ref()
+                    .filter(|_| started.elapsed() < SETTLED)
+                    .map_or(1, |last| last.failed_starts.saturating_add(1));
+                *failure = Some(RelayFailure {
+                    error,
+                    failed_starts,
+                    at_ms: tilo_clock::unix_now_ms(),
+                });
             }
             if started.elapsed() >= SETTLED {
                 wait = Duration::from_secs(1);
@@ -437,19 +525,43 @@ impl Persistent {
         }
     }
 
-    async fn run_child(&self, config: &Config) -> Result<()> {
+    async fn run_child(
+        &self,
+        config: &Config,
+        kept: &Arc<std::sync::Mutex<std::collections::VecDeque<String>>>,
+    ) -> Result<()> {
         let mut child = child_command(config, &self.shared.dir)?
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn()
             .context("run tilo-relay room --persistent")?;
         let stdin = child.stdin.take().context("relay stdin")?;
         let stdout = child.stdout.take().context("relay stdout")?;
+        // The relay's log goes on to this service's, and its last lines are
+        // kept to say why it stopped.
+        let stderr = child.stderr.take().context("relay stderr")?;
+        let forwarding = {
+            let kept = Arc::clone(kept);
+            tokio::spawn(async move {
+                let mut lines = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    eprintln!("{line}");
+                    let mut kept = kept.lock_recover();
+                    if kept.len() == KEPT_STDERR_LINES {
+                        kept.pop_front();
+                    }
+                    kept.push_back(line);
+                }
+            })
+        };
         let result = self
             .attach(Box::new(stdin), stdout, Some(config.persistent_origin()))
             .await;
         let _ = child.kill().await;
+        // Its last words are in before the stop is explained.
+        let _ = tokio::time::timeout(Duration::from_secs(2), forwarding).await;
         result
     }
 
@@ -644,6 +756,14 @@ impl Persistent {
     /// Whether a relay child is running and has announced itself.
     pub async fn relay_up(&self) -> bool {
         self.child.lock().await.is_some()
+    }
+
+    /// Why the relay last stopped, while it is not up.
+    pub async fn relay_failure(&self) -> Option<RelayFailure> {
+        if self.relay_up().await {
+            return None;
+        }
+        self.failure.lock().ok().and_then(|failure| failure.clone())
     }
 
     pub fn online(&self) -> u32 {
@@ -1531,5 +1651,46 @@ mod tests {
             .filter(|pair| pair[0] == flag)
             .map(|pair| pair[1].clone())
             .collect()
+    }
+
+    /// A deploy whose relay never comes up is diagnosable from outside the
+    /// cluster: `/mode` says what the relay printed when it stopped, with
+    /// nothing secret in it.
+    #[test]
+    fn why_the_relay_stopped_is_told_without_its_secrets() {
+        let stderr: std::collections::VecDeque<String> = [
+            "2026-10-19T16:00:00Z  WARN tilo_relay: slow start",
+            "Error: open the room 07848ffe-1898-4f72-8419-0b54c93e6dad: read the chat",
+            "",
+            "Caused by:",
+            "    key 9f5b0a9864e8326294583f0d35d7affa553f532930e98d4c98177064aa3707ca\u{7} refused",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        let told = explained("the relay exited", &stderr);
+        assert!(
+            told.starts_with(
+                "the relay exited: Error: open the room 07848ffe-1898-4f72-8419-0b54c93e6dad: read the chat"
+            ),
+            "{told}"
+        );
+        assert!(told.contains("Caused by:"), "{told}");
+        assert!(!told.contains("9f5b0a98"), "a key is not told: {told}");
+        assert!(told.contains("[redacted]"), "{told}");
+        assert!(!told.chars().any(char::is_control), "{told}");
+        // Without an error line, its last line; without any, what was seen.
+        let quiet: std::collections::VecDeque<String> = ["listening on 0.0.0.0:9780".to_owned()]
+            .into_iter()
+            .collect();
+        assert_eq!(
+            explained("the relay exited", &quiet),
+            "the relay exited: listening on 0.0.0.0:9780"
+        );
+        assert_eq!(
+            explained("the relay exited", &std::collections::VecDeque::new()),
+            "the relay exited"
+        );
+        assert!(sanitized(&"x ".repeat(1000)).chars().count() <= MAX_REPORTED_ERROR + 1);
     }
 }
