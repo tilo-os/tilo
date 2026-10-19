@@ -49,6 +49,8 @@ impl BarPopovers {
 /// [`ShellOverlayHost::run_native_workspace_action`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum NativeWorkspaceAction {
+    /// A new, empty workspace, shown at once.
+    New,
     /// The workspace's members, permissions, apps and devices.
     Settings,
     /// "Join a workspace…": the directory of public workspaces.
@@ -61,10 +63,17 @@ pub(crate) enum NativeWorkspaceAction {
 }
 
 impl NativeWorkspaceAction {
-    const ALL: [Self; 4] = [Self::Settings, Self::Join, Self::Report, Self::Leave];
+    const ALL: [Self; 5] = [
+        Self::New,
+        Self::Join,
+        Self::Settings,
+        Self::Report,
+        Self::Leave,
+    ];
 
     fn id(self) -> &'static str {
         match self {
+            Self::New => "new-workspace",
             Self::Settings => "workspace-settings",
             Self::Join => "join-workspace",
             Self::Report => "report-workspace",
@@ -78,6 +87,7 @@ impl NativeWorkspaceAction {
 
     fn menu_action(self) -> WorkspaceAction {
         let (title, destructive) = match self {
+            Self::New => ("workspace-menu-new", false),
             Self::Settings => ("workspace-menu-settings", false),
             Self::Join => ("workspace-menu-join", false),
             Self::Report => ("workspace-menu-report", false),
@@ -94,7 +104,7 @@ impl NativeWorkspaceAction {
     /// it is held through (`None`: on this computer, or shared directly).
     fn offered(self, site: Option<&crate::shell::network::SiteRoom>) -> bool {
         match self {
-            Self::Settings | Self::Join => true,
+            Self::New | Self::Settings | Self::Join => true,
             Self::Leave => site.is_some(),
             // Only a workspace joined from a directory has a door to
             // report it at.
@@ -369,6 +379,9 @@ impl ShellOverlayHost {
             .active_workspace()
             .map(|workspace| workspace.room);
         match action {
+            NativeWorkspaceAction::New => {
+                state.add_workspace(t("search-action-workspace-create-default-name"));
+            }
             NativeWorkspaceAction::Settings => {
                 state.open_workspace_settings(WsTab::General);
             }

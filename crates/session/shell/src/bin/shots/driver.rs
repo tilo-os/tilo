@@ -634,7 +634,7 @@ impl ShellDriver {
         self.fb.set_capture_replay_saved();
     }
 
-    pub fn set_capture_screenshot_finished(&mut self, copied: bool) {
+    pub fn set_capture_screenshot_finished(&mut self, kept: ui::widget::ScreenshotKept) {
         let palette = [
             [17, 19, 24, 255],
             [24, 29, 39, 255],
@@ -645,7 +645,7 @@ impl ShellDriver {
         ];
         let pixels = palette.into_iter().cycle().take(24).collect();
         self.fb.set_capture_screenshot_finished(
-            copied,
+            kept,
             1_584,
             716,
             ui::widget::CapturePreview {
@@ -1157,6 +1157,64 @@ impl ShellDriver {
     /// authority-checked capabilities and presence data as legacy scenes.
     pub fn seed_shared_workspace_for_shots(&mut self) {
         self.seed_shared_room();
+    }
+
+    /// Three strips in the shown workspace, Research and Design with a
+    /// window each, and people on them: Ada and Bo in Research, Cy in
+    /// Design. What the strip switcher shows faces for.
+    pub fn seed_strips_with_people_for_shots(&mut self) {
+        use shell::shell::state::{
+            AppKind, Collaborator, MintIds, ProcessIds, Strip, StripId, Tab, TileContent,
+            WindowGroup, WindowWidth,
+        };
+        use tilo_action_policy::Role;
+        self.seed_shared_room();
+        let handle = self.chrome_handle();
+        {
+            let st = handle.borrow();
+            let owner = st.local_user_id.clone();
+            let mut tree = st.tree_mut();
+            let ws_id = tree.desktop.active;
+            let _ = tree.admit_in_workspace(ws_id, &owner, "cy", Role::Editor);
+            let Some(ws) = tree.desktop.active_workspace_mut() else {
+                return;
+            };
+            let mut tabs = Vec::new();
+            for (name, kind, label) in [
+                ("Research", AppKind::Other("Browser".into()), "Browser"),
+                ("Design", AppKind::Other("Canvas".into()), "Canvas"),
+            ] {
+                let mut ids = ProcessIds;
+                let tab = Tab {
+                    id: ids.mint_id(),
+                    title: label.into(),
+                    tile: TileContent::AppPlaceholder {
+                        kind,
+                        label: label.into(),
+                    },
+                };
+                tabs.push(tab.id);
+                let mut strip = Strip::new(StripId::from(ids.mint_id()), name);
+                strip.window_groups.push(WindowGroup {
+                    id: ids.mint_id(),
+                    active_tab: tab.id,
+                    tabs: vec![tab],
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                    focus_history: Vec::new(),
+                });
+                ws.strips.push(strip);
+            }
+            ws.collaborators.push(Collaborator::new("cy", "Cy"));
+            for person in &mut ws.collaborators {
+                person.active_tab = match person.id.as_str() {
+                    "ada" | "bo" => tabs.first().copied(),
+                    "cy" => tabs.get(1).copied(),
+                    _ => person.active_tab,
+                };
+            }
+        }
+        self.with_chrome(|_| {});
     }
 
     /// Build the privacy-sensitive state through the same capability and
