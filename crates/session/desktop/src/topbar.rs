@@ -5285,10 +5285,12 @@ mod tests {
             "leading pad is {} not {pad}",
             text_x - bar.ws_pill_rect.x0
         );
+        // A bar control's width rounds up to a whole pixel, so the trailing
+        // pad may be up to a pixel wider, never narrower.
+        let trailing = bar.ws_pill_rect.x1 - bar.ws_chevron_rect.x1;
         assert!(
-            (bar.ws_pill_rect.x1 - bar.ws_chevron_rect.x1 - pad).abs() < 0.01,
-            "trailing pad is {} not {pad}",
-            bar.ws_pill_rect.x1 - bar.ws_chevron_rect.x1
+            trailing >= pad - 0.01 && trailing < pad + 1.0,
+            "trailing pad is {trailing} not {pad}",
         );
         assert!(
             (bar.ws_chevron_rect.center().y - bar.ws_pill_rect.center().y).abs() < 0.01,
@@ -6802,13 +6804,16 @@ mod tests {
             "topbar y1 ({bar_bottom}) should equal TOPBAR_HEIGHT_PX ({TOPBAR_HEIGHT_PX})",
         );
         assert_eq!(TOPBAR_HEIGHT_PX, 32.0);
+        // Every control is a bar control, centred: the same air above and
+        // below.
+        let inset = (f64::from(TOPBAR_HEIGHT_PX) - BAR_CONTROL_PX) / 2.0;
         for (label, rect) in [
             ("workspace", bar.ws_pill_rect),
             ("center", bar.center_rect),
             ("tray", bar.tray_pill_rect),
         ] {
-            assert_eq!(rect.y0 - bar.rect.y0, 2.0, "{label} top inset");
-            assert_eq!(bar.rect.y1 - rect.y1, 2.0, "{label} bottom inset");
+            assert_eq!(rect.y0 - bar.rect.y0, inset, "{label} top inset");
+            assert_eq!(bar.rect.y1 - rect.y1, inset, "{label} bottom inset");
         }
         assert_eq!(bar.tray_hit_rect.y0, bar.rect.y0);
         assert_eq!(bar.tray_hit_rect.y1, bar.rect.y1);

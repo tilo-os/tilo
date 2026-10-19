@@ -1190,14 +1190,20 @@ mod tests {
             assert_eq!(rest, theme.tokens.colors.surfaces.raised, "{}", theme.name);
             assert!(edge.is_none(), "{}: a raised tile has no edge", theme.name);
             assert_ne!(face(true).0, rest, "{}: a hovered tile lifts", theme.name);
+            // Icons are the text inks, never the accent. High contrast's
+            // accent is inverted, its primary ink itself, so there the
+            // colours cannot tell the two apart; elsewhere they must differ.
             let intent = &theme.tokens.colors.intent;
+            let neutral = [theme.text_dim, theme.text_primary];
             for active in [false, true] {
                 let ink = icon_ink(&theme, active);
-                assert!(
-                    ink != intent.accent && ink != intent.accent_ink,
-                    "{}: icons are neutral ink",
-                    theme.name
-                );
+                for accent in [intent.accent, intent.accent_ink] {
+                    assert!(
+                        neutral.contains(&accent) || ink != accent,
+                        "{}: icons are neutral ink",
+                        theme.name
+                    );
+                }
             }
             assert_eq!(icon_ink(&theme, false), theme.text_dim);
             assert_eq!(icon_ink(&theme, true), theme.text_primary);
