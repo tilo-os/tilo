@@ -349,12 +349,10 @@ fn opening_prefers_the_entrys_own_action_then_the_apps_open_at_its_resource() {
     .expect("the app's open opens it");
     assert!(!chosen.live);
     assert_eq!(invoked.action, OPEN_ACTION);
-    match argument {
-        InvokeArgument::Json(values) => {
-            assert_eq!(values.get(OPEN_ANCHOR), Some(&serde_json::json!("n1")));
-        }
-        other => panic!("open takes the anchor, not {other:?}"),
-    }
+    let InvokeArgument::Json(values) = argument else {
+        panic!("open takes the anchor as its argument");
+    };
+    assert_eq!(values.get(OPEN_ANCHOR), Some(&serde_json::json!("n1")));
 
     // An entry naming its own action invokes that, on the running app.
     let entry = IndexEntry {
