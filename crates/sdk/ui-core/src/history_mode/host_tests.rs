@@ -559,6 +559,11 @@ fn managed_registration_admits_only_real_owners_and_scopes() {
             (900, 650),
         )
         .expect("registered scopes must compose in the managed host");
+        assert!(
+            !driver.targets().contains_key("history-scope-a"),
+            "the scope switch belongs to open History, never to the live app's bar"
+        );
+        driver.click_named("history-open").unwrap();
         driver.click_named("history-scope-b").unwrap();
         assert!(driver.targets().contains_key("history-scope-a"));
         assert!(

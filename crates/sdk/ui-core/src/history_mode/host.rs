@@ -1848,7 +1848,10 @@ impl HistoryHost {
                 Text::new("history-mode-live-updates").with_live(crate::a11y::Politeness::Polite),
             ));
         }
-        if self.registration.definition.scopes.len() > 1 {
+        // Which history to show is a choice inside History: while it is
+        // closed the live app owns the bar, and a scope switch there reads
+        // as the app's own control.
+        if self.open && self.registration.definition.scopes.len() > 1 {
             let mut scopes = Row::new();
             for (index, scope) in self.registration.definition.scopes.iter().enumerate() {
                 let mut button = self.command_button(
