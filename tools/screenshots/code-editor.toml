@@ -1,0 +1,31 @@
+# Code editor: a small project written through the project's actions.
+
+[[situation]]
+name = "rust-project"
+title = "A small Rust project with a file open"
+
+[[situation.steps]]
+invoke = { resource = "code_editor.project", action = "new-folder", args = { name = "src" }, bind = "src" }
+
+[[situation.steps]]
+invoke = { resource = "code_editor.project", action = "new-file", args = { name = "Cargo.toml", text = "[package]\nname = \"tally\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[dependencies]\n" } }
+
+[[situation.steps]]
+invoke = { resource = "code_editor.project", action = "new-file", args = { name = "README.md", text = "# tally\n\nCounts words, lines and characters in the files you give it.\n" } }
+
+[[situation.steps]]
+invoke = { resource = "code_editor.project", action = "new-file", args = { name = "main.rs", text = "use std::{env, fs, io};\n\n/// Words, lines and characters in one text.\n#[derive(Debug, Default, PartialEq)]\nstruct Tally {\n    words: usize,\n    lines: usize,\n    chars: usize,\n}\n\nfn tally(text: &str) -> Tally {\n    Tally {\n        words: text.split_whitespace().count(),\n        lines: text.lines().count(),\n        chars: text.chars().count(),\n    }\n}\n\nfn main() -> io::Result<()> {\n    for path in env::args().skip(1) {\n        let text = fs::read_to_string(&path)?;\n        let t = tally(&text);\n        println!(\"{:>8} {:>8} {:>8} {path}\", t.lines, t.words, t.chars);\n    }\n    Ok(())\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn counts_a_short_text() {\n        assert_eq!(tally(\"one two\\nthree\\n\"), Tally { words: 3, lines: 2, chars: 14 });\n    }\n}\n" }, bind = "main" }
+
+[[situation]]
+name = "web-page"
+title = "A static web page and its stylesheet"
+
+[[situation.steps]]
+invoke = { resource = "code_editor.project", action = "new-file", args = { name = "index.html", text = "<!doctype html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"utf-8\">\n  <title>Kastanienallee Community Garden</title>\n  <link rel=\"stylesheet\" href=\"style.css\">\n</head>\n<body>\n  <header>\n    <h1>Kastanienallee Community Garden</h1>\n    <p>Thirty-two plots, one compost heap, and a seed library by the gate.</p>\n  </header>\n  <main>\n    <section id=\"visit\">\n      <h2>Visit</h2>\n      <p>Open every Tuesday from 17:00 and Saturdays from 10:00.</p>\n    </section>\n  </main>\n</body>\n</html>\n" } }
+
+[[situation.steps]]
+invoke = { resource = "code_editor.project", action = "new-file", args = { name = "style.css", text = "body {\n  font-family: system-ui, sans-serif;\n  margin: 0 auto;\n  max-width: 42rem;\n  line-height: 1.6;\n  color: #1d2a1f;\n}\n\nheader {\n  padding: 3rem 0 1rem;\n  border-bottom: 2px solid #8fb996;\n}\n\nh1 {\n  font-size: 2.2rem;\n  margin: 0;\n}\n" } }
+
+[[situation]]
+name = "empty"
+title = "A new project"

@@ -3313,6 +3313,31 @@ cost = "heavy"
 timeout_secs = 5400
 default = false
 
+# Screenshots of every app of the default collection in the situations its plan sets up through
+# the app's own actions (tools/screenshots/<app>.toml), dark and light, wide and compact, rendered
+# headless on the software renderer: `t outputs app-screenshots` puts them in
+# target/app-screenshots/<app>/ beside each app's manifest.json and resources.json. A failed
+# situation is listed in summary.json with its log; the pictures that were taken are kept.
+[[check]]
+name = "app-screenshots"
+run = """
+bash tools/screenshots/build.sh "$CARGO_TARGET_DIR/app-screenshots-build"
+rm -rf /target/app-screenshots
+bash tools/test-env.sh python3 tools/screenshots/run.py --out /target/app-screenshots \\
+  --bin-dir "$CARGO_TARGET_DIR/app-screenshots-build/bin" --lib-dir "$CARGO_TARGET_DIR/app-screenshots-build/lib" \\
+  || echo "app-screenshots: some situations failed (see summary.json)"
+"""
+# Pictures, not a lint gate: warnings stay warnings (clippy and the tests gate them), so one app's
+# dead code under its thin features does not cost every other app its screenshots.
+env = { TILO_TEST_NTFS_FIXTURES = "0", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+inputs = ["apps/**", "crates/**", "vendor/**", "dist/apps/**", "tools/screenshots/**", "tools/font-catalog.py", "tools/test-env.sh", "tools/with-test-environment.sh", "tools/with-headless-audio.sh", "os/scripts/build-thin-apps.sh", "tools/apps/**", "tools/ci/__init__.py", "tools/ci/python.py", "tools/ci/runner_labels.py", "tools/ci/workspace_graph.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/thin-app/**", "Cargo.toml", "Cargo.lock"]
+outputs = ["/target/app-screenshots/**"]
+requires = ["arch=x86_64"]
+requirement = { cores = 16, memory = "32GiB" }
+cost = "heavy"
+timeout_secs = 5400
+default = false
+
 # The same build for an arm64 machine (a Snapdragon laptop): its binaries run only there.
 [[check]]
 name = "nested-session-arm64"

@@ -1,0 +1,30 @@
+# Store: catalogue views through the catalogue's actions. The catalogue
+# needs the network; the pictures show what the app shows without it.
+
+[[situation]]
+name = "home"
+title = "The home view"
+
+[[situation.steps]]
+invoke = { resource = "store.catalog", action = "show-view", args = { view = "home" } }
+
+[[situation]]
+name = "installed"
+title = "Installed apps"
+
+[[situation.steps]]
+invoke = { resource = "store.catalog", action = "show-view", args = { view = "installed" } }
+
+[[situation]]
+name = "updates"
+title = "Updates"
+
+[[situation.steps]]
+invoke = { resource = "store.catalog", action = "show-view", args = { view = "updates" } }
+
+[[situation]]
+name = "app-details"
+title = "One app's details"
+
+[[situation.steps]]
+invoke = { resource = "store.catalog", action = "show-details", args = { app = "so.tilo.notes" } }

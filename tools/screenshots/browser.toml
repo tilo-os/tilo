@@ -1,0 +1,32 @@
+# Browser: bookmarks and the library panes, through the browser's actions
+# (pages need the network).
+
+[[situation]]
+name = "bookmarks"
+title = "Bookmarks"
+
+[[situation.steps]]
+invoke = { resource = "browser.application", action = "add-bookmark", args = { url = "https://www.openstreetmap.org/", title = "OpenStreetMap" } }
+
+[[situation.steps]]
+invoke = { resource = "browser.application", action = "add-bookmark", args = { url = "https://en.wikipedia.org/wiki/Main_Page", title = "Wikipedia" } }
+
+[[situation.steps]]
+invoke = { resource = "browser.application", action = "add-bookmark", args = { url = "https://www.bbc.co.uk/food", title = "BBC Food" } }
+
+[[situation.steps]]
+invoke = { resource = "browser.bookmarks", action = "show-bookmarks" }
+
+[[situation]]
+name = "history"
+title = "History"
+
+[[situation.steps]]
+invoke = { resource = "browser.history", action = "show-history" }
+
+[[situation]]
+name = "downloads"
+title = "Downloads"
+
+[[situation.steps]]
+invoke = { resource = "browser.downloads", action = "show-downloads" }

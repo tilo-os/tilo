@@ -1,0 +1,23 @@
+# Disks: its tabs through the system's actions (no drives in a screenshot
+# run).
+
+[[situation]]
+name = "overview"
+title = "Overview"
+
+[[situation.steps]]
+invoke = { resource = "disks.system", action = "show-tab", args = { tab = "overview" } }
+
+[[situation]]
+name = "smart"
+title = "Drive health"
+
+[[situation.steps]]
+invoke = { resource = "disks.system", action = "show-tab", args = { tab = "smart" } }
+
+[[situation]]
+name = "partitions"
+title = "Partitions"
+
+[[situation.steps]]
+invoke = { resource = "disks.system", action = "show-tab", args = { tab = "partitions" } }

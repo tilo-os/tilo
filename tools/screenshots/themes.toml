@@ -1,0 +1,26 @@
+# Themes: the gallery and themes derived from the presets, through the
+# studio's actions.
+
+[[situation]]
+name = "gallery"
+title = "The theme gallery"
+
+[[situation]]
+name = "custom-themes"
+title = "Two custom themes beside the presets"
+
+[[situation.steps]]
+invoke = { resource = "themes.studio", action = "new-theme", args = { id = "forest-night", base = "dark-graphite" } }
+
+[[situation.steps]]
+invoke = { resource = "themes.studio", action = "new-theme", args = { id = "paper", base = "light" } }
+
+[[situation]]
+name = "light-variant"
+title = "A dark theme switched to light"
+
+[[situation.steps]]
+invoke = { resource = "themes.studio", action = "new-theme", args = { id = "harbour", base = "dark-cool" } }
+
+[[situation.steps]]
+invoke = { resource = "themes.studio", action = "switch-polarity", args = { theme = "harbour", dark = false } }

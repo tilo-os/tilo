@@ -1,0 +1,71 @@
+# Word processor: letters and reports written through the document's
+# actions.
+
+[[situation]]
+name = "cover-letter"
+title = "A cover letter in progress"
+
+[[situation.steps]]
+invoke = { resource = "word-processor.document", action = "append-paragraph", args = { text = "Dear Ms Okafor," } }
+
+[[situation.steps]]
+invoke = { resource = "word-processor.document", action = "append-paragraph", args = { text = "I am writing to apply for the position of product designer at Northwind Studio, which I saw advertised on your website last week." } }
+
+[[situation.steps]]
+invoke = { resource = "word-processor.document", action = "append-paragraph", args = { text = "For the past five years I have designed tools for small teams at a cooperative in Leipzig, most recently a shared calendar used by four hundred schools. I enjoy the slow part of the work as much as the fast one: sitting with teachers, watching where they hesitate, and taking things away until the hesitation goes." } }
+
+[[situation.steps]]
+invoke = { resource = "word-processor.document", action = "append-paragraph", args = { text = "Your studio's work on accessible public services is the reason I am writing. I would welcome the chance to talk about how I could contribute." } }
+
+[[situation.steps]]
+invoke = { resource = "word-processor.document", action = "append-paragraph", args = { text = "Yours sincerely," } }
+
+[[situation.steps]]
+invoke = { resource = "word-processor.document", action = "append-paragraph", args = { text = "Lena Hoffmann" } }
+
+[[situation]]
+name = "report-with-headings"
+title = "A short report with an outline"
+
+[[situation.steps]]
+invoke = { resource = "word-processor.document", action = "append-paragraph", args = { text = "Community garden: autumn report" } }
+
+[[situation.steps]]
+invoke = { resource = "word-processor.document", action = "append-paragraph", args = { text = "This season thirty-two households shared the plots on Kastanienallee. We harvested roughly 410 kilograms of vegetables, a third more than last year, and gave 60 kilograms to the food bank on Saturdays." } }
+
+[[situation.steps]]
+invoke = { resource = "word-processor.document", action = "append-paragraph", args = { text = "What went well: the new rain barrels covered all watering from June to August, and the Tuesday work evenings drew more people than ever." } }
+
+[[situation.steps]]
+invoke = { resource = "word-processor.document", action = "append-paragraph", args = { text = "What to change: the tool shed needs a second lock, and the compost bays should be turned every two weeks rather than monthly." } }
+
+[[situation.steps]]
+invoke = { resource = "word-processor.document", action = "append-paragraph", args = { text = "Next spring we plan to add two raised beds for members who cannot kneel, and a small seed library by the gate." } }
+
+[[situation.steps]]
+invoke = { resource = "word-processor.document", action = "outline" }
+
+[[situation]]
+name = "styles-and-ruler"
+title = "Meeting minutes with the styles panel and ruler"
+
+[[situation.steps]]
+invoke = { resource = "word-processor.document", action = "append-paragraph", args = { text = "Minutes of the tenants' meeting, 14 October" } }
+
+[[situation.steps]]
+invoke = { resource = "word-processor.document", action = "append-paragraph", args = { text = "Present: eighteen tenants and the building manager. The meeting opened at 19:00 in the courtyard room." } }
+
+[[situation.steps]]
+invoke = { resource = "word-processor.document", action = "append-paragraph", args = { text = "1. Heating: the boiler service is booked for 3 November; radiators will be bled the same day." } }
+
+[[situation.steps]]
+invoke = { resource = "word-processor.document", action = "append-paragraph", args = { text = "2. Bicycles: a second rack goes in by the side gate before winter." } }
+
+[[situation.steps]]
+invoke = { resource = "word-processor.document", action = "append-paragraph", args = { text = "3. Next meeting: second Tuesday of December." } }
+
+[[situation.steps]]
+invoke = { resource = "word-processor.document", action = "styles" }
+
+[[situation.steps]]
+invoke = { resource = "word-processor.document", action = "ruler" }

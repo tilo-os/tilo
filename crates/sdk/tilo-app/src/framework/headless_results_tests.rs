@@ -77,6 +77,7 @@ fn invoke(action: &str, args: Map<String, Value>, expected: Option<&str>) -> Act
         confirm: false,
         confirmation_phrase: None,
         expect_error: expected.map(str::to_owned),
+        bind: None,
     })
 }
 

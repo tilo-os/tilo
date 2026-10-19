@@ -1,0 +1,34 @@
+# Video player: the library's playlists and lists, through its actions.
+
+[[situation]]
+name = "playlists"
+title = "Playlists and the watch-later list"
+
+[[situation.steps]]
+invoke = { resource = "video-player.library", action = "create-playlist", args = { name = "Woodworking" } }
+
+[[situation.steps]]
+invoke = { resource = "video-player.library", action = "create-playlist", args = { name = "Lectures: climate science" } }
+
+[[situation.steps]]
+invoke = { resource = "video-player.library", action = "add-to-watch-later", args = { media_ref = "media:9c1f-joinery-basics", title = "Hand-cut dovetails, start to finish" } }
+
+[[situation.steps]]
+invoke = { resource = "video-player.library", action = "add-to-watch-later", args = { media_ref = "media:2be7-ipcc-ar6", title = "What the IPCC report says, in twenty minutes" } }
+
+[[situation.steps]]
+invoke = { resource = "video-player.library", action = "show-library", args = { tab = "queue" } }
+
+[[situation]]
+name = "recent"
+title = "The recent videos tab"
+
+[[situation.steps]]
+invoke = { resource = "video-player.library", action = "show-library", args = { tab = "recent" } }
+
+[[situation]]
+name = "shared"
+title = "The shared tab"
+
+[[situation.steps]]
+invoke = { resource = "video-player.library", action = "show-library", args = { tab = "shared" } }

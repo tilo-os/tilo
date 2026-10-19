@@ -1,0 +1,12 @@
+# Terminal: a session through its actions; the scratch profile's shell.
+
+[[situation]]
+name = "session"
+title = "A fresh session"
+
+[[situation]]
+name = "typed-command"
+title = "A command at the prompt, not yet run"
+
+[[situation.steps]]
+invoke = { resource = "terminal.session", action = "send", confirm = true, args = { text = "du -sh ~/Documents/* | sort -h | tail -5" } }

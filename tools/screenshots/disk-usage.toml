@@ -1,0 +1,13 @@
+# Disk usage: folders analyzed through the app's actions, in the run's own
+# scratch home.
+
+[[situation]]
+name = "start"
+title = "Choosing what to analyze"
+
+[[situation]]
+name = "home"
+title = "The home folder analyzed"
+
+[[situation.steps]]
+invoke = { resource = "disk-usage", action = "home" }

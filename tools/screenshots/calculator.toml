@@ -1,0 +1,47 @@
+# Calculator: a history of calculations and graphs, through the document's
+# actions.
+
+[[situation]]
+name = "history"
+title = "Calculations in the history"
+
+[[situation.steps]]
+invoke = { resource = "calculator.document", action = "commit-history", args = { expr = "1250 + 420 + 90 + 160", result = "1920" } }
+
+[[situation.steps]]
+invoke = { resource = "calculator.document", action = "commit-history", args = { expr = "1920 × 12", result = "23040" } }
+
+[[situation.steps]]
+invoke = { resource = "calculator.document", action = "commit-history", args = { expr = "23040 ÷ 52", result = "443.0769230769" } }
+
+[[situation.steps]]
+invoke = { resource = "calculator.document", action = "commit-history", args = { expr = "√2", result = "1.4142135624" } }
+
+[[situation.steps]]
+invoke = { resource = "calculator.document", action = "commit-history", args = { expr = "15% of 86.40", result = "12.96" } }
+
+[[situation.steps]]
+invoke = { resource = "calculator.document", action = "show-calculator" }
+
+[[situation]]
+name = "graph"
+title = "Two functions on the graph"
+
+[[situation.steps]]
+invoke = { resource = "calculator.document", action = "add-function", args = { formula = "sin(x)" } }
+
+[[situation.steps]]
+invoke = { resource = "calculator.document", action = "add-function", args = { formula = "x^2/4 - 1" } }
+
+[[situation.steps]]
+invoke = { resource = "calculator.document", action = "show-graph2d" }
+
+[[situation]]
+name = "surface"
+title = "A surface in the 3D graph"
+
+[[situation.steps]]
+invoke = { resource = "calculator.document", action = "add-surface", args = { formula = "sin(x) * cos(y)" } }
+
+[[situation.steps]]
+invoke = { resource = "calculator.document", action = "show-graph3d" }

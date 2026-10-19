@@ -1,0 +1,13 @@
+# Logs: the system journal through its actions, showing the machine the
+# shots run on.
+
+[[situation]]
+name = "journal"
+title = "The journal"
+
+[[situation]]
+name = "live-tail"
+title = "Following new entries"
+
+[[situation.steps]]
+invoke = { resource = "logs.journal", action = "set-live-tail", args = { enabled = true } }

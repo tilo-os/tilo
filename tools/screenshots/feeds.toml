@@ -1,0 +1,47 @@
+# Feeds: subscriptions and folders, through the library's actions. Fetching
+# needs the network; the pictures show the library as it is kept.
+
+[[situation]]
+name = "subscriptions"
+title = "Subscriptions filed into folders"
+
+[[situation.steps]]
+invoke = { resource = "feeds.library", action = "new-folder", args = { name = "News" }, bind = "news" }
+
+[[situation.steps]]
+invoke = { resource = "feeds.library", action = "new-folder", args = { name = "Design" }, bind = "design" }
+
+[[situation.steps]]
+invoke = { resource = "feeds.library", action = "new-folder", args = { name = "Cooking" }, bind = "cooking" }
+
+[[situation.steps]]
+invoke = { resource = "feeds.library", action = "add-subscription", args = { url = "https://www.theguardian.com/world/rss", folder = "{{news.resources.0|last}}" } }
+
+[[situation.steps]]
+invoke = { resource = "feeds.library", action = "add-subscription", args = { url = "https://feeds.npr.org/1001/rss.xml", folder = "{{news.resources.0|last}}" } }
+
+[[situation.steps]]
+invoke = { resource = "feeds.library", action = "add-subscription", args = { url = "https://alistapart.com/main/feed/", folder = "{{design.resources.0|last}}" } }
+
+[[situation.steps]]
+invoke = { resource = "feeds.library", action = "add-subscription", args = { url = "https://www.smashingmagazine.com/feed/", folder = "{{design.resources.0|last}}" } }
+
+[[situation.steps]]
+invoke = { resource = "feeds.library", action = "add-subscription", args = { url = "https://www.seriouseats.com/feeds/all", folder = "{{cooking.resources.0|last}}" } }
+
+[[situation]]
+name = "reader-settings"
+title = "Reading settings changed"
+
+[[situation.steps]]
+invoke = { resource = "feeds.library", action = "add-subscription", args = { url = "https://www.theguardian.com/world/rss" } }
+
+[[situation.steps]]
+invoke = { resource = "feeds.library", action = "reader-text-larger" }
+
+[[situation.steps]]
+invoke = { resource = "feeds.library", action = "reader-paper", args = { paper = "sepia" } }
+
+[[situation]]
+name = "empty"
+title = "The library before the first subscription"

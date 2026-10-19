@@ -1,0 +1,29 @@
+# Hex editor: real file headers loaded and edited through the document's
+# actions.
+
+[[situation]]
+name = "png-header"
+title = "The start of a PNG file"
+
+[[situation.steps]]
+invoke = { resource = "hex-editor.document", action = "load", args = { name = "sunset.png", bytes = "89 50 4e 47 0d 0a 1a 0a 00 00 00 0d 49 48 44 52 00 00 07 80 00 00 04 38 08 06 00 00 00 e8 d3 c1 43 00 00 00 01 73 52 47 42 00 ae ce 1c e9 00 00 00 04 67 41 4d 41 00 00 b1 8f 0b fc 61 05 00 00 00 09 70 48 59 73 00 00 0e c3 00 00 0e c3 01 c7 6f a8 64 00 00 20 00 49 44 41 54 78 5e ec bd 07 98 1c c5 b5 f6 7d 77 66 76 25 ad 72 ce 39 08 21 04 92 50 ce 39 07 21 44 ce 08 89 1c 4c 30 18 0c 36 60 1b 6c 30 26 1a db 60 63 b0 c1 18 6c 63 03 36 d8 18 13 0c 26 98 1c 4c 30 d9 80 c9 98 6c c0 06 6c 30 39 e7" } }
+
+[[situation]]
+name = "elf-header"
+title = "An ELF executable's header"
+
+[[situation.steps]]
+invoke = { resource = "hex-editor.document", action = "load", args = { name = "hello", bytes = "7f 45 4c 46 02 01 01 00 00 00 00 00 00 00 00 00 03 00 b7 00 01 00 00 00 40 10 00 00 00 00 00 00 40 00 00 00 00 00 00 00 a8 36 00 00 00 00 00 00 00 00 00 00 40 00 38 00 0d 00 40 00 1e 00 1d 00 06 00 00 00 04 00 00 00 40 00 00 00 00 00 00 00 40 00 00 00 00 00 00 00 40 00 00 00 00 00 00 00 d8 02 00 00 00 00 00 00 d8 02 00 00 00 00 00 00 08 00 00 00 00 00 00 00 03 00 00 00 04 00 00 00 18 03 00 00 00 00 00 00 18 03 00 00 00 00 00 00 18 03 00 00 00 00 00 00 1b 00 00 00 00 00 00 00 1b 00 00 00 00 00 00 00 01 00 00 00 00 00 00 00 2f 6c 69 62 2f 6c 64 2d 6c 69 6e 75 78 2d 61 61 72 63 68 36 34 2e 73 6f 2e 31 00" } }
+
+[[situation]]
+name = "edited-text-file"
+title = "A text file with a few bytes changed"
+
+[[situation.steps]]
+invoke = { resource = "hex-editor.document", action = "load", args = { name = "notes.txt", bytes = "53 68 6f 70 70 69 6e 67 3a 20 6f 61 74 20 6d 69 6c 6b 2c 20 62 72 65 61 64 2c 20 6c 65 6d 6f 6e 73 0a 43 61 6c 6c 20 74 68 65 20 64 65 6e 74 69 73 74 20 6f 6e 20 4d 6f 6e 64 61 79 0a 57 61 74 65 72 20 74 68 65 20 70 6c 61 6e 74 73 0a" } }
+
+[[situation.steps]]
+invoke = { resource = "hex-editor.document", action = "overwrite-bytes", args = { offset = 10, bytes = "4f 41 54" } }
+
+[[situation.steps]]
+invoke = { resource = "hex-editor.document", action = "insert-bytes", args = { offset = 33, bytes = "2c 20 63 6f 66 66 65 65" } }

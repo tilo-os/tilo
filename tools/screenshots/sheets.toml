@@ -1,0 +1,75 @@
+# Sheets: a household budget and a sales report, set up through the
+# workbook's actions.
+
+[[situation]]
+name = "monthly-budget"
+title = "A monthly budget with totals"
+
+[[situation.steps]]
+invoke = { resource = "sheets.workbook/sheets/00000000-0000-4000-8000-000000000001", action = "rename", args = { name = "Budget" } }
+
+[[situation.steps]]
+invoke = { resource = "sheets.workbook/sheets/00000000-0000-4000-8000-000000000001", action = "set-cells", args = { start = "A1", rows = [
+  ["Category", "Planned", "Spent", "Left"],
+  ["Rent", 1250, 1250, "=B2-C2"],
+  ["Groceries", 420, 386.4, "=B3-C3"],
+  ["Transport", 90, 74.5, "=B4-C4"],
+  ["Utilities", 160, 171.2, "=B5-C5"],
+  ["Eating out", 150, 98, "=B6-C6"],
+  ["Savings", 400, 400, "=B7-C7"],
+  ["Total", "=SUM(B2:B7)", "=SUM(C2:C7)", "=SUM(D2:D7)"],
+] } }
+
+[[situation.steps]]
+invoke = { resource = "sheets.workbook/sheets/00000000-0000-4000-8000-000000000001", action = "format-cells", args = { range = "A1:D1", bold = true } }
+
+[[situation.steps]]
+invoke = { resource = "sheets.workbook/sheets/00000000-0000-4000-8000-000000000001", action = "format-cells", args = { range = "B2:D8", format = "currency:EUR" } }
+
+[[situation.steps]]
+invoke = { resource = "sheets.workbook/sheets/00000000-0000-4000-8000-000000000001", action = "format-cells", args = { range = "A8:D8", bold = true } }
+
+[[situation]]
+name = "sales-with-a-chart"
+title = "Quarterly sales with a column chart"
+
+[[situation.steps]]
+invoke = { resource = "sheets.workbook/sheets/00000000-0000-4000-8000-000000000001", action = "rename", args = { name = "Sales" } }
+
+[[situation.steps]]
+invoke = { resource = "sheets.workbook/sheets/00000000-0000-4000-8000-000000000001", action = "set-cells", args = { start = "A1", rows = [
+  ["Region", "Q1", "Q2", "Q3", "Q4"],
+  ["North", 18200, 21450, 19800, 24300],
+  ["South", 15600, 16900, 18750, 20100],
+  ["East", 12400, 14800, 16300, 17900],
+  ["West", 20900, 19700, 22600, 26800],
+] } }
+
+[[situation.steps]]
+invoke = { resource = "sheets.workbook/sheets/00000000-0000-4000-8000-000000000001", action = "format-cells", args = { range = "A1:E1", bold = true } }
+
+[[situation.steps]]
+invoke = { resource = "sheets.workbook/sheets/00000000-0000-4000-8000-000000000001", action = "add-chart", args = { range = "A1:E5", kind = "column", title = "Sales by region" } }
+
+[[situation]]
+name = "comments-on-a-schedule"
+title = "A shift schedule with a comment thread"
+
+[[situation.steps]]
+invoke = { resource = "sheets.workbook/sheets/00000000-0000-4000-8000-000000000001", action = "rename", args = { name = "Shifts" } }
+
+[[situation.steps]]
+invoke = { resource = "sheets.workbook/sheets/00000000-0000-4000-8000-000000000001", action = "set-cells", args = { start = "A1", rows = [
+  ["Day", "Morning", "Afternoon", "Evening"],
+  ["Monday", "Amira", "Jonas", "Priya"],
+  ["Tuesday", "Wen", "Amira", "Jonas"],
+  ["Wednesday", "Priya", "Wen", "Amira"],
+  ["Thursday", "Jonas", "Priya", "Wen"],
+  ["Friday", "Amira", "Wen", "Jonas"],
+] } }
+
+[[situation.steps]]
+invoke = { resource = "sheets.workbook/sheets/00000000-0000-4000-8000-000000000001", action = "format-cells", args = { range = "A1:D1", bold = true } }
+
+[[situation.steps]]
+invoke = { resource = "sheets.workbook/sheets/00000000-0000-4000-8000-000000000001", action = "comment", args = { range = "C3", text = "Amira asked to swap Tuesday afternoon with Wen; fine by me if Wen agrees." } }

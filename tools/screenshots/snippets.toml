@@ -1,0 +1,40 @@
+# Snippets: a small library of saved text, through the library's actions.
+
+[[situation]]
+name = "library"
+title = "A library of everyday snippets"
+
+[[situation.steps]]
+invoke = { resource = "snippets.library", action = "new-snippet", args = { title = "Out of office reply" } }
+
+[[situation.steps]]
+invoke = { resource = "snippets.library", action = "new-snippet", args = { title = "Postal address" } }
+
+[[situation.steps]]
+invoke = { resource = "snippets.library", action = "new-snippet", args = { title = "Bank details for invoices" } }
+
+[[situation.steps]]
+invoke = { resource = "snippets.library", action = "new-snippet", args = { title = "Meeting link" } }
+
+[[situation.steps]]
+invoke = { resource = "snippets.library", action = "new-snippet", args = { title = "Thank-you note" } }
+
+[[situation]]
+name = "search"
+title = "Searching the snippets"
+
+[[situation.steps]]
+invoke = { resource = "snippets.library", action = "new-snippet", args = { title = "SQL: active customers this month" } }
+
+[[situation.steps]]
+invoke = { resource = "snippets.library", action = "new-snippet", args = { title = "Git: undo the last commit" } }
+
+[[situation.steps]]
+invoke = { resource = "snippets.library", action = "new-snippet", args = { title = "Shell: find large files" } }
+
+[[situation.steps]]
+invoke = { resource = "snippets.library", action = "search" }
+
+[[situation]]
+name = "empty"
+title = "The library before the first snippet"

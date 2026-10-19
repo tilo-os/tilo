@@ -1,0 +1,58 @@
+# Slides: decks built through the deck's actions.
+
+[[situation]]
+name = "pitch-deck"
+title = "A product pitch deck in the editor"
+
+[[situation.steps]]
+invoke = { resource = "slides.deck/slides/00000000-0000-4000-8000-000000000001", action = "set-text", args = { title = "Field Notes", body = "A notebook for the people who maintain city trees" } }
+
+[[situation.steps]]
+invoke = { resource = "slides.deck", action = "add-slide", args = { title = "The problem", body = "Inspections live on paper and in three spreadsheets\nNobody can see which trees were checked this year\nStorm damage reports arrive by phone", layout = "title_content" } }
+
+[[situation.steps]]
+invoke = { resource = "slides.deck", action = "add-slide", args = { title = "What we built", body = "Every tree on one map, with its history\nInspections recorded on site, offline\nReports shared with the parks office the moment they sync", layout = "title_content" } }
+
+[[situation.steps]]
+invoke = { resource = "slides.deck", action = "add-slide", args = { title = "Pilot results", layout = "section" } }
+
+[[situation.steps]]
+invoke = { resource = "slides.deck", action = "add-slide", args = { title = "Next steps", body = "Two more districts in spring\nOpen data export for researchers", layout = "title_content" } }
+
+[[situation]]
+name = "overview"
+title = "A lecture deck in the slide overview"
+
+[[situation.steps]]
+invoke = { resource = "slides.deck/slides/00000000-0000-4000-8000-000000000001", action = "set-text", args = { title = "Introduction to Bread", body = "Week 3: wild yeast" } }
+
+[[situation.steps]]
+invoke = { resource = "slides.deck", action = "add-slide", args = { title = "What a starter is", body = "Flour, water and time\nWild yeasts and lactic bacteria working together", layout = "title_content" } }
+
+[[situation.steps]]
+invoke = { resource = "slides.deck", action = "add-slide", args = { title = "Feeding schedule", body = "Morning: discard half, feed 1:1:1\nEvening: check for bubbles and a domed top", layout = "two_column" } }
+
+[[situation.steps]]
+invoke = { resource = "slides.deck", action = "add-slide", args = { title = "Hands-on", layout = "section" } }
+
+[[situation.steps]]
+invoke = { resource = "slides.deck", action = "add-slide", args = { title = "Shaping a boule", body = "Pre-shape, rest twenty minutes\nBuild tension, seam side up into the basket", layout = "title_content" } }
+
+[[situation.steps]]
+invoke = { resource = "slides.deck", action = "add-slide", args = { title = "Questions?", layout = "title" } }
+
+[[situation.steps]]
+invoke = { resource = "slides.deck", action = "overview" }
+
+[[situation]]
+name = "speaker-notes"
+title = "A slide with its speaker notes open"
+
+[[situation.steps]]
+invoke = { resource = "slides.deck/slides/00000000-0000-4000-8000-000000000001", action = "set-text", args = { title = "Annual report 2026", body = "Neighbourhood library association" } }
+
+[[situation.steps]]
+invoke = { resource = "slides.deck/slides/00000000-0000-4000-8000-000000000001", action = "open" }
+
+[[situation.steps]]
+invoke = { resource = "slides.deck", action = "open-notes", args = { slide = "00000000-0000-4000-8000-000000000001" } }

@@ -1,0 +1,81 @@
+# Calendar: a working week, the agenda and the task list, through the
+# calendar's actions. Dates follow the day the shots are taken.
+
+[[situation]]
+name = "week-with-events"
+title = "A working week with meetings and a dinner"
+
+[[situation.steps]]
+invoke = { resource = "calendar.calendar", action = "new-event", args = { event = { reminder = -1, title = "Team stand-up", start = "${MON+0}T09:30", end = "${MON+0}T09:45", location = "Room 2" } } }
+
+[[situation.steps]]
+invoke = { resource = "calendar.calendar", action = "new-event", args = { event = { reminder = -1, title = "Design review", start = "${MON+1}T10:00", end = "${MON+1}T11:30", location = "Studio", color = 1 } } }
+
+[[situation.steps]]
+invoke = { resource = "calendar.calendar", action = "new-event", args = { event = { reminder = -1, title = "Lunch with Amira", start = "${MON+2}T12:30", end = "${MON+2}T13:30", location = "Café Linde", color = 2 } } }
+
+[[situation.steps]]
+invoke = { resource = "calendar.calendar", action = "new-event", args = { event = { reminder = -1, title = "Quarterly planning", start = "${MON+3}T14:00", end = "${MON+3}T16:00", color = 4 } } }
+
+[[situation.steps]]
+invoke = { resource = "calendar.calendar", action = "new-event", args = { event = { reminder = -1, title = "Dentist", start = "${MON+4}T08:15", end = "${MON+4}T09:00", color = 3 } } }
+
+[[situation.steps]]
+invoke = { resource = "calendar.calendar", action = "new-event", args = { event = { reminder = -1, title = "Dinner at Jonas and Priya's", start = "${MON+5}T19:00", end = "${MON+5}T22:00", color = 5 } } }
+
+[[situation.steps]]
+invoke = { resource = "calendar.calendar", action = "show-week" }
+
+[[situation]]
+name = "agenda"
+title = "The agenda for the coming days"
+
+[[situation.steps]]
+invoke = { resource = "calendar.calendar", action = "new-event", args = { event = { reminder = -1, title = "Flight to Lisbon", start = "${TODAY+1}T16:20", end = "${TODAY+1}T18:40", location = "BER Terminal 1" } } }
+
+[[situation.steps]]
+invoke = { resource = "calendar.calendar", action = "new-event", args = { event = { reminder = -1, title = "Walking tour of Alfama", start = "${TODAY+2}T10:00", end = "${TODAY+2}T12:00", location = "Largo das Portas do Sol", color = 2 } } }
+
+[[situation.steps]]
+invoke = { resource = "calendar.calendar", action = "new-event", args = { event = { reminder = -1, title = "Belém", start = "${TODAY+3}T00:00", end = "${TODAY+3}T23:59", all_day = true, color = 1 } } }
+
+[[situation.steps]]
+invoke = { resource = "calendar.calendar", action = "new-event", args = { event = { reminder = -1, title = "Train back", start = "${TODAY+3}T17:05", end = "${TODAY+3}T19:30" } } }
+
+[[situation.steps]]
+invoke = { resource = "calendar.calendar", action = "show-agenda" }
+
+[[situation]]
+name = "tasks"
+title = "Tasks in a project, some done"
+
+[[situation.steps]]
+invoke = { resource = "calendar.calendar", action = "new-task", args = { task = { title = "Book the room for the offsite", due = "${TODAY+2}", priority = 0 } } }
+
+[[situation.steps]]
+invoke = { resource = "calendar.calendar", action = "new-task", args = { task = { title = "Send the agenda to the team", due = "${TODAY+3}", priority = 1 } } }
+
+[[situation.steps]]
+invoke = { resource = "calendar.calendar", action = "new-task", args = { task = { title = "Order lunch for twelve", due = "${TODAY+6}", priority = 2 } } }
+
+[[situation.steps]]
+invoke = { resource = "calendar.calendar", action = "new-task", args = { task = { title = "Collect feedback from last offsite", done = true } } }
+
+[[situation.steps]]
+invoke = { resource = "calendar.calendar", action = "show-tasks" }
+
+[[situation]]
+name = "month"
+title = "A month with birthdays and a holiday"
+
+[[situation.steps]]
+invoke = { resource = "calendar.calendar", action = "new-event", args = { event = { reminder = -1, title = "Mum's birthday", start = "${TODAY+4}T00:00", end = "${TODAY+4}T23:59", all_day = true, color = 3 } } }
+
+[[situation.steps]]
+invoke = { resource = "calendar.calendar", action = "new-event", args = { event = { reminder = -1, title = "Holiday in the mountains", start = "${TODAY+9}T00:00", end = "${TODAY+13}T23:59", all_day = true, color = 1 } } }
+
+[[situation.steps]]
+invoke = { resource = "calendar.calendar", action = "new-event", args = { event = { reminder = -1, title = "Book club", start = "${TODAY+6}T19:30", end = "${TODAY+6}T21:00", color = 2 } } }
+
+[[situation.steps]]
+invoke = { resource = "calendar.calendar", action = "show-month" }

@@ -1,0 +1,35 @@
+# Diff and merge: two versions of a recipe compared and merged, through the
+# session's actions.
+
+[[situation]]
+name = "comparison"
+title = "Two versions of a recipe side by side"
+
+[[situation.steps]]
+invoke = { resource = "diffmerge.session", action = "open-comparison", args = { left_label = "recipe-v1.md", left = "# Lemon cake\n\n200 g butter\n200 g sugar\n4 eggs\n200 g flour\n1 lemon, zest and juice\n\nBake at 180 °C for 45 minutes.\nLet it cool before glazing.\n", right_label = "recipe-v2.md", right = "# Lemon drizzle cake\n\n225 g butter, soft\n225 g caster sugar\n4 eggs\n225 g self-raising flour\n2 lemons, zest and juice\n\nBake at 170 °C (fan) for 40 minutes.\nPour the drizzle over while the cake is warm.\n" } }
+
+[[situation.steps]]
+invoke = { resource = "diffmerge.session", action = "show-diff" }
+
+[[situation]]
+name = "merge"
+title = "A three-way merge with a conflict"
+
+[[situation.steps]]
+invoke = { resource = "diffmerge.session", action = "open-merge", args = { base_label = "base", base = "[server]\nport = 8080\nworkers = 4\nlog = \"info\"\n\n[cache]\nsize_mb = 256\n", ours_label = "ours", ours = "[server]\nport = 8080\nworkers = 8\nlog = \"info\"\n\n[cache]\nsize_mb = 512\n", theirs_label = "theirs", theirs = "[server]\nport = 9090\nworkers = 6\nlog = \"debug\"\n\n[cache]\nsize_mb = 256\n" } }
+
+[[situation.steps]]
+invoke = { resource = "diffmerge.session", action = "show-merge" }
+
+[[situation]]
+name = "next-change"
+title = "Stepping to the next change"
+
+[[situation.steps]]
+invoke = { resource = "diffmerge.session", action = "open-comparison", args = { left_label = "invitation-draft.txt", left = "Dear neighbours,\n\nWe are holding a street party on Saturday 12 July from 3 pm.\nPlease bring a dish to share.\nThe road will be closed from noon.\n\nBest wishes,\nThe residents' committee\n", right_label = "invitation-final.txt", right = "Dear neighbours,\n\nWe are holding a street party on Saturday 12 July from 2 pm.\nPlease bring a dish to share, and a chair if you can.\nThe road will be closed from 11 am to 10 pm.\nChildren's games start at 4 pm.\n\nBest wishes,\nThe residents' committee\n" } }
+
+[[situation.steps]]
+invoke = { resource = "diffmerge.session", action = "next-change" }
+
+[[situation.steps]]
+invoke = { resource = "diffmerge.session", action = "next-change" }

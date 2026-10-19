@@ -1,0 +1,30 @@
+# Camera: its modes through the camera's actions (no camera in a screenshot
+# run).
+
+[[situation]]
+name = "camera"
+title = "The camera"
+
+[[situation.steps]]
+invoke = { resource = "camera", action = "open-camera" }
+
+[[situation]]
+name = "scanner"
+title = "The code scanner"
+
+[[situation.steps]]
+invoke = { resource = "camera", action = "open-scanner" }
+
+[[situation]]
+name = "document"
+title = "The document scanner"
+
+[[situation.steps]]
+invoke = { resource = "camera", action = "open-document" }
+
+[[situation]]
+name = "settings"
+title = "Camera settings"
+
+[[situation.steps]]
+invoke = { resource = "camera", action = "open-settings" }

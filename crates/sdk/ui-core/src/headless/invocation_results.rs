@@ -186,6 +186,7 @@ mod tests {
             confirm: false,
             confirmation_phrase: Some("private confirmation".into()),
             expect_error: expected.map(str::to_owned),
+            bind: None,
         })
     }
     fn unknown() -> Action {

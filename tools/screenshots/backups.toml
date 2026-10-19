@@ -1,0 +1,13 @@
+# Backups: the workspace and its setup, through its actions (no backup
+# destination in a screenshot run).
+
+[[situation]]
+name = "overview"
+title = "The backup overview"
+
+[[situation]]
+name = "setup"
+title = "Setting up a backup"
+
+[[situation.steps]]
+invoke = { resource = "backups.workspace", action = "setup" }

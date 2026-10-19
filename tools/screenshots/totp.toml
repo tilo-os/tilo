@@ -1,0 +1,12 @@
+# Authenticator: the vault and a new account, through its actions.
+
+[[situation]]
+name = "empty"
+title = "No accounts yet"
+
+[[situation]]
+name = "add-account"
+title = "Adding an account"
+
+[[situation.steps]]
+invoke = { resource = "totp.vault", action = "add-account" }

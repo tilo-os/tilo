@@ -1,0 +1,30 @@
+# Containers: its sections through the engine's actions (the shots run
+# without Podman, so each says so).
+
+[[situation]]
+name = "containers"
+title = "Containers"
+
+[[situation.steps]]
+invoke = { resource = "containers.engine", action = "set-section", args = { section = "containers" } }
+
+[[situation]]
+name = "images"
+title = "Images"
+
+[[situation.steps]]
+invoke = { resource = "containers.engine", action = "set-section", args = { section = "images" } }
+
+[[situation]]
+name = "volumes"
+title = "Volumes"
+
+[[situation.steps]]
+invoke = { resource = "containers.engine", action = "set-section", args = { section = "volumes" } }
+
+[[situation]]
+name = "distrobox"
+title = "Distrobox"
+
+[[situation.steps]]
+invoke = { resource = "containers.engine", action = "set-section", args = { section = "distrobox" } }

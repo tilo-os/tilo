@@ -1,0 +1,12 @@
+# App publisher: the profile before and after a publisher key is made.
+
+[[situation]]
+name = "start"
+title = "Before a key exists"
+
+[[situation]]
+name = "key-created"
+title = "A publisher key created"
+
+[[situation.steps]]
+invoke = { resource = "publisher.profile", action = "create-key", confirm = true }

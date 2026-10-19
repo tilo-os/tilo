@@ -1,0 +1,19 @@
+# Books: the library and its reading settings, through the library's actions.
+
+[[situation]]
+name = "library"
+title = "The library"
+
+[[situation]]
+name = "reading-settings"
+title = "Reading settings"
+
+[[situation.steps]]
+invoke = { resource = "ebook.library/derived/settings", action = "settings" }
+
+[[situation]]
+name = "serif-font"
+title = "A reading font chosen"
+
+[[situation.steps]]
+invoke = { resource = "ebook.library/derived/settings/font:reading-literata", action = "open" }

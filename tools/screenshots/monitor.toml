@@ -1,0 +1,26 @@
+# System monitor: its tabs through the processes' actions, showing the
+# machine the shots run on.
+
+[[situation]]
+name = "processes"
+title = "The process list"
+
+[[situation.steps]]
+invoke = { resource = "monitor.processes", action = "show-tab", args = { tab = "processes" } }
+
+[[situation]]
+name = "resources"
+title = "Resource graphs"
+
+[[situation.steps]]
+invoke = { resource = "monitor.processes", action = "show-tab", args = { tab = "resources" } }
+
+[[situation]]
+name = "filtered"
+title = "Processes filtered by name"
+
+[[situation.steps]]
+invoke = { resource = "monitor.processes", action = "show-tab", args = { tab = "processes" } }
+
+[[situation.steps]]
+invoke = { resource = "monitor.processes", action = "filter", args = { query = "python" } }

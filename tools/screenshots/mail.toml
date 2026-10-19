@@ -1,0 +1,26 @@
+# Mail: folders and a draft, through the mailbox's actions. Accounts need a
+# server; the pictures show the mailbox kept on this device.
+
+[[situation]]
+name = "inbox"
+title = "The inbox"
+
+[[situation.steps]]
+invoke = { resource = "mail.mailbox/derived/folder:inbox", action = "open" }
+
+[[situation]]
+name = "draft"
+title = "A reply being written"
+
+[[situation.steps]]
+invoke = { resource = "mail.mailbox", action = "compose" }
+
+[[situation.steps]]
+invoke = { resource = "mail.mailbox", action = "start-draft-body", args = { text = "Hi Tomás,\n\nThanks for the tip about the bakery on Rua da Regueira; we went twice. Lisbon was wonderful, even in the rain on Sunday.\n\nAre you around in December? We could meet for coffee when you are in Berlin.\n\nLena\n\n> Do try the bakery on Rua da Regueira, the one with the blue tiles." } }
+
+[[situation]]
+name = "sent"
+title = "The sent folder"
+
+[[situation.steps]]
+invoke = { resource = "mail.mailbox/derived/folder:sent", action = "open" }

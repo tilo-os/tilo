@@ -1,0 +1,20 @@
+# PDF viewer: its panes through the document's actions (no document in a
+# fresh profile).
+
+[[situation]]
+name = "empty"
+title = "Before a document is opened"
+
+[[situation]]
+name = "sidebar"
+title = "The sidebar shown"
+
+[[situation.steps]]
+invoke = { resource = "pdf.document", action = "toggle-sidebar" }
+
+[[situation]]
+name = "pages"
+title = "The page list"
+
+[[situation.steps]]
+invoke = { resource = "pdf.document", action = "toggle-pages" }

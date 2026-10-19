@@ -1,0 +1,13 @@
+# Imager: writing an image, through the sources' actions (no drives in a
+# screenshot run).
+
+[[situation]]
+name = "start"
+title = "Choosing what to write"
+
+[[situation]]
+name = "choose-image"
+title = "Choosing an image"
+
+[[situation.steps]]
+invoke = { resource = "imager.sources", action = "choose-image" }

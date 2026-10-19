@@ -1,0 +1,13 @@
+# Messages: account setup and people, through the app's actions (no
+# messaging account in a screenshot run).
+
+[[situation]]
+name = "start"
+title = "Messages before an account is set up"
+
+[[situation]]
+name = "account-setup"
+title = "Setting up an account"
+
+[[situation.steps]]
+invoke = { resource = "tilo.messages", action = "open-account-setup" }

@@ -1,0 +1,32 @@
+# Typst editor: documents written through the workspace's actions, with
+# their preview.
+
+[[situation]]
+name = "letter"
+title = "A letter with its preview"
+
+[[situation.steps]]
+invoke = { resource = "typst-editor.workspace", action = "new-file", args = { name = "letter.typ", source = "#set page(paper: \"a4\", margin: 2.5cm)\n#set text(font: \"Libertinus Serif\", size: 11pt, lang: \"en\")\n\n#align(right)[\n  Lena Hoffmann \\\n  Kastanienallee 7 \\\n  10435 Berlin\n]\n\n#v(2em)\nCity Parks Office \\\nTree Care Department\n\n#v(1em)\n*Re: the plane trees on Kastanienallee*\n\nDear Dr Raman,\n\nthank you for the inspection last week. The residents were glad to hear that the three plane trees outside number 7 are healthy and only need their crowns lifted.\n\nWe would like to offer our help with watering during the summer. The community garden has two rain barrels and a group of volunteers on Tuesdays.\n\nKind regards,\n\nLena Hoffmann\n" } }
+
+[[situation.steps]]
+invoke = { resource = "typst-editor.workspace", action = "preview" }
+
+[[situation]]
+name = "math"
+title = "A worksheet with formulas"
+
+[[situation.steps]]
+invoke = { resource = "typst-editor.workspace", action = "new-file", args = { name = "worksheet.typ", source = "= Quadratic equations\n\nA quadratic equation has the form\n$ a x^2 + b x + c = 0, quad a != 0. $\n\nIts solutions are\n$ x_(1,2) = (-b plus.minus sqrt(b^2 - 4 a c)) / (2 a). $\n\n== Exercises\n\n+ Solve $x^2 - 5x + 6 = 0$.\n+ For which $k$ does $x^2 + k x + 9 = 0$ have exactly one solution?\n+ Show that $x^2 + x + 1 = 0$ has no real solutions.\n" } }
+
+[[situation.steps]]
+invoke = { resource = "typst-editor.workspace", action = "preview" }
+
+[[situation]]
+name = "editor-only"
+title = "The source without the preview"
+
+[[situation.steps]]
+invoke = { resource = "typst-editor.workspace", action = "new-file", args = { name = "notes.typ", source = "= Reading notes\n\n- _Piranesi_: the house as a mind; the tides as memory.\n- _The Dispossessed_: an ambiguous utopia, and the walls on both sides.\n" } }
+
+[[situation.steps]]
+invoke = { resource = "typst-editor.workspace", action = "editor" }

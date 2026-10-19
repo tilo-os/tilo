@@ -745,6 +745,88 @@ imported state, distinct from a seeded `--shots` fixture. The normal desktop's
 `tilo-control` already preserves returned action payloads; this option brings
 the standalone scenario driver to the same semantic result contract.
 
+An `invoke` that names `bind` keeps what the action answered, as
+`{"value": ..., "resources": [...]}`, and later steps use it with
+`{{name.path}}` in their `resource` or `args` (object keys and array indexes):
+a string that is exactly one placeholder becomes the bound value itself, a
+placeholder inside longer text its text, and a trailing `|last` keeps what
+follows the last `/` (the id at the end of an answered resource address,
+`{{folder.resources.0|last}}`). That is how a scenario opens the note it just
+created:
+
+```json
+[{"invoke": {"resource": "notes.notebook", "action": "new-note", "args": {"title": "Trip"}, "bind": "trip"}},
+ {"invoke": {"resource": "notes.notebook", "action": "open-note", "args": {"page": "{{trip.value.page}}"}}}]
+```
+
+`capture` takes pictures once every action ran: one object or an array of
+them, each with a `path` and optionally a shipped `theme` (`dark`, `light`,
+...) and a `viewport` (`[w, h]`, logical pixels). Each capture switches theme
+and size when it names them, lets the window settle (entrances finished,
+requested images loaded, as a person sees it a moment later) and writes the
+frame as a PNG through the offscreen renderer `--shots` uses:
+
+```json
+{"actions": [{"invoke": {"resource": "...", "action": "...", "args": {}}}],
+ "capture": [{"path": "out/week-dark-wide.png", "theme": "dark", "viewport": [1280, 800]},
+             {"path": "out/week-light-compact.png", "theme": "light", "viewport": [420, 800]}]}
+```
+
+`resources` writes the published resource tree after the actions ran: each
+resource's id, kind and label, its actions with their parameters (and why one
+is unavailable), and its children. It is what a scenario can `invoke`:
+
+```bash
+./target/debug/notes --headless-drive '{"resources":"/tmp/notes-resources.json"}'
+```
+
+### Screenshots of every app
+
+`tools/screenshots/run.py` photographs every app of the default collection in
+realistic situations, set up only through each app's actions. A plan per app,
+`tools/screenshots/<app>.toml`, lists situations; each is a name, a one-line
+title and the steps that reach it, in this grammar (`invoke`,
+`wait_for_named`, `expect`, `perform`; no clicks or keys):
+
+```toml
+[[situation]]
+name = "week-with-events"
+title = "A calendar week with events"
+
+[[situation.steps]]
+invoke = { resource = "calendar.calendar", action = "new-event", args = { event = { title = "Design review", start = "${MON+1}T10:00", end = "${MON+1}T11:00" } } }
+
+[[situation.steps]]
+invoke = { resource = "calendar.calendar", action = "show-week" }
+```
+
+Dates are written relative to the day of the run, so a week or an agenda has
+its content whenever the shots are taken: `${TODAY}`, `${TODAY+3}`, `${MON+2}`
+(this week's Wednesday).
+
+Each situation runs the app once, headless, in a fresh profile (its own HOME,
+XDG directories and runtime directory, no display, no session bus), and takes
+four pictures: dark and light, wide (1280x800) and compact (420x800). An app
+without a plan is photographed as it opens. One command builds every app on a
+t server, renders all of them there on the software renderer and downloads
+the result:
+
+```bash
+t outputs app-screenshots      # -> target/app-screenshots/<app>/<situation>-<theme>-<size>.png
+```
+
+Each app's directory holds `manifest.json` (its situations, titles and
+pictures) and `resources.json` (what its plan can invoke); `summary.json` at
+the top lists every situation that failed, with the end of its log, and
+`<situation>.log` beside the pictures has the whole log. With a build of the
+apps at hand (`tools/screenshots/build.sh DIR` makes one), the runner works
+locally too, one app or all; on a laptop take the GPU lock:
+
+```bash
+flock ~/TiloData/.gpu-lock tools/screenshots/run.py --bin-dir DIR/bin --lib-dir DIR/lib \
+    --out target/app-screenshots --apps "notes calendar"
+```
+
 From Rust, `Driver::invoke_action` is the same call, and
 `Driver::deliver_external` delivers a `UserEvent::External` payload the way
 the live host does. `crates/session/installer/tests/headless_wizard.rs` runs
