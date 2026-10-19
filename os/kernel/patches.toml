@@ -1,0 +1,101 @@
+# Every patch in os/kernel/patches/: where it stands upstream, and the Fedora
+# kernel these statuses were last checked against. os/kernel/check-patches.py
+# holds the record to the directory, and in the kernel build fails once the
+# buildroot's Fedora kernel is a release that already carries a patch merged
+# upstream: drop the patch and its entry then.
+#
+# `merged` is the first mainline release (tag) that contains the patch, and
+# `commit` the mainline commit. A patch without `merged` is not in mainline;
+# `upstream` says why it is carried and where it stands.
+
+fedora_kernel = "kernel-7.2.10-200.fc44"
+
+[[patch]]
+file = "0001-octeontx2-gate-cn20k-debugfs.patch"
+upstream = "Tilo's own build fix, not posted; mainline v7.3 still builds cn20k/debugfs.o unconditionally"
+
+[[patch]]
+file = "0002-btrfs-verity-verify-completed-range.patch"
+upstream = "Tilo's own fix, not posted; mainline v7.3 still verifies the whole folio"
+
+[[patch]]
+file = "0003-virtio-gpu-do-not-block-a-dumb-flush-on-a-50-ms-fence.patch"
+upstream = "Tilo's own, not posted; mainline v7.3 still waits on the fence"
+
+[[patch]]
+file = "0004-irqchip-qcom-pdc-Restructure-version-support.patch"
+upstream = "X1E PDC pass-through series v4"
+merged = "v7.3"
+commit = "83e089ef0d4e045efa743dcbc8de5ea0a9e4195d"
+
+[[patch]]
+file = "0005-irqchip-qcom-pdc-Move-all-static-variables-to-struct.patch"
+upstream = "X1E PDC pass-through series v4"
+merged = "v7.3"
+commit = "60caa95aa14aed8d05abc03b70e2ff14e5ab6820"
+
+[[patch]]
+file = "0006-irqchip-qcom-pdc-Differentiate-between-direct-SPI-an.patch"
+upstream = "X1E PDC pass-through series v4"
+merged = "v7.3"
+commit = "45af2d61edf62938b021b86439a1dd797fd74a91"
+
+[[patch]]
+file = "0007-irqchip-qcom-pdc-Configure-PDC-to-pass-through-mode.patch"
+upstream = "X1E PDC pass-through series v4"
+merged = "v7.3"
+commit = "ad01c2b2f29163ca0bbe1fd4f9343fbc5119c239"
+
+[[patch]]
+file = "0008-irqchip-qcom-pdc-Fix-kernel-doc-for-qcom_pdc_gic_sec.patch"
+upstream = "fix-up of the PDC series"
+merged = "v7.3"
+commit = "d307a7e7d9395875022ef89e6179118afb66eca8"
+
+[[patch]]
+file = "0009-pinctrl-qcom-Acknowledge-IRQs-for-PDC-interrupt-cont.patch"
+upstream = "X1E PDC pass-through series v4"
+merged = "v7.3"
+commit = "f790ea0b699d95d18572979b1bc1673d8f31eb3c"
+
+[[patch]]
+file = "0010-Revert-pinctrl-qcom-x1e80100-Bypass-PDC-wakeup-paren.patch"
+upstream = "X1E PDC pass-through series v4"
+merged = "v7.3"
+commit = "77fbc756d9cbe53a9496cb2c53ae209d37d5af2d"
+
+[[patch]]
+file = "0011-arm64-dts-qcom-x1e80100-Add-deepest-idle-state.patch"
+upstream = "X1E PDC pass-through series v5"
+merged = "v7.3"
+commit = "95f827ceb21e2885f40eec5d93a340abbcc22d13"
+
+[[patch]]
+file = "0012-PCI-Add-support-for-PCIe-WAKE-interrupt.patch"
+upstream = "PCIe WAKE# series"
+merged = "v7.3"
+commit = "071e245ab749c52338ec4eb7fe0a9bb2cee97492"
+
+[[patch]]
+file = "0013-PM-runtime-Only-set-runtime_error-on-suspend-callback.patch"
+upstream = "runtime PM fix"
+merged = "v7.3"
+commit = "eef1d74bf88f120f4f63a83a5201fcda67bf3b52"
+
+[[patch]]
+file = "0014-drm-msm-a6xx-Increase-GMU-FW-init-timeout.patch"
+upstream = "msm GMU fix"
+merged = "v7.3"
+commit = "ba970587a0e1203b6a0934b5b9174886b4c4d24c"
+
+[[patch]]
+file = "0015-drm-msm-fail-the-submits-of-a-GPU-that-cannot-be-recovered.patch"
+upstream = "Tilo's own, not posted; mainline v7.3 still replays submits after a failed recovery"
+
+[[patch]]
+file = "0016-firmware-qcom-set-up-mssecapp-and-report-the-TPM-type.patch"
+upstream = "Tilo's own, not posted; mainline v7.3 has no mssecapp client"
+
+[[patch]]
+file = "0017-tpm-add-a-driver-for-the-TPM-behind-Qualcomm-mssecapp.patch"
+upstream = "Tilo's own, not posted; mainline v7.3 has no driver for it"

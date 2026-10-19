@@ -167,6 +167,8 @@ RUN sh /work/kernel-build-support.sh signing-key "$(uname -m)" /work/module-sign
 COPY os/kernel/config-fragments/ /work/kernel-config/
 COPY os/kernel/check-config.py /work/check-config.py
 COPY os/kernel/patches/ /work/kernel-patches/
+COPY os/kernel/patches.toml /work/kernel-patches.toml
+COPY os/kernel/check-patches.py /work/check-patches.py
 
 # Patches, the libcrypto-free signing shim, the fragment merge and every
 # required-option check (build-support.sh prepare-source).

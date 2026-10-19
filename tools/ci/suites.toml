@@ -115,6 +115,7 @@ suites = [
   "os/dev/test-install-copy-scratch-cleanup.sh",
   "os/dev/test-install-copy-scratch.py",
   "os/kernel/tests/test-cc-wrapper.sh",
+  "os/kernel/tests/test_check_patches.py",
   "os/kernel/tests/test_preprocessing_wrapper.py",
   "os/kernel/tests/test-signing-identity.py",
   "os/tests/composefs_digest_parse.sh",
