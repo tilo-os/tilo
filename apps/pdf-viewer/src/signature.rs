@@ -39,7 +39,10 @@ impl Stroke {
     pub fn points(&self) -> Vec<(f64, f64)> {
         self.xy
             .chunks_exact(2)
-            .map(|pair| (pair[0], pair[1]))
+            .filter_map(|pair| match *pair {
+                [x, y] => Some((x, y)),
+                _ => None,
+            })
             .collect()
     }
 }

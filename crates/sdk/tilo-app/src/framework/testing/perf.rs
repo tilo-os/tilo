@@ -101,7 +101,12 @@ impl Report {
         let frames = self.frames.len();
         let steps = u64::try_from(self.samples.len().max(1)).unwrap_or(1);
         let per_step = |pass: fn(&ui_core::profiling::FrameTiming) -> u64| {
-            self.frames.iter().map(pass).sum::<u64>() / steps
+            self.frames
+                .iter()
+                .map(pass)
+                .sum::<u64>()
+                .checked_div(steps)
+                .unwrap_or(0)
         };
         eprintln!(
             "perf {} passes per step ({frames} frames): sync={}us build={}us apply={}us draw={}us event={}us resources={}us",
@@ -170,7 +175,7 @@ pub fn measure<A: ResourceApp>(
     for index in 0..steps {
         let start = ui_core::time::now();
         let ((), scopes) = tilo_resource::profiling::observe(|| {
-            step(app, warm + index);
+            step(app, warm.saturating_add(index));
             app.idle();
         });
         report
@@ -238,7 +243,7 @@ pub fn scroll<A: ResourceApp>(app: &mut HeadlessApp<A>, at: (f64, f64), steps: u
     let half = steps / 2;
     measure(app, "scroll step", (4, steps), |app, index| {
         // The warm notches go down, so the measured ones start mid-way.
-        let down = index < 4 + half;
+        let down = index < half.saturating_add(4);
         app.harness().scroll(0.0, if down { -1.0 } else { 1.0 });
     })
 }
@@ -337,11 +342,16 @@ pub fn switch_views<A: ResourceApp>(
         "a view switch needs two views, found {targets:?}"
     );
     let at: Vec<(f64, f64)> = targets.iter().map(|target| target.at).collect();
-    measure(app, label, (at.len(), at.len() * rounds), |app, index| {
-        if let Some(&(x, y)) = at.get(index % at.len()) {
-            app.harness().click_at(x, y);
-        }
-    })
+    measure(
+        app,
+        label,
+        (at.len(), at.len().saturating_mul(rounds)),
+        |app, index| {
+            if let Some(&(x, y)) = at.get(index.checked_rem(at.len()).unwrap_or(0)) {
+                app.harness().click_at(x, y);
+            }
+        },
+    )
 }
 
 /// Clicks at `at` that change nothing an app shows: an empty spot. What
