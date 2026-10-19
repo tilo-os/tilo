@@ -482,7 +482,7 @@ mod tests {
     fn shipped_system_apps_carry_their_german_names() {
         for (app, german) in [
             ("file-explorer", "Dateien"),
-            ("settings", "Persönliche Einstellungen"),
+            ("settings", "Einstellungen"),
             ("notes", "Notizen"),
         ] {
             let manifest = read_manifest(&repo().join("apps").join(app).join("tilo-app.toml"))
