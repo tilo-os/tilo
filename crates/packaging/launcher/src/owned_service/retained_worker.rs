@@ -378,10 +378,10 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     #[test]
     fn held_entry_walk_refuses_symlink_and_writable_parent() {
-        assert_eq!(
-            rustix::process::geteuid().as_raw(),
-            0,
-            "actual protected original worker fixture requires root"
+        tilo_test_env::require_capability!(
+            Chown,
+            tilo_test_env::switch_identity(65534),
+            "the protected worker fixture is a root-owned tree under /run"
         );
         let fixture = tempfile::Builder::new()
             .permissions(std::fs::Permissions::from_mode(0o700))

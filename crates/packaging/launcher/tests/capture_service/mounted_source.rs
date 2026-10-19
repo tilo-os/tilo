@@ -118,14 +118,14 @@ fn mounted_inputs(
 #[test]
 fn signed_original_mounted_roots_project_before_caller_drop_and_close_all_inputs() {
     const CHILD: &str = "TILO_MOUNTED_READER_CHILD";
+    tilo_test_env::require_capability!(
+        Chown,
+        tilo_test_env::switch_identity(65534),
+        "the mounted reader mounts roots as root in a mount namespace of its own"
+    );
     if run_mounted_child(CHILD) {
         return;
     }
-    assert_eq!(
-        rustix::process::geteuid().as_raw(),
-        0,
-        "isolated native root prerequisite required"
-    );
     let temporary = tempfile::Builder::new()
         .prefix("tilo-mounted-reader-")
         .tempdir_in("/run")

@@ -908,10 +908,10 @@ mod selected_permit_tests {
 
     #[test]
     fn actual_sealed_permit_digest_refuses_wrong_source_owner_and_nonsealed_file() {
-        assert_eq!(
-            rustix::process::geteuid().as_raw(),
-            0,
-            "root-owned sealed descriptor fixture requires root"
+        tilo_test_env::require_capability!(
+            Chown,
+            tilo_test_env::switch_identity(65534),
+            "the sealed descriptor fixture is owned by root and another user"
         );
         let record = SelectedReplacementPermitRecord {
             schema: 2,
