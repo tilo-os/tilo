@@ -1177,6 +1177,10 @@ struct JsVoiceParticipant {
     user: String,
     namespace: String,
     publishes: bool,
+    /// Its camera is on.
+    camera: bool,
+    /// It shares a screen.
+    screen: bool,
 }
 
 fn voice_participants(
@@ -1189,6 +1193,8 @@ fn voice_participants(
             user: hex::encode(participant.user_public_key),
             namespace: participant.namespace,
             publishes: participant.publishes,
+            camera: participant.showing.camera,
+            screen: participant.showing.screen,
         })
         .collect()
 }
@@ -1934,6 +1940,23 @@ impl WasmPeer {
     #[wasm_bindgen(js_name = voiceLeave)]
     pub fn voice_leave(&self, room: &str) -> Result<(), JsError> {
         self.handle.voice_leave(workspace(room)?).map_err(js_error)
+    }
+
+    /// Show this session's camera (`camera`) or a shared screen (`screen`)
+    /// besides its voice in the call of `room`, or stop: everyone in the
+    /// call learns it from the room.
+    ///
+    /// # Errors
+    ///
+    /// Throws for a malformed room or a closed session.
+    #[wasm_bindgen(js_name = voiceShow)]
+    pub fn voice_show(&self, room: &str, camera: bool, screen: bool) -> Result<(), JsError> {
+        self.handle
+            .voice_show(
+                workspace(room)?,
+                tilo_relay_protocol::voice::Showing { camera, screen },
+            )
+            .map_err(js_error)
     }
 
     /// Call events since the last call, as a JSON array of `{kind: 'calls',

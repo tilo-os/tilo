@@ -519,6 +519,29 @@ impl RelayCoeditSession {
             .map_err(|_| CoeditError::Disconnected)
     }
 
+    /// Say what `participation` in `call` shows besides its voice from now
+    /// on (its camera, a shared screen). Not answered: the call's next grant
+    /// and call list carry it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoeditError::Disconnected`] if the connection is gone.
+    pub fn voice_show(
+        &self,
+        call: [u8; 32],
+        participation: [u8; 32],
+        showing: tilo_relay_protocol::voice::Showing,
+    ) -> Result<(), CoeditError> {
+        self.client
+            .send(Envelope::VoiceShow {
+                workspace_id: self.workspace_id,
+                call,
+                participation,
+                showing,
+            })
+            .map_err(|_| CoeditError::Disconnected)
+    }
+
     /// End `participation` in `call`.
     ///
     /// # Errors

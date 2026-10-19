@@ -296,7 +296,8 @@ pub const FEATURE_COMPACTION: u64 = 2;
 /// The host governs calls in its rooms: it accepts
 /// [`crate::transport::Envelope::VoiceCall`],
 /// [`crate::transport::Envelope::VoiceJoin`],
-/// [`crate::transport::Envelope::VoiceLeave`] and
+/// [`crate::transport::Envelope::VoiceLeave`],
+/// [`crate::transport::Envelope::VoiceShow`] and
 /// [`crate::transport::Envelope::VoiceCalls`] (see [`crate::voice`]).
 pub const FEATURE_VOICE: u64 = 4;
 

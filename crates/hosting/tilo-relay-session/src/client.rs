@@ -157,6 +157,7 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
         | Envelope::VoiceLeave { workspace_id, .. }
         | Envelope::VoiceCalls { workspace_id }
         | Envelope::VoiceCallList { workspace_id, .. }
+        | Envelope::VoiceShow { workspace_id, .. }
         | Envelope::OpenRecord { workspace_id, .. }
         | Envelope::RecordOpened { workspace_id, .. } => *workspace_id == scope.workspace_id,
         Envelope::Ping | Envelope::Pong => true,

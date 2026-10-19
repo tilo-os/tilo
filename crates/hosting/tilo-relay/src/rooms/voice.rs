@@ -42,7 +42,7 @@ use tilo_peer_state::room::media::{self, CallPhaseV1, DirectionsV1, RoomMediaV1}
 use tilo_peer_state::{GovernedAccess, StatePeer};
 use tilo_relay_protocol::voice::{
     self as protocol, CallOperation, CallState, CallSummary, Directions, PARTICIPATION_TTL,
-    VoiceGrant, VoiceParticipant,
+    Showing, VoiceGrant, VoiceParticipant,
 };
 use tilo_relay_protocol::{AuthenticatedPeer, Envelope};
 use tokio::sync::mpsc;
@@ -78,6 +78,8 @@ struct Participation {
     device: [u8; 32],
     user: [u8; 32],
     directions: Directions,
+    /// What it shows besides its voice, as it last said.
+    showing: Showing,
     seen: Instant,
     outbound: mpsc::Sender<Envelope>,
     token: [u8; 32],
@@ -101,6 +103,20 @@ struct Watcher {
     device: [u8; 32],
     user: [u8; 32],
     outbound: mpsc::Sender<Envelope>,
+}
+
+impl Participation {
+    /// What it shows that the others see: nothing while it may not publish.
+    const fn shown(&self) -> Showing {
+        if self.directions.publish {
+            self.showing
+        } else {
+            Showing {
+                camera: false,
+                screen: false,
+            }
+        }
+    }
 }
 
 impl State {
@@ -152,6 +168,7 @@ impl Calls {
                 user_public_key: participation.user,
                 namespace: protocol::namespace(&participation.call, other),
                 publishes: participation.directions.publish,
+                showing: participation.shown(),
             })
             .collect();
         participants.sort_by(|a, b| a.namespace.cmp(&b.namespace));
@@ -401,6 +418,7 @@ fn call_list(state: &State, policy: &Policy) -> Vec<CallSummary> {
                     user_public_key: participation.user,
                     namespace: protocol::namespace(call, id),
                     publishes: participation.directions.publish,
+                    showing: participation.shown(),
                 })
                 .collect();
             participants.sort_by(|a, b| a.namespace.cmp(&b.namespace));
@@ -889,6 +907,7 @@ impl Rooms {
                     device: peer.device_public_key,
                     user: peer.user_public_key,
                     directions,
+                    showing: Showing::default(),
                     seen: Instant::now(),
                     outbound,
                     token: [0; 32],
@@ -1024,6 +1043,36 @@ impl Rooms {
             drop(state);
             self.tell_call_lists();
         }
+    }
+
+    /// Record what `participation` of `peer` in `call` shows besides its
+    /// voice; when that changed, the call's participants get their grants
+    /// again and the room's call list watchers the new list.
+    pub(crate) fn voice_show(
+        &self,
+        peer: &AuthenticatedPeer,
+        call: [u8; 32],
+        participation: [u8; 32],
+        showing: Showing,
+    ) {
+        let calls = &self.inner.calls;
+        let mut state = calls.state();
+        let Some(existing) = state
+            .participations
+            .get_mut(&participation)
+            .filter(|existing| existing.call == call && existing.device == peer.device_public_key)
+        else {
+            return;
+        };
+        if existing.showing == showing {
+            return;
+        }
+        existing.showing = showing;
+        let room = existing.room.clone();
+        calls.announce(&state, &[call]);
+        state.changed.insert(room);
+        drop(state);
+        self.tell_call_lists();
     }
 
     /// Re-derive the participations of `room` after a decision.

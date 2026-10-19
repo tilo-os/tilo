@@ -399,6 +399,7 @@ enum Command {
     VoiceCall(u64, [u8; 16], tilo_relay_protocol::voice::CallOperation),
     VoiceJoin(u64, [u8; 32]),
     VoiceLeave(u64),
+    VoiceShow(u64, tilo_relay_protocol::voice::Showing),
     LegacyInput(
         tilo_relay_protocol::legacy_window::InputRequest,
         InputCompletion,
@@ -912,6 +913,20 @@ impl PeerHandle {
     /// Returns an error once the session is closed.
     pub fn voice_leave(&self, workspace_id: u64) -> Result<(), String> {
         self.send(Command::VoiceLeave(workspace_id))
+    }
+
+    /// Show `showing` besides this session's voice in the call of
+    /// `workspace_id` (its camera, a shared screen).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn voice_show(
+        &self,
+        workspace_id: u64,
+        showing: tilo_relay_protocol::voice::Showing,
+    ) -> Result<(), String> {
+        self.send(Command::VoiceShow(workspace_id, showing))
     }
 
     /// Send input for a legacy window a member streams
@@ -1786,6 +1801,7 @@ impl Task {
             Command::VoiceCall(room, request, op) => self.voice_call(room, request, op, client),
             Command::VoiceJoin(workspace_id, call) => self.voice_join(workspace_id, call, client),
             Command::VoiceLeave(workspace_id) => self.voice_leave(workspace_id, client),
+            Command::VoiceShow(ws, showing) => self.voice_show(ws, showing, client),
             Command::Rooms(request, done) => {
                 Self::request_rooms(request, done, client);
                 true
@@ -1937,6 +1953,19 @@ impl Task {
             out.into_iter()
                 .all(|envelope| client.send(envelope).is_ok())
         })
+    }
+
+    /// Offline, the next connection's heartbeat says it.
+    fn voice_show(
+        &mut self,
+        workspace_id: u64,
+        showing: tilo_relay_protocol::voice::Showing,
+        client: Option<&Link>,
+    ) -> bool {
+        match (client, self.voice.show(workspace_id, showing)) {
+            (Some(client), Some(show)) => client.send(show).is_ok(),
+            _ => true,
+        }
     }
 
     fn voice_leave(&mut self, workspace_id: u64, client: Option<&Link>) -> bool {
