@@ -59,11 +59,19 @@ pub(crate) fn state(ws: u64) -> Option<RoomSyncState> {
     ROOMS.lock_recover().get(&ws).copied()
 }
 
-/// What an app window in the workspace `name`, on room topic `ws`, is told.
-pub(crate) fn told(ws: u64, name: &str) -> Option<ui::room_sync::RoomSync> {
-    state(ws).map(|state| ui::room_sync::RoomSync {
+/// What an app window in the workspace `name`, on room topic `ws`, is told,
+/// with whether the app may write the room now (`writable`). A room with no
+/// host still tells an app that answer, as a room synced as far as it goes.
+pub(crate) fn told(ws: u64, name: &str, writable: Option<bool>) -> Option<ui::room_sync::RoomSync> {
+    let state = match (state(ws), writable) {
+        (Some(state), _) => state,
+        (None, Some(_)) => RoomSyncState::Synced,
+        (None, None) => return None,
+    };
+    Some(ui::room_sync::RoomSync {
         state,
         workspace: name.to_owned(),
+        writable,
     })
 }
 
@@ -76,9 +84,14 @@ mod tests {
     fn a_room_is_connecting_until_its_first_sync_and_says_who_has_to_update() {
         const WS: u64 = 0x5eed_0001;
         assert_eq!(
-            told(WS, "Lounge"),
+            told(WS, "Lounge", None),
             None,
             "a room with no host is told nothing"
+        );
+        assert_eq!(
+            told(WS, "Lounge", Some(true)).map(|told| (told.state, told.writable)),
+            Some((RoomSyncState::Synced, Some(true))),
+            "but whether its app may write it"
         );
         connecting(WS);
         assert_eq!(state(WS), Some(RoomSyncState::Connecting));
@@ -89,10 +102,11 @@ mod tests {
         connecting(WS);
         synced(WS);
         assert_eq!(
-            told(WS, "Lounge"),
+            told(WS, "Lounge", Some(false)),
             Some(ui::room_sync::RoomSync {
                 state: RoomSyncState::Synced,
                 workspace: "Lounge".into(),
+                writable: Some(false),
             })
         );
         // Dialling again later, or a host gone to another version, does not
