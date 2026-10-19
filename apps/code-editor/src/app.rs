@@ -502,6 +502,11 @@ pub struct CodeApp {
     /// sidebar toggle, from the theme at layout time.
     header_h: f64,
     toggle_slot_w: f64,
+    /// Whether the last layout gave the file header's leading slot to the
+    /// sidebar toggle. The drawer learns the window's width only when it is
+    /// drawn, so a layout made before that (a phone-width window's first)
+    /// put the search button where the toggle is painted.
+    laid_out_toggle_in_strip: bool,
     /// Last cursor position, since `MouseInput` carries no coordinates.
     last_cursor: Point,
     panel_visible: bool,
@@ -825,9 +830,10 @@ impl Default for CodeApp {
 impl CodeApp {
     /// The editor with no project: what the app opens to when it was not given
     /// a path. There is nothing to show, and it says so rather than inventing a
-    /// project that does not exist on this machine.
+    /// project that does not exist on this machine. Files made before a
+    /// folder is opened belong to an untitled project, named as one.
     pub fn new() -> Self {
-        Self::from_session(Session::new(Project::new("No project")), None)
+        Self::from_session(Session::new(Project::new("Untitled")), None)
     }
 
     /// The editor over the bundled sample project, held in memory. Shots and
@@ -923,6 +929,7 @@ impl CodeApp {
                 .with_action("Open folder"),
             header_h: 0.0,
             toggle_slot_w: 0.0,
+            laid_out_toggle_in_strip: false,
             last_cursor: Point::ZERO,
             panel_visible: false,
             rect: Rect::ZERO,
@@ -2415,8 +2422,9 @@ impl CodeApp {
         self.toggle_slot_w = Self::toggle_slot_width(theme);
 
         let header_node = self.header.build_layout(taffy, theme, node_map);
+        self.laid_out_toggle_in_strip = self.toggle_in_tab_strip();
         if let Ok(existing) = taffy.style(header_node).cloned() {
-            let inset = if self.toggle_in_tab_strip() {
+            let inset = if self.laid_out_toggle_in_strip {
                 self.toggle_slot_w
             } else {
                 f64::from(spacing.s6)
@@ -3519,6 +3527,7 @@ impl Widget for CodeApp {
         // floating drawer computes its geometry in `draw` and needs no rebuild.
         std::mem::take(&mut self.structure_dirty)
             || self.sidebar_layout() == SplitLayout::Docked && self.drawer.is_animating()
+            || self.toggle_in_tab_strip() != self.laid_out_toggle_in_strip
     }
 
     fn mark_drawn(&mut self) {
