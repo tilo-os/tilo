@@ -106,6 +106,7 @@ pub fn review_local(
     let item = StoreItem {
         bot: None,
         awaiting_developer: false,
+        listing: crate::model::Listing::default(),
         id: package.id.clone(),
         name: package.name.clone().unwrap_or_else(|| package.id.clone()),
         description: ui::i18n!("store-package-local-description"),
@@ -304,6 +305,7 @@ type = "gui"
         let item = StoreItem {
             bot: None,
             awaiting_developer: false,
+            listing: crate::model::Listing::default(),
             id: manifest.package.id,
             name: "Import fixture".into(),
             description: "A signed test app".into(),

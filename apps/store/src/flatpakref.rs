@@ -99,6 +99,7 @@ impl FlatpakRef {
         StoreItem {
             bot: None,
             awaiting_developer: false,
+            listing: crate::model::Listing::default(),
             id: self.app_id,
             name: self.title,
             description: self.comment,

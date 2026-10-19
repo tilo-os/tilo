@@ -164,13 +164,16 @@ pub fn execute_with_host(
         (ActionKind::Remove, StoreSource::Tilo { .. }) => tilo_existing(host, item, |host, id| {
             host.remove(id).map(|()| "Removed app.".into())
         }),
-        (ActionKind::MarkInstalled, StoreSource::Tilo { .. }) => {
+        (ActionKind::MarkInstalled, StoreSource::Tilo { .. }) if item.installed.is_installed() => {
             tilo_existing(host, item, |host, id| {
-                host.pin(id, true).map(|()| "Marked installed.".into())
+                host.pin(id, true)
+                    .map(|()| ui::i18n!("store-kept", "name" => item.name.clone()))
             })
         }
+        (ActionKind::MarkInstalled, StoreSource::Tilo { .. }) => keep_new_tilo(host, item),
         (ActionKind::Unmark, StoreSource::Tilo { .. }) => tilo_existing(host, item, |host, id| {
-            host.pin(id, false).map(|()| "Unmarked app.".into())
+            host.pin(id, false)
+                .map(|()| ui::i18n!("store-released", "name" => item.name.clone()))
         }),
         (ActionKind::FlatpakInstall, StoreSource::Flathub | StoreSource::FlatpakRemote { .. }) => {
             let reference = match item.install_ref_path.as_deref() {
@@ -259,42 +262,14 @@ fn open_tilo(
     });
 
     if !already_cached {
-        // Need a download URL for the newest version.
+        let (registry_name, expected) = match install_expectation(item) {
+            Ok(found) => found,
+            Err(error) => return ActionOutcome::fail(error),
+        };
         let Some(version) = item.versions.first() else {
             return ActionOutcome::fail("registry entry has no version");
         };
-        let Some(root) = version
-            .root_hash_hex
-            .as_deref()
-            .filter(|root| root.len() == 64 && root.bytes().all(|byte| byte.is_ascii_hexdigit()))
-        else {
-            return ActionOutcome::fail("registry entry has an invalid package root");
-        };
-        let Some(publisher) = item.publisher_pubkey_hex.as_deref() else {
-            return ActionOutcome::fail("registry entry has no publisher identity");
-        };
-        let expected = match (format!("tapp:{root}").parse(), hex::decode(publisher)) {
-            (Ok(package_root), Ok(key)) if key.len() == 32 => {
-                let mut publisher = [0u8; 32];
-                publisher.copy_from_slice(&key);
-                app_host::install::InstallExpectation {
-                    package_root,
-                    publisher,
-                    app_id: item.id.clone(),
-                    version: version.version.clone(),
-                    size_bytes: version.size_bytes,
-                }
-            }
-            _ => {
-                return ActionOutcome::fail(
-                    "registry entry has an invalid package or publisher identity",
-                );
-            }
-        };
-        let StoreSource::Tilo { registry_name } = &item.source else {
-            return ActionOutcome::fail("This package has no Tilo repository.");
-        };
-        match host.install_offer(registry_name, &expected) {
+        match host.install_offer(&registry_name, &expected) {
             Ok(installed) => package_root = Some(installed),
             Err(error) => {
                 return ActionOutcome::fail(format!("{}: install refused: {error}", item.name));
@@ -328,6 +303,69 @@ fn open_tilo(
             app_id: item.id.clone(),
             package_root: Some(package_root.to_string()),
         }),
+    }
+}
+
+/// The repository and the exact signed identity of `item`'s newest version,
+/// which the host checks every byte it downloads against.
+fn install_expectation(
+    item: &StoreItem,
+) -> Result<(String, app_host::install::InstallExpectation), String> {
+    let version = item
+        .versions
+        .first()
+        .ok_or_else(|| "registry entry has no version".to_owned())?;
+    let root = version
+        .root_hash_hex
+        .as_deref()
+        .filter(|root| root.len() == 64 && root.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .ok_or_else(|| "registry entry has an invalid package root".to_owned())?;
+    let publisher = item
+        .publisher_pubkey_hex
+        .as_deref()
+        .ok_or_else(|| "registry entry has no publisher identity".to_owned())?;
+    let expected = match (format!("tapp:{root}").parse(), hex::decode(publisher)) {
+        (Ok(package_root), Ok(key)) if key.len() == 32 => {
+            let mut publisher = [0u8; 32];
+            publisher.copy_from_slice(&key);
+            app_host::install::InstallExpectation {
+                package_root,
+                publisher,
+                app_id: item.id.clone(),
+                version: version.version.clone(),
+                size_bytes: version.size_bytes,
+            }
+        }
+        _ => {
+            return Err("registry entry has an invalid package or publisher identity".into());
+        }
+    };
+    let StoreSource::Tilo { registry_name } = &item.source else {
+        return Err("This package has no Tilo repository.".into());
+    };
+    Ok((registry_name.clone(), expected))
+}
+
+/// Keep on this device, for a Tilo app not downloaded yet: download its
+/// newest version through the host's verified install and keep it, without
+/// opening it.
+fn keep_new_tilo(
+    host: Option<&app_host::client::BlockingClient>,
+    item: &StoreItem,
+) -> ActionOutcome {
+    let Some(host) = host else {
+        return ActionOutcome::fail("App service is unavailable; no host command was attempted.");
+    };
+    let (registry, expected) = match install_expectation(item) {
+        Ok(found) => found,
+        Err(error) => return ActionOutcome::fail(error),
+    };
+    match host
+        .install_offer(&registry, &expected)
+        .and_then(|installed| host.pin(installed, true))
+    {
+        Ok(()) => ActionOutcome::ok(ui::i18n!("store-kept", "name" => item.name.clone())),
+        Err(error) => ActionOutcome::fail(format!("{}: {error}", item.name)),
     }
 }
 
@@ -377,6 +415,7 @@ mod tests {
         StoreItem {
             bot: None,
             awaiting_developer: false,
+            listing: crate::model::Listing::default(),
             id: format!("so.tilo.{}", name.to_ascii_lowercase()),
             name: name.into(),
             description: String::new(),
@@ -409,6 +448,7 @@ mod tests {
         StoreItem {
             bot: None,
             awaiting_developer: false,
+            listing: crate::model::Listing::default(),
             id: format!("org.example.{name}"),
             name: name.into(),
             description: String::new(),

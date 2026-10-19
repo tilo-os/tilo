@@ -115,13 +115,106 @@ pub fn image_fetcher() -> Fetcher {
     })
 }
 
+/// Keep this much artwork on disk before the oldest files make room.
+const ARTWORK_CACHE_BYTES: u64 = 256 * 1024 * 1024;
+/// Check the artwork cache's size after this many new files.
+const EVICT_EVERY: usize = 64;
+
+/// The artwork cache under the Store's cache directory.
+fn artwork_dir() -> Option<std::path::PathBuf> {
+    crate::config::cache_dir().map(|dir| dir.join("artwork"))
+}
+
+/// `network` behind a disk cache in `dir`: artwork fetched once is read from
+/// disk afterwards, so icons and screenshots a window showed before appear
+/// at once, and only new ones wait for the network. Files are named by the
+/// BLAKE3 of their URL; the oldest are removed once the cache outgrows
+/// [`ARTWORK_CACHE_BYTES`].
+pub fn cached_fetcher(network: Fetcher, dir: Option<std::path::PathBuf>) -> Fetcher {
+    let written = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    Arc::new(move |url: &str| {
+        let Some(dir) = dir.as_ref() else {
+            return network(url);
+        };
+        let file = dir.join(blake3::hash(url.as_bytes()).to_hex().as_str());
+        if let Ok(metadata) = std::fs::metadata(&file)
+            && metadata.len() > 0
+            && metadata.len() <= MAX_ARTWORK_BYTES
+            && let Ok(bytes) = std::fs::read(&file)
+        {
+            return Some(bytes);
+        }
+        let bytes = network(url)?;
+        if tilo_files::native::atomic::write_creating_parent(&file, &bytes).is_ok()
+            && written
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                .is_multiple_of(EVICT_EVERY)
+        {
+            evict_oldest(dir, ARTWORK_CACHE_BYTES);
+        }
+        Some(bytes)
+    })
+}
+
+/// Remove the least recently written files in `dir` until it holds at most
+/// `budget` bytes.
+fn evict_oldest(dir: &std::path::Path, budget: u64) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<(std::time::SystemTime, u64, std::path::PathBuf)> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let metadata = entry.metadata().ok()?;
+            metadata.is_file().then(|| {
+                (
+                    metadata.modified().unwrap_or(std::time::UNIX_EPOCH),
+                    metadata.len(),
+                    entry.path(),
+                )
+            })
+        })
+        .collect();
+    let mut total: u64 = files.iter().map(|(_, size, _)| *size).sum();
+    if total <= budget {
+        return;
+    }
+    files.sort_by_key(|(modified, _, _)| *modified);
+    for (_, size, path) in files {
+        if total <= budget {
+            break;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            total = total.saturating_sub(size);
+        }
+    }
+}
+
 pub fn image_store() -> ImageStore {
-    ImageStore::with_workers(&image_fetcher(), 4)
+    ImageStore::with_workers(&cached_fetcher(image_fetcher(), artwork_dir()), 4)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn artwork_is_fetched_once_and_then_read_from_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&calls);
+        let network: Fetcher = Arc::new(move |_url: &str| {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Some(vec![1, 2, 3])
+        });
+        let fetch = cached_fetcher(network, Some(dir.path().to_path_buf()));
+        assert_eq!(fetch("https://cdn.example/icon.png"), Some(vec![1, 2, 3]));
+        assert_eq!(fetch("https://cdn.example/icon.png"), Some(vec![1, 2, 3]));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        std::fs::write(dir.path().join("old"), vec![0u8; 64]).unwrap();
+        evict_oldest(dir.path(), 4);
+        assert!(std::fs::read_dir(dir.path()).unwrap().count() <= 1);
+    }
 
     /// Artwork URLs refuse local networks, ambient credentials and every non-public range.
     #[test]

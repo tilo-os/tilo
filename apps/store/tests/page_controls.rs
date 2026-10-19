@@ -1,6 +1,6 @@
 //! The controls of the Store's pages reach the same typed actions an agent
-//! calls: a remote's row action, the filter reset, and the catalogue's
-//! search launcher.
+//! calls: a remote's row action, clearing a search, and the catalogue's
+//! search field.
 
 #![allow(
     clippy::panic,
@@ -88,7 +88,7 @@ fn activate_row_action(
 fn a_remote_rows_action_invokes_the_remotes_own_remove_action() {
     let mut app = lay_out(staged("remotes"));
     let row = "store.remote:flathub";
-    let target = row_action_target(&*app, row, "Remove remote")
+    let target = row_action_target(&*app, row, "Remove repository")
         .expect("the remote row publishes its own Remove control");
     let (root, state) = Framed::split(&mut app);
     assert!(
@@ -115,32 +115,41 @@ fn a_remote_rows_persistent_toggle_invokes_its_own_disable_action() {
     assert_eq!(invocation.arguments["remote"], "remote:flathub");
 }
 
-/// While a query narrows the catalogue the page offers one way back, bound to the browse action.
+/// A search that finds nothing offers one way back, bound to the browse action.
 #[test]
-fn a_narrowed_catalogue_offers_to_clear_its_filters() {
-    let mut app = lay_out(staged("search"));
-    let clear = rect_of(&*app, "store.filters.clear");
+fn an_empty_search_offers_to_clear_it() {
+    let mut store = store::fixture::seeded_app();
+    store.set_query("zzzz-nothing-matches".into());
+    let mut app = lay_out(store);
+    let clear = rect_of(&*app, "store.empty.clear");
     click(&mut app, clear.center());
     let invocation = ui::widget::controls::take_control_invocation(&mut *app)
-        .expect("clearing filters is an exported action");
+        .expect("clearing the search is an exported action");
     assert_eq!(invocation.address.resource, store::Reports::KIND);
     assert_eq!(invocation.address.action, "clear-filters");
 
     let plain = lay_out(store::fixture::seeded_app());
     assert!(
-        !has_test_id(&*plain, "store.filters.clear"),
-        "an unfiltered catalogue has nothing to clear"
+        !has_test_id(&*plain, "store.empty.clear"),
+        "Discover has no search to clear"
     );
 }
 
-/// The magnifier opens the platform search for this app instead of a field of the Store's own.
+/// Search inside the Store is the window's filter field, showing the query
+/// the Store searches for; there is no field of the Store's own.
 #[test]
-fn the_catalogue_searches_through_the_platform_launcher() {
-    let mut app = lay_out(store::fixture::seeded_app());
-    let search = rect_of(&*app, "search-open");
-    click(&mut app, search.center());
-    let invocation = ui::widget::controls::take_control_invocation(&mut *app)
-        .expect("the launcher is an exported action");
-    assert_eq!(invocation.address.resource, "tilo.host:search");
-    assert_eq!(invocation.address.action, "open");
+fn the_catalogue_searches_through_the_windows_filter_field() {
+    let mut store = store::fixture::seeded_app();
+    store.set_query("Notes".into());
+    let app = lay_out(store);
+    let field = find_test_id(&*app, "store.search").expect("the window's filter field");
+    assert_eq!(
+        field.accessibility().and_then(|node| node.value).as_deref(),
+        Some("Notes"),
+        "the field shows the query the Store searched for"
+    );
+    assert!(
+        !has_test_id(&*app, "search-open"),
+        "no separate launcher stands beside the field"
+    );
 }

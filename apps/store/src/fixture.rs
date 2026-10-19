@@ -90,14 +90,21 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
                 digest: &str| StoreItem {
         bot: None,
         awaiting_developer: false,
+        listing: crate::model::Listing {
+            developer: "Tilo".into(),
+            updated_at_unix: 1_760_000_000,
+            ..crate::model::Listing::default()
+        },
         id: format!("so.tilo.{}", name.to_ascii_lowercase()),
         name: name.into(),
         description: description.into(),
-        tagline: if name == "Notes" {
-            "Ideas worth keeping, together.".into()
-        } else {
-            String::new()
-        },
+        tagline: match name {
+            "Notes" => "Notes you write alone or together",
+            "Terminal" => "A terminal for your shell and command-line tools",
+            "Files" => "Browses, organizes and shares files in your workspaces",
+            _ => "",
+        }
+        .into(),
         supported_languages: if name == "Notes" {
             vec!["en".into(), "es".into()]
         } else {
@@ -135,10 +142,39 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
                    homepage: &str| StoreItem {
         bot: None,
         awaiting_developer: false,
+        listing: crate::model::Listing {
+            developer: match name {
+                "Chess" => "The GNOME Project",
+                "Inkscape" => "Inkscape Project",
+                _ => "VideoLAN",
+            }
+            .into(),
+            license: match name {
+                "Inkscape" | "Chess" => "GPL-3.0-or-later",
+                _ => "GPL-2.0-or-later",
+            }
+            .into(),
+            updated_at_unix: match name {
+                "Chess" => 1_759_000_000,
+                "Inkscape" => 1_760_500_000,
+                _ => 1_758_000_000,
+            },
+            featured_rank: match name {
+                "Inkscape" => Some(0),
+                "VLC" => Some(1),
+                _ => Some(2),
+            },
+            capabilities: Vec::new(),
+        },
         id: id.into(),
         name: name.into(),
         description: description.into(),
-        tagline: String::new(),
+        tagline: match name {
+            "Chess" => "Play chess against a person or the computer",
+            "Inkscape" => "Vector graphics editor",
+            _ => "Plays video and audio files and streams",
+        }
+        .into(),
         supported_languages: Vec::new(),
         categories: vec![category.into()],
         icon_url: Some(format!("{ARTWORK_HOST}{name}.png")),
@@ -225,27 +261,61 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
             },
             "https://www.videolan.org/vlc",
         ),
+        fixture_bot(),
     ]
 }
 
-/// Deterministic catalogue data for capture scenarios and isolated owner review.
-pub(crate) fn capture_catalog(scenario: Option<&str>) -> Vec<StoreItem> {
-    let items = fixture_catalog();
-    if scenario != Some("paging") {
-        return items;
+/// A directory bot: it runs in a room on a schedule, reads Notes and posts
+/// a digest; it is never downloaded to the device.
+fn fixture_bot() -> StoreItem {
+    StoreItem {
+        id: "so.tilo.bot.notes-digest".into(),
+        name: "Notes digest".into(),
+        description: "Posts a summary of the notes your room changed each morning.".into(),
+        tagline: "Posts a morning summary of changed notes".into(),
+        supported_languages: Vec::new(),
+        categories: vec!["Bots".into()],
+        icon_url: None,
+        screenshot_urls: Vec::new(),
+        homepage_url: None,
+        source_url: None,
+        install_ref_path: None,
+        source: StoreSource::Tilo {
+            registry_name: "Tilo main".into(),
+        },
+        trust: StoreTrust::PublisherSigned,
+        versions: Vec::new(),
+        publisher_pubkey_hex: Some(TILO_PUBLISHER_KEY.into()),
+        installed: InstalledState::Not,
+        awaiting_developer: false,
+        listing: crate::model::Listing {
+            developer: "Tilo".into(),
+            ..crate::model::Listing::default()
+        },
+        bot: Some(crate::model::BotListing {
+            version: "1.0.0".into(),
+            triggers: vec!["schedule".into()],
+            apps: vec!["so.tilo.notes".into(), "so.tilo.chat".into()],
+            connectors: Vec::new(),
+            appearance: false,
+            artifact: registry_types::BotArtifact {
+                program_url: "https://apps.tilo.so/blobs/notes-digest".into(),
+                program_blake3_hex: "5e".repeat(32),
+                program_size_bytes: 2_048,
+                requires: registry_types::BotRequirements {
+                    connectors: Vec::new(),
+                    apps: vec!["so.tilo.chat".into(), "so.tilo.notes".into()],
+                    appearance: false,
+                    triggers: vec!["schedule".into()],
+                },
+            },
+        }),
     }
-    items
-        .iter()
-        .cycle()
-        .take(50)
-        .enumerate()
-        .map(|(index, original)| {
-            let mut item = original.clone();
-            item.id = format!("org.example.Capture{index}");
-            item.name = format!("Capture app {index:02}");
-            item
-        })
-        .collect()
+}
+
+/// Deterministic catalogue data for capture scenarios and isolated owner review.
+pub(crate) fn capture_catalog(_scenario: Option<&str>) -> Vec<StoreItem> {
+    fixture_catalog()
 }
 
 /// An app seeded with the fixture catalogue.

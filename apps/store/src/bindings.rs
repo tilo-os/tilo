@@ -63,6 +63,57 @@ pub fn draft_report(item: &StoreItem) -> Option<ActionBinding<()>> {
     bound("draft-report", arguments([("app_id", item.id.clone())]))
 }
 
+/// A control blocking `item` in the person's own block list.
+pub fn block(item: &StoreItem) -> Option<ActionBinding<()>> {
+    effect(&StoreEffect::BlockApp {
+        app: item.id.clone(),
+    })
+}
+
+/// A control lifting the person's own block on `item`; a policy's block
+/// stays.
+pub fn unblock(item: &StoreItem) -> Option<ActionBinding<()>> {
+    effect(&StoreEffect::UnblockApp {
+        app: item.id.clone(),
+    })
+}
+
+/// The views' segmented control: segment `index` shows that view.
+pub fn view() -> Option<ActionBinding<usize>> {
+    let spec = DOOR.actions.iter().find(|spec| {
+        spec.id
+            == StoreEffect::ShowView {
+                view: String::new(),
+            }
+            .id()
+    })?;
+    ActionBinding::new(&DOOR, spec, move |index: usize| {
+        arguments([(
+            "view",
+            crate::app::VIEWS
+                .get(index)
+                .copied()
+                .unwrap_or("home")
+                .to_owned(),
+        )])
+    })
+    .ok()
+}
+
+/// A control showing the view `name` (`home`, `updates`, ...).
+pub fn view_named(name: &str) -> Option<ActionBinding<()>> {
+    effect(&StoreEffect::ShowView {
+        view: name.to_owned(),
+    })
+}
+
+/// A control showing every app in `category`.
+pub fn category_named(category: &str) -> Option<ActionBinding<()>> {
+    effect(&StoreEffect::SetCategory {
+        category: category.to_owned(),
+    })
+}
+
 pub fn show_details(item: &StoreItem) -> Option<ActionBinding<()>> {
     effect(&StoreEffect::ShowDetails {
         app: item.id.clone(),
@@ -103,10 +154,6 @@ pub fn search() -> Option<ActionBinding<String>> {
     bound_text("set-search", "query")
 }
 
-pub fn source() -> Option<ActionBinding<String>> {
-    bound_text("set-source", "source")
-}
-
 pub fn category() -> Option<ActionBinding<String>> {
     bound_text("set-category", "category")
 }
@@ -125,7 +172,13 @@ mod tests {
     /// binds to effects, never to a document change.
     #[test]
     fn controls_bind_to_published_actions() {
-        for id in ["set-search", "set-source", "set-category", "clear-filters"] {
+        for id in [
+            "set-search",
+            "show-view",
+            "show-more",
+            "set-category",
+            "clear-filters",
+        ] {
             let spec = DOOR
                 .actions
                 .iter()
@@ -133,7 +186,8 @@ mod tests {
                 .unwrap_or_else(|| panic!("`{id}` is published"));
             assert_ne!(spec.kind, OperationKind::Document, "{id}");
         }
-        assert!(search().is_some() && source().is_some() && category().is_some());
+        assert!(search().is_some() && view().is_some() && category().is_some());
+        assert!(view_named("updates").is_some() && category_named("Graphics").is_some());
         assert!(effect(&StoreEffect::Refresh).is_some());
         assert!(effect(&StoreEffect::ShowCatalogue).is_some());
         let item = crate::fixture::fixture_catalog().remove(0);
@@ -146,6 +200,7 @@ mod tests {
             "open-app"
         );
         assert!(draft_report(&item).is_some());
+        assert!(block(&item).is_some() && unblock(&item).is_some());
         let name = ui::LocalState::new("flathub".to_owned());
         let url = ui::LocalState::new("https://dl.flathub.org/repo/".to_owned());
         assert!(add_remote(&name, &url).is_some());
