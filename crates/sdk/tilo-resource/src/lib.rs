@@ -756,8 +756,12 @@ pub mod __private {
         value_of_bytes(&bytes)
     }
 
+    /// The JSON value in `bytes`, parsed by code compiled once: a model
+    /// type's reader that parses its stored text calls this and then reads
+    /// itself out of the value, rather than compiling serde_json's whole
+    /// text parser again for every app it is instantiated in.
     #[inline(never)]
-    fn value_of_bytes(bytes: &[u8]) -> Result<serde_json::Value, serde_json::Error> {
+    pub(crate) fn value_of_bytes(bytes: &[u8]) -> Result<serde_json::Value, serde_json::Error> {
         serde_json::from_slice(bytes)
     }
 

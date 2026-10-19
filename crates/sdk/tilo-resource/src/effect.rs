@@ -194,8 +194,7 @@ pub trait Effect: Sized + 'static {
     /// # Errors
     /// Returns why the payload is not an effect of this vocabulary.
     fn from_payload(payload: &[u8]) -> Result<Self, String> {
-        let Payload { effect, args } =
-            tilo_actions::decode_json(payload).map_err(|error| error.to_string())?;
+        let Payload { effect, args } = decode_payload(payload)?;
         Self::decode(&effect, &args)
     }
 }
@@ -206,6 +205,13 @@ struct Payload {
     effect: String,
     #[serde(default)]
     args: serde_json::Map<String, serde_json::Value>,
+}
+
+/// The [`Payload`] in `payload`. Not generic over the effect, so its decoder
+/// is compiled once rather than in every app's `from_payload`.
+#[inline(never)]
+fn decode_payload(payload: &[u8]) -> Result<Payload, String> {
+    tilo_actions::decode_json(payload).map_err(|error| error.to_string())
 }
 
 /// How an encoded invocation's arguments are made of the caller's and the

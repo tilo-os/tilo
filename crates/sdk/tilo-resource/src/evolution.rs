@@ -150,7 +150,8 @@ where
     if text == "null" {
         return Ok(Some(None));
     }
-    serde_json::from_str(&text)
+    crate::__private::value_of_bytes(text.as_bytes())
+        .and_then(serde_json::from_value)
         .map(|value| Some(Some(value)))
         .map_err(|error| ModelError::invalid(error.to_string()).at(key))
 }
