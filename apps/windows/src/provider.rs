@@ -18,6 +18,12 @@ use crate::model::{
 const REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
 pub trait CompatibilityProvider: Send {
+    /// Whether the session's compatibility service answers. Without it
+    /// nothing can be installed or opened, and the window says so in the
+    /// person's words, with the reason behind "Details".
+    fn connected(&self) -> bool {
+        true
+    }
     /// Live UI controls emit inert resource/action addresses so the host can
     /// re-authorize, record, and dispatch them. Fixtures execute in-process.
     fn action_native_controls(&self) -> bool {
@@ -148,6 +154,10 @@ impl Default for EmptyProvider {
 }
 
 impl CompatibilityProvider for EmptyProvider {
+    fn connected(&self) -> bool {
+        false
+    }
+
     fn catalogue(&mut self) -> Catalogue {
         Catalogue {
             apps: Vec::new(),

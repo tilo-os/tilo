@@ -1428,14 +1428,25 @@ impl WindowsApp {
     }
 
     fn empty_page(&self, page: &mut PageParts) {
-        let message = if self.catalogue.vm.ready {
-            strings::t("windows-empty-body")
+        // Without the session's compatibility service nothing here works:
+        // say that, and what to do, with the service's reason behind
+        // "Details".
+        let state = if self.provider.borrow().connected() {
+            let message = if self.catalogue.vm.ready {
+                strings::t("windows-empty-body")
+            } else {
+                self.catalogue.vm.detail.clone()
+            };
+            ui::widget::EmptyState::new(strings::t("windows-empty-title"))
+                .with_icon(Icon::AppWindow)
+                .with_message(message)
         } else {
-            self.catalogue.vm.detail.clone()
+            ui::widget::EmptyState::new(strings::t("windows-service-missing-title"))
+                .with_icon(Icon::AppWindow)
+                .with_message(strings::t("windows-service-missing-body"))
+                .with_details(self.catalogue.vm.detail.clone())
         };
-        page.head.push(Box::new(
-            ui::widget::EmptyState::new(strings::t("windows-empty-title")).with_message(message),
-        ));
+        page.head.push(Box::new(state));
     }
 
     #[allow(
