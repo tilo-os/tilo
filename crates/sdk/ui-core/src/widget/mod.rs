@@ -172,6 +172,25 @@ pub fn layout_rect(
     placed(&taffy.layout(node).copied().unwrap_or_default(), origin)
 }
 
+/// Solve the layout of the tree under `root` within `available`: what
+/// `TaffyTree::compute_layout` does, for a widget or an app that lays a
+/// panel out in a tree of its own.
+///
+/// Call this rather than the tree's own method. That method is generic, so
+/// every app calling it compiled Taffy's flexbox, grid and block solvers
+/// again (about 110 KB); this one is compiled once, into the toolkit.
+///
+/// # Errors
+///
+/// Returns the solver's error when Taffy rejects the tree.
+pub fn solve_layout(
+    taffy: &mut TaffyTree<()>,
+    root: NodeId,
+    available: taffy::Size<taffy::AvailableSpace>,
+) -> Result<(), taffy::TaffyError> {
+    taffy.compute_layout(root, available)
+}
+
 /// Implements [`Widget::apply_layout`] and [`Widget::get_rect`] for a widget
 /// that keeps the box layout gives it in `self.rect`.
 #[macro_export]

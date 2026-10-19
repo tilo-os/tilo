@@ -207,7 +207,8 @@ impl CompactSwatchPalette {
         let mut taffy = TaffyTree::new();
         let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = picker.build_layout(&mut taffy, theme, &mut nodes);
-        let _ = taffy.compute_layout(
+        let _ = ui::widget::solve_layout(
+            &mut taffy,
             node,
             taffy::Size {
                 width: taffy::AvailableSpace::MaxContent,
