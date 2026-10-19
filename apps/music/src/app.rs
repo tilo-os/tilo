@@ -2238,7 +2238,8 @@ impl MusicApp {
                 &[node],
             )
             .expect("a single freshly-created taffy node always attaches to a fresh tree");
-        let _ = taffy.compute_layout(
+        let _ = ui::widget::solve_layout(
+            &mut taffy,
             root,
             Size {
                 width: taffy::AvailableSpace::Definite(rect.width() as f32),

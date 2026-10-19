@@ -103,12 +103,12 @@ impl ExportDialog {
             width: taffy::AvailableSpace::Definite(viewport.width() as f32),
             height: taffy::AvailableSpace::Definite(viewport.height() as f32),
         };
-        let _ = tree.compute_layout(node, size);
+        let _ = ui::widget::solve_layout(&mut tree, node, size);
         if self
             .dialog
             .adjust_layout_style(&mut tree, node, text_renderer)
         {
-            let _ = tree.compute_layout(node, size);
+            let _ = ui::widget::solve_layout(&mut tree, node, size);
         }
         self.dialog.apply_layout(&tree, node, viewport.origin());
     }

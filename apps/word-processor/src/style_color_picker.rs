@@ -104,7 +104,8 @@ impl StyleColorPicker {
                 ..Default::default()
             },
         );
-        let _ = taffy.compute_layout(
+        let _ = ui::widget::solve_layout(
+            &mut taffy,
             node,
             taffy::Size {
                 width: taffy::AvailableSpace::Definite(num::f32_of_f64(WIDTH)),
