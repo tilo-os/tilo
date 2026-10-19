@@ -348,7 +348,7 @@ impl Inner {
                 tilo_render_service::RENDER_NODE_ENV,
                 self.render_node
                     .as_ref()
-                    .map(PathBuf::as_os_str)
+                    .map(|path| path.as_os_str().to_owned())
                     .unwrap_or_default(),
             )
             .stdin(std::process::Stdio::null());

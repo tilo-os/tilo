@@ -466,7 +466,7 @@ async fn live(token: String, guild_id: String) -> usize {
     )
     .unwrap()
     .unwrap();
-    discord::connect(&room.rooms, &room.id, &cert, &bridged, &server_name)
+    discord::connect(&room.rooms, &room.id, &cert, &bridged)
         .await
         .unwrap();
     room.chat_as({

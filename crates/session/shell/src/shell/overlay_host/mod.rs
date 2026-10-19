@@ -4553,12 +4553,14 @@ impl ShellOverlayHost {
                 if let Some(chrome) = self.chrome.as_ref() {
                     let mut state = chrome.borrow_mut();
                     match outcome {
-                        Ok(_) => state.push_notification(
-                            t("directory-reported"),
-                            t("directory-reported-body"),
-                        ),
+                        Ok(_) => {
+                            state.push_notification(
+                                t("directory-reported"),
+                                t("directory-reported-body"),
+                            );
+                        }
                         Err(error) => {
-                            state.push_warning_notification(t("directory-report-failed"), &error)
+                            state.push_warning_notification(t("directory-report-failed"), &error);
                         }
                     }
                 }
