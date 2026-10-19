@@ -14,14 +14,13 @@ use automerge::transaction::Transactable as _;
 use automerge::{ObjId, ReadDoc as _, ScalarValue, Value};
 use taffy::{NodeId, Style, TaffyTree};
 use ui::a11y::{AccessNode, AccessState, Action, Role};
-use ui::color_compat::ColorCompat;
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{Button, ButtonFace, TaffyTreeExt, Widget};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::Fill;
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -162,13 +161,24 @@ impl LaunchpadAction {
 
     const fn icon(self) -> Icon {
         match self {
-            Self::Chat => Icon::Mail,
+            Self::Chat => Icon::MessageCircle,
             Self::Notes => Icon::FileText,
-            Self::Tasks => Icon::Check,
-            Self::Meet => Icon::Camera,
-            Self::Invite => Icon::Users,
+            Self::Tasks => Icon::ListChecks,
+            Self::Meet => Icon::Phone,
+            Self::Invite => Icon::UserPlus,
             Self::Activity => Icon::History,
         }
+    }
+}
+
+/// A tile's icon ink: neutral, secondary at rest and primary while the tile
+/// is pointed at or chosen. The accent is never an icon at rest
+/// (`docs/design-language.md`, "Colour roles").
+fn icon_ink(theme: &Theme, active: bool) -> vello::peniko::Color {
+    if active {
+        theme.text_primary
+    } else {
+        theme.text_dim
     }
 }
 
@@ -708,42 +718,37 @@ impl Widget for CollaborationLaunchpad {
             );
         }
 
-        // Control role (HIG §9.1/§9.3): an action tile takes `radii.control`. The
-        // hovered or keyboard-selected tile is a lift with the tier's
-        // hairline — never an accent wash, which is reserved for live state
-        // (§9.4) — and an idle tile rests on its translucent floor with an
-        // edge derived from that floor (§9.5), so the six cards read as cards
-        // on the dark grid as well as the light one.
-        let floor = theme.tokens.colors.surfaces.raised.with_alpha_factor(0.78);
-        let idle_edge = ui::surface::edge_on(theme.tokens.colors.surfaces.raised);
+        // The tiles are actions, so each is a secondary action's face: the
+        // raised level with no edge, a neutral lift under the pointer and
+        // the press, and the keyboard focus ring outside it
+        // (`docs/design-language.md`, "Buttons" and "Lifts"). The icon is
+        // neutral ink: secondary at rest, primary while the tile is the one
+        // being pointed at or chosen; the accent is never an icon at rest.
         for (index, (action, rect)) in LaunchpadAction::ALL.into_iter().zip(cards).enumerate() {
-            let active = hovered == Some(index) || (self.focused && self.selected == index);
-            let tier = ui::chrome::selection_tier(
-                theme,
-                ui::chrome::SelectionState::new(
-                    active,
-                    hovered == Some(index),
-                    self.targets.interaction(action.path()).pressed,
-                ),
-            );
-            let surface = if active { tier.fill } else { floor };
-            let shape = RoundedRect::from_rect(
-                rect,
-                ui::chrome::ChromeRole::Control.radius(theme, rect.height()),
-            );
-            scene.fill(Fill::NonZero, transform, surface, None, &shape);
+            let interaction = self.targets.interaction(action.path());
             let focused = self.focused && self.selected == index;
-            scene.stroke(
-                &Stroke::new(if focused { 2.0 } else { 1.0 }),
-                transform,
-                if focused {
-                    theme.border_focus
-                } else {
-                    tier.border.unwrap_or(idle_edge)
+            let hovered_here = hovered == Some(index);
+            let (fill, _, _) = ui::widget::face_colors(
+                theme,
+                ui::widget::ButtonRole::Secondary,
+                ui::widget::ButtonInteract {
+                    hovered: hovered_here,
+                    pressed: interaction.pressed,
+                    focused,
+                    disabled: false,
                 },
-                None,
-                &shape,
             );
+            let radius = ui::chrome::ChromeRole::Control.radius(theme, rect.height());
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                fill,
+                None,
+                &RoundedRect::from_rect(rect, radius),
+            );
+            if focused {
+                ui::widget::paint_focus_ring(scene, transform, rect, radius, theme);
+            }
             let icon_rect = Rect::new(
                 rect.x0 + 18.0,
                 rect.y0 + 18.0,
@@ -754,7 +759,7 @@ impl Widget for CollaborationLaunchpad {
                 scene,
                 transform,
                 icon_rect,
-                theme.tokens.colors.intent.accent_ink,
+                icon_ink(theme, hovered_here || focused),
                 1.6,
             );
             let label = text.elide_to_width(&action.label(), base, (rect.width() - 72.0) as f32);
@@ -1165,23 +1170,42 @@ mod tests {
 
     use ui::synthetic_input::named_key;
 
+    /// The tiles are actions: a secondary action's face, the raised
+    /// level with no edge that lifts under the pointer, with neutral
+    /// icons, never the accent at rest.
     #[test]
-    fn launchpad_layout_keeps_edges_bounds_and_clears_chrome_at_every_size() {
-        /// HIG §9.5: an idle card's edge derives from its own floor and must
-        /// register on every shipped palette — the former `border_standard` at
-        /// 0.72 alpha was invisible on the dark grid.
-        fn launchpad_cards_keep_an_edge_on_every_palette() {
-            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-                let floor = theme.tokens.colors.surfaces.raised;
-                let delta = ui::surface::edge_delta(ui::surface::edge_on(floor), floor);
+    fn launchpad_tiles_are_raised_actions_with_neutral_icons() {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let face = |hovered| {
+                ui::widget::face_colors(
+                    &theme,
+                    ui::widget::ButtonRole::Secondary,
+                    ui::widget::ButtonInteract {
+                        hovered,
+                        ..ui::widget::ButtonInteract::default()
+                    },
+                )
+            };
+            let (rest, edge, _) = face(false);
+            assert_eq!(rest, theme.tokens.colors.surfaces.raised, "{}", theme.name);
+            assert!(edge.is_none(), "{}: a raised tile has no edge", theme.name);
+            assert_ne!(face(true).0, rest, "{}: a hovered tile lifts", theme.name);
+            let intent = &theme.tokens.colors.intent;
+            for active in [false, true] {
+                let ink = icon_ink(&theme, active);
                 assert!(
-                    delta >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
-                    "{}: the card edge must separate it from its floor (Δ luminance {delta:.4})",
+                    ink != intent.accent && ink != intent.accent_ink,
+                    "{}: icons are neutral ink",
                     theme.name
                 );
             }
+            assert_eq!(icon_ink(&theme, false), theme.text_dim);
+            assert_eq!(icon_ink(&theme, true), theme.text_primary);
         }
+    }
 
+    #[test]
+    fn launchpad_layout_keeps_edges_bounds_and_clears_chrome_at_every_size() {
         fn compact_large_text_heading_stays_below_top_chrome() {
             let mut pad = CollaborationLaunchpad::new();
             pad.rect = Rect::new(0.0, 48.0, 800.0, 700.0);
@@ -1254,7 +1278,6 @@ mod tests {
             }
         }
 
-        launchpad_cards_keep_an_edge_on_every_palette();
         compact_large_text_heading_stays_below_top_chrome();
         desktop_app_button_has_visible_bounds_in_compact_layouts();
         wide_and_narrow_layouts_keep_all_cards_actionable();

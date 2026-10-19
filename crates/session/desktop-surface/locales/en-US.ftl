@@ -887,6 +887,7 @@ workspace-settings-invite-hint = Choose a person and a role. The invite is signe
 workspace-settings-invite-admin-only = Only a governing administrator can create workspace invites.
 workspace-settings-invite-create = Create
 workspace-settings-devices-title = Your devices
+workspace-settings-devices-local = Your window layout and controls stay on each device.
 workspace-settings-device-here = { $device } (this device)
 workspace-settings-device-shown = Shown
 workspace-settings-device-hidden = Kept off
@@ -988,7 +989,7 @@ a11y-shell-people-changes-description = Open History at their changes
 a11y-shell-people-change-description = Open History at this change
 people-panel-follow = Follow
 people-panel-stop-following = Stop
-launchpad-subtitle = Choose how to begin. Workspace content syncs; your layout and controls stay local.
+launchpad-subtitle = Pick a way to start. What you make here is shared with everyone in this workspace.
 
 # The emoji picker (Super+. by default)
 emoji-picker-title = Emoji
