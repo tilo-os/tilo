@@ -487,6 +487,8 @@ impl ResourceSurface<Browser, BrowserEffect> for BrowserWindow {
         self.page().page_declarations()
     }
 
+    const ROW_DECLARATIONS: bool = true;
+
     /// The page row turns tracker protection on or off for its site.
     fn row_declarations(&self, row: &str) -> Vec<ActionDecl<Browser>> {
         self.page().row_declarations(row)

@@ -12,7 +12,7 @@ use tilo_resource::items::{ItemAction, ItemCollection};
 use ui_core::automerge::AutoCommit;
 use ui_core::published::{SharedChildren, SharedResource};
 
-use super::super::rows::outside_document;
+use super::super::rows::{LiveRow, join, outside_document};
 use super::typed::ResourceType;
 use super::{
     Decoration, ResourceRoot, mark_document_jobs, offer_document_reads, offer_item_open, open_spec,
@@ -61,6 +61,43 @@ pub(super) struct PublishedChildren {
     adds: (bool, bool),
     document: SharedChildren,
     published: SharedChildren,
+}
+
+/// The children of the publication with the live rows the surfaces show
+/// merged in: each group of rows under one id (merged into the document
+/// child of that id, or appended), with what it published. A group whose
+/// rows are the very ones the surfaces handed out last time, over the same
+/// document child, is that very node again.
+pub(super) struct RowChildren {
+    /// What was added: (`open` offered, document actions queued).
+    adds: (bool, bool),
+    groups: HashMap<String, RowGroup>,
+    children: SharedChildren,
+}
+
+/// One id's rows and the child they published.
+pub(super) struct RowGroup {
+    /// The document child they were merged into, if any.
+    base: Option<SharedResource>,
+    rows: Vec<LiveRow>,
+    published: SharedResource,
+}
+
+impl RowGroup {
+    fn holds(&self, base: Option<&SharedResource>, rows: &[LiveRow]) -> bool {
+        let same_base = match (&self.base, base) {
+            (Some(was), Some(now)) => was.ptr_eq(now),
+            (None, None) => true,
+            _ => false,
+        };
+        same_base
+            && self.rows.len() == rows.len()
+            && self
+                .rows
+                .iter()
+                .zip(rows)
+                .all(|(was, now)| was.same_row(now))
+    }
 }
 
 impl ResourceRoot {
@@ -227,11 +264,6 @@ impl ResourceRoot {
         let root = {
             let _profile = tilo_resource::profiling::Phase::start("framework.publication");
             let tree = self.shared_document_tree(state);
-            // A surface that adds rows, or edits bound to rows, changes the
-            // children: that publication is built whole.
-            if surface && !self.surfaces_publish_on_head_only(tree.children()) {
-                return None;
-            }
             if current.is_some() {
                 // As `current_publication`: nested views follow this state
                 // until the view syncs to it.
@@ -240,6 +272,11 @@ impl ResourceRoot {
             let mut head =
                 self.decorate_publication(state, tree.head().clone(), Decoration::Actions);
             let document = self.published_children(tree.children(), opens);
+            let document = if surface {
+                self.with_live_rows(document, opens)
+            } else {
+                document
+            };
             let children = self.with_record_children(document, opens);
             if opens && !head.actions.iter().any(|existing| existing.id == "open") {
                 head = head.with_action(open_spec());
@@ -372,27 +409,183 @@ impl ResourceRoot {
         found
     }
 
-    /// Whether every surface of the view publishes on the resource itself
-    /// only, as its head's bound edits and availability: no live rows, and
-    /// no edit bound to one of `children` or their children. Then the
-    /// publication is the shared document tree under the decorated head.
-    fn surfaces_publish_on_head_only(&self, children: &SharedChildren) -> bool {
-        fn ids<'a>(children: &'a SharedChildren, out: &mut Vec<&'a str>) {
-            for child in children {
-                out.push(child.id());
-                ids(child.children(), out);
+    /// `document`, the published document children, with the live rows the
+    /// surfaces show merged in by id, as [`super::super::rows::merge`] merges
+    /// them into the whole tree, and the edits surfaces bind to rows bound
+    /// on them. A row a surface hands out again (the same [`LiveRow`], kept
+    /// while what it shows holds) over the same document child publishes
+    /// the node it published last time, so what reads the forest skips it
+    /// as seen; only a surface that binds edits to rows
+    /// ([`super::super::ResourceSurface::ROW_DECLARATIONS`]) has its rows
+    /// bound afresh.
+    fn with_live_rows(&self, document: SharedChildren, opens: bool) -> SharedChildren {
+        let _profile = tilo_resource::profiling::Phase::start("framework.live_rows");
+        let mut rows = Vec::new();
+        let mut binds = false;
+        self.surfaces(&mut |surface| {
+            rows.extend(surface.live_rows());
+            binds |= surface.binds_rows();
+        });
+        if rows.is_empty() && !binds {
+            *self.row_children.borrow_mut() = None;
+            return document;
+        }
+        let adds = (opens, self.typed.has_causal_drains());
+        let last = self
+            .row_children
+            .borrow_mut()
+            .take()
+            .filter(|last| last.adds == adds);
+        // Rows by id, in the order merging meets them: those naming a
+        // document child join it, the rest are appended in order, a later
+        // row of an appended id joining the first.
+        let at: HashMap<&str, usize> = document
+            .iter()
+            .enumerate()
+            .map(|(index, child)| (child.id(), index))
+            .collect();
+        let mut order: Vec<String> = Vec::new();
+        let mut by_id: HashMap<String, Vec<LiveRow>> = HashMap::new();
+        for row in rows {
+            let id = row.id().to_owned();
+            by_id
+                .entry(id.clone())
+                .or_insert_with(|| {
+                    order.push(id);
+                    Vec::new()
+                })
+                .push(row);
+        }
+        let mut children: Vec<SharedResource> = document.iter().cloned().collect();
+        let mut groups = HashMap::with_capacity(order.len());
+        for id in order {
+            let Some(rows) = by_id.remove(&id) else {
+                continue;
+            };
+            let target = at.get(id.as_str()).copied();
+            let base = target.and_then(|index| document.as_slice().get(index));
+            let published = last
+                .as_ref()
+                .and_then(|last| last.groups.get(&id))
+                .filter(|group| group.holds(base, &rows))
+                .map_or_else(
+                    || self.publish_rows(base, &rows, adds),
+                    |group| group.published.clone(),
+                );
+            match target.and_then(|index| children.get_mut(index)) {
+                Some(child) => *child = published.clone(),
+                None => children.push(published.clone()),
             }
+            groups.insert(
+                id,
+                RowGroup {
+                    base: base.cloned(),
+                    rows,
+                    published,
+                },
+            );
+        }
+        if binds {
+            self.bind_rows_shared(&mut children, adds);
+        }
+        #[cfg(debug_assertions)]
+        if !binds {
+            self.surfaces(&mut |surface| {
+                for child in &children {
+                    debug_assert!(
+                        !surface.offers_on_row(child.id()),
+                        "a surface binds edits on `{}` without `ResourceSurface::ROW_DECLARATIONS`",
+                        child.id()
+                    );
+                }
+            });
+        }
+        let children = match last {
+            Some(last)
+                if last.children.len() == children.len()
+                    && last
+                        .children
+                        .iter()
+                        .zip(&children)
+                        .all(|(was, now)| was.ptr_eq(now)) =>
+            {
+                last.children.clone()
+            }
+            _ => SharedChildren::new(children),
+        };
+        *self.row_children.borrow_mut() = Some(RowChildren {
+            adds,
+            groups,
+            children: children.clone(),
+        });
+        children
+    }
+
+    /// The child `rows`, all of one id, publish: joined into `base`, the
+    /// document child of that id, or the first row with the rest joined
+    /// into it; with `open` offered on items and document actions queued
+    /// as jobs, as `adds` says.
+    fn publish_rows(
+        &self,
+        base: Option<&SharedResource>,
+        rows: &[LiveRow],
+        adds: (bool, bool),
+    ) -> SharedResource {
+        let mut rows = rows.iter().cloned().map(LiveRow::into_resource);
+        let mut resource = match base {
+            Some(base) => base.to_resource(),
+            None => match rows.next() {
+                Some(first) => first,
+                None => {
+                    return SharedResource::from_resource(tilo_actions::Resource::new("", "", ""));
+                }
+            },
+        };
+        for row in rows {
+            join(&mut resource, row);
+        }
+        self.decorate_child(&mut resource, adds);
+        SharedResource::from_resource(resource)
+    }
+
+    /// What the publication adds to each child, as `adds` says: `open` on
+    /// items a view opens, and document actions queued as jobs.
+    fn decorate_child(&self, resource: &mut tilo_actions::Resource, adds: (bool, bool)) {
+        if adds.1 {
+            mark_document_jobs(resource);
+        }
+        if adds.0 {
+            offer_item_open(self.resource.item_of, resource);
+        }
+    }
+
+    /// Bind the edits surfaces offer on rows to each of `children` holding a
+    /// row any surface offers on, anywhere in it. The others stay as they
+    /// are.
+    fn bind_rows_shared(&self, children: &mut [SharedResource], adds: (bool, bool)) {
+        fn offered(resource: &SharedResource, offers: &dyn Fn(&str) -> bool) -> bool {
+            offers(resource.id())
+                || resource
+                    .children()
+                    .iter()
+                    .any(|child| offered(child, offers))
         }
         let _profile = tilo_resource::profiling::Phase::start("framework.row_declarations");
-        let mut all = Vec::new();
-        ids(children, &mut all);
-        let mut head_only = true;
-        self.surfaces(&mut |surface| {
-            head_only = head_only
-                && surface.live_rows().is_empty()
-                && all.iter().all(|id| !surface.offers_on_row(id));
-        });
-        head_only
+        let offers = |id: &str| {
+            let mut any = false;
+            self.surfaces(&mut |surface| any = any || surface.offers_on_row(id));
+            any
+        };
+        for child in children {
+            if !offered(child, &offers) {
+                continue;
+            }
+            let mut bound = [child.to_resource()];
+            self.bind_row_declarations(&mut bound);
+            let [mut resource] = bound;
+            self.decorate_child(&mut resource, adds);
+            *child = SharedResource::from_resource(resource);
+        }
     }
 }
 

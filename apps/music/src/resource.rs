@@ -366,6 +366,8 @@ impl ResourceSurface<Library, MusicEffect> for MusicApp {
         self.device_row(id)
     }
 
+    const ROW_DECLARATIONS: bool = true;
+
     /// The library's field edits bound to the row they act on: saving an
     /// album, following an artist, taking a song out of a playlist or
     /// moving it, and the recommendations' switches and feedback.

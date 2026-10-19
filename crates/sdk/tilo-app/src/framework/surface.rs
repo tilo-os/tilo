@@ -308,11 +308,19 @@ pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
         None
     }
 
+    /// Whether [`row_declarations`](Self::row_declarations) binds edits on
+    /// any row. A surface that implements it says so here; every other
+    /// surface's rows are published without asking it about each one, and
+    /// a row it hands out again is published as it was.
+    const ROW_DECLARATIONS: bool = false;
+
     /// Edits of the resource bound to the live row `row` (rename *this*
     /// file): typed builders of the resource's action, published on that row
     /// and applied through the same permission check, confirmation and undo
     /// as the resource's own declarations. A row itself carries only view
     /// and effect operations; this is how it offers a document change.
+    /// Asked only of a surface that sets
+    /// [`ROW_DECLARATIONS`](Self::ROW_DECLARATIONS).
     fn row_declarations(&self, row: &str) -> Vec<ActionDecl<R>> {
         let _ = row;
         Vec::new()
@@ -396,6 +404,9 @@ pub(crate) trait SurfacePublication {
     fn availability(&self) -> Vec<EffectStatus>;
     fn live_rows(&self) -> Vec<LiveRow>;
     fn live_row(&self, id: &str) -> Option<LiveRow>;
+    /// Whether the surface binds edits on rows at all
+    /// ([`ResourceSurface::ROW_DECLARATIONS`]).
+    fn binds_rows(&self) -> bool;
     /// Whether the surface binds any edit on the row `row`.
     fn offers_on_row(&self, row: &str) -> bool;
     /// Add the edits the surface binds on the row `row` to `into`, a
@@ -764,9 +775,10 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceHost<R, 
         if !E::declarations().is_empty() {
             let published = Rc::clone(&statuses);
             let lifetime = Rc::clone(&scope);
+            let kept = super::effect::KeptSpecs::default();
             effects.publish::<E>(scope.alive(), move || {
                 if lifetime.active() {
-                    super::effect::published_specs::<E>(&published.borrow())
+                    super::effect::kept_specs::<E>(&kept, &published.borrow())
                 } else {
                     Vec::new()
                 }
@@ -1089,6 +1101,9 @@ impl SurfacePublication for HostedSurface {
     fn live_row(&self, id: &str) -> Option<LiveRow> {
         self.host.live_row(id)
     }
+    fn binds_rows(&self) -> bool {
+        self.host.binds_rows()
+    }
     fn offers_on_row(&self, row: &str) -> bool {
         self.host.offers_on_row(row)
     }
@@ -1173,11 +1188,22 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfacePublicat
         self.surface.live_row(id)
     }
 
+    fn binds_rows(&self) -> bool {
+        S::ROW_DECLARATIONS
+    }
+
     fn offers_on_row(&self, row: &str) -> bool {
-        !self.surface.row_declarations(row).is_empty()
+        self.binds_rows() && !self.surface.row_declarations(row).is_empty()
     }
 
     fn row_declarations(&self, row: &str, into: &mut dyn std::any::Any) -> bool {
+        if !self.binds_rows() {
+            debug_assert!(
+                self.surface.row_declarations(row).is_empty(),
+                "a surface binding edits on rows sets `ResourceSurface::ROW_DECLARATIONS`"
+            );
+            return false;
+        }
         let offered = self.surface.row_declarations(row);
         match into.downcast_mut::<Vec<ActionDecl<R>>>() {
             Some(into) if !offered.is_empty() => {

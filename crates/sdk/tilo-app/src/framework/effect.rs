@@ -1415,6 +1415,30 @@ impl EffectStatus {
 }
 
 /// The specs of `E`, as callers see them now.
+/// The specs [`published_specs`] last built for one vocabulary: the
+/// locale and statuses they were built at, kept so a publication that finds
+/// both unchanged copies them instead of building every declaration again.
+pub(crate) type KeptSpecs = std::cell::RefCell<Option<(u64, Vec<EffectStatus>, Vec<ActionSpec>)>>;
+
+/// [`published_specs`] of `E` at `statuses`, taken from `kept` while the
+/// locale and the statuses are those it was built at.
+pub(crate) fn kept_specs<E: Effect>(
+    kept: &KeptSpecs,
+    statuses: &[EffectStatus],
+) -> Vec<ActionSpec> {
+    let locale = ui_core::i18n::I18nManager::revision();
+    if let Some((_, _, specs)) = kept
+        .borrow()
+        .as_ref()
+        .filter(|(at, was, _)| *at == locale && was.as_slice() == statuses)
+    {
+        return specs.clone();
+    }
+    let specs = published_specs::<E>(statuses);
+    *kept.borrow_mut() = Some((locale, statuses.to_vec(), specs.clone()));
+    specs
+}
+
 pub(crate) fn published_specs<E: Effect>(statuses: &[EffectStatus]) -> Vec<ActionSpec> {
     E::specs()
         .into_iter()

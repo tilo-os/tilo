@@ -1323,6 +1323,8 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
         self.published_row(id).map(LiveRow::from_resource)
     }
 
+    const ROW_DECLARATIONS: bool = true;
+
     /// Rename, move and trash the entry a row shows, through the queue.
     fn row_declarations(&self, row: &str) -> Vec<ActionDecl<FileExplorer>> {
         self.entry_declarations(row)
