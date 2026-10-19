@@ -10,7 +10,7 @@ use crate::shell::quick_settings::{PowerProfile, QsLevel};
 use settings_store::hardware::{QuickSettingsConfig, QuickSettingsControl};
 use tilo_desktop::drill_in::{
     CONTROL_INSET, CONTROL_PAD, GLYPH, PANEL_PAD, RELATED_GAP, ROW_HEIGHT, SECTION_GAP,
-    SIBLING_GAP, TARGET, TOGGLE_H, TOGGLE_W, centred_text_top, control_radius, leading_glyph,
+    SIBLING_GAP, TARGET, centred_text_top, control_radius, leading_glyph,
     paint_control, trailing_glyph, trailing_toggle,
 };
 use ui::TextRole;
@@ -20,7 +20,7 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::ButtonRole;
 use ui::widget::drag::{DragController, ListMetrics};
-use ui::widget::{Button, ButtonFace, Slider, SliderFace, Toggle, ToggleFace};
+use ui::widget::{Button, ButtonFace, Slider, SliderFace};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
 use vello::peniko::Fill;
@@ -831,13 +831,13 @@ impl QuickSettingsRoot {
             // before each section that exists on this machine. The Devices
             // and Clipboard row and the power row sit one sibling gap apart.
             let sections = if rows > 0.0 { 4.0 } else { 3.0 };
-            scaled(PANEL_PAD * 2.0 + SECTION_GAP * sections + SIBLING_GAP)
+            scaled(PANEL_PAD * 2.0 + SECTION_GAP * sections + 2.0 * SIBLING_GAP)
                 + self.header_height_at(layout_scale)
                 + self.sliders_height_at(layout_scale)
                 + self.action_height_at(layout_scale)
                 + rows * self.card_height_at(layout_scale)
                 + (rows - 1.0).max(0.0) * scaled(SIBLING_GAP)
-                + 2.0 * self.power_height_at(layout_scale)
+                + 3.0 * self.power_height_at(layout_scale)
         }
     }
     fn save_config(&mut self) {
@@ -975,15 +975,14 @@ impl QuickSettingsRoot {
             row.y1 - self.scaled(7.0),
         )
     }
-    fn control_card(&self, panel: Rect, i: usize, count: usize) -> Rect {
+    fn control_card(&self, panel: Rect, i: usize, _count: usize) -> Rect {
         let row = i / 2;
         let pad = self.scaled(PANEL_PAD);
         let gap = self.scaled(SIBLING_GAP);
         let card = self.card_height();
         let y = self.grid_top(panel) + f64_of_usize(row) * (card + gap);
-        if count % 2 == 1 && i.checked_add(1) == Some(count) {
-            return Rect::new(panel.x0 + pad, y, panel.x1 - pad, y + card);
-        }
+        // Every card is half the width, an odd last one too: a lone card
+        // stretched across the panel read as a different kind of control.
         let w = (panel.width() - 2.0 * pad - gap) / 2.0;
         let x = panel.x0 + pad + f64_of_usize(i % 2) * (w + gap);
         Rect::new(x, y, x + w, y + card)
@@ -1099,18 +1098,21 @@ impl QuickSettingsRoot {
     }
     /// Devices and Clipboard share one row, one section gap under the
     /// cards. `index` 0 is Devices, 1 is Clipboard.
+    /// Devices, then Clipboard: full-width rows, so their name and the line
+    /// under it are never cut short.
     fn link_rect(&self, panel: Rect, state: &QuickSettingsState, index: usize) -> Rect {
         let pad = self.scaled(PANEL_PAD);
         let gap = self.scaled(SIBLING_GAP);
-        let y = self.cards_bottom(panel, state) + self.scaled(SECTION_GAP);
-        let w = (panel.width() - 2.0 * pad - gap) / 2.0;
-        let x = panel.x0 + pad + f64_of_usize(index.min(1)) * (w + gap);
-        Rect::new(x, y, x + w, y + self.power_height())
+        let h = self.power_height();
+        let y = self.cards_bottom(panel, state)
+            + self.scaled(SECTION_GAP)
+            + f64_of_usize(index.min(1)) * (h + gap);
+        Rect::new(panel.x0 + pad, y, panel.x1 - pad, y + h)
     }
-    /// The power-profile row: one sibling gap under the Devices and
-    /// Clipboard row it shares its row style with.
+    /// The power-profile row: one sibling gap under the Clipboard row it
+    /// shares its row style with.
     pub(crate) fn power_geometry(&self, panel: Rect, state: &QuickSettingsState) -> Rect {
-        let y = self.link_rect(panel, state, 0).y1 + self.scaled(SIBLING_GAP);
+        let y = self.link_rect(panel, state, 1).y1 + self.scaled(SIBLING_GAP);
         Rect::new(
             panel.x0 + self.scaled(PANEL_PAD),
             y,
@@ -1883,10 +1885,22 @@ impl QuickSettingsRoot {
         let colors = &theme.tokens.colors;
         let glyph = Self::glyph_at(self.layout_scale);
         let inset = self.scaled(CONTROL_INSET);
-        // Destinations remain at the top, in the place established by the
-        // original GNOME-inspired shell, rather than becoming unexplained
-        // footer glyphs.  The visible label is part of the control: a
-        // tooltip or accessibility tree is not sufficient discoverability.
+        // The destinations are the panel's footer, labelled: the visible
+        // label is part of the control, a tooltip is not enough to find it.
+        // All four labels share one size, the largest every one of them fits
+        // at, so one long word never sets its tile apart.
+        let label_style = {
+            let mut style = theme.text(TextRole::Label);
+            let max_label_width = (self.action(0).width() - 2.0 * inset).max(1.);
+            let widest = RootTile::ALL
+                .iter()
+                .map(|tile| f64::from(text.measure_style(&tile.label(), None, &style).0))
+                .fold(0.0_f64, f64::max);
+            if widest > max_label_width {
+                style.size *= f32v(max_label_width / widest);
+            }
+            style
+        };
         for tile in RootTile::ALL {
             let (icon, label) = (tile.icon(), tile.label());
             let label = label.as_str();
@@ -1908,12 +1922,6 @@ impl QuickSettingsRoot {
             // These four labels are fixed, high-value shell destinations.
             // Keep every word intact; at an unusually large text scale we
             // reduce this one caption before we truncate its meaning.
-            let max_label_width = (r.width() - 2.0 * inset).max(1.);
-            let mut label_style = theme.text(TextRole::Label);
-            let (unscaled_label_width, _) = text.measure_style(label, None, &label_style);
-            if f64::from(unscaled_label_width) > max_label_width {
-                label_style.size *= f32v(max_label_width / f64::from(unscaled_label_width));
-            }
             let (label_width, label_height) = text.measure_style(label, None, &label_style);
             // Glyph, `icon_label_gap`, caption: one measured block centred
             // in the tile (HIG §7), never a glyph pinned to the top edge
@@ -2207,7 +2215,7 @@ impl QuickSettingsRoot {
         }
         let (ink, ink_dim) = if on {
             let knob = ui::tokens::colors::ACTIVE_KNOB;
-            (knob, knob.with_alpha_factor(0.82))
+            (knob, knob.multiply_alpha(0.82))
         } else {
             (colors.text_primary, colors.text_dim)
         };
