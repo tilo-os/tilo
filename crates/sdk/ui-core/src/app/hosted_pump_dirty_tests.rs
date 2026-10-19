@@ -1059,6 +1059,32 @@ mod input_publication {
         assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
     }
 
+    /// A handled input asks for a sync and a frame, and that sync can move
+    /// what the tree shows. The input leaves its publication to the frame,
+    /// which publishes once after the sync, instead of the input building
+    /// the tree for itself and the frame building it again.
+    #[test]
+    fn a_handled_input_leaves_its_publication_to_the_frame_after_its_sync() {
+        let (mut app, _) = app();
+        let attempts = app.actions.action_surface_publication_attempts;
+        release(&mut app, "t");
+        assert!(app.needs_sync, "the handled release asks for a sync");
+        assert!(app.actions.action_surface_owed);
+        assert_eq!(
+            app.actions.action_surface_publication_attempts, attempts,
+            "the input published nothing itself"
+        );
+        let _ = app.sync_model(false);
+        app.publish_owed_action_surface();
+        assert!(!app.actions.action_surface_owed);
+        assert_eq!(
+            app.actions.action_surface_publication_attempts,
+            attempts + 1,
+            "the frame published once"
+        );
+        assert_eq!(published(&app), "tab 1 menu false drag None hovered false");
+    }
+
     #[test]
     fn consumed_key_release_still_republishes() {
         let (mut app, _) = app();
