@@ -62,6 +62,14 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+/// A published action a hit invokes: an action of a resource the app
+/// publishes, by their ids.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct IndexAction {
+    pub resource: String,
+    pub action: String,
+}
+
 /// One search entry, as the system index keeps it.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct IndexEntry {
@@ -69,12 +77,12 @@ pub struct IndexEntry {
     /// resource and action a hit invokes.
     pub key: String,
     /// The stable resource id a hit opens: the entry's anchor, else the
-    /// resource of its action.
+    /// resource of its action. Without an action (or once it is gone) a
+    /// hit opens the app here through its `open` action.
     pub resource: String,
-    /// The published action a hit invokes on `resource`; `None` opens the
-    /// app at `resource` through its `open` action.
+    /// The published action a hit invokes, when the entry names one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub action: Option<String>,
+    pub action: Option<IndexAction>,
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subtitle: Option<String>,
@@ -120,10 +128,11 @@ impl IndexEntry {
             || self.key.is_empty()
             || self.resource.len() > MAX_ID_BYTES
             || self.key.len() > MAX_ID_BYTES
-            || self
-                .action
-                .as_ref()
-                .is_some_and(|action| action.is_empty() || action.len() > MAX_ID_BYTES)
+            || self.action.as_ref().is_some_and(|action| {
+                [&action.resource, &action.action]
+                    .into_iter()
+                    .any(|id| id.is_empty() || id.len() > MAX_ID_BYTES)
+            })
         {
             return None;
         }
