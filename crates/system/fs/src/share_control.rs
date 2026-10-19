@@ -405,9 +405,9 @@ pub async fn read_share_control_response(
         .await
         .map_err(|error| match error {
             CanonicalFrameError::Io(error) => error,
-            CanonicalFrameError::TooLarge(_) => {
-                std::io::Error::other("share control response too large")
-            }
+            CanonicalFrameError::TooLarge(bytes) => std::io::Error::other(format!(
+                "share control response too large: {bytes} bytes"
+            )),
             CanonicalFrameError::Empty => {
                 std::io::Error::other("invalid share control response: zero-length frame")
             }
