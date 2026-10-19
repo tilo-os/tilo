@@ -982,15 +982,13 @@ fn agent_row_task_navigation_keeps_source_custody_through_the_production_door() 
         "opening is not approval and must not start a different projected task"
     );
 
-    for (field, value) in [("agent", "another-agent")] {
-        let mut forged = arguments.clone();
-        forged[field] = value.into();
-        assert!(
-            app.call_on(target, "open-task-conversation", forged)
-                .is_err(),
-            "the caller cannot select {field}"
-        );
-    }
+    let mut forged = arguments.clone();
+    forged["agent"] = "another-agent".into();
+    assert!(
+        app.call_on(target, "open-task-conversation", forged)
+            .is_err(),
+        "the caller cannot select the agent"
+    );
     assert!(
         app.call_on(
             target,
