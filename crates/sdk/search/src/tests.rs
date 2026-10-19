@@ -335,6 +335,28 @@ fn a_four_letter_typo_and_typos_among_spread_words_still_find_it() {
 }
 
 #[test]
+fn numbers_carry_no_typos_and_punctuation_opens_a_word() {
+    let documents = (0..12).map(|at| {
+        Document::new(at)
+            .field(format!("Library volume {}", 2990 + at), FieldWeight::TITLE)
+            .field(format!("src/volume_{at}.rs"), FieldWeight::SUBTITLE)
+    });
+    for index in [committed(Matching::LOOSE, documents.clone()), {
+        let mut index = SearchIndex::new(Matching::LOOSE).through_tantivy();
+        index.replace_all(documents);
+        index.commit().unwrap();
+        index
+    }] {
+        // "2999" is one record, not the ten numbers a typo away from it.
+        assert_eq!(keys(&index, "volume 2999"), [9]);
+        assert_eq!(keys(&index, "2999"), [9]);
+        // An extension matches from the word after its dot, in a subtitle
+        // too, where nothing matches inside a word.
+        assert_eq!(keys(&index, ".rs").len(), 12);
+    }
+}
+
+#[test]
 fn a_typo_in_a_name_outranks_the_same_typo_in_a_keyword() {
     let loose = committed(
         Matching::LOOSE,
@@ -523,6 +545,8 @@ fn direct_and_tantivy_answer_alike() {
         "e-mail",
         "email",
         "2026",
+        "2025",
+        ".rs",
         "final report",
         "o",
         "of",

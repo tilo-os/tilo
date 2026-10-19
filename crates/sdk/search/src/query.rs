@@ -134,9 +134,14 @@ pub(crate) fn tier_sequence(tier: MatchTier, query: &[char]) -> Option<Vec<char>
         MatchTier::Exact => (true, starts_word, ends_word, true),
         MatchTier::Spanning | MatchTier::Typo => return None,
     };
-    if (word_start && !starts_word) || (word_end && !ends_word) {
+    // A query opening with punctuation (".rs") carries its own word start:
+    // the marked query holds one before its first word, so it matches from
+    // that word's start without one in front of the punctuation.
+    let opens_word = starts_word || query.iter().any(|scalar| scalar.is_alphanumeric());
+    if (word_start && !opens_word) || (word_end && !ends_word) {
         return None;
     }
+    let word_start = word_start && starts_word;
     let mut sequence = Vec::with_capacity(query.len().saturating_add(4));
     sequence.extend(value_start.then_some(VALUE_START));
     sequence.extend(word_start.then_some(WORD_START));
@@ -213,7 +218,7 @@ impl Query for Unscored {
 fn fuzzy_word(field: Field, vocabulary: &Vocabulary, word: &str, last: bool) -> Option<BoxQuery> {
     let term = Term::from_field_text(field, word);
     let scalars: Vec<char> = word.chars().collect();
-    match (typo_distance(scalars.len()), last) {
+    match (typo_distance(&scalars), last) {
         (0, false) => Some(Box::new(TermQuery::new(term, IndexRecordOption::Basic))),
         (0, true) => Some(prefix_query(term)),
         (distance, prefix) => any_of(
@@ -230,11 +235,15 @@ fn fuzzy_word(field: Field, vocabulary: &Vocabulary, word: &str, last: bool) -> 
     }
 }
 
-/// The typos a typed word of `scalars` scalars may carry: none while it is
-/// short, then one, then two.
-pub(crate) fn typo_distance(scalars: usize) -> usize {
-    usize::from(scalars >= ONE_TYPO_SCALARS)
-        .saturating_add(usize::from(scalars >= TWO_TYPOS_SCALARS))
+/// The typos a typed word of `scalars` may carry: none while it is short,
+/// then one, then two. A number carries none: "2999" is not "2998" mistyped,
+/// and every neighbouring number would match it.
+pub(crate) fn typo_distance(scalars: &[char]) -> usize {
+    if scalars.iter().any(|scalar| scalar.is_numeric()) {
+        return 0;
+    }
+    usize::from(scalars.len() >= ONE_TYPO_SCALARS)
+        .saturating_add(usize::from(scalars.len() >= TWO_TYPOS_SCALARS))
 }
 
 /// Which parts of the schema hold any text, so a query skips the rest.
