@@ -706,7 +706,11 @@ fn verified_bundle(root: &Path, fixtures: bool) -> Result<Arc<VerifiedBundle>, F
     if let Some(bundle) = verified.get(&key) {
         return Ok(Arc::clone(bundle));
     }
-    let bundle = Arc::new(verify_bundle(root, fixtures)?);
+    // The image's catalog records its faces when it is built
+    // (`tilo_font_catalog::faces`): read from it, no font is parsed here.
+    let trust = Trust::of_root(root);
+    let shipped = tilo_font_catalog::faces::FaceIndex::read_trusted(root, trust);
+    let bundle = Arc::new(verify_bundle(root, fixtures, trust, shipped.as_ref())?);
     verified.insert(key, Arc::clone(&bundle));
     Ok(bundle)
 }
@@ -715,13 +719,17 @@ fn verified_bundle(root: &Path, fixtures: bool) -> Result<Arc<VerifiedBundle>, F
     clippy::too_many_lines,
     reason = "Bundle verification keeps manifest, size, hash and face validation in one sequence."
 )]
-fn verify_bundle(root: &Path, fixtures: bool) -> Result<VerifiedBundle, FontCatalogError> {
+fn verify_bundle(
+    root: &Path,
+    fixtures: bool,
+    trust: Trust,
+    shipped: Option<&tilo_font_catalog::faces::FaceIndex>,
+) -> Result<VerifiedBundle, FontCatalogError> {
     tilo_font_catalog::check_manifest(root)?;
     let manifest = tilo_font_catalog::manifest()?;
     // The image's catalog is root-owned on a read-only mount, so its bytes
     // are the image's (composefs/fs-verity) and need no hashing here; a
     // checkout, a per-user runtime's or any writable catalog is hashed.
-    let trust = Trust::of_root(root);
     tracing::debug!(root = %root.display(), ?trust, "verifying Tilo font catalog");
     let mut db = fontdb::Database::new();
     let mut canonical = HashSet::new();
@@ -740,7 +748,18 @@ fn verify_bundle(root: &Path, fixtures: bool) -> Result<VerifiedBundle, FontCata
         // can still discover an ambient Adwaita as a user-named font.
         reserved.extend(asset.reserved_aliases.iter().map(|s| s.to_lowercase()));
         let path = verify_asset(root, asset, trust)?;
-        let ids = db.load_font_source(fontdb::Source::File(path.clone()));
+        // The faces the catalog's build recorded for this file are the ones
+        // fontdb reads from it; a file without a record is parsed.
+        let ids: Vec<fontdb::ID> = match shipped.and_then(|index| index.faces(&asset.file)) {
+            Some(faces) => faces
+                .iter()
+                .map(|face| db.push_face_info(face.info(fontdb::Source::File(path.clone()))))
+                .collect(),
+            None => db
+                .load_font_source(fontdb::Source::File(path.clone()))
+                .into_iter()
+                .collect(),
+        };
         if ids.len() != asset.faces.len() {
             return Err(FontCatalogError::at(
                 &path,

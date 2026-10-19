@@ -109,6 +109,10 @@ if [ -n "$FONT_CATALOG_ROOT" ]; then
         || die "cannot sign an invalid product font catalog"
     [ "$(basename "$FONT_CATALOG_ROOT")" = fonts ] \
         || die "FONT_CATALOG_ROOT must be a fonts directory"
+    # Record what fontdb reads of each font once, here, so no process that
+    # sets text from the signed catalog parses its fonts again.
+    "$BUNDLE_BIN" font-index "$FONT_CATALOG_ROOT" \
+        || die "cannot record the font catalog's faces"
     INCLUDE_ARGS+=(--include "$FONT_CATALOG_ROOT")
 fi
 dependency_objects=()
@@ -154,6 +158,8 @@ BUNDLE_DIR="$OUT_DIR/tilo-runtime/$(cat "$VERSION_OUT")"
 if [ -n "$FONT_CATALOG_ROOT" ]; then
     python3 "$REPO_DIR/tools/font-catalog.py" verify "$BUNDLE_DIR/lib/fonts" --scope product \
         || die "signed SDK is missing its verified product font catalog"
+    [ -f "$BUNDLE_DIR/lib/fonts/face-index.json" ] \
+        || die "signed SDK is missing its font catalog's recorded faces"
 fi
 # One copy per soname (tilo-runtime-bundle's BuildOptions::extra_libs): a
 # library at the top of lib/, where LD_LIBRARY_PATH finds it, is not signed

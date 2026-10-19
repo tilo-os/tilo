@@ -363,7 +363,8 @@ fn catalog_root_trust_is_verify_for_checkout_and_writable_roots() {
     let mut bytes = std::fs::read(first.path_in(&checkout).unwrap()).unwrap();
     *bytes.last_mut().unwrap() ^= 1;
     std::fs::write(first.path_in(tmp.path()).unwrap(), bytes).unwrap();
-    let error = verify_bundle(&tmp.path().canonicalize().unwrap(), false)
+    let root = tmp.path().canonicalize().unwrap();
+    let error = verify_bundle(&root, false, Trust::of_root(&root), None)
         .err()
         .expect("a modified font in a writable root is refused");
     assert!(error.problem.contains("SHA-256"), "{error}");
@@ -536,4 +537,59 @@ fn a_browser_fetches_the_cuts_a_reading_style_can_take() {
     let body = crate::tokens::Typography::default().style(crate::tokens::TextRole::Body);
     renderer.measure_style("Settings", None, &body.strong());
     assert!(renderer.take_browser_font_demands().is_empty());
+}
+
+/// A catalog's build records the faces of its files
+/// (`tilo_font_catalog::faces`), and every process builds the catalog's part
+/// of its font database from that record instead of parsing each font. The
+/// database the record makes must be the one parsing makes, face for face,
+/// in the same order, under the same Tilo families: nothing a process
+/// shapes or falls back to may depend on which way it was built.
+#[test]
+fn a_catalog_s_recorded_faces_build_the_database_parsing_builds() {
+    let root = tilo_font_catalog::checkout_root().canonicalize().unwrap();
+    let recorded = tilo_font_catalog::faces::FaceIndex::build(&root).unwrap();
+    let parsed = verify_bundle(&root, false, Trust::Verify, None).unwrap();
+    let read = verify_bundle(&root, false, Trust::Verify, Some(&recorded)).unwrap();
+    let faces = |bundle: &VerifiedBundle| {
+        bundle
+            .db
+            .faces()
+            .map(|face| {
+                let path = match &face.source {
+                    fontdb::Source::File(path) | fontdb::Source::SharedFile(path, _) => {
+                        Some(path.clone())
+                    }
+                    fontdb::Source::Binary(_) => None,
+                };
+                (
+                    path,
+                    face.index,
+                    face.families
+                        .iter()
+                        .map(|(name, _)| name.clone())
+                        .collect::<Vec<_>>(),
+                    face.post_script_name.clone(),
+                    face.style,
+                    face.weight,
+                    face.stretch,
+                    face.monospaced,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    assert!(!faces(&parsed).is_empty());
+    assert_eq!(faces(&read), faces(&parsed));
+    assert_eq!(read.canonical, parsed.canonical);
+    assert_eq!(read.required, parsed.required);
+}
+
+/// The record is believed only where the image's integrity pins it like the
+/// fonts: in a catalog on writable storage (a checkout, a per-user runtime)
+/// a record anyone could have written is passed over and the fonts parsed.
+#[test]
+fn a_recorded_catalog_on_writable_storage_is_parsed() {
+    let root = tilo_font_catalog::checkout_root().canonicalize().unwrap();
+    assert_eq!(Trust::of_root(&root), Trust::Verify);
+    assert!(tilo_font_catalog::faces::FaceIndex::read_trusted(&root, Trust::Verify).is_none());
 }

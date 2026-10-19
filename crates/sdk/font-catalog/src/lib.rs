@@ -19,6 +19,8 @@ use std::sync::OnceLock;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+#[cfg(feature = "faces")]
+pub mod faces;
 #[cfg(test)]
 mod tests;
 

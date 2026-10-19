@@ -53,6 +53,17 @@ class CatalogTest(unittest.TestCase):
                                     (os_fonts / "NewCM10-Regular.otf").stat().st_ino)
                 with self.assertRaisesRegex(ValueError, "missing.*NewCM10-Regular"):
                     fc.link(product, Path(tmp) / "no-extra", "os")
+        with self.subTest(phase='the recorded faces travel with every copy of the catalog'):
+            with tempfile.TemporaryDirectory() as tmp:
+                product, staged, linked = Path(tmp) / "product", Path(tmp) / "staged", Path(tmp) / "linked"
+                fc.stage(source, product, "product")
+                (product / fc.FACE_INDEX).write_text('{"recorded": true}\n')
+                fc.stage(product, staged, "product")
+                fc.link(product, linked, "product")
+                for copy in (staged, linked):
+                    self.assertEqual((copy / fc.FACE_INDEX).read_text(), '{"recorded": true}\n')
+                self.assertEqual((linked / fc.FACE_INDEX).stat().st_ino,
+                                 (product / fc.FACE_INDEX).stat().st_ino)
         with self.subTest(phase='corruption is not substituted'):
             with tempfile.TemporaryDirectory() as tmp:
                 dest = Path(tmp) / "fonts"

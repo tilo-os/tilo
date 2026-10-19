@@ -8,12 +8,19 @@ description = "Tilo's pinned font catalog: its manifest, where it is installed, 
 repository.workspace = true
 homepage.workspace = true
 
+[features]
+# The catalog's recorded faces (`faces`): what fontdb reads of each file,
+# written when a catalog is built and read by processes that set text.
+faces = ["dep:fontdb", "dep:serde_json"]
+
 [dependencies]
 serde.workspace = true
 sha2.workspace = true
 hex.workspace = true
 thiserror.workspace = true
 toml.workspace = true
+fontdb = { version = "0.23", default-features = false, features = ["std", "fs"], optional = true }
+serde_json = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true
