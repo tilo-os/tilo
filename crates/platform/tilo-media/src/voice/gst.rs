@@ -401,7 +401,14 @@ impl VoiceAudio {
         for frame in self.jitter.poll(now) {
             if !self.decoders.contains_key(&frame.publisher) {
                 if self.decoders.len() >= MAX_PUBLISHERS {
-                    return Err(AudioError::Capacity);
+                    // A voice that gave up its slot in the jitter buffer
+                    // gives up its decoder too.
+                    let jitter = &self.jitter;
+                    self.decoders
+                        .retain(|publisher, _| jitter.contains(publisher));
+                }
+                if self.decoders.len() >= MAX_PUBLISHERS {
+                    continue;
                 }
                 self.decoders
                     .insert(frame.publisher.clone(), Decoder::new()?);

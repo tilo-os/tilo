@@ -2,9 +2,10 @@
 //!
 //! The room's governor records each call in the room's governance, bound to
 //! one voice channel of a chat record; see [`tilo_relay_protocol::voice`]. A
-//! [`Participation`] finds the active call bound to a channel (or, for the
-//! room's own person, asks the governor to start one), joins it over the
-//! room's relay session and keeps the governor's current grant. That grant
+//! [`Participation`] finds the active call bound to a channel (or asks the
+//! governor to open the channel's call, which any member may: joining a
+//! voice channel is joining its call), joins it over the room's relay session
+//! and keeps the governor's current grant. That grant
 //! is the whole admission to the relay's voice carrier: the participation
 //! is the carrier's [`ClientAuthority`] while the grant still admits its
 //! scope, the device is still a member and the last grant is younger than
@@ -28,7 +29,7 @@ use parking_lot::Mutex;
 use tilo_desktop_model::RoomId;
 use tilo_moq::client::{Client, ClientAuthority, Connection, ConnectionScope};
 use tilo_moq::relay::Direction;
-use tilo_relay_protocol::voice::{CallOperation, Directions, PARTICIPATION_TTL, VoiceGrant};
+use tilo_relay_protocol::voice::{CallOperation, PARTICIPATION_TTL, VoiceGrant};
 use tilo_relay_session::coedit::{RelayCoeditSession, VoiceEvent};
 
 use crate::{NativeCommittedView, NativeFenceSubscription, NativeWorkspaceOwner};
@@ -92,12 +93,12 @@ pub struct Participation {
 
 impl Participation {
     /// Join the call bound to `channel` in `room` over the room's relay
-    /// `session`, starting it when none is active and this device's person
-    /// governs the room. `check` vets the device's custody.
+    /// `session`, opening it when none is active. `check` vets the device's
+    /// custody.
     ///
     /// # Errors
-    /// The device is no member, the channel is no voice channel, no call is
-    /// active and the device may not start one, or the session is gone.
+    /// The device is no member, the channel is no voice channel, or the
+    /// session is gone.
     pub fn open(
         owner: NativeWorkspaceOwner,
         room: RoomId,
@@ -117,16 +118,13 @@ impl Participation {
             let policy = view.peer().validated_media_policy()?;
             let mut calls = policy.iter().flat_map(|policy| {
                 policy.calls.iter().filter(|(_, call)| {
-                    call.binding == binding
+                    call.binding.same_channel(&binding)
                         && call.phase == tilo_peer_state::room::media::CallPhaseV1::Active
                 })
             });
             let call = calls.next().map(|(id, _)| *id);
             if calls.next().is_some() {
                 return Err("ambiguous governed call".into());
-            }
-            if call.is_none() && view.governor().user_public_key != view.device().user_public_key {
-                return Err("no call is active on this channel".into());
             }
             Ok((view.workspace(), view.device().device_public_key, call))
         })?;
@@ -181,14 +179,10 @@ impl Participation {
         match (phase, call) {
             (Phase::Starting(request), _) => session.voice_call(
                 request,
-                CallOperation::Start {
+                CallOperation::Open {
                     app_id: channel.app.clone(),
                     record_id: channel.record.clone(),
                     channel_id: channel.channel.clone(),
-                    allowed: Directions {
-                        publish: true,
-                        subscribe: true,
-                    },
                 },
             ),
             (_, Some(call)) => session.voice_join(call, None),
@@ -280,6 +274,8 @@ impl Participation {
                 self.refuse(reason.clone());
                 true
             }
+            // The room's rosters, for whoever asked; no participation's.
+            VoiceEvent::Calls(_) => false,
         }
     }
 

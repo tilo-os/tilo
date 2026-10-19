@@ -165,10 +165,9 @@ fn receiver_capacity_and_invalid_timing_do_not_allocate_unbounded_state() {
             .push(received(&format!("p{index}"), 0, now), now)
             .unwrap();
     }
-    assert_eq!(
-        queue.push(received("ninth", 0, now), now),
-        Err(AudioError::Capacity)
-    );
+    // Every slot is speaking: a ninth voice waits, without ending anything.
+    assert_eq!(queue.push(received("ninth", 0, now), now), Ok(()));
+    assert_eq!(queue.stats().overruns, 1);
     for sequence in 1..10 {
         queue.push(received("p0", sequence, now), now).unwrap();
     }
@@ -244,5 +243,30 @@ fn mixing_sums_independent_publishers_then_saturates() {
     assert_eq!(
         mix_frames(&[positive.as_slice(); 9]),
         Err(AudioError::Capacity)
+    );
+}
+
+#[test]
+fn a_ninth_voice_takes_the_slot_of_the_one_quiet_longest() {
+    let now = Instant::now();
+    let mut queue = JitterBuffer::default();
+    for index in 0..8 {
+        queue
+            .push(received(&format!("p{index}"), 0, now), now)
+            .unwrap();
+    }
+    // Everyone's last frame played out and expired: they went quiet, p0 first.
+    let later = now + Duration::from_millis(400);
+    let _ = queue.poll(later);
+    let speaker = received("ninth", 0, later);
+    let ninth = speaker.publisher.clone();
+    queue.push(speaker, later).unwrap();
+    assert!(queue.contains(&ninth), "the new voice is heard");
+    assert_eq!(
+        (0..8)
+            .filter(|index| !queue.contains(&received(&format!("p{index}"), 0, now).publisher))
+            .count(),
+        1,
+        "exactly one quiet voice gave up its slot"
     );
 }

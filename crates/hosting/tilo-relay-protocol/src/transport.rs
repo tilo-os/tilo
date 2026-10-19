@@ -428,9 +428,10 @@ pub enum Envelope {
         signature: [u8; 64],
     },
 
-    /// Start, end or moderate a call of a room the host governs (see
-    /// [`crate::voice`]). Requires an accepted `Subscribe` and the room's
-    /// owner or an administrator. Answered with [`Envelope::VoiceCallResult`].
+    /// Open, start, end or moderate a call of a room the host governs (see
+    /// [`crate::voice`]). Requires an accepted `Subscribe`; opening a
+    /// channel's call takes a member, everything else the room's owner or an
+    /// administrator. Answered with [`Envelope::VoiceCallResult`].
     /// Sent only to a host that advertised voice.
     VoiceCall {
         /// Workspace id.
