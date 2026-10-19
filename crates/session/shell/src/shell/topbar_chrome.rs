@@ -49,17 +49,17 @@ pub(crate) fn own_shown_name(state: &chrome_state::ChromeState) -> String {
     let own_name = (!state.hosted_inputs().is_fixture())
         .then(ui::local_identity::load)
         .flatten()
-        .map(|identity| identity.display_name)
-        .filter(|name| !name.trim().is_empty());
+        .map(|identity| identity.display_name);
+    // As the people here see this person: their name, else "Guest", never
+    // a key or a device.
+    let own_name = Some(crate::shell::network::shared_person_name(own_name));
     let local_user = state.active_local_user();
     let (_, shown) = tilo_desktop::collaborators::collaborator_roster_rows_named(
         &state.tree().desktop,
         &local_user,
         own_name.as_deref(),
     );
-    shown
-        .or(own_name)
-        .unwrap_or_else(|| ui::history_source::participant_display_label(&local_user))
+    shown.or(own_name).unwrap_or_default()
 }
 
 /// The colour this person wears here; an owned fixture derives it from the

@@ -1692,6 +1692,19 @@ fn visibility_allows(
     }
 }
 
+/// The name this person goes by in the rooms they are in: the name they
+/// chose (`display_name`), else "Guest", which the people there tell apart
+/// by number like any shared name (`ui::presence::ParticipantLabels`) and
+/// by colour. Never a device's name, nor a key: a room, and a public one
+/// above all, learns nothing of this person's devices.
+pub(crate) fn shared_person_name(display_name: Option<String>) -> String {
+    display_name
+        .as_deref()
+        .and_then(|name| tilo_user_identity::display_name(name).ok())
+        .map(str::to_owned)
+        .unwrap_or_else(|| crate::shell::i18n::t("presence-guest-name"))
+}
+
 /// What one live member said or reacted with, in one frame.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LiveChat {
@@ -3620,12 +3633,8 @@ impl ShellNetwork {
     fn live_participant(&self) -> tilo_relay_protocol::live::LiveParticipant {
         // The person's name, never the device's: the people in a public
         // workspace learn nothing of this person's devices.
-        let label = ui::local_identity::load()
-            .map(|identity| identity.display_name)
-            .filter(|name| !name.trim().is_empty())
-            .unwrap_or_else(|| {
-                ui::history_source::participant_display_label(&crate::shell::state::local_user_id())
-            });
+        let label =
+            shared_person_name(ui::local_identity::load().map(|identity| identity.display_name));
         crate::shell::live_presence::participant(label, crate::shell::state::local_presence_hue())
     }
 
