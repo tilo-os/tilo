@@ -3,4 +3,4 @@
 # merely near its category. Desktop search matches every language's words
 # whatever the desktop speaks. Comma separated, one phrase each. The packer
 # writes them into the signed manifest; tilo-app.toml carries no copy.
-search-keywords = password manager, password, credentials, logins, vault, keychain, secrets, passkeys
+search-keywords = password manager, password, credentials, logins, vault, keychain, secrets, passkeys, 1password, bitwarden, keepass, keepassxc, lastpass

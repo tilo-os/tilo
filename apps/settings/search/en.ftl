@@ -3,4 +3,4 @@
 # merely near its category. Desktop search matches every language's words
 # whatever the desktop speaks. Comma separated, one phrase each. The packer
 # writes them into the signed manifest; tilo-app.toml carries no copy.
-search-keywords = preferences, system settings, control panel, options, configuration, config, setup, system preferences, tweaks, customize
+search-keywords = preferences, system settings, control panel, options, configuration, config, setup, system preferences, tweaks, customize, gnome settings

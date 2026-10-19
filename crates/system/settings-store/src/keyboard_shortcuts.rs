@@ -387,16 +387,10 @@ pub static FIXED_SHORTCUTS: &[FixedShortcut] = &[
         &[key(&["Super"], "n")],
     ),
     fixed(
-        "fixed-add-tab",
-        "shortcut-add-tab",
-        ShortcutCategory::Windows,
-        &[key(&["Super"], "t")],
-    ),
-    fixed(
         "fixed-duplicate-tab",
         "shortcut-duplicate-tab",
         ShortcutCategory::Windows,
-        &[key(&["Super"], "d")],
+        &[key(&["Super"], "t")],
     ),
     fixed(
         "fixed-open-terminal",

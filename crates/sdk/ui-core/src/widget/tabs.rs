@@ -456,6 +456,20 @@ pub struct TabBar {
     /// preview in the floating pass, above strip clips. Standalone tab bars
     /// keep the legacy inline overlay for their own tests/embedders.
     drag_overlay_owned_by_parent: bool,
+    /// The bar is a window's ([`TabBar::set_window_controls`]): the window's
+    /// own controls stand at its trailing end, and a window showing one tab
+    /// shows it as its title rather than as a tab.
+    window_controls: bool,
+    controls: super::window_controls::WindowControls,
+    hover_control: Option<super::window_controls::WindowControl>,
+    pressed_control: Option<super::window_controls::WindowControl>,
+    /// The window is maximized: its maximize control shows restore.
+    maximized: bool,
+    /// Whether the window showed several tabs at the last layout, and since
+    /// when: the tabs' bodies grow in, or fade back into a plain title, over
+    /// that change.
+    tabbed: bool,
+    tabbed_changed_at: Option<Instant>,
 }
 
 /// Geometry shared by the tab handle and the window-content preview attached
@@ -496,6 +510,7 @@ impl TabBar {
             *rect = shift_rect(*rect, shift);
         }
         self.new_tab_rect = shift_rect(self.new_tab_rect, shift);
+        self.controls.offset(shift);
     }
 
     /// Source pill's opacity while the drag-ghost is visible; low enough to read as
@@ -506,6 +521,7 @@ impl TabBar {
     pub const GHOST_PILL_ALPHA: f32 = 0.5;
 
     pub fn new(group_id_tag: &str, tabs: Vec<TabDescriptor>, active_id: u64) -> Self {
+        let tabbed = tabs.len() > 1;
         Self {
             group_id_tag: group_id_tag.into(),
             tabs,
@@ -579,7 +595,83 @@ impl TabBar {
             drag_lift_duration: crate::tokens::motion::Durations::default().fast(),
             drag_overlay_owned_by_parent: false,
             min_pointer_target: f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
+            window_controls: false,
+            controls: super::window_controls::WindowControls::default(),
+            hover_control: None,
+            pressed_control: None,
+            maximized: false,
+            tabbed,
+            tabbed_changed_at: None,
         }
+    }
+
+    /// Make this a window's bar: the window's controls (History,
+    /// maximize/restore, close) stand at its trailing end and act on the
+    /// active tab, and a window of one tab shows that tab as its title. The
+    /// tabs themselves then carry no maximize or History chips.
+    pub fn set_window_controls(&mut self, on: bool) {
+        self.window_controls = on;
+        if on {
+            self.show_maximize = false;
+        }
+    }
+
+    /// The window is maximized, so its maximize control offers restore.
+    pub fn set_maximized(&mut self, maximized: bool) {
+        self.maximized = maximized;
+    }
+
+    /// A window bar showing a single tab: the tab is the window's title, with
+    /// no tab look.
+    fn solo(&self) -> bool {
+        self.window_controls && self.tabs.len() <= 1
+    }
+
+    /// How far the tabs' bodies have grown in: `0` while the window shows
+    /// one tab as its title, `1` once it shows several as tabs, and between
+    /// the two on the disclosure motion as it changes.
+    fn tabbed_progress(&self) -> f64 {
+        if !self.window_controls {
+            return 1.0;
+        }
+        let target = if self.tabbed { 1.0 } else { 0.0 };
+        let Some(at) = self.tabbed_changed_at else {
+            return target;
+        };
+        if self.reduce_motion {
+            return target;
+        }
+        let direction = if self.tabbed {
+            Direction::Enter
+        } else {
+            Direction::Exit
+        };
+        let elapsed = crate::time::now().saturating_duration_since(at);
+        if elapsed >= tab_motion_time(Disclose::SPEC, direction) {
+            return target;
+        }
+        let p = tab_progress(Disclose::SPEC, direction, elapsed).clamp(0.0, 1.0);
+        if self.tabbed { p } else { 1.0 - p }
+    }
+
+    fn tabbed_in_flight(&self) -> bool {
+        self.window_controls
+            && !self.reduce_motion
+            && self.tabbed_changed_at.is_some_and(|at| {
+                let direction = if self.tabbed {
+                    Direction::Enter
+                } else {
+                    Direction::Exit
+                };
+                crate::time::now().saturating_duration_since(at)
+                    < tab_motion_time(Disclose::SPEC, direction)
+            })
+    }
+
+    /// The window controls' rects, for the host's hit tests and tests.
+    #[must_use]
+    pub fn window_controls(&self) -> &super::window_controls::WindowControls {
+        &self.controls
     }
 
     /// Whether tabs close from the strip (default `true`). Without it no
@@ -791,14 +883,41 @@ impl TabBar {
         // The one selector painter, so a tab can't drift from the rest of
         // the chrome.
         let shape = RoundedRect::from_rect(r, radius);
-        crate::chrome::paint_selector(
-            scene,
-            pill_transform,
-            &shape,
-            crate::chrome::SelectorRole::Item(&look),
-            theme,
-        );
-        if is_active && self.shows_group_focus && self.group_focus == GroupFocus::Focused {
+        // A window of one tab shows it as a plain title; the tab's body grows
+        // in as a second tab arrives and fades back as the last one leaves.
+        let body = self.tabbed_progress();
+        if body > 0.0 {
+            let faded = body < 1.0;
+            if faded {
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "a progress in 0..=1 is exact enough as f32 alpha"
+                )]
+                let alpha = body as f32;
+                scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    alpha,
+                    pill_transform,
+                    &r.inflate(2.0, 2.0),
+                );
+            }
+            crate::chrome::paint_selector(
+                scene,
+                pill_transform,
+                &shape,
+                crate::chrome::SelectorRole::Item(&look),
+                theme,
+            );
+            if faded {
+                scene.pop_layer();
+            }
+        }
+        if body >= 1.0
+            && is_active
+            && self.shows_group_focus
+            && self.group_focus == GroupFocus::Focused
+        {
             // A restrained focus keyline separates two different facts that
             // used to share one treatment: "active tab in this group" and
             // "group receiving keyboard input".  It sits inside the pill so
@@ -2339,6 +2458,25 @@ impl TabBar {
     /// Released outside this bar's rect → `pending_detach`; the parent `GroupRow`
     /// resolves the target bar by hit-testing sibling `bar_rect()`s.
     fn finish_drag_release(&mut self, handled: &mut bool) {
+        if let Some(control) = self.pressed_control.take() {
+            // A control acts on release over itself, like every button.
+            if self.controls.hit(self.last_cursor) == Some(control) {
+                let active = self.active_id;
+                match control {
+                    super::window_controls::WindowControl::Close => {
+                        let _ = self.start_closing(active);
+                    }
+                    super::window_controls::WindowControl::Maximize => {
+                        self.pending_max = Some(active);
+                    }
+                    super::window_controls::WindowControl::History => {
+                        let _ = self.press_history(active);
+                    }
+                }
+            }
+            *handled = true;
+            return;
+        }
         if let Some(resist) = self.resist.as_mut().filter(|r| r.released_at.is_none()) {
             if resist.pull == vello::kurbo::Vec2::ZERO {
                 self.resist = None;
@@ -2661,12 +2799,22 @@ impl TabBar {
     /// the same inset they keep from its top and bottom, so the strip's
     /// capsule is concentric with the tabs in it.
     fn pill_row(&self) -> Rect {
-        if self.on_strip && self.rect.width() > 2.0 * TAB_PILL_INSET_Y {
+        let row = if self.on_strip && self.rect.width() > 2.0 * TAB_PILL_INSET_Y {
             self.rect.inset((-TAB_PILL_INSET_Y, 0.0))
         } else {
             self.rect
+        };
+        if !self.window_controls {
+            return row;
         }
+        // The title's glyph keeps the same distance from the window's
+        // leading edge as the close glyph keeps from its trailing edge.
+        let lead = WINDOW_BAR_LEAD_PX;
+        let x0 = row.x0 + lead;
+        let x1 = self.controls.content_limit(row).max(x0);
+        Rect::new(x0, row.y0, x1, row.y1)
     }
+
 
     /// The ink of an idle tab's title and glyphs: the dim tier, unless the
     /// bar stands on a frosted strip, whose ground is the desktop behind it
@@ -2846,6 +2994,11 @@ impl TabBar {
 pub const TAB_BAR_HEIGHT: f64 = 44.0;
 /// 44 – 2×6 = 32 px pill height and pointer-sized + affordance.
 pub const TAB_PILL_INSET_Y: f64 = 6.0;
+/// Where a window bar's row starts: the leading glyph then sits as far from
+/// the window's leading edge as the close glyph does from its trailing edge.
+const WINDOW_BAR_LEAD_PX: f64 = super::window_controls::EDGE_INSET
+    + (super::window_controls::CONTROL_PX - ICON_W) / 2.0
+    - PILL_PAD_X;
 /// Square at pill height so the "+" chip reads as part of the pill row.
 pub const NEW_TAB_CHIP_PX: f64 = TAB_BAR_HEIGHT - 2.0 * TAB_PILL_INSET_Y;
 
@@ -3264,6 +3417,17 @@ impl Widget for TabBar {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
+        if self.window_controls {
+            let tabbed = self.tabs.len() > 1;
+            if tabbed != self.tabbed {
+                self.tabbed = tabbed;
+                self.tabbed_changed_at = Some(crate::time::now());
+            }
+            let history = self.history.contains_key(&self.active_id);
+            self.controls = super::window_controls::WindowControls::lay_out(self.rect, history);
+        } else {
+            self.controls = super::window_controls::WindowControls::default();
+        }
         self.advance_changed = false;
         self.face_demand_stale = false;
         self.tab_rects.clear();
@@ -3334,6 +3498,9 @@ impl Widget for TabBar {
                 max_w,
                 search_w,
             );
+            // A window of one tab shows it as its title: the window's close
+            // control closes it, so the title carries no × of its own.
+            let close = if self.solo() { Rect::ZERO } else { close };
             let close_hit = if close.area() > 0.0 {
                 let hit_w = CLOSE_HIT_PX.min(r.width());
                 // The destructive target never sits on the painted maximize
@@ -3382,7 +3549,7 @@ impl Widget for TabBar {
         // `x` is the strip's write head; the "+" chip is suppressed once pills
         // fill the bar.
         let plus_x1 = x + NEW_TAB_CHIP_PX;
-        self.new_tab_rect = if self.new_tab && plus_x1 <= row.x1 {
+        self.new_tab_rect = if self.new_tab && !self.solo() && plus_x1 <= row.x1 {
             Rect::new(x, pill_y0, plus_x1, pill_y1)
         } else {
             Rect::ZERO
@@ -3436,6 +3603,23 @@ impl Widget for TabBar {
             self.draw_keyboard_focus(scene, transform, theme)
         });
         self.draw_new_tab_chip(scene, transform, tr, theme);
+        if self.window_controls {
+            self.controls.paint(
+                scene,
+                transform,
+                theme,
+                self.ground(theme),
+                super::window_controls::ControlsState {
+                    hovered: self.hover_control,
+                    pressed: self.pressed_control,
+                    maximized: self.maximized,
+                    history_open: self
+                        .history
+                        .get(&self.active_id)
+                        .is_some_and(|control| control.is_open()),
+                },
+            );
+        }
         self.draw_closing_tabs(scene, transform, tr, theme);
         self.draw_drop_indicator(scene, transform, theme);
         self.draw_drag_ghost(scene, transform, tr, theme, presence);
@@ -3464,6 +3648,8 @@ impl Widget for TabBar {
             WindowEvent::CursorLeft { .. } => {
                 // Nothing can be aimed at from outside the surface.
                 self.hover_idx = None;
+                self.hover_control = None;
+                self.pressed_control = None;
                 self.hover_close_idx = None;
                 self.hover_max_idx = None;
                 self.hover_search_idx = None;
@@ -3806,7 +3992,14 @@ impl Widget for TabBar {
         // spring back runs by itself.
         let resisting =
             self.resist.is_some_and(|r| r.released_at.is_some()) && self.resist_offset().is_some();
-        layout || insert_fade || close_fade || hover_drop_fade || reveal || drag_lift || resisting
+        layout
+            || insert_fade
+            || close_fade
+            || hover_drop_fade
+            || reveal
+            || drag_lift
+            || resisting
+            || self.tabbed_in_flight()
     }
 }
 
@@ -4254,6 +4447,10 @@ impl TabBar {
     ) {
         let p = Point::new(position.x / scale_factor, position.y / scale_factor);
         self.last_cursor = p;
+        self.hover_control = self.controls.hit(p);
+        if self.pressed_control.is_some_and(|c| Some(c) != self.hover_control) {
+            self.pressed_control = None;
+        }
         // Pinned pills leave their close/max/search rects at `Rect::ZERO`;
         // skip them so a cursor crossing (0,0) doesn't latch a hover on a
         // glyph that isn't painted.
@@ -4361,6 +4558,11 @@ impl TabBar {
     /// the `too_many_lines` budget.
     fn on_left_press(&mut self, handled: &mut bool) {
         let cursor_pos = self.last_cursor;
+        if let Some(control) = self.controls.hit(cursor_pos) {
+            self.pressed_control = Some(control);
+            *handled = true;
+            return;
+        }
         let is_pinned_at = |i: usize| {
             self.tabs
                 .get(i)

@@ -3,4 +3,4 @@
 # merely near its category. Desktop search matches every language's words
 # whatever the desktop speaks. Comma separated, one phrase each. The packer
 # writes them into the signed manifest; tilo-app.toml carries no copy.
-search-keywords = app store, store, apps, programs, programs install, install programs, install, installer, software, download apps, software center, appstore
+search-keywords = app store, store, apps, programs, programs install, install programs, install, installer, software, download apps, software center, appstore, flathub, play store, gnome software, discover, flatpak

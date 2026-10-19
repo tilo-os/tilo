@@ -58,16 +58,15 @@ impl BarStanding {
     }
 }
 
-/// A thin strip: every bar control is [`BAR_CONTROL_PX`] (20) with half an
-/// `s1` of air above and below, so the bar is 24 logical pixels (48 at scale
-/// 2). It was 48, then 40, then 36; what it carries (the workspace, the
-/// time, the status glyphs) is a line of text, and every taller step read
-/// as a slab over the work area. The bar's controls run to the screen's top
-/// edge, where a pointer cannot overshoot them, so their targets keep the
-/// pointer floor through their own hit rects rather than a taller bar.
-/// Unscaled `BASE` values because layout sizes its node from this constant
-/// before any theme is in hand.
-pub const TOPBAR_HEIGHT_PX: f32 = BAR_CONTROL_LOGICAL + ui::tokens::Spacing::BASE.s1;
+/// The desktop's bar: every bar control is [`BAR_CONTROL_PX`] (24) with an
+/// `s1` of air above and below, so the bar is 32 logical pixels (64 at scale
+/// 2). At 24 it read cramped and out of balance with the windows' bars
+/// below it. The bar's controls run to the screen's top edge, where a
+/// pointer cannot overshoot them, so their targets keep the pointer floor
+/// through their own hit rects rather than a taller bar. Unscaled `BASE`
+/// values because layout sizes its node from this constant before any theme
+/// is in hand.
+pub const TOPBAR_HEIGHT_PX: f32 = BAR_CONTROL_LOGICAL + 2.0 * ui::tokens::Spacing::BASE.s1;
 
 /// The bar's height under `theme`: [`TOPBAR_HEIGHT_PX`], grown with a large
 /// text size so the time's line still fits with air above and below. At the
@@ -78,7 +77,7 @@ pub fn topbar_height(theme: &Theme) -> f32 {
         .style(TextRole::Body)
         .line_height_px()
         * theme.text_scale;
-    TOPBAR_HEIGHT_PX.max((line + ui::tokens::Spacing::BASE.s1 / 2.0).ceil())
+    TOPBAR_HEIGHT_PX.max((line + 2.0 * ui::tokens::Spacing::BASE.s1).ceil())
 }
 
 const CLOCK_OVERLAY_HEIGHT: f64 = 150.0;
@@ -89,10 +88,10 @@ const NARROW_MENU_BAR_PX: f64 = 720.0;
 
 /// Height of every control in the bar — the Tilo mark, the workspace
 /// pill, the centre widget, the tray pill and the media indicator — so they
-/// share one top and bottom edge: the toolkit's bar control height less two
-/// `s1` steps, a caption line with `s1` of air.
+/// share one top and bottom edge: the toolkit's bar control height less one
+/// `s1` step, a label line with air above and below.
 const BAR_CONTROL_LOGICAL: f32 =
-    ui::tokens::Metrics::BASE.bar_control_height - 2.0 * ui::tokens::Spacing::BASE.s1;
+    ui::tokens::Metrics::BASE.bar_control_height - ui::tokens::Spacing::BASE.s1;
 const BAR_CONTROL_PX: f64 = BAR_CONTROL_LOGICAL as f64;
 /// Centre-to-centre distance of the bar's avatar chips: 20 px chips whose
 /// rings cut only each other's edge.
@@ -107,8 +106,6 @@ const CENTER_INSET_PX: f64 = 12.0;
 /// chevron opening its menu).
 const SMALL_GLYPH_PX: f64 = 12.0;
 
-/// Between the workspace's name and the strip's, after the workspace pill.
-const STRIP_SEPARATOR: &str = "\u{203a}";
 
 /// Diameter of the bar's larger glyphs: the status icons.
 const BAR_GLYPH_PX: f64 = 14.0;
@@ -1941,7 +1938,7 @@ impl TopBarChrome {
     ) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let ws_text_style = tokens.typography.style(TextRole::Caption);
+        let ws_text_style = tokens.typography.style(TextRole::Label);
         // Measured at the same weight it's drawn at (Semibold), so the
         // pill width tracks the glyph advance, not the narrower Regular.
         let ws_weight = self.workspace_name_text_weight();
@@ -1986,38 +1983,23 @@ impl TopBarChrome {
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.settings_anchor(ws_pill_outer);
         }
-        // A thing you choose between is a capsule (HIG §9.1, Selector).
-        let pill = RoundedRect::from_rect(
-            ws_pill_outer,
-            ui::chrome::ChromeRole::Selector.radius(theme, ws_pill_outer.height()),
-        );
-        paint_bar_selector(
-            scene,
-            transform,
-            &pill,
-            ui::chrome::SelectionState::active(true),
-            theme,
-        );
+        // Plain at rest, like every control on the bar: the workspace name
+        // and its chevron. It lifts while its menu is open.
         let workspace_lens_open = self
             .chrome
             .as_ref()
             .is_some_and(|chrome| chrome.snapshot().overlays.ws_settings);
         if workspace_lens_open {
-            let context_rule = RoundedRect::from_rect(
-                Rect::new(
-                    ws_pill_outer.x0 + pad,
-                    ws_pill_outer.y1 - 2.5,
-                    ws_pill_outer.x1 - pad,
-                    ws_pill_outer.y1 - 0.5,
-                ),
-                1.0,
+            let pill = RoundedRect::from_rect(
+                ws_pill_outer,
+                f64::from(theme.tokens.radii.control),
             );
-            scene.fill(
-                Fill::NonZero,
+            paint_bar_selector(
+                scene,
                 transform,
-                colors.intent.inverted,
-                None,
-                &context_rule,
+                &pill,
+                ui::chrome::SelectionState::active(true),
+                theme,
             );
         }
         text_renderer.draw_style(
@@ -2041,11 +2023,7 @@ impl TopBarChrome {
             transform,
             chevron_rect,
             Self::WORKSPACE_MENU_ICON,
-            if workspace_lens_open {
-                colors.intent.inverted
-            } else {
-                colors.text_dim
-            },
+            colors.text_dim,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
     }
@@ -2317,18 +2295,10 @@ impl TopBarChrome {
             self.rect.x1,
             self.rect.y1,
         );
-        let tray = RoundedRect::from_rect(
-            self.tray_pill_rect,
-            ui::chrome::ChromeRole::Selector.radius(theme, tray_h),
-        );
-        paint_bar_selector(
-            scene,
-            transform,
-            &tray,
-            ui::chrome::SelectionState::active(true),
-            theme,
-        );
-        // At 3% the user needs to notice the whole pill, not just read
+        // Plain at rest, like every control on the bar: the status glyphs
+        // stand on the bar itself.
+        let tray = RoundedRect::from_rect(self.tray_pill_rect, f64::from(theme.tokens.radii.control));
+        // At 3% the user needs to notice the whole control, not just read
         // the glyph.
         if self.status.battery_is_critical() {
             scene.fill(
@@ -5326,18 +5296,18 @@ mod tests {
         let spacing = tokens.spacing;
         assert_eq!(
             BAR_CONTROL_PX,
-            f64::from(tokens.metrics.bar_control_height - 2.0 * spacing.s1)
+            f64::from(tokens.metrics.bar_control_height - spacing.s1)
         );
         assert_eq!(CENTER_INSET_PX, f64::from(spacing.s3));
-        // The bar is its 20 px controls plus half an `s1` of air each side:
-        // a 24 px line (48 physical px at scale 2), not the 36, 40 or 48 it
-        // grew to.
-        assert_eq!(TOPBAR_HEIGHT_PX, 24.0);
-        assert_eq!(TOPBAR_HEIGHT_PX, BAR_CONTROL_LOGICAL + spacing.s1);
+        // USER REQUIREMENT (2026-10-19): "why is the top bar so tiny, why not
+        // a few pixel bigger? it looks super unbalanced" — 24 px controls
+        // with an `s1` of air each side: a 32 px bar.
+        assert_eq!(TOPBAR_HEIGHT_PX, 32.0);
+        assert_eq!(TOPBAR_HEIGHT_PX, BAR_CONTROL_LOGICAL + 2.0 * spacing.s1);
         assert!(TOPBAR_HEIGHT_PX < tokens.metrics.bar_height);
     }
 
-    /// At the default text size the bar is 24 px; a large text size grows
+    /// At the default text size the bar is 32 px; a large text size grows
     /// it so the time's line never spills out of it.
     #[test]
     fn the_bar_grows_with_large_text_and_not_before() {
@@ -6640,7 +6610,7 @@ mod tests {
             (bar_bottom - f64::from(TOPBAR_HEIGHT_PX)).abs() < 0.5,
             "topbar y1 ({bar_bottom}) should equal TOPBAR_HEIGHT_PX ({TOPBAR_HEIGHT_PX})",
         );
-        assert_eq!(TOPBAR_HEIGHT_PX, 24.0);
+        assert_eq!(TOPBAR_HEIGHT_PX, 32.0);
         for (label, rect) in [
             ("workspace", bar.ws_pill_rect),
             ("center", bar.center_rect),

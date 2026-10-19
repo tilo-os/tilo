@@ -1340,7 +1340,6 @@ impl GroupRow {
             if rect.area() <= 0.0 {
                 continue;
             }
-            group.draw_docked_strip(scene, (transform, Affine::IDENTITY), theme);
             group.draw(scene, transform, text_renderer, theme, presence);
             rects.push(rect);
         }
@@ -1554,7 +1553,6 @@ impl GroupRow {
                 transform,
                 &rect.inflate(16.0, 16.0),
             );
-            self.groups[i].draw_docked_strip(scene, (transform, self.drawing_desktop), theme);
             self.groups[i].draw(scene, transform, tr, theme, presence);
             scene.pop_layer();
         }
@@ -5379,16 +5377,6 @@ impl GroupRow {
             // would spend a blurred region on nothing.
             // A damage part of its own: a strip that reads the desktop again
             // repaints only itself.
-            if seen_across(presence, rect).is_none_or(|(x0, x1)| x1 > x0) {
-                let key = crate::scene_parts::PartKey::new("ui.docked-strip", id);
-                let bounds =
-                    vec![t.transform_rect_bbox(self.groups[i].bar_rect().inflate(2.0, 2.0))];
-                let desktop = self.drawing_desktop;
-                let group = &mut self.groups[i];
-                crate::scene_parts::part(scene, key, bounds, |scene| {
-                    group.draw_docked_strip(scene, (t, desktop), theme);
-                });
-            }
             match self.apart_window {
                 // Only a group at rest in its slot: one moving, lifted or
                 // fading is drawn every frame.

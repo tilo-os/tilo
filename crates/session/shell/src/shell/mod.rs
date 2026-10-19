@@ -1128,15 +1128,13 @@ pub fn mount_in_process(
     })
 }
 
-/// Spacing of the strip column under the top bar. Nothing between the bar
-/// and the first strip: the tab row above every window already carries
-/// `TAB_PILL_INSET_Y` of air over its pills, and the bar keeps `s1` under
-/// its controls, so a margin on top of both was an empty band (24 physical
-/// px at scale 2) between the bar and the windows' tab row. The windows
-/// keep a margin over the bottom edge, which nothing else provides.
+/// Spacing of the strip column under the top bar: the same margin above the
+/// windows as below them, so the work area reads as one evenly framed space.
+/// With nothing above them, the windows' bars sat directly against the top
+/// bar and the two read as one cramped stack.
 pub(crate) const WORK_AREA: tilo_desktop::composition::WorkArea =
     tilo_desktop::composition::WorkArea::Flush {
-        top: 0.0,
+        top: 12.0,
         bottom: 12.0,
     };
 

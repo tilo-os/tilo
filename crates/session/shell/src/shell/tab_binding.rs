@@ -874,13 +874,19 @@ pub fn rename_tab_for_title(tree: &mut WorkspaceTree, surface_id: u64, title: &s
                         TileContent::Foreign { surface_id: id, .. } if *id == surface_id
                     )
                 }) {
+                    let location = match &tab.tile {
+                        TileContent::Foreign { app_id, .. } => {
+                            location_from_title(title, &tab_label_for_foreign(app_id))
+                        }
+                        _ => title.to_owned(),
+                    };
                     // Terminals re-send their title continuously; an identical
                     // one is not a change, and must not bump the tree revision
                     // (a chrome rebuild and repaint per event).
-                    if tab.title == title {
+                    if tab.title == location {
                         return true;
                     }
-                    title.clone_into(&mut tab.title);
+                    tab.title = location;
                     true
                 } else {
                     false
@@ -893,6 +899,42 @@ pub fn rename_tab_for_title(tree: &mut WorkspaceTree, surface_id: u64, title: &s
         }
     }
     false
+}
+
+/// What a foreign window's title says about where it is, without the app's
+/// own name: the bar already shows the app's icon, so "Q3 report.odt -
+/// LibreOffice Writer" is "Q3 report.odt". Only the app's exact name,
+/// joined by one of the usual separators at either end, is removed; any
+/// other title is left as the app wrote it. A title that is nothing but the
+/// app's name stays its name: the app shows no location.
+pub(crate) fn location_from_title(title: &str, app_name: &str) -> String {
+    const SEPARATORS: [&str; 4] = [" - ", " \u{2014} ", " \u{2013} ", " | "];
+    let name = app_name.trim();
+    let trimmed = title.trim();
+    if name.is_empty() || trimmed.eq_ignore_ascii_case(name) {
+        return trimmed.to_owned();
+    }
+    for separator in SEPARATORS {
+        let suffix = format!("{separator}{name}");
+        if trimmed.len() > suffix.len()
+            && trimmed
+                .get(trimmed.len() - suffix.len()..)
+                .is_some_and(|tail| tail.eq_ignore_ascii_case(&suffix))
+            && let Some(head) = trimmed.get(..trimmed.len() - suffix.len())
+        {
+            return head.trim().to_owned();
+        }
+        let prefix = format!("{name}{separator}");
+        if trimmed.len() > prefix.len()
+            && trimmed
+                .get(..prefix.len())
+                .is_some_and(|head| head.eq_ignore_ascii_case(&prefix))
+            && let Some(tail) = trimmed.get(prefix.len()..)
+        {
+            return tail.trim().to_owned();
+        }
+    }
+    trimmed.to_owned()
 }
 
 /// Resolve the [`GroupId`] owning the `TileContent::Foreign` tab bound to `surface_id`. Used by
@@ -3222,5 +3264,33 @@ mod tests {
             assert_eq!(tree.desktop.active, active);
             assert!(group_id_for_surface(&tree, 9_999).is_none());
         }
+    }
+}
+
+#[cfg(test)]
+mod location_tests {
+    use super::location_from_title;
+
+    // USER REQUIREMENT (2026-10-19): asked how "a legacy application that
+    // actually sets an app title" shows; the bar shows the app's icon, so its
+    // name in the title is said twice.
+    #[test]
+    fn the_apps_own_name_is_removed_from_its_title() {
+        let name = "LibreOffice Writer";
+        assert_eq!(
+            location_from_title("Q3 report.odt - LibreOffice Writer", name),
+            "Q3 report.odt"
+        );
+        assert_eq!(
+            location_from_title("LibreOffice Writer \u{2014} Q3 report.odt", name),
+            "Q3 report.odt"
+        );
+        assert_eq!(location_from_title("LibreOffice Writer", name), "LibreOffice Writer");
+        assert_eq!(location_from_title("~/work: vim", "Alacritty"), "~/work: vim");
+        assert_eq!(
+            location_from_title("Writer - notes", name),
+            "Writer - notes",
+            "only the exact name is removed"
+        );
     }
 }
