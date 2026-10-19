@@ -1327,7 +1327,24 @@ impl QuickSettingsRoot {
                 QuickSettingsControl::Wifi | QuickSettingsControl::AirplaneMode
             )
         {
-            return t("display-confirm-applying");
+            // The change under way, until the machine answers: never the
+            // request shown as if it had happened.
+            return match (c, s.radio_change) {
+                (QuickSettingsControl::Wifi, Some(os_actions::RadioChange::Wifi(on)))
+                | (
+                    QuickSettingsControl::AirplaneMode,
+                    Some(os_actions::RadioChange::Airplane(on)),
+                ) => t(if on { "qs-turning-on" } else { "qs-turning-off" }),
+                _ => t("display-confirm-applying"),
+            };
+        }
+        if c == QuickSettingsControl::Wifi && s.radios.wifi_available && !s.wifi {
+            if s.radios.wifi_hardware_blocked {
+                return crate::shell::quick_settings::radio::WifiProblem::HardwareSwitch.reason();
+            }
+            if let Some(problem) = s.wifi_problem {
+                return problem.reason();
+            }
         }
 
         let on_off = |on: bool| t(if on { "qs-on" } else { "qs-off" });

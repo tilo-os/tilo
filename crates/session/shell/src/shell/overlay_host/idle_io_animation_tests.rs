@@ -133,7 +133,7 @@ fn wifi_radio_dispatch_does_not_wait_for_the_native_network_operation() {
             &self,
             change: os_actions::RadioChange,
         ) -> Option<os_actions::RadioWork> {
-            Some(Box::new(move || change.execute(&Self)))
+            Some(Box::new(move || change.run(&Self)))
         }
         fn set_brightness(&self, _: f32) -> Result<(), String> {
             Ok(())

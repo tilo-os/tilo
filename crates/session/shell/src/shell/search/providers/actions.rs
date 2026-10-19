@@ -2725,12 +2725,12 @@ impl SharedQsDispatcher {
             *self.radio_job.borrow_mut() = Some(job.clone());
             let mut state = chrome.borrow_mut();
             state.quick_settings.radio_change_pending = true;
+            state.quick_settings.radio_change = Some(change);
             state.bump();
             Ok(Some(job))
         } else {
-            let result = change.execute(actions.as_ref());
-            result?;
-            crate::shell::quick_settings::radio::apply(change, Ok(()), chrome);
+            let radios = change.run(actions.as_ref())?;
+            crate::shell::quick_settings::radio::apply(change, Ok(radios), chrome);
             Ok(None)
         }
     }
@@ -2909,6 +2909,13 @@ impl crate::shell::quick_settings::actions::QsActions for ValidatedQsActions<'_>
         change: os_actions::RadioChange,
     ) -> Option<os_actions::RadioWork> {
         self.inner.prepare_radio_change(change)
+    }
+
+    fn apply_radio_change(
+        &self,
+        change: os_actions::RadioChange,
+    ) -> Result<Option<os_actions::RadioState>, String> {
+        self.inner.apply_radio_change(change)
     }
 
     fn set_brightness(&self, percent: f32) -> Result<(), String> {

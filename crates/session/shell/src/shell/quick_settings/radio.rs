@@ -6,13 +6,17 @@
 use parking_lot::Mutex;
 use std::sync::Arc;
 
-use os_actions::{RadioChange, RadioWork};
+use os_actions::{RadioChange, RadioState, RadioWork};
 
 use crate::shell::chrome_state::Chrome;
 use crate::shell::i18n::t;
 
+/// What the worker came back with: the radios read after the change (when
+/// the dispatcher reads them), or its refusal.
+type RadioResult = Result<Option<RadioState>, String>;
+
 struct Completion {
-    result: Option<Result<(), String>>,
+    result: Option<RadioResult>,
     applied: bool,
     finished: bool,
 }
@@ -61,8 +65,11 @@ impl RadioTicket {
         Ok(ticket)
     }
 
+    /// Whether the change happened, once the worker is done: its refusal,
+    /// or — when it read the radios back — whether they ended up as asked.
     pub(crate) fn result(&self) -> Option<Result<(), String>> {
-        self.completion.lock().result.clone()
+        let result = self.completion.lock().result.clone()?;
+        Some(result.and_then(|radios| radios.map_or(Ok(()), |radios| self.change.outcome(&radios))))
     }
 
     pub(crate) fn finished(&self) -> bool {
@@ -91,33 +98,91 @@ impl RadioTicket {
     }
 }
 
-pub(crate) fn apply(change: RadioChange, result: Result<(), String>, chrome: &Chrome) {
+/// Why Wi-Fi is not in the state the person asked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WifiProblem {
+    /// A physical switch holds the radio off.
+    HardwareSwitch,
+    /// Asked to turn on, the radio stayed off.
+    StayedOff,
+    /// The change could not be made at all.
+    Failed,
+}
+
+impl WifiProblem {
+    /// The reason in the person's words.
+    pub fn reason(self) -> String {
+        t(match self {
+            Self::HardwareSwitch => "qs-wifi-problem-hardware-switch",
+            Self::StayedOff => "qs-wifi-problem-stayed-off",
+            Self::Failed => "qs-wifi-problem-failed",
+        })
+    }
+}
+
+/// Land a finished radio change in the panel: the radios as they were read
+/// back, never the request. A change that did not happen says why.
+pub(crate) fn apply(change: RadioChange, result: RadioResult, chrome: &Chrome) {
     let mut state = chrome.borrow_mut();
-    state.quick_settings.radio_change_pending = false;
-    match result {
-        Ok(()) => match change {
-            RadioChange::Wifi(enabled) => {
-                state.quick_settings.wifi = enabled;
-                state.quick_settings.radios.wifi_enabled = enabled;
-                state.quick_settings.wifi_password = None;
-                if !enabled {
-                    state.quick_settings.wifi_networks.clear();
+    let qs = &mut state.quick_settings;
+    qs.radio_change_pending = false;
+    qs.radio_change = None;
+    let failed = match result {
+        Ok(Some(radios)) => {
+            let outcome = change.outcome(&radios);
+            qs.wifi_problem = match (change, &outcome) {
+                (_, Ok(())) => None,
+                (RadioChange::Wifi(true) | RadioChange::Airplane(false), Err(_))
+                    if radios.wifi_hardware_blocked =>
+                {
+                    Some(WifiProblem::HardwareSwitch)
+                }
+                (RadioChange::Wifi(true) | RadioChange::Airplane(false), Err(_)) => {
+                    Some(WifiProblem::StayedOff)
+                }
+                (_, Err(_)) => qs.wifi_problem,
+            };
+            if radios.wifi_available {
+                qs.wifi = radios.wifi_enabled;
+            }
+            qs.radios = radios;
+            outcome.err()
+        }
+        // A dispatcher that cannot read the radios back reported success:
+        // show it, and the read-back the host kicks next corrects it.
+        Ok(None) => {
+            match change {
+                RadioChange::Wifi(enabled) => {
+                    qs.wifi = enabled;
+                    qs.radios.wifi_enabled = enabled;
+                }
+                RadioChange::Airplane(enabled) => {
+                    qs.radios.airplane_mode = enabled;
                 }
             }
-            RadioChange::Airplane(enabled) => {
-                state.quick_settings.radios.airplane_mode = enabled;
-            }
-        },
-        Err(error) => {
-            tracing::warn!(target: "tilo::os_actions", op = ?change, %error, "radio change failed");
-            state.push_notification(
-                t(match change {
-                    RadioChange::Wifi(_) => "host-qs-change-failed-wifi",
-                    RadioChange::Airplane(_) => "host-qs-change-failed-airplane",
-                }),
-                t("host-qs-change-failed-state-restored"),
-            );
+            qs.wifi_problem = None;
+            None
         }
+        Err(error) => {
+            if matches!(change, RadioChange::Wifi(_)) {
+                qs.wifi_problem = Some(WifiProblem::Failed);
+            }
+            Some(error)
+        }
+    };
+    if !qs.wifi {
+        qs.wifi_password = None;
+        qs.wifi_networks.clear();
+    }
+    if let Some(error) = failed {
+        tracing::warn!(target: "tilo::os_actions", op = ?change, %error, "radio change failed");
+        state.push_notification(
+            t(match change {
+                RadioChange::Wifi(_) => "host-qs-change-failed-wifi",
+                RadioChange::Airplane(_) => "host-qs-change-failed-airplane",
+            }),
+            t("host-qs-change-failed-state-restored"),
+        );
     }
     state.bump();
 }

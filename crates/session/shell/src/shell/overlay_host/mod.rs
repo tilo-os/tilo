@@ -219,6 +219,14 @@ mod idle_io_animation_tests;
 #[path = "qs_device_state_tests.rs"]
 mod qs_device_state_tests;
 
+#[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "each test reads one chrome borrow through to its last assertion"
+)]
+#[path = "qs_wifi_radio_tests.rs"]
+mod qs_wifi_radio_tests;
+
 /// Draw a relationship line with a visible head at the followed person. This
 /// intentionally encodes direction in geometry, so a room observer does not
 /// have to decode a caption or guess from the source cursor's colour.
@@ -11965,6 +11973,10 @@ impl ShellOverlayHost {
         self.qs_action_slot.observe_radio_availability(&radios);
         if let Ok(on) = os_actions::wifi_from_radios(&radios) {
             st.quick_settings.wifi = on;
+            if on {
+                // Whatever kept it off has let go.
+                st.quick_settings.wifi_problem = None;
+            }
         }
         st.quick_settings.radios = radios;
     }
