@@ -194,6 +194,8 @@ impl ResourceSurface<Shelf> for Rows {
         ]
     }
 
+    const ROW_DECLARATIONS: bool = true;
+
     fn row_declarations(&self, row: &str) -> Vec<ActionDecl<Shelf>> {
         match self.side {
             Side::Left if even(row) => vec![
@@ -429,4 +431,143 @@ fn controls_bind_to_the_published_actions_without_its_children() {
             assert_eq!(WALKS.get(), 1, "bindings walk the view once");
         })
         .expect("the root is the shelf's");
+}
+
+/// The shelf's document, as its record holds it now.
+fn document(app: &TestApp<impl ResourceApp>) -> AutoCommit {
+    app.read_document(Clone::clone)
+}
+
+#[test]
+fn the_shared_publication_with_live_rows_is_the_whole_one() {
+    let mut app = shelf(3).expect("the shelf opens");
+    let doc = document(&app);
+    let root = app
+        .harness()
+        .widget_mut::<ResourceRoot>()
+        .expect("the root is the shelf's");
+    let whole = outline(&root.publication());
+    let shared = root
+        .shared_resources(None, &doc)
+        .expect("surfaces with live rows and row edits publish a shared forest");
+    let published = shared.first().expect("the shelf").to_resource();
+    assert_eq!(
+        outline(&published),
+        whole,
+        "the shared forest carries every row, merged and bound, as the whole tree does"
+    );
+}
+
+/// A surface that keeps the rows it made, as one does while what they show
+/// holds, and binds no edit to them.
+struct KeptRows {
+    rows: Vec<LiveRow>,
+    rect: Rect,
+}
+
+impl Widget for KeptRows {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _: &Theme,
+        _: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        taffy
+            .new_leaf(ui_core::taffy::Style::default())
+            .unwrap_or_else(|_| NodeId::from(0_u64))
+    }
+
+    fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, origin: Point) {
+        self.rect = Rect::from_origin_size(origin, Size::ZERO);
+    }
+
+    fn name(&self) -> &'static str {
+        "KeptRows"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+}
+
+impl ResourceSurface<Shelf> for KeptRows {
+    fn present(&mut self, _: &Rc<i64>) {}
+
+    fn live_rows(&self) -> Vec<LiveRow> {
+        self.rows.clone()
+    }
+}
+
+struct KeptShelfApp;
+
+impl ResourceApp for KeptShelfApp {
+    type Resource = Shelf;
+    const ID: &'static str = "so.tilo.test-kept-shelf";
+    const TITLE: &'static str = "Kept shelf";
+
+    fn view(cx: &mut ViewCx<Shelf>) -> Element {
+        cx.surface(KeptRows {
+            rows: vec![
+                // Joins the document's first item.
+                LiveRow::new("shelf/item:0", "test.shelf.live", "Live item"),
+                LiveRow::new("shelf/visitor", "test.shelf.visitor", "Visitor"),
+            ],
+            rect: Rect::ZERO,
+        })
+    }
+}
+
+#[test]
+fn rows_handed_out_again_publish_the_nodes_they_published() {
+    let mut app = TestApp::<KeptShelfApp>::new().expect("the shelf opens");
+    app.call("grow", json!({ "by": 2 }))
+        .expect("the shelf grows");
+    let doc = document(&app);
+    let root = app
+        .harness()
+        .widget_mut::<ResourceRoot>()
+        .expect("the root is the shelf's");
+    let first = root.shared_resources(None, &doc).expect("a shared forest");
+    let second = root.shared_resources(None, &doc).expect("a shared forest");
+    let children = |forest: &[ui_core::published::SharedResource]| {
+        forest
+            .first()
+            .expect("the shelf")
+            .children()
+            .iter()
+            .map(|child| (child.id().to_owned(), child.clone()))
+            .collect::<Vec<_>>()
+    };
+    let (was, now) = (children(&first), children(&second));
+    assert_eq!(
+        was.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+        ["shelf/item:0", "shelf/item:1", "shelf/visitor"],
+        "the row naming an item joins it; the other is appended"
+    );
+    // This shelf builds its document children afresh for each publication
+    // (it keeps no publication epoch), so a row joining one is joined
+    // again; a row of its own is the node it published last time.
+    let visitor = |children: &[(String, ui_core::published::SharedResource)]| {
+        children
+            .iter()
+            .find(|(id, _)| id == "shelf/visitor")
+            .map(|(_, child)| child.clone())
+            .expect("the visitor row")
+    };
+    assert!(
+        visitor(&was).ptr_eq(&visitor(&now)),
+        "nothing the row was made from moved, so it is the node published last time"
+    );
+    let joined = was
+        .first()
+        .map(|(_, child)| child.to_resource())
+        .expect("the first item");
+    assert!(
+        joined.presentation.is_none(),
+        "a row without a presentation lends none"
+    );
+    assert!(
+        joined.actions.iter().any(|action| action.id == "take"),
+        "the joined item keeps its own actions"
+    );
 }

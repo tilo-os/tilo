@@ -22,9 +22,14 @@ use tilo_resource::Effect;
 /// Rows are merged by id into the resource's published children: a row with
 /// the id of a document child adds its operations to that child instead of
 /// publishing a second resource under the same id.
+///
+/// A row is shared, not copied: a surface that keeps the rows it made while
+/// what they show holds hands the same rows to every publication, and the
+/// publication reuses what it built from each one instead of building it
+/// again.
 #[derive(Clone)]
 pub struct LiveRow {
-    resource: Resource,
+    resource: std::rc::Rc<Resource>,
 }
 
 impl LiveRow {
@@ -33,7 +38,7 @@ impl LiveRow {
     /// time, a container id), a `kind` tag and a human `label`.
     pub fn new(id: impl Into<String>, kind: impl Into<String>, label: impl Into<String>) -> Self {
         Self {
-            resource: Resource::new(id, kind, label),
+            resource: std::rc::Rc::new(Resource::new(id, kind, label)),
         }
     }
 
@@ -43,7 +48,8 @@ impl LiveRow {
     /// publication boundary.
     #[must_use]
     pub fn semantic_identity(mut self, identity: ResourceSemanticIdentity) -> Self {
-        self.resource.semantic_identity = identity.is_valid().then_some(identity);
+        std::rc::Rc::make_mut(&mut self.resource).semantic_identity =
+            identity.is_valid().then_some(identity);
         self
     }
 
@@ -53,7 +59,7 @@ impl LiveRow {
     /// any depth: the resource's own publication carries them.
     pub fn from_resource(resource: Resource) -> Self {
         Self {
-            resource: resolved_outside_document(resource),
+            resource: std::rc::Rc::new(resolved_outside_document(resource)),
         }
     }
 
@@ -65,7 +71,9 @@ impl LiveRow {
     #[must_use]
     pub fn operation(mut self, operation: ActionSpec) -> Self {
         if admits(&operation, self.id()) {
-            self.resource.actions.push(operation);
+            std::rc::Rc::make_mut(&mut self.resource)
+                .actions
+                .push(operation);
         }
         self
     }
@@ -75,7 +83,7 @@ impl LiveRow {
     /// that has no presentation of its own lends it this one.
     #[must_use]
     pub fn presentation(mut self, presentation: ResourcePresentation) -> Self {
-        self.resource.presentation = Some(presentation);
+        std::rc::Rc::make_mut(&mut self.resource).presentation = Some(presentation);
         self
     }
 
@@ -92,14 +100,16 @@ impl LiveRow {
     /// navigates to, opened by one of the row's own operations.
     #[must_use]
     pub fn view(mut self, view: tilo_actions::ResourceViewSpec) -> Self {
-        self.resource = self.resource.with_view(view);
+        std::rc::Rc::make_mut(&mut self.resource).views.push(view);
         self
     }
 
     /// Nest `row` beneath this one (a container's logs).
     #[must_use]
     pub fn row(mut self, row: LiveRow) -> Self {
-        self.resource.children.push(row.resource);
+        std::rc::Rc::make_mut(&mut self.resource)
+            .children
+            .push(std::rc::Rc::unwrap_or_clone(row.resource));
         self
     }
 
@@ -109,9 +119,16 @@ impl LiveRow {
     }
 
     /// The row as the published tree carries it.
-    pub fn into_resource(mut self) -> Resource {
-        tilo_resource::share::offer_tree(&mut self.resource);
-        self.resource
+    pub fn into_resource(self) -> Resource {
+        let mut resource = std::rc::Rc::unwrap_or_clone(self.resource);
+        tilo_resource::share::offer_tree(&mut resource);
+        resource
+    }
+
+    /// Whether `self` and `other` are the same row, handed out again: a
+    /// clone of one row, not two rows that read alike.
+    pub(crate) fn same_row(&self, other: &Self) -> bool {
+        std::rc::Rc::ptr_eq(&self.resource, &other.resource)
     }
 }
 

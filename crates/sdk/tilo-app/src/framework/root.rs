@@ -40,7 +40,9 @@ use super::view::ViewCx;
 mod shared_tree;
 mod typed;
 mod widget;
-use shared_tree::{ItemChildren, NestedViews, PublishedChildren, RecordChildren, SharedTreeCache};
+use shared_tree::{
+    ItemChildren, NestedViews, PublishedChildren, RecordChildren, RowChildren, SharedTreeCache,
+};
 use typed::TypedRoot;
 pub(crate) use typed::{ResourceType, Typed};
 pub(crate) use widget::{RootApp, RootControls, RootModel, RootPublishes, RootSearch, RootWidget};
@@ -101,6 +103,9 @@ pub(crate) struct ResourceRoot {
     /// The children with the records kept beside the resource, as the shared
     /// publication last carried them.
     record_children: std::cell::RefCell<Option<RecordChildren>>,
+    /// The children with the surfaces' live rows merged in, as the shared
+    /// publication last carried them.
+    row_children: std::cell::RefCell<Option<RowChildren>>,
     /// The head bound controls were last refreshed from, kept between syncs
     /// for a resource whose publication may be reused
     /// ([`Resource::publication_cache_epoch`]).
@@ -475,6 +480,7 @@ impl ResourceRoot {
             item_children: std::cell::RefCell::new(None),
             published_children: std::cell::RefCell::new(None),
             record_children: std::cell::RefCell::new(None),
+            row_children: std::cell::RefCell::new(None),
             binding_head: std::cell::RefCell::new(None),
             binding_base: std::cell::RefCell::new(None),
             nested_views: std::cell::RefCell::new(None),

@@ -547,13 +547,14 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         // Captures and History still describe the controls they draw. Only
         // execution needs a live environment; publication is inert metadata.
         let source = Rc::clone(&status);
+        let kept = super::effect::KeptSpecs::default();
         self.effects.publish::<E>(self.alive.clone(), move || {
             let now = source
                 .borrow()
                 .as_ref()
                 .map(|status| status())
                 .unwrap_or_default();
-            super::effect::published_specs::<E>(&now)
+            super::effect::kept_specs::<E>(&kept, &now)
         });
         if self.effects.env().is_some() {
             self.effects.handle(self.alive.clone(), handle);
