@@ -767,7 +767,7 @@ fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
         }
     }
 
-    eprintln!("phase block_identity_is_preserved_and_shape_errors_install_nothing");
+    eprintln!("phase block_identity_is_preserved_and_a_damaged_note_is_quarantined");
     {
         use automerge::ReadDoc;
         use ui::application_view::ApplicationViewState;
@@ -825,22 +825,19 @@ fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
                 app.restore_application_view(saved.application.as_ref().unwrap(), doc)
             })
             .unwrap();
-        assert!(result.is_err());
-        assert_eq!(
-            app.main_panel_mut().editor().blocks()[0].text(),
-            "Project index"
+        // A note that no longer reads as a note is quarantined: the rest of
+        // the notebook opens without it, and the document keeps it as it
+        // is until it is repaired.
+        assert!(result.is_ok(), "{result:?}");
+        assert!(
+            app.workspace_pages_for_test()
+                .iter()
+                .all(|page| page.id != f.root),
+            "the damaged note is left out of the notebook"
         );
-        assert_eq!(
-            app.main_panel_mut().editor().blocks()[0].line.cursor_pos(),
-            1
-        );
-        let error = try_restored_component(&f, 11, existing(&checkout), RestoreInput::Local(saved))
-            .err()
-            .unwrap();
-        assert!(matches!(
-            error,
-            ui::launch::LaunchError::ComponentSetup { .. }
-        ));
+        assert_ne!(app.selected_for_test(), Some(f.root));
+        try_restored_component(&f, 11, existing(&checkout), RestoreInput::Local(saved))
+            .expect("a notebook with one damaged note still opens");
         assert_eq!(fingerprint(&f, &checkout), before);
     }
 }
