@@ -34,10 +34,8 @@ tilo_automerge_isolate::test_worker!();
 use tilo_relay_protocol::room_workspace_id;
 use tilo_relay_protocol::{auth, live, room_workspace_id_matches};
 
-/// The relay wire messages together with the frame error, under the path the
-/// session modules use for both.
+/// The relay wire messages, under the path the session modules use.
 mod transport {
-    pub use tilo_relay_client::frame::FrameError;
     pub use tilo_relay_protocol::transport::*;
 }
 
