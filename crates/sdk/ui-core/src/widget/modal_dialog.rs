@@ -1301,17 +1301,18 @@ impl Widget for FooterKey {
     clippy::struct_excessive_bools,
     reason = "independent open, presentation, hosting and invalidation flags"
 )]
-pub struct ModalDialog<C: Widget> {
+pub struct ModalDialog<C: Widget + ?Sized> {
     action_identity: uuid::Uuid,
     test_id: Option<String>,
     title: String,
-    content: C,
     primary_action: Option<DialogAction>,
     secondary_action: Option<DialogAction>,
     tertiary_action: Option<DialogAction>,
     tertiary_destructive: bool,
     primary_enabled: bool,
-    primary_gate: Option<Box<dyn Fn(&C) -> bool>>,
+    /// Reads the content, which is the `C` the dialog was built with
+    /// ([`Self::primary_enabled_if`]).
+    primary_gate: Option<Box<dyn Fn(&dyn Widget) -> bool>>,
     on_dismiss: Option<Box<dyn FnMut()>>,
     open: bool,
     destructive: bool,
@@ -1357,9 +1358,12 @@ pub struct ModalDialog<C: Widget> {
     layout_theme: Theme,
     /// Its arriving and leaving (`motion::Appear`, from the sheet's centre).
     appear: crate::motion::Appearing,
+    /// Last, so a `ModalDialog<C>` coerces to `ModalDialog<dyn Widget>`, the
+    /// one type the dialog's behaviour is compiled for.
+    content: C,
 }
 
-impl<C: Widget> ModalDialog<C> {
+impl<C: Widget + 'static> ModalDialog<C> {
     pub fn new(title: impl Into<String>, content: C) -> Self {
         Self {
             action_identity: uuid::Uuid::new_v4(),
@@ -1441,7 +1445,7 @@ impl<C: Widget> ModalDialog<C> {
         on_click: impl FnMut() + 'static,
     ) -> Self {
         self.primary_action = Some(DialogAction::new(label, on_click));
-        self.footer_changed();
+        self.as_dyn_mut().footer_changed();
         self
     }
 
@@ -1454,7 +1458,7 @@ impl<C: Widget> ModalDialog<C> {
         on_click: impl FnMut() + 'static,
     ) -> Self {
         self.secondary_action = Some(DialogAction::new(label, on_click));
-        self.footer_changed();
+        self.as_dyn_mut().footer_changed();
         self
     }
 
@@ -1469,7 +1473,7 @@ impl<C: Widget> ModalDialog<C> {
         on_click: impl FnMut() + 'static,
     ) -> Self {
         self.tertiary_action = Some(DialogAction::new(label, on_click));
-        self.footer_changed();
+        self.as_dyn_mut().footer_changed();
         self
     }
 
@@ -1523,7 +1527,12 @@ impl<C: Widget> ModalDialog<C> {
     /// values live outside its widgets is gated the same way.
     #[must_use]
     pub fn primary_enabled_if(mut self, gate: impl Fn(&C) -> bool + 'static) -> Self {
-        self.primary_gate = Some(Box::new(gate));
+        self.primary_gate = Some(Box::new(move |content: &dyn Widget| {
+            // SAFETY: the gate is only ever called with this dialog's content
+            // (`primary_enabled_now`), and the content of a `ModalDialog<C>` is
+            // a `C`: erasing its type to `dyn Widget` keeps the data pointer.
+            gate(unsafe { &*std::ptr::from_ref(content).cast::<C>() })
+        }));
         self
     }
 
@@ -1554,6 +1563,33 @@ impl<C: Widget> ModalDialog<C> {
         self.invalidate_layout();
     }
 
+    pub fn content(&self) -> &C {
+        &self.content
+    }
+
+    pub fn content_mut(&mut self) -> &mut C {
+        &mut self.content
+    }
+
+    /// Whether the primary action can be taken now.
+    pub fn primary_enabled(&self) -> bool {
+        self.as_dyn().primary_enabled_now()
+    }
+
+    /// This dialog with its content's type erased: the one type its
+    /// behaviour is compiled for, so an app that builds a dialog links that
+    /// code from the shared runtime instead of compiling it again for its
+    /// content type.
+    fn as_dyn(&self) -> &ModalDialog<dyn Widget> {
+        self
+    }
+
+    fn as_dyn_mut(&mut self) -> &mut ModalDialog<dyn Widget> {
+        self
+    }
+}
+
+impl<C: Widget + ?Sized> ModalDialog<C> {
     /// Measure and place the content again: call after changing the
     /// content in a way that changes its size without changing its
     /// structure. A structure change the content reports
@@ -1562,14 +1598,6 @@ impl<C: Widget> ModalDialog<C> {
         self.laid_out_for = None;
         self.stale = true;
         self.remeasure = true;
-    }
-
-    pub fn content(&self) -> &C {
-        &self.content
-    }
-
-    pub fn content_mut(&mut self) -> &mut C {
-        &mut self.content
     }
 
     pub fn dialog_rect(&self) -> Rect {
@@ -1600,11 +1628,6 @@ impl<C: Widget> ModalDialog<C> {
         self.open
     }
 
-    /// Whether the primary action can be taken now.
-    pub fn primary_enabled(&self) -> bool {
-        self.primary_enabled && self.primary_gate.as_ref().is_none_or(|g| g(&self.content))
-    }
-
     fn slot_rect(&self, slot: Slot) -> Rect {
         let Some(layout) = &self.layout else {
             return Rect::ZERO;
@@ -1619,6 +1642,13 @@ impl<C: Widget> ModalDialog<C> {
     fn footer_changed(&mut self) {
         self.laid_out_for = None;
         self.structure_dirty = true;
+    }
+}
+
+impl ModalDialog<dyn Widget> {
+    /// Whether the primary action can be taken now.
+    fn primary_enabled_now(&self) -> bool {
+        self.primary_enabled && self.primary_gate.as_ref().is_none_or(|g| g(&self.content))
     }
 
     fn closable(&self) -> bool {
@@ -1649,7 +1679,7 @@ impl<C: Widget> ModalDialog<C> {
 
     fn slot_enabled(&self, slot: Slot) -> bool {
         match slot {
-            Slot::Primary => self.primary_enabled(),
+            Slot::Primary => self.primary_enabled_now(),
             Slot::Secondary | Slot::Tertiary => true,
         }
     }
@@ -1677,7 +1707,7 @@ impl<C: Widget> ModalDialog<C> {
                 } else {
                     ModalAction::primary(&a.label)
                 }
-                .enabled(self.primary_enabled()),
+                .enabled(self.primary_enabled_now()),
             );
             slots.push(Slot::Primary);
         }
@@ -1733,7 +1763,7 @@ impl<C: Widget> ModalDialog<C> {
         let max_scroll = (self.content_size.1 - layout.body.height()).max(0.0);
         self.scroll = self.scroll.clamp(0.0, max_scroll);
         self.slots = slots;
-        let primary_enabled = self.primary_enabled();
+        let primary_enabled = self.primary_enabled_now();
         let actions: Vec<_> = self
             .keys
             .iter()
@@ -2027,15 +2057,9 @@ impl<C: Widget + 'static> ModalDialog<C> {
     }
 }
 
-impl<C: Widget + 'static> Widget for ModalDialog<C> {
-    fn as_any(&self) -> Option<&dyn std::any::Any> {
-        Some(self)
-    }
-
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        Some(self)
-    }
-
+/// The dialog's behaviour, compiled once for every content type: a
+/// `ModalDialog<C>` forwards each method to its type-erased form.
+impl Widget for ModalDialog<dyn Widget> {
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
         let reorders = self.platform.dialog_action_order() != conventions.dialog_action_order();
         self.platform = conventions;
@@ -2107,7 +2131,6 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
             },
             &children,
         );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.remeasure = true;
         node
     }
@@ -2239,7 +2262,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         };
         // A gate can change with any keystroke: the footer's buttons are
         // announced with the state the sheet is painted with.
-        let primary_enabled = self.primary_enabled();
+        let primary_enabled = self.primary_enabled_now();
         for key in &mut self.keys {
             key.enabled = key.slot != Slot::Primary || primary_enabled;
         }
@@ -2533,7 +2556,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                     1,
                     &self.primary_action,
                     self.primary_rect(),
-                    self.primary_enabled(),
+                    self.primary_enabled_now(),
                 ),
                 (
                     "secondary",
@@ -2591,7 +2614,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         let is = |name: &str| {
             target == format!("modal.{name}") || target == format!("dialog:{id}:{name}")
         };
-        if is("primary") && self.primary_action.is_some() && self.primary_enabled() {
+        if is("primary") && self.primary_action.is_some() && self.primary_enabled_now() {
             self.activate(Slot::Primary);
             true
         } else if is("secondary") && self.secondary_action.is_some() {
@@ -2615,6 +2638,137 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
             .get(*index)?
             .bounds
             .map(super::super::a11y::AccessBounds::to_rect)
+    }
+}
+
+impl<C: Widget + 'static> Widget for ModalDialog<C> {
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
+        self.as_dyn_mut().set_platform_conventions(conventions);
+    }
+
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.as_dyn_mut().sync(state, path);
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = self.as_dyn_mut().build_layout(taffy, theme, node_map);
+        // The dialog's node is the dialog: a host reaching it through the
+        // map meets this widget, not its type-erased form.
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        text: &mut TextRenderer,
+    ) -> bool {
+        self.as_dyn_mut().adjust_layout_style(taffy, node, text)
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.as_dyn_mut().apply_layout(taffy, node, origin);
+    }
+
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.as_dyn_mut()
+            .draw_overlay(scene, transform, text_renderer, theme, presence);
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.as_dyn_mut().handle_event(event, ctx);
+    }
+
+    fn name(&self) -> &'static str {
+        "ModalDialog"
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        self.as_dyn().test_id()
+    }
+
+    fn modal_capture(&self) -> Option<Rect> {
+        self.as_dyn().modal_capture()
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.as_dyn().children()
+    }
+
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        self.as_dyn().for_each_child(visitor);
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.as_dyn_mut().children_mut()
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        self.as_dyn_mut().take_structure_dirty()
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        self.as_dyn().is_layout_dirty()
+    }
+
+    fn layout_needs_measure(&self) -> bool {
+        self.as_dyn().layout_needs_measure()
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.as_dyn().needs_redraw()
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.as_dyn().needs_animation_frame()
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.as_dyn().get_rect()
+    }
+
+    fn traps_focus(&self) -> bool {
+        self.as_dyn().traps_focus()
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        self.as_dyn().accessibility()
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        arg2: &mut crate::widget::Edits<'_>,
+        arg3: &ModelPath,
+    ) -> bool {
+        self.as_dyn_mut()
+            .perform_semantic_action(target, action, arg2, arg3)
+    }
+
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        self.as_dyn().synthetic_accessibility_rect(path)
     }
 }
 
