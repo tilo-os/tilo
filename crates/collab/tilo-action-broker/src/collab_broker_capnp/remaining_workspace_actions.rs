@@ -239,7 +239,7 @@ impl CapnpBrokerState {
         spend: bool,
     ) -> Result<(), ActionHostError> {
         let (workspace, actor, now) = authority;
-        let (answer, spent) = actor.action_verdict_in(
+        let (answer, charged) = actor.action_verdict_in(
             workspace,
             action.0,
             (
@@ -261,7 +261,7 @@ impl CapnpBrokerState {
             _ => {}
         }
         if spend {
-            self.spend_once_grants(&workspace.room.to_string(), &spent);
+            self.spend_once_grants(&workspace.room.to_string(), &charged);
         }
         Ok(())
     }
