@@ -151,14 +151,7 @@ pub fn fetch_listed_bot(
     // an app that sets up a bot it ships beside (the Discord connector's
     // bridge) asks for, without knowing the registry's numbering.
     let resolved = if version == NEWEST {
-        listed
-            .entry
-            .versions
-            .iter()
-            .filter(|listed| listed.bot().is_some())
-            .max_by_key(|listed| listed.released_at_unix)
-            .map(|listed| listed.version.clone())
-            .ok_or_else(|| not_listed(entry, version))?
+        newest_version(&listed.entry).ok_or_else(|| not_listed(entry, version))?
     } else {
         version.to_owned()
     };
@@ -172,6 +165,16 @@ pub fn fetch_listed_bot(
 
 /// The version a request names to get the most recently released one.
 pub const NEWEST: &str = "newest";
+
+/// The most recently released bot version `entry` lists.
+fn newest_version(entry: &RegistryEntry) -> Option<String> {
+    entry
+        .versions
+        .iter()
+        .filter(|listed| listed.bot().is_some())
+        .max_by_key(|listed| listed.released_at_unix)
+        .map(|listed| listed.version.clone())
+}
 
 /// Whether the host that will run the bot has a connector it needs.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -448,6 +451,19 @@ mod tests {
             verify_listed_bot(&entries, OWNER, "so.tilo.bots.echo", "1.0.0", b"{}"),
             Err(DirectoryError::Program(_))
         ));
+    }
+
+    #[test]
+    fn newest_is_the_most_recently_released_version() {
+        let program = program_bytes();
+        let mut entries = listing(&program, &["1.0.0", "2.0.0", "1.5.0"], &["so.tilo.chat"]);
+        let versions = &mut entries[0].entry.versions;
+        versions[0].released_at_unix = 10;
+        versions[1].released_at_unix = 20;
+        versions[2].released_at_unix = 30;
+        assert_eq!(newest_version(&entries[0].entry).as_deref(), Some("1.5.0"));
+        entries[0].entry.versions.clear();
+        assert_eq!(newest_version(&entries[0].entry), None);
     }
 
     #[test]
