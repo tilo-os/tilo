@@ -58,6 +58,12 @@ impl StatePeer {
             WorkspaceMembershipCommand::AdoptBot(adoption) => {
                 Some(self.apply_adopt_bot(caller, adoption, key, now))
             }
+            WorkspaceMembershipCommand::RequestBot(request) => {
+                Some(self.apply_request_bot(caller, request, key, now))
+            }
+            WorkspaceMembershipCommand::WithdrawBotRequest { entry } => {
+                Some(self.apply_withdraw_bot_request(caller, entry, key, now))
+            }
             _ => None,
         }
     }
@@ -275,7 +281,9 @@ impl PeerWorkspaceMut<'_> {
             | WorkspaceMembershipCommand::PauseBot { .. }
             | WorkspaceMembershipCommand::ResumeBot { .. }
             | WorkspaceMembershipCommand::SetBotAppearance { .. }
-            | WorkspaceMembershipCommand::AdoptBot(_) => {
+            | WorkspaceMembershipCommand::AdoptBot(_)
+            | WorkspaceMembershipCommand::RequestBot(_)
+            | WorkspaceMembershipCommand::WithdrawBotRequest { .. } => {
                 return Err("a command entered the agent membership branch".into());
             }
         };

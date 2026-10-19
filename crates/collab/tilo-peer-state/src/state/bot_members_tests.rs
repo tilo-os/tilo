@@ -788,3 +788,104 @@ fn adopting_moves_the_bot_to_the_adopter_and_reissues_its_grants() {
         );
     }
 }
+
+fn standup(version: &str) -> crate::workspace_membership::BotRequest {
+    crate::workspace_membership::BotRequest {
+        entry: "so.tilo.bots.standup".into(),
+        version: version.into(),
+    }
+}
+
+#[test]
+fn the_owner_asks_for_a_directory_bot_and_takes_the_request_back() {
+    let (mut governor, authority, _, owner_device, now) = crate::admission_tests::seeded();
+    let ask = Command::RequestBot(standup("1.2.0"));
+    assert_eq!(
+        governor.workspace_mut().apply_workspace_membership_command(
+            &owner_device,
+            &ask,
+            &authority,
+            now
+        ),
+        Ok(true)
+    );
+    let requests = governor.governance().bot_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].request, standup("1.2.0"));
+    assert_eq!(
+        requests[0].requested_by,
+        governor
+            .permissions(owner_device.device_public_key, now)
+            .unwrap()
+            .person,
+        "the request names who asked"
+    );
+    assert_eq!(
+        governor.workspace_mut().apply_workspace_membership_command(
+            &owner_device,
+            &ask,
+            &authority,
+            now
+        ),
+        Ok(false),
+        "asking again for the same version changes nothing"
+    );
+    let newer = Command::RequestBot(standup("1.3.0"));
+    assert_eq!(
+        governor.workspace_mut().apply_workspace_membership_command(
+            &owner_device,
+            &newer,
+            &authority,
+            now
+        ),
+        Ok(true)
+    );
+    assert_eq!(
+        governor
+            .governance()
+            .bot_request("so.tilo.bots.standup")
+            .map(|row| row.request.version),
+        Some("1.3.0".to_owned()),
+        "asking for another version replaces the request"
+    );
+    let withdraw = Command::WithdrawBotRequest {
+        entry: "so.tilo.bots.standup".into(),
+    };
+    assert_eq!(
+        governor.workspace_mut().apply_workspace_membership_command(
+            &owner_device,
+            &withdraw,
+            &authority,
+            now
+        ),
+        Ok(true)
+    );
+    assert!(governor.governance().bot_requests().is_empty());
+    assert_eq!(
+        governor.workspace_mut().apply_workspace_membership_command(
+            &owner_device,
+            &withdraw,
+            &authority,
+            now
+        ),
+        Ok(false),
+        "nothing to take back"
+    );
+}
+
+#[test]
+fn an_editor_cannot_ask_for_a_bot_by_default() {
+    let (mut governor, authority, _, editor_device, now) = crate::admission_tests::seeded_editor();
+    assert!(
+        governor
+            .workspace_mut()
+            .apply_workspace_membership_command(
+                &editor_device,
+                &Command::RequestBot(standup("1.2.0")),
+                &authority,
+                now
+            )
+            .is_err()
+    );
+    assert!(governor.governance().bot_requests().is_empty());
+}

@@ -23,6 +23,20 @@ use crate::workspace_membership::{BotDevice, BotInstall, BotRenewal};
 
 /// The governed map that keeps bot programs, by BLAKE3 hex.
 const PROGRAMS: &str = "bot_programs_v1";
+/// The governed map that keeps the bots the room asks its host to run, by
+/// directory entry.
+const REQUESTS: &str = "bot_requests_v1";
+
+/// A bot the room asks its host to run, as the room keeps the request.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RequestedBot {
+    /// The directory entry and version asked for.
+    pub request: crate::workspace_membership::BotRequest,
+    /// The person who asked.
+    pub requested_by: String,
+    /// When they asked, ns since the epoch.
+    pub requested_at_ns: u64,
+}
 
 /// One installed bot on a room's roster.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -397,7 +411,112 @@ impl StatePeer {
         self.apply_governance_doc(doc, &before, key, now)
     }
 }
+impl StatePeer {
+    /// Ask the room's host to run directory bot `request`, as `caller`, who
+    /// must be able to install bots here. Asking again for the same entry
+    /// replaces the version asked for.
+    pub(super) fn apply_request_bot(
+        &mut self,
+        caller: &DeviceCert,
+        request: &crate::workspace_membership::BotRequest,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        let member = self.check_bot_governance(caller, governance::INSTALL_BOT, now)?;
+        let previous = self.governance().bot_request(&request.entry);
+        if previous
+            .as_ref()
+            .is_some_and(|previous| &previous.request == request)
+        {
+            return Ok(false);
+        }
+        let row = RequestedBot {
+            request: request.clone(),
+            requested_by: member.person,
+            requested_at_ns: now_ns(now),
+        };
+        self.put_bot_request(&request.entry, Some(&row), key, now)
+    }
+
+    /// Take back the request for `entry`, as `caller`, who must be able to
+    /// uninstall bots here.
+    pub(super) fn apply_withdraw_bot_request(
+        &mut self,
+        caller: &DeviceCert,
+        entry: &str,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        self.check_bot_governance(caller, governance::UNINSTALL_BOT, now)?;
+        if self.governance().bot_request(entry).is_none() {
+            return Ok(false);
+        }
+        self.put_bot_request(entry, None, key, now)
+    }
+
+    /// Write or remove the request for `entry` in one governed commit.
+    fn put_bot_request(
+        &mut self,
+        entry: &str,
+        row: Option<&RequestedBot>,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        self.require_governance_writer(key, now)?;
+        let mut doc = self
+            .core
+            .room_doc
+            .clone()
+            .ok_or("room governance missing")?;
+        let before = doc.get_heads();
+        doc.set_actor(automerge::ActorId::from(
+            key.verifying_key().to_bytes().to_vec(),
+        ));
+        let requests = match doc.get(ROOT, REQUESTS).map_err(err)? {
+            Some((_, map)) => map,
+            None => doc.put_object(ROOT, REQUESTS, ObjType::Map).map_err(err)?,
+        };
+        match row {
+            Some(row) => doc
+                .put(
+                    &requests,
+                    entry,
+                    automerge::ScalarValue::Bytes(serde_json::to_vec(row).map_err(err)?),
+                )
+                .map_err(err)?,
+            None => doc.delete(&requests, entry).map_err(err)?,
+        }
+        doc.commit();
+        self.apply_governance_doc(doc, &before, key, now)
+    }
+}
+
 impl PeerGovernance<'_> {
+    /// Every bot the room asks its host to run, by entry.
+    #[must_use]
+    pub fn bot_requests(self) -> Vec<RequestedBot> {
+        let Some(doc) = self.peer.core.room_doc.as_ref() else {
+            return Vec::new();
+        };
+        let Ok(Some((_, requests))) = doc.get(ROOT, REQUESTS) else {
+            return Vec::new();
+        };
+        let mut out: Vec<RequestedBot> = doc
+            .keys(&requests)
+            .filter_map(|entry| read_request(&**doc, &requests, &entry))
+            .collect();
+        out.sort_by(|a, b| a.request.entry.cmp(&b.request.entry));
+        out
+    }
+
+    /// The room's request for directory entry `entry`, if it stands.
+    #[must_use]
+    pub fn bot_request(self, entry: &str) -> Option<RequestedBot> {
+        let doc = self.peer.core.room_doc.as_ref()?;
+        let (_, requests) = doc.get(ROOT, REQUESTS).ok()??;
+        read_request(&**doc, &requests, entry)
+    }
+
     /// The program installation rows name by `hash`, as the room keeps it.
     #[must_use]
     pub fn bot_program(self, hash: &str) -> Option<String> {
@@ -646,4 +765,22 @@ fn program_grants(
         RoomPolicy::check_within(&authority, grant, cx).map_err(|refusal| refusal.to_string())?;
     }
     Ok(grants)
+}
+
+/// The request kept under `entry` in `requests`, if it reads as one for
+/// that entry: a row naming another entry than its key is not trusted.
+fn read_request(
+    doc: &impl ReadDoc,
+    requests: &automerge::ObjId,
+    entry: &str,
+) -> Option<RequestedBot> {
+    match doc.get(requests, entry).ok()?? {
+        (automerge::Value::Scalar(value), _) => match value.as_ref() {
+            automerge::ScalarValue::Bytes(bytes) => serde_json::from_slice::<RequestedBot>(bytes)
+                .ok()
+                .filter(|row| row.request.entry == entry && row.request.validate().is_ok()),
+            _ => None,
+        },
+        _ => None,
+    }
 }

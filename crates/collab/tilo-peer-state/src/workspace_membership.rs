@@ -48,6 +48,55 @@ pub struct BotRenewal {
     pub device: BotDevice,
 }
 
+/// A bot from the registry's directory that the room asks its host to run:
+/// the host installs it as itself and keeps it a governed member for as
+/// long as the request stands.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BotRequest {
+    /// The directory entry (`so.tilo.bots.standup`).
+    pub entry: String,
+    /// The listed version to install.
+    pub version: String,
+}
+
+/// Most bytes a requested entry or version takes.
+const MAX_BOT_REQUEST_ID: usize = 128;
+
+impl BotRequest {
+    /// Validate the entry and version the request names.
+    ///
+    /// # Errors
+    /// Refuses an empty, unbounded or non-canonical entry or version.
+    pub fn validate(&self) -> Result<(), String> {
+        validate_bot_entry(&self.entry)?;
+        if self.version.is_empty()
+            || self.version.len() > MAX_BOT_REQUEST_ID
+            || !self
+                .version
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+'))
+        {
+            return Err("invalid bot version".into());
+        }
+        Ok(())
+    }
+}
+
+/// A directory entry id, as the registry names bots: lowercase, dotted.
+fn validate_bot_entry(entry: &str) -> Result<(), String> {
+    if entry.is_empty()
+        || entry.len() > MAX_BOT_REQUEST_ID
+        || entry.split('.').any(str::is_empty)
+        || !entry.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'-' | b'_')
+        })
+    {
+        return Err("invalid bot directory entry".into());
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorkspaceMembershipCommand {
     AddAgent {
@@ -109,6 +158,13 @@ pub enum WorkspaceMembershipCommand {
     },
     /// Become a bot's installer ([`BotAdoption`]).
     AdoptBot(Box<BotAdoption>),
+    /// Ask the room's host to run a bot from the directory ([`BotRequest`]).
+    RequestBot(BotRequest),
+    /// Take back the request for directory entry `entry`: its host
+    /// uninstalls the bot it installed for it.
+    WithdrawBotRequest {
+        entry: String,
+    },
 }
 
 /// The id of the grant task `task`'s grant set holds for `node`.
@@ -133,7 +189,9 @@ impl WorkspaceMembershipCommand {
             | Self::PauseBot { .. }
             | Self::ResumeBot { .. }
             | Self::SetBotAppearance { .. }
-            | Self::AdoptBot(_) => None,
+            | Self::AdoptBot(_)
+            | Self::RequestBot(_)
+            | Self::WithdrawBotRequest { .. } => None,
         }
     }
 
@@ -148,6 +206,12 @@ impl WorkspaceMembershipCommand {
                 return Err("the bot program is too large".into());
             }
             return Ok(());
+        }
+        if let Self::RequestBot(request) = self {
+            return request.validate();
+        }
+        if let Self::WithdrawBotRequest { entry } = self {
+            return validate_bot_entry(entry);
         }
         // Installation ids are checked when they are read; a bot command
         // carries nothing else free-form.
@@ -281,6 +345,42 @@ mod tests {
         for unknown in ["admin", "owner", "Observer", "operator ", ""] {
             assert!(AgentPreset::parse(unknown).is_none());
         }
+    }
+
+    #[test]
+    fn a_bot_request_names_a_canonical_entry_and_version() {
+        let request = |entry: &str, version: &str| {
+            WorkspaceMembershipCommand::RequestBot(BotRequest {
+                entry: entry.into(),
+                version: version.into(),
+            })
+            .validate()
+        };
+        request("so.tilo.bots.standup", "1.2.0").unwrap();
+        request("so.tilo.bots.standup", "1.2.0-rc.1+build.7").unwrap();
+        for (entry, version) in [
+            ("", "1.0.0"),
+            ("So.Tilo.Bots", "1.0.0"),
+            ("so..tilo", "1.0.0"),
+            ("so.tilo bot", "1.0.0"),
+            (&"x".repeat(129), "1.0.0"),
+            ("so.tilo.bots.standup", ""),
+            ("so.tilo.bots.standup", "1.0 beta"),
+        ] {
+            assert!(request(entry, version).is_err(), "{entry:?} {version:?}");
+        }
+        WorkspaceMembershipCommand::WithdrawBotRequest {
+            entry: "so.tilo.bots.standup".into(),
+        }
+        .validate()
+        .unwrap();
+        assert!(
+            WorkspaceMembershipCommand::WithdrawBotRequest {
+                entry: "../standup".into(),
+            }
+            .validate()
+            .is_err()
+        );
     }
 
     #[test]

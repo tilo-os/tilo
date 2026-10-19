@@ -41,7 +41,7 @@ pub use facades::{
 };
 mod bot_members;
 mod delegates;
-pub use bot_members::InstalledBot;
+pub use bot_members::{InstalledBot, RequestedBot};
 pub use delegates::{GovernedAgent, GovernedDelegateRow};
 mod local_admission;
 mod local_outbox;
