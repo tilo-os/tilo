@@ -8,10 +8,12 @@
 # Android, the goldens. Those say `on = ["stable", "dispatch"]` and `default = false`; `t test
 # <name>` runs one for a working tree, `t dispatch <name>` on a branch.
 
-# The builder index tools/ci/resolve_builder.py resolves registry.tilo.so/tilo/tilo-builder:latest
-# to, pinned so results stay comparable: move it by resolving the tag again
-# (`skopeo inspect --raw docker://registry.tilo.so/tilo/tilo-builder:latest | sha256sum`).
-image = "registry.tilo.so/tilo/tilo-builder@sha256:7706dd82cbb5598be302186d1d4748a44bbd2e67f6608e7bc150236046ef120e"
+# The builder index this tree's os/Containerfile.builder defines, as main's publish-ci-builder
+# published it (`dev-<commit>`), pinned so results stay comparable. `latest` lags behind it, so
+# move the pin to the newest `dev-<commit>` whose commit has today's builder inputs
+# (`skopeo inspect --raw docker://registry.tilo.so/tilo/tilo-builder:dev-<commit> | sha256sum`).
+# The test family expects what the builder provides, such as the Chromium RPM at $CHROME.
+image = "registry.tilo.so/tilo/tilo-builder@sha256:e4763a8c16005f544dde0206014c2cc088fff0d5d28f1857ea24961677c666f6"
 inputs = ["rust-toolchain.toml", ".cargo/config.toml", "deny.toml"]
 
 # A check that needs a particular node names it in `requires`: `arch=x86_64`, `os=macos`, a
