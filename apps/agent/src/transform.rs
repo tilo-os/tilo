@@ -717,29 +717,7 @@ pub fn bind(
         AGENT_EXTRACT_ACTION => Transform::Extract {
             schema: schema()?.ok_or_else(|| invalid("`extract` needs a `schema`"))?,
         },
-        AGENT_CLASSIFY_ACTION => {
-            let choices = args
-                .choices
-                .as_deref()
-                .unwrap_or_default()
-                .iter()
-                .map(|choice| choice.as_str().map(str::to_string))
-                .collect::<Option<Vec<_>>>()
-                .ok_or_else(|| invalid("every choice must be text"))?;
-            if choices.is_empty() || choices.len() > MAX_CHOICES {
-                return Err(invalid("`classify` needs between 1 and 64 choices"));
-            }
-            if choices
-                .iter()
-                .any(|choice| choice.trim().is_empty() || choice.chars().count() > MAX_CHOICE_CHARS)
-            {
-                return Err(invalid("each choice must be 1 to 200 characters"));
-            }
-            Transform::Classify {
-                choices,
-                multi: args.multi.unwrap_or(false),
-            }
-        }
+        AGENT_CLASSIFY_ACTION => classify(&args)?,
         AGENT_RESPOND_ACTION => respond(&args)?,
         _ => {
             let prompt = args
@@ -774,6 +752,32 @@ pub fn bind(
         ));
     }
     Ok(Call { transform, input })
+}
+
+/// The `classify` transform: its choices, each text of 1 to 200 characters
+/// and between 1 and 64 of them, and whether more than one may apply.
+fn classify(args: &Arguments) -> Result<Transform, Failure> {
+    let choices = args
+        .choices
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|choice| choice.as_str().map(str::to_string))
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| invalid("every choice must be text"))?;
+    if choices.is_empty() || choices.len() > MAX_CHOICES {
+        return Err(invalid("`classify` needs between 1 and 64 choices"));
+    }
+    if choices
+        .iter()
+        .any(|choice| choice.trim().is_empty() || choice.chars().count() > MAX_CHOICE_CHARS)
+    {
+        return Err(invalid("each choice must be 1 to 200 characters"));
+    }
+    Ok(Transform::Classify {
+        choices,
+        multi: args.multi.unwrap_or(false),
+    })
 }
 
 /// Bind the single wire argument a directed invocation carries.
