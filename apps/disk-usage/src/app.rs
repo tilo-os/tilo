@@ -51,9 +51,16 @@ enum Request {
 
 type Inbox = Rc<RefCell<Vec<Request>>>;
 
-/// A folder as the header row names it; nothing before one is chosen.
-fn folder_title(folder: &std::path::Path) -> String {
-    folder.to_string_lossy().into_owned()
+/// A folder as the header row names it: a place by its name (Home, not
+/// the path to it), any other folder by its own name.
+fn folder_title(places: &[Place], folder: &std::path::Path) -> String {
+    if let Some(place) = places.iter().find(|place| place.path == folder) {
+        return place.label.clone();
+    }
+    folder.file_name().map_or_else(
+        || folder.to_string_lossy().into_owned(),
+        |name| name.to_string_lossy().into_owned(),
+    )
 }
 
 fn files_text(n: u64) -> String {
@@ -459,9 +466,9 @@ impl DiskUsageApp {
     fn rebuild(&mut self) {
         let (title, view) = match &self.view {
             View::Home => (String::new(), self.home_view()),
-            View::Loading(path) => (folder_title(path), Self::loading_view()),
-            View::Analysis(result) => (folder_title(&result.path), self.analysis_view(result)),
-            View::Error(path, message) => (folder_title(path), self.error_view(path, message)),
+            View::Loading(path) => (folder_title(&self.places, path), Self::loading_view()),
+            View::Analysis(result) => (folder_title(&self.places, &result.path), self.analysis_view(result)),
+            View::Error(path, message) => (folder_title(&self.places, path), self.error_view(path, message)),
         };
         let back = !matches!(self.view, View::Home);
         self.can_go_back.set(back);
@@ -720,6 +727,29 @@ mod view_tests {
             rest.bytes,
             (NAMED_SLICES as u64..12).map(|i| 1_000 - i).sum::<u64>()
         );
+    }
+
+    /// The header names a place as the home view does and any other folder
+    /// by its own name, never by the path to it.
+    #[test]
+    fn the_header_names_places_and_folders_not_paths() {
+        let places = [
+            Place {
+                label: "Home".into(),
+                path: PathBuf::from("/var/home/lena"),
+            },
+            Place {
+                label: "File system".into(),
+                path: PathBuf::from("/"),
+            },
+        ];
+        assert_eq!(folder_title(&places, std::path::Path::new("/var/home/lena")), "Home");
+        assert_eq!(folder_title(&places, std::path::Path::new("/")), "File system");
+        assert_eq!(
+            folder_title(&places, std::path::Path::new("/var/home/lena/Projects")),
+            "Projects"
+        );
+        assert_eq!(folder_title(&[], std::path::Path::new("/")), "/");
     }
 }
 
