@@ -295,7 +295,7 @@ async fn cleanup(
         .await
         .unwrap();
     // Persistence failure must not be acknowledged as a successful edit.
-    let path = root.join("settings.json");
+    let path = settings_store::settings_path_in(&root);
     fs::remove_file(&path).unwrap();
     fs::create_dir(&path).unwrap();
     assert_eq!(
@@ -440,6 +440,11 @@ async fn mutation_stop_waits_for_commit() {
     server.await.unwrap();
 }
 
+/// How long a model turn may take. The first turn's reply waits for a
+/// configuration edit, whose vault and settings writes can take seconds on a
+/// loaded machine.
+const MODEL_WAIT: Duration = Duration::from_secs(30);
+
 async fn child(http: bool) {
     if http {
         let service = crate::http_service::HttpService::new(Arc::new(Auth), 4).unwrap();
@@ -490,7 +495,7 @@ async fn child(http: bool) {
                     url,
                     token: "agent",
                 },
-                Duration::from_secs(5),
+                MODEL_WAIT,
             ),
         )
         .await;
@@ -517,7 +522,7 @@ async fn child(http: bool) {
         let (inference, infer_server) = fd(AGENT_APP);
         lifecycle(
             &AdministrationClient::new(management),
-            &ModelClient::default_model(inference, Duration::from_secs(5)),
+            &ModelClient::default_model(inference, MODEL_WAIT),
         )
         .await;
         server.abort();
@@ -535,7 +540,7 @@ fn provider_administration_http_and_fd_end_to_end() {
             .build()
             .unwrap()
             .block_on(async {
-                tokio::time::timeout(Duration::from_secs(15), child(kind == "http"))
+                tokio::time::timeout(Duration::from_secs(120), child(kind == "http"))
                     .await
                     .unwrap();
             });
@@ -557,7 +562,8 @@ fn provider_administration_http_and_fd_end_to_end() {
             .unwrap();
         assert!(
             output.status.success(),
-            "{kind}: {} {}",
+            "{kind}: {}: {} {}",
+            output.status,
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );

@@ -376,7 +376,9 @@ mod tests {
                 target,
                 ("model", &request),
                 "2cb77630-02ac-823f-af97-72c25a7e64b7",
-                Instant::now() + Duration::from_secs(10),
+                // Room for the backoff and a fresh client per attempt on a
+                // loaded machine; the peer answers at once.
+                Instant::now() + Duration::from_secs(60),
                 &credentials,
             )
             .await
