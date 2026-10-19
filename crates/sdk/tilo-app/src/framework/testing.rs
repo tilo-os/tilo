@@ -1973,7 +1973,7 @@ fn open_app(
     let permissions = role_permissions(&person, launch.role);
     let host_phase = tilo_resource::profiling::Phase::start("start.host");
     let (mut host, instance) = profile_host(&profile, author, &permissions)?;
-    drop(host_phase);
+    host_phase.end();
     let definition = opening.definition;
     let prepare_phase = tilo_resource::profiling::Phase::start("start.prepare");
     let records = host.records_for(definition)?;
@@ -2015,7 +2015,7 @@ fn open_app(
     prepared.context.provide_content(profile.content());
     let mut prepared = in_profile(prepared, &profile.root(), opening.id);
     configure(&mut prepared.context);
-    drop(prepare_phase);
+    prepare_phase.end();
     let component = {
         let _phase = tilo_resource::profiling::Phase::start("start.instantiate");
         definition.instantiate(prepared.context, prepared.target, prepared.restore)?

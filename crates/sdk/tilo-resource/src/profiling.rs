@@ -24,6 +24,12 @@ impl Phase {
     pub const fn start(_name: &'static str) -> Self {
         Self
     }
+
+    /// Close the scope here, before the end of its block.
+    #[inline]
+    pub const fn end(self) {
+        let Self = self;
+    }
 }
 
 /// Run `operation` without recording its scopes in an active observation:
@@ -84,6 +90,11 @@ mod recorder {
                 RECORDS
                     .with(|records| records.borrow().as_ref().map(|_| (name, tilo_clock::now()))),
             )
+        }
+
+        /// Close the scope here, before the end of its block.
+        pub fn end(self) {
+            drop(self);
         }
     }
 
