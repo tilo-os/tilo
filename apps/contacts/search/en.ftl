@@ -3,7 +3,7 @@
 # merely near its category. Desktop search matches every language's words
 # whatever the desktop speaks. Comma separated, one phrase each. The packer
 # writes them into the signed manifest; tilo-app.toml carries no copy.
-search-keywords = address book, people, phone book, vcard, carddav, friends, phonebook
+search-keywords = address book, people, phone book, vcard, carddav, friends, phonebook, gnome contacts, kaddressbook, outlook people
 # What the app does, in one plain phrase (English): the tag line under its
 # name in the Store and in search. No marketing; the packer signs it into the
 # manifest.
