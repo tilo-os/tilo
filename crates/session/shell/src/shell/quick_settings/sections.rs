@@ -9,8 +9,7 @@
 //! ([`ui::motion::Disclose`]). Paint, hit-testing, keyboard focus and the
 //! accessibility tree all read the same items, so they cannot disagree.
 
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use vello::peniko::Fill;
+use vello::kurbo::{Affine, Point, Rect};
 
 use ui::TextRole;
 use ui::paint::PaintCtx;
@@ -754,7 +753,8 @@ fn paint_network(
     };
     let theme = ctx.theme;
     let ink = theme.tokens.colors.text_primary;
-    let faint = ink.multiply_alpha(0.25);
+    // An unlit arc of the signal: the quietest ink.
+    let faint = theme.tokens.colors.text_tertiary;
     let signal = network.signal;
     let side = f64::from(theme.tokens.metrics.icon_md);
     let bars = move |c: &mut PaintCtx<'_>, slot: Rect| {
@@ -975,27 +975,12 @@ fn paint_battery(
         rect.x1 - bleed,
         rect.y0 + (m.title + gauge_h) / 2.0,
     );
-    let radius = gauge_h / 4.0;
-    ctx.scene.stroke(
-        &vello::kurbo::Stroke::new(1.5),
+    ui::widget::primitives::paint_level_gauge(
+        ctx.scene,
         ctx.transform,
-        colors.text_dim,
-        None,
-        &RoundedRect::from_rect(gauge, radius),
-    );
-    let inner = gauge.inset(-3.0);
-    let filled = Rect::new(
-        inner.x0,
-        inner.y0,
-        inner.x0 + inner.width() * f64::from(state.battery.percent.min(100)) / 100.0,
-        inner.y1,
-    );
-    ctx.scene.fill(
-        Fill::NonZero,
-        ctx.transform,
-        colors.text_primary,
-        None,
-        &RoundedRect::from_rect(filled, radius / 2.0),
+        gauge,
+        f64::from(state.battery.percent.min(100)) / 100.0,
+        ctx.theme,
     );
 }
 
