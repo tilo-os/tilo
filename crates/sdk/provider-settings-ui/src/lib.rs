@@ -458,7 +458,16 @@ impl<H: PanelBindings> ProviderPanel<H> {
             sections.push(section(&t("agent-service-title"), rows(vec![note(notice)])));
         }
         sections.push(self.hosted_profiles_with_sign_in(include_sign_in));
-        sections.push(self.request_limits_card());
+        // Limits are per model: with no model yet the section would be a
+        // paragraph about nothing.
+        if self
+            .provider_config()
+            .profiles
+            .iter()
+            .any(|profile| !profile.models.is_empty())
+        {
+            sections.push(self.request_limits_card());
+        }
         sections
     }
     /// Inspect the configured deployment limits for a provider's model.
@@ -705,32 +714,38 @@ impl<H: PanelBindings> ProviderPanel<H> {
         } else if self.admin_pending.is_some() {
             body.push(note(&t("agent-provider-pending")));
         }
-        body.push(row(Box::new(
-            self.bind_invocation(
-                Button::new(
-                    "agent-models-refresh-providers",
-                    &t("agent-provider-refresh"),
-                )
-                .with_enabled(self.provider_admin.is_available() && self.admin_pending.is_none()),
-                ProviderEffect::RefreshProviders,
-            ),
-        )));
-        body.push(row(Box::new(
-            Row::new()
-                .push(Box::new(self.bind_invocation(
-                    Button::new("agent-models-add-anthropic", &t("agent-add-anthropic")),
-                    ProviderEffect::AddProvider {
-                        protocol: "anthropic".into(),
-                    },
-                )))
-                .push(widgets::gap(ui::tokens::SpacingStep::S2))
-                .push(Box::new(self.bind_invocation(
-                    Button::new("agent-models-add-openai", &t("agent-add-compatible")),
-                    ProviderEffect::AddProvider {
-                        protocol: "openai-compatible".into(),
-                    },
-                ))),
-        )));
+        // Controls nobody here can use are not offered: without provider
+        // administration the note above says who can change providers.
+        if self.provider_admin.is_available() {
+            body.push(row(Box::new(
+                self.bind_invocation(
+                    Button::new(
+                        "agent-models-refresh-providers",
+                        &t("agent-provider-refresh"),
+                    )
+                    .with_enabled(self.admin_pending.is_none()),
+                    ProviderEffect::RefreshProviders,
+                ),
+            )));
+        }
+        if self.provider_admin.is_available() || self.cx.offline_metadata() {
+            body.push(row(Box::new(
+                Row::new()
+                    .push(Box::new(self.bind_invocation(
+                        Button::new("agent-models-add-anthropic", &t("agent-add-anthropic")),
+                        ProviderEffect::AddProvider {
+                            protocol: "anthropic".into(),
+                        },
+                    )))
+                    .push(widgets::gap(ui::tokens::SpacingStep::S2))
+                    .push(Box::new(self.bind_invocation(
+                        Button::new("agent-models-add-openai", &t("agent-add-compatible")),
+                        ProviderEffect::AddProvider {
+                            protocol: "openai-compatible".into(),
+                        },
+                    ))),
+            )));
+        }
         for profile in config
             .profiles
             .iter()
