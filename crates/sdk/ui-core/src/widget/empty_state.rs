@@ -228,7 +228,7 @@ impl StackStyle {
             clippy::cast_possible_truncation,
             reason = "window widths are logical pixels well within f32 range"
         )]
-        let inner_width = (width - gap * 2.0).max(1.0) as f32;
+        let inner_width = (width - gap * 2.0).clamp(1.0, READABLE_MEASURE) as f32;
         let (_, title_h) =
             text_renderer.measure_style(content.title, Some(inner_width), &self.title);
         let (_, msg_h) = content.message.map_or((0.0, 0.0), |value| {
@@ -264,6 +264,11 @@ impl StackStyle {
         }
     }
 }
+
+/// The longest line an empty state's title and message run to: a readable
+/// measure, so a wide window wraps the message under the title instead of
+/// stretching one sentence across the whole width.
+const READABLE_MEASURE: f64 = 560.0;
 
 /// The measure the technical detail wraps at: the stack's inner width,
 /// kept to a readable line.
@@ -2118,6 +2123,30 @@ mod tests {
         roomy_scrollable_retains_the_icon_and_explanatory_message();
         roomy_manual_pane_keeps_the_essential_block_centered();
         accessibility_is_a_named_group();
+    }
+
+    /// In a wide window the message wraps at a readable measure under the
+    /// title, never one sentence stretched across the whole width.
+    #[test]
+    fn a_wide_window_wraps_the_message_at_a_readable_measure() {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let message = "Bridge a server with the Discord Bridge bot and its channels and \
+                       messages show up in this room's Chat, in step both ways.";
+        let content = EmptyStateContent {
+            message: Some(message),
+            ..EmptyStateContent::new("Bring a Discord server into this room")
+        };
+        let style = StackStyle::resolved(&theme, false);
+        let wide = style.measure(&mut text, 1600.0, &content);
+        assert!(f64::from(wide.inner_width) <= READABLE_MEASURE);
+        let one_line = style.measure(&mut text, 1600.0, &EmptyStateContent {
+            message: Some("Ag"),
+            ..content
+        });
+        assert!(wide.msg_h > one_line.msg_h, "the message wraps");
+        let narrow = style.measure(&mut text, 320.0, &content);
+        assert!(narrow.inner_width < wide.inner_width, "a narrow window still narrows it");
     }
 
     #[test]
