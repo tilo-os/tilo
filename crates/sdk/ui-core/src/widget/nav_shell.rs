@@ -3127,7 +3127,7 @@ impl NavShell {
             crate::motion::CROSS_FADE,
             motion,
             crate::tokens::MotionSource::Pointer,
-            crate::time::now(),
+            crate::motion::frame_now(),
         );
         fade
     }
@@ -3245,7 +3245,7 @@ impl NavShell {
                 let i = f64_of_usize(stack_index(&after.stack, front));
                 let last = f64_of_usize(after.stack.len().saturating_sub(1));
                 let from = (i - (was.x0 - is.x0) / w).clamp(0.0, last);
-                let now = crate::time::now();
+                let now = crate::motion::frame_now();
                 inputs.push.snap(from);
                 let timing = crate::motion::Drill::SPEC.timing(
                     crate::motion::Direction::Enter,
@@ -3342,7 +3342,7 @@ impl NavShell {
         let g = self.geometry.clone();
         // Under reduced motion a sidebar or drawer that just appeared fades
         // in instead of sliding.
-        let fade = unit_f32(self.fade.progress(crate::time::now()));
+        let fade = unit_f32(self.fade.progress(crate::motion::frame_now()));
 
         // Docked regions under their columns, each painted just before its
         // column: while a panel slides, the content beside it keeps its
@@ -3529,7 +3529,7 @@ impl NavShell {
         let clip = rect.intersect(self.rect);
         // A column a layout switch brought in fades in.
         let alpha = if self.switch_columns[column.index()] {
-            unit_f32(self.switch_fade.progress(crate::time::now()))
+            unit_f32(self.switch_fade.progress(crate::motion::frame_now()))
         } else {
             1.0
         };
@@ -4354,7 +4354,7 @@ impl Widget for NavShell {
         // cannot advance until the drawer is painted. Only painted parts ask
         // the host for frames; background wakes still visit every owned part.
         self.animating
-            || self.fade.is_moving(crate::time::now())
+            || self.fade.is_moving(crate::motion::frame_now())
             || self
                 .host_parts
                 .iter()
@@ -4376,7 +4376,7 @@ impl Widget for NavShell {
             || self.toasts_dirty
             || self.toasts_expired()
             || self.animating
-            || self.fade.is_moving(crate::time::now())
+            || self.fade.is_moving(crate::motion::frame_now())
             || self
                 .host_parts
                 .iter()
@@ -4402,7 +4402,7 @@ impl Widget for NavShell {
         // The shell's own geometry, materials and transitions can change
         // outside a child's box. A settled shell can preserve local control
         // damage rather than rasterising every pane for a hover.
-        if self.paint_dirty || self.animating || self.fade.is_moving(crate::time::now()) {
+        if self.paint_dirty || self.animating || self.fade.is_moving(crate::motion::frame_now()) {
             regions.push(self.rect);
         } else {
             self.for_each_owned(|child| child.collect_damage(regions));

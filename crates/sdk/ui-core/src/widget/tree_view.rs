@@ -3742,7 +3742,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
     fn needs_animation_frame(&self) -> bool {
         self.bar_fade
             .get()
-            .fading_at(crate::time::now(), self.bar_held.get())
+            .fading_at(crate::motion::frame_now(), self.bar_held.get())
             || self.momentum.is_active()
             || self.model.needs_poll()
             || self.reorder.is_active()
@@ -3757,7 +3757,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         let mut earliest = self
             .bar_fade
             .get()
-            .fade_deadline_at(crate::time::now(), self.bar_held.get());
+            .fade_deadline_at(crate::motion::frame_now(), self.bar_held.get());
         for row in &self.mounted_rows {
             if let Some(deadline) = row.widget.next_wake_deadline() {
                 earliest = Some(earliest.map_or(deadline, |old| old.min(deadline)));

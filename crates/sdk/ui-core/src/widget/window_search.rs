@@ -464,7 +464,7 @@ impl WindowSearch {
             Disclose::SPEC,
             self.motion,
             source,
-            crate::time::now(),
+            crate::motion::frame_now(),
         );
     }
 
@@ -538,7 +538,7 @@ impl WindowSearch {
             Disclose::SPEC,
             self.motion,
             source,
-            crate::time::now(),
+            crate::motion::frame_now(),
         );
     }
 
@@ -989,11 +989,11 @@ impl Widget for WindowSearch {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.presence.is_moving(crate::time::now()) || self.field.needs_redraw()
+        self.presence.is_moving(crate::motion::frame_now()) || self.field.needs_redraw()
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.presence.is_moving(crate::time::now())
+        self.presence.is_moving(crate::motion::frame_now())
             || (self.has_keyboard() && self.field.needs_animation_frame())
     }
 

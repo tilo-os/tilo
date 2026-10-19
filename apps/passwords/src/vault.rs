@@ -679,7 +679,7 @@ impl Core {
     pub(crate) fn revealed_value(&self, id: &SecretId) -> Option<&str> {
         self.revealed
             .as_ref()
-            .filter(|(revealed, _, until)| revealed == id && *until > ui::time::now())
+            .filter(|(revealed, _, until)| revealed == id && *until > ui::motion::frame_now())
             .map(|(_, value, _)| value.as_str())
     }
 

@@ -689,7 +689,7 @@ pub struct TypingRun {
 impl TypingRun {
     /// An edit landed now.
     pub fn touch(&mut self) {
-        self.touch_at(crate::time::now());
+        self.touch_at(crate::motion::frame_now());
     }
     /// An edit landed at `at`.
     pub fn touch_at(&mut self, at: Instant) {

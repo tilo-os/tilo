@@ -1354,7 +1354,7 @@ mod tests {
             7,
             Some(&browser()),
             Theme::dark().motion(),
-            crate::time::now(),
+            crate::motion::frame_now(),
         );
         row.lay_out(Rect::new(40.0, 0.0, 640.0, 40.0));
         row

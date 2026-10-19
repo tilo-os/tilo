@@ -9267,7 +9267,7 @@ impl Widget for BlockEditor {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, _) = crate::doc::document_ref(state, path);
         self.retire_finished_handle_fade();
-        self.settle_caret_suggestion_at(crate::time::now());
+        self.settle_caret_suggestion_at(crate::motion::frame_now());
         self.refresh_image_attachments();
         let Some(list) = self.blocks_list.clone() else {
             // Unbound (examples / tests): local-mode, nothing to sync.

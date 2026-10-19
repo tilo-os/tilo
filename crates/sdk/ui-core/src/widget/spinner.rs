@@ -221,7 +221,7 @@ impl Widget for Spinner {
     /// steps leave its box undamaged, and an unchanged frame does not
     /// present.
     fn needs_redraw(&self) -> bool {
-        self.stepped || self.drawn_step != Some(self.step_at(crate::time::now()))
+        self.stepped || self.drawn_step != Some(self.step_at(crate::motion::frame_now()))
     }
 
     fn mark_drawn(&mut self) {

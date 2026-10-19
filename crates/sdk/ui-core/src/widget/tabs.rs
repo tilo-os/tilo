@@ -3913,7 +3913,7 @@ impl Widget for TabBar {
     ) {
         self.drag_lift_duration = theme.tokens.motion.durations.fast();
         self.busy_drawn =
-            (!self.busy_since.is_empty()).then(|| self.busy_pose_at(crate::time::now()));
+            (!self.busy_since.is_empty()).then(|| self.busy_pose_at(crate::motion::frame_now()));
         // Guards one stale frame after a detach/insert mutates `tabs` outside the
         // layout pass; next `apply_layout` fixes it.
         if self.tab_rects.len() != self.tabs.len() {

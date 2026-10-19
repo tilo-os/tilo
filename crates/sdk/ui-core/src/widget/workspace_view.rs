@@ -88,7 +88,7 @@ impl Widget for WorkspaceView {
         Some(self)
     }
     fn update(&mut self, _s: &AppModel, _p: &ModelPath) -> bool {
-        self.slide.is_moving(crate::time::now())
+        self.slide.is_moving(crate::motion::frame_now())
     }
     fn build_layout(
         &mut self,

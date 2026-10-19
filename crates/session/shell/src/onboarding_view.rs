@@ -4687,7 +4687,7 @@ impl OnboardingView {
     /// The arriving step's pose: it comes in from the side it lives on.
     fn transition_pose(&mut self, theme: &Theme) -> ui::motion::Pose {
         self.reduce_motion = theme.reduce_motion;
-        let arrived = self.transition.progress(ui::time::now());
+        let arrived = self.transition.progress(ui::motion::frame_now());
         ui::motion::Drill::pose(
             self.transition_direction * (1.0 - arrived),
             self.rect.width(),
@@ -5576,7 +5576,7 @@ impl Widget for OnboardingView {
                 .identity_work
                 .as_ref()
                 .is_some_and(IdentityWork::reported)
-            || self.transition.is_moving(ui::time::now())
+            || self.transition.is_moving(ui::motion::frame_now())
             || self
                 .picker
                 .as_ref()

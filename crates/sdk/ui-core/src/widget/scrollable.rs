@@ -848,7 +848,7 @@ impl Scrollable {
     }
 
     fn bar_opacity(&self, theme: &Theme) -> f32 {
-        self.bar_opacity_at(crate::time::now(), theme.reduce_motion)
+        self.bar_opacity_at(crate::motion::frame_now(), theme.reduce_motion)
     }
 
     fn fade_held(&self) -> bool {
@@ -860,7 +860,7 @@ impl Scrollable {
     }
 
     fn fade_in_progress(&self) -> bool {
-        self.fade_in_progress_at(crate::time::now())
+        self.fade_in_progress_at(crate::motion::frame_now())
     }
 
     fn fade_start_deadline_at(&self, now: Instant) -> Option<Instant> {
@@ -878,7 +878,7 @@ impl Scrollable {
     }
 
     fn needs_terminal_fade_frame(&self) -> bool {
-        self.needs_terminal_fade_frame_at(crate::time::now())
+        self.needs_terminal_fade_frame_at(crate::motion::frame_now())
     }
 
     fn advance_hold(&mut self, now: Instant) {
@@ -1932,7 +1932,7 @@ impl Widget for Scrollable {
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
-        self.fade_start_deadline_at(crate::time::now())
+        self.fade_start_deadline_at(crate::motion::frame_now())
             .into_iter()
             .chain(self.hold.map(|hold| hold.next_at))
             .chain(
@@ -3692,7 +3692,7 @@ mod tests {
             s.last_activity = None; // as freshly constructed
             s.pointer_near_bar = false;
             assert_eq!(
-                s.bar_opacity_at(crate::time::now(), false),
+                s.bar_opacity_at(crate::motion::frame_now(), false),
                 0.0,
                 "idle overlay is hidden"
             );
@@ -3776,7 +3776,7 @@ mod tests {
             let mut persistent = vertical(1200.0).always_visible();
             persistent.last_activity = None;
             assert_eq!(
-                persistent.bar_opacity_at(crate::time::now(), false),
+                persistent.bar_opacity_at(crate::motion::frame_now(), false),
                 1.0,
                 "persistent bar always visible"
             );

@@ -98,7 +98,7 @@ impl DisclosureState {
             Disclose::SPEC,
             motion,
             crate::motion::input_source(),
-            crate::time::now(),
+            crate::motion::frame_now(),
         );
         if let Some(until) = state.reveal.settles_at() {
             crate::motion::want_frames_until(until);

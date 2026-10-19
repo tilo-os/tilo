@@ -223,7 +223,7 @@ impl CaptureMirrorImage {
     }
 
     fn handoff_mix(&self) -> f64 {
-        self.handoff.progress(ui::time::now())
+        self.handoff.progress(ui::motion::frame_now())
     }
 
     fn painted_image_rect(&mut self, mix: f64) -> Rect {

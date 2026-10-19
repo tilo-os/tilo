@@ -26141,7 +26141,7 @@ impl ShellOverlayHost {
         // Summoned from no control, the palette appears in place, from its
         // own centre (`ui::motion::Appear`).
         let pose = ui::motion::Appear::pose(
-            self.palette_transition.progress(ui::time::now()),
+            self.palette_transition.progress(ui::motion::frame_now()),
             palette_rect.center(),
             self.motion.get(),
         );

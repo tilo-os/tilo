@@ -490,7 +490,7 @@ mod tests {
 
     #[test]
     fn hidden_at_rest_anywhere_in_the_app() {
-        let t0 = crate::time::now();
+        let t0 = crate::motion::frame_now();
         let mut r = TopEdgeReveal::default();
         for (i, y) in [400.0, 120.0, 60.0, 43.0].into_iter().enumerate() {
             let at = ms(t0, 1000 * u64::try_from(i).unwrap());
@@ -503,7 +503,7 @@ mod tests {
 
     #[test]
     fn a_rest_in_the_band_shows_the_bar_after_the_dwell() {
-        let t0 = crate::time::now();
+        let t0 = crate::motion::frame_now();
         let mut r = TopEdgeReveal::default();
         // Slow, careful approach from just below: no push credit.
         let t = path(
@@ -528,7 +528,7 @@ mod tests {
 
     #[test]
     fn pushing_up_to_the_edge_shows_the_bar_at_once() {
-        let t0 = crate::time::now();
+        let t0 = crate::motion::frame_now();
         let mut r = TopEdgeReveal::default();
         let t = path(
             &mut r,
@@ -549,7 +549,7 @@ mod tests {
 
     #[test]
     fn a_fast_move_that_stops_dead_in_the_band_still_rests_there() {
-        let t0 = crate::time::now();
+        let t0 = crate::motion::frame_now();
         let mut r = TopEdgeReveal::default();
         // Fast all the way, then silence: the last sample was fast, but the
         // pointer is resting in the band.
@@ -572,7 +572,7 @@ mod tests {
 
     #[test]
     fn a_fast_pass_through_the_band_is_transit() {
-        let t0 = crate::time::now();
+        let t0 = crate::motion::frame_now();
         let mut r = TopEdgeReveal::default();
         // Straight up through the band into the desktop's bar at full speed.
         let t = path(
@@ -593,7 +593,7 @@ mod tests {
 
     #[test]
     fn crossing_a_shown_control_in_transit_does_not_hold_the_bar() {
-        let t0 = crate::time::now();
+        let t0 = crate::motion::frame_now();
         let mut r = TopEdgeReveal::default();
         r.force_shown(true);
         // From the band straight down through Restore into the app at a
@@ -633,7 +633,7 @@ mod tests {
 
     #[test]
     fn aiming_at_the_apps_top_content_never_shows_the_bar() {
-        let t0 = crate::time::now();
+        let t0 = crate::motion::frame_now();
         let mut r = TopEdgeReveal::default();
         // A quick flick up that stops on the app's top row (a tab at y=52),
         // just below the band, and rests there.
@@ -662,7 +662,7 @@ mod tests {
 
     #[test]
     fn coming_down_from_the_desktop_bar_is_not_a_push() {
-        let t0 = crate::time::now();
+        let t0 = crate::motion::frame_now();
         let mut r = TopEdgeReveal::default();
         r.on_motion(Point::new(600.0, 10.0), &geo(), t0);
         r.on_motion(Point::new(600.0, 30.0), &geo(), ms(t0, 10));
@@ -678,7 +678,7 @@ mod tests {
 
     #[test]
     fn a_click_in_the_band_goes_to_the_app_and_cancels_the_reveal() {
-        let t0 = crate::time::now();
+        let t0 = crate::motion::frame_now();
         let mut r = TopEdgeReveal::default();
         let p = Point::new(200.0, 38.0);
         r.on_motion(p, &geo(), t0);
@@ -695,7 +695,7 @@ mod tests {
 
     #[test]
     fn the_shown_bar_holds_under_menu_aim_and_hides_otherwise() {
-        let t0 = crate::time::now();
+        let t0 = crate::motion::frame_now();
         let mut r = TopEdgeReveal::default();
         r.force_shown(true);
         r.on_motion(TITLE.center(), &geo(), t0);
@@ -726,7 +726,7 @@ mod tests {
 
     #[test]
     fn it_never_hides_under_a_pointer_on_a_control_or_on_the_bar() {
-        let t0 = crate::time::now();
+        let t0 = crate::motion::frame_now();
         let mut r = TopEdgeReveal::default();
         r.force_shown(true);
         r.on_motion(CLOSE.center(), &geo(), t0);
@@ -739,7 +739,7 @@ mod tests {
 
     #[test]
     fn an_overshoot_into_the_desktop_bar_gets_a_grace_to_return() {
-        let t0 = crate::time::now();
+        let t0 = crate::motion::frame_now();
         let mut r = TopEdgeReveal::default();
         r.force_shown(true);
         r.on_motion(Point::new(1100.0, 40.0), &geo(), t0);
@@ -755,7 +755,7 @@ mod tests {
 
     #[test]
     fn keyboard_and_touch_reach_the_bar() {
-        let t0 = crate::time::now();
+        let t0 = crate::motion::frame_now();
         let mut r = TopEdgeReveal::default();
         assert!(r.pin(t0));
         r.on_motion(Point::new(600.0, 500.0), &geo(), ms(t0, 10));
@@ -774,7 +774,7 @@ mod tests {
 
     #[test]
     fn the_fade_runs_in_place_and_reports_its_end() {
-        let t0 = crate::time::now();
+        let t0 = crate::motion::frame_now();
         let mut r = TopEdgeReveal::default();
         r.pin(t0);
         let motion = crate::tokens::EffectiveMotion::default();

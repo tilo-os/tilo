@@ -972,7 +972,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
             // landing chrome regardless of slow software readback time.
             1.0
         } else {
-            self.overlay_chrome_alpha_at(crate::time::now(), theme.reduce_motion)
+            self.overlay_chrome_alpha_at(crate::motion::frame_now(), theme.reduce_motion)
         };
         self.drawn_chrome_alpha = presence_alpha;
         let chrome_alpha = landing_alpha * presence_alpha;
@@ -1159,7 +1159,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                 if self.closable
                     && self.close_rect().contains(pt)
                     && (!self.overlay_chrome
-                        || self.overlay_chrome_alpha_at(crate::time::now(), false) > 0.2)
+                        || self.overlay_chrome_alpha_at(crate::motion::frame_now(), false) > 0.2)
                 {
                     self.set_open(false);
                     *ctx.handled = true;
@@ -1649,16 +1649,16 @@ mod tests {
             assert_eq!(w.overlay_chrome_alpha_at(now, false), 0.0);
 
             w.update_pointer_position(w.window_rect().center());
-            assert!(w.overlay_chrome_alpha_at(crate::time::now(), false) < 0.05);
+            assert!(w.overlay_chrome_alpha_at(crate::motion::frame_now(), false) < 0.05);
             w.overlay_chrome_changed_at = Some(crate::time::now() - overlay_chrome_fade());
-            assert!(w.overlay_chrome_alpha_at(crate::time::now(), false) > 0.99);
+            assert!(w.overlay_chrome_alpha_at(crate::motion::frame_now(), false) > 0.99);
 
             w.update_pointer_position(Point::new(-20.0, -20.0));
             w.overlay_chrome_changed_at = Some(crate::time::now() - overlay_chrome_fade() / 4);
-            let leaving = w.overlay_chrome_alpha_at(crate::time::now(), false);
+            let leaving = w.overlay_chrome_alpha_at(crate::motion::frame_now(), false);
             assert!(leaving > 0.05 && leaving < 0.95, "partly faded: {leaving}");
             w.update_pointer_position(w.window_rect().center());
-            let interrupted = w.overlay_chrome_alpha_at(crate::time::now(), false);
+            let interrupted = w.overlay_chrome_alpha_at(crate::motion::frame_now(), false);
             assert!(
                 (interrupted - leaving).abs() < 0.05,
                 "re-entering must continue from the current alpha, not jump"

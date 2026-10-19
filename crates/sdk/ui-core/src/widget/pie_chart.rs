@@ -497,7 +497,7 @@ impl PieChart {
         }
         let angle =
             (dy.atan2(dx) - self.style.start_angle).rem_euclid(TAU) + self.style.start_angle;
-        self.sectors_at(crate::time::now())
+        self.sectors_at(crate::motion::frame_now())
             .into_iter()
             .find(|s| angle >= s.start && angle < s.end)
             .map(|s| s.index)
@@ -537,7 +537,7 @@ impl PieChart {
         };
         let total = self.total();
         let slice_anchor = || {
-            self.sectors_at(crate::time::now())
+            self.sectors_at(crate::motion::frame_now())
                 .into_iter()
                 .find(|sector| self.inspection.hovered == Some(sector.index))
                 .map_or_else(
@@ -681,7 +681,7 @@ impl InteractiveChart for PieChart {
         true
     }
     fn keyboard_items(&self) -> Vec<usize> {
-        let sectors = self.sectors_at(crate::time::now());
+        let sectors = self.sectors_at(crate::motion::frame_now());
         sectors.into_iter().map(|sector| sector.index).collect()
     }
     /// Keyboard inspection leaves the pointer alone: the tooltip places itself

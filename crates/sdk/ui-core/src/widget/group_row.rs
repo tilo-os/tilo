@@ -1505,7 +1505,9 @@ impl GroupRow {
                 .fullscreen_idx()
                 .or_else(|| self.groups.iter().position(|g| g.maximized))
                 .and_then(|i| self.groups.get(i).map(|g| g.id));
-        } else if self.sibling_fade.is_open() && !self.sibling_fade.is_moving(crate::time::now()) {
+        } else if self.sibling_fade.is_open()
+            && !self.sibling_fade.is_moving(crate::motion::frame_now())
+        {
             self.fade_hero = None;
         }
         let want_open = !hide;
@@ -1516,7 +1518,7 @@ impl GroupRow {
             crate::motion::WindowMotion::SIBLINGS,
             theme.motion(),
             self.motion_source,
-            crate::time::now(),
+            crate::motion::frame_now(),
         );
     }
 
@@ -1560,12 +1562,12 @@ impl GroupRow {
 
     #[cfg(test)]
     pub(crate) fn sibling_fade_value(&self) -> f32 {
-        crate::motion::unit_opacity(self.sibling_fade.progress(crate::time::now()))
+        crate::motion::unit_opacity(self.sibling_fade.progress(crate::motion::frame_now()))
     }
 
     #[cfg(test)]
     pub(crate) fn sibling_fade_is_animating(&self) -> bool {
-        self.sibling_fade.is_moving(crate::time::now())
+        self.sibling_fade.is_moving(crate::motion::frame_now())
     }
 
     /// Rewind the live fade so a test can sample it mid-flight without
@@ -5149,7 +5151,7 @@ impl Widget for GroupRow {
             || self
                 .group_resist_back
                 .is_some_and(|(id, _, _)| self.group_pull(id).is_some())
-            || self.sibling_fade.is_moving(crate::time::now())
+            || self.sibling_fade.is_moving(crate::motion::frame_now())
             || self
                 .groups
                 .iter()
@@ -9046,7 +9048,7 @@ mod tests {
                 );
                 assert!(!handled, "a bare wheel must be left unclaimed by the strip");
                 // Lets any wrongly-started eased travel show itself.
-                row.tick_snap_at(crate::time::now() + Duration::from_millis(400));
+                row.tick_snap_at(crate::motion::frame_now() + Duration::from_millis(400));
                 assert_eq!(row.scroll_x(), 0.0, "a bare wheel must not move the strip");
                 row.apply_layout(&taffy, root, Point::ORIGIN);
                 assert_eq!(
@@ -9305,7 +9307,7 @@ mod tests {
              ({expected}); got {}",
                 anim.to
             );
-            row.tick_snap_at(crate::time::now() + Duration::from_millis(400));
+            row.tick_snap_at(crate::motion::frame_now() + Duration::from_millis(400));
             assert!(
                 (row.scroll_x() - expected).abs() < 0.5,
                 "the snap must settle on its original target ({expected}); \

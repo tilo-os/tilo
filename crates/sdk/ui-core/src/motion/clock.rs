@@ -44,6 +44,23 @@ pub(crate) fn pin_frame() -> PinnedFrame {
     PinnedFrame(FRAME_AT.with(|cell| cell.replace(Some(at))))
 }
 
+/// In a debug build, fail a motion that is read while a frame's layout is
+/// pinned at any instant but the frame's: a widget that sizes or places
+/// itself by a motion must read it at [`frame_now`], or the frame's layout
+/// passes disagree and its composition cannot settle. Only a moving motion
+/// is checked; one at rest reads the same at any instant.
+#[track_caller]
+pub(crate) fn debug_assert_frame_instant(now: Instant) {
+    if cfg!(debug_assertions)
+        && let Some(at) = FRAME_AT.with(Cell::get)
+    {
+        assert!(
+            now == at,
+            "a motion read during layout at the live clock: read it at motion::frame_now()"
+        );
+    }
+}
+
 /// Restores the frame clock [`pin_frame`] pinned.
 pub(crate) struct PinnedFrame(Option<Instant>);
 

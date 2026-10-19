@@ -2495,7 +2495,8 @@ impl Widget for TileHost {
         if self.spawn_in_flight()
             && let Some(started) = self.spawned_at
         {
-            let progress = spawn_progress(crate::time::now().saturating_duration_since(started));
+            let progress =
+                spawn_progress(crate::motion::frame_now().saturating_duration_since(started));
             let pose = WindowMotion::content_pose(progress, self.rect, theme.motion());
             let alpha = pose.opacity;
             // The window edge sits just outside the card; a few pixels of
