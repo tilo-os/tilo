@@ -848,7 +848,17 @@ impl App {
                     self.floating.coordinate_offsets.remove(id);
                     self.floating.suspended_ids.insert(id.clone());
                 }
-                FloatingSurfaceHostMessage::Appearance { network_status, .. } => {
+                FloatingSurfaceHostMessage::Appearance {
+                    network_status,
+                    room_sync,
+                    ..
+                } => {
+                    // A room that has not synced shows so in every empty
+                    // state, so what it shows changes with it.
+                    if crate::room_sync::set(room_sync.clone()) {
+                        self.layout.layout_dirty = true;
+                        self.layout.request_rebuild();
+                    }
                     if let Some(status) = network_status {
                         self.floating.network_status_active = true;
                         tilo_host::network_status::set_host_status(

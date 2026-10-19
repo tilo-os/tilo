@@ -4012,29 +4012,50 @@ impl FrameBuilder {
     /// app's shell-ui connection whenever it changes.
     #[must_use]
     pub fn window_appearance_for_app(&self, app_id: &str) -> ui::WindowAppearance {
-        let id = {
-            let chrome = self.chrome.borrow();
-            let tree = chrome.tree();
-            tree.desktop
-                .workspaces
-                .iter()
-                .find(|workspace| {
-                    workspace
-                        .strips
-                        .iter()
-                        .flat_map(|strip| &strip.window_groups)
-                        .flat_map(|group| &group.tabs)
-                        .any(|tab| {
-                            matches!(
-                                &tab.tile,
-                                crate::shell::state::TileContent::Foreign { app_id: candidate, .. }
-                                    if candidate == app_id
-                            )
-                        })
-                })
-                .map(|workspace| workspace.id.0.to_string())
-        };
+        let id = self.with_app_workspace(app_id, |workspace| workspace.id.0.to_string());
         self.windows.in_workspace(id.as_deref())
+    }
+
+    /// Where the room of the workspace holding `app_id`'s window stands
+    /// with its host ([`crate::shell::room_sync`]); `None` for a workspace
+    /// that syncs with no host.
+    #[must_use]
+    pub fn room_sync_for_app(&self, app_id: &str) -> Option<ui::room_sync::RoomSync> {
+        self.with_app_workspace(app_id, |workspace| {
+            crate::shell::room_sync::told(
+                crate::shell::network::room_topic_id(workspace.room),
+                &workspace.name,
+            )
+        })
+        .flatten()
+    }
+
+    /// `read` of the workspace holding a window of `app_id`, if any.
+    fn with_app_workspace<T>(
+        &self,
+        app_id: &str,
+        read: impl FnOnce(&crate::shell::state::Workspace) -> T,
+    ) -> Option<T> {
+        let chrome = self.chrome.borrow();
+        let tree = chrome.tree();
+        tree.desktop
+            .workspaces
+            .iter()
+            .find(|workspace| {
+                workspace
+                    .strips
+                    .iter()
+                    .flat_map(|strip| &strip.window_groups)
+                    .flat_map(|group| &group.tabs)
+                    .any(|tab| {
+                        matches!(
+                            &tab.tile,
+                            crate::shell::state::TileContent::Foreign { app_id: candidate, .. }
+                                if candidate == app_id
+                        )
+                    })
+            })
+            .map(read)
     }
 
     /// The OS palette before the window's workspace tint is applied.
@@ -5774,7 +5795,10 @@ impl FrameBuilder {
         // clicks the button a person clicks rather than invoking the action
         // behind it — a click proves the control is wired, an invocation
         // only proves the action.
-        put("collab_invite".into(), host.collaborators_invite_rect_for_tests());
+        put(
+            "collab_invite".into(),
+            host.collaborators_invite_rect_for_tests(),
+        );
         for (name, rect) in host.quick_settings_semantic_rects() {
             put(name, rect);
         }

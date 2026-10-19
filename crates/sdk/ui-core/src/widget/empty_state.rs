@@ -449,6 +449,41 @@ fn paint_empty_state(
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return None;
     }
+    // A room that has not synced with its host is not empty: whatever the
+    // app would say about nothing being here, say what is going on instead
+    // (`crate::room_sync`).
+    let waiting = crate::room_sync::waiting();
+    let mut waiting_spinner = None;
+    let replaced;
+    let (content, spinner) = match &waiting {
+        Some(waiting) => {
+            replaced = EmptyStateContent {
+                // The spinner takes the hero slot; the slot is still sized.
+                icon: Some(if waiting.spinner_since.is_some() {
+                    Icon::Info
+                } else {
+                    Icon::Download
+                }),
+                illustration: None,
+                title: &waiting.title,
+                message: waiting.message.as_deref(),
+                action_label: None,
+                error: false,
+            };
+            if let Some(since) = waiting.spinner_since {
+                let turning = ctx.theme.motion().loops();
+                let step = if turning {
+                    crate::animation::indicator_step(since, crate::time::now())
+                } else {
+                    0
+                };
+                crate::room_sync::spinner_painted(step, turning);
+                waiting_spinner = Some(crate::widget::Spinner::started_at(since));
+            }
+            (&replaced, waiting_spinner.as_mut())
+        }
+        None => (content, spinner),
+    };
     let theme = ctx.theme;
     let transform = ctx.transform;
     let placed = place(ctx.text, theme, rect, content, inline);
@@ -2356,6 +2391,63 @@ mod tests {
             node.children
                 .iter()
                 .any(|child| child.state.expanded == Some(true))
+        );
+    }
+
+    // USER REQUIREMENT (2026-10-19): "If a v6 client meets the v5 relay, the user must see a clear "update needed" state, never a silent empty room."
+    #[test]
+    fn an_empty_state_in_a_room_that_never_synced_says_so_and_offers_nothing_of_the_apps() {
+        use crate::room_sync::{RoomSync, RoomSyncState};
+        let theme = crate::theme::Theme::dark();
+        let mut text = crate::text_render::TextRenderer::new();
+        let mut scene = vello::Scene::new();
+        let rect = vello::kurbo::Rect::new(0.0, 0.0, 500.0, 400.0);
+        let content = EmptyStateContent {
+            action_label: Some("Say hello"),
+            ..EmptyStateContent::new("Nothing has been said here yet")
+        };
+        let mut paint = |scene: &mut vello::Scene| {
+            EmptyState::paint(
+                &mut PaintCtx::new(scene, vello::kurbo::Affine::IDENTITY, &mut text, &theme),
+                rect,
+                &content,
+                vello::kurbo::Point::new(-1.0, -1.0),
+            )
+        };
+        let told = |state| {
+            Some(RoomSync {
+                state,
+                workspace: "Lounge".into(),
+            })
+        };
+
+        crate::room_sync::set(told(RoomSyncState::Connecting));
+        let _ = crate::room_sync::take_spinner_stepped();
+        assert!(
+            paint(&mut scene).is_none(),
+            "before the first sync the app's own empty state, and its action, wait"
+        );
+        assert!(
+            crate::room_sync::take_spinner_stepped(),
+            "the connecting state turns a spinner"
+        );
+
+        crate::room_sync::set(told(RoomSyncState::HostNeedsUpdate));
+        assert!(paint(&mut scene).is_none());
+        assert!(
+            !crate::room_sync::take_spinner_stepped(),
+            "a host that has to update is no wait to spin through"
+        );
+
+        crate::room_sync::set(told(RoomSyncState::Synced));
+        assert!(
+            paint(&mut scene).is_some(),
+            "once the room synced, its emptiness is the app's to say"
+        );
+        crate::room_sync::set(None);
+        assert!(
+            paint(&mut scene).is_some(),
+            "a room with no host is the app's"
         );
     }
 }

@@ -249,6 +249,63 @@ pub enum ClientError {
         /// The other device's version.
         theirs: u32,
     },
+    /// The host closed the relay stream without answering this device's
+    /// hello at all. A host that refuses a device closes it this way, and so
+    /// does one from before versioned handshakes, which cannot read the
+    /// hello; [`RelayClient::probe_handshake_version`] tells the two apart.
+    #[error("the host closed the stream without answering: {0}")]
+    NoHandshakeAnswer(String),
+}
+
+/// What a host answered a hello without a leading version
+/// ([`RelayClient::probe_handshake_version`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HandshakeProbe {
+    /// It answered with a handshake of its own, as a host from before
+    /// versioned handshakes reads that hello: it is behind every versioned
+    /// device ([`crate::auth::UNVERSIONED_PEER_PROTOCOL`]).
+    Unversioned,
+    /// It answered with its version alone, as every versioned host answers
+    /// a hello it cannot read.
+    Versioned(u32),
+    /// It answered nothing, or something else.
+    Unknown,
+}
+
+impl HandshakeProbe {
+    /// What `frame`, a host's first answer to an unversioned hello, says.
+    #[must_use]
+    pub fn read(frame: Option<&[u8]>) -> Self {
+        let Some(frame) = frame else {
+            return Self::Unknown;
+        };
+        match postcard::take_from_bytes::<u32>(frame) {
+            // A versioned host's answer is its version and nothing else.
+            Ok((theirs, [])) => Self::Versioned(theirs),
+            // An unversioned host's ack starts with its certificate.
+            _ if postcard::from_bytes::<UnversionedHelloAck>(frame).is_ok() => Self::Unversioned,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// A hello as hosts read it before versioned handshakes: no leading
+/// version.
+#[derive(serde::Serialize)]
+struct UnversionedHello<'a> {
+    cert: &'a DeviceCert,
+    client_nonce: [u8; 32],
+}
+
+/// The ack a host from before versioned handshakes answers with.
+#[derive(serde::Deserialize)]
+struct UnversionedHelloAck {
+    #[allow(dead_code, reason = "read only to recognise the ack's shape")]
+    cert: DeviceCert,
+    #[allow(dead_code, reason = "read only to recognise the ack's shape")]
+    server_nonce: [u8; 32],
+    #[allow(dead_code, reason = "read only to recognise the ack's shape")]
+    sig_over_client_nonce: Vec<u8>,
 }
 
 impl ClientError {
@@ -559,6 +616,40 @@ impl RelayClient {
         .await
     }
 
+    /// Ask the host at `relay_addr` whether it predates versioned
+    /// handshakes: send it a hello as such a host reads it (no leading
+    /// version) and read its first answer. A host that closed the stream on
+    /// this device's versioned hello without a word may have refused it, or
+    /// may be one that cannot read it; this tells the two apart. Nothing is
+    /// authenticated or kept: the connection closes after the answer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] when the host is not reached.
+    pub async fn probe_handshake_version(
+        endpoint: &Endpoint,
+        relay_addr: EndpointAddr,
+        own_cert: &DeviceCert,
+    ) -> Result<HandshakeProbe, ClientError> {
+        let conn = dial(endpoint, relay_addr).await?;
+        let (mut send, mut recv) = conn
+            .open_bi()
+            .await
+            .map_err(|e| ClientError::Iroh(e.to_string()))?;
+        let hello = postcard::to_allocvec(&UnversionedHello {
+            cert: own_cert,
+            client_nonce: rand::random(),
+        })
+        .map_err(|e| ClientError::Codec(e.to_string()))?;
+        write_frame(&mut send, &hello).await?;
+        let answer = tilo_relay_client::frame::read_frame_or_eof(&mut recv, MAX_FRAME_BYTES)
+            .await
+            .ok()
+            .flatten();
+        conn.close(0u32.into(), b"probe answered");
+        Ok(HandshakeProbe::read(answer.as_deref()))
+    }
+
     /// Connect to a host whose Iroh endpoint address was obtained from a
     /// trusted workspace configuration/invite. The host may be provider-owned
     /// and therefore chain to a different user root.
@@ -845,7 +936,16 @@ impl RelayClient {
             postcard::to_allocvec(&hello).map_err(|e| ClientError::Codec(e.to_string()))?;
         write_frame(&mut send, &hello_bytes).await?;
 
-        let ack_bytes = read_frame(&mut recv, MAX_FRAME_BYTES).await?;
+        // Nothing at all back is told apart from a broken answer: it is how
+        // a refusal, and a host from before versioned handshakes, look.
+        let ack_bytes =
+            match tilo_relay_client::frame::read_frame_or_eof(&mut recv, MAX_FRAME_BYTES).await {
+                Ok(Some(bytes)) => bytes,
+                Ok(None) => {
+                    return Err(ClientError::NoHandshakeAnswer("the stream ended".into()));
+                }
+                Err(error) => return Err(ClientError::NoHandshakeAnswer(error.to_string())),
+            };
         let ack: HelloAck = handshake_frame(&ack_bytes)?;
         let now_ns = tilo_clock::unix_now_ns();
         let relay_peer = if let Some(scope) = interactive_scope.as_ref() {
@@ -2735,6 +2835,63 @@ mod peer_version_tests {
         assert_eq!(
             ClientError::Https(tilo_relay_client::LinkError::Malformed("x".into())).peer_version(),
             None
+        );
+    }
+}
+
+#[cfg(test)]
+mod handshake_probe_tests {
+    use super::HandshakeProbe;
+
+    /// The ack a host from before versioned handshakes sent (its shape at
+    /// relay 8fca8fe781): its certificate first, no version.
+    #[derive(serde::Serialize)]
+    struct OldAck {
+        cert: tilo_user_identity::DeviceCert,
+        server_nonce: [u8; 32],
+        // `serde_bytes` on the host: a length and the bytes, as a `Vec`.
+        sig_over_client_nonce: Vec<u8>,
+    }
+
+    // USER REQUIREMENT (2026-10-19): "If a v6 client meets the v5 relay, the user must see a clear "update needed" state, never a silent empty room."
+    #[test]
+    fn a_probe_tells_a_host_from_before_versions_from_one_that_refused_this_device() {
+        let ours = crate::auth::PEER_PROTOCOL_VERSION;
+        // A versioned host answers a hello it cannot read with its version.
+        let versioned = postcard::to_allocvec(&ours).unwrap();
+        assert_eq!(
+            HandshakeProbe::read(Some(&versioned)),
+            HandshakeProbe::Versioned(ours),
+            "a host at this version that closed on the hello refused this device"
+        );
+        let behind = postcard::to_allocvec(&(ours - 1)).unwrap();
+        assert_eq!(
+            HandshakeProbe::read(Some(&behind)),
+            HandshakeProbe::Versioned(ours - 1)
+        );
+        // A host from before versions reads the unversioned hello and acks.
+        let old = postcard::to_allocvec(&OldAck {
+            cert: tilo_user_identity::DeviceCert {
+                user_public_key: [6; 32],
+                device_public_key: [7; 32],
+                device_label: "lounge room host".into(),
+                capabilities: tilo_user_identity::DeviceCapabilities::host(),
+                issued_at_ns: 1,
+                expires_at_ns: None,
+                signature: [9; 64],
+            },
+            server_nonce: [3; 32],
+            sig_over_client_nonce: vec![4; 64],
+        })
+        .unwrap();
+        assert_eq!(
+            HandshakeProbe::read(Some(&old)),
+            HandshakeProbe::Unversioned
+        );
+        assert_eq!(HandshakeProbe::read(None), HandshakeProbe::Unknown);
+        assert_eq!(
+            HandshakeProbe::read(Some(b"\xff\xff")),
+            HandshakeProbe::Unknown
         );
     }
 }

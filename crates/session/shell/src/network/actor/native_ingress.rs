@@ -17,6 +17,11 @@ struct Route {
     https: Option<super::HttpsRoute>,
     serial: u64,
     pending: Option<tokio::task::JoinHandle<()>>,
+    /// Dials in a row the host closed without answering this device's
+    /// hello: a refusal, or a host from before versioned handshakes. Past
+    /// [`tilo_joined_room::session::UNANSWERED_BEFORE_PROBE`] the next one
+    /// probes which.
+    unanswered: u32,
 }
 /// A governed room's relay session is not up (yet): the caller may retry.
 pub(crate) const NOT_CONNECTED: &str = "the governed room is not connected";
@@ -38,7 +43,9 @@ impl Routes {
         self.entries.contains_key(&ws)
     }
     pub(super) fn remove(&mut self, ws: u64) {
-        self.entries.remove(&ws);
+        if self.entries.remove(&ws).is_some() {
+            crate::shell::room_sync::forget(ws);
+        }
     }
     pub(super) fn is_empty(&self) -> bool {
         self.entries.is_empty()
@@ -193,6 +200,8 @@ impl ActorState {
             return;
         };
         self.native_routes.serial = serial;
+        // Apps in the room say they are connecting until its first sync.
+        crate::shell::room_sync::connecting(ws);
         self.native_routes.entries.insert(
             ws,
             Route {
@@ -200,6 +209,7 @@ impl ActorState {
                 https,
                 serial: self.native_routes.serial,
                 pending: None,
+                unanswered: 0,
             },
         );
         self.retry_native_routes();
@@ -247,7 +257,13 @@ impl ActorState {
             let tx = self.internal_tx.clone();
             let serial = route.serial;
             let https = route.https.clone();
+            // Over iroh a host from before versioned handshakes closes the
+            // stream on this device's hello without a word, as a refusal
+            // does: after a few, ask it the way such a host reads.
+            let probe = https.is_none()
+                && route.unanswered >= tilo_joined_room::session::UNANSWERED_BEFORE_PROBE;
             route.pending = Some(tokio::spawn(async move {
+                let probing = (probe, endpoint.clone(), expected_device.clone());
                 let result = match https {
                     Some(super::HttpsRoute(http)) => {
                         tilo_joined_room::session::dial_https(
@@ -264,6 +280,21 @@ impl ActorState {
                         tilo_joined_room::session::dial(endpoint, ws, &hint, cert, key, revocations)
                             .await
                     }
+                };
+                let result = match result {
+                    Err(tilo_joined_room::session::DialError::NoAnswer(reason)) if probing.0 => {
+                        match tilo_joined_room::session::probe_version(
+                            &probing.1, &hint, &probing.2,
+                        )
+                        .await
+                        {
+                            Some(theirs) => {
+                                Err(tilo_joined_room::session::DialError::PeerVersion { theirs })
+                            }
+                            None => Err(tilo_joined_room::session::DialError::NoAnswer(reason)),
+                        }
+                    }
+                    result => result,
                 };
                 let _ = tx
                     .send(InternalEvent::NativeHostConnected {
@@ -311,6 +342,12 @@ impl ActorState {
         let Ok((payload, _)) = IrohWorkspaceHostHintV1::authenticate_transport_hint(&hint) else {
             return;
         };
+        route.unanswered = match &*result {
+            Err(tilo_joined_room::session::DialError::NoAnswer(_)) => {
+                route.unanswered.saturating_add(1)
+            }
+            _ => 0,
+        };
         let session = match *result {
             Ok(session) => session,
             // The room's host speaks another peer protocol version: the
@@ -328,6 +365,7 @@ impl ActorState {
                     String::new(),
                     theirs,
                 );
+                crate::shell::room_sync::other_version(ws, theirs);
                 return;
             }
             Err(error) => {

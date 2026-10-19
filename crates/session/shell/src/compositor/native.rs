@@ -10982,8 +10982,9 @@ pub fn run() {
         // Each app window wears the temperature of the workspace it is in
         // and the person's colour, told again whenever either moves.
         if let Some(service) = floating_surface_service.as_ref() {
-            window_appearances.publish(
+            window_appearances.publish_with_rooms(
                 |app_id| frame_builder.window_appearance_for_app(app_id),
+                |app_id| frame_builder.room_sync_for_app(app_id),
                 frame_builder.configured_app_theme(),
                 frame_builder
                     .host()

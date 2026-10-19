@@ -551,6 +551,11 @@ pub enum FloatingSurfaceHostMessage {
         /// A presence hue by its stored name (`PresenceHue::id`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         your_colour: Option<String>,
+        /// Whether the room the window is in has synced with its host
+        /// ([`crate::room_sync`]); absent for a workspace that syncs with no
+        /// host, and from older shells.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        room_sync: Option<crate::room_sync::RoomSync>,
     },
 }
 
@@ -563,6 +568,7 @@ impl FloatingSurfaceHostMessage {
             network_status: None,
             workspace_hue: appearance.workspace_hue.filter(|hue| hue.is_finite()),
             your_colour: appearance.your_colour.map(|hue| hue.id().to_owned()),
+            room_sync: None,
         }
     }
 
