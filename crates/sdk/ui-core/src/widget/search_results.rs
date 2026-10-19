@@ -1306,9 +1306,11 @@ mod tests {
             )]
             let lum = |x: f64, y: f64| lum_at(&rgba, w as u32, x, y);
 
-            // Panel edge against the panel ground just inside it, on the top
-            // padding row above the first header (nothing else paints there).
-            let y = panel.y0 + PAD / 2.0;
+            // Panel edge against the panel ground just inside it, on the left
+            // side below the rounded corner (at the top padding row the edge
+            // column is still on the corner's arc, outside the panel), where
+            // nothing but the ground paints at the left inset.
+            let y = panel.y0 + f64::from(theme.tokens.radii.control) + 1.0;
             let edge = lum(panel.x0, y);
             let ground = lum(panel.x0 + 3.0, y);
             assert!(
