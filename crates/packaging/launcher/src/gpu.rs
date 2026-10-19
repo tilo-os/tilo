@@ -50,6 +50,7 @@
 //! own default in place, the strictly smaller failure.
 
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
 use tilo_lock::MutexRecover as _;
 
 /// The capability an app declares to reach the GPU itself
