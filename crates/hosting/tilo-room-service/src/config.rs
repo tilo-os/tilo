@@ -80,6 +80,12 @@ pub struct PersistentConfig {
     pub bots: Vec<String>,
     /// Apps authored into the room at first start.
     pub seed_apps: Vec<String>,
+    /// Apps the room's members write through (`TILO_ROOMS_AUTHOR_APPS`,
+    /// comma-separated): each authors the room's content, so a guest, an
+    /// Editor, can talk in its Chat. Unset, every seeded app: they are what
+    /// the room offers its visitors. `none`, none, and the room is
+    /// read-only to its guests whatever their role.
+    pub author_apps: Vec<String>,
     /// Seconds between resets of the seeded non-chat content; 0 never.
     pub reset_secs: u64,
     /// Minutes a guest may be away (no session) before the relay removes
@@ -435,6 +441,16 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
     let token = PathBuf::from("/run/secrets/discord-bot-token");
     let moderation_key = PathBuf::from("/run/secrets/moderation-model-key");
     let moderation_model = moderation_model(var)?;
+    // Unset: chat, a welcome note and a canvas, so a visitor has something
+    // to do at once.
+    let seed_apps = if var("TILO_ROOMS_SEED_APPS").is_some() {
+        list("TILO_ROOMS_SEED_APPS", ',')
+    } else {
+        DEFAULT_SEED_APPS
+            .iter()
+            .map(|app| (*app).to_owned())
+            .collect()
+    };
     Ok(Some(PersistentConfig {
         name,
         shown_name: shown_name(var)?,
@@ -455,16 +471,8 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
             .filter(|path| !path.is_empty())
             .map(std::path::PathBuf::from),
         bots: list("TILO_ROOMS_BOTS", ';'),
-        // Unset: chat, a welcome note and a canvas, so a visitor has
-        // something to do at once.
-        seed_apps: if var("TILO_ROOMS_SEED_APPS").is_some() {
-            list("TILO_ROOMS_SEED_APPS", ',')
-        } else {
-            DEFAULT_SEED_APPS
-                .iter()
-                .map(|app| (*app).to_owned())
-                .collect()
-        },
+        author_apps: author_apps(var, &seed_apps)?,
+        seed_apps,
         reset_secs: parsed(var, "TILO_ROOMS_RESET_SECS", 21_600_u64)?,
         prune_after_mins: prune_after_mins(var)?,
         root_file: var("TILO_ROOMS_ROOT_FILE")
@@ -563,6 +571,39 @@ fn description(var: &impl Fn(&str) -> Option<String>) -> Result<String> {
     .checked()
     .map(|listing| listing.description)
     .map_err(|error| anyhow::anyhow!("TILO_ROOMS_DESCRIPTION: {error}"))
+}
+
+/// `TILO_ROOMS_AUTHOR_APPS`: the apps the room's members write through,
+/// comma-separated app ids. Unset, `seed_apps`: a public room's apps are
+/// there for its visitors to use, and its Chat for them to talk in. `none`,
+/// none (an empty variable counts as unset here, as everywhere).
+fn author_apps(var: &impl Fn(&str) -> Option<String>, seed_apps: &[String]) -> Result<Vec<String>> {
+    let Some(apps) = var("TILO_ROOMS_AUTHOR_APPS") else {
+        return Ok(seed_apps.to_vec());
+    };
+    if apps.trim() == "none" {
+        return Ok(Vec::new());
+    }
+    let apps: Vec<String> = apps
+        .split(',')
+        .map(str::trim)
+        .filter(|app| !app.is_empty())
+        .map(str::to_owned)
+        .collect();
+    for app in &apps {
+        ensure!(
+            app.len() <= 128
+                && app.contains('.')
+                && app.split('.').all(|part| {
+                    !part.is_empty()
+                        && part.bytes().all(|b| {
+                            b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_'
+                        })
+                }),
+            "TILO_ROOMS_AUTHOR_APPS names apps by id, like so.tilo.chat, not {app:?}"
+        );
+    }
+    Ok(apps)
 }
 
 /// `TILO_ROOMS_CHAT_CHANNELS`: comma-separated channel names, each
@@ -762,6 +803,48 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    // USER REQUIREMENT (2026-10-19): "In a public community lounge, a person who joined must be able to write in #chat."
+    // USER REQUIREMENT (2026-10-19): "Joined members of a community's public home room get authorship for the room's home app (Chat) by default. The host can configure otherwise, but the default is that they can talk."
+    #[test]
+    fn members_of_a_public_room_write_through_its_chat_unless_the_host_says_otherwise() {
+        let base = [
+            ("TILO_ROOMS_PERSISTENT", "plaza"),
+            ("TILO_ROOMS_LOCAL", "1"),
+        ];
+        let defaults = config(&base).unwrap().persistent.unwrap();
+        assert!(
+            defaults.author_apps.iter().any(|app| app == "so.tilo.chat"),
+            "{:?}",
+            defaults.author_apps
+        );
+        assert_eq!(defaults.author_apps, defaults.seed_apps);
+        let chat_only = config(&[base[0], base[1], ("TILO_ROOMS_SEED_APPS", "so.tilo.chat")])
+            .unwrap()
+            .persistent
+            .unwrap();
+        assert_eq!(chat_only.author_apps, ["so.tilo.chat"]);
+        let configured = config(&[
+            base[0],
+            base[1],
+            ("TILO_ROOMS_AUTHOR_APPS", " so.tilo.chat ,so.tilo.canvas"),
+        ])
+        .unwrap()
+        .persistent
+        .unwrap();
+        assert_eq!(configured.author_apps, ["so.tilo.chat", "so.tilo.canvas"]);
+        let none = config(&[base[0], base[1], ("TILO_ROOMS_AUTHOR_APPS", "none")])
+            .unwrap()
+            .persistent
+            .unwrap();
+        assert!(none.author_apps.is_empty());
+        for bad in ["Chat", "so..chat", "so.tilo.chat/x"] {
+            assert!(
+                config(&[base[0], base[1], ("TILO_ROOMS_AUTHOR_APPS", bad)]).is_err(),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

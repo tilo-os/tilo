@@ -324,23 +324,19 @@ fn child_command(config: &Config, dir: &Path) -> Result<Command> {
     if let Some(shown) = &persistent.shown_name {
         command.arg("--workspace-name").arg(shown);
     }
-    for channel in &persistent.chat_channels {
-        command.arg("--chat-channel").arg(channel);
-    }
-    for strip in &persistent.strips {
-        command.arg("--strip").arg(strip);
-    }
-    for owner in &persistent.owners {
-        command.arg("--owner").arg(owner);
-    }
-    for moderator in &persistent.moderators {
-        command.arg("--moderator").arg(moderator);
+    // Each repeatable flag, once per value.
+    for (flag, values) in [
+        ("--chat-channel", &persistent.chat_channels),
+        ("--strip", &persistent.strips),
+        ("--owner", &persistent.owners),
+        ("--moderator", &persistent.moderators),
+        ("--seed-app", &persistent.seed_apps),
+        ("--author-app", &persistent.author_apps),
+    ] {
+        command.args(values.iter().flat_map(|value| [flag, value.as_str()]));
     }
     if let Some(roles) = &persistent.roles_file {
         command.arg("--roles-file").arg(roles);
-    }
-    for app in &persistent.seed_apps {
-        command.arg("--seed-app").arg(app);
     }
     command
         .arg("--reset-every")
