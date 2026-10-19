@@ -768,7 +768,7 @@ impl TimelineInteraction {
             );
             if hour < 24 {
                 ctx.text(
-                    &format!("{hour:02}:00"),
+                    &crate::timeline_viewport::hour_label(hour),
                     &ty.hour,
                     colors.text_dim,
                     Point::new(area.x0 + s3, y + s1 / 2.0),

@@ -77,7 +77,12 @@ impl TimelineTokens {
             day_h: line(text, &ty.day),
             strip_h: line(text, &ty.strip),
             title_h,
-            hour_w: f64::from(text.measure_style("00:00", None, &ty.hour).0),
+            // The widest hour label in the person's clock: "22:00" or
+            // "10:00 PM".
+            hour_w: [0, 10, 12, 22]
+                .into_iter()
+                .map(|hour| f64::from(text.measure_style(&hour_label(hour), None, &ty.hour).0))
+                .fold(0.0, f64::max),
             s1: f64::from(sp.s1),
             s2: f64::from(sp.s2),
             s3: f64::from(sp.s3),
@@ -452,4 +457,12 @@ mod tests {
             );
         }
     }
+}
+
+/// The label of an hour in the gutter, in the person's clock ("09:00" or
+/// "9:00 AM"), as every other time in the calendar is.
+pub(crate) fn hour_label(hour: u32) -> String {
+    chrono::NaiveTime::from_hms_opt(hour, 0, 0)
+        .map(|time| ui::format::time(&time))
+        .unwrap_or_default()
 }
