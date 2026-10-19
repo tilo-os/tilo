@@ -581,6 +581,7 @@ mod tests {
                 name: "Mail".into(),
                 names: std::collections::BTreeMap::new(),
                 category: Some("Office".into()),
+                ..PackageAbout::default()
             },
         }
     }

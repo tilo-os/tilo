@@ -4,3 +4,7 @@
 # whatever the desktop speaks. Comma separated, one phrase each. The packer
 # writes them into the signed manifest; tilo-app.toml carries no copy.
 search-keywords = fernzugriff, fernwartung, remotedesktop, entfernter zugriff, bildschirmfreigabe, fernsteuerung, verbinden
+# What the app does, in one plain phrase (German): the tag line under its
+# name in the Store and in search. No marketing; the packer signs it into the
+# manifest.
+app-tagline = Zeigt und steuert einen anderen Desktop

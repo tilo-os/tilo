@@ -53,6 +53,8 @@ class RegistryMetadataTests(unittest.TestCase):
                     with self.subTest(app=path.stem):
                         for field in ("name", "description", "tagline"):
                             self.assertTrue(entry[field]["en"].strip())
+                        # The tag line is the app's own `app-tagline`, in English and German.
+                        self.assertTrue(entry["tagline"]["de"].strip())
                         self.assertEqual(entry["supported_languages"], sorted(entry["supported_languages"]))
                         self.assertIn("en", entry["supported_languages"])
                         self.assertTrue(entry["images"]["en"])
