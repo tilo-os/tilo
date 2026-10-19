@@ -364,8 +364,10 @@ fn app_names() -> Vec<(&'static str, Expect)> {
         ("slack", not_app("so.tilo.chat")),
         ("discord", not_app("so.tilo.chat")),
         ("whatsapp", not_app("so.tilo.chat")),
-        ("firefox", not_app("so.tilo.browser")),
-        ("chrome", not_app("so.tilo.browser")),
+        // The other systems' browsers are names of the Browser while no app
+        // of that name is installed (one that is leads by its own name).
+        ("firefox", app("so.tilo.browser")),
+        ("chrome", app("so.tilo.browser")),
         ("photoshop", not_app("so.tilo.canvas")),
         ("spotify", not_app("so.tilo.music")),
         ("notion", not_app("so.tilo.notes")),
