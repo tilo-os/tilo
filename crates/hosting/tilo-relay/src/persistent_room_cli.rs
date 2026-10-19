@@ -112,6 +112,12 @@ pub struct PersistentArgs {
     /// An app authored into the room at its first start; repeatable.
     #[arg(long = "seed-app", value_name = "APP_ID")]
     pub seed_apps: Vec<String>,
+    /// An app the room's members write through: it authors the room's
+    /// content, so a member whose role lets them change the room (a guest
+    /// is an Editor) can talk in its Chat; repeatable. Settled at every
+    /// start: an app named here no longer stops authoring the room.
+    #[arg(long = "author-app", value_name = "APP_ID")]
+    pub author_apps: Vec<String>,
     /// Every this many seconds, snapshot each seeded app with starting
     /// content (not chat) and reset it to that content; 0 never resets.
     #[arg(long = "reset-every", value_name = "SECS", default_value_t = 0)]
@@ -828,6 +834,27 @@ pub(crate) async fn reset_seeded(
     Ok(())
 }
 
+/// Make exactly the operator's `apps` authors of the room, so its members
+/// write through them, and take authorship back from an app this host made
+/// an author at an earlier start and no longer names (kept in `authored`).
+pub(crate) async fn settle_app_authorship(
+    rooms: &Rooms,
+    room: &str,
+    cert: &DeviceCert,
+    apps: &[String],
+    authored: &Path,
+) -> anyhow::Result<()> {
+    let earlier: BTreeSet<String> = read_json(authored)?;
+    let apps: BTreeSet<String> = apps.iter().cloned().collect();
+    let withdrawn: BTreeSet<String> = earlier.difference(&apps).cloned().collect();
+    rooms
+        .settle_app_authorship(room, cert, &apps, &withdrawn)
+        .await
+        .map_err(|error| anyhow::anyhow!("let members write through {apps:?}: {error}"))?;
+    write_json(authored, &apps)?;
+    Ok(())
+}
+
 pub(crate) async fn ensure_guest_policy(
     rooms: &Rooms,
     room: &str,
@@ -978,6 +1005,14 @@ pub(crate) async fn run(
     .await?;
     settle_strips(&rooms, &room, &host_cert, &shown, &persistent.strips).await?;
     ensure_guest_policy(&rooms, &room, &host_cert).await?;
+    settle_app_authorship(
+        &rooms,
+        &room,
+        &host_cert,
+        &persistent.author_apps,
+        &state.join("authored-apps.json"),
+    )
+    .await?;
     let web = hosted
         .relay
         .serve_web(web_config(&args.web, listen, &state))

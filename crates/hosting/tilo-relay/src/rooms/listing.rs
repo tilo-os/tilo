@@ -793,6 +793,117 @@ mod door_tests {
         relay.shutdown().await;
     }
 
+    /// Whether `device` may write in `room`'s Chat now: its role lets it
+    /// change Chat's content and Chat authors the room, the two things a
+    /// Tilo computer checks before it opens Chat writable rather than
+    /// read-only.
+    async fn writes_in_chat(rooms: &Rooms, room: &str, device: &DeviceCert) -> bool {
+        const CHAT: &str = "so.tilo.chat";
+        let state = rooms.room(room).await.unwrap();
+        let governed = state.lock().await;
+        let now = std::time::SystemTime::now();
+        let member = governed
+            .peer()
+            .permissions(device.device_public_key, now)
+            .unwrap();
+        member.allows(
+            &member.policy.node().app(CHAT),
+            tilo_action_policy::ActionKind::Undoable,
+            now,
+        ) && member
+            .policy
+            .app_authors(CHAT, &tilo_action_policy::Context::at_time(now))
+    }
+
+    // USER REQUIREMENT (2026-10-19): "In a public community lounge, a person who joined must be able to write in #chat."
+    // USER REQUIREMENT (2026-10-19): "Joined members of a community's public home room get authorship for the room's home app (Chat) by default. The host can configure otherwise, but the default is that they can talk."
+    #[tokio::test]
+    async fn a_person_who_joined_a_public_room_can_talk_in_its_chat_unless_the_host_withdraws_it() {
+        use std::collections::BTreeSet;
+        let dir = tempfile::tempdir().unwrap();
+        let (key, owner) = governor();
+        let relay = view_read_relay(dir.path(), &key, &owner).await;
+        let rooms = relay.rooms().unwrap();
+        let room = rooms.create("Lounge").await.unwrap().room;
+        rooms
+            .publish(
+                &room,
+                &owner,
+                Listing {
+                    description: String::new(),
+                    default_role: RoomRole::Editor,
+                },
+            )
+            .await
+            .unwrap();
+        let (reply, guest) = walk_in(rooms, &room).await;
+        assert!(matches!(
+            reply.unwrap(),
+            JoinReply::Admitted {
+                role: RoomRole::Editor,
+                ..
+            }
+        ));
+        // An Editor of a room whose Chat authors nothing reads it only: what
+        // the Lounge showed ("You can read this conversation but not write
+        // in it").
+        assert!(!writes_in_chat(rooms, &room, &guest).await);
+
+        let chat = BTreeSet::from(["so.tilo.chat".to_owned()]);
+        let none = BTreeSet::new();
+        assert!(
+            rooms
+                .settle_app_authorship(&room, &owner, &chat, &none)
+                .await
+                .unwrap()
+        );
+        assert!(writes_in_chat(rooms, &room, &guest).await);
+        // Every start settles it again; a room already so is left alone.
+        assert!(
+            !rooms
+                .settle_app_authorship(&room, &owner, &chat, &none)
+                .await
+                .unwrap()
+        );
+        // Whoever joins later talks too.
+        let (_, later) = walk_in(rooms, &room).await;
+        assert!(writes_in_chat(rooms, &room, &later).await);
+
+        // Authorship is the app's; whether a person writes stays their
+        // role's, and moderation stays the host's.
+        rooms
+            .publish(
+                &room,
+                &owner,
+                Listing {
+                    description: String::new(),
+                    default_role: RoomRole::Viewer,
+                },
+            )
+            .await
+            .unwrap();
+        let (_, viewer) = walk_in(rooms, &room).await;
+        assert!(!writes_in_chat(rooms, &room, &viewer).await);
+        // Only the host settles it, not a member.
+        assert!(
+            rooms
+                .settle_app_authorship(&room, &guest, &none, &chat)
+                .await
+                .is_err()
+        );
+        assert!(writes_in_chat(rooms, &room, &guest).await);
+
+        // The host configured otherwise: Chat is read-only to members again.
+        assert!(
+            rooms
+                .settle_app_authorship(&room, &owner, &none, &chat)
+                .await
+                .unwrap()
+        );
+        assert!(!writes_in_chat(rooms, &room, &guest).await);
+        relay.shutdown().await;
+    }
+
     #[tokio::test]
     async fn a_private_workspace_has_no_door_and_is_not_listed() {
         let dir = tempfile::tempdir().unwrap();

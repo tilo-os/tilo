@@ -617,6 +617,101 @@ impl Rooms {
         .await
     }
 
+    /// Make the room's app authorship what its host configured: every app
+    /// in `apps` authors the room's content
+    /// ([`tilo_action_policy::roles::app_authorship`]), so a member whose
+    /// role lets them change the room can do so through it, and every app in
+    /// `withdrawn` (one the host made an author before and names no longer)
+    /// stops. A room already that way is left as it is, so the host settles
+    /// this at every start without a governance change each time. Whether a
+    /// member may write stays their role's: a viewer still writes nothing.
+    ///
+    /// Answers whether anything changed.
+    ///
+    /// # Errors
+    ///
+    /// Refuses non-administrators, invalid application ids and changes that
+    /// could not commit.
+    pub async fn settle_app_authorship(
+        &self,
+        room: &str,
+        administrator: &DeviceCert,
+        apps: &std::collections::BTreeSet<String>,
+        withdrawn: &std::collections::BTreeSet<String>,
+    ) -> Result<bool, CollaborationError> {
+        let now = tilo_clock::unix_now_ns();
+        self.authorize(
+            administrator,
+            None,
+            RoomOp::Host(HostOperation::PutRoomGrants),
+            now,
+        )?;
+        for app in apps.iter().chain(withdrawn) {
+            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::GrantAppAuthorship {
+                app: app.clone(),
+            }
+            .validate()?;
+        }
+        let state = self.room(room).await?;
+        let mut governed = state.lock().await;
+        let granted_by =
+            tilo_action_policy::Subject::Person(hex::encode(administrator.user_public_key));
+        let held = governed
+            .peer()
+            .permissions(administrator.device_public_key, system_time(now))?
+            .policy
+            .grants;
+        let grants: Vec<tilo_action_policy::Grant> = apps
+            .iter()
+            .map(|app| tilo_action_policy::roles::app_authorship(room, app, granted_by.clone()))
+            .filter(|grant| !held.contains(grant))
+            .collect();
+        let revoked: Vec<tilo_action_policy::GrantId> = withdrawn
+            .iter()
+            .filter(|app| !apps.contains(*app))
+            .map(|app| tilo_action_policy::roles::app_authorship(room, app, granted_by.clone()).id)
+            .filter(|id| held.iter().any(|grant| &grant.id == id))
+            .collect();
+        if grants.is_empty() && revoked.is_empty() {
+            return Ok(false);
+        }
+        let digest = request_digest(&("app.authorship.settle", &grants, &revoked))?;
+        // One request per change from this generation: settling the same
+        // configuration again later finds nothing to change and asks nothing.
+        let request_id = request_digest(&(digest, governed.record.generation))?;
+        let key = self.inner.host.key.clone();
+        self.administer(
+            &mut governed,
+            request_id,
+            digest,
+            |peer| {
+                let added = !grants.is_empty()
+                    && peer.governance_mut().put_governed_grants(
+                        &grants,
+                        &key,
+                        system_time(now),
+                    )?;
+                let removed = !revoked.is_empty()
+                    && peer.governance_mut().remove_governed_grants(
+                        &revoked,
+                        &key,
+                        system_time(now),
+                    )?;
+                Ok(added || removed)
+            },
+            now,
+        )
+        .await?;
+        drop(governed);
+        tracing::info!(
+            %room,
+            authors = ?apps,
+            withdrawn = revoked.len(),
+            "room app authorship settled"
+        );
+        Ok(true)
+    }
+
     /// Make `user_public_key` an administrator of `room`: an editor holding
     /// every governance action, still bounded by their role
     /// ([`tilo_action_policy::roles::administrator_grant`]).
