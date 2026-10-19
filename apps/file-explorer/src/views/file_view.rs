@@ -2643,7 +2643,7 @@ mod tests {
     fn assert_description_has_every_fact(description: Option<&str>) {
         let description = description.unwrap_or_default();
         for fact in [
-            "File, 4\u{a0}kB",
+            "File, 4 kB",
             "Available offline",
             "Kept offline",
             "Kept on other devices",
