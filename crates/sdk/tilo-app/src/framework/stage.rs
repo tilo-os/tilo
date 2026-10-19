@@ -251,6 +251,9 @@ fn stage_with(
     harness
         .flush_component_records()
         .map_err(LaunchError::Operation)?;
+    // How long staging took is not a wait anyone saw: the save status shows
+    // the state the record is in, not a stall the machine's speed decided.
+    harness.with_widget_mut(ResourceRoot::settle_saves_for_capture);
     harness.relayout();
     // Navigation replacement has coherent first-frame geometry. Capture the
     // acknowledged production frame after its visual work above completes;
