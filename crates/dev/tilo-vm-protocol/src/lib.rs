@@ -996,46 +996,66 @@ pub struct StatusResult {
     pub storage: Storage,
     pub issues: Vec<Issue>,
     /// The last time the machine booted another OS image than its slots
-    /// were made on, and what that took off them. Absent from a daemon that
-    /// does not reconcile slots with the image.
+    /// were made on, and which slots kept layers built on the previous one.
+    /// Absent from a daemon that does not record images.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_change: Option<ImageChange>,
-    /// The OS image the slots' generations are made on, as [`booted_image`]
-    /// names it: recorded at every boot, so it is the booted one. Absent
-    /// from a daemon that does not reconcile slots with the image.
+    /// The OS image this boot runs, as [`booted_image`] names it: recorded
+    /// at every boot. Absent from a daemon that does not record images.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slots_image: Option<String>,
 }
 
-/// The machine booted another OS image than its slots' generations were
-/// made on. Layers are built against one image (its libraries, its
-/// protocols, its other components), so on the new one they would run old
-/// programs against new ones: every slot went back to the image itself
-/// (generation 0), and the generations made for the old image are gone.
+/// The machine booted another OS image than the one recorded at the boot
+/// before. Layers are built against one image (its libraries, its
+/// protocols, its other components), so on another one they may run old
+/// programs against new ones. They are the person's deployed work all the
+/// same: every slot stays on its generation, and nothing is deleted, until
+/// the person rolls the slot back (`tilo-vm rollback --slot <slot> --to 0`
+/// runs the image as installed) or forward (a new swap builds against the
+/// booted image). An unknown previous image is never a change.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImageChange {
-    /// The image the generations were made on; `None` when tilo-vmd had not
-    /// recorded one (state from before it did).
+    /// The image recorded at the boot before. `None` only in a record an
+    /// older tilo-vmd wrote, which counted state from before it recorded
+    /// images as a change.
     pub from: Option<String>,
     /// The booted image, as `composefs:<digest>` or `ostree:<deployment>`.
     pub to: String,
     /// RFC 3339, when the boot found the change.
     pub at: String,
-    /// Slots that ran layers and no longer do.
-    pub dropped: Vec<DroppedLayers>,
-    /// Layers no generation referenced any more, deleted afterwards.
+    /// Slots whose current generation was made on `from` and still runs
+    /// its layers on `to`.
+    #[serde(default)]
+    pub kept: Vec<SlotLayers>,
+    /// Slots an older tilo-vmd put back on the image at this change,
+    /// deleting their generations. tilo-vmd no longer drops anything; this
+    /// stays readable so such a record is reported as what it was.
+    #[serde(default)]
+    pub dropped: Vec<SlotLayers>,
+    /// What that older tilo-vmd deleted of the dropped slots' layers.
     #[serde(default)]
     pub freed_bytes: u64,
 }
 
-/// One slot an [`ImageChange`] put back on the image.
+/// One slot's generation at an [`ImageChange`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DroppedLayers {
+pub struct SlotLayers {
     pub slot: String,
     /// The generation it was on.
     pub generation: u64,
     /// The components that generation had swapped in, by name.
     pub components: Vec<String>,
+}
+
+impl SlotLayers {
+    fn components_text(&self) -> String {
+        if self.components.is_empty() {
+            "no components".to_owned()
+        } else {
+            self.components.join(", ")
+        }
+    }
 }
 
 /// The booted OS image, from a kernel command line: the composefs digest of
@@ -1055,27 +1075,43 @@ pub fn booted_image(cmdline: &str) -> Option<String> {
 }
 
 impl ImageChange {
-    /// One line per slot, for people: what the upgrade took off and why.
+    /// One line per slot, for people: which slots run layers built on the
+    /// previous image, and the way to either image.
     #[must_use]
     pub fn describe(&self) -> Vec<String> {
-        if self.dropped.is_empty() {
-            return Vec::new();
-        }
-        let mut lines = vec![format!(
-            "the OS image changed ({}): layers built for the previous image were dropped, because they would run old programs against the new ones",
-            self.at
-        )];
-        for slot in &self.dropped {
+        let mut lines = Vec::new();
+        if !self.kept.is_empty() {
             lines.push(format!(
-                "  slot {} left generation {} ({}) and runs the image as installed",
-                slot.slot,
-                slot.generation,
-                if slot.components.is_empty() {
-                    "no components".to_owned()
+                "the OS image changed ({}): these slots keep the layers built on the previous image; tilo-vm rollback --slot <slot> --to 0 runs the image as installed, a new swap builds against it",
+                self.at
+            ));
+            for slot in &self.kept {
+                lines.push(format!(
+                    "  slot {} stays on generation {} ({})",
+                    slot.slot,
+                    slot.generation,
+                    slot.components_text()
+                ));
+            }
+        }
+        if !self.dropped.is_empty() {
+            lines.push(format!(
+                "the OS image changed ({}): an older tilo-vmd dropped the layers built for the previous image{}",
+                self.at,
+                if self.freed_bytes > 0 {
+                    format!(" and deleted {} bytes of them", self.freed_bytes)
                 } else {
-                    slot.components.join(", ")
+                    String::new()
                 }
             ));
+            for slot in &self.dropped {
+                lines.push(format!(
+                    "  slot {} left generation {} ({})",
+                    slot.slot,
+                    slot.generation,
+                    slot.components_text()
+                ));
+            }
         }
         lines
     }

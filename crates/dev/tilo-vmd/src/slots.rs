@@ -578,33 +578,6 @@ impl SlotStore {
             .ok()
     }
 
-    /// Put the slot back on the image (generation 0) and delete every
-    /// generation it has: they were made for another image. The record is
-    /// saved first, so an interruption leaves a slot on the image with
-    /// leftover generation files, which the next call deletes.
-    ///
-    /// # Errors
-    /// I/O failures.
-    pub fn return_to_image(&self, record: &mut SlotRecord) -> Result<(), DaemonError> {
-        self.set_current(record, 0)?;
-        let dir = self.dir.join(&record.name).join("generations");
-        if !dir.exists() {
-            return Ok(());
-        }
-        let doomed = self
-            .dir
-            .join(&record.name)
-            .join(format!(".rm-generations-{}", uuid::Uuid::new_v4().simple()));
-        fs::rename(&dir, &doomed).map_err(DaemonError::io(format!(
-            "drop the generations of {}",
-            record.name
-        )))?;
-        fs::remove_dir_all(&doomed).map_err(DaemonError::io(format!(
-            "drop the generations of {}",
-            record.name
-        )))
-    }
-
     /// Delete generations older than the newest `keep` (the current one is
     /// always kept) and return the survivors' layers plus what was deleted.
     ///

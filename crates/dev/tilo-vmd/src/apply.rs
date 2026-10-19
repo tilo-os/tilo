@@ -164,8 +164,9 @@ pub trait Apply {
     fn unit_state(&mut self, unit: &str) -> String;
     /// Give a staged layer the `SELinux` labels its files get under `/`.
     fn label_layer(&mut self, layer: &std::path::Path) -> Result<(), DaemonError>;
-    /// Point the VM-wide sysext set at exactly `layers`.
-    fn link_sysext(&mut self, layers: &[PathBuf]) -> Result<(), DaemonError>;
+    /// Point the VM-wide sysext set at exactly `layers`; `true` when a link
+    /// was added, replaced or removed (so `/usr` needs a refresh to match).
+    fn link_sysext(&mut self, layers: &[PathBuf]) -> Result<bool, DaemonError>;
     fn sysext_refresh(&mut self) -> Result<(), DaemonError>;
     /// Create a vkms card with `connectors` connected outputs and a logind
     /// seat for it; return the seat name.
@@ -975,10 +976,11 @@ impl Apply for RecordingApply {
         self.call("label_layer".into());
         Ok(())
     }
-    fn link_sysext(&mut self, layers: &[PathBuf]) -> Result<(), DaemonError> {
+    fn link_sysext(&mut self, layers: &[PathBuf]) -> Result<bool, DaemonError> {
         self.call(format!("link_sysext {}", layers.len()));
+        let changed = self.sysext != layers;
         self.sysext = layers.to_vec();
-        Ok(())
+        Ok(changed)
     }
     fn sysext_refresh(&mut self) -> Result<(), DaemonError> {
         self.call("sysext_refresh".into());
