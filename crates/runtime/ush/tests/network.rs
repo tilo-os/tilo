@@ -24,7 +24,7 @@ use tilo_environment::{DEFAULT_RECORD, Environment, PackageId};
 use ush::records::Records;
 use ush::store::Store;
 
-use crate::serve_handoff::{RUNTIME, fixture_images, guest_unavailable};
+use crate::serve_handoff::{RUNTIME, fixture_images, guest_unavailable, namespace_entry};
 
 /// Where the fake world is, as the guest sees it.
 const WORLD: &str = "192.0.2.10";
@@ -118,9 +118,6 @@ fn run(dir: &Path, store: &Store, script: &str, env: &[(&str, String)]) -> Outpu
 fn network_unavailable() -> Option<String> {
     if let Some(reason) = guest_unavailable() {
         return Some(reason);
-    }
-    if let Err(e) = tilo_egress::Netns::create() {
-        return Some(format!("no network namespace: {e}"));
     }
     if !tilo_egress::pasta::find().is_file() {
         return Some("pasta (the passt package) is not installed".into());
@@ -220,12 +217,13 @@ fn a_guest_reaches_its_granted_host_and_nothing_else() {
 /// One with nothing granted starts offline.
 #[test]
 fn a_guest_whose_hosts_cannot_be_enforced_does_not_start() {
+    tilo_test_env::require_capability!(
+        NamespaceEntry,
+        namespace_entry(),
+        "the guest's network namespace"
+    );
     if let Some(reason) = guest_unavailable() {
         eprintln!("network: no guest on this machine — {reason}");
-        return;
-    }
-    if let Err(e) = tilo_egress::Netns::create() {
-        eprintln!("network: no network namespace on this machine — {e}");
         return;
     }
     let refuse = [("TILO_USH_EGRESS_REFUSE_NETFILTER", "1".to_owned())];

@@ -1592,6 +1592,75 @@ inputs = []
 on = ["stable", "dispatch"]
 default = false
 
+# ush's guests need what the job sandbox refuses: its supervisor enters the
+# network namespace it prepares for every guest (setns, which the job sandbox's
+# seccomp filter refuses), and its loader fixture mounts a read-only filesystem
+# and gives files to other users (real root). There those tests skip; they are
+# built here and run in a micro-VM, the guests as an ordinary user as in a
+# session, the loader fixture as root.
+[[check]]
+name = "ush-guests-build"
+requires = ["arch=x86_64"]
+run = """
+set -eu
+mkdir -p "$CARGO_TARGET_DIR/vm"
+# Read every message before selecting: closing cargo's pipe early makes it
+# fail with a broken pipe while it is still writing build messages.
+test_binary() {
+  python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m["executable"] for m in messages if m.get("reason") == "compiler-artifact" and m.get("executable") and m["target"]["name"] == sys.argv[1] and m["profile"]["test"]))' "$1"
+}
+cp "$(cargo test --locked -p ush --lib --no-run --message-format json | test_binary ush)" "$CARGO_TARGET_DIR/vm/ush-lib"
+cp "$(cargo test --locked -p ush --test it --no-run --message-format json | test_binary it)" "$CARGO_TARGET_DIR/vm/ush-it"
+"""
+outputs = ["/target/vm/ush-lib", "/target/vm/ush-it", "/target/debug/tilo-ush"]
+cargo_packages = ["ush"]
+inputs = ["os/usr/lib/systemd/user/tilo-ush.service"]
+
+[[check]]
+name = "ush-guests"
+requires = ["arch=x86_64"]
+isolation = "vm"
+needs = ["ush-guests-build"]
+env = { TILO_REQUIRE_CHOWN = "1", TILO_REQUIRE_SETNS = "1" }
+run = """
+set -eu
+if [ "$(id -u)" != "0" ]; then
+  echo "ush-guests: expected euid 0 in the micro-VM, got $(id -u)" >&2
+  exit 1
+fi
+# A filter that matches fewer tests than named still exits 0: compare the count.
+run_tests() {
+  expected=$1
+  shift
+  output=$("$@" 2>&1) || { status=$?; printf '%s\\n' "$output"; return "$status"; }
+  printf '%s\\n' "$output"
+  actual=$(printf '%s\\n' "$output" | sed -n 's/^test result: ok\\. \\([0-9][0-9]*\\) passed.*/\\1/p' | tail -n 1)
+  if [ "${actual:-}" != "$expected" ]; then
+    echo "expected $expected passing tests, got ${actual:-none}: $*" >&2
+    return 1
+  fi
+}
+cd crates/runtime/ush
+TMPDIR=/var/tmp/ush-root
+mkdir -p "$TMPDIR"
+TMPDIR=$TMPDIR run_tests 1 /target/vm/ush-lib --exact \\
+  helper_runtime::tests::installed_loader_in_systemd_user_namespace_requires_immutable_filesystem \\
+  --nocapture --test-threads=1
+# The guests run as the session's user does: not root.
+home=/var/tmp/ush-user
+mkdir -p "$home"
+chown 1000:1000 "$home"
+run_tests 5 setpriv --reuid=1000 --regid=1000 --clear-groups \\
+  env HOME="$home" TMPDIR="$home" /target/vm/ush-it --exact \\
+  serve_handoff::a_terminal_gets_a_shell_in_its_environment_over_the_service_socket \\
+  serve_handoff::the_public_ush_alias_creates_default_and_runs_a_confined_command \\
+  serve_handoff::a_sandbox_that_cannot_be_built_is_explained \\
+  serve_handoff::the_shipped_service_reexecs_the_same_elf_when_its_launch_path_is_unlinked \\
+  network::a_guest_whose_hosts_cannot_be_enforced_does_not_start \\
+  --nocapture --test-threads=1
+"""
+inputs = []
+
 # ---------------------------------------------------------------------------
 # Scheduled suites: nightly-* every night, weekly-* on Sundays, and on request:
 # `t test 'nightly-*'` or `t dispatch <check>`. t reserves `/` in check names for package

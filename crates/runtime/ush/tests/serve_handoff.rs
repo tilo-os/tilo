@@ -263,6 +263,16 @@ fn fixture_file(runtime: &Path, source: &Path) {
 /// the runtime performs — a user namespace mapping the real uid, `/usr` as a
 /// read-only overlay of the materialized runtime and tool lowers. It probes
 /// the subject the tests actually use, including on an overlay-backed host.
+/// Whether this process can prepare a guest's network namespace: make one
+/// and enter it, as the supervisor does before it starts any guest.
+///
+/// # Errors
+/// Returns the step the kernel or the sandbox refused.
+pub fn namespace_entry() -> std::io::Result<()> {
+    tilo_egress::Netns::create()?.open_inside().map(drop)
+}
+
+/// Why no guest can run on this machine, or `None`.
 pub fn guest_unavailable() -> Option<String> {
     let Some(bwrap) = which_bwrap() else {
         return Some("bwrap is not installed".into());
@@ -297,7 +307,9 @@ pub fn guest_unavailable() -> Option<String> {
         .args(["/usr/bin/bash", "-c", "exit 0"])
         .output();
     match probe {
-        Ok(o) if o.status.success() => None,
+        Ok(o) if o.status.success() => namespace_entry()
+            .err()
+            .map(|e| format!("the guest's network namespace cannot be prepared: {e}")),
         Ok(o) => Some(format!(
             "this machine cannot stack the guest's images: {}",
             String::from_utf8_lossy(&o.stderr).trim()
@@ -320,6 +332,11 @@ fn which_bwrap() -> Option<PathBuf> {
 #[test]
 fn a_terminal_gets_a_shell_in_its_environment_over_the_service_socket() {
     let _guest = GUEST_ENV.lock().expect("guest env lock");
+    tilo_test_env::require_capability!(
+        NamespaceEntry,
+        namespace_entry(),
+        "the guest's network namespace"
+    );
     assert_eq!(
         guest_unavailable(),
         None,
@@ -333,6 +350,11 @@ fn a_terminal_gets_a_shell_in_its_environment_over_the_service_socket() {
 #[test]
 fn the_public_ush_alias_creates_default_and_runs_a_confined_command() {
     let _guest = GUEST_ENV.lock().expect("guest env lock");
+    tilo_test_env::require_capability!(
+        NamespaceEntry,
+        namespace_entry(),
+        "the guest's network namespace"
+    );
     assert_eq!(
         guest_unavailable(),
         None,
@@ -772,6 +794,11 @@ fn start_reexec_supervisor(
 
 #[test]
 fn the_shipped_service_reexecs_the_same_elf_when_its_launch_path_is_unlinked() {
+    tilo_test_env::require_capability!(
+        NamespaceEntry,
+        namespace_entry(),
+        "the guest's network namespace"
+    );
     assert!(
         guest_unavailable().is_none(),
         "this regression must observe a real confined guest"
