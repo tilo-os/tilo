@@ -204,6 +204,23 @@ pub fn window_row_app_id(tree: &DesktopTree, id: &str) -> Option<String> {
     }
 }
 
+/// Every app with a window open anywhere on the desktop, by app id: what
+/// each window announces, or for a built-in the package it is.
+pub fn open_app_ids(tree: &DesktopTree) -> std::collections::BTreeSet<String> {
+    tree.workspaces
+        .iter()
+        .flat_map(|workspace| workspace.strips.iter())
+        .flat_map(|strip| strip.window_groups.iter())
+        .flat_map(|group| group.tabs.iter())
+        .filter_map(|tab| match &tab.tile {
+            TileContent::AppPlaceholder { kind, .. } | TileContent::Stub { kind, .. } => {
+                Some(kind.app_id())
+            }
+            tile => app_id(tile).map(str::to_owned),
+        })
+        .collect()
+}
+
 /// The readable end of an app id — `so.tilo.file-explorer` answers to
 /// "file explorer" — so a window titled after its document is still found
 /// by its app.

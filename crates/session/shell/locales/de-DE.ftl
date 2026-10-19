@@ -1594,6 +1594,7 @@ search-apps-shortcut-failed = Die Verknüpfung konnte nicht geöffnet werden. Pr
 
 # Suche: Apps zum Holen, aus dem Katalog, den die Suche mit dem App Store teilt
 search-catalogue-provider = App Store
+search-catalogue-installed-provider = App-Aktionen
 search-catalogue-source-tilo = Tilo-App
 search-catalogue-source-flathub = Flathub
 search-catalogue-document-subtitle = Neu in { $app }

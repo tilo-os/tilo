@@ -1610,6 +1610,7 @@ search-apps-shortcut-failed = The shortcut could not be opened. Check its target
 
 # Search: apps to get, from the catalogue search shares with the App Store
 search-catalogue-provider = App Store
+search-catalogue-installed-provider = App actions
 search-catalogue-source-tilo = Tilo app
 search-catalogue-source-flathub = Flathub
 search-catalogue-document-subtitle = New in { $app }
