@@ -9,7 +9,6 @@
 //! frame. See [`crate::command`].
 
 use ui::num::i64_of_usize;
-use ui::tilo_resource::Effect as _;
 use ui::widget::TaffyTreeExt;
 
 use crate::command::{CommandSink, FileCommand, new_sink};
@@ -46,6 +45,7 @@ use vello::peniko::ImageData as PenikoImage;
 mod clipboard_client;
 mod cloud_browse;
 mod drives;
+mod entry_rows;
 mod mounted_cloud;
 mod native_open_with;
 mod selected_open;
@@ -964,6 +964,10 @@ pub struct FileExplorerWidget {
     /// "Open With" candidates per file type, asked of the host once per
     /// listing rather than once per row.
     open_with_cache: RefCell<HashMap<String, crate::open_with::OpenWithCandidates>>,
+    /// The listing's entries by resource id, made once per listing.
+    entry_ids: RefCell<EntryIds>,
+    /// The entry rows last published, kept while what each shows holds.
+    entry_rows: RefCell<entry_rows::EntryRows>,
     /// The shared searchable picker behind "Other application…"; its rows are
     /// the published open-with actions of [`Self::app_chooser_target`].
     app_chooser: ui::widget::command_palette::CommandPalette,
@@ -1357,11 +1361,7 @@ impl FileExplorerWidget {
         if self.is_trash_view() {
             return Vec::new();
         }
-        let Some(entry) = self
-            .entries
-            .iter()
-            .find(|entry| Self::entry_resource_id(entry) == row)
-        else {
+        let Some(entry) = self.entry_by_resource_id(row) else {
             return Vec::new();
         };
         let path = entry.path.display().to_string();
@@ -1953,6 +1953,8 @@ impl FileExplorerWidget {
             recent: crate::recent::RecentFiles::default(),
             recent_setting: None,
             open_with_cache: RefCell::new(HashMap::new()),
+            entry_ids: RefCell::default(),
+            entry_rows: RefCell::default(),
             app_chooser: ui::widget::command_palette::CommandPalette::commands(),
             app_chooser_target: None,
             thumb_imgs: Rc::new(RefCell::new(HashMap::new())),
@@ -2048,6 +2050,14 @@ impl FileExplorerWidget {
         )
     }
 
+    /// The listed entry whose resource id is `id`
+    /// ([`Self::entry_resource_id`]), through ids made once per listing:
+    /// finding a row's entry hashed the path of every entry before it, and
+    /// a publication asks it of every row.
+    fn entry_by_resource_id(&self, id: &str) -> Option<&Entry> {
+        self.entry_ids.borrow_mut().find(&self.entries, id)
+    }
+
     /// The resource identities (kind and id) of the single selected entry,
     /// most specific first: its collaborative record, then its path.
     fn selected_entry_identities(&self) -> Vec<(String, String)> {
@@ -2077,9 +2087,7 @@ impl FileExplorerWidget {
     }
 
     fn visible_entry_path(&self, resource_id: &str) -> Option<PathBuf> {
-        self.entries
-            .iter()
-            .find(|entry| Self::entry_resource_id(entry) == resource_id)
+        self.entry_by_resource_id(resource_id)
             .map(|entry| entry.path.clone())
     }
 
@@ -2667,29 +2675,25 @@ impl FileExplorerWidget {
     }
 
     fn importable_cloud_entry(&self, path: &Path) -> bool {
-        // Legacy native-document placeholders contain a browser link, not
-        // editable document bytes. Copying one cannot fulfil an import.
-        if path.extension().is_some_and(|extension| {
-            [
-                "gdoc", "gsheet", "gslides", "gdraw", "gform", "gsite", "url",
-            ]
-            .iter()
-            .any(|suffix| extension.eq_ignore_ascii_case(suffix))
-        }) {
-            return false;
-        }
-        self.remote_account_snapshot().iter().any(|account| {
-            matches!(
-                account.kind,
-                crate::remote_accounts::RemoteAccountKind::GoogleDrive
-                    | crate::remote_accounts::RemoteAccountKind::Dropbox
-            ) && !account.is_import()
-                && account.health != crate::remote_accounts::RemoteAccountHealth::Disabled
-                && account
-                    .mount
-                    .as_ref()
-                    .is_some_and(|mount| path.starts_with(mount))
-        })
+        entry_rows::importable_under(path, &self.import_mounts())
+    }
+
+    /// Where the accounts a converted file can be imported once from are
+    /// mounted: Google Drive and Dropbox accounts, not themselves imports,
+    /// not disabled.
+    fn import_mounts(&self) -> Vec<PathBuf> {
+        self.remote_account_snapshot()
+            .into_iter()
+            .filter(|account| {
+                matches!(
+                    account.kind,
+                    crate::remote_accounts::RemoteAccountKind::GoogleDrive
+                        | crate::remote_accounts::RemoteAccountKind::Dropbox
+                ) && !account.is_import()
+                    && account.health != crate::remote_accounts::RemoteAccountHealth::Disabled
+            })
+            .filter_map(|account| account.mount)
+            .collect()
     }
 
     /// Import uses the ordinary queued copy path: kernel reads hydrate the
@@ -5201,9 +5205,14 @@ impl FileExplorerWidget {
     /// `FileCommand::RestoreFromTrash` — restore the selection to its
     /// original location.
     fn is_native_trash_entry(&self, path: &Path) -> bool {
+        entry_rows::in_native_trash(path, self.native_trash_dir().as_deref())
+    }
+
+    /// The host's Trash, when this window uses its native Trash.
+    fn native_trash_dir(&self) -> Option<PathBuf> {
         self.hosted_clipboard()
-            && host_fs::trash::user_trash_dir()
-                .is_some_and(|root| path.parent() == Some(root.as_path()))
+            .then(host_fs::trash::user_trash_dir)
+            .flatten()
     }
 
     fn request_restore_from_trash(&mut self) -> bool {
@@ -9538,266 +9547,40 @@ impl FileExplorerWidget {
         ));
     }
 
-    /// Construct the complete action contract for one already-projected row.
-    /// This is intentionally separate from `resources`: a folder can have far
-    /// more rows than an action directory should enumerate, while an exact
-    /// search/history/agent address must still resolve to the same canonical
-    /// actions as a visible context menu.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "an entry's complete canonical action contract stays together so lazy and eager resource resolution cannot diverge by dispatch route"
-    )]
-    fn entry_resource(&self, entry: &Entry) -> Resource {
-        use crate::effects::{FilesEffect, row_action};
-        let resource_id = Self::entry_resource_id(entry);
-        let id = || resource_id.clone();
-        let record_id = entry.record_id.map(uuid::Uuid::from_bytes);
-        let mut resource = Resource::new(
-            resource_id.clone(),
-            if record_id.is_some() {
-                "files.record"
-            } else {
-                "files.entry"
-            },
-            entry.name.clone(),
-        );
-        if self.is_recent_view() {
-            resource.actions.push(row_action(
-                &FilesEffect::RevealRecent { entry: id() },
-                crate::search_provider::REVEAL_ACTION,
-                t("files-recent-reveal"),
-            ));
-            resource.actions.push(row_action(
-                &FilesEffect::ForgetRecent { entry: id() },
-                "forget-recent",
-                t("files-recent-forget"),
-            ));
-        } else if let Some(record_id) = record_id {
-            resource.actions.push(row_action(
-                &FilesEffect::Reveal {
-                    record: record_id.to_string(),
-                },
-                crate::search_provider::REVEAL_ACTION,
-                t("files-action-reveal"),
-            ));
-        }
-        resource.actions.push(row_action(
-            &FilesEffect::OpenItem { item: id() },
-            "open",
-            if self.converted_description(&entry.path).is_some() {
-                t("files-mounted-open")
-            } else {
-                t("files-menu-open")
-            },
-        ));
-        if let Some(description) = self.converted_description(&entry.path) {
-            resource.presentation = Some(ui::tilo_actions::ResourcePresentation {
-                detail: Some(description.clone()),
-                badge: Some(t("files-mounted-readonly")),
-                preview: Some(format!(
-                    "{} {}",
-                    description,
-                    t("files-mounted-independent")
-                )),
-            });
-            if let Some(open) = resource.actions.last_mut() {
-                open.description = Some(description);
-            }
-            resource.actions.push(row_action(
-                &FilesEffect::ImportConverted { entry: id() },
-                "import-converted",
-                t("files-mounted-copy"),
-            ));
-        }
-        self.append_open_with_actions(entry, &resource_id, &mut resource);
-        if !self.is_trash_view() {
-            let mut copy_to = FilesEffect::CopyTo {
-                entry: id(),
-                folder: String::new(),
-            }
-            .bound_asking(&["folder"]);
-            copy_to.label = "Copy to folder…".into();
-            resource.actions.push(copy_to);
-            if self.importable_cloud_entry(&entry.path) {
-                let mut import = FilesEffect::ImportOnce {
-                    entry: id(),
-                    folder: String::new(),
-                }
-                .bound_asking(&["folder"]);
-                import.label = t("files-import-once");
-                resource.actions.push(import);
-            }
-            resource.actions.push(row_action(
-                &FilesEffect::SendNearby { entry: id() },
-                "send-nearby",
-                t("files-menu-send-nearby"),
-            ));
-            if entry.path.is_file() && self.nearby_send.airdrop_available() {
-                let effect = FilesEffect::SendAirDrop {
-                    entry: id(),
-                    address: String::new(),
-                    port: 0,
-                };
-                let mut params = effect.bound_asking(&["address", "port"]).params().to_vec();
-                for param in &mut params {
-                    let key = if &*param.name == "address" {
-                        "files-airdrop-address"
-                    } else {
-                        "files-airdrop-port"
-                    };
-                    param.description = t(key).into();
-                    param.schema = Some(
-                        (if &*param.name == "port" {
-                            serde_json::json!({"minimum": 1, "maximum": 65535})
-                        } else {
-                            serde_json::json!({"minLength": 1, "maxLength": 64})
-                        })
-                        .into(),
-                    );
-                }
-                let mut action = effect.bound_asking_params(params);
-                action.description = Some(t("files-airdrop-action-detail"));
-                action.id = "send-airdrop".into();
-                action.label = t("files-action-send-airdrop");
-                resource.actions.push(action);
-            }
-            for target in self
-                .nearby_send
-                .targets()
-                .iter()
-                .filter(|target| target.online)
-            {
-                resource.actions.push(row_action(
-                    &FilesEffect::SendTo {
-                        entry: id(),
-                        target: target.handle,
-                    },
-                    format!("send-nearby-{}", hex_prefix(target.handle.as_bytes(), 6)),
-                    t_args(
-                        "files-action-send-nearby-device",
-                        &[arg("device", target.label.clone())],
-                    ),
-                ));
-            }
-        }
-        let mut entry_effects: Vec<(FilesEffect, &str, String)> = if self.is_trash_view() {
-            vec![
-                (
-                    FilesEffect::Restore { entry: id() },
-                    "restore",
-                    t("files-menu-restore"),
-                ),
-                (
-                    FilesEffect::DeletePermanently { entry: id() },
-                    "delete-permanently",
-                    t("files-menu-delete-permanently"),
-                ),
-                (
-                    FilesEffect::Properties { entry: id() },
-                    "properties",
-                    t("files-menu-properties"),
-                ),
-            ]
-        } else {
-            vec![
-                (
-                    FilesEffect::Copy { entry: id() },
-                    "copy",
-                    t("files-menu-copy"),
-                ),
-                (FilesEffect::Cut { entry: id() }, "cut", t("files-menu-cut")),
-                (
-                    FilesEffect::Properties { entry: id() },
-                    "properties",
-                    t("files-menu-properties"),
-                ),
-                (
-                    FilesEffect::Sharing { entry: id() },
-                    "sharing",
-                    t("files-sharing-access"),
-                ),
-                (
-                    FilesEffect::History { entry: id() },
-                    "history",
-                    t("files-version-history"),
-                ),
-            ]
-        };
-        if self.is_native_trash_entry(&entry.path) {
-            entry_effects
-                .retain(|(effect, _, _)| !matches!(effect, FilesEffect::DeletePermanently { .. }));
-        }
-        for (effect, action, label) in entry_effects {
-            resource.actions.push(row_action(&effect, action, label));
-        }
-        if let Some(availability) = entry.availability.as_ref() {
-            resource.actions.push(row_action(
-                &FilesEffect::Availability { entry: id() },
-                "availability",
-                t("files-availability-title-short"),
-            ));
-            if availability.policy == fs_protocol::AvailabilityPolicy::Automatic {
-                resource.actions.push(row_action(
-                    &FilesEffect::KeepOffline { entry: id() },
-                    "keep-offline",
-                    t("files-keep-offline"),
-                ));
-            }
-            if availability.policy == fs_protocol::AvailabilityPolicy::Pinned
-                && !availability.policy_inherited
-            {
-                resource.actions.push(row_action(
-                    &FilesEffect::AutomaticStorage { entry: id() },
-                    "automatic-storage",
-                    t("files-use-automatic-storage"),
-                ));
-            }
-            let releasable = !entry.is_dir
-                && availability.policy == fs_protocol::AvailabilityPolicy::Automatic
-                && !availability.policy_inherited
-                && availability.transfer.phase == fs_protocol::TransferPhase::Idle
-                && matches!(
-                    availability.residency,
-                    fs_protocol::Residency::Partial { .. }
-                        | fs_protocol::Residency::Resident { .. }
-                );
-            if releasable {
-                resource.actions.push(row_action(
-                    &FilesEffect::FreeLocalSpace { entry: id() },
-                    "free-local-space",
-                    t("files-free-local-space"),
-                ));
-            }
-            let retryable = !matches!(
-                availability.residency,
-                fs_protocol::Residency::Resident { .. }
-            ) && availability.transfer.phase == fs_protocol::TransferPhase::Idle;
-            if retryable {
-                resource.actions.push(row_action(
-                    &FilesEffect::RetryDownload { entry: id() },
-                    "retry-download",
-                    t("files-retry-download"),
-                ));
-            }
-        }
-        if entry.record_id.is_some() {
-            resource.actions.push(row_action(
-                &FilesEffect::ShareLink { entry: id() },
-                "share-link",
-                "Create one-time share link",
-            ));
-        }
-        resource
-    }
-
     /// The live rows the window shows beneath the resource: listing entries,
     /// remote accounts, nearby transfers, and the retry of a failed listing.
     /// The folder, its places and templates are the resource's publication.
     fn live_filesystem_extras(&self) -> Vec<Resource> {
-        let mut extras = published_place_resources(&self.favorites());
-        extras.extend(published_template_resources());
-        extras.extend(self.live_entry_resources());
-        extras.extend(self.live_remote_account_resources());
+        self.published_live_rows()
+            .into_iter()
+            .map(ui::framework::LiveRow::into_resource)
+            .collect()
+    }
+
+    /// [`Self::live_filesystem_extras`] as the rows a publication shares:
+    /// an entry's row is the one last published while what it shows holds
+    /// ([`Self::live_entry_rows`]).
+    pub(crate) fn published_live_rows(&self) -> Vec<ui::framework::LiveRow> {
+        use ui::framework::LiveRow;
+        let mut rows: Vec<LiveRow> = published_place_resources(&self.favorites())
+            .into_iter()
+            .chain(published_template_resources())
+            .map(LiveRow::from_resource)
+            .collect();
+        rows.extend(self.live_entry_rows());
+        rows.extend(
+            self.live_other_resources()
+                .into_iter()
+                .map(LiveRow::from_resource),
+        );
+        rows
+    }
+
+    /// The live rows besides places, templates and entries: remote
+    /// accounts, drives, cloud entries, nearby transfers and a failed
+    /// listing's retry.
+    fn live_other_resources(&self) -> Vec<Resource> {
+        let mut extras = self.live_remote_account_resources();
         extras.extend(self.live_drive_resources());
         if ui::bound_dispatch::host_person_invocation_permitted() {
             extras.extend(self.cloud_resources());
@@ -9809,14 +9592,6 @@ impl FileExplorerWidget {
             extras.push(retry_row(failure.may_pass()));
         }
         extras
-    }
-
-    fn live_entry_resources(&self) -> Vec<Resource> {
-        self.entries
-            .iter()
-            .take(MAX_EAGER_ENTRY_RESOURCES)
-            .map(|entry| self.entry_resource(entry))
-            .collect()
     }
 
     fn live_remote_account_resources(&self) -> Vec<Resource> {
@@ -9868,6 +9643,56 @@ impl FileExplorerWidget {
                 resource
             })
             .collect()
+    }
+}
+
+/// The listing's entries by resource id ([`FileExplorerWidget::entry_resource_id`]).
+/// An id is a pure function of an entry's path and record, so an id found
+/// here names the entry at its index whenever that entry still has the
+/// path and record it had when the ids were made; anything else (another
+/// listing, an id not found) makes them again from the listing as it is.
+#[derive(Default)]
+struct EntryIds {
+    /// Each entry's path and record, in listing order, when the ids were made.
+    made_of: Vec<(PathBuf, Option<[u8; 16]>)>,
+    /// The index of each id's entry in that listing.
+    by_id: HashMap<String, usize>,
+}
+
+impl EntryIds {
+    fn find<'a>(&mut self, entries: &'a [Entry], id: &str) -> Option<&'a Entry> {
+        if let Some(entry) = self.lookup(entries, id) {
+            return Some(entry);
+        }
+        let current = self.made_of.len() == entries.len()
+            && self
+                .made_of
+                .iter()
+                .zip(entries)
+                .all(|((path, record), entry)| *path == entry.path && *record == entry.record_id);
+        if current {
+            return None;
+        }
+        self.made_of = entries
+            .iter()
+            .map(|entry| (entry.path.clone(), entry.record_id))
+            .collect();
+        self.by_id = entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| (FileExplorerWidget::entry_resource_id(entry), index))
+            .collect();
+        self.lookup(entries, id)
+    }
+
+    /// The entry `id` names, when its index still holds the entry it was
+    /// made from.
+    fn lookup<'a>(&self, entries: &'a [Entry], id: &str) -> Option<&'a Entry> {
+        let index = *self.by_id.get(id)?;
+        let (path, record) = self.made_of.get(index)?;
+        entries
+            .get(index)
+            .filter(|entry| entry.path == *path && entry.record_id == *record)
     }
 }
 
@@ -10767,6 +10592,7 @@ impl FileExplorerWidget {
     /// remote accounts, nearby transfers and the retry of a failed listing.
     /// The folder, its places and templates and its folder-wide work are the
     /// resource's publication.
+    #[cfg(test)]
     pub(crate) fn published_rows(&self) -> Vec<Resource> {
         self.live_filesystem_extras()
     }
@@ -10788,9 +10614,7 @@ impl FileExplorerWidget {
         {
             return Some(found);
         }
-        self.entries
-            .iter()
-            .find(|entry| Self::entry_resource_id(entry) == id)
+        self.entry_by_resource_id(id)
             .map(|entry| self.entry_resource(entry))
             .or_else(|| {
                 self.places_search

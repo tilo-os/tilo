@@ -127,7 +127,7 @@ impl LiveRow {
 
     /// Whether `self` and `other` are the same row, handed out again: a
     /// clone of one row, not two rows that read alike.
-    pub(crate) fn same_row(&self, other: &Self) -> bool {
+    pub fn same_row(&self, other: &Self) -> bool {
         std::rc::Rc::ptr_eq(&self.resource, &other.resource)
     }
 }

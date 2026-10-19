@@ -370,163 +370,203 @@ impl FileExplorerWidget {
         self.structure_dirty = true;
     }
 
-    /// Open-with actions for a file resource: the typed door (any claiming
-    /// app, optionally made the default) and, while the app chooser is open
-    /// on this file, one row action per app for the chooser to list.
-    pub(super) fn append_open_with_actions(
-        &self,
-        entry: &Entry,
-        resource_id: &str,
-        resource: &mut Resource,
-    ) {
+    /// What the open-with actions of `entry`'s row are made from
+    /// ([`append_open_with_actions`]); `None` when the row offers none: a
+    /// folder, an archive's or the Trash's entry, a type no app claims.
+    pub(super) fn open_with_facts(&self, entry: &Entry) -> Option<OpenWithFacts> {
         if entry.is_dir
             || crate::archive::location(&self.current_path).is_some()
             || self.is_trash_view()
         {
-            return;
+            return None;
         }
         let candidates = self.open_with_candidates(&entry.path);
         if candidates.apps.is_empty() {
-            return;
+            return None;
         }
         let access = self.retained_open_default_access(&entry.path);
         let can_edit = candidates.apps.iter().any(|app| {
             self.retained_open_target_access(&entry.path, &app.id)
                 == Some(ui::collaboration::open_selected::v2::SelectedAccess::EditInParent)
         });
-        let permission = if can_edit {
-            ui::tilo_actions::ActionKind::Undoable
-        } else {
-            match access {
-                Some(ui::collaboration::open_selected::v2::SelectedAccess::EditInParent) => {
-                    ui::tilo_actions::ActionKind::Undoable
-                }
-                _ => ui::tilo_actions::ActionKind::Read,
-            }
-        };
-        let mut params = vec![
-            ActionParam::required_owned("app", ParamType::Text, t("files-open-with-app-param"))
-                .with_choices(candidates.apps.iter().map(|app| app.id.clone())),
-            ActionParam::optional_owned(
-                "always",
-                ParamType::Boolean,
-                t_args(
-                    "files-open-with-always-param",
-                    &[arg("type", candidates.type_label.clone())],
-                ),
-            ),
-        ];
-        if let Some(access) = access {
-            let choices = if can_edit {
-                vec!["read-only", "edit-in-parent"]
-            } else {
-                vec!["read-only"]
-            };
-            params.push(
-                ActionParam::optional_owned(
-                    "access",
-                    ParamType::Text,
-                    t("files-open-with-access-param"),
-                )
-                .with_choices(choices.clone())
-                .with_schema(
-                    serde_json::json!({"type":"string", "enum":choices, "default":access.as_str()}),
-                ),
-            );
-        }
-        // This is an actual declared contract for the offered operation, not
-        // permission reconstructed later from caller-provided text. The same
-        // row is rebuilt from the live dispatcher on every publication.
-        let mut open_with = crate::effects::FilesEffect::OpenWith {
-            entry: resource_id.to_string(),
-            app: String::new(),
-            always: None,
-            access: access.map(|access| access.as_str().to_owned()),
-        }
-        .bound_asking_params(params);
-        open_with.contract.kind = permission;
-        open_with.id = OPEN_WITH_ACTION.into();
-        open_with.label = t("files-menu-open-with");
-        resource.actions.push(open_with);
-        if self.app_chooser_target.as_deref() == Some(entry.path.as_path()) {
-            self.append_open_with_chooser_actions(entry, resource_id, resource, &candidates);
-        }
+        let chooser =
+            (self.app_chooser_target.as_deref() == Some(entry.path.as_path())).then(|| {
+                candidates
+                    .apps
+                    .iter()
+                    .map(|app| {
+                        self.retained_open_target_access(&entry.path, &app.id)
+                            .is_some()
+                    })
+                    .collect()
+            });
+        Some(OpenWithFacts {
+            candidates,
+            access,
+            can_edit,
+            chooser,
+        })
     }
+}
 
-    fn append_open_with_chooser_actions(
-        &self,
-        entry: &Entry,
-        resource_id: &str,
-        resource: &mut Resource,
-        candidates: &OpenWithCandidates,
-    ) {
-        for app in &candidates.apps {
-            let access = self
-                .retained_open_target_access(&entry.path, &app.id)
-                .map(|_| ui::collaboration::open_selected::v2::SelectedAccess::ReadOnly);
-            let permission = if access
-                .is_some_and(ui::collaboration::open_selected::v2::SelectedAccess::editable)
-            {
+/// What a row's open-with actions are made from: the apps that claim the
+/// file's type, the access opening it in place gives, and, while the app
+/// chooser is open on the file, which apps open it in place.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct OpenWithFacts {
+    candidates: OpenWithCandidates,
+    access: Option<ui::collaboration::open_selected::v2::SelectedAccess>,
+    can_edit: bool,
+    /// Per app of `candidates`, whether it opens the file in place.
+    chooser: Option<Vec<bool>>,
+}
+
+/// Open-with actions for a file resource: the typed door (any claiming app,
+/// optionally made the default) and, while the app chooser is open on this
+/// file, one row action per app for the chooser to list.
+pub(super) fn append_open_with_actions(
+    facts: &OpenWithFacts,
+    resource_id: &str,
+    resource: &mut Resource,
+) {
+    let candidates = &facts.candidates;
+    let access = facts.access;
+    let can_edit = facts.can_edit;
+    let permission = if can_edit {
+        ui::tilo_actions::ActionKind::Undoable
+    } else {
+        match access {
+            Some(ui::collaboration::open_selected::v2::SelectedAccess::EditInParent) => {
+                ui::tilo_actions::ActionKind::Undoable
+            }
+            _ => ui::tilo_actions::ActionKind::Read,
+        }
+    };
+    let mut params = vec![
+        ActionParam::required_owned("app", ParamType::Text, t("files-open-with-app-param"))
+            .with_choices(candidates.apps.iter().map(|app| app.id.clone())),
+        ActionParam::optional_owned(
+            "always",
+            ParamType::Boolean,
+            t_args(
+                "files-open-with-always-param",
+                &[arg("type", candidates.type_label.clone())],
+            ),
+        ),
+    ];
+    if let Some(access) = access {
+        let choices = if can_edit {
+            vec!["read-only", "edit-in-parent"]
+        } else {
+            vec!["read-only"]
+        };
+        params.push(
+            ActionParam::optional_owned(
+                "access",
+                ParamType::Text,
+                t("files-open-with-access-param"),
+            )
+            .with_choices(choices.clone())
+            .with_schema(
+                serde_json::json!({"type":"string", "enum":choices, "default":access.as_str()}),
+            ),
+        );
+    }
+    // This is an actual declared contract for the offered operation, not
+    // permission reconstructed later from caller-provided text. The same
+    // row is rebuilt from the live dispatcher on every publication.
+    let mut open_with = crate::effects::FilesEffect::OpenWith {
+        entry: resource_id.to_string(),
+        app: String::new(),
+        always: None,
+        access: access.map(|access| access.as_str().to_owned()),
+    }
+    .bound_asking_params(params);
+    open_with.contract.kind = permission;
+    open_with.id = OPEN_WITH_ACTION.into();
+    open_with.label = t("files-menu-open-with");
+    resource.actions.push(open_with);
+    if let Some(chooser) = &facts.chooser {
+        append_open_with_chooser_actions(candidates, chooser, resource_id, resource);
+    }
+}
+
+fn append_open_with_chooser_actions(
+    candidates: &OpenWithCandidates,
+    in_place: &[bool],
+    resource_id: &str,
+    resource: &mut Resource,
+) {
+    for (app, in_place) in candidates.apps.iter().zip(in_place) {
+        let access =
+            in_place.then_some(ui::collaboration::open_selected::v2::SelectedAccess::ReadOnly);
+        let permission =
+            if access.is_some_and(ui::collaboration::open_selected::v2::SelectedAccess::editable) {
                 ui::tilo_actions::ActionKind::Undoable
             } else {
                 ui::tilo_actions::ActionKind::Read
             };
-            for (prefix, always, label) in [
-                (
-                    OPEN_ONCE_PREFIX,
-                    false,
-                    t_args("files-open-with-app", &[arg("app", app.name.clone())]),
+        for (prefix, always, label) in [
+            (
+                OPEN_ONCE_PREFIX,
+                false,
+                t_args("files-open-with-app", &[arg("app", app.name.clone())]),
+            ),
+            (
+                ALWAYS_PREFIX,
+                true,
+                t_args(
+                    "files-open-with-always-app",
+                    &[
+                        arg("app", app.name.clone()),
+                        arg("type", candidates.type_label.clone()),
+                    ],
                 ),
-                (
-                    ALWAYS_PREFIX,
-                    true,
-                    t_args(
-                        "files-open-with-always-app",
-                        &[
-                            arg("app", app.name.clone()),
-                            arg("type", candidates.type_label.clone()),
-                        ],
-                    ),
-                ),
-            ] {
-                if always && access.is_some() {
-                    continue;
-                }
-                let effect = crate::effects::FilesEffect::OpenWith {
-                    entry: resource_id.to_string(),
-                    app: app.id.clone(),
-                    always: Some(always),
-                    access: if always {
-                        None
-                    } else {
-                        access.map(|access| access.as_str().to_owned())
-                    },
-                };
-                let spec =
-                    if let Some(access) = access.filter(|_| !always) {
-                        let immediate = effect.bound().input;
-                        let mut spec =
-                            effect.bound_asking_params(vec![ActionParam::optional_owned(
-                        "access", ParamType::Text, t("files-open-with-access-param"),
-                    ).with_choices([access.as_str()]).with_schema(serde_json::json!({
-                        "type":"string", "const":access.as_str(), "default":access.as_str(),
-                    }))]);
-                        spec.contract.kind = permission;
-                        // The existing chooser remains one click. Its immutable
-                        // optional constant also describes the bound intent to the
-                        // original host custody, without a second permission UI.
-                        spec.input = immediate;
-                        spec.id = format!("{prefix}{}", app.id);
-                        spec.label = label;
-                        spec
-                    } else {
-                        crate::effects::row_action(&effect, format!("{prefix}{}", app.id), label)
-                    };
-                resource.actions.push(spec);
+            ),
+        ] {
+            if always && access.is_some() {
+                continue;
             }
+            let effect = crate::effects::FilesEffect::OpenWith {
+                entry: resource_id.to_string(),
+                app: app.id.clone(),
+                always: Some(always),
+                access: if always {
+                    None
+                } else {
+                    access.map(|access| access.as_str().to_owned())
+                },
+            };
+            let spec = if let Some(access) = access.filter(|_| !always) {
+                let immediate = effect.bound().input;
+                let mut spec = effect.bound_asking_params(vec![
+                    ActionParam::optional_owned(
+                        "access",
+                        ParamType::Text,
+                        t("files-open-with-access-param"),
+                    )
+                    .with_choices([access.as_str()])
+                    .with_schema(serde_json::json!({
+                        "type":"string", "const":access.as_str(), "default":access.as_str(),
+                    })),
+                ]);
+                spec.contract.kind = permission;
+                // The existing chooser remains one click. Its immutable
+                // optional constant also describes the bound intent to the
+                // original host custody, without a second permission UI.
+                spec.input = immediate;
+                spec.id = format!("{prefix}{}", app.id);
+                spec.label = label;
+                spec
+            } else {
+                crate::effects::row_action(&effect, format!("{prefix}{}", app.id), label)
+            };
+            resource.actions.push(spec);
         }
     }
+}
 
+impl FileExplorerWidget {
     fn retained_open_target_access(
         &self,
         path: &Path,

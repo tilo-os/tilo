@@ -1,4 +1,5 @@
 use super::*;
+use ui::tilo_resource::Effect as _;
 
 #[test]
 fn shared_menu_layout_matches_the_former_taffy_pass() {
@@ -7505,4 +7506,65 @@ fn a_file_inside_an_archive_opens_as_a_read_only_copy() {
     assert_eq!(archive_member_copy(&zip, &member).unwrap(), copy, "reused");
     let missing = archive_member_copy(&zip, std::path::Path::new("nope.txt"));
     assert!(missing.is_err());
+}
+
+/// A row's entry is found by the row's id through ids made once per
+/// listing, and found again as the listing changes: a new file, a file
+/// gone.
+#[test]
+fn a_listed_entry_is_found_by_its_row_id_as_the_listing_changes() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(directory.path().join("a.txt"), b"a").unwrap();
+    std::fs::write(directory.path().join("b.txt"), b"b").unwrap();
+    let mut files = FileExplorerWidget::new();
+    files.navigate(directory.path().to_path_buf());
+    let id = |name: &str| crate::search_provider::entry_resource_id(&directory.path().join(name));
+    let found = |files: &FileExplorerWidget, name: &str| {
+        files
+            .entry_by_resource_id(&id(name))
+            .map(|entry| entry.name.clone())
+    };
+    assert_eq!(found(&files, "b.txt").as_deref(), Some("b.txt"));
+    assert_eq!(found(&files, "c.txt"), None);
+    std::fs::write(directory.path().join("c.txt"), b"c").unwrap();
+    std::fs::remove_file(directory.path().join("b.txt")).unwrap();
+    files.refresh();
+    assert_eq!(found(&files, "c.txt").as_deref(), Some("c.txt"));
+    assert_eq!(found(&files, "b.txt"), None);
+    assert_eq!(found(&files, "a.txt").as_deref(), Some("a.txt"));
+}
+
+/// An entry whose row shows what it showed publishes the row it
+/// published, so the publication shares it; one that changed makes it
+/// again.
+#[test]
+fn an_unchanged_entry_publishes_the_row_it_published() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(directory.path().join("a.txt"), b"a").unwrap();
+    std::fs::write(directory.path().join("b.txt"), b"b").unwrap();
+    let mut files = FileExplorerWidget::new();
+    files.navigate(directory.path().to_path_buf());
+    let row = |files: &FileExplorerWidget, name: &str| {
+        let id = crate::search_provider::entry_resource_id(&directory.path().join(name));
+        files
+            .live_entry_rows()
+            .into_iter()
+            .find(|row| row.id() == id)
+            .expect("the entry's row is published")
+    };
+    let a = row(&files, "a.txt");
+    assert!(row(&files, "a.txt").same_row(&a), "the same row again");
+    // The entry changed: its row is made again, the other kept.
+    let b = row(&files, "b.txt");
+    if let Some(entry) = files.entries.iter_mut().find(|entry| entry.name == "a.txt") {
+        entry.size = entry.size.saturating_add(1);
+    }
+    assert!(
+        !row(&files, "a.txt").same_row(&a),
+        "a changed entry's row is new"
+    );
+    assert!(
+        row(&files, "b.txt").same_row(&b),
+        "an unchanged entry's row is kept"
+    );
 }
