@@ -503,6 +503,10 @@ mod tests {
                 .open_entry(0, &mut file_explorer::files_app::SystemRunner)
                 .unwrap()
         );
-        assert_eq!(files.status_line(), Some("Document opening is unavailable"));
+        let told = files.notice_line().expect("a refused open is said");
+        assert!(
+            told.contains(&file_explorer::i18n::t("files-open-unavailable")),
+            "{told}"
+        );
     }
 }
